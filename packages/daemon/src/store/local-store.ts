@@ -10,6 +10,7 @@ import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patr
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
+import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -305,10 +306,7 @@ export interface SessionRecord {
   /** 1 when this session's coordinates are its own conversation, so a parent link is
    *  lineage only and the CP must not inherit the parent's audience (§4.2). */
   directDestination?: number | null
-  // session-concept §5.3: the origin (parent) session's stable acpSessionId, when this session
-  // was spawned by another session's `sendMessage` (case 2a / A2A). DURABLE parent link (first-wins):
-  // it authorizes this session's SessionTarget replies back to the parent on EVERY turn, not just
-  // the waking one — a human-triggered follow-up turn carries no per-turn CallMeta. NULL for roots.
+  // The session that created this one, written once with the row; a record only, never read for replies (send-message-guide.md §9.6).
   originSessionId?: string | null
   /** The first parent link's output snapshot; JSON null records an explicitly private return route. */
   originCodeHostReplyTarget?: string | null
@@ -318,10 +316,7 @@ export interface SessionRecord {
   // turn is in flight; this only distinguishes a finished-well from a finished-badly session —
   // it is what `viewSessionStatus` reports as `failed`.
   lastTurnOutcome?: 'done' | 'failed' | null
-  // session-concept §5.3 companion of {@link originSessionId}: 1 when the parent woke this
-  // session with `toAgent.needsReply`, so the session carries a standing directive to report
-  // back into its parent when it finishes or fails. STICKY (never cleared by a later wake that
-  // omits it), so the directive survives resume and later human-triggered turns.
+  // Pre-message-id sticky reply request, read only by the v52 migration and status; obligations are per message now (§9.5).
   needsParentReply?: number | null
   // The platform module's standing block (`NormalizedMessage.standingContext`), persisted with the
   // logical session (first-wins) so a cold resume or a continuation that reconstructs its message
@@ -338,6 +333,8 @@ export interface SessionRecord {
   selectedRepos?: string | null
   // Where an appending session's latest turn replied (channel-session-mode.md §3.1), written by `setSessionReplyThread`; null at the conversation's top level and on every other session.
   replyThread?: string | null
+  // A digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null on a session from before it was recorded.
+  standingDigest?: string | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1306,7 +1303,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 49
+export const SCHEMA_VERSION = 52
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1905,8 +1902,114 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
     if (!columns.some((c) => c.name === 'replyThread'))
       await db.exec('ALTER TABLE sessions ADD COLUMN replyThread TEXT')
-  }
+  },
+  // v50 keeps a digest of the standing context a session's model last received, so a resume can tell whether it changed.
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS standingDigest TEXT')
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(sessions)', [])).rows as { name: string }[]
+    if (!columns.some((c) => c.name === 'standingDigest'))
+      await db.exec('ALTER TABLE sessions ADD COLUMN standingDigest TEXT')
+  },
+  // v51 numbers a sub-session's work rounds, so a continued one reports and counts per round (send-message-guide.md §8.4).
+  async (db, store) => {
+    if (store.postgres) {
+      await db.exec(
+        'ALTER TABLE IF EXISTS assistant_subsession ADD COLUMN IF NOT EXISTS round INTEGER NOT NULL DEFAULT 1'
+      )
+      return
+    }
+    const columns = (await db.query('PRAGMA table_info(assistant_subsession)', [])).rows as { name: string }[]
+    if (columns.length > 0 && !columns.some((c) => c.name === 'round'))
+      await db.exec('ALTER TABLE assistant_subsession ADD COLUMN round INTEGER NOT NULL DEFAULT 1')
+  },
+  // v52 addresses replies to session messages: each session's origin becomes one received call (send-message-guide.md §9.6).
+  async (db, store) => await migrateOriginsToSessionMessages(db, store.postgres)
 ]
+
+/** Give every session created by another one a synthesized `call` from its origin, carrying an outstanding request. */
+async function migrateOriginsToSessionMessages(db: StoreTx, postgres: boolean): Promise<void> {
+  await db.exec(SESSION_MESSAGE_SCHEMA)
+  // Probed, never queried blind: a failed statement aborts a Postgres migration transaction.
+  const keptSources = await tableExists(db, postgres, 'session_reply_source')
+  const sessions = (
+    await db.query(
+      'SELECT key, agentId, originSessionId, originCodeHostReplyTarget, needsParentReply FROM sessions WHERE originSessionId IS NOT NULL',
+      []
+    )
+  ).rows as {
+    key: string
+    agentId: string
+    originSessionId: string
+    originCodeHostReplyTarget: string | null
+    needsParentReply: number | null
+  }[]
+  const now = Date.now()
+  for (const rec of sessions) {
+    if (!rec.agentId) continue
+    const local = (
+      (await db.query('SELECT agentId FROM sessions WHERE sessionId = ? LIMIT 1', [rec.originSessionId])).rows as {
+        agentId: string
+      }[]
+    )[0]
+    // A remote origin's agent and coordinates were only ever known from a recorded source, which an earlier build kept.
+    const source = local || !keptSources ? undefined : await legacyReplySource(db, rec.key, rec.originSessionId)
+    await db.query(
+      `INSERT OR IGNORE INTO session_message
+         (messageId, recipientKey, recipientAgentId, sourceSessionId, sourceAgentId, sourcePlatform, sourceChannel,
+          sourceThread, codeHostReplyTarget, kind, replyState, replyFailed, hopCount, legacy, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'call', ?, 0, 0, 1, ?)`,
+      [
+        newSessionMessageId(),
+        rec.key,
+        rec.agentId,
+        rec.originSessionId,
+        local?.agentId ?? source?.sourceAgentId ?? '',
+        source?.sourcePlatform ?? null,
+        source?.sourceChannel ?? null,
+        source?.sourceThread ?? null,
+        rec.originCodeHostReplyTarget ?? null,
+        Number(rec.needsParentReply ?? 0) === 1 ? 'open' : 'none',
+        now
+      ]
+    )
+  }
+  await db.exec('DROP TABLE IF EXISTS session_reply_obligation')
+  await db.exec('DROP TABLE IF EXISTS session_reply_source')
+}
+
+/** Whether `table` exists in the store's schema. */
+async function tableExists(db: StoreTx, postgres: boolean, table: string): Promise<boolean> {
+  const sql = postgres
+    ? 'SELECT 1 AS found FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?'
+    : "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?"
+  return (await db.query(sql, [table])).rows.length > 0
+}
+
+/** A remote origin's route as an earlier build recorded it; the caller has checked that its table exists. */
+async function legacyReplySource(
+  db: StoreTx,
+  key: string,
+  sourceSessionId: string
+): Promise<
+  { sourceAgentId: string; sourcePlatform?: string; sourceChannel?: string; sourceThread?: string } | undefined
+> {
+  const row = (
+    await db.query(
+      'SELECT sourceAgentId, sourcePlatform, sourceChannel, sourceThread FROM session_reply_source WHERE sessionKey = ? AND sourceSessionId = ?',
+      [key, sourceSessionId]
+    )
+  ).rows[0] as Record<string, string | null> | undefined
+  if (!row?.sourceAgentId) return undefined
+  return {
+    sourceAgentId: row.sourceAgentId,
+    ...(row.sourcePlatform ? { sourcePlatform: row.sourcePlatform } : {}),
+    ...(row.sourceChannel ? { sourceChannel: row.sourceChannel } : {}),
+    ...(row.sourceThread ? { sourceThread: row.sourceThread } : {})
+  }
+}
 
 /** The approval record's columns as of v40, which the v40 rebuild copies across where the old table has them. */
 const ASSISTANT_DRAFT_V40_COLUMNS = [
@@ -2102,6 +2205,8 @@ export class LocalStore {
   readonly assistantReminders: AssistantReminderLedger
   /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
   readonly placeTimeZones: PlaceTimeZones
+  /** The messages each session received and sent, with their reply obligations (send-message-guide.md §9.3). */
+  readonly sessionMessages: SessionMessages
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2137,6 +2242,7 @@ export class LocalStore {
     this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
+    this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
   }
 
   /**
@@ -2203,6 +2309,7 @@ export class LocalStore {
       ${ASSISTANT_PATROL_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
+      ${SESSION_MESSAGE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -2219,7 +2326,8 @@ export class LocalStore {
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
-        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT
+        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
+        standingDigest TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3312,6 +3420,19 @@ export class LocalStore {
   /** Resolve a slot from the id the OUTSIDE world addresses it by (session-concept.md §1.1).
    *  Falls back to the ACP id so a caller still holding the runtime's name — and a control
    *  plane that recorded one before the outward column existed — still lands on the session. */
+  /** An agent's session by its outward id alone, never an ACP id, which names a session only inside its runtime. */
+  async getSessionByOutwardIdOnly(sessionId: string, agentId: string): Promise<SessionRecord | undefined> {
+    const row = (await this.db
+      .prepare('SELECT * FROM sessions WHERE sessionId = ? AND agentId = ?')
+      .get(sessionId, agentId)) as SessionRecord | undefined
+    if (row) return row
+    const minted = (await this.db
+      .prepare('SELECT key FROM session_outward_ids WHERE sessionId = ? AND agentId = ?')
+      .get(sessionId, agentId)) as { key: string } | undefined
+    const rec = minted ? await this.getSession(minted.key) : undefined
+    return rec?.agentId === agentId ? rec : undefined
+  }
+
   async getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined> {
     const scope = agentId === undefined ? '' : ' AND agentId = @agentId'
     const params = { sessionId, ...(agentId === undefined ? {} : { agentId }) }
@@ -3886,6 +4007,11 @@ export class LocalStore {
   /** Where an appending session's latest turn replied, or null at its top level; a wake keyed by the session alone replies there. */
   async setSessionReplyThread(key: string, thread: string | null): Promise<void> {
     await this.db.prepare('UPDATE sessions SET replyThread = ? WHERE key = ?').run(thread, key)
+  }
+
+  /** The digest of the standing context this session's model holds, or null for none yet; compared when the session resumes. */
+  async setSessionStandingDigest(key: string, digest: string | null): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET standingDigest = ? WHERE key = ?').run(digest, key)
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):
@@ -4697,10 +4823,18 @@ export class LocalStore {
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
       // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
-      if (isSubsessionCoordinate(rec.thread))
+      if (isSubsessionCoordinate(rec.thread)) {
         await tx
           .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
           .run(rec.agentId, key)
+        await tx
+          .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
+          .run(rec.agentId, key)
+      }
+      // A purged session neither answers nor is answered: its messages go with it (send-message-guide.md §9.3).
+      await tx.prepare('DELETE FROM session_message WHERE recipientKey = ?').run(key)
+      await tx.prepare('DELETE FROM session_message_sent WHERE senderKey = ?').run(key)
+      if (outward) await tx.prepare('DELETE FROM session_message WHERE sourceSessionId = ?').run(outward)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
         // Once the local session content is gone, creating a new CP metadata row

@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
+  SkillSourceFailureCode,
   AgentModelProvider,
   AgentDecisionIds,
   ChatActions,
@@ -55,7 +56,7 @@ import {
   UsageReport,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
-  normalizeGitHubSkillSource,
+  normalizeSkillSource,
   normalizeGitCloneUrl,
   redactGitUrlSecrets,
   normalizeRepoSubdir,
@@ -605,13 +606,13 @@ const SkillSourceArg = z
   .refine(
     (s) => {
       try {
-        normalizeGitHubSkillSource(s)
+        normalizeSkillSource(s)
         return true
       } catch {
         return false
       }
     },
-    { message: 'source must be a bounded GitHub repository source' }
+    { message: 'source must be a bounded GitHub repository source or an HTTPS Git address' }
   )
 
 const SkillSourceRef = z
@@ -1231,19 +1232,23 @@ export const UpdateSkillSourceBody = z
   .strict()
   .refine((b) => Object.keys(b).length > 0, { message: 'no fields to update' })
 
-/** `POST /skill-sources/preview` — best-effort GitHub scan for the import dialog.
- *  Takes an installation + repo (same shape as the branches picker) and returns the
- *  ref choices + the SKILL.md manifest. Scan failure ⇒ empty skills (install all). */
-export const PreviewSkillSourceBody = z
-  .object({
-    installationId: z.string(),
-    owner: z.string().min(1),
-    repo: z.string().min(1),
-    ref: z.string().optional()
-  })
-  .strict()
+/** `POST /skill-sources/preview` — best-effort scan for the import dialog: a GitHub installation + repo, or a `source` address (GitLab is scanned, any other host is never contacted). */
+export const PreviewSkillSourceBody = z.union([
+  z
+    .object({
+      installationId: z.string(),
+      owner: z.string().min(1),
+      repo: z.string().min(1),
+      ref: z.string().optional()
+    })
+    .strict(),
+  // An HTTPS address (source-cache.md §11): scanned through the GitLab API on the deployment's instance, never read elsewhere.
+  z.object({ source: SkillSourceArg, ref: SkillSourceRef.optional(), subDir: SkillSourceSubDir.optional() }).strict()
+])
 
 export const SkillSourcePreviewDto = z.object({
+  // False when the CP did not read the repository (another host, or a failed GitLab scan): the lists are then empty and the client offers whole-source enablement or a typed skill filter.
+  resolvable: z.boolean(),
   branches: z.array(z.string()),
   tags: z.array(z.string()),
   skills: z.array(z.object({ name: z.string(), dirPath: z.string() }))
@@ -1296,6 +1301,8 @@ export const SkillSourceDto = z.object({
   subDir: z.string().nullable(),
   skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
   private: z.boolean(), // repo was private at bind time ⇒ acquired through the org GitHub App
+  // Who vouches for the source: a provider-qualified repository/project id; null ⇒ anonymous.
+  credential: z.object({ provider: z.enum(['github', 'gitlab']), repoId: z.string() }).nullable(),
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()),
   createdBy: z.string().nullable(),
@@ -1321,9 +1328,22 @@ export const AgentSkillSourceDto = z.object({
   ref: z.string().nullable(),
   subDir: z.string().nullable(),
   skills: z.array(z.string()), // the source's own skill filter ([] ⇒ all)
-  private: z.boolean()
+  private: z.boolean(),
+  // Which code host's credential acquires it; null ⇒ anonymous (the console marks an anonymous off-GitHub source "trusted by URL").
+  credential: z.object({ provider: z.enum(['github', 'gitlab']) }).nullable()
 })
 export const AgentSkillSourceListDto = z.array(AgentSkillSourceDto)
+
+/** `GET /agents/:id/skill-source-status` — each enabled Source's latest install failure as its daemon reported it (source-cache.md §11). */
+export const AgentSkillSourceStatusDto = z.object({
+  sources: z.array(
+    z.object({
+      name: z.string(),
+      code: SkillSourceFailureCode,
+      reportedAt: z.string() // ISO-8601, the Control Plane's receipt time
+    })
+  )
+})
 
 // ── organization environment: variables & secrets ──────────────────────────
 // docs/designs/organization-secrets-and-variables.md §6. Owner-only registry.
@@ -3584,7 +3604,8 @@ export const WorkspaceTransferBody = z
     sha256: z
       .string()
       .regex(/^[0-9a-fA-F]{16,64}$/)
-      .optional() // the digest prefix a share recorded; the bucket's bytes must still match it
+      .optional(), // the digest prefix a share recorded; the bucket's bytes must still match it
+    poll: z.boolean().optional() // answer 202 with an operationId while the daemon uploads, instead of holding the request
   })
   .strict()
 
@@ -3595,6 +3616,27 @@ export const WorkspaceTransferDto = z.object({
   expiresAt: z.string(),
   cached: z.boolean() // the bucket already held this revision
 })
+
+/** A workspace transfer whose upload is still running; poll its operation. */
+export const WorkspaceTransferPendingDto = z.object({
+  operationId: z.string().uuid(), // GET /agents/:id/workspace/file/transfer/:operationId
+  path: z.string(),
+  size: z.number().int().nonnegative()
+})
+
+export const WorkspaceTransferOperationParams = z.object({
+  id: z.string(),
+  operationId: z.string().uuid()
+})
+
+export const WorkspaceTransferOperationQuery = z
+  .object({
+    sha256: z
+      .string()
+      .regex(/^[0-9a-fA-F]{16,64}$/)
+      .optional() // as on the POST: the bucket's bytes must still match this digest prefix
+  })
+  .strict()
 
 /** One file the console is about to upload for a webchat turn; the browser hashes it first. */
 export const FileUploadBody = z

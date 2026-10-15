@@ -33,6 +33,7 @@ import {
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   AgentActivate as AgentActivateSchema,
   AgentSkillEntry as AgentSkillEntrySchema,
+  skillSourceCredential,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -105,6 +106,7 @@ import {
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  WORKSPACE_UPLOAD_BEGIN_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
   type SharedImageResolveOk,
   type SharedImageResolveReq,
@@ -333,7 +335,7 @@ import {
 } from './assistant/drafts.js'
 import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
-import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
+import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import {
   askerOf,
@@ -384,7 +386,7 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import { describePlace, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import { describePlace, judgeSessionParticipation, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
@@ -496,11 +498,18 @@ import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
 import {
   createSkillRefPlanResolution,
   createSkillRefResolution,
+  isCredentialedSkillSource,
+  resolveCredentialedSkillRef,
   type SkillRefPlan
 } from './skills/skill-ref-resolution.js'
-import { reconcileSandboxSkillSources, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
+import { configureGitlabSkillReads } from './skills/gitlab-skill-source.js'
+import { gitlabRepository } from './gitlab/repository.js'
+import { reconcileSandboxSkillSources, skillWindowKey, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
+import { resolveSkillRefInPod } from './skills/pod-skill-ref.js'
+import { GITLAB_SKILL_WINDOW_PREFIX } from './cp/skill-credential-window.js'
 import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/cluster-skill-coordinator.js'
+import type { SkillSourceFailureEntry } from './skills/skill-source-failure.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -745,7 +754,7 @@ import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-i
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
-import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
+import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
@@ -814,6 +823,7 @@ import {
   type SubsessionApprovalRoute
 } from './permissions/subsession-approval.js'
 import { CollabCoordinator, type CollabHost } from './collab/coordinator.js'
+import { legacySessionMessageId } from './collab/session-message.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -1031,6 +1041,12 @@ import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as webchatTurnOutput from './webchat/turn-output.js'
 import {
+  WEBCHAT_ROUTING_UPDATE_TEXT,
+  foldWebchatRouting,
+  initialWebchatRouting,
+  webchatRoutingNoteBlocks
+} from './webchat/narrowed-scope.js'
+import {
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
   SHARED_IMAGE_SOURCE_MAX_BYTES,
@@ -1187,6 +1203,8 @@ type HostRetirement = {
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
+// One pod-local skill ref listing, the same bound the daemon's own ref naming has.
+const POD_SKILL_REF_TIMEOUT_MS = 10_000
 
 /** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
 const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
@@ -2552,6 +2570,8 @@ export class Daemon {
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
+      migrateTelegramChat: (migration, integrationIds) =>
+        this.observedChannelsSync.migrateTelegramChat(migration, integrationIds),
       observePlatformChat: (platform, chat, integrationIds) =>
         this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds),
       observePlatformChats: (platform, chats, integrationIds) =>
@@ -2648,6 +2668,7 @@ export class Daemon {
       draining: () => this.draining,
       agentDraining: (agentId) => this.drainingAgents.has(agentId),
       turnFinalContextRefresh: () => this.cfg.features.turnFinalContextRefresh,
+      holdContextForOwnTurn: (key, ts) => this.holdContextForOwnTurn(key, ts),
       inflight: () => this.inflight,
       serialQueue: () => this.serialQueue,
       pending: () => this.pending,
@@ -3237,11 +3258,24 @@ export class Daemon {
           (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
         )
       },
+      // A credentialed GitLab skill source the spec enables, by the path its project is measured at on the spec's instance.
+      privateGitlabSkillProjectOf: (agentId: string, projectPath: string) => {
+        const agent = this.agents.get(agentId)
+        const wanted = `${GITLAB_SKILL_WINDOW_PREFIX}${projectPath.toLowerCase()}`
+        for (const value of agent?.skills ?? []) {
+          const parsed = AgentSkillEntrySchema.safeParse(value)
+          if (!parsed.success) continue
+          const credential = skillSourceCredential(parsed.data)
+          if (credential?.provider === 'gitlab' && skillWindowKey(parsed.data, agent?.gitlabHost) === wanted)
+            return credential.projectId
+        }
+        return undefined
+      },
       // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): issued only inside a skill credential window.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
         return (this.agents.get(agentId)?.skills ?? []).some(
-          (entry) => entry.private === true && gitSkillRepositoryPath(entry)?.toLowerCase() === wanted
+          (entry) => isCredentialedSkillSource(entry) && gitSkillRepositoryPath(entry)?.toLowerCase() === wanted
         )
       }
     })
@@ -3448,10 +3482,28 @@ export class Daemon {
         stateRoot: join(root, 'skill-installs'),
         warn: (message: string) => this.log.warn(message)
       }),
-      credentialed: this.codeHostRefs
+      credentialed: this.codeHostRefs,
+      gitlabHostOf: (agentId: string) => this.agents.get(agentId)?.gitlabHost
     }
     this.gitSkillRefs = createSkillRefResolution(skillRefDeps)
     this.gitSkillRefPlans = createSkillRefPlanResolution(skillRefDeps)
+    // A credentialed GitLab Source reads with the agent's own CP-minted read token, resolved like a workspace (source-cache.md §5).
+    const skillTokens = gitCredReadTokens({
+      get: (...args) => this.gitCreds.get(...args),
+      invalidate: (...args) => this.gitCreds.invalidate(...args)
+    })
+    configureGitlabSkillReads({
+      host: (agentId) => this.agents.get(agentId)?.gitlabHost,
+      resolve: (entry, agentId) =>
+        resolveCredentialedSkillRef(this.codeHostRefs, entry, agentId, this.agents.get(agentId)?.gitlabHost),
+      token: async (agentId, repository) =>
+        (
+          await skillTokens.get(
+            agentId,
+            gitlabRepository.readTokenAsk({ externalId: repository.externalId, repoFullName: repository.path })
+          )
+        ).token
+    })
   }
 
   /** Phase 13 — resolve host candidates and the image's separate executable catalog. */
@@ -4176,6 +4228,7 @@ export class Daemon {
       messageAgent: (req) => this.collab.messageAgent(req),
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
       replyToSession: (req) => this.collab.replyToSession(req),
+      continueSubsession: (req) => this.collab.continueSubsession(req),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
@@ -4218,13 +4271,14 @@ export class Daemon {
         },
         now: () => this.clock.now()
       },
-      // A main conversation's stop of its own sub-session (assistant-mode.md §5.8), through the console's Stop core.
+      // An owning session's stop of its own task (send-message-guide.md §8.7), through the console's Stop core.
       assistantSubsessions: {
-        stopper: async (ctx) => this.subsessionStopper(ctx),
+        actor: (ctx) => this.taskStopper(ctx),
+        sessionIdOf: async (key) => (await this.store.getSession(key))?.sessionId ?? undefined,
         find: async (agentId, id) =>
           (await this.store.assistantSubsessions.get(agentId, id)) ??
           (await this.store
-            .getSessionByOutwardId(id, agentId)
+            .getSessionByOutwardIdOnly(id, agentId)
             .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
         stopSession: (key, actor) => this.stopSessionByKey(key, actor)
       },
@@ -4566,8 +4620,8 @@ export class Daemon {
         tools = [...tools, ...assistantItemToolsFor(agent)]
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-        // Stopping a sub-session it opened (§5.8), for every agent, in a place's main conversation only.
-        tools = [...tools, ...assistantSubsessionToolsFor({ platform, channel, thread, integrationId })]
+        // Stopping a task it started (send-message-guide.md §8.7), in every session that can start one.
+        tools = [...tools, ...stopTaskToolsFor({ thread })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -6557,7 +6611,9 @@ export class Daemon {
       ],
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
-      resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value)
+      resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value),
+      reportSkillSourceFailures: (value: Agent, failures: SkillSourceFailureEntry[]) =>
+        this.reportSkillSourceFailures(value.id, failures)
     }
     // §11: the session a per-session host serves gets its own clones, never a worktree of the primary.
     return request
@@ -6579,6 +6635,15 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) return []
     return this.workspaces.needsGitcredTunnel(agent) ? ['mcp', 'gitcred'] : ['mcp']
+  }
+
+  /** D→C `agent/skill-status` after a completed skill reconcile: names and codes only, best-effort (source-cache.md §11). */
+  private reportSkillSourceFailures(agentId: string, failed: SkillSourceFailureEntry[]): void {
+    try {
+      this.cpClient?.emitAgentSkillStatus?.({ agentId, failed, ts: new Date(this.clock.now()).toISOString() })
+    } catch (err) {
+      this.log.warn(`skills: source status for "${agentId}" not reported: ${formatErr(err)}`)
+    }
   }
 
   /** The commit a tracking Git skill ref points at now, or null when unknown (the installed commit then stands). */
@@ -6821,7 +6886,8 @@ export class Daemon {
                 ...acquireOptions,
                 destination
               }),
-        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {})
+        ...(client.gitInPod && peer.pod ? { inPod: this.inPodSkillDeps(agent, peer.pod) } : {}),
+        reportSourceFailures: (failures) => this.reportSkillSourceFailures(agent.id, failures)
       },
       {
         agentId: agent.id,
@@ -6865,9 +6931,19 @@ export class Daemon {
               this.skillCachePlan!({ agentId: agent.id, entry, resolution }, options)
           }
         : {}),
+      // A pod resolves an anonymous Source off GitHub itself, so the daemon never contacts that host (source-cache.md §5).
+      ...(this.k8sPlane?.podGitRunner
+        ? {
+            resolveInPod: async (entry: AgentSkillEntrySchema) => {
+              const runner = this.k8sPlane?.podGitRunner?.(pod.subject, AbortSignal.timeout(POD_SKILL_REF_TIMEOUT_MS))
+              return runner ? await resolveSkillRefInPod(entry, runner) : { ok: false as const }
+            }
+          }
+        : {}),
+      ...(agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}),
       // A public entry naming a repository the agent capability grants keeps that grant on the daemon path.
       daemonOnly: (entry) => {
-        if (entry.private === true) return false
+        if (isCredentialedSkillSource(entry)) return false
         const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
         return repo !== undefined && (repo === workspaceRepo || additional.has(repo))
       }
@@ -7675,6 +7751,8 @@ export class Daemon {
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
       FILE_TRANSFER_FEATURE,
+      // Runs a workspace upload behind a short `workspace/upload/begin` and reports it with `transfer/settle`; static.
+      WORKSPACE_UPLOAD_BEGIN_FEATURE,
       // Answers `image/original/resolve` and publishes shared-image originals (webchat-generated-images.md).
       WEBCHAT_IMAGES_FEATURE,
       TASK_LIST_FEATURE,
@@ -8082,6 +8160,25 @@ export class Daemon {
     return external
   }
   private readonly memoryShares = new Map<string, { at: number; external: boolean }>()
+
+  /** send-message-guide.md §9.2: may the people on a calling turn join this agent's session, judged as a read of its conversation. */
+  private async sessionParticipation(
+    target: SessionRecord,
+    callerPlace: { platform: string; channel: string },
+    askers: TurnAskers
+  ): Promise<boolean> {
+    return await judgeSessionParticipation({
+      callerPlace,
+      target,
+      askers,
+      bot: this.integrationIdForSessionTransport(target.agentId, target.platform, target.transportScope),
+      lookups: this.placeMembers.lookupsFor(target.agentId),
+      deps: {
+        gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
+        placeSnapshot: (integrationId, channel) => this.readPlaceSnapshot(integrationId, channel)
+      }
+    })
+  }
 
   /** describePlace's inputs for memory: the snapshot row, plus the privacy a channel lookup cached; `isPrivate: true` from either wins. */
   private memoryPlaceDeps(): Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> {
@@ -8797,6 +8894,55 @@ export class Daemon {
     return this.activeGateEntries.get(this.sessionKeyOf(ctx))
   }
 
+  /** send-message-guide.md §9.3: record an admitted session message on the session it reached, with its reply obligation. */
+  private async noteSessionMessage(agentId: string, key: string, callMeta: CallMeta): Promise<void> {
+    const source = callMeta.originSessionId
+    // A root seed was never sent, and a delivery with no source session is no session message.
+    if (source === undefined || callMeta.initializeOnly === true) return
+    try {
+      // A session never receives a message from itself.
+      if ((await this.store.getSession(key))?.sessionId === source) return
+      let messageId = callMeta.messageId
+      if (messageId === undefined) {
+        // A report from the agent's own sub-session without an id names nothing to answer.
+        const origin = await this.store.getSessionByOutwardId(source)
+        if (origin && origin.agentId === agentId && isSubsessionCoordinate(origin.thread)) return
+        // A delivery from a peer or an inbox row that predates ids: one stable id, answered by the pre-id route.
+        messageId = legacySessionMessageId(callMeta.callFrom, callMeta.deliveryId)
+        callMeta.messageId = messageId
+        callMeta.legacyMessage = true
+      }
+      const coords = callMeta.originCoords
+      const recorded = await this.store.sessionMessages.recordReceived({
+        messageId,
+        recipientKey: key,
+        recipientAgentId: agentId,
+        sourceSessionId: source,
+        sourceAgentId: callMeta.callFrom,
+        ...(coords
+          ? {
+              sourcePlatform: coords.platform,
+              sourceChannel: coords.channel,
+              ...(coords.thread !== undefined ? { sourceThread: coords.thread } : {})
+            }
+          : {}),
+        ...(callMeta.originCodeHostReplyTarget !== undefined
+          ? { codeHostReplyTarget: JSON.stringify(callMeta.originCodeHostReplyTarget) }
+          : {}),
+        kind: callMeta.messageKind ?? 'call',
+        ...(callMeta.inReplyTo !== undefined ? { inReplyTo: callMeta.inReplyTo } : {}),
+        replyState: callMeta.needsReply === true ? 'open' : 'none',
+        hopCount: callMeta.hopCount,
+        ...(callMeta.legacyMessage ? { legacy: true } : {}),
+        now: this.clock.now()
+      })
+      if (recorded === 'conflict')
+        this.log.warn(`session message ${messageId} is already another session's; not recorded`)
+    } catch (err) {
+      this.log.warn(`session message for ${key} not recorded: ${formatErr(err)}`)
+    }
+  }
+
   /** Who is asking on a session's live turn: its message's sender and every message folded into it (assistant-mode.md §5.5). */
   private async readAskersFor(ctx: SessionContext): Promise<TurnAskers> {
     const key = this.sessionKeyOf(ctx)
@@ -8847,7 +8993,15 @@ export class Daemon {
   /** A message folded into the live turn joins the people it reads for; recorded before the model can see it. */
   private noteFoldedMessage(key: string, entry: QueueEntry): void {
     const live = this.activeGateEntries.get(key)
-    if (live && live !== entry) (live.foldedMessages ??= []).push(this.turnMessageOf(entry))
+    if (!live || live === entry) return
+    ;(live.foldedMessages ??= []).push(this.turnMessageOf(entry))
+    // send-message-guide.md §9.5: a message folded into this turn makes its final output no one message's answer.
+    const call = entry.callMeta
+    if (call?.originSessionId !== undefined)
+      (live.foldedCalls ??= []).push({
+        deliveryId: call.deliveryId,
+        ...(call.messageId !== undefined ? { messageId: call.messageId } : {})
+      })
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
@@ -8922,23 +9076,19 @@ export class Daemon {
     }
   }
 
-  /** The console's Stop and the main conversation's `stopSubsession` alike: the `!cancel` core, logged with who asked. */
+  /** The console's Stop and an owning session's `stopTask` alike: the `!cancel` core, logged with who asked. */
   private async stopSessionByKey(key: string, actor?: InteractionActor): Promise<boolean> {
     const applied = await this.commands.cancelSessionByKey(key, actor)
     if (applied) this.commands.logSessionAction('cancel', key, actor)
     return applied
   }
 
-  /** The person whose own message started the live turn, held to today's `!stop` sender rule (assistant-mode.md §5.8). */
-  private subsessionStopper(ctx: SessionContext): SubsessionStopper {
+  /** Who a `stopTask` is logged as: the person whose message started the live turn, else the agent itself (send-message-guide.md §8.7). */
+  private taskStopper(ctx: SessionContext): { userId: string; name?: string; isBot?: boolean } {
     const msg = this.liveTurn(ctx)?.msg
-    if (!msg || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return { ok: false, reason: 'no-person' }
-    const actor = { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
-    // Webchat has no `!stop`; the Control Plane admitted this message only from someone who may continue the conversation.
-    if (ctx.platform === 'webchat') return { ok: true, actor }
-    if (!ctx.integrationId || !this.commands.commandSenderAllowed(ctx.agentId, ctx.integrationId, msg))
-      return { ok: false, reason: 'sender' }
-    return { ok: true, actor }
+    if (msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id)
+      return { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
+    return { userId: ctx.agentId, isBot: true }
   }
 
   /** The zone a person's profile on that bot names, from the name lookups' per-person cache; none where the platform keeps none. */
@@ -12253,11 +12403,47 @@ export class Daemon {
       // and only the CP may open it.
       ...(msg.parentPrivate === true ? { parentPrivate: true } : {})
     }
+    // send-message-guide.md §9.3: the message's id as its sender minted it; a delivery from a pre-id peer gets a stable one here.
+    if (msg.originSessionId !== undefined) {
+      callMeta.messageId = msg.messageId ?? legacySessionMessageId(msg.trustedFromAgentId, msg.deliveryId)
+      callMeta.messageKind = msg.messageKind ?? (msg.deliveryKind === 'session-reply' ? 'reply' : 'call')
+      if (msg.inReplyTo !== undefined) callMeta.inReplyTo = msg.inReplyTo
+      if (msg.messageId === undefined) callMeta.legacyMessage = true
+    }
 
-    // The source daemon checks origin authority; an agent-scoped lookup here prevents session aliasing.
+    // send-message-guide.md §9.2: an existing-session call is admitted here, the owning daemon, into that session or nowhere.
+    if (msg.deliveryKind === 'session-call') {
+      if (msg.targetSessionId === undefined) return record(nak('not_found'))
+      const admitted = await this.collab.admitSessionCall({
+        toAgentId: msg.toAgentId,
+        callerAgentId: msg.trustedFromAgentId,
+        targetSessionId: msg.targetSessionId,
+        callerPlace: msg.originCoords ?? msg.coords,
+        askers: msg.callerAskers ?? NOBODY,
+        text: msg.text,
+        callMeta
+      })
+      if (!admitted.accepted)
+        return record(
+          nak(admitted.reason === 'not_found' || admitted.reason === 'queue_full' ? admitted.reason : 'busy')
+        )
+      this.log.info(
+        `relay: rd/agentmsg/fwd session call ${msg.trustedFromAgentId} → ${msg.toAgentId} (${admitted.key}) delivery=${msg.deliveryId}`
+      )
+      return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: admitted.key })
+    }
+    // A reply: one naming a message lands only in the session that sent it to the replier (send-message-guide.md §9.4); a pre-id one in its named session.
     if (msg.lineageReplyTo !== undefined) {
-      const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
+      const origin = await this.replyRecipient(msg)
       if (!origin) return record(nak('not_found'))
+      if (
+        callMeta.messageId !== undefined &&
+        (await this.store.sessionMessages.conflicts(callMeta.messageId, origin.key, origin.agentId))
+      )
+        return record(nak('not_allowed'))
+      // A replay of one submission lands once (§8.6): its message is already recorded on that session.
+      if (await this.collab.alreadyReceived(msg.messageId, origin.key))
+        return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId: origin.key })
       const route = sessionReplyRoute(
         origin,
         (...args) => this.integrationIdForSessionTransport(...args),
@@ -12287,7 +12473,7 @@ export class Daemon {
         // Ordered as NEW content in the origin session (see replyToSession's local branch).
         transcriptTs: monotonicTs(),
         sender: { id: msg.trustedFromAgentId, isBot: true },
-        text: msg.text,
+        text: this.collab.renderInput(callMeta, msg.text),
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
         isDm: false,
@@ -12310,7 +12496,10 @@ export class Daemon {
         replyIntegrationId,
         this.webchatTransport.webchatWakeContext(origin.platform, origin.channel),
         callMeta,
-        { requireDurable: true, onAdmission: (result) => settleAdmission(result) },
+        {
+          requireDurable: true,
+          onAdmission: (result) => settleAdmission(result)
+        },
         codeHostReply
       ).catch((err) => {
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
@@ -12318,6 +12507,11 @@ export class Daemon {
       })
       const admission = await admitted
       if (!admission.accepted) return record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
+      await this.collab.notePeerReplyAdmitted({
+        fromAgentId: msg.trustedFromAgentId,
+        ...(msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {}),
+        ...(msg.lineageReplyTo !== undefined ? { lineageReplyTo: msg.lineageReplyTo } : {})
+      })
       this.log.info(
         `relay: rd/agentmsg/fwd lineage reply ${msg.trustedFromAgentId} → ${msg.toAgentId} (${origin.key}) delivery=${msg.deliveryId}`
       )
@@ -12399,11 +12593,8 @@ export class Daemon {
       ...(thread !== undefined ? { thread } : {}),
       ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
-      // The forwarded text already names the caller (`From <caller>: …`, built on the caller's
-      // daemon in prepareAgentDelivery) — deliver it as-is. Re-wrapping it here would
-      // double-frame it AND leak the caller's raw agentId, which the caller can't resolve
-      // for a remote peer anyway.
-      text: msg.text,
+      // §9.5: the body under this daemon's message header, from the trusted lineage; a pre-id peer's text arrives already framed.
+      text: this.collab.renderInput(callMeta, msg.text),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       // A `toAgent`+`channel` wake was preceded by a visible post the SOURCE daemon made; carry
@@ -12412,6 +12603,12 @@ export class Daemon {
       ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {})
     }
 
+    // §9.3: an id already recorded for another session is that message's, so this delivery is refused.
+    if (
+      callMeta.messageId !== undefined &&
+      (await this.store.sessionMessages.conflicts(callMeta.messageId, childSessionId, msg.toAgentId))
+    )
+      return record(nak('not_allowed'))
     // send-message-routing-rework.md §3.2: the target daemon owns the rendezvous for a
     // cross-daemon paired call too — BOTH the forwarded wake and the routed IM event
     // converge here, so this is the only place that can see both halves. The relay
@@ -12456,6 +12653,21 @@ export class Daemon {
     })
     this.log.info(`relay: rd/agentmsg/fwd ${msg.trustedFromAgentId} → ${msg.toAgentId} delivery=${msg.deliveryId}`)
     return record({ deliveryId: msg.deliveryId, delivered: true, childSessionId })
+  }
+
+  /** The session a remote reply may land in: the sender of the message it answers, by this daemon's own sent record, else a pre-id reply's named session. */
+  private async replyRecipient(msg: RdAgentMsgFwd): Promise<SessionRecord | undefined> {
+    if (msg.inReplyTo === undefined)
+      return msg.lineageReplyTo !== undefined
+        ? await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
+        : undefined
+    const sent = await this.store.sessionMessages.sent(msg.inReplyTo).catch(() => undefined)
+    // Only a message this daemon sent from the named agent's session to the replying agent can be answered.
+    if (!sent || sent.senderAgentId !== msg.toAgentId || sent.recipientAgentId !== msg.trustedFromAgentId)
+      return undefined
+    if (msg.lineageReplyTo !== undefined && sent.senderSessionId !== msg.lineageReplyTo) return undefined
+    const sender = await this.store.getSession(sent.senderKey)
+    return sender?.agentId === msg.toAgentId ? sender : undefined
   }
 
   /** Whether this member serves the agent's ingress edges and sweeps: the duty holder, or any local daemon. */
@@ -13284,7 +13496,8 @@ export class Daemon {
   private async coalesceEntryIntoTurn(
     entry: QueueEntry,
     sessionId: string | null,
-    reason: 'coalesced_into_turn' | 'steered_into_turn' = 'coalesced_into_turn'
+    reason: 'coalesced_into_turn' | 'steered_into_turn' = 'coalesced_into_turn',
+    routingFolded = false
   ): Promise<void> {
     if (entry.webchat && !entry.webchat.doneSent) {
       entry.webchat.doneSent = true
@@ -13296,13 +13509,16 @@ export class Daemon {
     }
     const { thread, ts } = transcriptCoords(entry.msg)
     const mention = attachmentMention(entry.msg.attachments)
+    const liveKey = sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
+    // §5.2a: the live webchat turn now also answers this activation, so its routing and reply scope fold it in.
+    const live = routingFolded
+      ? undefined
+      : [...this.pending.values()].find((p) => p.webchat && p.plan.sessionKey === liveKey)
+    if (live) live.webchatRouting = foldWebchatRouting(live.webchatRouting ?? initialWebchatRouting(live.entry), entry)
     await this.store.appendTranscript({
       channel: transcriptChannelKey(entry.msg.channel, entry.msg.transportScope),
       thread: entry.msg.thread ?? entry.msg.msgId,
-      admission: {
-        agentId: entry.agentId,
-        sessionKey: sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
-      },
+      admission: { agentId: entry.agentId, sessionKey: liveKey },
       ts,
       sender: entry.msg.sender.id,
       // Carried so a live agent-wake post (postAgentWakeInbound) reconciles against
@@ -13341,12 +13557,18 @@ export class Daemon {
     target.steerCount = (target.steerCount ?? 0) + 1
     // Before the runtime has it, so no read in the live turn can run without its sender; a declined steer only narrows.
     this.noteFoldedMessage(key, entry)
+    // §5.2a: the steered blocks consume this activation, so they carry the routing it folds in (committed only if the runtime takes it).
+    const routing = target.webchat
+      ? foldWebchatRouting(target.webchatRouting ?? initialWebchatRouting(target.entry), entry)
+      : undefined
     let outcome: Awaited<ReturnType<AcpHost['steer']>>
     try {
       // `promptRequired`: a steer that races the turn end is declined, never a turn we did not admit.
-      outcome = await host.steer(target.acpSessionId, steerPromptBlocks(entry.msg, await this.steerIntakeText(entry)), {
-        idleBehavior: 'promptRequired'
-      })
+      const blocks = [
+        ...steerPromptBlocks(entry.msg, await this.steerIntakeText(entry)),
+        ...(routing ? webchatRoutingNoteBlocks(routing, false) : [])
+      ]
+      outcome = await host.steer(target.acpSessionId, blocks, { idleBehavior: 'promptRequired' })
     } catch (err) {
       this.log.warn(`steer: ${key} failed, queueing instead — ${(err as Error).message}`)
       return false
@@ -13360,7 +13582,8 @@ export class Daemon {
     const { ts } = transcriptCoords(entry.msg)
     this.noteAbsorbedContext(key, new Map([[ts, steeredTranscriptText(entry.msg)]]))
     this.claimAbsorbedContext(key, ts)
-    await this.coalesceEntryIntoTurn(entry, target.acpSessionId, 'steered_into_turn')
+    if (routing) target.webchatRouting = { ...routing, notes: { becameAddressed: false, absorbedOutsideFrom: [] } }
+    await this.coalesceEntryIntoTurn(entry, target.acpSessionId, 'steered_into_turn', routing !== undefined)
     defaultTurnOutputMetrics.queueSteered(entry.msg.platform, 1)
     this.log.info(`steer: delivered 1 message into the live turn for ${key} (${outcome})`)
     return true
@@ -13667,6 +13890,20 @@ export class Daemon {
    *  fence absorbed it is coalesced rather than prompted twice, and a row whose revision a
    *  later write bumps is not re-read as new context. FIFO-capped per key. */
   private absorbedContextTs = new Map<string, Map<string, { text?: string; settled: boolean }>>()
+  /** Rows whose message must run as its own turn — it carries uploads a folded prompt would drop — by session key. */
+  private ownTurnContextTs = new Map<string, Set<string>>()
+
+  /** Keep this row out of every fence for the key, so its queued activation runs with its download links. */
+  private holdContextForOwnTurn(key: string, ts: string): void {
+    const held = this.ownTurnContextTs.get(key) ?? new Set<string>()
+    held.add(ts)
+    while (held.size > ABSORBED_CONTEXT_TS_MEMORY) held.delete(held.values().next().value!)
+    this.ownTurnContextTs.set(key, held)
+  }
+
+  private heldForOwnTurn(key: string, event: Pick<TranscriptEntry, 'ts'>): boolean {
+    return this.ownTurnContextTs.get(key)?.has(event.ts) === true
+  }
 
   /** Record the rows one prompt represents. FIFO-capped: an observation whose activation
    *  never arrives is evicted rather than remembered forever. */
@@ -13870,6 +14107,9 @@ export class Daemon {
       noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
+      callerAskers: async (agentId, key, thread, integrationId) =>
+        this.askersOfKey(key, integrationId, await this.openerOf(agentId, thread, key)),
+      sessionParticipation: (target, callerPlace, askers) => this.sessionParticipation(target, callerPlace, askers),
       cpClient: () => this.cpClient,
       cpAgents: () => this.cpAgents,
       cpCollab: () => this.cpCollab,
@@ -14866,6 +15106,9 @@ export class Daemon {
               await this.store.releaseActivation(activationKey)
             }
           }
+          // send-message-guide.md §9.3: an admitted session message is recorded before the model sees it.
+          if (result.accepted && !result.duplicate && callMeta !== undefined)
+            await this.noteSessionMessage(agentId, key, callMeta)
           await opts?.onAdmission?.(result)
           const surface = this.turnSurfaces.exact(msg.platform)
           if (
@@ -15874,7 +16117,14 @@ export class Daemon {
       await this.openTurnChrome(p, run, currentAttributionInfo)
       const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
-      const outcome = await this.runPromptLoop(p, run, { ...prompt, host, sessionId, turnModel, settlement })
+      const outcome = await this.runPromptLoop(p, run, {
+        ...prompt,
+        host,
+        sessionId,
+        turnModel,
+        settlement,
+        ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {})
+      })
       if (outcome.kind === 'cancelled') return null
       if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.settleUsage(p, run, sessionId)
@@ -16116,8 +16366,7 @@ export class Daemon {
           this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)
         }
       }
-      // §2.3/§5.3: hand the origin session id to prompt assembly so a child woken by another
-      // session's `sendMessage` gets its `Parent session` line (the SessionTarget to reply into).
+      // send-message-guide.md §9.5–§9.6: the sending session is recorded as a new session's creator; the input shows its own message id.
       handled = await this.sessions.handle(
         agentId,
         msg,
@@ -16125,15 +16374,15 @@ export class Daemon {
         integrationId,
         callMeta?.originSessionId,
         chatSettingsAllowed(agent) ? webchat?.runtime?.effort : undefined,
-        // §5.3: the parent asked to be told how this session ends — prompt assembly turns it into
-        // a standing directive naming the origin as the reply target.
         callMeta?.needsReply,
         {
+          ...(callMeta?.messageId !== undefined ? { messageId: callMeta.messageId } : {}),
           initializeOnly: plan.initializeOnly,
           retryAdmittedTurn: entry.fromInboxReplay,
           runtimeTarget: this.sessionRuntimes.get(key),
           // CallMeta marks a real A2A delivery, not a synthetic `source: agent` wake; a webchat roster continuation carries it but is no address (webchat-multi-agents.md §5.2a).
           directAgentCall: plan.directAgentCall,
+          outsideHumanScope: callMeta?.outsideHumanScope === true,
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
@@ -17197,7 +17446,7 @@ export class Daemon {
         p.plan.webchatRefresh
           ? initialRefresh.events.filter((event) => msg.transcriptTs === undefined || event.ts !== msg.transcriptTs)
           : initialRefresh.events
-      ).filter((event) => !this.absorbedContext(key, event))
+      ).filter((event) => !this.absorbedContext(key, event) && !this.heldForOwnTurn(key, event))
       const representedEventTs = new Map<string, string | undefined>([
         ...(handled.contextEvents ?? []).map((event) => [event.ts, event.text] as const),
         ...initialEvents.map((event) => [event.ts, event.text] as const)
@@ -17218,6 +17467,16 @@ export class Daemon {
       this.claimAbsorbedContext(key, transcriptCoords(msg).ts)
       baseRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
+      // §5.2a: this first prompt consumes the activations it absorbed, so it carries their routing; an absorbed invitation drops the stale stay-out reminder.
+      if (p.webchatRouting?.notes.becameAddressed) {
+        const stale = promptBlocks.findIndex((b) => b.type === 'text' && b.text === OUTSIDE_HUMAN_SCOPE_REMINDER)
+        if (stale !== -1) {
+          promptBlocks.splice(stale, 1)
+          // With the reminder gone there is nothing left to lift.
+          p.webchatRouting = { ...p.webchatRouting, notes: { ...p.webchatRouting.notes, becameAddressed: false } }
+        }
+      }
+      promptBlocks.push(...this.takeWebchatRoutingNotes(p, false))
     }
     // What this conversation's live MCP App frames asked the next turn to know
     // (webchat-mcp-apps.md §7.3). Appended last and labelled as page-authored data: the words come
@@ -17310,6 +17569,8 @@ export class Daemon {
       finalCaptureInput: string
       baseRevision: number
       providerCheckpoint: string | undefined
+      /** The digest of the standing context the first prompt carries inline (SessionManager.standingDelivered). */
+      standingDigest?: string
     }
   ): Promise<TurnPromptOutcome> {
     const { entry, key, plan, agent, evaluation } = run
@@ -17322,7 +17583,7 @@ export class Daemon {
     let generation = 0
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
-    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint } = turn
+    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest } = turn
     const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
 
     while (true) {
@@ -17336,6 +17597,11 @@ export class Daemon {
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
       const result = await this.promptTurn(p, host, sessionId, promptBlocks)
+      // ACP acknowledges a prompt only with its response, whatever the stop reason; a rejected one leaves the refresh due.
+      if (standingDigest !== undefined) {
+        await this.sessions.standingDelivered(key, standingDigest)
+        standingDigest = undefined
+      }
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.
       await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))
@@ -17421,10 +17687,13 @@ export class Daemon {
         // A row an earlier prompt for this session already carried is not new context: the
         // async store lets a later write bump its revision and re-surface it here.
         .filter((event) => !this.absorbedContext(key, event))
+        // A message carrying uploads queues as its own turn; folding it here would drop its download links.
+        .filter((event) => !this.heldForOwnTurn(key, event))
         .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
       const finalRevision = await this.store.threadTranscriptRevision(this.planReadScope(p.plan))
 
-      if (invalidatingEvents.length === 0) {
+      // A routing correction no prompt delivered yet (a late-admitted invitation) regenerates even without new rows (§5.2a).
+      if (invalidatingEvents.length === 0 && !this.webchatRoutingNotesOwed(p)) {
         if (p.plan.stageAnswer) this.commitStagedSegment(p)
         if (generation > 0) defaultTurnOutputMetrics.regeneration(p.plan.platform, 'accepted')
         defaultTurnOutputMetrics.generations(generation + 1)
@@ -17537,10 +17806,14 @@ export class Daemon {
           type: 'text',
           // Segments already committed at a boundary were delivered and stand; the model
           // must be told so, or it regenerates (and re-says) the whole answer.
-          text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
-            deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
-          })
-        }
+          text:
+            invalidatingEvents.length > 0
+              ? contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
+                  deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
+                })
+              : WEBCHAT_ROUTING_UPDATE_TEXT
+        },
+        ...this.takeWebchatRoutingNotes(p, true)
       ]
       finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
       // The wall-clock budget covers replacement work only. A slow original
@@ -17562,6 +17835,20 @@ export class Daemon {
     }
 
     return { kind: 'answered', stopReason, usage: evaluationUsage ?? usage, finalCaptureInput }
+  }
+
+  /** Whether a webchat turn still owes the model a §5.2a routing correction that no prompt has delivered. */
+  private webchatRoutingNotesOwed(p: Pending): boolean {
+    const notes = p.webchatRouting?.notes
+    return !!p.webchat && !!notes && (notes.becameAddressed || notes.absorbedOutsideFrom.length > 0)
+  }
+
+  /** §5.2a routing facts owed after coalescing, consumed by the prompt that carries them; a replacement prompt also re-reminds a still-left-out turn. */
+  private takeWebchatRoutingNotes(p: Pending, replacement: boolean): Array<{ type: 'text'; text: string }> {
+    if (!p.webchat) return []
+    const routing = p.webchatRouting ?? initialWebchatRouting(p.entry)
+    p.webchatRouting = { ...routing, notes: { becameAddressed: false, absorbedOutsideFrom: [] } }
+    return webchatRoutingNoteBlocks(routing, replacement)
   }
 
   /** Fold the turn's token totals into the status bar and report the session's merged
@@ -17616,6 +17903,7 @@ export class Daemon {
   ): Promise<void> {
     if (!p.webchat) return
     const agentId = p.entry.agentId
+    const scope = hopCount !== undefined ? (p.webchatRouting ?? initialWebchatRouting(p.entry)).scope : undefined
     const replyTs = await webchatTurnOutput.appendWebchatTextRow(
       this.store,
       p.plan.transcriptChannel,
@@ -17634,7 +17922,12 @@ export class Daemon {
       post: {
         postId: segment.postId,
         conversationId: p.webchat.conversationId,
-        author: { kind: 'agent', agentId, ...(hopCount !== undefined ? { hopCount } : {}) },
+        author: {
+          kind: 'agent',
+          agentId,
+          ...(hopCount !== undefined ? { hopCount } : {}),
+          ...(scope ? { addressedAgentIds: scope } : {})
+        },
         text: segment.text,
         at: Number(replyTs)
       },
@@ -20190,7 +20483,8 @@ export class Daemon {
       outcome,
       reason: entry.cancelledReason,
       replayed: this.retainsInboxRow(entry, outcome === 'failed'),
-      hopCount: entry.callMeta?.hopCount
+      hopCount: entry.callMeta?.hopCount,
+      round: entry.callMeta?.subsessionRound
     })
   }
 

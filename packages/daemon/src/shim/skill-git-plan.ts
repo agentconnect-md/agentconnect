@@ -72,22 +72,27 @@ export interface AcquireGitPlanInput {
 
 const shellQuoted = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 
-/** The credential a Source's Git child gets: only with a window and only for github.com, the one P2 host. */
+/** The credential a Source's Git child gets: only with a window, for github.com or the GitLab instance its plan names. */
 export function skillGitCredentialFor(
   plan: GitSkillPlan,
   window: SkillCredentialWindowGrant | undefined,
   agentId: string,
   deps: Pick<SkillGitPlanDeps, 'credentialHelper' | 'credentialSocket'>
 ): SkillGitCredential | undefined {
-  if (!window || new URL(plan.url).origin !== GITHUB_MANAGED_HOST.baseUrl) return undefined
+  if (!window) return undefined
+  const gitlab = plan.credentialHost?.replace(/\/+$/, '')
+  // The schema already holds the clone URL under the named instance; checked again where the credential is handed out.
+  if (gitlab !== undefined && !plan.url.startsWith(`${gitlab}/`)) return undefined
+  if (gitlab === undefined && new URL(plan.url).origin !== GITHUB_MANAGED_HOST.baseUrl) return undefined
+  const host = gitlab === undefined ? GITHUB_MANAGED_HOST : { provider: 'gitlab', baseUrl: gitlab }
   return {
-    host: GITHUB_MANAGED_HOST.baseUrl,
+    host: host.baseUrl,
     helper: `!sh ${shellQuoted(deps.credentialHelper)} ${shellQuoted(agentId)}`,
     env: {
       [GITCRED_CAPABILITY_ENV]: window.capability,
       [GITCRED_AGENT_ENV]: agentId,
       [GITCRED_SOCKET_ENV]: deps.credentialSocket,
-      [GITCRED_HOSTS_ENV]: encodeManagedHostTable([GITHUB_MANAGED_HOST])
+      [GITCRED_HOSTS_ENV]: encodeManagedHostTable([host])
     }
   }
 }

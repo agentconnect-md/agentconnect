@@ -180,7 +180,7 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
       throw new Error('channelAgents not stubbed')
     },
     messageAgent: vi.fn(async (req) => ({ delivered: true, targetSession: `stub:${req.toAgentId}` })),
-    replyToSession: vi.fn(async () => ({ delivered: true, targetSession: 'stub' })),
+    replyToSession: vi.fn(async () => ({ delivered: true, targetSession: 'stub', inReplyTo: 'msg-stub' })),
     memory: noMemory,
     recordOutbound: async () => {},
     now: () => 1000,

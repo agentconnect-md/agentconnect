@@ -27,9 +27,21 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import { stableTurnId, type Attachment, type NormalizedMessage, sessionThreadOf } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
-import { DIRECT_AGENT_CALL_REMINDER, EXPLICIT_MENTION_REMINDER, NO_RESPONSE_REMINDER } from './no-response.js'
+import {
+  DIRECT_AGENT_CALL_REMINDER,
+  EXPLICIT_MENTION_REMINDER,
+  NO_RESPONSE_REMINDER,
+  OUTSIDE_HUMAN_SCOPE_REMINDER
+} from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
-import { AGENT_META_OPENING, buildStandingContext, type StandingContext } from './turn/standing-context.js'
+import {
+  AGENT_META_OPENING,
+  buildSessionMessagesBlock,
+  buildStandingContext,
+  MAX_LISTED_SESSION_MESSAGES,
+  standingRefreshBlock,
+  type StandingContext
+} from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
@@ -38,7 +50,6 @@ import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.
 import { runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
-import { assistantMainConversation } from '../mcp/ops/assistant-subsessions.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
@@ -316,6 +327,26 @@ export class SessionManager {
   private readonly lastContextUsed = new Map<string, number>()
   // The running-sub-session list each main conversation was last shown, so a change re-injects it.
   private readonly runningSubsessionsShown = new Map<string, string>()
+  // The answerable-messages list each session was last shown, so a change re-injects it.
+  private readonly sessionMessagesShown = new Map<string, string>()
+  // Sessions whose runtime may not hold the current standing context, until a delivered prompt carries it (see standingDelivered).
+  private readonly standingRefreshDue = new Set<string>()
+
+  /** send-message-guide.md §9.5: the messages this session may answer, open obligations first, unless only this turn's own one; an unreadable store lists none. */
+  private async sessionMessagesBlock(key: string, current: string | undefined): Promise<string | undefined> {
+    const messages = this.deps.store.sessionMessages
+    if (!messages) return undefined
+    try {
+      const [listed, count] = await Promise.all([
+        messages.listFor(key, MAX_LISTED_SESSION_MESSAGES),
+        messages.countFor(key)
+      ])
+      if (listed.length === 0 || (count === 1 && listed[0]!.messageId === current)) return undefined
+      return buildSessionMessagesBlock({ messages: listed, more: Math.max(0, count - listed.length) })
+    } catch {
+      return undefined
+    }
+  }
 
   /**
    * Every agent that is ALREADY part of this thread — open sessions first, then ones
@@ -351,17 +382,13 @@ export class SessionManager {
     msg: NormalizedMessage,
     signal?: AbortSignal,
     integrationId?: string,
-    /** session-concept §2.3/§5.3: the origin (parent) session's stable id, present only when
-     *  THIS turn was woken by another session's `sendMessage`. Surfaced to the agent as the
-     *  `Parent session` line of the `# Agent` block — the SessionTarget it replies into. */
+    /** The sending session's outward id when another session's message woke this turn; recorded as the creator of a session it creates (send-message-guide.md §9.6). */
     originSessionId?: string,
     /** A chat-selected effort needed by session/new metadata before the session row exists.
      *  The daemon revalidates current Agent authority before persisting or prompting. */
     initialEffort?: string,
-    /** session-concept §5.3: the parent woke this session with `toAgent.needsReply`, so it must
-     *  be told to report back into `originSessionId` when it finishes or fails. Persisted on the
-     *  session (sticky) so the directive survives resume and later turns. */
-    needsParentReply?: boolean,
+    /** Unused: a reply request belongs to its message now, shown with it (send-message-guide.md §9.5). */
+    _needsReply?: boolean,
     /** A self-authored channel-root post only establishes the new logical/runtime session.
      *  It is already recorded in the transcript and must not become a model activation. */
     options: {
@@ -371,6 +398,10 @@ export class SessionManager {
       retryAdmittedTurn?: boolean
       /** True only for trusted CallMeta: background-task wakes use `source: agent` without being direct agent calls. */
       directAgentCall?: boolean
+      /** A webchat continuation the human's @mention left out (§5.2a): remind the agent to stay silent by default. */
+      outsideHumanScope?: boolean
+      /** The session message this turn's input is (send-message-guide.md §9.5), already shown with its header. */
+      messageId?: string
       /** Trusted daemon-owned host override for a conversation-isolated webchat
        * cell. Never derived from model/session input. */
       host?: AcpHost
@@ -404,6 +435,8 @@ export class SessionManager {
     contextEvents?: { ts: string; text?: string }[]
     /** Incremental provider read checkpoint associated with the assembled snapshot. */
     providerCheckpoint?: string
+    /** The digest of the standing context these blocks carry inline; hand it to `standingDelivered` once the runtime takes the prompt. */
+    standingDigest?: string
     /** False when session creation/loading rejected the trusted additional MCP
      * descriptors and the runtime session succeeded only after retrying with
      * the ordinary server set. Absent when no additional descriptors existed. */
@@ -515,37 +548,8 @@ export class SessionManager {
       rec = { ...rec, platformStanding: msg.standingContext, updatedAt: Date.now() }
       await this.deps.store.upsertSession(rec)
     }
-    // Durable parent link (§5.3): prefer the origin persisted on the session (present on EVERY
-    // turn of a spawned session) over this turn's wake origin (only the one agent-call turn that
-    // first spawns the session carries it). This value both drives the `Parent session` line and,
-    // once persisted, is what authorizes SessionTarget replies to the parent on later
-    // human-triggered turns that have no per-turn CallMeta.
-    // PRECEDENCE MATTERS: this must agree with what `replyToSession` will actually authorize on
-    // this turn, which prefers the turn's CallMeta origin over the persisted one. A session can be
-    // woken by more than one parent; if we named the first-wins persisted parent while the
-    // authorizer accepted the current waker, the agent would be told to reply somewhere its reply
-    // is then refused. A turn with no wake origin (human follow-up) falls back to the persisted
-    // link, which is what the authorizer also falls back to. The DURABLE link itself stays
-    // first-wins — the store COALESCEs it — so this only changes who the current turn addresses.
-    const effectiveOriginSessionId = originSessionId ?? rec?.originSessionId
-    // The report-back directive is sticky the same way: once a parent asked for a reply the
-    // session keeps the obligation, so later (human-triggered) turns and resumes re-assert it
-    // instead of quietly dropping it. Only meaningful with a parent to report to.
-    const needsReplyToParent =
-      effectiveOriginSessionId !== undefined && (rec?.needsParentReply === 1 || needsParentReply === true)
-    // When an already-open session's STANDING context does not (or no longer) states the right
-    // obligation, this turn has to carry it as a turn-scoped block instead. Two causes:
-    //   • the obligation was just added — the session opened without it; or
-    //   • a DIFFERENT parent woke the session than the one its standing context named. That
-    //     context is fixed for the ACP session's life (Claude sets it at session/new, other
-    //     runtimes inline it once), so a second parent's wake would otherwise leave the agent
-    //     addressing the first parent — which `replyToSession` refuses on this turn.
-    const restateParentReply =
-      needsReplyToParent &&
-      (rec?.needsParentReply !== 1 ||
-        (originSessionId !== undefined &&
-          rec?.originSessionId !== undefined &&
-          originSessionId !== rec.originSessionId))
+    // send-message-guide.md §9.6: the origin records who created the session, written once with the row and never read for replies.
+    const creatorSessionId = rec ? (rec.originSessionId ?? undefined) : originSessionId
     // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
     const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
@@ -650,14 +654,13 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           sessionId: rec?.sessionId,
-          parentSessionId: effectiveOriginSessionId,
+          originSessionId: creatorSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
           fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
           workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
           onDemandClones: await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
-          needsReplyToParent,
           memoryIndex,
           usesMeta,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
@@ -688,8 +691,7 @@ export class SessionManager {
         ...(msg.threadUrl ? { threadUrl: msg.threadUrl } : {}),
         memoryProvider: currentMemoryProvider,
         workspaceIsolation,
-        ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),
-        ...(needsReplyToParent ? { needsParentReply: true } : {}),
+        ...(creatorSessionId ? { originSessionId: creatorSessionId } : {}),
         ...(isNewLogicalSession && fallbackTitle ? { initialTitle: fallbackTitle } : {}),
         ...(platformStanding ? { platformStanding } : {})
       },
@@ -756,6 +758,15 @@ export class SessionManager {
     }
     const created = opened.created
     const additionalMcpServersAttached = opened.additionalMcpAttached
+    // What the model holds of the standing context (session-concept.md §2.3); an inline copy counts once its prompt is delivered.
+    const recordStanding = async (session: SessionRecord, digest: string | null): Promise<void> => {
+      await this.deps.store.setSessionStandingDigest(key, digest)
+      session.standingDigest = digest
+    }
+    const appliesOnLoad = usesMeta && (host.appliesSystemPromptOnLoad?.() ?? false)
+    if (created) await recordStanding(rec, usesMeta ? (await standingContext()).sessionDigest : null)
+    else if (opened.resumed && appliesOnLoad) await recordStanding(rec, (await standingContext()).resumeDigest)
+    if ((created && !usesMeta) || (opened.resumed && !appliesOnLoad)) this.standingRefreshDue.add(key)
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
@@ -787,8 +798,11 @@ export class SessionManager {
       rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     const opening = created || firstPromptAfterOwnRootInitialization
-    // Only an inline opening prelude or a restate reads it below, so a warm turn never samples the workspace roots.
-    const preludeStanding = (opening ? !usesMeta : restateParentReply) ? await standingContext() : undefined
+    const inlineOpening = opening && !usesMeta
+    // A resumed session's first prompt compares the standing context its runtime kept; an inline opening restates it anyway.
+    const refreshDue = !inlineOpening && this.standingRefreshDue.has(key)
+    // Only an inline opening prelude or a due refresh reads it below, so a warm turn never samples the workspace roots.
+    const preludeStanding = (opening && !usesMeta) || refreshDue ? await standingContext() : undefined
     // The warm-thread provider snapshot (§8.4/§8.5) lives in turn/thread-backfill.ts;
     // handle() only supplies the coordinates and consumes the stable window it returns.
     // §6.3: an append session spans many threads and its coordinate is no thread's, so
@@ -865,9 +879,6 @@ export class SessionManager {
         rec.lastDeliveredTs = plan.deliveredThrough
         rec.state = 'idle'
         rec.updatedAt = Date.now()
-        // A skipped activation still took on the obligation — persist it so the next real turn
-        // (and any resume) carries the directive.
-        if (needsReplyToParent) rec.needsParentReply = 1
         await this.deps.store.upsertSession(rec)
         return {
           sessionId: rec.acpSessionId!,
@@ -970,14 +981,21 @@ export class SessionManager {
 
     // A new session or an initialized root's first prompt inlines the standing context unless `_meta` has it (#398).
     const promptPrelude: ContentBlock[] = []
+    // The digest of the standing context this prompt carries inline, recorded by standingDelivered once the runtime takes it.
+    let standingDigest: string | undefined
+    if (refreshDue && preludeStanding?.sessionDigest === rec.standingDigest) this.standingRefreshDue.delete(key)
+    else if (refreshDue && preludeStanding) {
+      standingDigest = preludeStanding.sessionDigest
+      promptPrelude.push({ type: 'text', text: standingRefreshBlock(preludeStanding.sessionContext) })
+    }
     let reminded = false
     if (opening) {
       // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
       this.turnsSinceReminder.set(key, 0)
-      if (preludeStanding?.sessionContext) promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
-    } else if (restateParentReply && preludeStanding) {
-      // An open session's standing context lacks this obligation or names another parent, so state it as a turn block.
-      promptPrelude.push({ type: 'text', text: preludeStanding.parentReplyAppend })
+      if (inlineOpening && preludeStanding?.sessionContext) {
+        standingDigest = preludeStanding.sessionDigest
+        promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
+      }
     } else if (await this.shouldRemind(key)) {
       // A long-running or just-compacted session gets the no-response rule again; a new one already carries it.
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
@@ -989,8 +1007,8 @@ export class SessionManager {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
       if (summary) promptPrelude.push({ type: 'text', text: summary })
     }
-    // Every agent's main conversation: its running sub-sessions ride the same points, and any turn after that list changed (§5.6).
-    if (rec.sessionId && assistantMainConversation(place)) {
+    // Every session that can own tasks: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
+    if (rec.sessionId && !isSubsessionCoordinate(thread)) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,
@@ -1000,6 +1018,13 @@ export class SessionManager {
       ).catch(() => undefined)
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
+    }
+    // send-message-guide.md §9.5: the messages this session may still answer, refreshed like the running tasks.
+    const messages = await this.sessionMessagesBlock(key, options.messageId)
+    if (messages === undefined) this.sessionMessagesShown.delete(key)
+    else if (opening || reminded || this.sessionMessagesShown.get(key) !== messages) {
+      this.sessionMessagesShown.set(key, messages)
+      promptPrelude.push({ type: 'text', text: messages })
     }
     // Every turn of every agent is told the people's local time, current now (product-conventions.md "Local time").
     promptPrelude.push({
@@ -1011,6 +1036,9 @@ export class SessionManager {
     // generic no-response rule cannot mistake the caller label for an addressee.
     if (options.directAgentCall === true) {
       promptPrelude.push({ type: 'text', text: DIRECT_AGENT_CALL_REMINDER })
+    }
+    if (options.outsideHumanScope === true) {
+      promptPrelude.push({ type: 'text', text: OUTSIDE_HUMAN_SCOPE_REMINDER })
     }
     // The router has already matched the raw platform token against THIS integration's
     // resolved bot identity. Preserve that trusted fact for the model: an opaque Slack
@@ -1028,9 +1056,6 @@ export class SessionManager {
     // messageAgent, cron, or hook.
     rec.state = 'prompting'
     rec.updatedAt = Date.now()
-    // Sticky in the store, so this only ever adds the obligation — an ordinary turn on a session
-    // that already has it passes 1 straight back through.
-    if (needsReplyToParent) rec.needsParentReply = 1
     await this.deps.store.upsertSession(rec)
     // Where an appending session's turn replies, for a later wake keyed by the session alone (a pull request's feedback).
     const replyThread = isAppendCoordinate(thread) ? (msg.thread ?? null) : null
@@ -1048,8 +1073,15 @@ export class SessionManager {
       contextRevision,
       contextEvents,
       ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
-      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
+      ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {}),
+      ...(standingDigest !== undefined ? { standingDigest } : {})
     }
+  }
+
+  /** The runtime took a prompt that carried the standing context inline: record what it now holds and stop refreshing it. */
+  async standingDelivered(key: string, digest: string): Promise<void> {
+    await this.deps.store.setSessionStandingDigest(key, digest)
+    this.standingRefreshDue.delete(key)
   }
 
   /** The local-time line, in the first zone found: the sender's, a run's schedule's, its starter's, the place's last seen, UTC. */

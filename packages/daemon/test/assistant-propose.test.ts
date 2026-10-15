@@ -294,11 +294,18 @@ async function proposed(h: Awaited<ReturnType<typeof boot>>, channel = 'C1') {
   return { place, item, results, record: record! }
 }
 
-/** The task's own report into the conversation that took the item, through `sendMessage {sessionId}`. */
+/** The task's own report into the conversation that took the item, answering the message that started it (§9.4). */
 const reportsBack =
-  (deps: any) =>
+  (deps: any, d: any) =>
   async (ctx: SessionContext): Promise<void> => {
-    await executeTool(ctx, 'sendMessage', { sessionId: 'sid-parent-bot-a', message: 'Rebased and pushed.' }, deps)
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const [started] = await d.store.sessionMessages.listFor(key, 1)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'replyToSession', messageId: started.messageId, message: 'Rebased and pushed.' },
+      deps
+    )
   }
 
 describe('a patrol proposes', () => {
@@ -417,7 +424,7 @@ describe('an approved proposal runs once', () => {
   it('opens a normal-permission sub-session in the item’s place, records it with the approval, and reports back', async () => {
     const h = await boot(scaffold())
     const { place, item, record } = await proposed(h)
-    h.behavior.task = reportsBack(h.deps)
+    h.behavior.task = reportsBack(h.deps, h.d)
 
     expect(await h.decide(record.id)).toMatchObject({
       operation: 'decide-draft',
@@ -455,7 +462,12 @@ describe('an approved proposal runs once', () => {
     expect(taskCtx.tools.map((t) => t.name)).toContain('sendMessage')
     expect(taskCtx.tools.map((t) => t.name)).not.toContain('propose')
 
-    expect(h.reports().map((c) => c.msg.text)).toEqual(['Rebased and pushed.'])
+    // §9.5: the reply reaches the place under its header, answering the message that started the work.
+    expect(h.reports().map((c) => c.msg.text)).toEqual([
+      expect.stringMatching(
+        /^\[Message msg-[^\]]+\] Reply from bot-a .* to your message msg-[^:]+:\nRebased and pushed\.$/
+      )
+    ])
     expect(h.reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate })
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'succeeded' })
     expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({
@@ -588,7 +600,7 @@ describe('a proposal in the conversation its item belongs to', () => {
     async (chat) => {
       const h = await boot(scaffold({ chat }))
       const { record } = await proposed(h)
-      h.behavior.task = reportsBack(h.deps)
+      h.behavior.task = reportsBack(h.deps, h.d)
       expect(h.cards.post.mock.calls.map((c) => c[0])).toEqual(['C1'])
 
       await h.click(record.id, 'approve', 'U0BOB')
@@ -926,7 +938,7 @@ describe('a task cut short by a restart or handover', () => {
     await h.d.interruptAgentTurns('bot-a', 'handover', 'handoff')
     h.d.assistantTaskService = undefined
     h.d.absorbedContextTs.clear()
-    h.behavior.task = reportsBack(h.deps)
+    h.behavior.task = reportsBack(h.deps, h.d)
     await h.d.replayInbox(new Set(['bot-a']))
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()

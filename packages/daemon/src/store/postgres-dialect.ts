@@ -184,6 +184,7 @@ export const canonicalColumns = [
   'snapshotWrites',
   'sourceBindingKind',
   'spaceId',
+  'standingDigest',
   'statusBarTs',
   'stayedHomeReason',
   'stopReason',
@@ -293,7 +294,19 @@ export const canonicalColumns = [
   'itemVersion',
   'subsessionKey',
   'endReport',
-  'reportAttempts'
+  'reportAttempts',
+  'submissionId',
+  'sourceAgentId',
+  'deliveryId',
+  'recipientKey',
+  'recipientAgentId',
+  'inReplyTo',
+  'replyState',
+  'replyFailed',
+  'hopCount',
+  'senderKey',
+  'senderAgentId',
+  'senderSessionId'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer as createSocketServer, type AddressInfo, type Server as SocketServer } from 'node:net'
 import type { McpServer } from '@agentclientprotocol/sdk'
@@ -41,11 +41,27 @@ import {
   type ResolvedRuntimeCatalog,
   type ResolvedRuntimeEntry
 } from '../../src/runtimes/registry.js'
+import {
+  aggregate,
+  probeTools,
+  runSendMessageScenarios,
+  scenarioGrid,
+  selectedScenarios,
+  sendMessageFixture,
+  sendMessageReport,
+  SCENARIOS,
+  unreachableRuns,
+  type SendMessageFixture,
+  type SendMessageRun,
+  type SendMessageScenario
+} from './send-message-probe.js'
 import { FEATURES, type FeatureId } from './support-matrix.js'
 
 const IS_CI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
 const TURN_TIMEOUT = 180_000
 const SUITE_TIMEOUT = 30 * 60_000
+// The sendMessage probe runs targets × scenarios × reps sessions, each bounded by a session and a prompt timeout.
+const SEND_MESSAGE_TIMEOUT = sendMessageBudget()
 const SKILL_NAME = 'runtime-matrix-probe'
 const DEBUG_CHILD = process.env.AC_RUNTIME_MATRIX_DEBUG === '1'
 // Kept between runs so the msb package and the image are pulled once; short because VM socket paths must fit 108 bytes.
@@ -185,7 +201,8 @@ function providerUnavailable(error: unknown): boolean {
     'usage limit',
     'quota',
     'high demand',
-    'rate limit'
+    'rate limit',
+    'too many requests'
   ].some((part) => message.includes(part))
 }
 
@@ -664,6 +681,77 @@ async function runIsolatedProbe(feature: IsolatedFeature, target: RuntimeTarget)
   }
 }
 
+/** The `sendMessage` probe on one runtime: a host started once, a fresh session per scenario and repetition. */
+async function runSendMessageRuntime(
+  target: RuntimeTarget,
+  fixture: SendMessageFixture,
+  tools: ReturnType<typeof probeTools>,
+  scenarios: SendMessageScenario[],
+  reps: number,
+  onRun: (run: SendMessageRun) => void
+): Promise<{ result: RuntimeResult; runs: SendMessageRun[] }> {
+  const result: RuntimeResult = {
+    id: target.id,
+    reachable: false,
+    features: {},
+    models: [],
+    modes: [],
+    mcp: { http: false, sse: false }
+  }
+  const root = mkdtempSync(join(tmpdir(), `ac-runtime-matrix-send-${target.id.replace(/[^a-z0-9-]/gi, '-')}-`))
+  const cwd = join(root, 'workspace')
+  mkdirSync(cwd, { recursive: true })
+  const updates: Array<{ sessionId: string; update: any }> = []
+  const host = new AcpHost(target.runtime, {
+    runtimeId: target.id,
+    suppressChildStderr: !DEBUG_CHILD,
+    onUpdate: (sessionId, update) => updates.push({ sessionId, update }),
+    onPermission: async (_sessionId, params) => selectAllowOption(params)
+  })
+  let runs: SendMessageRun[]
+  try {
+    await withTimeout(host.start(), `${target.id}/start`)
+    result.reachable = true
+    result.mcp = host.mcpCapabilities() ?? { http: false, sse: false }
+    runs = result.mcp.http
+      ? await runSendMessageScenarios({
+          runtime: target.id,
+          host,
+          cwd,
+          fixture,
+          tools,
+          scenarios,
+          reps,
+          updates,
+          support: { withTimeout, providerUnavailable, errorReason: turnFailureReason },
+          onRun
+        })
+      : scenarios.map((scenario) => ({
+          runtime: target.id,
+          scenario: scenario.id,
+          rep: 1,
+          comparable: scenario.newOnly !== true,
+          verdict: 'SKIPPED' as const,
+          ops: [],
+          counts: { sendMessage: 0, getToolGuide: 0, otherMcp: 0, acpToolCalls: 0 },
+          ms: 0,
+          notes: ['runtime does not advertise HTTP MCP']
+        }))
+    result.features.sendMessage = result.mcp.http
+      ? aggregate(runs)
+      : { status: 'degrade', detail: 'HTTP MCP not advertised' }
+  } catch (error) {
+    result.error = turnFailureReason(error)
+    const unavailable = providerUnavailable(error)
+    runs = unreachableRuns(target.id, scenarios, reps, unavailable ? 'UNAVAILABLE' : 'FAIL', result.error)
+    result.features.sendMessage = { status: unavailable ? 'unavailable' : 'fail', detail: result.error }
+  } finally {
+    await host.stop().catch(() => {})
+    rmSync(root, { recursive: true, force: true })
+  }
+  return { result, runs }
+}
+
 const SHORT: Record<FeatureId, string> = {
   capabilities: 'caps',
   lifecycle: 'life',
@@ -676,7 +764,8 @@ const SHORT: Record<FeatureId, string> = {
   sandbox: 'sbox',
   vm: 'vm',
   mcp: 'mcp',
-  skills: 'skills'
+  skills: 'skills',
+  sendMessage: 'send'
 }
 const CELL: Record<Status, string> = { ok: '✓', degrade: '·', na: '~', unavailable: 'U', fail: '✗' }
 
@@ -694,6 +783,64 @@ function grid(results: RuntimeResult[], features: FeatureId[] = FEATURES): strin
         .join(' ')
   )
   return [head, separator, ...rows, '', 'legend: ✓ real pass · degrade ~ n/a U provider unavailable ✗ fail'].join('\n')
+}
+
+/** The sendMessage mode's test budget: every selected run at its worst case, for the named targets or a generous default count. */
+function sendMessageBudget(): number {
+  const named = (process.env.AC_RUNTIME_MATRIX_TARGETS ?? '').split(',').filter((id) => id.trim() !== '').length
+  const reps = Math.max(1, Number.parseInt(process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_REPS ?? '1', 10) || 1)
+  let scenarios = SCENARIOS.length
+  try {
+    scenarios = selectedScenarios(process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_SCENARIOS).length
+  } catch {
+    // An unknown scenario id fails in the test itself, with its message.
+  }
+  const perTarget = TURN_TIMEOUT * (2 + 3 * scenarios * reps)
+  return Math.max(SUITE_TIMEOUT, (named || 12) * perTarget)
+}
+
+/** Run the `sendMessage` probe across targets, print its scenario grid, and always write the JSON report when asked. */
+async function runSendMessageMatrix(targets: RuntimeTarget[], results: RuntimeResult[]): Promise<void> {
+  const tools = probeTools()
+  const scenarios = selectedScenarios(process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_SCENARIOS)
+  const reps = Math.max(1, Number.parseInt(process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_REPS ?? '1', 10) || 1)
+  const out = process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_OUT?.trim()
+  const fixture = await sendMessageFixture(tools)
+  const runs: SendMessageRun[] = []
+  // Rewritten after every run, so a test timeout still leaves every finished run on disk.
+  const write = (current: SendMessageRun[]) => {
+    if (!out) return
+    mkdirSync(dirname(out), { recursive: true })
+    writeFileSync(out, `${JSON.stringify(sendMessageReport(tools, current), null, 2)}\n`)
+  }
+  try {
+    for (const target of targets) {
+      const live: SendMessageRun[] = []
+      const probe = await runSendMessageRuntime(target, fixture, tools, scenarios, reps, (run) => {
+        live.push(run)
+        write([...runs, ...live])
+      })
+      results.push(probe.result)
+      runs.push(...probe.runs)
+      write(runs)
+      console.info(
+        `[runtime-matrix] ${target.id}: ${probe.result.features.sendMessage?.detail ?? 'no result'}${probe.result.error ? ` — ${probe.result.error}` : ''}`
+      )
+    }
+  } finally {
+    fixture.server.close()
+    if (out) {
+      write(runs)
+      console.info(`[runtime-matrix] sendMessage report written to ${out}`)
+    }
+  }
+  console.info(`\nsendMessage scenarios:\n${scenarioGrid(runs, scenarios)}\n`)
+  for (const run of runs) {
+    if (run.verdict === 'PASS' || run.verdict === 'SKIPPED') continue
+    console.info(
+      `[runtime-matrix] sendMessage ${run.verdict} ${run.runtime}/${run.scenario}#${run.rep}: ops=${run.ops.map((op) => `${op.op}${op.valid ? '' : '!'}`).join(' > ') || '-'} ${run.notes.join('; ')}`
+    )
+  }
 }
 
 describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
@@ -717,9 +864,11 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       .sort((a, b) => a.id.localeCompare(b.id))
     const only = process.env.AC_RUNTIME_MATRIX_ONLY?.trim()
     if (only) {
-      if (!(only in ISOLATED_PROBES))
-        throw new Error(`AC_RUNTIME_MATRIX_ONLY must be one of: ${Object.keys(ISOLATED_PROBES).join(', ')}`)
-      features = [only as IsolatedFeature]
+      if (!(only in ISOLATED_PROBES) && only !== 'sendMessage')
+        throw new Error(
+          `AC_RUNTIME_MATRIX_ONLY must be one of: ${[...Object.keys(ISOLATED_PROBES), 'sendMessage'].join(', ')}`
+        )
+      features = [only as IsolatedFeature | 'sendMessage']
     }
     if (features.includes('vm')) await startVm(config, catalog)
   }, SUITE_TIMEOUT)
@@ -731,14 +880,18 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
     async () => {
       expect(targets.length, 'no installed ACP runtimes were discovered on this host').toBeGreaterThan(0)
       const results: RuntimeResult[] = []
-      for (const target of targets) {
-        const isolated =
-          features.length === 1 && features[0]! in ISOLATED_PROBES ? (features[0] as IsolatedFeature) : undefined
-        const result = isolated ? await runIsolatedProbe(isolated, target) : await runRuntime(target)
-        results.push(result)
-        console.info(
-          `[runtime-matrix] ${target.id}: ${result.reachable ? 'reachable' : 'unavailable'}${result.error ? ` — ${result.error}` : ''}`
-        )
+      if (features.length === 1 && features[0] === 'sendMessage') {
+        await runSendMessageMatrix(targets, results)
+      } else {
+        for (const target of targets) {
+          const isolated =
+            features.length === 1 && features[0]! in ISOLATED_PROBES ? (features[0] as IsolatedFeature) : undefined
+          const result = isolated ? await runIsolatedProbe(isolated, target) : await runRuntime(target)
+          results.push(result)
+          console.info(
+            `[runtime-matrix] ${target.id}: ${result.reachable ? 'reachable' : 'unavailable'}${result.error ? ` — ${result.error}` : ''}`
+          )
+        }
       }
 
       console.info(`\nREAL local runtime matrix (${results.length} installed):\n${grid(results, features)}\n`)
@@ -766,6 +919,6 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       }
       expect(failures, `real runtime failures:\n${failures.join('\n')}`).toEqual([])
     },
-    SUITE_TIMEOUT
+    process.env.AC_RUNTIME_MATRIX_ONLY?.trim() === 'sendMessage' ? SEND_MESSAGE_TIMEOUT : SUITE_TIMEOUT
   )
 })

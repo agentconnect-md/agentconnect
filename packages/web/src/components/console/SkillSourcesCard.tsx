@@ -1,22 +1,6 @@
 'use client'
 
-// Skills library card (Tools & Skills page) — one surface for the org-level
-// Git source registry (docs/designs/shared-skills.md) and centrally accepted
-// immutable managed bundles (docs/designs/organization-knowledge.md). Git
-// sources install via `npx skills`; managed bundles use the daemon's pinned
-// digest cache. Per-agent enablement for both lives on the agent detail view.
-//
-// A Git source is registered two ways, both behind the header's "Add" menu (same
-// shape as the MCP servers card): "Import from GitHub" takes a repository you
-// already know, and "Search skills.sh" searches the public registry by skill
-// name (InstallRegistrySkillModal). Both end at the same POST — the second
-// just fills the source string and skill filter from the hit you picked.
-//
-// A source records only WHERE skills come from (source string + optional ref /
-// subDir / skill filter) — nothing secret. A private repository is accepted when
-// the org GitHub App covers it; the tile then carries a "private" badge and the
-// daemon acquires it with a read-only installation token. Self-contained (own
-// create/edit/delete dialogs in a scrim, like the MCP servers card).
+// Skills library card: Git sources (shared-skills.md; GitHub, Git URL or skills.sh import) and managed bundles, with "private" and "trusted by URL" badges.
 
 import { useRef, useState } from 'react'
 import useSWR, { useSWRConfig } from 'swr'
@@ -26,10 +10,13 @@ import { useProfile } from '@/lib/profile'
 import {
   fmtDate,
   listManagedSkills,
+  previewSkillSource,
   setManagedSkillArchived,
   type ManagedSkillDto,
-  type SkillSourceDto
+  type SkillSourceDto,
+  type SkillSourcePreviewDto
 } from '@/lib/api'
+import { isHttpsGitAddress, isTrustedByUrl } from '@/lib/skill-source'
 import { consoleKeys } from '@/lib/swr-keys'
 import { ManagedSkillTile } from '@/components/console/ManagedSkillTile'
 import { InstallRegistrySkillModal } from '@/components/console/InstallRegistrySkillModal'
@@ -55,6 +42,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
   const { activeOrg } = useOrgs()
   const { mutate: mutateSWR } = useSWRConfig()
   const [creating, setCreating] = useState(false)
+  const [creatingGit, setCreatingGit] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [editing, setEditing] = useState<SkillSourceDto | null>(null)
   const [deleting, setDeleting] = useState<SkillSourceDto | null>(null)
@@ -96,7 +84,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
           {canWrite && (
             <AnchoredFlyout
               ariaLabel={t('skills.addAria')}
-              estimatedHeight={154}
+              estimatedHeight={222}
               trigger={({ open, menuId, toggle }) => (
                 <Button
                   variant="secondary"
@@ -151,6 +139,26 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
                       </span>
                       <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
                         {t('skills.importGithubDescription')}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      setCreatingGit(true)
+                    }}
+                    className="flex w-full cursor-pointer items-start gap-[9px] rounded-[6px] border-0 bg-transparent p-[10px] text-left hover:bg-(--surface-hover)"
+                  >
+                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+                      <Icon name="git-branch" size={16} color="var(--brand)" />
+                    </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                        {t('skills.importGit')}
+                      </span>
+                      <span className="mt-[2px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
+                        {t('skills.importGitDescription')}
                       </span>
                     </span>
                   </button>
@@ -209,6 +217,13 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
           </div>
         </Scrim>
       )}
+      {creatingGit && (
+        <Scrim onEscape={() => setCreatingGit(false)}>
+          <div className="modal">
+            <CreateGitUrlSkillSourceModal onClose={() => setCreatingGit(false)} />
+          </div>
+        </Scrim>
+      )}
       {editing && (
         <Scrim onEscape={() => setEditing(null)}>
           <div className="modal">
@@ -239,13 +254,22 @@ function SourceTile({
   onDelete: () => void
 }) {
   const t = useTranslations('Tools')
+  const trusted = isTrustedByUrl(s)
   return (
     <ToolTile
       mark={<SkillMark />}
       name={s.name}
       badge={
-        s.ref || s.private ? (
+        s.ref || s.private || trusted ? (
           <span className="flex min-w-0 items-center gap-1">
+            {trusted && (
+              <span
+                className="badge flex-none bg-(--surface-sunken) text-[9.5px] text-(--text-secondary)"
+                title={t('skills.trustedByUrlHint')}
+              >
+                {t('skills.trustedByUrl')}
+              </span>
+            )}
             {s.private && (
               <span
                 className="badge flex-none bg-(--status-paused-soft) text-[9.5px] text-(--status-paused)"
@@ -432,6 +456,264 @@ export function CreateSkillSourceModal({
         >
           <Icon name="book-open" size={14} />
           {busy ? t('importing') : t('import')}
+        </Button>
+      </div>
+    </>
+  )
+}
+
+/** Register a GitLab project or any HTTPS Git repository; the preview reads GitLab only, so another host is trusted by URL. */
+export function CreateGitUrlSkillSourceModal({
+  onClose,
+  onCreated
+}: {
+  onClose: () => void
+  onCreated?: (created: SkillSourceDto) => void
+}) {
+  const t = useTranslations('Tools.skills.gitCreate')
+  const createT = useTranslations('Tools.skills.create')
+  const formT = useTranslations('Tools.skillSourceForm')
+  const { createSkillSource } = useConsoleData()
+  const [name, setName] = useState('')
+  const [source, setSource] = useState('')
+  const [ref, setRef] = useState('')
+  const [subDir, setSubDir] = useState('')
+  const [skills, setSkills] = useState('')
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [preview, setPreview] = useState<SkillSourcePreviewDto | 'checking' | null>(null)
+  const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const checkSeq = useRef(0)
+
+  const derivedName =
+    name.trim() ||
+    source
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/\.git$/, '')
+      .split('/')
+      .filter(Boolean)
+      .pop() ||
+    ''
+  const addressOk = isHttpsGitAddress(source)
+  const valid = !!(derivedName && addressOk)
+  const scanned = preview !== null && preview !== 'checking' && preview.resolvable !== false ? preview : null
+  const unresolvable = preview !== null && preview !== 'checking' && preview.resolvable === false
+  const picker = scanned !== null && scanned.skills.length > 0
+
+  // Any edit to what the preview read makes its answer stale.
+  const edit = (set: (value: string) => void) => (value: string) => {
+    set(value)
+    checkSeq.current += 1
+    setPreview(null)
+    setPicked(new Set())
+  }
+
+  const check = async () => {
+    if (!addressOk || preview === 'checking') return
+    const seq = ++checkSeq.current
+    setPreview('checking')
+    setErr(null)
+    try {
+      const result = await previewSkillSource({
+        source: source.trim(),
+        ...(ref.trim() ? { ref: ref.trim() } : {}),
+        ...(subDir.trim() ? { subDir: subDir.trim() } : {})
+      })
+      if (seq === checkSeq.current) setPreview(result)
+    } catch (e) {
+      if (seq !== checkSeq.current) return
+      setPreview(null)
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const togglePicked = (skill: string) =>
+    setPicked((cur) => {
+      const next = new Set(cur)
+      if (next.has(skill)) next.delete(skill)
+      else next.add(skill)
+      return next
+    })
+
+  const submit = async () => {
+    if (!valid || busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const created = await createSkillSource({
+        name: derivedName,
+        source: source.trim(),
+        ...(ref.trim() ? { ref: ref.trim() } : {}),
+        ...(subDir.trim() ? { subDir: subDir.trim() } : {}),
+        skills: picker ? scanned.skills.map((sk) => sk.name).filter((n) => picked.has(n)) : parseSkills(skills),
+        ...(sharing.visibility === 'restricted'
+          ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
+          : {})
+      })
+      onCreated?.(created)
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="modalhead">
+        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--brand-soft)">
+          <Icon name="git-branch" size={16} color="var(--brand)" />
+        </span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
+        <button className="iconbtn" onClick={onClose}>
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+
+      <div className="modalbody">
+        <div className="flex flex-col gap-[14px]">
+          <div className="fld">
+            <span className="fldlbl">{t('source')}</span>
+            <input
+              className="inp mn"
+              placeholder={t('sourcePlaceholder')}
+              value={source}
+              onChange={(e) => edit(setSource)(e.target.value)}
+              autoFocus
+            />
+            <span
+              className={`mt-1 font-sans text-[11.5px] font-normal leading-normal ${source.trim() && !addressOk ? 'text-(--status-error)' : 'text-(--text-tertiary)'}`}
+            >
+              {source.trim() && !addressOk ? t('sourceInvalid') : t('sourceHint')}
+            </span>
+          </div>
+          <div className="fld">
+            <span className="fldlbl">{createT('name')}</span>
+            <input
+              className="inp mn"
+              placeholder={derivedName || 'platform-skills'}
+              value={name}
+              maxLength={64}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
+            <div className="fld">
+              <span className="fldlbl">{createT('refOptional')}</span>
+              <input
+                className="inp mn"
+                placeholder={formT('refPlaceholder')}
+                value={ref}
+                list={scanned ? 'git-skill-source-refs' : undefined}
+                onChange={(e) => edit(setRef)(e.target.value)}
+              />
+              {scanned && (
+                <datalist id="git-skill-source-refs">
+                  {[...scanned.branches, ...scanned.tags].map((r) => (
+                    <option key={r} value={r} />
+                  ))}
+                </datalist>
+              )}
+            </div>
+            <div className="fld">
+              <span className="fldlbl">{createT('subdirOptional')}</span>
+              <input
+                className="inp mn"
+                placeholder={formT('subdirPlaceholder')}
+                value={subDir}
+                onChange={(e) => edit(setSubDir)(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => void check()}
+              disabled={!addressOk || preview === 'checking'}
+            >
+              <Icon name="search" size={13} />
+              {preview === 'checking' ? t('checking') : t('check')}
+            </Button>
+            {scanned && (
+              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                {picker ? t('found', { count: scanned.skills.length }) : t('noneFound')}
+              </span>
+            )}
+          </div>
+          {unresolvable && (
+            <div
+              data-trusted-by-url
+              className="flex items-start gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[10px]"
+            >
+              <Icon name="link" size={14} className="mt-[2px] flex-none" color="var(--text-tertiary)" />
+              <span className="flex min-w-0 flex-col gap-1">
+                <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                  {t('trustedTitle')}
+                </span>
+                <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+                  {t('trustedBody')}
+                </span>
+                {subDir.trim() && !ref.trim() && (
+                  <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                    {t('subdirNeedsRef')}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+          {picker ? (
+            <div className="fld">
+              <span className="fldlbl">{createT('skillsOptional')}</span>
+              <div className="flex max-h-[200px] flex-col overflow-y-auto rounded-md border border-(--border-subtle)">
+                {scanned.skills.map((sk) => (
+                  <label
+                    key={sk.name}
+                    className="flex cursor-pointer items-center gap-[10px] border-b border-(--border-subtle) px-3 py-[7px] last:border-b-0"
+                  >
+                    <input type="checkbox" checked={picked.has(sk.name)} onChange={() => togglePicked(sk.name)} />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
+                        {sk.name}
+                      </span>
+                      <span className="truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                        {sk.dirPath}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="fld">
+              <span className="fldlbl">{createT('skillsOptional')}</span>
+              <input
+                className="inp mn"
+                placeholder={createT('skillsPlaceholder')}
+                value={skills}
+                onChange={(e) => setSkills(e.target.value)}
+              />
+            </div>
+          )}
+          <VisibilityField value={sharing} onChange={setSharing} />
+        </div>
+        {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
+      </div>
+
+      <div className="modalfoot">
+        <div className="flex-1" />
+        <Button variant="ghost" onClick={onClose}>
+          {createT('cancel')}
+        </Button>
+        <Button
+          variant="primary"
+          onClick={() => void submit()}
+          className={valid && !busy ? undefined : 'pointer-events-none opacity-50'}
+        >
+          <Icon name="git-branch" size={14} />
+          {busy ? createT('importing') : createT('import')}
         </Button>
       </div>
     </>

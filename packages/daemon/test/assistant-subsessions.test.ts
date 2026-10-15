@@ -244,6 +244,82 @@ describe('the failure report a sub-session index row holds (assistant-mode.md §
   })
 })
 
+describe('work rounds and parent inputs (send-message-guide.md §8.4, §8.6)', () => {
+  it('reopens a settled row as its next round only below the limit, and only from the round it names', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const cap = { limit: 1, startedSince: 0 }
+    await index.open(row(a, '1'))
+    await index.open(row(a, '2'))
+    expect(await index.finish(a, childKey(a, '1'), 'done')).toBe(true)
+    // Row 2 still runs, so round 2 of row 1 waits for a slot.
+    expect(await index.reopenWithinLimit(a, childKey(a, '1'), 1, cap)).toBe('limit')
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ state: 'done' })
+    expect(await index.reopenWithinLimit(a, childKey(a, '2'), 1, cap)).toBe('changed')
+    await index.finish(a, childKey(a, '2'), 'failed')
+    expect(await index.reopenWithinLimit(a, childKey(a, '1'), 2, cap)).toBe('changed')
+    expect(await index.reopenWithinLimit(a, childKey(a, '1'), 1, cap)).toBe('opened')
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ state: 'open', round: 2 })
+    expect(await index.reopenWithinLimit(a, childKey(a, '2'), 1, cap)).toBe('limit')
+    // A guard on the round: an older round's settlement or report claim changes nothing.
+    expect(await index.finish(a, childKey(a, '1'), 'failed', 1)).toBe(false)
+    expect(await index.claimReport(a, childKey(a, '1'), '{"text":"old"}', 1)).toBe(false)
+    expect(await index.claimReport(a, childKey(a, '1'), '{"text":"new","round":2}', 2)).toBe(true)
+    expect(await index.settleReport(a, childKey(a, '1'), 'done')).toBe(true)
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ state: 'done', round: 2 })
+  })
+
+  it('claims one submission once and keeps its receipt, dropped with the agent', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    expect(await index.claimInput(a, 'sub-1', childKey(a, '1'), 1_000)).toBe(true)
+    expect(await index.claimInput(a, 'sub-1', childKey(a, '1'), 1_001)).toBe(false)
+    expect(await index.getInput(a, 'sub-1')).toEqual({
+      agentId: a,
+      submissionId: 'sub-1',
+      childSessionKey: childKey(a, '1'),
+      round: 0
+    })
+    await index.settleInput(a, 'sub-1', 2, '{"delivered":true}')
+    expect(await index.getInput(a, 'sub-1')).toMatchObject({ round: 2, receipt: '{"delivered":true}' })
+    await index.deleteForAgent(a)
+    expect(await index.getInput(a, 'sub-1')).toBeUndefined()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v50 → v51 round column on SQLite', () => {
+  it('adds the column to a v50 index, its rows in their first round', async () => {
+    const path = tempStorePath('ac-assistant-v50-')
+    await (await LocalStore.open(path)).close()
+    const a = agent()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE assistant_subsession DROP COLUMN round; PRAGMA user_version = 50')
+    old
+      .prepare(
+        `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+         VALUES (?, ?, 'sid-parent-1', 'parent', 'done', 1000)`
+      )
+      .run(a, childKey(a, '1'))
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).not.toHaveProperty('round')
+      expect(
+        await upgraded.assistantSubsessions.reopenWithinLimit(a, childKey(a, '1'), 1, { limit: 3, startedSince: 0 })
+      ).toBe('opened')
+      expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).toMatchObject({ state: 'open', round: 2 })
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
 describe.skipIf(usingPostgresStore())('the v43 → v44 failure report columns on SQLite', () => {
   it('adds the columns to a v43 index and keeps its rows', async () => {
     const path = tempStorePath('ac-assistant-v43-')
@@ -338,7 +414,7 @@ describe.skipIf(!usingPostgresStore())('the v43 → v44 failure report columns o
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {
   it('adds the table to a v37 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(49)
+    expect(SCHEMA_VERSION).toBe(52)
     const path = tempStorePath('ac-assistant-v37-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
@@ -357,7 +433,12 @@ describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLi
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index') AND name LIKE 'assistant_subsession%'")
       .all() as { name: string }[]
-    expect(tables.map((t) => t.name).sort()).toEqual(['assistant_subsession', 'assistant_subsession_by_parent'])
+    expect(tables.map((t) => t.name).sort()).toEqual([
+      'assistant_subsession',
+      'assistant_subsession_by_parent',
+      'assistant_subsession_input',
+      'assistant_subsession_input_by_child'
+    ])
     expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
     db.close()
   })

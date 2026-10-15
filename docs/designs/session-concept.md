@@ -10,6 +10,12 @@
 > match; read that document for the verification, hop-transition, and activation
 > rendezvous rules behind them.
 
+> **Reply update:** [`send-message-guide.md`](send-message-guide.md) §9.3–§9.6 is
+> implemented and authoritative for REPLIES. The `# Agent` block's `Parent session` line is
+> now `Created by session`, a record only: a session answers a message by its id with
+> `replyToSession {messageId}`, never by naming a parent session. Passages below that use
+> `Parent session` as a reply address describe the earlier design.
+
 > This document does one thing: define **session** precisely--what it is, what
 > it contains, how messages record source and destination, how agent-to-agent
 > communication and cross-platform sends enter sessions, and how **replies**
@@ -195,13 +201,30 @@ At session start, the daemon injects standing location metadata into the first
 one `- Key: value` per line. Claude receives it through `_meta.systemPrompt`.
 Runtimes advertising AIR `customInstructions` receive it through
 `_meta.jetbrains.air.customInstructions`; Codex maps this to native developer
-instructions. The daemon also sends them on `session/load`, but the adapter
-controls restoration: Codex currently retains the instructions already in its
-history, so an existing conversation needs a new session to adopt this channel
-or changed instructions immediately. Other runtimes receive standing context
-inline as the first prompt block. Incoming messages
-and repository content remain in the user prompt; they are not promoted to
-standing instructions.
+instructions. Other runtimes receive standing context inline as the first prompt
+block. Incoming messages and repository content remain in the user prompt; they
+are not promoted to standing instructions.
+
+The daemon sends the native form again on `session/load`, but only Claude
+applies it there (`AcpHost.appliesSystemPromptOnLoad()`). Codex applies
+developer instructions only when a thread starts and keeps the copy in its
+history, and an inline runtime keeps the block in its first prompt. So each
+session row records a digest of the standing context its model last received:
+at `session/new` on the native channel, on a load that applies it, and when the
+runtime answers a prompt that carried it inline (`sessions.standingDigest`,
+local store v50). ACP acknowledges a prompt only with its response, so that
+response, whatever its stop reason, is the delivery point; a new inline session
+holds none until its opening prompt is answered. On the first prompt after a
+`session/load` on any other runtime, the daemon builds the current standing
+context; if its digest differs, that prompt carries it as a block whose first
+line says it replaces the earlier standing instructions. Until a prompt carrying
+it is answered the refresh stays due, so a turn paused, cancelled or rejected
+before its prompt reaches the runtime hands it to the next prompt. A row
+without a digest counts as changed. The digest covers the standing context
+alone, not the memory catalog appended beside it on the native channel, and
+leaves out the `Session` line, which the turn that opens a session does not have
+yet. A session whose standing context changes while its runtime stays up keeps
+what it has, on every runtime, until it next resumes.
 
 Current fields identify the agent and source:
 
@@ -221,7 +244,7 @@ its origin:
 ```text
 - Thread: <current thread id>             # thread segment from sessionKey; session-manager.ts:216
 - Session: <this session id>              # acpSessionId, when available
-- Parent session: <origin session id>     # Only for a session woken by sendMessage
+- Created by session: <origin session id> # Only for a session woken by sendMessage; a record, not a reply address
 ```
 
 - **`Thread`** is the current session's platform thread:
@@ -231,15 +254,13 @@ its origin:
   (`session-manager.ts:312` versus `session-manager.ts:411`), while a new
   `acpSessionId` is returned only by that call. A resumed session can include it
   reliably.
-- **`Parent session`** is the **origin session's ID**, described in section 5.1.
+- **`Created by session`** is the **origin session's ID**, described in section 5.1.
   It appears only when `sendMessage` created or woke this session, as in cases
-  2, 3, and 3b. A human-created root session has no line. This is exactly the
-  `SessionTarget.sessionId` the owner uses to reply. `CallMeta.originSessionId`
+  2, 3, and 3b. A human-created root session has no line. `CallMeta.originSessionId`
   carries it into the daemon, which renders this line.
 
-In other words, a session has a replyable parent exactly when its `# Agent`
-block contains `Parent session`. The agent submits that opaque value as a
-SessionTarget, and the daemon still authorizes the write.
+The line is a record only. A session replies by answering a message it received, by that
+message's id (send-message-guide.md §9.6); it never submits this id as a reply address.
 
 ---
 

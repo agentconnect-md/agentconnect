@@ -85,8 +85,9 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 9. **Console file transfer** (`control-plane/src/file-transfer/`, `object-store`,
    `source-cache-file-transfer.md`): the CP holds the bucket credentials and presigns every URL; browsers
    and out-of-cluster daemons PUT and GET the bucket directly at `publicEndpoint`. A PUT is bound to its
-   length, SHA-256 and `pending` tag; a daemon may sign only a PUT its CP ticket allows; an agent's GET is
-   a short-lived bearer URL that may leave the cluster through the model provider.
+   length, SHA-256 and `pending` tag; a daemon may sign only a PUT its CP ticket allows; an upload's key
+   names the agent it was reserved for, so only a daemon serving that agent can `transfer/get` it; an
+   agent's GET is a short-lived bearer URL that may leave the cluster through the model provider.
 10. **Operator-supplied uploads and config**: agent/org icon uploads (`sharp`, `@resvg/resvg-js`),
     Slack manifests, integration credentials entered in the console or Setup Server.
 

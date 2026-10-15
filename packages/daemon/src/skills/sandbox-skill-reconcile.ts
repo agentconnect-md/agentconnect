@@ -1,7 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AgentSkillEntry } from '@agentconnect.md/protocol'
+import {
+  AgentSkillEntry,
+  isGitHubSkillSource,
+  skillSourceCredential,
+  type CompatibleAgentSkillEntry
+} from '@agentconnect.md/protocol'
+import { GITLAB_SKILL_WINDOW_PREFIX } from '../cp/skill-credential-window.js'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
 import {
   GitSkillPlanSchema,
@@ -29,9 +35,16 @@ import {
   type LocalSkillSource
 } from './install-skills.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
+import { gitlabSkillRepository } from './gitlab-skill-source.js'
 import { gitSkillRepositoryPath, resolveBoundedGitSkillSource } from './skill-git-source.js'
-import type { SkillRefPlan } from './skill-ref-resolution.js'
+import { isCredentialedSkillSource, type SkillRefPlan } from './skill-ref-resolution.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skill-source-snapshot.js'
+import {
+  SkillSourceFailure,
+  skillSourceFailureCode,
+  uniqueSkillSourceFailures,
+  type SkillSourceFailureEntry
+} from './skill-source-failure.js'
 
 // One sandbox skill reconcile (source-cache.md §8): Git Sources acquired by the daemon, or planned for an image that clones them in-pod.
 
@@ -62,6 +75,10 @@ export interface InPodSkillDeps {
   ): Promise<SkillSourceCachePlan>
   /** A Source only the daemon path can fill, e.g. a public entry naming a repository the agent capability grants. */
   daemonOnly?(entry: AgentSkillEntry): boolean
+  /** An anonymous Source off GitHub, resolved by this pod itself (source-cache.md §5); absent ⇒ the daemon path acquires it. */
+  resolveInPod?(entry: AgentSkillEntry): Promise<SkillRefPlan>
+  /** The GitLab instance the agent's spec names, for a credentialed GitLab Source's window key and credential host. */
+  gitlabHost?: string
 }
 
 export interface SandboxSkillReconcileDeps {
@@ -76,12 +93,14 @@ export interface SandboxSkillReconcileDeps {
     destination: string
   ): Promise<{ sourceDir: string; resolvedCommit: string }>
   inPod?: InPodSkillDeps
+  /** Called once a reconcile with Git Sources commits, with those it could not install. */
+  reportSourceFailures?(failures: SkillSourceFailureEntry[]): void
 }
 
 export interface SandboxSkillReconcileInput {
   agentId: string
-  /** The agent's entries as replicated; one without a numeric repository id predates current admission. */
-  skills: ReadonlyArray<Omit<AgentSkillEntry, 'githubRepoId'> & { githubRepoId?: string }>
+  /** The agent's entries as replicated; strict admission below drops what this daemon cannot install. */
+  skills: ReadonlyArray<CompatibleAgentSkillEntry>
   managed: LocalSkillSource[]
   dreamed: LocalSkillSource[]
   priorLedger?: ClusterSkillLedger
@@ -107,10 +126,10 @@ export async function reconcileSandboxSkillSources(
   input: SandboxSkillReconcileInput
 ): Promise<SandboxSkillReconcileResult> {
   const configured = input.skills.flatMap((entry, index) => {
-    if (!entry.githubRepoId) return []
     const parsed = AgentSkillEntry.safeParse(entry)
-    if (parsed.success && parsed.data.githubRepoId) return [{ index, entry: parsed.data }]
-    deps.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
+    if (parsed.success) return [{ index, entry: parsed.data }]
+    if (entry.githubRepoId)
+      deps.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
     return []
   })
   let journaled: string | undefined
@@ -202,6 +221,7 @@ async function reconcileOnce(
     )
     await Promise.all(acquisitions.values())
     const gitSources: ClusterSkillReconcileSource[] = []
+    const failures: SkillSourceFailureEntry[] = []
     for (const { index, entry } of configured) {
       const plan = pod?.plans.get(index)
       if (plan) {
@@ -217,15 +237,26 @@ async function reconcileOnce(
         const { acquired, plannedCommit } = outcome
         const resolvedCommit = acquired.resolvedCommit.toLowerCase()
         if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
-          throw new Error(`Git source "${entry.name}" did not resolve to its planned commit`)
+          throw new SkillSourceFailure('ref_moved', `Git source "${entry.name}" did not resolve to its planned commit`)
         }
         resolutionsByDefinition.set(definitionDigest, resolvedCommit)
         const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
           limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
         })
-        const selected = await resolveSkillSelections(entry.name, acquired.sourceDir, inspected.files, entry.skills)
+        const selected = await resolveSkillSelections(
+          entry.name,
+          acquired.sourceDir,
+          inspected.files,
+          entry.skills
+        ).catch((error: unknown) => {
+          throw new SkillSourceFailure('cli_failed', (error as Error).message)
+        })
         // Charged last, so a source this `try` goes on to reject never spends budget later ones need.
-        admit(inspected.fileCount, inspected.totalBytes)
+        try {
+          admit(inspected.fileCount, inspected.totalBytes)
+        } catch (error) {
+          throw new SkillSourceFailure('limits_exceeded', (error as Error).message)
+        }
         gitSources.push({
           sourceId: gitSourceId(index, definitionDigest, resolvedCommit),
           sourceKind: 'agent',
@@ -235,10 +266,12 @@ async function reconcileOnce(
           limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
         })
       } catch (error) {
+        failures.push({ name: entry.name, code: skillSourceFailureCode(error) })
         deps.log.warn(`skills: Git source ${entry.name} unavailable for ${input.agentId} (${(error as Error).message})`)
       }
     }
     for (const { entry } of pod?.unresolved ?? []) {
+      failures.push({ name: entry.name, code: 'resolution_failed' })
       deps.log.warn(
         `skills: Git source ${entry.name} unresolved and not installed for ${input.agentId}; skipped this preparation`
       )
@@ -292,6 +325,8 @@ async function reconcileOnce(
       ...(journalAs ? { journalAs } : {})
     })
     logSkipped(deps, input, configured, sources, reconciled.skipped ?? [])
+    failures.push(...skippedGitFailures(configured, sources, reconciled.skipped ?? []))
+    if (configured.length > 0) deps.reportSourceFailures?.(uniqueSkillSourceFailures(failures))
     return reconciled
   } finally {
     // The window never outlives its reconcile, whatever the outcome.
@@ -343,6 +378,21 @@ function logSkipped(
   }
 }
 
+/** The configured Git Sources the shim skipped, in the §11 vocabulary; a code an older shim omitted reads as its stage's. */
+function skippedGitFailures(
+  configured: ConfiguredGitSource[],
+  sources: ClusterSkillReconcileSource[],
+  skipped: ClusterSkillSkippedSource[]
+): SkillSourceFailureEntry[] {
+  return skipped.flatMap((entry) => {
+    const index = /^agent:(\d+):/.exec(entry.sourceId)?.[1]
+    const name = configured.find((source) => String(source.index) === index)?.entry.name
+    if (name === undefined) return []
+    const planned = sources.some((source) => source.sourceId === entry.sourceId && source.sourceKind === 'git')
+    return [{ name, code: entry.code ?? (planned ? 'fetch_failed' : 'cli_failed') }]
+  })
+}
+
 /** Resolve, route and plan the in-pod Sources: origin policy first, then the frame bound, then GET URLs. */
 async function planInPod(
   deps: SandboxSkillReconcileDeps,
@@ -352,12 +402,22 @@ async function planInPod(
 ): Promise<PodPlan> {
   const routed = configured.filter(({ entry }) => {
     if (inPod.daemonOnly?.(entry)) return false
+    // An anonymous Source off GitHub goes in-pod only where the pod can resolve it itself.
+    if (!isCredentialedSkillSource(entry)) return isGitHubSkillSource(entry.source) || inPod.resolveInPod !== undefined
+    // A GitLab Source needs an image that credentials its instance.
+    if (!isGitHubSkillSource(entry.source) && !input.target.client.gitlabPlans) return false
     // A pod without the gitcred tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
-    if (entry.private !== true) return true
-    const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
-    return inPod.servesGitcred && repo !== undefined && inPod.windowAdmits(repo)
+    const key = skillWindowKey(entry, inPod.gitlabHost)
+    return inPod.servesGitcred && key !== undefined && inPod.windowAdmits(key)
   })
-  const resolutions = await Promise.all(routed.map(({ entry }) => inPod.resolve(entry)))
+  // The pod's own answer for an anonymous Source off GitHub is used by this preparation alone (source-cache.md §5).
+  const resolutions = await Promise.all(
+    routed.map(({ entry }) =>
+      isCredentialedSkillSource(entry) || isGitHubSkillSource(entry.source)
+        ? inPod.resolve(entry)
+        : inPod.resolveInPod!(entry)
+    )
+  )
   const priorCommits = new Map(
     currentGitResolutions(
       configured.map(({ entry }) => entry),
@@ -388,6 +448,7 @@ async function planInPod(
     }
     // The daemon's origin policy runs here, before any URL reaches the pod.
     const parsed = resolveBoundedGitSkillSource(entry)
+    const gitlab = gitlabSkillRepository(entry, parsed.cloneUrl, inPod.gitlabHost)
     const ref = resolution.ok && !resolution.pinned ? resolution.ref : undefined
     // The widest write-back request is measured with the plan; the real one, or none, replaces it below.
     const writeBack =
@@ -399,6 +460,7 @@ async function planInPod(
       ...(ref ? { ref } : {}),
       plannedCommit: commit,
       ...(parsed.subDir ? { subDir: parsed.subDir } : {}),
+      ...(gitlab ? { credentialHost: gitlab.baseUrl } : {}),
       selections: [...entry.skills],
       ...(keepInstalled ? { keepInstalled: true } : {}),
       ...(writeBack ? { writeBack } : {})
@@ -462,13 +524,24 @@ async function planInPod(
   const privateSourceIds: string[] = []
   for (const { source, plan } of fitted) {
     commits.set(gitResolutionDigest(source.entry), plan.plannedCommit)
-    const repo = gitSkillRepositoryPath(source.entry)
-    if (source.entry.private === true && !plan.keepInstalled && repo) {
-      privateRepos.add(repo.toLowerCase())
+    const key = skillWindowKey(source.entry, inPod.gitlabHost)
+    if (isCredentialedSkillSource(source.entry) && !plan.keepInstalled && key) {
+      privateRepos.add(key)
       privateSourceIds.push(plan.sourceId)
     }
   }
   return { plans, commits, unresolved, privateRepos: [...privateRepos], writeBacks, privateSourceIds }
+}
+
+/** The key a skill credential window names a credentialed Source by: GitHub's `owner/repo`, or `gitlab:<project path>`. */
+export function skillWindowKey(entry: AgentSkillEntry, gitlabHost: string | undefined): string | undefined {
+  if (skillSourceCredential(entry)?.provider !== 'gitlab') return gitSkillRepositoryPath(entry)?.toLowerCase()
+  try {
+    const gitlab = gitlabSkillRepository(entry, resolveBoundedGitSkillSource(entry).cloneUrl, gitlabHost)
+    return gitlab && `${GITLAB_SKILL_WINDOW_PREFIX}${gitlab.path.toLowerCase()}`
+  } catch {
+    return undefined
+  }
 }
 
 function planBytes(plan: GitSkillPlan): number {

@@ -236,6 +236,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
                 await host.store().assistantSubsessions.deleteForAgent(agentId)
                 await host.store().assistantReminders.deleteForAgent(agentId)
                 await host.store().placeTimeZones.deleteForAgent(agentId)
+                await host.store().sessionMessages.deleteForAgent(agentId)
                 await host.discardClusterSandbox(agentId)
                 host.moveStageMetadata().delete(agentId)
                 host.moveStagedAgents().delete(agentId)
@@ -450,6 +451,7 @@ export function applyAgentRemove(host: ConfigApplyHost, agentId: string): Promis
         await host.store().assistantSubsessions.deleteForAgent(agentId)
         await host.store().assistantReminders.deleteForAgent(agentId)
         await host.store().placeTimeZones.deleteForAgent(agentId)
+        await host.store().sessionMessages.deleteForAgent(agentId)
       } catch (cleanupError) {
         if (removal.markerError) {
           throw new AggregateError(

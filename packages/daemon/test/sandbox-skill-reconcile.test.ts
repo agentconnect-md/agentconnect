@@ -23,7 +23,11 @@ import {
   type InPodSkillDeps,
   type SandboxSkillReconcileDeps
 } from '../src/skills/sandbox-skill-reconcile.js'
-import { createSkillRefPlanResolution, type SkillRefPlan } from '../src/skills/skill-ref-resolution.js'
+import {
+  createSkillRefPlanResolution,
+  isCredentialedSkillSource,
+  type SkillRefPlan
+} from '../src/skills/skill-ref-resolution.js'
 import { GitSkillRefTracker } from '../src/skills/git-skill-ref-tracker.js'
 import { nameGitSkillRef, runBoundedGit } from '../src/skills/git-skill-ref-name.js'
 import { bundleKey, parseSourceCacheObjectKey, skillPointerKey, anonRepoId } from '../src/source-cache/keys.js'
@@ -33,10 +37,17 @@ import { createSourceCacheWriter, type SourceCacheWriteOutcome } from '../src/so
 import type { ClusterSkillLedger } from '../src/store/cluster-skill-ledger.js'
 import { LocalStore, type SourceCacheObjectRow } from '../src/store/local-store.js'
 import { memoryStoreDatabase } from './store-support.js'
+import { SkillSourceFailure } from '../src/skills/skill-source-failure.js'
 
 // The S5b golden parity: one agent spec through the daemon-acquisition path and the in-pod path, over the real handler and file:// repos.
 
 const HOST = 'https://github.com/'
+// Hosts off GitHub serve the same on-disk repositories: `<host><name>` is `<root>/<name>`.
+const OTHER_HOSTS = ['https://git.example.test/', 'https://gitlab.example.test/']
+const repoName = (source: string): string => {
+  for (const host of [HOST, ...OTHER_HOSTS]) if (source.startsWith(host)) return source.slice(host.length)
+  return source
+}
 const AUTHORITY = { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'w' }
 const gitEnv = {
   ...process.env,
@@ -120,7 +131,7 @@ const runner =
     await runLocalSkillGit({
       ...invocation,
       args: invocation.args.map((arg) =>
-        arg.startsWith(HOST) ? `file://${join(w.root, arg.slice(HOST.length))}` : arg
+        [HOST, ...OTHER_HOSTS].some((host) => arg.startsWith(host)) ? `file://${join(w.root, repoName(arg))}` : arg
       )
     })
 
@@ -166,8 +177,8 @@ async function sandbox(
     stateRoot: join(dir, 'state'),
     git: {
       git: async (invocation) => {
-        const origin = invocation.args.find((arg) => arg.startsWith(HOST))
-        if (origin) originCalls.push(origin.slice(HOST.length))
+        const origin = invocation.args.find((arg) => [HOST, ...OTHER_HOSTS].some((host) => arg.startsWith(host)))
+        if (origin) originCalls.push(repoName(origin))
         return await runner(w)(invocation)
       },
       allowFileProtocol: true,
@@ -190,8 +201,16 @@ async function sandbox(
   const stager = bundles
     ? new ShimBundleClient({ request: async (_capability, payload) => await bundles(payload) })
     : undefined
-  const client = (gitInPod: boolean): ClusterSkillClient => {
-    const c = new ClusterSkillClient(requester, true, true, true, gitInPod, gitInPod ? stager : undefined)
+  const client = (gitInPod: boolean, gitlabPlans = false): ClusterSkillClient => {
+    const c = new ClusterSkillClient(
+      requester,
+      true,
+      true,
+      true,
+      gitInPod,
+      gitInPod ? stager : undefined,
+      gitInPod && gitlabPlans
+    )
     Object.defineProperty(c, 'manifestLimits', { get: () => limits })
     return c
   }
@@ -240,14 +259,21 @@ async function installed(workspace: string): Promise<Record<string, string>> {
 }
 
 interface Run {
+  skills?: AgentSkillEntry[]
   resolve?: (entry: AgentSkillEntry) => SkillRefPlan
   inPod?: Partial<InPodSkillDeps>
   logs?: string[]
   acquired?: string[]
+  /** Every Source failure report, one per committed reconcile. */
+  reported?: Array<Array<{ name: string; code: string }>>
+  /** Fails the daemon acquisition of a Source by name. */
+  failAcquire?: (entry: AgentSkillEntry) => Error | undefined
+  /** The bound image takes GitLab plan entries (`skills-git-gitlab`). */
+  gitlabPlans?: boolean
 }
 
 async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run = {}) {
-  const tipOf = (entry: AgentSkillEntry): string => w.tips[entry.source]!
+  const tipOf = (entry: AgentSkillEntry): string => w.tips[repoName(entry.source)]!
   const resolve =
     options.resolve ??
     ((entry: AgentSkillEntry): SkillRefPlan => ({
@@ -255,7 +281,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       commit: tipOf(entry),
       ref: 'refs/heads/main',
       pinned: false,
-      credentialed: entry.private === true
+      credentialed: isCredentialedSkillSource(entry)
     }))
   const deps: SandboxSkillReconcileDeps = {
     store: box.store.store,
@@ -264,10 +290,13 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       const resolved = resolve(entry)
       return resolved.ok ? resolved.commit : null
     },
+    reportSourceFailures: (failures) => options.reported?.push(failures),
     acquire: async (entry, plannedCommit, destination) => {
       options.acquired?.push(entry.name)
+      const failure = options.failAcquire?.(entry)
+      if (failure) throw failure
       await mkdir(destination, { recursive: true })
-      ok(destination, ['clone', '-q', join(w.root, `${entry.source}.git`), 'repo'])
+      ok(destination, ['clone', '-q', join(w.root, `${repoName(entry.source)}.git`), 'repo'])
       const checkout = join(destination, 'repo')
       const commit = plannedCommit ?? ok(checkout, ['rev-parse', 'HEAD'])
       ok(checkout, ['checkout', '-q', commit])
@@ -291,7 +320,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
   }
   return await reconcileSandboxSkillSources(deps, {
     agentId: 'a',
-    skills: [PUBLIC, PRIVATE],
+    skills: options.skills ?? [PUBLIC, PRIVATE],
     managed: [w.managed],
     dreamed: [w.dream],
     priorLedger: await box.store.ledger(),
@@ -299,7 +328,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       authority: AUTHORITY,
       skillsAgentId: 'codex',
       shimGeneration: 1,
-      client: box.client(mode === 'pod'),
+      client: box.client(mode === 'pod', options.gitlabPlans),
       isLaunchCurrent: () => true
     }
   })
@@ -423,6 +452,132 @@ describe('sandbox skill reconcile: routing', () => {
     })
   }, 120_000)
 
+  it('reads a credential without the legacy flag as private, and acquires a Source on another host on the daemon', async () => {
+    await withWorld(async (w) => {
+      const pod = await sandbox(w, 'pod')
+      const opened: string[][] = []
+      const logs: string[] = []
+      const acquired: string[] = []
+      const { private: _legacy, ...credentialOnly } = PRIVATE
+      const elsewhere = AgentSkillEntry.parse({ name: 'elsewhere', source: 'https://git.example.test/team/skills' })
+      await run(w, pod, 'pod', {
+        logs,
+        acquired,
+        skills: [PUBLIC, { ...credentialOnly, credential: { provider: 'github' } }, elsewhere],
+        inPod: {
+          openWindow: (repos) => {
+            opened.push(repos)
+            return { capability: 'w'.repeat(43), close() {} }
+          }
+        }
+      })
+      expect(opened).toEqual([['acme/private']])
+      // Off GitHub the daemon acquires (this fixture has no such origin, so it is logged unavailable); the pod plans only GitHub.
+      expect(acquired).toEqual(['elsewhere'])
+      expect(logs).toContainEqual(expect.stringContaining('Git source elsewhere unavailable'))
+      expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0', '1'])
+    })
+  }, 120_000)
+
+  it('plans an anonymous Source off GitHub in-pod at the commit the pod resolved, never asking the daemon', async () => {
+    await withWorld(async (w) => {
+      const pod = await sandbox(w, 'pod')
+      const acquired: string[] = []
+      const tracked: string[] = []
+      const elsewhere = AgentSkillEntry.parse({
+        name: 'elsewhere',
+        source: 'https://git.example.test/acme/skills',
+        subDir: 'skills',
+        skills: ['beta']
+      })
+      const asked: string[] = []
+      await run(w, pod, 'pod', {
+        acquired,
+        skills: [PUBLIC, elsewhere],
+        resolve: (entry) => {
+          tracked.push(entry.name)
+          return {
+            ok: true,
+            commit: w.tips[repoName(entry.source)]!,
+            ref: 'refs/heads/main',
+            pinned: false,
+            credentialed: false
+          }
+        },
+        inPod: {
+          resolveInPod: async (entry) => {
+            asked.push(entry.name)
+            return {
+              ok: true,
+              commit: w.tips['acme/skills']!,
+              ref: 'refs/heads/main',
+              pinned: false,
+              credentialed: false
+            }
+          }
+        }
+      })
+      expect(asked).toEqual(['elsewhere'])
+      expect(tracked).toEqual(['public'])
+      expect(acquired).toEqual([])
+      const plans = pod.gitPlans()[0]!
+      expect(plans.map((plan) => plan.url)).toEqual([
+        'https://github.com/acme/skills.git',
+        'https://git.example.test/acme/skills'
+      ])
+      expect(plans[1]).toMatchObject({ ref: 'refs/heads/main', plannedCommit: w.tips['acme/skills'] })
+      expect(plans[1]).not.toHaveProperty('credentialHost')
+      expect(Object.keys(await installed(pod.workspace))).toContain('.agents/skills/beta/SKILL.md')
+    })
+  }, 120_000)
+
+  it('plans a credentialed GitLab Source in-pod only for an image that credentials its instance', async () => {
+    await withWorld(async (w) => {
+      const gitlab = AgentSkillEntry.parse({
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/acme/private',
+        credential: { provider: 'gitlab', projectId: '77' },
+        subDir: 'skills',
+        skills: ['gamma']
+      })
+      const pod = await sandbox(w, 'pod')
+      const opened: string[][] = []
+      await run(w, pod, 'pod', {
+        gitlabPlans: true,
+        skills: [gitlab],
+        inPod: {
+          openWindow: (repos) => {
+            opened.push(repos)
+            return { capability: 'w'.repeat(43), close() {} }
+          }
+        }
+      })
+      expect(opened).toEqual([['gitlab:acme/private']])
+      expect(pod.gitPlans()[0]).toEqual([
+        expect.objectContaining({
+          url: 'https://gitlab.example.test/acme/private',
+          credentialHost: 'https://gitlab.example.test'
+        })
+      ])
+      expect(Object.keys(await installed(pod.workspace))).toContain('.agents/skills/gamma/SKILL.md')
+
+      // An older image, or a window that would not admit the project, leaves it to the daemon.
+      const older = await sandbox(w, 'older')
+      const acquired: string[] = []
+      await run(w, older, 'pod', { skills: [gitlab], acquired })
+      expect(acquired).toEqual(['gitlab'])
+      const unadmitted = await sandbox(w, 'unadmitted')
+      const daemonAcquired: string[] = []
+      await run(w, unadmitted, 'pod', {
+        gitlabPlans: true,
+        skills: [gitlab],
+        acquired: daemonAcquired,
+        inPod: { windowAdmits: (key) => key !== 'gitlab:acme/private' }
+      })
+      expect(daemonAcquired).toEqual(['gitlab'])
+    })
+  }, 240_000)
+
   it('routes private Sources through the daemon for a pod bound without the gitcred tunnel', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod')
@@ -526,7 +681,10 @@ describe('sandbox skill reconcile: routing', () => {
       })
       const logs: string[] = []
       const acquired: string[] = []
-      const result = await run(w, pod, 'pod', { logs, acquired })
+      const reported: NonNullable<Run['reported']> = []
+      const result = await run(w, pod, 'pod', { logs, acquired, reported })
+      // Only the committed fallback reports, and it installed every Source.
+      expect(reported).toEqual([[]])
       // The shim published the plan before the reply was refused; the fallback resumes that operation.
       expect(pod.gitPlans()[0]).toHaveLength(2)
       expect(logs.join('\n')).toContain('in-pod Git skill install failed for a; acquiring through the daemon')
@@ -555,8 +713,10 @@ describe('sandbox skill reconcile: routing', () => {
           )
         }
       })
-      const result = await run(w, pod, 'pod')
+      const reported: NonNullable<Run['reported']> = []
+      const result = await run(w, pod, 'pod', { reported })
       expect(result.skipped).toEqual([expect.objectContaining({ sourceId: expect.stringMatching(/^agent:0:/) })])
+      expect(reported).toEqual([[{ name: 'public', code: 'commit_unavailable' }]])
       const resolutions = (await pod.store.ledger()).gitResolutions ?? []
       expect(resolutions.map((r) => r.definitionDigest)).toEqual([gitResolutionDigest(PRIVATE)])
       expect(resolutions.some((r) => r.resolvedCommit === forged)).toBe(false)
@@ -568,9 +728,11 @@ describe('sandbox skill reconcile: routing', () => {
       const pod = await sandbox(w, 'pod')
       const logs: string[] = []
       const acquired: string[] = []
+      const reported: NonNullable<Run['reported']> = []
       await run(w, pod, 'pod', {
         logs,
         acquired,
+        reported,
         resolve: (entry) =>
           entry.name === 'private'
             ? { ok: false }
@@ -579,6 +741,21 @@ describe('sandbox skill reconcile: routing', () => {
       expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0'])
       expect(acquired).toEqual([])
       expect(logs.join('\n')).toContain('Git source private unresolved and not installed')
+      expect(reported).toEqual([[{ name: 'private', code: 'resolution_failed' }]])
+    })
+  }, 120_000)
+
+  it('reports a daemon-path acquisition failure by its code, and clears it once the Source installs', async () => {
+    await withWorld(async (w) => {
+      const box = await sandbox(w, 'daemon')
+      const reported: NonNullable<Run['reported']> = []
+      let failing = true
+      const failAcquire = (entry: AgentSkillEntry) =>
+        failing && entry.name === 'private' ? new SkillSourceFailure('access_denied', 'raw host output') : undefined
+      await run(w, box, 'daemon', { reported, failAcquire })
+      failing = false
+      await run(w, box, 'daemon', { reported, failAcquire })
+      expect(reported).toEqual([[{ name: 'private', code: 'access_denied' }], []])
     })
   }, 120_000)
 })

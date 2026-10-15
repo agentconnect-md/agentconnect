@@ -48,6 +48,42 @@ export const WorkspaceUploadOk = z.object({
 })
 export type WorkspaceUploadOk = z.infer<typeof WorkspaceUploadOk>
 
+/** Daemon answers `workspace/upload/begin` and reports its outcome with `transfer/settle`, so no RPC waits on the upload. */
+export const WORKSPACE_UPLOAD_BEGIN_FEATURE = 'workspace-upload-begin-v1'
+
+/** C→D REQ: start the same snapshot upload in the background; the ack only accepts it, keyed by `ticket`. */
+export const WorkspaceUploadBeginReq = WorkspaceUploadReq
+export type WorkspaceUploadBeginReq = z.infer<typeof WorkspaceUploadBeginReq>
+
+/** D→C REP: accepted; a retransmit or second begin for the same ticket joins the running upload. */
+export const WorkspaceUploadBeginOk = z.object({})
+export type WorkspaceUploadBeginOk = z.infer<typeof WorkspaceUploadBeginOk>
+
+/** How a begun upload ended: what was sent, or the error the single-shot RPC would have answered. */
+export const TransferUploadOutcome = z.discriminatedUnion('ok', [
+  WorkspaceUploadOk.extend({ ok: z.literal(true) }),
+  z.object({
+    ok: z.literal(false),
+    /** CONFLICT, BAD_PAYLOAD or INTERNAL, as the workspace error frame would carry it. */
+    code: z.enum(['CONFLICT', 'BAD_PAYLOAD', 'INTERNAL']),
+    /** A `WorkspaceErrorReason`; a string so a newer daemon's reason still parses. */
+    reason: z.string().min(1).max(64).optional(),
+    message: z.string().max(500)
+  })
+])
+export type TransferUploadOutcome = z.infer<typeof TransferUploadOutcome>
+
+/** D→C REQ: record a begun upload's outcome on its ticket; idempotent, so the daemon may resend it. */
+export const TransferSettleReq = z.object({
+  ticket: z.string().uuid(),
+  outcome: TransferUploadOutcome
+})
+export type TransferSettleReq = z.infer<typeof TransferSettleReq>
+
+/** C→D REP: recorded, or the ticket had already settled or expired. */
+export const TransferSettleOk = z.object({})
+export type TransferSettleOk = z.infer<typeof TransferSettleOk>
+
 /** Where the requester reaches the bucket: a sandbox pod in the cluster, or anything else over the public origin. */
 export const TransferNetwork = z.enum(['cluster', 'public'])
 export type TransferNetwork = z.infer<typeof TransferNetwork>

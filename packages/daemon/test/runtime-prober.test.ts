@@ -338,6 +338,7 @@ describe('curatedProbeEnvironment', () => {
       ANTHROPIC_IDENTITY_TOKEN: 'anthropic-identity',
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       KIRO_API_KEY: 'kiro-key',
+      META_API_KEY: 'synthetic-meta-key',
       OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:18789',
       OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
       OPENCLAW_STATE_DIR: '/host/openclaw',
@@ -367,6 +368,7 @@ describe('curatedProbeEnvironment', () => {
       ANTHROPIC_IDENTITY_TOKEN: 'anthropic-identity',
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       KIRO_API_KEY: 'kiro-key',
+      META_API_KEY: 'synthetic-meta-key',
       OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:18789',
       OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
       // A launch inherits these from the host; a probe that read the model picker without them

@@ -167,6 +167,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
   /** A git runner on the pod that owns the path; an unbound session path gets one that refuses on first use as removed or asleep and wakes nothing, any other unbound path undefined, which callers refuse. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+  /** A git runner on exactly this subject's pod while it is bound, at its workspace root; undefined otherwise. */
+  podGitRunner?: (subject: string, abort?: AbortSignal) => GitRunner | undefined
   /** The console's file operations, each root on the pod that owns it and refused per call while that pod is unbound; separate from git because `read` and `exec` are separate capabilities. */
   workspaceFilesFor: (agentId: string) => WorkspaceFiles | undefined
   /** Where the agent's WORKSPACE files live and which coordinates they are addressed in — the
@@ -471,6 +473,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     workspacesOffDisk: true,
     // The driver claims the pod a host key names, so only a confined session's host hands it one; every other host shares the agent's pod (§11).
     spawnFor: ({ hostKey, confined }) => ({ driver, ...(confined() ? { hostKey } : {}) }),
+    podGitRunner: (subject, abort) => {
+      const session = boundSession(subject)
+      return session ? new ShimGitRunner(session, undefined, undefined, abort) : undefined
+    },
     gitRunnerFor: (agentId, cwd, abort) => {
       // No channel to the owning pod of a non-session path answers undefined, which the workspace manager refuses as `sandbox-unavailable`.
       const subject = subjectForPath(agentId, cwd)
@@ -549,7 +555,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         session.hasCapability('skills-git'),
         session.hasCapability('skills-git-writeback') && session.hasCapability('bundle')
           ? new ShimBundleClient(session)
-          : undefined
+          : undefined,
+        session.hasCapability('skills-git-gitlab')
       )
     },
     workspaceIncarnationFor: (subject) => driver.currentLaunch(subject)?.claimUid,

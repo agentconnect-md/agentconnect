@@ -29,7 +29,7 @@ import {
   prepareScriptedWebchatRoot,
   type WebchatSeat
 } from './webchat-fixture.js'
-import { executeBrainTurn, parentSessionIdOf, scriptedWebchatHostFactory } from './webchat-referee.js'
+import { executeBrainTurn, replyMessageIdOf, scriptedWebchatHostFactory } from './webchat-referee.js'
 import type { PromptLogEntry, ScriptedSessionHandler } from './webchat-referee.js'
 import {
   GAME_OVER_PATTERN,
@@ -138,7 +138,7 @@ export async function runWebchatWerewolf(options: WebchatWerewolfRunOptions): Pr
       const player = scriptedWebchatPlayer({
         alias: seat.alias,
         callTool: callDaemonTool,
-        parentSessionIdOf,
+        replyMessageIdOf,
         ...(options.scriptedAbstainers?.includes(seat.alias) ? { abstainPublicVote: true } : {})
       })
       handlers.set(seat.agentId, ({ sessionId, text, binding }) => player({ sessionId, text, binding }))

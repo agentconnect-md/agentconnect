@@ -330,7 +330,7 @@ export function createSourceCacheSweeper(deps: SourceCacheSweeperDeps): SourceCa
         const lifecycle = await objects.getBucketLifecycle()
         const evaluation =
           lifecycle.kind === 'none'
-            ? { pending: false, unreferenced: false, warnings: [] }
+            ? { pending: false, unreferenced: false, pendingShortestDays: undefined, warnings: [] }
             : evaluateSourceCacheLifecycle(lifecycle.xml, deps.config.prefix)
         for (const warning of evaluation.warnings) log.warn(`source cache: ${warning}`)
         next = evaluation.pending && evaluation.unreferenced ? 'present' : 'missing'

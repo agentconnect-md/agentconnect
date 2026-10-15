@@ -15,11 +15,12 @@ export const ASSISTANT_MODE_RUNTIME_FACTS: Readonly<Record<string, AssistantMode
   'claude-acp': { nativeMemoryDisableable: true, resumesById: true },
   // The earlier daemon generation's id for the same Claude adapter.
   claude: { nativeMemoryDisableable: true, resumesById: true },
-  // Memory off via the memories feature flag; resuming by id after a restart is unverified (assistant-mode.md §9).
-  'codex-acp': { nativeMemoryDisableable: true, resumesById: false },
-  codex: { nativeMemoryDisableable: true, resumesById: false },
-  // No automatic native memory store; resuming by id after a restart is unverified.
-  opencode: { nativeMemoryDisableable: true, resumesById: false }
+  // Memory off via the memories feature flag; session/load resumes the thread from its rollout under CODEX_HOME.
+  'codex-acp': { nativeMemoryDisableable: true, resumesById: true },
+  // The earlier daemon generation's id for the same Codex adapter.
+  codex: { nativeMemoryDisableable: true, resumesById: true },
+  // No automatic native memory store; session/load resumes from its session database under XDG_DATA_HOME.
+  opencode: { nativeMemoryDisableable: true, resumesById: true }
 })
 
 /** Why an agent cannot switch assistant mode on; the console shows each as the lock reason. */

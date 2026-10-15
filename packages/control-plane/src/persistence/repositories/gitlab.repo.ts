@@ -48,6 +48,7 @@ import { orgScope } from '../../secrets/scope.js'
 import { OrgId } from '../../domain/ids.js'
 import {
   GITLAB_ACCESS_DEVELOPER as ACCESS_DEVELOPER,
+  GITLAB_ACCESS_REPORTER as ACCESS_REPORTER,
   gitlabAuthorizationAccessLevel,
   gitlabWorkspaceAccessLevel
 } from '../../gitlab/api.js'
@@ -958,7 +959,38 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     // An explicit additional-project authorization is a consumer too (§8.3): without
     // it, the membership such a grant binds would be unbound by the next converge.
     for (const row of grants) raise(row.agentId, gitlabAuthorizationAccessLevel(row.access))
+    // An enabled private skill source is a read grant on its project (shared-skills.md §3).
+    for (const row of await this.skillSourceConsumers(orgId, projectId)) raise(row.agentId, ACCESS_REPORTER)
     return [...levels].map(([agentId, accessLevel]) => ({ agentId, accessLevel }))
+  }
+
+  /** Agents enabling a credentialed GitLab skill source, per project; one project when `projectId` is given. */
+  private async skillSourceConsumers(
+    orgId: string,
+    projectId?: bigint
+  ): Promise<Array<{ agentId: string; projectId: bigint }>> {
+    const sources = await this.prisma.skillSource.findMany({
+      where: { orgId, credentialProvider: 'gitlab', credentialRepoId: projectId ?? { not: null } },
+      select: { name: true, credentialRepoId: true }
+    })
+    if (sources.length === 0) return []
+    const projectOf = new Map(sources.map((row) => [row.name, row.credentialRepoId!]))
+    const agents = await this.prisma.agent.findMany({ where: { orgId }, select: { id: true, runtimeOverrides: true } })
+    const out: Array<{ agentId: string; projectId: bigint }> = []
+    for (const agent of agents) {
+      const skills = (agent.runtimeOverrides as { skills?: unknown } | null)?.skills
+      if (!Array.isArray(skills)) continue
+      const projects = new Set<bigint>()
+      // An enable-ref is "<source>/<skill>", "<source>/*", or a bare "<source>".
+      for (const ref of skills) {
+        if (typeof ref !== 'string') continue
+        const slash = ref.indexOf('/')
+        const project = projectOf.get(slash < 0 ? ref : ref.slice(0, slash))
+        if (project !== undefined) projects.add(project)
+      }
+      for (const project of projects) out.push({ agentId: agent.id, projectId: project })
+    }
+    return out
   }
 
   async consumersForOrg(orgId: string): Promise<GitlabProjectConsumer[]> {
@@ -989,6 +1021,8 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
     for (const row of hooks) if (row.agentId && row.repoId) raise(row.repoId, row.agentId, ACCESS_DEVELOPER)
     // An explicit additional-project authorization is a consumer too (§8.3).
     for (const row of grants) raise(row.repoId, row.agentId, gitlabAuthorizationAccessLevel(row.access))
+    // An enabled private skill source is a read grant on its project (shared-skills.md §3).
+    for (const row of await this.skillSourceConsumers(orgId)) raise(row.projectId, row.agentId, ACCESS_REPORTER)
     return [...levels.values()]
   }
 }

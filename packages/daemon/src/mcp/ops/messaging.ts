@@ -21,47 +21,43 @@ import {
   platformLabel
 } from '../../platforms/read-ports.js'
 
-export const SEND_MESSAGE_TARGET_HELP =
-  'Valid targets: agent {"toAgent":"<agent-id>","message":"..."}; ' +
-  'user DM {"toUser":"<Slack-user-id>","message":"..."}; ' +
-  'channel users {"toUser":["<id-1>","<id-2>"],"channel":"<channel-id>","message":"..."}; ' +
-  'channel {"channel":"<channel-id>","message":"..."}; ' +
-  'thread update {"channel":"<channel-id>","thread":"<thread-root-id>","message":"..."}; ' +
-  'session {"sessionId":"<Parent session>","message":"..."}'
+/** The repair every pre-effect `sendMessage` rejection ends with: the action's guide, then a retry. */
+export function sendMessageGuidePointer(action?: string): string {
+  const query = action === undefined ? '{"tool":"sendMessage"}' : `{"tool":"sendMessage","action":"${action}"}`
+  return `Nothing was sent. Call getToolGuide ${query} for the required arguments, then retry with a valid action and target.`
+}
 
 const AGENT_TARGET_SHAPE_ERROR =
   'sendMessage: `toAgent` must be an agent id string or {"agentId":"…","needsReply":bool}'
+export const USER_ARRAY_NEEDS_CHANNEL =
+  'a `toUser` array requires `channel` — direct messages accept exactly one user id'
 const USER_TARGET_ERROR = 'sendMessage: `toUser` must be a user id string or a non-empty array of user id strings'
 
-/** Reject any key the branch does not accept, naming the repair — silently ignoring a `thread`
- *  or a stray identity field is the confusing outcome (send-message-routing-rework.md §2.2). */
-function branchKeyError(target: string, allowed: readonly string[]): { error: z.core.$ZodErrorMap } {
+/** Reject any key the branch does not accept, naming the repair — silently ignoring a `thread` or a stray identity field is the confusing outcome (send-message-routing-rework.md §2.2). */
+function branchKeyError(target: string, allowed: readonly string[], action: string): { error: z.core.$ZodErrorMap } {
   const quoted = (keys: readonly PropertyKey[]) => keys.map((key) => `\`${String(key)}\``).join(', ')
   return {
     error: (issue) =>
       issue.code === 'unrecognized_keys'
         ? `sendMessage: ${target} allows only ${quoted(allowed)}; unexpected ${quoted(issue.keys)}. ` +
-          SEND_MESSAGE_TARGET_HELP
+          sendMessageGuidePointer(action)
         : undefined
   }
 }
 
-/** One call mode's full key set — the runtime twin of a `oneOf` branch in the advertised schema. */
-function targetBranch<T extends z.ZodRawShape>(target: string, shape: T) {
-  return z.strictObject(shape, branchKeyError(target, Object.keys(shape)))
+/** One delivery form's full key set, checked after the adapter removed the validated `action`. */
+function targetBranch<T extends z.ZodRawShape>(target: string, action: string, shape: T) {
+  return z.strictObject(shape, branchKeyError(target, ['action', ...Object.keys(shape)], action))
 }
 
-const messageField = requiredString('message')
-const channelField = optionalString('channel')
-/** §2.4: an EXISTING thread's root id. Only the bare-`channel` branch carries it — the
- *  update form — so every other branch still rejects it as an unrecognized key. */
-const threadField = optionalString('thread')
-/** The name of a file the caller RECEIVED in this conversation, forwarded as-is. Named
- *  rather than id'd because the name is what the agent already has: it reads it in the
- *  `[attached: …]` marker on the triggering message. */
-const attachmentField = optionalString('attachment')
-const platformField = optionalString('platform')
-const integrationIdField = optionalString('integrationId')
+export const messageField = requiredString('message')
+export const channelField = optionalString('channel')
+/** §2.4: an EXISTING thread's root id, carried by the bare-`channel` update form only. */
+export const threadField = optionalString('thread')
+/** A file the caller RECEIVED here, by the name its `[attached: …]` marker shows. */
+export const attachmentField = optionalString('attachment')
+export const platformField = optionalString('platform')
+export const integrationIdField = optionalString('integrationId')
 
 /** `toAgent` accepts the bare agent id or `{agentId, needsReply}`. The bare-string form stays
  *  supported indefinitely: every published example and every warm ACP session teaches it, and
@@ -77,9 +73,9 @@ const AGENT_TARGET_OBJECT = z.strictObject(
       ])
       .nullish()
   },
-  branchKeyError('agent target `toAgent`', ['agentId', 'needsReply'])
+  branchKeyError('agent target `toAgent`', ['agentId', 'needsReply'], 'callAgent')
 )
-const AGENT_TARGET = z.union([AGENT_ID, AGENT_TARGET_OBJECT])
+export const AGENT_TARGET = z.union([AGENT_ID, AGENT_TARGET_OBJECT])
 
 function normalizeNeedsReply(value: boolean | string | null | undefined): boolean | undefined {
   if (value === true) return true
@@ -87,10 +83,9 @@ function normalizeNeedsReply(value: boolean | string | null | undefined): boolea
   return undefined
 }
 
-/** `toUser`: one id works for every delivery form; a non-empty array is reserved for one visible
- *  channel-root post that @-mentions every listed member. */
+/** `toUser`: one id for every form; a non-empty array only for one channel-root post mentioning them all. */
 const USER_ID = z.string(USER_TARGET_ERROR).refine((id) => id.trim().length > 0, USER_TARGET_ERROR)
-const USER_TARGETS = z
+export const USER_TARGETS = z
   .union([USER_ID, z.array(USER_ID).min(1, USER_TARGET_ERROR)], USER_TARGET_ERROR)
   .transform((value) => (typeof value === 'string' ? [value] : value))
   .refine(
@@ -98,10 +93,14 @@ const USER_TARGETS = z
     'sendMessage: `toUser` must not contain duplicate user ids'
   )
 
-/** The four mutually exclusive call modes (§3.3), one strict key set each. */
+/** The four delivery forms the actions map onto (send-message-guide.md §3.3), one strict key set each. */
 export const SEND_MESSAGE_BRANCHES = {
-  toAgent: targetBranch('agent target', { toAgent: AGENT_TARGET, channel: channelField, message: messageField }),
-  toUser: targetBranch('user target', {
+  toAgent: targetBranch('action `callAgent`', 'callAgent', {
+    toAgent: AGENT_TARGET,
+    channel: channelField,
+    message: messageField
+  }),
+  toUser: targetBranch('action `postMessage` with `toUser`', 'postMessage', {
     toUser: USER_TARGETS,
     channel: channelField,
     platform: platformField,
@@ -109,7 +108,7 @@ export const SEND_MESSAGE_BRANCHES = {
     attachment: attachmentField,
     message: messageField
   }),
-  channel: targetBranch('channel target', {
+  channel: targetBranch('action `postMessage` with `channel`', 'postMessage', {
     channel: requiredString('channel'),
     thread: threadField,
     platform: platformField,
@@ -117,14 +116,14 @@ export const SEND_MESSAGE_BRANCHES = {
     attachment: attachmentField,
     message: messageField
   }),
-  sessionId: targetBranch('session target', {
-    sessionId: requiredString('sessionId'),
+  messageId: targetBranch('action `replyToSession`', 'replyToSession', {
+    messageId: requiredString('messageId'),
     message: messageField
   })
 }
 
 /** Normalize `toAgent`. `undefined` ⇒ this is not an agent target. */
-function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
+export function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
   if (value === undefined || value === null) return {}
   if (typeof value === 'string') {
     const trimmed = value.trim()
@@ -203,6 +202,29 @@ export interface MessageAgentReq {
   agentCallDeliveryId?: string
   /** send-message-routing-rework.md §3.1: the postless `toAgent` form, whose child runs headless; set only by `sendMessage`'s agent target. */
   postless?: boolean
+  /** send-message-guide.md §9.2: `callAgent.sessionId`, the target's existing session by key or outward id; never a new one. */
+  targetSessionId?: string
+  /** The transport's stable id of this call, so a replay of it keeps its message id (send-message-guide.md §9.3). */
+  submissionId?: string
+}
+
+/** The guidance a started task's receipt hands back (send-message-guide.md §8.6). */
+export const TASK_STARTED =
+  'Task started in the background. Tell the people here it has started and end this turn; it reports back into ' +
+  'this session when it finishes or fails. Do not do the work here as well.'
+
+/** An owning session's message into its own task (send-message-guide.md §8.1): only the handle and `text` come from the model. */
+export interface ContinueSubsessionReq {
+  callerAgentId: string
+  platform: string
+  callerTransportScope?: string
+  callerChannel: string
+  callerThread: string
+  /** The task's handle: the `taskId` `startTask` returned, or its outward id. */
+  sessionId: string
+  text: string
+  /** A stable id of this submission, so a replay of it is admitted once; minted by the daemon when absent. */
+  submissionId?: string
 }
 
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
@@ -215,11 +237,11 @@ export interface MessageAgentResult {
   reason?: string
   /** A refusal the agent must read in words, beside its `reason`. */
   message?: string
-  /** assistant-mode.md §5.6: the wake opened a background sub-session, which always reports back. */
+  /** send-message-guide.md §8.5: the wake started or messaged a background task, which always reports back. */
   subsession?: true
 }
 
-/** A trusted SessionTarget reply (session-concept §5.2): only `sessionId` and `text` come from the model, and `sessionId` must be the caller's origin. */
+/** A reply to one message the caller received (send-message-guide.md §9.4): only `messageId` and `text` come from the model. */
 export interface ReplyToSessionReq {
   /** Trusted caller identity (== `ctx.agentId`). Never a tool input. */
   callerAgentId: string
@@ -228,22 +250,21 @@ export interface ReplyToSessionReq {
   callerTransportScope?: string
   callerChannel: string
   callerThread: string
-  /** The ONLY untrusted field: the target session's stable id (the child's `Parent session`).
-   *  The daemon authorizes it against the caller's active-turn origin. */
-  sessionId: string
+  /** The only untrusted field: the answered message's id, resolved against what this session received. */
+  messageId: string
   text: string
+  /** The transport's stable id of this call, so a replay of it is one reply. */
+  submissionId?: string
 }
 
-/** The result of a SessionTarget reply. `delivered:false` carries a typed reason
- *  ('not_authorized' when the sessionId isn't the caller's origin; 'unsupported' when a
- *  cross-daemon reply reached a target too old to advertise `headless-agent-delivery-v1`,
- *  which is REFUSED rather than delivered — a legacy fence from when this delivery kind
- *  muted the parent turn, send-message-routing-rework.md §7/§8.4; the rest mirror the
- *  cross-daemon agent-msg verdicts for a reply that had to route over the relay). */
+/** A reply's receipt (send-message-guide.md §9.4): `message_not_found` names nothing, and the rest mirror delivery verdicts. */
 export interface ReplyToSessionResult {
   delivered: boolean
   targetSession?: string
+  /** The message this reply answers. */
+  inReplyTo: string
   reason?:
+    | 'message_not_found'
     | 'not_authorized'
     | 'not_found'
     | 'hop_limit'
@@ -254,8 +275,8 @@ export interface ReplyToSessionResult {
     | 'not_allowed'
     | 'unsupported'
     | 'not_ready'
-    // assistant-mode.md §5.7: the daemon already reported this sub-session's end to its parent.
-    | 'subsession_ended'
+    // send-message-guide.md §8.5: the daemon already reported this round's end to the owning session.
+    | 'task_ended'
 }
 
 /** The deps of the unified outbound send: peer wake, session reply, the visible post, and
@@ -291,16 +312,13 @@ export interface MessagingDeps extends GatewayDeps {
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free: the reason {@link MessagingDeps.messageAgent} would refuse this wake locally, else null, so no post precedes it; absent ⇒ not gated. */
   preflightWake?: (req: MessageAgentReq) => string | null
-  /** Backs `sendMessage`'s SessionTarget (session-concept §5.2): origin-only, fail-closed reply into the caller's origin session. */
+  /** Backs `replyToSession`: a reply to one message the caller received, routed by that message's record (send-message-guide.md §9.4). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
-  /** How a channel-ROOT post this session just made relates to the conversations the session is
-   *  ALREADY part of: `parent` = the origin session waiting on an answer (named, so the caller can
-   *  address it), `self` = this session's own conversation, undefined = an unrelated destination,
-   *  i.e. the ordinary new-topic post. The daemon answers because it owns the identity rules —
-   *  a channel id means a different conversation under a different transport scope, and the
-   *  parent link may only exist as the durable origin on the session row (a relayed answer runs
-   *  on a human-triggered turn with no call metadata at all). Absent in the chat CLI / tests with
-   *  no daemon ⇒ no notice. */
+  /** Backs `messageTask` (send-message-guide.md §8): the caller's own task only; absent ⇒ unavailable. */
+  continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
+  /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */
+  callId?: string
+  /** How a channel-root post relates to conversations this session is in: `source` = that of a message it owes an answer (by id), `self` = its own; absent without a daemon. */
   rootPostRelation?: (req: {
     callerAgentId: string
     platform: string
@@ -315,7 +333,7 @@ export interface MessagingDeps extends GatewayDeps {
      *  continuous conversation, so they fork nothing and the reader did receive the post. */
     targetThread: string
     targetIntegrationId?: string
-  }) => Promise<{ kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined>
+  }) => Promise<{ kind: 'source'; messageId: string } | { kind: 'self' } | undefined>
   /** session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
    *  agent (origin = the current session), so a deliberate top-level post starts its own context.
    *  Only called for a root post (no thread) with no toAgent. Fire-and-forget; the daemon creates
@@ -480,34 +498,28 @@ async function openDirectMessage(gateway: MessageGateway, user: string, platform
   return gateway.openDirectMessage(user)
 }
 
-// Unified outbound send (session-concept §3). One tool merges the old `sendPlatformMessage`
-// (post to a platform channel/user) and `messageAgent` (wake a peer agent), plus SessionTarget
-// replies. Universal (any agent — a memory-only agent can still wake a peer / reply), handled
-// before the platform-gateway gate. A MessageTarget uses `toAgent` (wake a peer), `toUser`
-// (reach humans), or a bare `channel`. Omitting `channel` selects a postless peer wake or a
-// user DM; providing it always selects a channel-root post. `sessionId` is a separate reply
-// branch for an existing session.
-// SECURITY: the caller identity + coords come from the trusted session context, never tool input.
-export async function sendMessage(
+/** The delivery behind every validated `sendMessage` action, on its target-shaped arguments; caller identity and coords come from trusted context only. */
+export async function deliverSendMessage(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: MessagingDeps
 ): Promise<unknown> {
   const message = parseArgs(messageField, args.message)
 
-  // Discriminant (§3.3): a `sessionId` ⇒ SessionTarget — reply into that existing session.
-  const sessionId = parseArgs(optionalString('sessionId'), args.sessionId)
-  if (sessionId !== undefined) {
+  // send-message-guide.md §9.4: a `messageId` answers that message, decided by its record alone.
+  const messageId = parseArgs(optionalString('messageId'), args.messageId)
+  if (messageId !== undefined) {
     // Validation only: the strict branch rejects any key this form does not accept.
-    parseArgs(SEND_MESSAGE_BRANCHES.sessionId, args)
+    parseArgs(SEND_MESSAGE_BRANCHES.messageId, args)
     return await deps.replyToSession({
       callerAgentId: ctx.agentId,
       platform: ctx.platform,
       ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
       callerChannel: ctx.channel,
       callerThread: ctx.thread,
-      sessionId,
-      text: message
+      messageId,
+      text: message,
+      ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
     })
   }
 
@@ -523,13 +535,11 @@ export async function sendMessage(
   const attachmentName = parseArgs(attachmentField, args.attachment)
   if (toAgent === undefined && toUsers === undefined && channel === undefined) {
     throw new Error(
-      `sendMessage: \`toAgent\`, \`toUser\`, or \`channel\` must select the target. ${SEND_MESSAGE_TARGET_HELP}`
+      `sendMessage: action \`postMessage\` requires \`toUser\` or \`channel\`. ${sendMessageGuidePointer('postMessage')}`
     )
   }
   if (toAgent !== undefined && toUsers !== undefined) {
-    throw new Error(
-      `sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive — pick one mode. ${SEND_MESSAGE_TARGET_HELP}`
-    )
+    throw new Error(`sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive. ${sendMessageGuidePointer()}`)
   }
   // send-message-routing-rework.md §2.2: ONLY the bare-`channel` branch accepts `thread`,
   // and only to name a thread that already exists — the update form (§2.4). Addressing the
@@ -548,7 +558,7 @@ export async function sendMessage(
   // Read only after the branch check, so `thread` on a non-channel branch has already failed.
   const updateThread = toAgent === undefined && toUsers === undefined ? parseArgs(threadField, args.thread) : undefined
   if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
-    throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
+    throw new Error(`sendMessage: ${USER_ARRAY_NEEDS_CHANNEL}`)
   }
 
   // The trusted wake request (built once) — also fed to the preflight below. `thread` and
@@ -568,7 +578,8 @@ export async function sendMessage(
           channel: channel ?? ctx.channel,
           ...(needsReply ? { needsReply: true } : {}),
           // §3.1: no `channel` ⇒ the postless form, whose child is headless.
-          ...(channel === undefined ? { postless: true } : {})
+          ...(channel === undefined ? { postless: true } : {}),
+          ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
         }
       : undefined
   // No visible post for a wake messageAgent would refuse locally; a remote target's call policy can still leave one (accepted).
@@ -841,7 +852,7 @@ export async function sendMessage(
       ts
     }
     if (settled.seeded) {
-      // A root post that forked a conversation the agent is already in (parent or its own) names the address that would have answered.
+      // A root post that forked a conversation the agent is already in (a source's or its own) names the call that would have answered.
       const relation =
         postedThread !== undefined && updateThread === undefined
           ? await deps.rootPostRelation?.({
@@ -856,11 +867,12 @@ export async function sendMessage(
               ...(targetId ? { targetIntegrationId: targetId } : {})
             })
           : undefined
-      if (relation?.kind === 'parent') {
+      if (relation?.kind === 'source') {
         notices.push(
-          `This posted at the ROOT of the conversation your parent session occupies, so it starts a separate ` +
-            `context there instead of answering — the conversation waiting on you did not receive it. To answer ` +
-            `it, call sendMessage with {"sessionId":"${relation.sessionId}"}.`
+          `This posted at the ROOT of the conversation of the session that sent you message ${relation.messageId}, ` +
+            `so it starts a separate context there instead of answering — the session waiting on you did not ` +
+            `receive it. To answer it, call sendMessage with ` +
+            `{"action":"replyToSession","messageId":"${relation.messageId}","message":"..."}.`
         )
       } else if (relation?.kind === 'self') {
         notices.push(
@@ -910,19 +922,19 @@ export async function sendMessage(
   // (`viewSessionStatus`) without having to reconstruct the key. Only for an ADMITTED wake: a
   // rejected one opened nothing, and `wake.reason` explains why.
   const childSessionId = wake?.delivered === true ? wake.targetSession : undefined
-  // assistant-mode.md §5.6: a sub-session reports back whether or not `needsReply` was set.
+  // send-message-guide.md §8.6: a task reports back whether or not `needsReply` was set, and its handle is `taskId`.
   const subsession = wake?.subsession === true
   return {
     ok: true,
     ...(wake !== undefined ? { wake } : {}),
     ...(post !== undefined ? { post } : {}),
-    ...(childSessionId !== undefined ? { childSessionId } : {}),
+    ...(childSessionId !== undefined ? (subsession ? { taskId: childSessionId } : { childSessionId }) : {}),
     ...(childSessionId !== undefined && (needsReply || subsession)
       ? {
           reply: { requested: true, state: 'awaiting' as const },
           nextAction: 'finish-turn-and-wait' as const,
           message: subsession
-            ? 'Sub-session started in the background. Tell the people here it has started and end this turn; it reports back into this conversation when it finishes or fails. Do not do the work here as well.'
+            ? TASK_STARTED
             : 'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
         }
       : {}),

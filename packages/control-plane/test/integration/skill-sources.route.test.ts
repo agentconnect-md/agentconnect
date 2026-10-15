@@ -814,11 +814,22 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
         ref: 'main',
         subDir: 'plugins/review',
         skills: [],
+        credential: { provider: 'github' },
         private: true
       }
     ])
+    // The credential is a CodeHostRepository reference, and binding converges that catalog row.
+    expect(await prisma.skillSource.findUniqueOrThrow({ where: { id: created.json().id } })).toMatchObject({
+      credentialProvider: 'github',
+      credentialRepoId: 8080n,
+      private: true
+    })
+    expect(await app.deps.repos.codeHostRepository.byExternalId(DEFAULT_ORG_ID, 'github', 8080n)).toMatchObject({
+      displayPath: 'anthropics/skills',
+      cloneUrl: 'https://github.com/anthropics/skills'
+    })
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/skill-sources` })).json()).toEqual([
-      expect.objectContaining({ name: 'kit', private: true })
+      expect.objectContaining({ name: 'kit', private: true, credential: { provider: 'github' } })
     ])
 
     // A later edit re-reads visibility alongside the id: the repo went public.
@@ -835,6 +846,22 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
     })
     expect(patched.statusCode).toBe(200)
     expect(patched.json()).toMatchObject({ private: false, skills: ['review'] })
+    expect(await prisma.skillSource.findUniqueOrThrow({ where: { id: created.json().id } })).toMatchObject({
+      credentialProvider: null,
+      credentialRepoId: null,
+      private: false
+    })
+  })
+
+  it('reads a row an older replica wrote with only the private flag as a GitHub credential', async () => {
+    const app = appResolving(publicRepo)
+    const row = await prisma.skillSource.create({
+      data: { orgId: DEFAULT_ORG_ID, name: 'older', source: 'acme/older', githubRepoId: 77n, private: true }
+    })
+    expect(await app.deps.repos.skillSource.get(OrgId(DEFAULT_ORG_ID), row.id)).toMatchObject({
+      private: true,
+      credential: { provider: 'github', repoId: 77n }
+    })
   })
 
   it('back-fills a historical unbound row on the next edit — the repair PATCH could not do', async () => {
@@ -991,5 +1018,121 @@ describe('POST/PATCH /skill-sources — canonical slug and accepted forms', () =
     expect(res.statusCode).toBe(201)
     expect(res.json().githubRepoId).toBe('314')
     expect(seen).toEqual(['anthropics/skills'])
+  })
+})
+
+/** Any other host (source-cache.md §11, CP3.3): admitted on syntax alone, anonymous, and never contacted by the CP. */
+describe('other-host skill sources (CP3.3)', () => {
+  const OTHER = 'https://git.example.test/example-org/example-skills.git'
+
+  /** An app whose every outbound path is a spy: the GitHub lookup and the process-wide fetch. */
+  function quietApp() {
+    const resolvePublicRepo = vi.fn<NonNullable<HttpDeps['resolvePublicRepo']>>(async () => 'not-found' as const)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, { resolvePublicRepo })
+    opened.push(app)
+    const assertNoNetwork = () => {
+      expect(resolvePublicRepo).not.toHaveBeenCalled()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    }
+    return { app, assertNoNetwork, restore: () => fetchSpy.mockRestore() }
+  }
+
+  it('admits an anonymous source, projects it without an identity, and makes no network request', async () => {
+    const q = quietApp()
+    try {
+      const created = await q.app.app.inject({
+        method: 'POST',
+        url: `${ORG}/skill-sources`,
+        payload: { name: 'other', source: `${OTHER}/`, ref: 'v1', subDir: 'skills' }
+      })
+      expect(created.statusCode).toBe(201)
+      expect(created.json()).toMatchObject({
+        source: OTHER,
+        githubRepoId: null,
+        ref: 'v1',
+        subDir: 'skills',
+        private: false,
+        credential: null
+      })
+
+      const agentId = await createAgent(q.app, 'other-reader', ['other/*'])
+      const agent = await q.app.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId))
+      const spec = await q.app.deps.agentSpecs.assemble(agent!)
+      expect(spec.skills).toEqual([{ name: 'other', source: OTHER, ref: 'v1', subDir: 'skills', skills: [] }])
+
+      const listed = await q.app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/${created.json().id}/skills` })
+      expect(listed.json()).toEqual({ resolvable: false, skills: [] })
+
+      const edited = await q.app.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/skill-sources/${created.json().id}`,
+        payload: { skills: ['review'] }
+      })
+      expect(edited.statusCode).toBe(200)
+      expect(edited.json()).toMatchObject({ source: OTHER, skills: ['review'], credential: null })
+      q.assertNoNetwork()
+    } finally {
+      q.restore()
+    }
+  })
+
+  it('answers the preview resolvable:false without contacting the host', async () => {
+    const q = quietApp()
+    try {
+      const res = await q.app.app.inject({
+        method: 'POST',
+        url: `${ORG}/skill-sources/preview`,
+        payload: { source: OTHER, ref: 'main', subDir: 'skills' }
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ resolvable: false, branches: [], tags: [], skills: [] })
+      q.assertNoNetwork()
+    } finally {
+      q.restore()
+    }
+  })
+
+  it('refuses a GitHub identity, a subdir without a ref, and non-HTTPS transports', async () => {
+    const q = quietApp()
+    try {
+      const refused = async (payload: Record<string, unknown>) => {
+        const res = await q.app.app.inject({
+          method: 'POST',
+          url: `${ORG}/skill-sources`,
+          payload: { name: 'other', ...payload }
+        })
+        expect(res.statusCode, JSON.stringify(payload)).toBe(400)
+        return res.json().message as string
+      }
+      expect(await refused({ source: OTHER, githubRepoId: '42' })).toMatch(/only to a GitHub source/)
+      expect(await refused({ source: OTHER, subDir: 'skills' })).toMatch(/needs a ref/)
+      await refused({ source: 'ssh://git@git.example.test/example-org/example-skills' })
+      await refused({ source: 'http://git.example.test/example-org/example-skills' })
+      expect((await q.app.app.inject({ method: 'GET', url: `${ORG}/skill-sources` })).json()).toEqual([])
+      q.assertNoNetwork()
+    } finally {
+      q.restore()
+    }
+  })
+
+  it('moves a GitHub source to another host as an anonymous one', async () => {
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      resolvePublicRepo: async (owner, repo) => ({
+        repoId: 7n,
+        fullName: `${owner}/${repo}`,
+        private: false,
+        defaultBranch: 'main'
+      })
+    })
+    opened.push(app)
+    const id = await createSource(app, 'kit')
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${id}`,
+      payload: { source: OTHER }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ source: OTHER, githubRepoId: null, credential: null })
   })
 })

@@ -41,6 +41,7 @@ import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
 import { GitlabGitcredService } from './gitlab/gitcred.service.js'
+import { resolveGitlabSkillSourceProjects } from './orchestrator/skillSource.js'
 import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabRetirementSweeper } from './gitlab/retirement-sweeper.js'
 import { GitlabConvergeSweeper } from './gitlab/converge-sweeper.js'
@@ -108,6 +109,7 @@ import {
   PgWebchatMcpOperationRepo,
   PgLaunchRepo,
   PgSecretLeaseRepo,
+  PgUploadTicketRepo,
   PgIntegrationRepo,
   PgIntegrationChannelRepo,
   PgBotRepo,
@@ -120,6 +122,7 @@ import {
   PgMcpProviderOauthSecretStore,
   PgMcpProviderOauthStateStore,
   PgSkillSourceRepo,
+  PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,
@@ -232,7 +235,7 @@ import { loadFileTransferConfig } from './file-transfer/config.js'
 import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
-import { createFileTransfer, isTransferObjectKey } from './file-transfer/transfer.js'
+import { createFileTransfer, isTransferObjectKey, transferPendingMinimumDays } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
 
@@ -478,6 +481,7 @@ export function buildContainer(
     webchatMcpOperation: new PgWebchatMcpOperationRepo(prisma),
     launch: new PgLaunchRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
+    uploadTicket: new PgUploadTicketRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     // §11 D6: which values carry this bot's demux identity is the provider's
@@ -500,6 +504,7 @@ export function buildContainer(
     mcpProviderOauthSecret: new PgMcpProviderOauthSecretStore(prisma, secretCipher),
     mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),
     skillSource: new PgSkillSourceRepo(prisma),
+    agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     // Owns its transactions: every organization-environment write runs the design
     // §5 fence (org row → agent rows → re-read → validate → persist + bump
@@ -881,15 +886,20 @@ export function buildContainer(
         const gate = createLifecycleGate({
           objects,
           prefix: fileTransferConfig.prefix,
+          minimumPendingDays: transferPendingMinimumDays(fileTransferConfig.limits.urlSeconds),
           log: { info: (m) => http.log.info(m), warn: (m) => http.log.warn(m) }
         })
         const transfer = createFileTransfer({
           config: fileTransferConfig,
           credentials,
           objects,
-          enabled: () => gate.status() !== 'missing'
+          enabled: () => gate.enabled()
         })
-        return { gate, transfer, service: createFileTransferService({ transfer, control: sender }) }
+        return {
+          gate,
+          transfer,
+          service: createFileTransferService({ transfer, control: sender, tickets: repos.uploadTicket })
+        }
       })()
     : undefined
   const fileTransfer = fileTransferBucket?.service
@@ -1926,6 +1936,7 @@ export function buildContainer(
       mcpProviderOauthSecret: repos.mcpProviderOauthSecret,
       mcpProviderOauthState: repos.mcpProviderOauthState,
       skillSource: repos.skillSource,
+      agentSkillSourceStatus: repos.agentSkillSourceStatus,
       organizationKnowledge: repos.organizationKnowledge,
       organizationEnvironment: repos.organizationEnvironment,
       organizationEnvironmentSecret: repos.organizationEnvironmentSecret,
@@ -2590,6 +2601,7 @@ export function buildContainer(
     agentMemoryStore,
     agentMemoryTransaction,
     agentMemoryHistory: repos.agentMemoryHistory,
+    agentSkillSourceStatus: repos.agentSkillSourceStatus,
     ...(github ? { github } : {}),
     ...(github
       ? {
@@ -2610,6 +2622,7 @@ export function buildContainer(
             credentials: new PgGitlabProjectCredentialRepo(prisma),
             credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
             repoAuths: repos.agentRepoAuth,
+            skillSourceProjects: (agent) => resolveGitlabSkillSourceProjects(agent, repos.skillSource),
             clock,
             baseUrl: gitlab.api.baseUrl
           })

@@ -176,7 +176,9 @@ export const WebchatPost = z.object({
       // post may continue the conversation as an activation (webchat-multi-agents.md
       // §5.2a, the #549 parity). Absent (a pre-parity daemon), the post stays
       // transcript-only: a missing depth must never coerce to zero.
-      hopCount: z.number().int().min(0).optional()
+      hopCount: z.number().int().min(0).optional(),
+      // The participants the human narrowed this exchange to (§5.2a); a peer outside it wakes only when the post @-names it.
+      addressedAgentIds: z.array(z.string().uuid()).max(16).optional()
     })
   ]),
   text: z.string(),

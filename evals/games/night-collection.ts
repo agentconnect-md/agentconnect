@@ -133,7 +133,7 @@ export class NightCollectionReferee implements ScriptedBrain {
     this.issued.push({ to: seat.agentId, purpose, needsReply: true, delivered: false })
     return {
       tool: 'sendMessage',
-      args: { toAgent: { agentId: seat.agentId, needsReply: true }, message }
+      args: { action: 'callAgent', toAgent: { agentId: seat.agentId, needsReply: true }, message }
     }
   }
 }

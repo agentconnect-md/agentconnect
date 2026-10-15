@@ -23,6 +23,7 @@ import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/loca
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { attachmentMention, transcriptImageAttachments } from '../session/attachment-block.js'
 import { routeRules, webchatContinuationDecision } from '../router/routing-table.js'
+import { continuationScope } from './narrowed-scope.js'
 import type { RoutingRule } from '../router/routing-rule.js'
 import { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
@@ -120,6 +121,8 @@ export interface WebchatHost {
   agentDraining(agentId: string): boolean
   /** `features.turnFinalContextRefresh` — gates the admission-time observed inbound row. */
   turnFinalContextRefresh(): boolean
+  /** Keep this transcript row out of the session's context fences: its message must run as its own turn. */
+  holdContextForOwnTurn(sessionKey: string, ts: string): void
   inflight(): Set<string>
   serialQueue(): Map<string, QueueEntry[]>
   pending(): Map<string, Pending>
@@ -332,6 +335,9 @@ export class WebchatTransport {
     // as a delivery; refused, nothing must remain for the final fence to regenerate over — the
     // browser re-sends the same text later as an ordinary turn. It still needs the canonical ts.
     if (post && steer) msg.transcriptTs = String(post.at)
+    // Before the row lands: a live turn's fence would otherwise fold this message in with only its marker.
+    const ownTurn = post !== undefined && !!uploadedFiles?.length
+    if (ownTurn) this.host.holdContextForOwnTurn(key, String(post.at))
     if (post && this.host.turnFinalContextRefresh() && !steer) {
       const observedMention = attachmentMention(msg.attachments)
       // The bounded inline image rides the ADMISSION write: it wins the slot, and an
@@ -362,6 +368,7 @@ export class WebchatTransport {
       // transcriptCoords ts, and a mismatch would run the follow-up again as a
       // separate turn after the regeneration already answered it.
       msg.transcriptTs = observedTs
+      if (ownTurn && observedTs !== String(post.at)) this.host.holdContextForOwnTurn(key, observedTs)
     }
     if (steer) {
       const verdict = this.dispatchSteerOnly(result.agentId, msg, stream)
@@ -408,9 +415,11 @@ export class WebchatTransport {
     const verdict = await admission
     if (!verdict.accepted) {
       this.removeWebchatStream(this.webchatStreamKey(stream.turnId, agentId), stream)
-      this.host.info(
-        `webchat: steer for ${stream.turnId} refused (${verdict.reason ?? 'busy'}) — browser keeps it queued`
-      )
+      // A steer cannot deliver an upload's download link, so one carrying files waits to run as its own turn.
+      const reason = verdict.reason ?? 'busy'
+      const why =
+        reason === 'busy' && msg.attachments?.some((a) => a.transfer) ? 'busy; carries uploaded files' : reason
+      this.host.info(`webchat: steer for ${stream.turnId} refused (${why}) — browser keeps it queued`)
       return { accepted: false, turnId: stream.turnId, reason: verdict.reason === 'paused' ? 'paused' : 'busy' }
     }
     return { accepted: true, turnId: stream.turnId, ...(verdict.steered ? { steered: true } : {}) }
@@ -1012,6 +1021,19 @@ export class WebchatTransport {
    * MULTI-AGENT webchat conversations — single-agent conversations, the platform
    * ladders, and playground sessions are structurally unreachable from here.
    */
+  // The human's @mention scope never gates the wake (Slack #549 parity); it only tells a left-out peer to stay silent by default.
+  private narrowedCallMeta(
+    targetAgentId: string,
+    post: WebchatPost
+  ): Pick<CallMeta, 'addressedAgentIds' | 'outsideHumanScope'> {
+    const target = this.host.agents().get(targetAgentId)
+    const scope = continuationScope(post, targetAgentId, [target?.name, target?.displayName])
+    return {
+      ...(scope.addressedAgentIds ? { addressedAgentIds: scope.addressedAgentIds } : {}),
+      ...(scope.outsideHumanScope ? { outsideHumanScope: true as const } : {})
+    }
+  }
+
   async maybeActivateWebchatContinuation(
     targetAgentId: string,
     chatId: string,
@@ -1091,7 +1113,8 @@ export class WebchatTransport {
       deliveryId,
       // §8.6: settled centrally in `dispatch` — live, queued, and startup replay alike.
       activationKey: key,
-      conversationContinuation: true
+      conversationContinuation: true,
+      ...this.narrowedCallMeta(targetAgentId, contextPost)
     }
     void this.host
       .dispatch(targetAgentId, msg, undefined, webchat, callMeta, {

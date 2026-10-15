@@ -24,6 +24,8 @@ export const MAX_SKILL_GET_URL_LENGTH = 8192
 export const SKILL_GIT_IN_POD_FEATURE = 'skill-git-in-pod-v1' as const
 /** Advertised by a shim that also bundles a Git plan clone for write-back; the daemon's grant for it is `skills-git-writeback`. */
 export const SKILL_GIT_WRITEBACK_FEATURE = 'skill-git-writeback-v1' as const
+/** Advertised by a shim that credentials a GitLab plan entry through its window; the daemon's grant for it is `skills-git-gitlab`. */
+export const SKILL_GIT_GITLAB_FEATURE = 'skill-git-gitlab-v1' as const
 
 /** What `cluster-skills-v1` admits — a daemon takes over a running pod, so it may be older than us.
  *  That image has no `manifest` op, so its whole file list must still fit one `begin` frame. */
@@ -186,6 +188,8 @@ export const GitSkillPlanSchema = z
         if (problem) ctx.addIssue({ code: 'custom', message: `getUrl ${problem}` })
       })
       .optional(),
+    // Only to a `skill-git-gitlab-v1` shim: the GitLab instance base whose credential the window carries for this URL.
+    credentialHost: SkillGitUrlSchema.optional(),
     // Only to a `skill-git-writeback-v1` shim: bundle this clone for write-back (§9) when its read calls for one.
     writeBack: z
       .object({
@@ -198,6 +202,11 @@ export const GitSkillPlanSchema = z
   })
   .strict()
   .refine((value) => !(value.keepInstalled && value.getUrl), 'a keepInstalled entry carries no getUrl')
+  .refine(
+    (value) =>
+      value.credentialHost === undefined || value.url.startsWith(`${value.credentialHost.replace(/\/+$/, '')}/`),
+    'a credential host must be a prefix of the clone URL'
+  )
   .refine(
     (value) => !value.writeBack || (!value.keepInstalled && value.ref !== undefined && isValidBranchRef(value.ref)),
     'only a cloned branch Source may ask for write-back'

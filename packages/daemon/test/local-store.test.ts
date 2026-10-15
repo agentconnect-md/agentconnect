@@ -4000,7 +4000,7 @@ describe.skipIf(pg)('decision table migrations', () => {
   }
 
   it('creates the decision tables on a fresh store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(49)
+    expect(SCHEMA_VERSION).toBe(52)
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v26-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()
     expect(tables(path)).toEqual([
@@ -4500,6 +4500,43 @@ describe.skipIf(usingPostgresStore())('the v48 → v49 reply thread on SQLite', 
   })
 })
 
+describe.skipIf(usingPostgresStore())('the v49 → v50 standing digest on SQLite', () => {
+  it('adds the column to a v49 store, keeps its sessions, and reads back the recorded digest', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-standing-v49-')), 'local.sqlite')
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    const fresh = await LocalStore.open(path)
+    await fresh.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await fresh.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE sessions DROP COLUMN standingDigest')
+    old.exec('PRAGMA user_version = 49')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    // A session from before the column has no digest, so its next resume treats the context as changed.
+    expect((await upgraded.getSession(key))?.standingDigest).toBeNull()
+    await upgraded.setSessionStandingDigest(key, 'digest-1')
+    expect((await upgraded.getSession(key))?.standingDigest).toBe('digest-1')
+    // A later state upsert leaves it alone.
+    await upgraded.setSessionState(key, 'prompting', 2)
+    expect(await upgraded.getSession(key)).toMatchObject({ acpSessionId: 'acp-1', standingDigest: 'digest-1' })
+    await upgraded.close()
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
 describe.skipIf(!usingPostgresStore())('the v46 → v47 beside handle on PostgreSQL', () => {
   it('adds the columns and keeps the rows already there', async () => {
     const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
@@ -4545,6 +4582,55 @@ describe.skipIf(!usingPostgresStore())('the v46 → v47 beside handle on Postgre
           'request-1',
           'request-2'
         ])
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v49 → v50 standing digest on PostgreSQL', () => {
+  it('adds the column and keeps the sessions already there', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pgDriver.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      const first = await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })
+      await first.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: '100.1',
+        acpSessionId: 'acp-1',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1
+      })
+      await first.close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('ALTER TABLE sessions DROP COLUMN standingDigest')
+      await admin.query('UPDATE _local_store_schema_version SET version = 49 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        expect((await upgraded.getSession(key))?.standingDigest).toBeNull()
+        await upgraded.setSessionStandingDigest(key, 'digest-1')
+        expect(await upgraded.getSession(key)).toMatchObject({ acpSessionId: 'acp-1', standingDigest: 'digest-1' })
       } finally {
         await upgraded.close()
       }

@@ -12,7 +12,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
@@ -64,6 +64,34 @@ describe('gemini API-key credentials', () => {
 })
 
 describe('stored runtime credential discovery', () => {
+  it('uses META_API_KEY for Muse and seeds settings without copying the host browser login', () => {
+    const { hostHome, scopeDir, cwd } = fixture()
+    const config = join(hostHome, 'xdg')
+    const env = { HOME: hostHome, USERPROFILE: hostHome, XDG_CONFIG_HOME: config }
+    const auth = join(config, 'muse', 'auth.json')
+    mkdirSync(dirname(auth), { recursive: true })
+    writeFileSync(
+      auth,
+      JSON.stringify({ schema_version: 1, providers: { meta: { access_token: 'synthetic-access' } } })
+    )
+    writeFileSync(join(dirname(auth), 'settings.json'), '{"schema_version":1,"model":"test-model"}')
+    writeFileSync(join(dirname(auth), 'trust.json'), '{"host-workspace":true}')
+    expect(runtimeCredentialsConfigured('muse-acp', undefined, env)).toBe(false)
+    expect(discoverRuntimeCredentials('muse-acp', undefined, { ...env, META_API_KEY: 'synthetic-key' })).toEqual({
+      paths: [],
+      providers: ['meta']
+    })
+    const options = { runtimeId: 'muse-acp', scopeDir, cwd, runInSandbox: false, isolateHome: true, hostEnv: env }
+    const launch = prepareRuntimeLaunch(options)
+    const privateConfig = join(launch.env!.XDG_CONFIG_HOME!, 'muse')
+    expect(readFileSync(join(privateConfig, 'settings.json'), 'utf8')).toContain('test-model')
+    expect(existsSync(join(privateConfig, 'auth.json'))).toBe(false)
+    expect(existsSync(join(privateConfig, 'trust.json'))).toBe(false)
+    writeFileSync(join(privateConfig, 'auth.json'), '{"agent-login":true}')
+    prepareRuntimeLaunch(options)
+    expect(readFileSync(join(privateConfig, 'auth.json'), 'utf8')).toBe('{"agent-login":true}')
+  })
+
   it('finds only stored OMP provider records in the configured database, including expired login', () => {
     const { hostHome } = fixture()
     const configDir = join(hostHome, 'custom-omp')

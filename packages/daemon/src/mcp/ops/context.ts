@@ -110,7 +110,7 @@ export interface MessageGateway {
   listMemberIds?(channel: string): Promise<string[]>
   /** A full member of this bot's workspace, not a guest or an outsider; offered where the platform declares `workspaceMembers`. */
   isFullMember?(user: string): Promise<boolean>
-  listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
+  listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean; joined?: boolean }[]>
   /** The id of the one channel `listChannels` names `channel`; undefined for an id or a name it cannot pin to one channel. */
   resolveChannelName?(channel: string): Promise<string | undefined>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>

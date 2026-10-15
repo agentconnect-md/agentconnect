@@ -5,9 +5,11 @@ import type { DutyGrantEntry, EventSession, ExternalSessionAudience, SessionKey 
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { TurnPlan } from './turn-plan.js'
+import type { WebchatRouting } from '../webchat/narrowed-scope.js'
 import type { TurnEvaluationReporter } from './turn-evaluation.js'
 import type { KeyGrant } from '../key-server/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import type { SessionMessageKind } from '../store/session-messages.js'
 import type { WorkBoundary } from '../messages/message-boundary.js'
 import type { ApprovalWait } from '../permissions/coordinator.js'
 import type { GithubTurnState } from '../platforms/github/turn-output.js'
@@ -180,21 +182,18 @@ export interface CallMeta {
    * with the inbox row like the rest of CallMeta.
    */
   conversationContinuation?: true
+  /** §5.2a: the human's webchat @mention scope a continuation inherits and stamps on its own reply. */
+  addressedAgentIds?: string[]
+  /** §5.2a: the human addressed other participants and the waking post does not @-name this one. */
+  outsideHumanScope?: true
   /** A self-authored channel-root post initializes its new session but is not a model turn.
    *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
   initializeOnly?: boolean
-  /** session-concept §5.3: the WAKING (parent/origin) session's stable acpSessionId. This
-   *  is the value surfaced to the child as its `Parent session` (§2.3) and the SessionTarget
-   *  the child replies into via `sendMessage`. Absent on root turns (human-initiated) and the
-   *  self-introduce fan-out — those have no parent, so the child gets no `Parent session` line
-   *  and cannot address a SessionTarget. */
+  /** The sending session's outward id, the source a session message names (send-message-guide.md §9.3); absent on root turns. */
   originSessionId?: string
   /** Immutable output of the delegating turn; null means it had no public reply. */
   originCodeHostReplyTarget?: CodeHostReplyTarget | null
-  /** session-concept §5.3: the origin session's landing coords. Used to route a SessionTarget
-   *  reply back when the origin session lives on ANOTHER daemon (the relay has no
-   *  sessionId→daemon registry, so a cross-daemon reply routes by these coords + `callFrom`).
-   *  Set alongside `originSessionId`. */
+  /** The source session's landing coords, recorded with the message so a reply from another daemon can route there. */
   originCoords?: { platform: Exclude<NormalizedMessage['platform'], 'hook'>; channel: string; thread?: string }
   /** Immutable external source inherited from the waking Session. This is
    * daemon-authored metadata and never comes from model text. The credential
@@ -216,12 +215,17 @@ export interface CallMeta {
    *  braces); this is what makes it true regardless of model compliance. Set only by the
    *  self-introduce-on-join dispatch and, like `deliverHeadless`, does NOT cascade. */
   introChannel?: string
-  /** session-concept §5.3: the waking parent asked this session to report back when it is done
-   *  or has failed (`sendMessage`'s `toAgent.needsReply`). Handed to prompt assembly, which turns
-   *  it into a standing directive on the child naming `originSessionId` as the reply target.
-   *  Like `deliverHeadless` it does NOT cascade — a grandchild is only obliged if its own parent
-   *  asks. Absent ⇒ an ordinary fire-and-forget wake. */
+  /** The sender asked for an outcome (`toAgent.needsReply`, or a task input), which opens this message's obligation (send-message-guide.md §9.5). */
   needsReply?: boolean
+  /** send-message-guide.md §8.4: the daemon-owned work round of a sub-session this input belongs to; persisted with the inbox row. */
+  subsessionRound?: number
+  /** send-message-guide.md §9.3: the session message this input is, by the id its sending daemon minted. */
+  messageId?: string
+  messageKind?: SessionMessageKind
+  /** For a reply, the message it answers. */
+  inReplyTo?: string
+  /** The id was synthesized here for a delivery that carried none, so a reply to it takes the pre-id route. */
+  legacyMessage?: true
   /** session-visibility.md §5.1: the WAKING session is private, so this child's
    *  transcript holds prompt text copied out of it and must not feed shared agent
    *  memory. Strictly ONE-DIRECTIONAL — it can only tighten. A `false`/absent
@@ -293,6 +297,8 @@ export interface QueueEntry {
   msg: NormalizedMessage
   /** Messages coalesced or steered into this live turn: the read rule reads for their senders too (assistant-mode.md §5.5). */
   foldedMessages?: TurnMessage[]
+  /** Session messages folded into this live turn, by delivery and message id (send-message-guide.md §9.5). */
+  foldedCalls?: { deliveryId: string; messageId?: string }[]
   /** Cancels the entire cold SessionManager initialization path after the bounded
    *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
   initAbort: AbortController
@@ -382,6 +388,8 @@ export interface HandledTurnSession {
   contextEvents?: { ts: string; text?: string }[]
   providerCheckpoint?: string
   additionalMcpServersAttached?: boolean
+  /** The digest of the standing context the blocks carry inline, recorded once the runtime answers the prompt. */
+  standingDigest?: string
 }
 
 /** The handles every `dispatchOne` phase shares: the entry being run, the pure plan for it,
@@ -598,6 +606,8 @@ export interface TurnSignals {
  *  through it; the mutable rest is grouped by who writes it — platform chrome cursors,
  *  reply accumulation, the approval-wait meter (permissions/), and completion signals. */
 export interface Pending {
+  /** §5.2a: this webchat turn's routing once coalesced activations folded in; absent means the entry's own. */
+  webchatRouting?: WebchatRouting
   // Completed tool calls already projected into a native dialog during this turn.
   nativeAppToolCallIds?: Set<string>
   /** The same trusted workspace link resolver used by every output surface for this turn. */

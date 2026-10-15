@@ -7,7 +7,7 @@
 // the purchase until the service says the payment settled. The return redirect
 // itself is never treated as proof of payment.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import useSWR, { useSWRConfig } from 'swr'
@@ -46,15 +46,32 @@ import { sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
 import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
-import { AgentIconView, LoadingState } from '@/components/marks'
+import { AgentIconView, LoadingState, MarkSlot, ModelMark, modelProviderSlug } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
-// `.row` is a bare grid — the column template is the caller's, as a full literal.
-// Design columns: direction chip · description · amount · spacer · posted.
-// Every track but the description is a fixed width: each `.row` is its own grid, so an
-// `auto` track sizes per-row and pulls the header out of line with the body below it.
-// Mobile scrolls the card sideways (globals' `.card:has(.row)`), so one template serves both.
-const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
+// Fixed tracks keep each `.row` grid aligned with its header; mobile scrolls the card sideways.
+// Usage columns: expand toggle · agent · models · amount · posted.
+// ≤768px floors the agent/model tracks and widens each row to their sum so the card scrolls instead of clipping names.
+const USAGE_MIN_W = 'max-desktop:min-w-[754px]'
+const USAGE_GRID = `grid-cols-[28px_minmax(0,1fr)_minmax(0,1.3fr)_132px_190px] max-desktop:grid-cols-[28px_minmax(160px,1fr)_minmax(180px,1.3fr)_132px_190px] ${USAGE_MIN_W} gap-2`
+// Top-up columns: description · amount · posted.
+const TOPUP_GRID = 'grid-cols-[minmax(0,1fr)_132px_190px] gap-2'
+// A usage row's agent or model entry: icon + name, no frame, flush with its column header.
+const TX_TAG =
+  'inline-flex h-[22px] min-w-0 max-w-full items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)'
+
+// A model's provider brand, or a generic chip glyph when the model names no known provider.
+function TxModelMark({ model }: { model: string }) {
+  return (
+    <MarkSlot size={14}>
+      {modelProviderSlug(model) ? (
+        <ModelMark model={model} fallbackRuntime="" fillPct={100} />
+      ) : (
+        <Icon name="cpu" size={12} strokeWidth={2} color="var(--text-tertiary)" />
+      )}
+    </MarkSlot>
+  )
+}
 
 // Named agent chips a usage row shows before the tail becomes a `+N` count. The withheld
 // rollup is never one of them — it is appended after, so it cannot be capped out of view.
@@ -768,6 +785,18 @@ export default function BillingView() {
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
   const [side, setSide] = useState<TxSide>('debit')
+  // Usage rows whose per-model breakdown is open, by transaction id.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleExpanded = useCallback(
+    (id: string) =>
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      }),
+    []
+  )
   const sideType = TX_SIDES.find((s) => s.key === side)!.type
   // The table's own feed, one page one per side. `all` is the same key the unfiltered ledger
   // below uses, so the default view still costs ONE request — SWR dedupes them.
@@ -885,6 +914,28 @@ export default function BillingView() {
   // the whole ledger. Cutting again here is what stops that image from rendering top-ups
   // under a pill that says Usage — a wrong answer is worse than a narrower one.
   const txItems = sideType ? loaded.filter((tx) => tx.type === sideType) : loaded
+  // Each side has its own header; it sticks flush to the viewport, offsetting `.content`'s 34px top padding.
+  const postedHeader = (
+    <span className="truncate" title={LOCAL_TZ}>
+      {t('transactions.columns.posted', { tz: LOCAL_TZ })}
+    </span>
+  )
+  const txHeader =
+    side === 'debit' ? (
+      <div className={`row h sticky top-[-34px] z-10 rounded-none ${USAGE_GRID}`}>
+        <span />
+        <span>{t('transactions.columns.agent')}</span>
+        <span>{t('transactions.columns.models')}</span>
+        <span className="text-right">{t('transactions.columns.amount')}</span>
+        {postedHeader}
+      </div>
+    ) : (
+      <div className={`row h sticky top-[-34px] z-10 rounded-none ${TOPUP_GRID}`}>
+        <span>{t('transactions.columns.description')}</span>
+        <span className="text-right">{t('transactions.columns.amount')}</span>
+        {postedHeader}
+      </div>
+    )
   const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
 
   // Deep-link landing for a console that does not offer billing: the rail hides
@@ -1071,28 +1122,32 @@ export default function BillingView() {
                 </Button>
               </div>
             ) : !transactions.data ? (
-              // Placeholder rows on the real column template, so the header the loaded table
-              // will carry lines up with them instead of arriving over a centred word.
+              // Placeholder rows on the real column template, so the loaded table's header lines up with them.
               <div className="animate-pulse">
-                <div className={`row h rounded-none ${TX_GRID}`}>
-                  <span />
-                  <span>{t('transactions.columns.description')}</span>
-                  <span className="text-right">{t('transactions.columns.amount')}</span>
-                  <span />
-                  <span className="truncate">{t('transactions.columns.posted', { tz: LOCAL_TZ })}</span>
-                </div>
-                {Array.from({ length: 5 }, (_, i) => (
-                  <div key={i} className={`row ${TX_GRID}`}>
-                    <span className="h-[26px] w-[26px] rounded-[7px] bg-(--surface-active)" />
-                    <span
-                      className="h-[13px] rounded-[3px] bg-(--surface-active)"
-                      style={{ width: `${44 + i * 9}%` }}
-                    />
-                    <span className="ml-auto h-[13px] w-[68px] rounded-[3px] bg-(--surface-active)" />
-                    <span />
-                    <span className="h-[13px] w-[112px] rounded-[3px] bg-(--surface-active)" />
-                  </div>
-                ))}
+                {txHeader}
+                {Array.from({ length: 5 }, (_, i) =>
+                  side === 'debit' ? (
+                    <div key={i} className={`row ${USAGE_GRID}`}>
+                      <span />
+                      <span className="h-[13px] w-[60%] rounded-[3px] bg-(--surface-active)" />
+                      <span
+                        className="h-[13px] rounded-[3px] bg-(--surface-active)"
+                        style={{ width: `${44 + i * 9}%` }}
+                      />
+                      <span className="ml-auto h-[13px] w-[68px] rounded-[3px] bg-(--surface-active)" />
+                      <span className="h-[13px] w-[112px] rounded-[3px] bg-(--surface-active)" />
+                    </div>
+                  ) : (
+                    <div key={i} className={`row ${TOPUP_GRID}`}>
+                      <span
+                        className="h-[13px] rounded-[3px] bg-(--surface-active)"
+                        style={{ width: `${44 + i * 9}%` }}
+                      />
+                      <span className="ml-auto h-[13px] w-[68px] rounded-[3px] bg-(--surface-active)" />
+                      <span className="h-[13px] w-[112px] rounded-[3px] bg-(--surface-active)" />
+                    </div>
+                  )
+                )}
               </div>
             ) : txItems.length === 0 ? (
               <div className="flex flex-col items-center px-4 py-10 text-center">
@@ -1118,139 +1173,33 @@ export default function BillingView() {
               </div>
             ) : (
               <>
-                <div className={`row h rounded-none ${TX_GRID}`}>
-                  <span />
-                  <span>{t('transactions.columns.description')}</span>
-                  <span className="text-right">{t('transactions.columns.amount')}</span>
-                  <span />
-                  <span className="truncate" title={LOCAL_TZ}>
-                    {t('transactions.columns.posted', { tz: LOCAL_TZ })}
-                  </span>
-                </div>
+                {txHeader}
                 {txItems.map((tx) => {
-                  const credit = tx.type === 'credit'
-                  const positive = credit && tx.amountMicro > 0
-                  return (
-                    <div key={tx.id} className={`row ${TX_GRID}`}>
-                      <span
-                        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px]"
-                        style={
-                          positive
-                            ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
-                            : { background: 'var(--surface-sunken)', color: 'var(--text-tertiary)' }
-                        }
-                      >
-                        <Icon name={credit ? 'arrow-down-left' : 'arrow-up-right'} size={14} strokeWidth={2} />
-                      </span>
-                      {/* A usage row wraps its label, agent and model chips onto a second line only when they don't fit. */}
-                      <span
-                        className={
-                          credit
-                            ? 'flex min-w-0 items-center gap-2'
-                            : 'flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1'
-                        }
-                      >
-                        <span className="contents">
+                  const posted = (
+                    <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedLocal(tx.at)}</span>
+                  )
+                  if (tx.type === 'credit') {
+                    const positive = tx.amountMicro > 0
+                    return (
+                      <div key={tx.id} className={`row ${TOPUP_GRID}`}>
+                        <span className="flex min-w-0 items-center gap-2">
                           <span className="truncate font-sans text-[13px] font-medium leading-normal">
-                            {credit
-                              ? (KNOWN_KINDS as readonly string[]).includes(tx.kind)
-                                ? t(`kindLabels.${tx.kind}`)
-                                : tx.kind
-                              : t('transactions.usagePeriod', { period: tx.period })}
+                            {(KNOWN_KINDS as readonly string[]).includes(tx.kind)
+                              ? t(`kindLabels.${tx.kind}`)
+                              : tx.kind}
                           </span>
-                          {credit && (
-                            <span
-                              className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
-                              style={
-                                positive
-                                  ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
-                                  : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
-                              }
-                            >
-                              {tx.kind}
-                            </span>
-                          )}
-                          {/* Who the charge is attributed to. An agent is named only when it is in
-                            the viewer's roster; everything else is one id-less rollup with a
-                            default avatar. See `rowAttribution` and billing-api.ts. */}
-                          {!credit &&
-                            (() => {
-                              // Nothing at all while the roster is in flight: fail closed applies
-                              // to a MISSING answer, not a pending one.
-                              const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
-                              // The description column shares the row with the amount, so the
-                              // NAMED chips are capped. The rollup is appended after the cap: it
-                              // is the one chip that must never be hidden behind a `+N`.
-                              const named = split.filter((c) => c.agent)
-                              const rollup = split.find((c) => !c.agent)
-                              const shown = named.slice(0, TX_AGENT_CHIPS)
-                              const rest = named.length - shown.length
-                              return (
-                                <>
-                                  {/* On desktop the per-agent amount is disclosure, not decoration:
-                                    eight visible dollar figures per row drowned the row's own
-                                    amount, so it lives in `title` — the console TooltipLayer shows
-                                    it on hover AND on keyboard focus (the chip is tabbable for
-                                    exactly that). Touch has neither, so ≤768px keeps the amount
-                                    visible in the chip; that card already scrolls sideways. */}
-                                  {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
-                                    const share = chip.agent
-                                      ? t('transactions.agentShare', {
-                                          name: agentLabel(chip.agent),
-                                          amount: fmtDecimalUsd(chip.amount)
-                                        })
-                                      : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
-                                    return (
-                                      <span
-                                        key={chip.key}
-                                        data-tx-agent="true"
-                                        tabIndex={0}
-                                        title={share}
-                                        aria-label={share}
-                                        className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
-                                          chip.agent ? '' : 'desktop:pr-[2px]'
-                                        }`}
-                                      >
-                                        <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
-                                          {chip.agent ? (
-                                            <AgentIconView
-                                              icon={chip.agent.icon}
-                                              runtime={chip.agent.runtime}
-                                              size={17}
-                                            />
-                                          ) : (
-                                            // The default avatar. This viewer may not learn which
-                                            // agents these are, how many, or how the amount splits
-                                            // between them — only that the rest of the charge is
-                                            // theirs.
-                                            <span
-                                              data-tx-agent-default="true"
-                                              className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
-                                            >
-                                              <Icon name="bot" size={10} strokeWidth={2} />
-                                            </span>
-                                          )}
-                                        </span>
-                                        {chip.agent && (
-                                          <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
-                                        )}
-                                        {/* Touch's reachable copy of the share; desktop keeps it
-                                          in the tooltip. */}
-                                        <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
-                                          {fmtDecimalUsd(chip.amount)}
-                                        </span>
-                                      </span>
-                                    )
-                                  })}
-                                  {rest > 0 && (
-                                    <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
-                                  )}
-                                </>
-                              )
-                            })()}
-                          {/* Free operator text, rendered as TEXT — truncated, with the whole
-                            note on hover, so a long one cannot push the amount column out. */}
-                          {credit && tx.note && (
+                          <span
+                            className="mono inline-flex h-[19px] flex-none items-center rounded-[4px] px-[7px] text-[10.5px] font-semibold tracking-[0.04em] uppercase"
+                            style={
+                              positive
+                                ? { background: 'var(--status-online-soft)', color: 'var(--status-online)' }
+                                : { background: 'var(--surface-active)', color: 'var(--text-secondary)' }
+                            }
+                          >
+                            {tx.kind}
+                          </span>
+                          {/* Free operator text, rendered as TEXT and truncated so it cannot push the amount out. */}
+                          {tx.note && (
                             <span
                               className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
                               title={tx.note}
@@ -1258,7 +1207,7 @@ export default function BillingView() {
                               {tx.note}
                             </span>
                           )}
-                          {credit && tx.receiptUrl && (
+                          {tx.receiptUrl && (
                             <a
                               className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"
                               href={tx.receiptUrl}
@@ -1270,62 +1219,155 @@ export default function BillingView() {
                             </a>
                           )}
                         </span>
-                        {/* The charge's model split, org-wide; each chip wraps on its own like the agent chips beside it. */}
-                        {!credit &&
-                          (() => {
-                            const models = (tx.models ?? []).filter((m) => Number(m.amount) > 0)
-                            if (!models.length) return null
-                            const shown = models.slice(0, TX_MODEL_CHIPS)
-                            const rest = models.length - shown.length
-                            return (
-                              <span className="contents">
-                                {shown.map((m) => {
-                                  const name = m.model === UNATTRIBUTED_MODEL ? t('activity.unknownModel') : m.model
-                                  const share = t('transactions.modelShare', { name, amount: fmtDecimalUsd(m.amount) })
-                                  return (
-                                    <span
-                                      key={m.model}
-                                      data-tx-model="true"
-                                      tabIndex={0}
-                                      title={share}
-                                      aria-label={share}
-                                      className="inline-flex h-[21px] min-w-0 max-w-full items-center gap-[5px] rounded-[4px] border border-(--border-subtle) px-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
-                                    >
-                                      <Icon name="cpu" size={11} strokeWidth={2} color="var(--text-tertiary)" />
-                                      <span className="mono min-w-0 truncate text-[11px]">{name}</span>
-                                      <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
-                                        {fmtDecimalUsd(m.amount)}
-                                      </span>
-                                    </span>
-                                  )
-                                })}
-                                {rest > 0 && (
-                                  <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
-                                )}
-                              </span>
-                            )
-                          })()}
-                      </span>
-                      {/* A debit is recorded as a positive amount that was taken away, so the
-                          sign belongs here. The rounded figure carries the exact wire string
-                          as its tooltip, dotted per the design. */}
-                      {credit ? (
                         <span
                           className="mono text-right text-[13px]"
                           style={positive ? { color: 'var(--status-online)' } : undefined}
                         >
                           {positive ? `+${fmtMicroUsd(tx.amountMicro)}` : fmtMicroUsd(tx.amountMicro)}
                         </span>
-                      ) : (
+                        {posted}
+                      </div>
+                    )
+                  }
+                  // Agents are named only when in the viewer's roster (see `rowAttribution`); nothing while it loads.
+                  const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
+                  // Named chips are capped; the withheld rollup is appended after so it is never hidden behind `+N`.
+                  const named = split.filter((c) => c.agent)
+                  const rollup = split.find((c) => !c.agent)
+                  const shownAgents = named.slice(0, TX_AGENT_CHIPS)
+                  const restAgents = named.length - shownAgents.length
+                  const models = (tx.models ?? [])
+                    .filter((m) => Number(m.amount) > 0)
+                    .sort((a, b) => Number(b.amount) - Number(a.amount))
+                  const shownModels = models.slice(0, TX_MODEL_CHIPS)
+                  const restModels = models.length - shownModels.length
+                  const expandable = models.length > 0
+                  const open = expandable && expanded.has(tx.id)
+                  const chargeTotal = Number(tx.amount)
+                  const modelName = (model: string) =>
+                    model === UNATTRIBUTED_MODEL ? t('activity.unknownModel') : model
+                  return (
+                    <Fragment key={tx.id}>
+                      <div
+                        className={`row ${expandable ? 'click' : ''} ${USAGE_GRID}`}
+                        onClick={expandable ? () => toggleExpanded(tx.id) : undefined}
+                      >
+                        <span className="flex items-center justify-center">
+                          {expandable && (
+                            // The row's click handler toggles; this button is the keyboard and screen-reader handle.
+                            <button
+                              type="button"
+                              data-tx-toggle="true"
+                              aria-expanded={open}
+                              aria-label={open ? t('transactions.collapse') : t('transactions.expand')}
+                              className="iconbtn flex h-[22px] w-[22px] items-center justify-center rounded-[5px] text-(--text-tertiary)"
+                            >
+                              <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+                            </button>
+                          )}
+                        </span>
+                        {/* Per-agent amounts live in `title` on desktop (tabbable for the TooltipLayer); ≤768px shows them inline. */}
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                          {[...shownAgents, ...(rollup ? [rollup] : [])].map((chip) => {
+                            const share = chip.agent
+                              ? t('transactions.agentShare', {
+                                  name: agentLabel(chip.agent),
+                                  amount: fmtDecimalUsd(chip.amount)
+                                })
+                              : t('transactions.withheldShare', { amount: fmtDecimalUsd(chip.amount) })
+                            return (
+                              <span
+                                key={chip.key}
+                                data-tx-agent="true"
+                                tabIndex={0}
+                                title={share}
+                                aria-label={share}
+                                className={TX_TAG}
+                              >
+                                <span className="av h-[15px] w-[15px] flex-none rounded-[4px]">
+                                  {chip.agent ? (
+                                    <AgentIconView icon={chip.agent.icon} runtime={chip.agent.runtime} size={15} />
+                                  ) : (
+                                    // Default avatar: the viewer learns neither which agents nor how many, only the amount.
+                                    <span
+                                      data-tx-agent-default="true"
+                                      className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                    >
+                                      <Icon name="bot" size={10} strokeWidth={2} />
+                                    </span>
+                                  )}
+                                </span>
+                                {chip.agent && <span className="max-w-[160px] truncate">{agentLabel(chip.agent)}</span>}
+                                <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
+                                  {fmtDecimalUsd(chip.amount)}
+                                </span>
+                              </span>
+                            )
+                          })}
+                          {restAgents > 0 && (
+                            <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{restAgents}</span>
+                          )}
+                        </span>
+                        {/* The charge's model split, org-wide and visible to every member. */}
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                          {shownModels.map((m) => {
+                            const name = modelName(m.model)
+                            const share = t('transactions.modelShare', { name, amount: fmtDecimalUsd(m.amount) })
+                            return (
+                              <span
+                                key={m.model}
+                                data-tx-model="true"
+                                title={share}
+                                aria-label={share}
+                                className={TX_TAG}
+                              >
+                                <TxModelMark model={m.model} />
+                                <span className="min-w-0 truncate">{name}</span>
+                              </span>
+                            )
+                          })}
+                          {restModels > 0 && (
+                            <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{restModels}</span>
+                          )}
+                        </span>
+                        {/* A debit is a positive amount taken away, so the sign belongs here; the exact wire string is the tooltip. */}
                         <span className="mono text-right text-[13px]" title={`$${tx.amount}`}>
                           <span className="cursor-help border-b border-dotted border-(--border-strong)">
                             -{fmtDecimalUsd(tx.amount)}
                           </span>
                         </span>
+                        {posted}
+                      </div>
+                      {open && (
+                        <div
+                          data-tx-models="true"
+                          className={`border-b border-(--border-subtle) bg-(--surface-app) py-1.5 ${USAGE_MIN_W}`}
+                        >
+                          {models.map((m) => {
+                            const pct = chargeTotal > 0 ? (Number(m.amount) / chargeTotal) * 100 : 0
+                            return (
+                              <div key={m.model} className={`grid items-center px-4 py-1.5 ${USAGE_GRID}`}>
+                                <span />
+                                <span />
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <TxModelMark model={m.model} />
+                                  <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">
+                                    {modelName(m.model)}
+                                  </span>
+                                  <span className="mono flex-none text-[11px] text-(--text-tertiary)">
+                                    {pct.toFixed(1)}%
+                                  </span>
+                                </span>
+                                <span className="mono text-right text-[12.5px]" title={`$${m.amount}`}>
+                                  -{fmtDecimalUsd(m.amount)}
+                                </span>
+                                <span />
+                              </div>
+                            )
+                          })}
+                        </div>
                       )}
-                      <span />
-                      <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedLocal(tx.at)}</span>
-                    </div>
+                    </Fragment>
                   )
                 })}
                 <div className="flex items-center justify-center gap-3 rounded-b-[10px] border-t border-(--border-subtle) bg-(--surface-app) px-4 py-3.5">

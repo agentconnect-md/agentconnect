@@ -16,7 +16,6 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
-import { buildParentReplyAppend } from '../src/session/turn/standing-context.js'
 import { planReplay } from '../src/session/turn/replay-plan.js'
 import { ModelSelectionError } from '../src/acp/acp-host.js'
 
@@ -58,6 +57,10 @@ const agent: Agent & { dir: string; env: Record<string, string> } = {
 const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
 /** A prompt without the local-time line every agent's turn carries (product-conventions.md "Local time"). */
 const withoutNow = (blocks: any[]): any[] => blocks.filter((b) => !b.text?.includes('\nNow: '))
+/** What the daemon does once the runtime answers a prompt: record the standing context it carried inline. */
+async function promptDelivered(sm: SessionManager, key: string, turn: { standingDigest?: string }): Promise<void> {
+  if (turn.standingDigest !== undefined) await sm.standingDelivered(key, turn.standingDigest)
+}
 
 // The managed memory provider over the shared agent's root dir — SessionManager
 // now seeds/injects memory through it.
@@ -232,6 +235,7 @@ describe('SessionManager', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     const standing = '# Linear\n- Issue: ENG-1 (id issue-uuid)\n\nWorking here: the issue is the record.'
     const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', standingContext: standing }))
+    await promptDelivered(sm, sessionKey('slack', 'C1', '100.1', 'bot-a'), first)
     const texts = (b: any[]): string[] => b.map((block: any) => block.text ?? '')
     // Non-meta runtime: the standing context inlines as block 0, the platform block inside it.
     expect(texts(first.blocks)[0]).toContain('# Agent')
@@ -440,7 +444,7 @@ describe('SessionManager', () => {
     )
     const prompt = firstReply.blocks.map((block: any) => block.text ?? '').join('\n')
     expect(prompt).toContain('# Agent')
-    expect(prompt).toContain('Parent session: acp-parent-1')
+    expect(prompt).toContain('Created by session: acp-parent-1')
     expect(prompt).toContain('Please investigate the deployment failure.')
     expect(prompt).toContain('The failing deployment is production; can you check it now?')
     expect(firstReply.blocks.at(-1)).toEqual({
@@ -985,6 +989,7 @@ describe('SessionManager', () => {
     const opened = await sm.handle('bot-a', buildHookMessage(fire('d-1', 'opened'), 't-open'))
     expect(opened.created).toBe(true)
     const key = (await (await store).getSessionByAcpId('acp-sync-1'))!.key
+    await promptDelivered(sm, key, opened)
     expect((await (await store).getSession(key))?.title).toBe(
       'PR #1729: feat(linear): record the answer in the console transcript'
     )
@@ -1097,7 +1102,8 @@ describe('SessionManager', () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    await promptDelivered(sm, sessionKey('slack', 'C1', '100.1', 'bot-a'), first)
     const { blocks } = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
     // second turn reuses the session (created=false) → no meta block
     expect(blocks.some((b: any) => typeof b.text === 'string' && b.text.includes('# Agent'))).toBe(false)
@@ -1133,10 +1139,10 @@ describe('SessionManager', () => {
     expect(metaArg).not.toContain('- Channel name:')
     // session-concept §2.3 standing locators: Thread is always rendered; Session is
     // absent on a brand-new session's FIRST turn (its acpSessionId is minted AFTER this
-    // block is composed); Parent session is absent when this session has no parent.
+    // block is composed); Created by session is absent when no session created this one.
     expect(metaArg).toContain('- Thread: 100.1')
     expect(metaArg).not.toContain('- Session:')
-    expect(metaArg).not.toContain('- Parent session:')
+    expect(metaArg).not.toContain('- Created by session:')
     await (await store).close()
   })
 
@@ -1235,130 +1241,111 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
-  it('renders the Parent session locator when handle is woken by another session (originSessionId)', async () => {
+  it('records the session that created this one as its creator only (send-message-guide.md §9.6)', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-    // session-concept §2.3/§5.3: the 5th `handle` param is the origin (parent) session id,
-    // surfaced as the `- Parent session` line — the SessionTarget this turn replies into.
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'from parent' }), undefined, undefined, 'origin-sess-9')
     const metaArg = host.newSession.mock.calls[0][3] as string
-    expect(metaArg).toContain('- Parent session: origin-sess-9')
-    // No `needsReply` on the wake ⇒ no report-back obligation.
-    expect(metaArg).not.toContain('# Reporting back to your parent session')
+    expect(metaArg).toContain('- Created by session: origin-sess-9')
+    expect(metaArg).not.toContain('Parent session')
+    expect(metaArg).not.toContain('# Reporting back')
     await (await store).close()
   })
 
-  it('keeps the persisted parent link through a later ordinary turn that carries no origin', async () => {
+  it('writes the origin once: a later turn, or another session’s call, never changes it', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'from parent' }), undefined, undefined, 'origin-sess-9')
     await sm.handle('bot-a', msg({ ts: '100.2', text: 'a human follow-up' }))
+    await sm.handle(
+      'bot-a',
+      msg({ ts: '100.3', text: 'another caller' }),
+      undefined,
+      undefined,
+      'origin-C',
+      undefined,
+      true
+    )
     expect((await store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.originSessionId).toBe('origin-sess-9')
+    // A session a person created has no origin, and a later call gives it none.
+    await sm.handle('bot-a', msg({ ts: '300.1', thread: '300.1', text: 'a person starts this' }))
+    await sm.handle('bot-a', msg({ ts: '300.2', thread: '300.1', text: 'a call' }), undefined, undefined, 'origin-C')
+    expect((await store.getSession(sessionKey('slack', 'C1', '300.1', 'bot-a')))?.originSessionId ?? null).toBeNull()
     await store.close()
   })
 
-  // §5.3 `toAgent.needsReply`: the parent asked to be told how this session ends. The obligation
-  // outlives the waking turn, so it must ride the STANDING context (and be persisted), not the
-  // delivered message text.
-  describe('needsParentReply report-back directive', () => {
+  // send-message-guide.md §9.5: a reply request belongs to its message, shown with it; the session carries no standing one.
+  describe('reply requests per message', () => {
     const wake = (sm: SessionManager, text: string, needsReply?: boolean, ts = '100.1') =>
       sm.handle('bot-a', msg({ ts, text }), undefined, undefined, 'origin-sess-9', undefined, needsReply)
 
-    it('adds the directive to the new session’s standing context, naming the parent as the target', async () => {
+    it('adds no standing report-back directive and persists no session-wide obligation', async () => {
       const store = await newStore()
       const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
       const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
       await wake(sm, 'do this and tell me', true)
-      const metaArg = host.newSession.mock.calls[0][3] as string
-      expect(metaArg).toContain('# Reporting back to your parent session')
-      expect(metaArg).toContain('{"sessionId":"origin-sess-9","message":"..."}')
-      expect(metaArg).toContain('after the tool reports successful delivery, end your turn immediately')
-      expect(metaArg).toContain('without repeating the message')
-      // Persisted, so later turns and resumes keep it.
-      expect((await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.needsParentReply).toBe(1)
-      await (await store).close()
-    })
-
-    it('requires a parent to report to — a root turn gets no directive even if the flag is set', async () => {
-      const store = await newStore()
-      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-      await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }), undefined, undefined, undefined, undefined, true)
+      const turn = await wake(sm, 'and this', true, '100.2')
       const metaArg = host.newSession.mock.calls[0][3] as string
       expect(metaArg).not.toContain('# Reporting back')
-      expect(metaArg).not.toContain('end your turn immediately')
+      expect(metaArg).not.toContain('"sessionId":"origin-sess-9"')
+      expect(JSON.stringify(turn.blocks)).not.toContain('# Reporting back')
       expect(
         (await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.needsParentReply ?? null
       ).toBeNull()
       await (await store).close()
     })
 
-    it('is sticky: a later ordinary turn keeps it, and a resume re-asserts it', async () => {
-      const store = await newStore()
-      const host1 = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-      const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
-      await wake(sm1, 'delegated work', true)
-      // An ordinary follow-up carries no flag; the obligation must not be dropped.
-      await sm1.handle('bot-a', msg({ ts: '100.2', text: 'more' }))
-      expect((await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.needsParentReply).toBe(1)
-
-      const host2 = {
-        newSession: vi.fn(async () => 'acp-2'),
-        loadSession: vi.fn(async () => {}),
-        hasSession: () => false,
-        loadSupported: () => true,
-        usesMetaSystemPrompt: () => true
-      } as any
-      const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
-      await sm2.handle('bot-a', msg({ ts: '100.3', text: 'after restart' }))
-      expect(host2.loadSession.mock.calls[0][4] as string).toContain('# Reporting back to your parent session')
-      await (await store).close()
-    })
-
-    // Review finding 2: a session can be woken by more than one parent. `replyToSession`
-    // authorizes THIS turn's wake origin ahead of the persisted first-wins link, so the directive
-    // (and the `Parent session` locator) must name that same session — otherwise the agent is told
-    // to reply somewhere its reply is then refused.
-    it('names the CURRENT wake origin, not the first-wins persisted parent', async () => {
+    it('lists the messages a session may answer, open ones first, and only when they change', async () => {
       const store = await newStore()
       const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
       const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-      // Parent A opens the session…
-      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }), undefined, undefined, 'origin-A', undefined, true)
-      // …then a DIFFERENT parent C wakes the same session and asks for a report.
-      const turn = await sm.handle(
-        'bot-a',
-        msg({ ts: '100.2', text: 'second parent' }),
-        undefined,
-        undefined,
-        'origin-C',
-        undefined,
-        true
-      )
-      const text = (turn.blocks.find((b: any) => String(b.text).includes('Reporting back')) as any)?.text ?? ''
-      expect(text).toContain('"sessionId":"origin-C"')
-      expect(text).not.toContain('origin-A')
-      // The DURABLE link stays first-wins (the store COALESCEs it) — only this turn's addressing moved.
-      expect((await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.originSessionId).toBe(
-        'origin-A'
-      )
-      await (await store).close()
-    })
-
-    it('states the directive as a turn block when it is added to an ALREADY-OPEN session', async () => {
-      const store = await newStore()
-      const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-      // First wake without the flag: the session opens with no obligation…
       await wake(sm, 'first', false)
-      // …so a second wake that DOES ask has no system-prompt channel to update.
-      const turn = await wake(sm, 'now report back when done', true, '100.2')
-      expect(turn.blocks[0]).toMatchObject({ type: 'text' })
-      expect((turn.blocks[0] as any).text).toContain('# Reporting back to your parent session')
-      expect((await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.needsParentReply).toBe(1)
-      await (await store).close()
+      const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+      const receive = (messageId: string, sourceSessionId: string, open: boolean, now: number) =>
+        store.sessionMessages.recordReceived({
+          messageId,
+          recipientKey: key,
+          recipientAgentId: 'bot-a',
+          sourceSessionId,
+          sourceAgentId: 'agent-src',
+          kind: 'call',
+          replyState: open ? 'open' : 'none',
+          hopCount: 1,
+          now
+        })
+      await receive('msg-a', 'sid-a', false, 1)
+      // Only this turn's own message: its header already shows it, so no list.
+      const own = await sm.handle(
+        'bot-a',
+        msg({ ts: '100.2', text: 'm' }),
+        undefined,
+        undefined,
+        'sid-a',
+        undefined,
+        false,
+        {
+          messageId: 'msg-a'
+        }
+      )
+      expect(JSON.stringify(own.blocks)).not.toContain('# Messages you may answer')
+      await receive('msg-c', 'sid-c', true, 2)
+      const listed = await wake(sm, 'more', false, '100.3')
+      const block = (listed.blocks.find((b: any) => String(b.text).startsWith('# Messages you may answer')) as any)
+        ?.text as string
+      expect(block).toContain('{"action":"replyToSession","messageId":"<id>","message":"..."}')
+      expect(block.indexOf('- msg-c:')).toBeLessThan(block.indexOf('- msg-a:'))
+      expect(block).toContain('- msg-c: a message from agent agent-src, session sid-c — waiting on your reply')
+      expect(block).toContain('- msg-a: a message from agent agent-src, session sid-a')
+      expect(block).not.toContain('msg-a: a message from agent agent-src, session sid-a —')
+      // Unchanged since it was shown: not repeated.
+      const again = await wake(sm, 'again', false, '100.4')
+      expect(JSON.stringify(again.blocks)).not.toContain('# Messages you may answer')
+      await store.sessionMessages.settle('msg-c', 'replied', 3)
+      const changed = await wake(sm, 'after a reply', false, '100.5')
+      expect(JSON.stringify(changed.blocks)).toContain('# Messages you may answer')
+      await store.close()
     })
   })
 
@@ -2616,15 +2603,17 @@ describe('SessionManager — collaboration preamble', () => {
     expect(first).toContain('# Collaborating with other agents')
     // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
     expect(first).toContain('`sendMessage`')
-    expect(first).toContain('{"toAgent":"<agent id>","message":"..."}')
-    expect(first).toContain('channel-root form may target YOURSELF')
+    expect(first).toContain('{"action":"callAgent","toAgent":"<agent id>","message":"..."}')
+    expect(first).toContain('{"action":"startTask","message":"..."}')
+    expect(first).toContain('getToolGuide')
+    expect(first).toContain('channel form may target YOURSELF')
     expect(first).toContain('use your own ID from the # Agent block')
     expect(first).toContain('never your platform bot identity')
     expect(first).toContain('never put an AgentConnect agent or your own bot identity in `toUser`')
-    expect(first).toContain('{"sessionId":"<Parent session>","message":"..."}')
-    expect(first).toContain('{"toUser":"<Slack user id>","message":"..."}')
+    expect(first).toContain('{"action":"replyToSession","messageId":"<that id>","message":"..."}')
+    expect(first).toContain('{"action":"postMessage","toUser":"<Slack user id>","message":"..."}')
     expect(first).toContain('"toUser":["<user id 1>","<user id 2>"]')
-    expect(first).toContain('Every visible `sendMessage` lands at a channel root')
+    expect(first).toContain('Every visible `sendMessage` except a `thread` update lands at a channel root')
     expect(first).toContain('write your ordinary turn reply and @-mention them in it')
     expect(first).not.toContain('"thread":"<thread id>"')
     expect(first).not.toContain('in-thread form')
@@ -2648,7 +2637,9 @@ describe('SessionManager — collaboration preamble', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
     const metaArg = host.newSession.mock.calls[0][3] as string
-    expect(metaArg).toContain('{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}')
+    expect(metaArg).toContain(
+      '{"action":"callAgent","toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}'
+    )
     expect(metaArg).toContain('FIRE-AND-FORGET')
     // The trigger, so the rule is actionable rather than a definition of the flag.
     expect(metaArg).toMatch(/asks a question or requests a result/)
@@ -3177,7 +3168,8 @@ it('refreshes the bounded catalog on native resume without adding it to user pro
     loadSession: vi.fn(async () => {}),
     hasSession: vi.fn(() => false),
     loadSupported: () => true,
-    usesMetaSystemPrompt: () => true
+    usesMetaSystemPrompt: () => true,
+    appliesSystemPromptOnLoad: () => true
   } as any
   const resumed = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory: provider })
   const result = await resumed.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'telegram' }))
@@ -3271,6 +3263,7 @@ describe('SessionManager — standing context composed only where a prompt reads
   const rootPath = '/srv/agents/bot-a/repos/acme/infra/checkout'
   const roots = [{ path: rootPath, repoFullName: 'acme/infra', branch: 'trunk' }]
   const rootsLine = `- ${rootPath} — acme/infra (trunk)`
+  const rootsKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
   // Counts the standing context's reads; `asleep` stands for the pod holding the roots going unbound.
   class RootsProbe extends WorkspaceManager {
     reads = 0
@@ -3315,7 +3308,7 @@ describe('SessionManager — standing context composed only where a prompt reads
     'composes none of it on a warm turn, which an unreadable root cannot fail (meta %s)',
     async (meta) => {
       const { store, workspaces, host, sm } = await setup(meta)
-      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+      await promptDelivered(sm, rootsKey, await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' })))
       expect(workspaces.reads).toBe(1)
       workspaces.asleep = true
       const warm = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
@@ -3361,7 +3354,7 @@ describe('SessionManager — standing context composed only where a prompt reads
         expect(workspaces.reads).toBe(1)
       } else {
         expect(prompt).toContain('# Agent')
-        expect(prompt).toContain('- Parent session: acp-parent-1')
+        expect(prompt).toContain('- Created by session: acp-parent-1')
         expect(prompt).toContain(rootsLine)
         expect(workspaces.reads).toBe(2)
       }
@@ -3370,28 +3363,25 @@ describe('SessionManager — standing context composed only where a prompt reads
   )
 
   it.each([false, true])(
-    'composes it for a restate, stating exactly the parent-reply block (meta %s)',
+    'does not compose it for a call asking for a reply, whose request rides its message (meta %s)',
     async (meta) => {
       const { store, workspaces, sm } = await setup(meta)
       const wake = (ts: string, needsReply: boolean) =>
         sm.handle('bot-a', msg({ ts, text: 'work' }), undefined, undefined, 'origin-9', undefined, needsReply)
-      await wake('100.1', false)
+      await promptDelivered(sm, rootsKey, await wake('100.1', false))
       expect(workspaces.reads).toBe(1)
-      const restated = await wake('100.2', true)
-      expect(restated.blocks[0]).toEqual({ type: 'text', text: buildParentReplyAppend(true, 'origin-9') })
-      expect(workspaces.reads).toBe(2)
-      // The obligation is now the session's own, so the next ordinary turn is warm again.
-      await sm.handle('bot-a', msg({ ts: '100.3', text: 'more' }))
-      expect(workspaces.reads).toBe(2)
+      const asked = await wake('100.2', true)
+      expect(JSON.stringify(asked.blocks)).not.toContain('# Reporting back')
+      expect(workspaces.reads).toBe(1)
       await store.close()
     }
   )
 
   it.each([false, true])(
-    'composes it on a resume only for a host that re-asserts it on load (meta %s)',
+    'composes it once on a resume, to re-assert it on load or compare it on the first prompt (meta %s)',
     async (meta) => {
       const { store, workspaces, sm } = await setup(meta)
-      await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+      await promptDelivered(sm, rootsKey, await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' })))
       const host2 = liveHost(meta)
       const resumed = new SessionManager({
         store,
@@ -3405,9 +3395,9 @@ describe('SessionManager — standing context composed only where a prompt reads
       expect(load.created).toBe(false)
       if (meta) expect(host2.loadSession.mock.calls[0][4]).toContain(rootsLine)
       else expect(host2.loadSession.mock.calls[0][4]).toBeUndefined()
-      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      expect(workspaces.reads).toBe(2)
       await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third' }))
-      expect(workspaces.reads).toBe(meta ? 2 : 1)
+      expect(workspaces.reads).toBe(2)
       await store.close()
     }
   )

@@ -1,10 +1,14 @@
 # Source Cache: Object-Store Acceleration for In-Pod Git Materialization
 
-> **Status:** Proposed.
+> **Status:** Implemented (P1–P3; the change index is section 15). Still open:
+> the end-to-end cluster verification of CP1.8, the AWS S3 matrix and test-app
+> timings of P0 (CP0.3), and the P3 exit check on the test cluster.
 >
 > **Scope:** daemon (pool members and the in-sandbox shim) + control plane (skill
-> source admission only) + Helm chart. Cluster daemons only: the Cloud pool and an
-> OSS self-hosted pool. Self-hosted `srt`, microsandbox, and session executors are
+> source admission and skipped-Source status only) + web console + Helm chart.
+> The cache itself serves cluster daemons only: the Cloud pool and an OSS
+> self-hosted pool. Non-GitHub skill sources (section 11) install on every
+> daemon; self-hosted `srt`, microsandbox, and session executors are otherwise
 > unchanged.
 >
 > **Requirement mapping:**
@@ -210,18 +214,20 @@ projectId }`), never a new source kind. A credentialed Source references its
 Resolution is a member of that seam, `CodeHostRepository.resolveRef`, not a
 per-host table in this design:
 
-| Source               | Resolution runs                         | How                                                           | Anti-replacement                   |
-| -------------------- | --------------------------------------- | ------------------------------------------------------------- | ---------------------------------- |
-| `credential: github` | Daemon, `CodeHostRepository.resolveRef` | The existing REST identity check + commit lookup, conditional | Numeric repository id              |
-| `credential: gitlab` | Daemon, `CodeHostRepository.resolveRef` | Project API: project id + ref → commit                        | Numeric project id                 |
-| Anonymous (any host) | In the owning pod, `git ls-remote`      | Shim exec (section 6.1)                                       | None: trusted by URL, console says |
+| Source                | Resolution runs                                              | How                                                           | Anti-replacement                   |
+| --------------------- | ------------------------------------------------------------ | ------------------------------------------------------------- | ---------------------------------- |
+| `credential: github`  | Daemon, `CodeHostRepository.resolveRef`                      | The existing REST identity check + commit lookup, conditional | Numeric repository id              |
+| `credential: gitlab`  | Daemon, `CodeHostRepository.resolveRef`                      | Project API: project id + ref → commit                        | Numeric project id                 |
+| Anonymous, off GitHub | In the owning pod, `git ls-remote` (daemon path: the daemon) | Shim exec (section 6.1)                                       | None: trusted by URL, console says |
 
-The daemon makes no network request to a user-typed Git URL: an anonymous
-Source is resolved by the pod that will fetch it, so a member serving many
-organizations never contacts an arbitrary host. An anonymous GitHub address
-still passes the anonymous REST identity check when it names github.com, as
-today, and the daemon's one ref-naming `ls-remote` (below) goes only to such a
-canonical github.com URL.
+On the in-pod path the daemon makes no network request to a user-typed Git
+URL: an anonymous Source is resolved by the pod that will fetch it, so a member
+serving many organizations never contacts an arbitrary host. The daemon
+acquisition path, which fetches the Source itself, resolves it itself too
+(section 11). An anonymous GitHub address still passes the anonymous REST
+identity check when it names github.com, as today, and on the in-pod path the
+daemon's one ref-naming `ls-remote` (below) goes only to such a canonical
+github.com URL.
 
 Result caching:
 
@@ -358,6 +364,13 @@ operation this design adds is placed against that rule:
 | Workspace write-back bundle                                                              | Shim `bundle` operation (shim-internal)   | Not the exec channel, which admits no form of `bundle`. The shim composes `bundle create -q <file> [--filter=blob:none] refs/heads/<branch>` itself, with `<file>` named by a handle it mints (a UUID) inside its 0700 `<runtimeRoot>/bundle-staging`; the daemon sends the checkout, the branch, the origin commit and the shape, never a path. The shim refuses a shallow checkout and a branch that no longer names that commit, forces `GIT_NO_LAZY_FETCH=1` last into an environment it builds (hooks and fsmonitor off, no system or global config), and checks with `bundle list-heads` that the file names exactly that ref at that commit; a `HEAD` or `refs/remotes/*` bundle would be silently ignored by `--bundle-uri` |
 | Anonymous resolution                                                                     | Shim `exec`                               | None: `ls-remote` is admitted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Skill acquisition: clone, fetch, subdirectory checkout, `fsck`, retry, write-back bundle | Shim-internal, inside the skill reconcile | Not the exec channel. The shim spawns Git itself with argv it composes from validated plan fields (origin policy on the URL, ref / SHA / subdirectory syntax), under the same refused-argument rules as `exec`, in a private staging directory; nothing the daemon sends is passed as free argv, and the runtime cannot invoke the operation. Its connectivity check is the same `fsck --connectivity-only` as the workspace path                                                                                                                                                                                                                                                                                                   |
+
+**The daemon acquisition path is outside this table.** Where a pod cannot
+carry a Source (section 11), the daemon fetches it as before P2 and, for an
+anonymous Source, spawns the anonymous `ls-remote` that names its ref and,
+off GitHub, the same shim-internal bounded acquisition, in a daemon-private
+directory, with no repository discovered, no credential, no system or global
+configuration, and redirects off. No pod-supplied argument reaches it.
 
 **Refused options include their abbreviations.** Git accepts any unique prefix
 of a long option and runs it as the full option: `clone --upload=<cmd>`,
@@ -650,7 +663,7 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    `resolvedCommit` and the leaves it staged. The per-reconcile window
    capability arrives as the reconcile's optional `credentialWindow` and
    reaches only the Git child's `AC_GITCRED_*` environment, for a github.com
-   Source.
+   Source or one on the GitLab instance its plan names (section 11).
 5. The daemon closes the credential window, records the ledger with the resolved
    commits, and later handles write-back candidates (section 9).
 
@@ -949,7 +962,11 @@ Daemon implementation (P1, CP1.7):
 
   The check warns on a rule that also covers `snapshots/`, on one that keeps
   objects longer than the defaults, and on an untagged rule that would expire
-  live bundles.
+  live bundles. It also reports the shortest expiration any enabled rule can give
+  a `pending` object under `src/`, counting narrower, size-filtered and untagged
+  rules too. Console file transfers need that window to be at least 2 days and
+  turn off below it ([source-cache-file-transfer.md](source-cache-file-transfer.md)
+  §2); write-back commits within the 1-hour reservation, so it ignores the length.
 
 - Each member runs the check at start and every 6 hours. When the bucket
   affirmatively lacks either rule, the member warns at every check and turns
@@ -965,21 +982,23 @@ Daemon implementation (P1, CP1.7):
 **Hosts supported by this design:**
 
 - GitHub: public and private (GitHub App), unchanged.
-- GitLab (gitlab.com and configured instances): public and private, with the
-  existing GitLab credential minting behind `gitcred`.
+- GitLab (the deployment's instance, gitlab.com or self-managed): public and
+  private, with the existing GitLab credential minting behind `gitcred`.
 - Any other Git host over HTTPS: public repositories only, no credential. The
   canonical origin must pass the daemon's Git-origin policy.
 
 **Admission (Control Plane):**
 
 - GitHub keeps its current admission and preview scan.
-- GitLab admission records the numeric project id and the private flag and scans
-  `SKILL.md` through the GitLab API, at parity with GitHub.
-- Other hosts are admitted on syntax and origin policy alone. **The CP makes no
+- GitLab admission records a `gitlab` credential with the numeric project id
+  for a private project and scans `SKILL.md` through the GitLab API, at parity
+  with GitHub.
+- Other hosts are admitted on syntax alone; the daemon's Git-origin policy gates
+  acquisition. **The CP makes no
   network request to a URL a user typed** (no SSRF, no content through the CP).
   Preview answers `resolvable:false`, so the console offers whole-source
   enablement or a manual skill filter, which the UI already supports.
-- Whether the Source works is learned at the first reconcile in a pod. The
+- Whether the Source works is learned at its first reconcile. The
   daemon reports each skipped Source to the CP as agent skill status metadata:
   the Source's name and an enumerated reason code — `resolution_failed`,
   `access_denied`, `ref_moved`, `commit_unavailable`, `sha_fetch_refused`,
@@ -992,6 +1011,166 @@ subdirectory and selections, plus `credential?` as in the workspace contract and
 the `CodeHostRepository` reference for a credentialed Source. `githubRepoId`
 stays decodable during migration, as the workspace contract's `github` and
 `gitlab` arms do ([git-workspace-model.md](git-workspace-model.md) §8).
+
+Wire identity (P3, CP3.1):
+
+- `AgentSkillEntry.source` is GitHub's bounded vocabulary or a plain HTTPS
+  address on any other host (`normalizeSkillSource`). Ref and subdirectory
+  travel separately.
+- `githubRepoId` is required exactly when the source names github.com.
+- `credential` must match the host: `github` only on github.com, `gitlab` only
+  elsewhere.
+- A GitHub credential is still projected beside the legacy `private: true`, so
+  a daemon that predates `credential` acquires as before. `skillSourceCredential`
+  reads either spelling.
+- The daemon's spec digest treats that restated credential as the same content,
+  so the projection change needs no `configRevision` bump.
+- `skill_source` stores the reference as `credentialProvider` +
+  `credentialRepoId`; the migration backfills every private, bound row as
+  `github`.
+- A row written by an older replica with only `private` reads the same way.
+- A credentialed GitHub bind converges its `CodeHostRepository` catalog row.
+- A daemon that predates CP3.3b skips a non-GitHub entry with a warning; a
+  current one acquires it (below).
+
+GitLab admission (P3, CP3.2):
+
+- A source on the deployment's GitLab instance is stored as
+  `<base>/<path_with_namespace>`, the project's current path; a `/-/` route
+  path is refused, since ref and subdirectory travel separately.
+- An anonymous project read decides visibility. A public project is admitted
+  anonymously. Otherwise the project must be a managed binding in the
+  organization: the row records `gitlab` plus the numeric project id, re-read
+  through the installer connection (the binding's own facts when no connection
+  answers), and converges its `CodeHostRepository` row.
+- The preview and the skill picker scan `SKILL.md` through the repository tree
+  API with GitHub's layout precedence: anonymously for a public project, with
+  the installer connection's token for a managed one.
+- Enabling a credentialed GitLab source is a read grant. The account repository
+  counts each enabling agent as a Reporter consumer of the project (§7.2 of
+  [gitlab-com-integration.md](gitlab-com-integration.md)). An enable-list
+  change re-converges the affected projects. The GitLab gitcred broker serves
+  the read PAT for that project under a `read` clamp when neither the workspace
+  nor an explicit grant covers it (`gitlab/skill-source.ts`,
+  `gitlab/gitcred.service.ts`).
+
+Other-host admission (P3, CP3.3):
+
+- A source that is neither on github.com nor on the deployment's GitLab
+  instance is admitted when `normalizeSkillSource` accepts it as a plain
+  credential-free HTTPS address, and is stored in that normalized form with no
+  identity and no credential (`otherHostSkillSource` in
+  `orchestrator/skillSource.ts`). A GitHub id on it is refused.
+- The CP holds no host list: the daemon's `workspaceGitAllowedOrigins` stays the
+  only Git-origin policy ([git-workspace-model.md](git-workspace-model.md) §10)
+  and gates the origin at acquisition.
+- No admission, edit, preview or skill listing contacts the address. The preview
+  answers `resolvable: false` with empty branch, tag and skill lists, which a
+  failed GitLab scan now answers too. A subdirectory needs an explicit ref,
+  since the CP cannot learn the default branch.
+- Without a GitLab seam, a GitLab address is just another host, as for
+  workspaces.
+
+Daemon acquisition (P3, CP3.3b, daemon path):
+
+- The daemon path acquires a Source off GitHub itself. That path serves local
+  daemons, executors, and pods whose plan does not carry the Source.
+- A credentialed GitLab Source resolves through `resolveRef` with the agent's
+  CP-minted read token: identity by project id and path, then the ref. The
+  daemon then downloads the project archive by project id at that commit, so
+  no name-based read follows the identity check (`skill-git-source.ts`). The
+  instance is the spec's `gitlabHost`, which the CP carries whenever a
+  credentialed GitLab skill Source rides the spec, path prefix included. A spec
+  from an older CP that omits it falls back to the Source's own origin.
+- An anonymous Source is resolved and named in one anonymous, pattern-scoped
+  `git ls-remote`. It runs over https only, with no redirect, no system or
+  global configuration and no credential. The answer is shared like the
+  github.com check. The bounded in-pod Git acquisition then fetches the Source
+  on the daemon (`skill-git-hosted.ts`).
+- These are requests to a user-typed URL from the daemon. Only the daemon path
+  makes them, because it fetches the Source anyway, and the Git-origin policy
+  gates both.
+- The daemon's local cache keys a GitLab Source by project id and an anonymous
+  one by URL and subdirectory, the only part of the tree it holds.
+
+In-pod acquisition (P3, CP3.3b, in-pod path):
+
+- An anonymous Source off GitHub is resolved by the pod that will fetch it.
+  The daemon sends one scoped `git ls-remote` over that pod's `exec` channel,
+  with no repository discovered (`GIT_DIR` names none) and the workspace's
+  hardened Git environment (`skills/pod-skill-ref.ts`). The answer becomes that
+  plan's planned commit and full ref. It is never cached or shared, and the
+  daemon itself never contacts the host. A pinned commit is taken as given.
+- A credentialed GitLab Source goes in-pod only to an image that advertises
+  `skill-git-gitlab-v1` (the `skills-git-gitlab` grant). Its plan entry names
+  the instance base as `credentialHost`; an older image would refuse that
+  field. The planned commit is the daemon's `resolveRef`, as for GitHub.
+- The pod-subject window names a GitLab project as `gitlab:<path>`, which can
+  never collide with a GitHub `owner/repo`. Through that window alone, `gitcred`
+  serves the project's read credential by numeric id for a `git` ask. It is
+  cached as the read token keyed by project path, so it never shares an entry
+  that an additional-repository grant may hold writable. The daemon path keys
+  its own read token the same way, apart from the workspace's. The shim hands
+  the Git child a helper for that instance only.
+- A GitLab Source's `cred` cache key is `gitlab:<projectId>`. An anonymous
+  Source off GitHub keys `anon` on its URL.
+- Anything a pod cannot carry stays on the daemon path above. That covers a
+  GitLab Source for an older image or for a window that would not admit it, and
+  an anonymous Source off GitHub where no runner for the pod's `exec` channel
+  exists.
+
+Skipped-Source status (P3, CP3.4):
+
+- After every skill reconcile that commits and covers at least one Git Source,
+  the daemon sends `agent/skill-status`: each Source it could not install, by
+  name, with one code from the list above. A Source not listed installed. The
+  frame goes only to a CP that advertises `agent-skill-status-v1`, so an older
+  CP never sees it, and an older daemon never sends it.
+- Codes come from tagged failures (`skills/skill-source-failure.ts`). A 401 or
+  403 is `access_denied`, as is a GitHub identity 404. A refused entry or
+  origin is `resolution_failed`. Archive and snapshot refusals are
+  `limits_exceeded`, as is a Source the manifest budget drops. A planned-commit
+  mismatch on the daemon path is `ref_moved`. A selection or CLI failure, or a
+  bundle whose destination the workspace already holds, is `cli_failed`. The in-pod path reports the shim's own code. An untagged error is
+  `fetch_failed`.
+- An installed Source whose resolution failed keeps its commit and is not
+  reported. A reconcile that throws reports nothing.
+- The CP stores the latest report per agent in `agent_skill_source_status`, so a
+  Source that installs loses its row. `GET /agents/:id/skill-source-status` lists
+  the rows for Sources the agent still enables. Only the daemon serving the
+  agent may report, and one agent's reports apply one at a time, in receipt
+  order on a replica.
+
+Console (P3, CP3.5):
+
+- The skills library's Add menu gains "Import from a Git URL" for a GitLab
+  project or any HTTPS repository. Its preview sends `{ source, ref?, subDir? }`.
+  A scanned project offers its skills as a picker. An unread one
+  (`resolvable: false`) explains the "trusted by URL" trust and keeps a typed
+  skill filter.
+- A Source with `credential: null` off github.com carries a "trusted by URL"
+  badge in the library and on the agent's skill rows.
+  `GET /agents/:id/skill-sources` now returns that `credential` (provider only),
+  so a Source hidden from the caller's library is marked too. A CP that omits
+  the field shows no badge.
+- An agent's skill row shows the latest reason code from
+  `GET /agents/:id/skill-source-status`, with human-readable text below the row.
+  An older CP's 404 reads as no failures.
+- An agent's row for a Source that cannot be scanned accepts a typed skill list
+  in place of the per-skill toggles.
+
+Implementation anchors (P3):
+
+| Concern                                  | Location                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Wire identity                            | protocol `frames/agent.ts` (`AgentSkillEntry`, `SkillSourceCredential`, `skillSourceCredential`); `git-url.ts` (`normalizeSkillSource`, `isGitHubSkillSource`)                                                                                                                                                                                   |
+| Stored credential reference              | control-plane `prisma/schema.prisma` (`SkillSource.credentialProvider`, `credentialRepoId`); projection in `orchestrator/skillSource.ts` (`resolveAgentSkillEntries`)                                                                                                                                                                            |
+| GitLab admission, preview and read grant | control-plane `gitlab/skill-source.ts` (`resolveGitlabSkillProject`, `scanGitlabSkillProject`); `orchestrator/skillSource.ts` (`resolveGitlabSkillSourceProjects`); `gitlab/gitcred.service.ts` (`skillSourceProjects`); routes in `http/routes/skill-sources.ts`                                                                                |
+| Other-host admission                     | control-plane `orchestrator/skillSource.ts` (`otherHostSkillSource`); `http/routes/skill-sources.ts`                                                                                                                                                                                                                                             |
+| Daemon-path acquisition                  | daemon `skills/skill-git-source.ts` (`acquireGitSkillSource`), `skills/gitlab-skill-source.ts`, `skills/skill-git-hosted.ts` (`nameHostedGitSkillRef`, `acquireAnonymousGitSkillSource`), `skills/git-ref-listing.ts`                                                                                                                            |
+| In-pod resolution and GitLab plans       | daemon `skills/pod-skill-ref.ts` (`resolveSkillRefInPod`); `shim/skill-protocol.ts` (`SKILL_GIT_GITLAB_FEATURE`); `shim/skill-git-plan.ts`; `shim/dialer.ts` (`skills-git-gitlab` grant)                                                                                                                                                         |
+| Skipped-Source status                    | protocol `frames/skill.ts` (`agent/skill-status`, `SkillSourceFailureCode`); daemon `skills/skill-source-failure.ts`, `cp/client.ts` (`emitAgentSkillStatus`); control-plane `ws/handlers/agent-skill-status.ts`, `persistence/repositories/agent-skill-source-status.repo.ts`, `GET /agents/:id/skill-source-status` in `http/routes/agents.ts` |
+| Console                                  | web `components/console/SkillSourcesCard.tsx` (`CreateGitUrlSkillSourceModal`), `components/console/AgentSkillsCard.tsx`, `lib/skill-source.ts` (`isTrustedByUrl`)                                                                                                                                                                               |
 
 ## 12. Configuration and degradation
 
@@ -1149,7 +1328,9 @@ Each phase ships and rolls back alone.
     Follow-up issue: #2856.
 - **P3 — non-GitHub admission.** `credential?` skill identity on the wire, GitLab
   admission and preview, arbitrary-host public Sources, skipped-Source status in
-  the console.
+  the console. Shipped as CP3.1 (#3037), CP3.2 (#3039), CP3.3 (#3040), CP3.3b
+  (#3041, #3042), CP3.4 (#3043) and CP3.5 (#3044); the install check on the test
+  cluster is still open.
 
 ### P0 prerequisites and baseline (2026-10-01)
 
@@ -1253,13 +1434,13 @@ matrix and test-app pod/timing checks run. The chart default remains off while
 
 ## 15. Change index
 
-| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag/DELETE/lifecycle-read client `source-cache/object-client.ts`, the sweep `source-cache/sweep.ts` and lifecycle check `source-cache/lifecycle.ts`, the metrics recorder `source-cache/metrics.ts`, the in-pod reconcile plan and its routing in `skills/sandbox-skill-reconcile.ts` (with the Git plan receipts in `skills/cluster-skill-coordinator.ts`), the skill read planner `createSkillReadPlanner` over `skillPointerKey`, the pod-subject window in `cp/gitcred-server.ts` bound by the tunnel greeting (`shim/tunnel-proxy.ts`, `remote/tunnel-binder.ts`) |
-| daemon (shim) | The `skill-git-in-pod-v1` probe `shim/skill-git-feature.ts`, in-pod Git skill acquisition in `shim/skill-handler.ts` over `shim/skill-git-acquire.ts` (with its retry core `source-cache/bundle-retry.ts`), the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| protocol      | `credential?` `AgentSkillEntry` identity; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| control-plane | GitLab skill admission and preview; arbitrary-host admission without network access; skipped-Source reason codes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 marked relocated for the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| web           | Non-GitHub import form and the per-Source failure display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| chart         | `sourceCache.*` values, member credentials, the bucket lifecycle rule document in the chart README                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Package       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| daemon        | Source Cache client and signer, `CodeHostRepository.resolveRef` (`codehost/repository.ts`, `codehost/ref-resolver.ts`, `github/repository.ts`, `gitlab/repository.ts`) and its read gate `source-cache/authorize-read.ts`, the workspace read planner `source-cache/read-plan.ts` and retry contract `workspace/bundled-clone.ts` behind `workspace-manager.ts`, workspace write-back `source-cache/write-back.ts` with the header-signed HEAD/retag/DELETE/lifecycle-read client `source-cache/object-client.ts`, the sweep `source-cache/sweep.ts` and lifecycle check `source-cache/lifecycle.ts`, the metrics recorder `source-cache/metrics.ts`, the in-pod reconcile plan and its routing in `skills/sandbox-skill-reconcile.ts` (with the Git plan receipts in `skills/cluster-skill-coordinator.ts`), the skill read planner `createSkillReadPlanner` over `skillPointerKey`, the pod-subject window in `cp/gitcred-server.ts` bound by the tunnel greeting (`shim/tunnel-proxy.ts`, `remote/tunnel-binder.ts`); non-GitHub skill acquisition (`skills/gitlab-skill-source.ts`, `skills/skill-git-hosted.ts`, `skills/pod-skill-ref.ts`) and skipped-Source reporting (`skills/skill-source-failure.ts`) |
+| daemon (shim) | The `skill-git-in-pod-v1` probe `shim/skill-git-feature.ts`, in-pod Git skill acquisition in `shim/skill-handler.ts` over `shim/skill-git-acquire.ts` (with its retry core `source-cache/bundle-retry.ts`), the `bundle` operations (`shim/bundle-handler.ts`, `shim/bundle-protocol.ts`, daemon side `shim/bundle-client.ts`), credential window in the `gitcred` tunnel, the `--bundle-uri` rule in `workspace/git-command-policy.ts`, the `skill-git-gitlab-v1` feature and `credentialHost` plan field (`shim/skill-protocol.ts`, `shim/skill-git-plan.ts`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| daemon store  | `source_cache_object` table on both drivers, with `canonicalColumns` entries for the Postgres dialect; the pointer row's compare-and-set in `setSourceCachePointer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| protocol      | `credential?` `AgentSkillEntry` identity and `normalizeSkillSource`; `agent/skill-status` with `SkillSourceFailureCode`; shim capability and operation schemas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| control-plane | GitLab skill admission, preview and read grant (`gitlab/skill-source.ts`, `gitlab/gitcred.service.ts`); arbitrary-host admission without network access (`otherHostSkillSource`); the `skill_source` credential reference; skipped-Source storage and read API (`agent_skill_source_status`, `ws/handlers/agent-skill-status.ts`, `GET /agents/:id/skill-source-status`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| docs          | [shared-skills.md](shared-skills.md) §3, §6.2 and §8 describe GitHub, GitLab and other-host sources and the in-pod path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| web           | Non-GitHub import form (`CreateGitUrlSkillSourceModal`), the trusted-by-URL badge (`lib/skill-source.ts`) and the per-Source failure display (`AgentSkillsCard.tsx`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| chart         | `sourceCache.*` values, member credentials, the bucket lifecycle rule document in the chart README                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |

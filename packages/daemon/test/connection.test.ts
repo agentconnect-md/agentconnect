@@ -346,10 +346,8 @@ describe('SlackConnection.listBotChannels', () => {
     expect(await conn.listBotChannels()).toBeNull()
   })
 
-  it('lists every public channel of the workspace plus the private channels the bot is in', async () => {
-    // Public channels come from the workspace-wide conversations.list (paginated), member or
-    // not: the connection joins one on first use. Private channels are invitation-only, so the
-    // membership snapshot is the only source for them.
+  it('lists every public channel of the workspace, marking the ones the bot is in, plus its private channels', async () => {
+    // Public channels come from the workspace-wide conversations.list, member or not; private ones only from the membership snapshot.
     const pages = [
       {
         channels: [
@@ -389,10 +387,10 @@ describe('SlackConnection.listBotChannels', () => {
     )
 
     await expect(conn.listChannels()).resolves.toEqual([
-      { id: 'C1', name: 'joined-public' },
-      { id: 'C5', name: 'other-public' },
-      { id: 'C6', name: 'more-public' },
-      { id: 'C2', name: 'joined-private', isPrivate: true }
+      { id: 'C1', name: 'joined-public', joined: true },
+      { id: 'C5', name: 'other-public', joined: false },
+      { id: 'C6', name: 'more-public', joined: false },
+      { id: 'C2', name: 'joined-private', isPrivate: true, joined: true }
     ])
     expect(conversationsList).toHaveBeenNthCalledWith(1, {
       types: 'public_channel',

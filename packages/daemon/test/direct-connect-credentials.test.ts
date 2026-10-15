@@ -98,6 +98,7 @@ describe('provider credentials in the direct-connect stage', () => {
       'read',
       'skills',
       'skills-git',
+      'skills-git-gitlab',
       'skills-git-writeback',
       'skills-receipts',
       'skills-wide',

@@ -15,7 +15,7 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import type { CpClient } from '../cp/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { LocalStore } from '../store/local-store.js'
-import type { TelegramObservedChat } from '../telegram/connection.js'
+import type { TelegramChatMigration, TelegramObservedChat } from '../telegram/connection.js'
 import {
   observedChannelsFor,
   observedMembershipPlatforms,
@@ -188,6 +188,41 @@ export class ObservedChannelsSync {
    */
   async observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void> {
     await this.observePlatformChat('telegram', chat, integrationIds)
+  }
+
+  /** A group upgraded to a supergroup changes id: report the pair so the CP carries the old row's settings over. */
+  async migrateTelegramChat(migration: TelegramChatMigration, integrationIds: readonly string[]): Promise<void> {
+    const { from, to, name, isPrivate } = migration
+    if (from === to) return
+    const store = this.host.store()
+    if (name) {
+      await store.setDisplayName(to, name, Date.now())
+      await this.host.emitSessionMetadataSnapshotsForDisplayName(to)
+    }
+    const snapshots = this.host.channelSnapshots()
+    for (const integrationId of integrationIds) {
+      if (this.host.integrationConfigById(integrationId)?.platform !== 'telegram') continue
+      // Session history still names the old id, so without the marker the next refresh resurrects it.
+      await store.markRetractedConversations(integrationId, [from], this.host.now())
+      const cached = snapshots.get(integrationId)
+      const prior = cached?.channels ?? []
+      const previous = prior.find((c) => c.id === from) ?? prior.find((c) => c.id === to)
+      const moved: IntegrationChannel = {
+        ...previous,
+        id: to,
+        ...(name ? { name } : {}),
+        isPrivate,
+        kind: 'channel'
+      }
+      const channels = [...prior.filter((c) => c.id !== from && c.id !== to), moved]
+      snapshots.set(integrationId, { channels, authoritative: cached?.authoritative ?? false })
+      this.host.cpClient()?.emitIntegrationChannels({
+        integrationId,
+        channels,
+        authoritative: false,
+        migrated: [{ from, to }]
+      })
+    }
   }
 
   /** Record one observed chat row for a platform that cannot enumerate its bot's

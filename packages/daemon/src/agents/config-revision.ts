@@ -70,7 +70,26 @@ export function agentSpecDigest(spec: AgentSpec): string {
   if (content.repositorySelector === null) delete content.repositorySelector
   // So is a cleared assistant mode.
   if (content.assistantMode === null) delete content.assistantMode
+  // A GitHub credential beside `private` restates it, so a CP that starts shipping `credential` does not conflict either.
+  if (content.skills?.some(restatesPrivate)) {
+    content.skills = content.skills.map((entry) => {
+      if (!restatesPrivate(entry)) return entry
+      const { credential: _restated, ...rest } = entry
+      return rest
+    })
+  }
   return 'sha256:' + createHash('sha256').update(canonicalJson(content)).digest('hex')
+}
+
+function restatesPrivate(entry: AgentSpec['skills'][number]): boolean {
+  const credential = entry.credential as { provider?: unknown } | undefined
+  return (
+    entry.private === true &&
+    typeof credential === 'object' &&
+    credential !== null &&
+    credential.provider === 'github' &&
+    Object.keys(credential).length === 1
+  )
 }
 
 /** Deterministic JSON: objects emit their keys in sorted order, arrays keep theirs. */

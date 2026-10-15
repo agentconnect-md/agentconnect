@@ -38,6 +38,8 @@ import type { ExecutionPlane, PlaneResolver, PlaneScope } from '../execution/pla
 import { makeLogger } from '../log.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
+import { isCredentialedSkillSource } from '../skills/skill-ref-resolution.js'
+import type { SkillSourceFailureEntry } from '../skills/skill-source-failure.js'
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import { reserveBuiltinSkills } from '../skills/builtin-skills.js'
 import { bundlePathsFromCheckoutRoot, excludeManagedSkillBundles } from './git-exclude.js'
@@ -124,6 +126,8 @@ export interface PrepareWorkspaceOptions {
   /** Where a TRACKING Git skill ref points now, so a new session picks up a
    * moved branch head (shared-skills.md §5). Absent ⇒ retained commits stand. */
   resolveGitSkillRef?: (entry: AgentSkillEntry, agent: Agent) => Promise<string | null>
+  /** Told the Git Sources a completed install could not install (source-cache.md §11). */
+  reportSkillSourceFailures?: (agent: Agent, failures: SkillSourceFailureEntry[]) => void
 }
 
 export interface GithubReviewWorkspaceRevision {
@@ -525,6 +529,7 @@ export class WorkspaceManager {
         : {}),
       warn: (msg) => skillsLog.warn(msg)
     })
+    if (installed.sourceFailures) opts.reportSkillSourceFailures?.(agent, installed.sourceFailures)
     await this.excludeInstalledSkills(agent, acpCwd, installed.owned)
     return acpCwd
   }
@@ -567,7 +572,7 @@ export class WorkspaceManager {
    *  repository-scoped token for exactly those (shared-skills.md §3). A scratch
    *  or anonymous-git agent with only public sources keeps acquiring anonymously. */
   skillGitCredentialEnabled(agent: Agent): boolean {
-    return this.usesGithubApp(agent) || (agent.skills ?? []).some((entry) => entry.private === true)
+    return this.usesGithubApp(agent) || (agent.skills ?? []).some((entry) => isCredentialedSkillSource(entry))
   }
 
   /** Which managed credential backs this workspace's remote git; undefined ⇒ anonymous. */

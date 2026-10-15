@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { toolsForIntegrations, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import type { Integration } from '../src/agents/agent-schema.js'
+import { SEND_MESSAGE_ACTION_SCHEMAS } from '../src/mcp/ops.js'
+import type { SessionContext } from '../src/mcp/ops/context.js'
+import { sendMessageGuide } from '../src/mcp/ops/tool-guide.js'
 
 const slackInt: Integration = {
   id: 'int-1',
@@ -92,12 +95,22 @@ describe('toolsForIntegrations', () => {
     oneOf?: ObjectSchema[]
   }
   const sendSchema = (ints: Integration[]) => sendTool(ints)!.inputSchema as unknown as ObjectSchema
-  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'toUser' | 'channel' | 'sessionId') =>
-    sendSchema(ints).oneOf!.find((branch) => branch.required?.includes(targetField))!
-  // The unified sendMessage tool's platform enum belongs only to the toUser-mode branch.
-  const sendPlatformEnum = (ints: Integration[]) => {
-    return sendTargetBranch(ints, 'toUser').properties.platform!.enum
-  }
+  // The flat sendMessage schema's one platform enum, narrowed to the agent's platforms.
+  const sendPlatformEnum = (ints: Integration[]) => sendSchema(ints).properties.platform!.enum
+  const guideCtx = (ints: Integration[]): SessionContext => ({
+    agentId: 'agent-self',
+    platform: 'slack',
+    isDm: false,
+    channel: 'C1',
+    thread: '100.1',
+    deliveryThread: '100.1',
+    tools: toolsForIntegrations(ints),
+    integrations: ints.map((i) => ({ id: i.id, platform: i.platform }))
+  })
+  const guideRules = (ints: Integration[], action: keyof typeof SEND_MESSAGE_ACTION_SCHEMAS) =>
+    (sendMessageGuide(guideCtx(ints), action).rules as string[]).join('\n')
+  const actionKeys = (action: keyof typeof SEND_MESSAGE_ACTION_SCHEMAS) =>
+    Object.keys((SEND_MESSAGE_ACTION_SCHEMAS[action] as unknown as { shape: Record<string, unknown> }).shape)
 
   it('injects the Slack read tools + the unified send tool for a Slack integration', () => {
     const names = toolsForIntegrations([slackInt]).map((t) => t.name)
@@ -295,126 +308,93 @@ describe('toolsForIntegrations', () => {
     )
   })
 
-  it('exposes `thread` on the bare-channel branch ONLY, on any integration set', () => {
-    // send-message-routing-rework.md §2.2 / §10 case 1. The schema-level statement of where a
-    // visible in-thread form exists: the update (§2.4) carries `thread` on the bare-`channel`
-    // branch, and nowhere else. A `toAgent` wake anchors to the post the daemon just created,
-    // an existing thread offers it no anchor; and speaking in the CURRENT thread stays the
-    // ordinary turn reply's job (§2.1). Asserted across integration sets because the branch
-    // union is built per-agent — a `thread` reappearing on only the Telegram shape would be
-    // just as wrong and much easier to miss.
+  it('accepts `thread` on postMessage ONLY, on any integration set', () => {
+    // send-message-routing-rework.md §2.2/§2.4: the update form is the only visible in-thread send.
     for (const ints of [[slackInt], [telegramInt], [slackInt, telegramInt]]) {
-      for (const branch of sendSchema(ints).oneOf!) {
-        const keys = Object.keys(branch.properties)
-        const isBareChannel = keys.includes('channel') && !keys.includes('toAgent') && !keys.includes('toUser')
-        expect(keys.includes('thread')).toBe(isBareChannel)
-      }
+      expect(Object.keys(sendSchema(ints).properties)).toContain('thread')
     }
+    for (const action of Object.keys(SEND_MESSAGE_ACTION_SCHEMAS) as (keyof typeof SEND_MESSAGE_ACTION_SCHEMAS)[]) {
+      expect(actionKeys(action).includes('thread'), action).toBe(action === 'postMessage')
+    }
+    expect(guideRules([slackInt], 'postMessage')).toContain('`thread` is only for a bare `channel` post')
   })
 
-  it('descriptor shape: the unified send tool requires one strict, non-overlapping target branch', () => {
+  it('descriptor shape: one flat object with a required action, no top-level union, within the size budget', () => {
     const tool = sendTool([slackInt])!
     expect(tool.name).toBe('sendMessage')
     const schema = sendSchema([slackInt])
     expect(schema.type).toBe('object')
-    expect(schema.oneOf).toHaveLength(4)
-
-    const agent = sendTargetBranch([slackInt], 'toAgent')
-    expect(agent.required).toEqual(['toAgent', 'message'])
-    expect(agent.additionalProperties).toBe(false)
-    expect(Object.keys(agent.properties)).toEqual(['toAgent', 'channel', 'message'])
-    expect(agent.properties.toAgent!.description).toContain('Without `channel`')
-    expect(agent.properties.toAgent!.description).toContain('With `channel` it also posts at the channel root')
-
-    const user = sendTargetBranch([slackInt], 'toUser')
-    expect(user.required).toEqual(['toUser', 'message'])
-    expect(user.additionalProperties).toBe(false)
-    expect(Object.keys(user.properties)).toEqual([
+    expect(schema).not.toHaveProperty('oneOf')
+    expect(schema).not.toHaveProperty('anyOf')
+    expect(schema.required).toEqual(['action', 'message'])
+    expect(schema.additionalProperties).toBe(false)
+    expect(Object.keys(schema.properties)).toEqual([
+      'action',
+      'message',
+      'toAgent',
       'toUser',
       'channel',
-      'platform',
-      'integrationId',
+      'thread',
+      'sessionId',
+      'taskId',
+      'messageId',
       'attachment',
-      'message'
+      'platform',
+      'integrationId'
     ])
-    expect(user.properties.toUser!.description).toContain('A DM is exactly one id and no `channel`')
-    expect(user.properties.toUser!.description).toContain('one id or an array posts one channel-root message')
-    expect(user.properties.toUser!.oneOf).toMatchObject([
+    expect(schema.properties.action!.enum).toEqual([
+      'callAgent',
+      'startTask',
+      'messageTask',
+      'replyToSession',
+      'postMessage'
+    ])
+    expect(schema.properties.toUser!.oneOf).toMatchObject([
       { type: 'string', minLength: 1 },
       { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } }
     ])
-
-    const channel = sendTargetBranch([slackInt], 'channel')
-    expect(channel.required).toEqual(['channel', 'message'])
-    expect(channel.additionalProperties).toBe(false)
-    expect(Object.keys(channel.properties)).toEqual([
-      'channel',
-      'thread',
-      'platform',
-      'integrationId',
-      'attachment',
-      'message'
-    ])
-    expect(tool.description).toContain('`{"channel":"<channel id>","message":"..."}` — no recipient')
-
-    const session = sendTargetBranch([slackInt], 'sessionId')
-    expect(session.required).toEqual(['sessionId', 'message'])
-    expect(session.additionalProperties).toBe(false)
-    expect(Object.keys(session.properties)).toEqual(['sessionId', 'message'])
-
-    expect(tool.description).toMatch(/^Send one message using exactly one target mode/)
-    expect(tool.description).toContain('{"toAgent":"<agent id>","message":"..."}')
-    expect(tool.description).toContain('{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}')
-    expect(tool.description).toContain('This form MAY target yourself')
-    expect(tool.description).toContain('your own # Agent ID')
-    expect(user.properties.toUser!.description).toContain('never an AgentConnect agent or your own bot identity')
-    expect(tool.description).not.toContain('cannot impersonate anyone or wake yourself')
-    expect(tool.description).toContain('{"toUser":"<Slack user id>","message":"..."}')
-    expect(tool.description).toContain('an id array with `channel` posts once at the channel root')
-    expect(tool.description).toContain('{"channel":"<channel id>","message":"..."}')
-    expect(tool.description).toContain('{"sessionId":"<Parent session>","message":"..."}')
+    for (const ints of [[], [slackInt], [slackInt, telegramInt, discordInt, feishuInt, qqInt]]) {
+      expect(sendTool(ints)!.description.length).toBeLessThanOrEqual(1024)
+    }
+    const guide = toolsForIntegrations([slackInt]).find((t) => t.name === 'getToolGuide')!
+    expect(guide.description.length + JSON.stringify(guide.inputSchema).length).toBeLessThanOrEqual(600)
+    expect(guide.inputSchema).not.toHaveProperty('oneOf')
+    expect(tool.description).toContain('Required action: callAgent')
+    expect(tool.description).toContain('Call getToolGuide {"tool":"sendMessage"} for arguments and examples.')
+    expect(tool.description).toContain('Calls without action fail without sending anything.')
+    expect(tool.description).toContain('toAgent: {agentId: "...", needsReply: true}')
+    // Tasks and explicit peer sessions are advertised now that the daemon implements both (§8, §9).
+    expect(tool.description).toContain('sessionId continues an existing peer session')
+    expect(tool.description).toContain('startTask starts a background task of this session')
+    expect(tool.description).toContain('messageTask sends a task you started more (taskId)')
+    // §9.4: a reply names the message it answers.
+    expect(tool.description).toContain('replyToSession answers a message another session sent you, by its messageId')
+    expect(schema.properties.sessionId!.description).toContain('callAgent only')
+    expect(schema.properties.messageId!.description).toContain('replyToSession only')
   })
 
-  it('states what a channel-root post costs, and points a relayed answer at the parent session', () => {
-    // A coordinate-only description leaves the three branches reading as equivalent ways to
-    // "send somewhere", so an agent asked to relay an answer back to a customer picks the
-    // channel it can see and posts at its root — a top-level message plus a NEW session,
-    // instead of a reply in the conversation that asked. The consequence has to be ON the
-    // parameter that carries it, and the tool has to say the turn's own reply already lands here.
+  it('states what a channel-root post costs, and points a relayed answer at the message it answers', () => {
     const description = sendTool([slackInt])!.description
-    // §2.1 is now the FIRST thing the tool says: to speak where you already are — including
-    // to address a peer or a human there — write your ordinary reply and @-mention them.
-    expect(description).toContain('CONVERSATION YOU ARE ALREADY IN')
-    expect(description).toContain('ordinary turn reply')
-    expect(description).toContain('@-mention')
-    expect(description).toContain('opens a NEW conversation')
-    expect(description).toContain('never at their channel root')
-    expect(sendTargetBranch([slackInt], 'sessionId').properties.sessionId!.description).toContain(
-      'channel ROOT would start a new one'
+    expect(description).toContain('For your current conversation, write your ordinary reply.')
+    expect(guideRules([slackInt], 'replyToSession')).toContain(
+      'Never post the answer at that conversation’s channel root instead: that starts a separate conversation.'
     )
-
-    // Every visible send is a ROOT post now (§2.2), so both the tool and the `channel` parameter
-    // have to say so — there is no longer an in-thread form that avoids the cost.
-    for (const text of [description, sendTargetBranch([slackInt], 'channel').properties.channel!.description!])
-      expect(text).toMatch(/(at )?channel.{0,3}s? root/i)
-
-    // …and the toUser mode is not DM-only: its channel-root form posts visible @-mentions,
-    // which is a legitimate reason to send into a conversation the agent is not in.
-    expect(description).toContain('@-mentions every listed user')
-    expect(sendTargetBranch([slackInt], 'toUser').properties.toUser!.description).toContain(
-      '@-mentions every listed user'
+    expect(guideRules([slackInt], 'postMessage')).toContain(
+      'posts one message at the channel root that @-mentions all of them'
+    )
+    expect(guideRules([slackInt], 'postMessage')).toContain(
+      'never for the thread you are answering — that is your ordinary reply'
     )
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {
-    const branches = (sendTargetBranch([slackInt], 'toAgent').properties.toAgent as { oneOf: unknown[] }).oneOf as {
+    const branches = (sendSchema([slackInt]).properties.toAgent as { oneOf: unknown[] }).oneOf as {
       type?: string
       properties?: Record<string, unknown>
       required?: string[]
       additionalProperties?: boolean
     }[]
-    // The bare-string form stays FIRST: it is what every warm session's descriptor and every
-    // published example teaches, and the object form only layers delivery options onto it.
+    // The bare-string form stays FIRST; the object form only layers delivery options onto it.
     expect(branches).toHaveLength(2)
     expect(branches[0]!.type).toBe('string')
     expect(Object.keys(branches[1]!.properties!)).toEqual(['agentId', 'needsReply'])
@@ -422,39 +402,28 @@ describe('toolsForIntegrations', () => {
     expect(branches[1]!.additionalProperties).toBe(false)
   })
 
-  it('teaches discovery and target branches how to address self without confusing the Slack bot identity', () => {
-    const tools = toolsForIntegrations([slackInt])
-    const listAgents = tools.find((tool) => tool.name === 'listAgents')!
-    const agent = sendTargetBranch([slackInt], 'toAgent')
-    const user = sendTargetBranch([slackInt], 'toUser')
-
+  it('teaches discovery and the guide how to address self without confusing the Slack bot identity', () => {
+    const listAgents = toolsForIntegrations([slackInt]).find((tool) => tool.name === 'listAgents')!
     expect(listAgents.description).toContain('INCLUDING YOURSELF')
-    expect(listAgents.description).toContain('`toAgent` + `channel`')
-    expect(agent.properties.toAgent!.description).toContain(
-      'your own ID there opens and activates one new conversation'
-    )
-    expect(agent.properties.toAgent!.description).toContain('your own ID from the # Agent block')
-    expect(agent.properties.toAgent!.description).toContain(
-      'Without `channel`, your own ID opens a background sub-session'
-    )
-    expect(user.properties.toUser!.description).toContain('never an AgentConnect agent or your own bot identity')
+    expect(listAgents.description).toContain('`callAgent` with `channel`')
+    const callAgent = guideRules([slackInt], 'callAgent')
+    expect(callAgent).toContain('never a platform member id such as a Slack `U…` id')
+    expect(callAgent).toContain('Your own id (agent-self) with `channel` opens and activates a visible conversation')
+    expect(guideRules([slackInt], 'postMessage')).toContain('never an AgentConnect agent or your own bot identity')
   })
 
-  it('still injects the unified send tool for an agent with no integrations, but no platform read tools', () => {
-    // The unified sendMessage tool is ALWAYS present (a memory-only agent can wake a peer /
-    // reply to its origin) — but the platform read helpers only appear with ≥1 integration.
+  it('still injects sendMessage and its guide for an agent with no integrations, but no platform read tools', () => {
     const names = toolsForIntegrations([]).map((t) => t.name)
     expect(names).toContain('sendMessage')
+    expect(names).toContain('getToolGuide')
     expect(names).not.toContain('getCurrentChannel')
     expect(names).not.toContain('listChannels')
-    // With no platform, the toUser branch still describes the shape but has no selectable platform enum.
-    expect(sendTargetBranch([], 'toUser').properties.platform).not.toHaveProperty('enum')
+    // With no platform, `platform` still describes the field but has no selectable enum.
+    expect(sendSchema([]).properties.platform).not.toHaveProperty('enum')
   })
 
   it('injects the universal memory + collaboration + send tools for every agent, even with no integrations', () => {
     const tools = toolsForIntegrations([])
-    // Universal, platform-independent; no Slack/Telegram read tools. `sendMessage` is
-    // always present (session-concept §3); `messageAgent` is gone (merged into it).
     expect(tools.map((t) => t.name)).toEqual([
       'describeMemoryEntries',
       'listMemoryEntries',
@@ -470,15 +439,13 @@ describe('toolsForIntegrations', () => {
       'listChannelAgents',
       'viewSessionStatus',
       'recall',
-      'sendMessage'
+      'sendMessage',
+      'getToolGuide'
     ])
   })
 
-  it('offers one surface only: every composition carries the full production target union', () => {
-    // The user-facing invariant behind removing the evaluation "collaboration off"
-    // toggle: there is exactly ONE tool surface, and it is the production one.
-    // Whatever options a caller composes with, the collaboration tools are present
-    // and sendMessage carries the full four-branch target union in stable order.
+  it('offers one surface only: every composition carries every sendMessage action', () => {
+    // There is exactly ONE tool surface, and it is the production one.
     const surfaces = [
       toolsForIntegrations([]),
       toolsForIntegrations([slackInt]),
@@ -486,16 +453,17 @@ describe('toolsForIntegrations', () => {
     ]
     for (const tools of surfaces) {
       const names = tools.map((tool) => tool.name)
-      for (const required of ['listAgents', 'listChannelAgents', 'viewSessionStatus', 'sendMessage']) {
+      for (const required of ['listAgents', 'listChannelAgents', 'viewSessionStatus', 'sendMessage', 'getToolGuide']) {
         expect(names).toContain(required)
       }
       const send = tools.find((tool) => tool.name === 'sendMessage')!
       const schema = send.inputSchema as unknown as ObjectSchema
-      expect(schema.oneOf?.map((branch) => branch.required)).toEqual([
-        ['toAgent', 'message'],
-        ['toUser', 'message'],
-        ['channel', 'message'],
-        ['sessionId', 'message']
+      expect(schema.properties.action!.enum).toEqual([
+        'callAgent',
+        'startTask',
+        'messageTask',
+        'replyToSession',
+        'postMessage'
       ])
       expect(send.description).not.toContain('disabled for this run')
     }

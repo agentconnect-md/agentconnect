@@ -1,15 +1,6 @@
 import type { RuntimeDef } from '../config/config-schema.js'
 
-/**
- * Audited identity compatibility between AgentConnect runtime ids and the
- * exact skills CLI version bundled with this daemon. This is deliberately an
- * agent identity table, never a filesystem-layout table: the CLI remains the
- * sole authority for destinations.
- *
- * A new harness is unsupported until onboarding verifies its CLI identity and
- * real discovery behavior, then adds that identity here (or declares it in an
- * operator-owned RuntimeDef). Similar-looking names are never guessed.
- */
+// Identities verified with the bundled skills CLI and native discovery; the CLI owns destination paths.
 export const AUDITED_RUNTIME_SKILLS_AGENTS: Readonly<Record<string, string>> = Object.freeze({
   // Legacy/local runtime ids still present in existing agent.json files.
   claude: 'claude-code',
@@ -44,9 +35,9 @@ export const AUDITED_RUNTIME_SKILLS_AGENTS: Readonly<Record<string, string>> = O
   // Curated/legacy ids whose RuntimeDef also carries the declaration.
   hermes: 'hermes-agent',
   'hermes-agent': 'hermes-agent',
-  // DeepSeek Harness has no CLI agent id of its own; its filesystem skill provider scans the
-  // cross-agent `<projectRoot>/.agents/skills` root the CLI's `universal` identity writes.
+  // DeepSeek and Muse discover the project .agents/skills directory written by the universal identity.
   'dsh-acp': 'universal',
+  'muse-acp': 'universal',
   'kiro-cli': 'kiro-cli',
   // skills@1.5.21 `openclaw` identity — global ~/.openclaw/skills, project `skills/`.
   openclaw: 'openclaw',

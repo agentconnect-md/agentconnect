@@ -1367,4 +1367,23 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
     expect(skillGitCredentialFor(github, window, 'a', deps)?.env.AC_GITCRED_CAPABILITY).toBe('cap')
     expect(skillGitCredentialFor(github, undefined, 'a', deps)).toBeUndefined()
   })
+
+  it('attaches the window credential to a GitLab Source only on the instance its plan names', () => {
+    const deps = { credentialHelper: HELPER, credentialSocket: SOCKET }
+    const window = { capability: 'cap' }
+    const gitlab = {
+      ...plan({ tip: 'a'.repeat(40) } as World),
+      url: 'https://gitlab.example.test/prefix/group/skills.git',
+      credentialHost: 'https://gitlab.example.test/prefix'
+    }
+    const credential = skillGitCredentialFor(gitlab, window, 'a', deps)
+    expect(credential?.host).toBe('https://gitlab.example.test/prefix')
+    expect(credential?.env.AC_GITCRED_HOSTS).toBe('gitlab=https://gitlab.example.test/prefix')
+    expect(credential?.env.AC_GITCRED_CAPABILITY).toBe('cap')
+    // A named instance that does not prefix the URL, or no window, carries nothing.
+    expect(
+      skillGitCredentialFor({ ...gitlab, credentialHost: 'https://code.example.test' }, window, 'a', deps)
+    ).toBeUndefined()
+    expect(skillGitCredentialFor(gitlab, undefined, 'a', deps)).toBeUndefined()
+  })
 })

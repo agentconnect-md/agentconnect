@@ -78,6 +78,7 @@ import {
   WorkspaceReadReq,
   WorkspaceReadContent,
   WorkspaceUploadReq,
+  WorkspaceUploadBeginOk,
   WorkspaceUploadOk,
   WorkspaceWriteReq,
   WorkspaceWriteOk,
@@ -733,6 +734,12 @@ export class ControlSender {
       { epoch: c.sessionEpoch },
       { ackTimeoutMs: WORKSPACE_TRANSFER_BUDGET_MS, maxTries: 1 }
     )
+  }
+
+  /** Start that upload in the background (REQ → `workspace/upload/begin/ok`); the daemon reports its outcome with `transfer/settle`. */
+  async workspaceUploadBegin(daemonId: string, req: WorkspaceUploadReq): Promise<WorkspaceUploadBeginOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceUploadBeginOk>('workspace/upload/begin', req, { epoch: c.sessionEpoch })
   }
 
   /** Create or replace one scratch-workspace text file on the owning daemon. */

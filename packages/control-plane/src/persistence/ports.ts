@@ -11,6 +11,7 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  SkillSourceFailureCode,
   AgentModelProvider,
   AgentApiGates,
   ChatActions,
@@ -53,7 +54,8 @@ import type {
   SessionStayedHomeReason,
   BotRevocationEvidence,
   PlaceExternalReason,
-  RuntimeStrategyEntries
+  RuntimeStrategyEntries,
+  TransferUploadOutcome
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -5517,7 +5519,7 @@ export interface ReportedChannel {
  * both internal trust domains (§4).
  */
 export interface IntegrationChannelRepo {
-  /** Converge to a channel report: known rows keep their trigger, new ones take `defaultTrigger` or the open default (§14.9); an authoritative snapshot drops absent channel rows, `removed` deletes outright. */
+  /** Converge to a channel report: known rows keep their trigger, new ones take `defaultTrigger` or the open default (§14.9); an authoritative snapshot drops absent channel rows, `removed` deletes outright, `migrated` re-keys a conversation. */
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
@@ -5528,8 +5530,10 @@ export interface IntegrationChannelRepo {
       defaultTriggerByChannel?: ReadonlyMap<string, SeedTrigger>
       authoritative?: boolean
       removed?: string[]
+      /** Conversations whose platform id changed: `from`'s settings move onto `to` unless an editor already chose `to`'s, then `from` is deleted. */
+      migrated?: readonly { from: string; to: string }[]
     }
-  ): Promise<{ externalChanged: boolean }>
+  ): Promise<{ externalChanged: boolean; migrated?: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
@@ -6587,6 +6591,12 @@ export interface McpProviderOauthStateStore {
 //   Shareable, so the same visibility policy as agents/MCP.
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Who vouches for a skill source: the provider-qualified numeric id of its CodeHostRepository (source-cache.md §11). */
+export interface SkillSourceCredentialRef {
+  provider: 'github' | 'gitlab'
+  repoId: bigint
+}
+
 /** Domain view of a `skill_source` row. Shareable (visibility + complete
  *  Selected audience). Nothing here is secret. */
 export interface SkillSourceRecord extends Shareable {
@@ -6598,7 +6608,8 @@ export interface SkillSourceRecord extends Shareable {
   ref: string | null
   subDir: string | null
   skills: string[] // empty ⇒ install every skill; else only these
-  private: boolean // repo was private at bind time ⇒ daemons acquire through the org GitHub App
+  private: boolean // credential is GitHub ⇒ daemons acquire through the org GitHub App
+  credential: SkillSourceCredentialRef | null // null ⇒ anonymous
   createdByUserId: string | null
   createdAt: Date
   updatedAt: Date
@@ -6612,7 +6623,7 @@ export interface CreateSkillSourceInput {
   ref?: string | null
   subDir?: string | null
   skills?: string[]
-  private?: boolean // default false
+  credential?: SkillSourceCredentialRef | null // default anonymous
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[]
   createdByUserId?: string
@@ -6625,7 +6636,7 @@ export interface UpdateSkillSourceInput {
   ref?: string | null
   subDir?: string | null
   skills?: string[]
-  private?: boolean
+  credential?: SkillSourceCredentialRef | null
 }
 
 export interface SkillSourceRepo {
@@ -6660,6 +6671,24 @@ export interface SkillSourceRepo {
    *  Org-fenced: a cross-org id is 'deleted' — the same answer as an unknown id,
    *  and (unlike 'referenced') one that discloses nothing about the foreign row. */
   delete(orgId: OrgId, id: string): Promise<'deleted' | 'referenced'>
+}
+
+/** One enabled skill Source's latest install failure for an agent (source-cache.md §11). */
+export interface AgentSkillSourceStatusRecord {
+  sourceName: string
+  code: SkillSourceFailureCode
+  reportedAt: Date
+}
+
+/** Daemon-reported skill Source failures, keyed by agent and Source name; callers fence the agent's org. */
+export interface AgentSkillSourceStatusRepo {
+  /** Make `failed` the agent's whole status: a Source not named installed, so its row goes. */
+  replace(
+    agentId: AgentId,
+    failed: Array<{ sourceName: string; code: SkillSourceFailureCode }>,
+    reportedAt: Date
+  ): Promise<void>
+  list(agentId: AgentId): Promise<AgentSkillSourceStatusRecord[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -7750,4 +7779,33 @@ export interface ProviderKeyStore {
   put(orgId: OrgId, provider: ProviderKeyProvider, input: SetProviderKeyInput): Promise<ProviderKeyMetadata | null>
   get(orgId: OrgId, provider: ProviderKeyProvider): Promise<ProviderCredentials | null>
   delete(orgId: OrgId, provider: ProviderKeyProvider): Promise<void>
+}
+
+// Console file-transfer upload tickets (source-cache-file-transfer.md §3): shared so any CP replica can sign.
+export interface UploadTicket {
+  daemonId: string
+  objectKey: string
+  size: number
+  /** A begun upload's poll scope: the agent and path it was opened for. */
+  agentId?: string
+  path?: string
+}
+
+/** What a poller reads: the ticket and, once the daemon settled it, the outcome. */
+export interface UploadTicketState extends UploadTicket {
+  outcome?: TransferUploadOutcome
+}
+
+export interface UploadTicketRepo {
+  /** Record a ticket that expires `ttlMs` after database time, sweeping expired tickets first. */
+  open(id: string, ticket: UploadTicket, ttlMs: number): Promise<void>
+  /** The unexpired, unsettled ticket `id` if it was issued to `daemonId`. */
+  find(id: string, daemonId: string): Promise<Omit<UploadTicket, 'daemonId'> | undefined>
+  /** The unexpired, unsettled ticket already uploading `objectKey` on `daemonId`, so a retry joins it. */
+  pending(objectKey: string, daemonId: string): Promise<string | undefined>
+  /** Record the outcome once and keep the row `retainMs` for pollers; false ⇒ unknown, expired or already settled. */
+  settle(id: string, daemonId: string, outcome: TransferUploadOutcome, retainMs: number): Promise<boolean>
+  /** The unexpired ticket `id`, settled or not. */
+  get(id: string): Promise<UploadTicketState | undefined>
+  close(id: string): Promise<void>
 }

@@ -6,7 +6,12 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
-import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
+import {
+  isTelegramMembershipServiceMessage,
+  normalizeTelegramMessage,
+  telegramChatMigration,
+  type TelegramMessage
+} from './normalize.js'
 import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from './render.js'
 import type { PlatformConnection, PlatformReactionIntent } from '../platforms/contract.js'
 
@@ -112,11 +117,21 @@ export interface TelegramObservedChat {
   isPrivate: boolean
 }
 
+/** A group upgraded to a supergroup: the same chat, now addressed by `to` instead of `from`. */
+export interface TelegramChatMigration {
+  from: string
+  to: string
+  name?: string
+  isPrivate: boolean
+}
+
 export interface TelegramDeps {
   group: ConsolidatedTelegramGroup
   onMessage: (msg: NormalizedMessage) => void
   /** Membership service records discover chats but never enter message routing. */
   onBotAddedToChat?: (chat: TelegramObservedChat) => void
+  /** Upgrade records re-key a known chat and, like membership records, never enter routing. */
+  onChatMigrated?: (migration: TelegramChatMigration) => void
   /** An inline-keyboard button was tapped (session-control cards — /models etc.). */
   onCallback?: (cb: TelegramCallback) => void
   newTraceId: () => string
@@ -312,6 +327,17 @@ export class TelegramConnection implements PlatformConnection {
     log?.debug(`telegram: getMe ok → bot @${this.botUsername || '?'} (id ${this.botUserId || 'n/a'})`)
 
     this.bot.onMessage((message) => {
+      const migration = telegramChatMigration(message)
+      if (migration) {
+        const chat = message.chat
+        this.deps.onChatMigrated?.({
+          ...migration,
+          ...(chat.title || chat.username ? { name: chat.title ?? chat.username } : {}),
+          isPrivate: !chat.username
+        })
+        log?.info(`telegram: chat ${migration.from} migrated to ${migration.to}`)
+        return
+      }
       if (isTelegramMembershipServiceMessage(message)) {
         const botWasAdded = message.new_chat_members?.some((member) => String(member.id) === this.botUserId) === true
         if (botWasAdded) {

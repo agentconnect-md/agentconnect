@@ -84,6 +84,8 @@ export interface OpenRuntimeSessionResult {
   created: boolean
   /** True only when a persisted runtime session could not be resumed and a fresh one replaced it. */
   historyLost: boolean
+  /** True when THIS call re-attached a persisted runtime session with `session/load`. */
+  resumed: boolean
   /** False when the runtime rejected the trusted additional descriptors and only the
    *  ordinary server set succeeded. Absent when no additional descriptors existed. */
   additionalMcpAttached?: boolean
@@ -101,6 +103,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   let additionalMcpAttached: boolean | undefined = input.additionalMcpServers?.length ? true : undefined
   let created = false
   let historyLost = false
+  let resumed = false
 
   const sessionStartEffort = async (): Promise<{ value?: string; chatSelected: boolean }> => {
     if (!input.chatRuntimeChangesAllowed()) return { chatSelected: false }
@@ -239,7 +242,6 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     const ordinaryMcpServers = input.mcpServersFor()
     const mcpServers = [...ordinaryMcpServers, ...(input.additionalMcpServers ?? [])]
     const fallbackMcpServers = input.additionalMcpServers?.length ? ordinaryMcpServers : undefined
-    let resumed = false
     if (host.loadSupported?.()) {
       // §7.3 closed/evicted → resuming: mark the re-attach so a TTL-closed session
       // isn't seen as `closed` mid-load, then fall through to `prompting` later.
@@ -273,6 +275,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     rec,
     created,
     historyLost,
+    resumed,
     ...(additionalMcpAttached !== undefined ? { additionalMcpAttached } : {})
   }
 }

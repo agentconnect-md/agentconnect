@@ -1163,18 +1163,18 @@ gets its item ledger tools `takeItem`, `listItems`, `updateItem` and `followItem
 re-checks the mode, and the asker is the sender of the message that started the live turn. A
 session of such an agent with a platform conversation of its own also gets `remind`,
 `listReminders` and `cancelReminder` (`src/mcp/ops/assistant-reminders.ts`, §5.9): the daemon's
-patrol sweep posts a due reminder's text into that conversation, with no turn. A place's main
-conversation of every agent, webchat included and in assistant mode or not, also gets
-`stopSubsession` (`src/mcp/ops/assistant-subsessions.ts`, §5.8): it stops a sub-session that
-conversation opened through the console's own Stop core, on a turn a person there started.
+patrol sweep posts a due reminder's text into that conversation, with no turn. Every session
+that can start a background task (every one except a task, patrol or approved proposal, of
+every agent, webchat, hook and scheduled runs included) also gets `stopTask {taskId}`
+(`src/mcp/ops/assistant-subsessions.ts`, [send-message-guide.md](send-message-guide.md) §8.7):
+it stops a task that same session started, through the console's own Stop core; any other id
+is refused in one set of words.
 
 Every descriptor has to reach the model whole on both runtimes the product ships. Claude Code
 cuts a tool description at 2,048 characters and appends `… [truncated]`; when it flattens a
-top-level `oneOf`, as for `sendMessage`, the note it prepends counts toward that limit. Codex
-keeps the description whole but strips every description from an input schema whose compact
-form exceeds 5,000 bytes. So `sendMessage` keeps its rules in the tool description and the
-per-form detail in its parameter descriptions, and `test/mcp-tool-description-limits.test.ts`
-checks every descriptor against both limits.
+top-level `oneOf`, the note it prepends counts toward that limit. Codex keeps the description
+whole but strips every description from an input schema whose compact form exceeds 5,000
+bytes. `test/mcp-tool-description-limits.test.ts` checks every descriptor against both limits.
 
 A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of

@@ -136,13 +136,14 @@ describe('cron/report EVT → lastRunAt convergence', () => {
     await expect(report(DAEMON, randomUUID(), agentId, '2026-07-03T09:00:00.000Z')).resolves.toBeUndefined()
   })
 
-  it('attaches the session while running; the completion report closes it with outcome', async () => {
+  it('attaches the session while running and preserves a completion after 30 days', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
     const cronId = await seedCron(agentId)
     const repo = new PgCronRepo(prisma)
     const firedAt = '2026-07-03T09:00:00.000Z'
+    const durationMs = 30 * 24 * 60 * 60 * 1000 + 1
 
     await report(DAEMON, cronId, agentId, firedAt) // fire → running
     let runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
@@ -160,12 +161,11 @@ describe('cron/report EVT → lastRunAt convergence', () => {
       sessionId: 'ses_1'
     })
 
-    // A terminal report from a rolling-compatible daemon may omit the session;
-    // omission preserves the association already recorded by the progress report.
-    await report(DAEMON, cronId, agentId, firedAt, { status: 'success', durationMs: 4200 })
+    // A completion without a session preserves the link recorded by the progress report.
+    await report(DAEMON, cronId, agentId, firedAt, { status: 'success', durationMs })
     runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
     expect(runs).toHaveLength(1) // same (cronId, firedAt) key — closed, not duplicated
-    expect(runs[0]).toMatchObject({ status: 'success', durationMs: 4200, sessionId: 'ses_1' })
+    expect(runs[0]).toMatchObject({ status: 'success', durationMs, sessionId: 'ses_1' })
 
     // Another FIRE re-assert never reopens the closed run.
     await report(DAEMON, cronId, agentId, firedAt)

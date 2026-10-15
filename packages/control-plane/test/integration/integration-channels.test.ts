@@ -220,7 +220,8 @@ async function report(
    *  report runs the REAL seed resolver over these links instead of none. */
   links?: Record<string, SlackIdentity>,
   /** §14.8: records the re-converge a report that opened a DM has to trigger. */
-  integrationConverge?: (agent: unknown) => Promise<void>
+  integrationConverge?: (agent: unknown) => Promise<void>,
+  migrated?: { from: string; to: string }[]
 ): Promise<void> {
   const frame = {
     v: 1,
@@ -231,7 +232,8 @@ async function report(
       integrationId,
       channels,
       ...(authoritative === undefined ? {} : { authoritative }),
-      ...(removed === undefined ? {} : { removed })
+      ...(removed === undefined ? {} : { removed }),
+      ...(migrated === undefined ? {} : { migrated })
     }
   } as AnyFrame
   const users = new PgUserRepo(prisma)
@@ -1289,6 +1291,90 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await report(DAEMON, id, [{ id: '-1001', name: 'First group' }], undefined, undefined, false, ['-1001'])
 
     expect(await channels.listForIntegration(IntegrationId(id))).toEqual([])
+  })
+
+  // A Telegram group upgraded to a supergroup changes id; its settings must follow, not reset to a fresh row.
+  it('a migration moves the old conversation settings onto the new id and drops the old row', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    const converged: unknown[] = []
+    const converge = async (agent: unknown) => {
+      converged.push(agent)
+    }
+
+    await report(DAEMON, id, [{ id: '-1001', name: 'Ops group' }], undefined, undefined, false)
+    await channels.setTrigger(IntegrationId(id), '-1001', { trigger: 'any' }, { chosen: true })
+    await channels.setSessionMode(IntegrationId(id), '-1001', 'append')
+    const migrate = () =>
+      report(
+        DAEMON,
+        id,
+        [{ id: '-1002001', name: 'Ops group' }],
+        undefined,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        converge,
+        [{ from: '-1001', to: '-1002001' }]
+      )
+    await migrate()
+
+    const rows = await channels.listForIntegration(IntegrationId(id))
+    expect(rows).toEqual([
+      expect.objectContaining({
+        channelId: '-1002001',
+        name: 'Ops group',
+        trigger: 'any',
+        sessionMode: 'append',
+        triggerChosen: true
+      })
+    ])
+    expect(converged).toHaveLength(1)
+    // Both sides of the upgrade report it; the second finds nothing left to move.
+    await migrate()
+    expect(await channels.listForIntegration(IntegrationId(id))).toEqual(rows)
+    expect(converged).toHaveLength(1)
+  })
+
+  it('a migration keeps a choice an editor already made on the new id', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: '-1001', name: 'Ops group' },
+        { id: '-1002001', name: 'Ops group' }
+      ],
+      undefined,
+      undefined,
+      false
+    )
+    await channels.setTrigger(IntegrationId(id), '-1001', { trigger: 'any' }, { chosen: true })
+    await channels.setTrigger(IntegrationId(id), '-1002001', { trigger: 'off' }, { chosen: true })
+    await report(
+      DAEMON,
+      id,
+      [{ id: '-1002001', name: 'Ops group' }],
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      [{ from: '-1001', to: '-1002001' }]
+    )
+
+    const rows = await channels.listForIntegration(IntegrationId(id))
+    expect(rows).toEqual([expect.objectContaining({ channelId: '-1002001', trigger: 'off', triggerChosen: true })])
   })
 
   // §14.3 DM rows are exempt from authoritative deletion (no snapshot can list them),

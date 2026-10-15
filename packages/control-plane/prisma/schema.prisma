@@ -970,6 +970,7 @@ model Agent {
   repoAuths             AgentRepoAuthorization[]
   installationAuths     AgentInstallationAuthorization[]
   secrets               AgentSecret[]
+  skillSourceStatus     AgentSkillSourceStatus[]
   webchatConversations  WebchatConversation[]
   webchatParticipations WebchatConversationAgent[]
   webchatMcpDelegations WebchatMcpDelegation[]
@@ -1047,6 +1048,19 @@ model AgentSecret {
 
   @@id([agentId, key])
   @@map("agent_secret")
+}
+
+/// One agent Source's latest reported install failure code, never Git or CLI output (source-cache.md §11).
+model AgentSkillSourceStatus {
+  agentId    String   @db.Uuid
+  sourceName String // the org-level skill_source.name the agent enables
+  code       String // closed set: protocol SkillSourceFailureCode
+  reportedAt DateTime @db.Timestamptz(6)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, sourceName])
+  @@map("agent_skill_source_status")
 }
 
 /// Access level of an AgentRepoAuthorization row. Three tiers instead of
@@ -1967,7 +1981,7 @@ model CronRun {
   orgId      String
   startedAt  DateTime      @db.Timestamptz(6) // CronReport.firedAt
   status     CronRunStatus @default(running)
-  durationMs Int?
+  durationMs Float?       @db.DoublePrecision
   sessionId  String? // ACP session id (console deep-link); null while running / on legacy reports
   reason     String? // short failure text (status "failed")
   createdAt  DateTime      @default(now()) @db.Timestamptz(6)
@@ -2157,7 +2171,7 @@ model HookRun {
   publishedCommentKind      String?
   publishedCommentId        String?
   status                    CronRunStatus      @default(running)
-  durationMs                Int?
+  durationMs                Float?             @db.DoublePrecision
   sessionId                 String? // Console session id when the delivery has one
   reason                    String? // short failure text: daemon_offline / dispatch_timeout / orphaned / turn failure
   // Durable, metadata-only GitHub redelivery schedule. These fields are used
@@ -3693,7 +3707,10 @@ model SkillSource {
   ref             String? // optional branch/tag/commit; composed into the source (design §5)
   subDir          String? // optional repo-relative install dir
   skills          String[]           @default([]) // empty ⇒ install every skill; else only these (passed as -s)
-  private         Boolean            @default(false) // repo was private at bind time; daemons acquire it through the org GitHub App (read-only, repo-scoped)
+  private         Boolean            @default(false) // legacy mirror of credentialProvider = 'github', still written for older replicas and daemons
+  // Who vouches (source-cache.md §11): the CodeHostRepository reference of a credentialed source; null ⇒ anonymous.
+  credentialProvider String? // 'github' | 'gitlab' — app-layer closed set
+  credentialRepoId   BigInt? // that provider's numeric repository/project id
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([]) // complete app_user.id audience when visibility='restricted'
   createdByUserId String?
@@ -4269,4 +4286,24 @@ model CodeHostDecisionRouting {
   @@index([decisionId])
   @@index([evaluationAgentId])
   @@map("code_host_decision_routing")
+}
+
+// A console file-transfer upload ticket (source-cache-file-transfer.md §3), shared so any CP replica can answer `transfer/sign`.
+model TransferUploadTicket {
+  id        String   @id @db.Uuid
+  daemonId  String   @db.Uuid
+  objectKey String
+  size      BigInt
+  // Set and compared with database time, so replicas with skewed clocks agree.
+  expiresAt DateTime @db.Timestamptz(6)
+  // A begun upload's poll scope; null on a single-shot ticket.
+  agentId   String?
+  path      String?
+  // The daemon's `transfer/settle` outcome; once set, the ticket signs nothing more.
+  outcome   Json?
+  settledAt DateTime? @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@index([objectKey])
+  @@map("transfer_upload_ticket")
 }

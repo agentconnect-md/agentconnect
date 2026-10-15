@@ -3,6 +3,9 @@ import { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate } from '@agentconn
 
 export { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate }
 
+/** How a released daemon's self-delegation opened before message headers (send-message-guide.md §9.5); its cards still strip it. */
+export const LEGACY_TASK_START_WRAPPER = 'From your own main conversation, as a background sub-session:'
+
 /** The coordinate of the sub-session a delegation opens, from its daemon-minted delivery id. */
 export function subsessionCoordinate(deliveryId: string): string {
   return `${SUBSESSION_COORDINATE_PREFIX}${deliveryId}`
@@ -32,4 +35,9 @@ export function taskCoordinate(deliveryId: string): string {
 /** Whether a session's thread segment is an approved proposal's: run once, with the agent's own permissions. */
 export function isTaskCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(TASK_COORDINATE_PREFIX)
+}
+
+/** Whether a thread segment is a delegated sub-session's, the kind a parent can keep messaging across work rounds. */
+export function isDelegationCoordinate(thread: string | null | undefined): boolean {
+  return isSubsessionCoordinate(thread) && !isPatrolCoordinate(thread) && !isTaskCoordinate(thread)
 }

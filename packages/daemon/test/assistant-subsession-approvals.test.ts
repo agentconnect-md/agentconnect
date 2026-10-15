@@ -1,4 +1,5 @@
 // A background sub-session's runtime permission request reaches the conversation it belongs to (assistant-mode.md §5.6).
+import { SESSION_MESSAGE_HEADER } from '../src/collab/session-message.js'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -762,9 +763,8 @@ describe('the approval queue names the conversation a sub-session asks from', ()
 })
 
 describe('the name a sub-session’s cards give it', () => {
-  const wrapped = 'From your own main conversation, as a background sub-session: '
-
-  it('uses the title, else the task without the delegation wrapper, truncated, else none', () => {
+  it('uses the title, else the task without a released daemon’s wrapper, truncated, else none', () => {
+    const wrapped = 'From your own main conversation, as a background sub-session: '
     expect(subsessionLabel('Fix the flaky test', `${wrapped}anything`)).toBe('Fix the flaky test')
     // The first-message title a sub-session is born with is the wrapper, so its task is read from the message.
     expect(subsessionLabel(`${wrapped}fix the f…`, `${wrapped}fix the flaky test and open a PR`)).toBe(
@@ -879,7 +879,7 @@ async function delegateAndAsk(agentId: string, opts: { external?: boolean } = {}
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-        if (!JSON.stringify(blocks).includes('background sub-session')) return 'end_turn'
+        if (!JSON.stringify(blocks).includes('as a background task')) return 'end_turn'
         const d = live.d
         const owner = [...d.pending.values()].find((p: Pending) => p.acpSessionId === sessionId)!.hostKey
         answers.push(await d.permissions.onAcpPermission(owner, sessionId, params(sessionId)))
@@ -988,8 +988,8 @@ describe('through the daemon', () => {
       clock.advance(1)
       await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
       expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
-      expect(reports[0]!.text).toBe(
-        `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). It sent no result; delegate again if the work is still needed.\n\n${REPORT_ANSWER_LANGUAGE}`
+      expect(reports[0]!.text.replace(SESSION_MESSAGE_HEADER, '')).toBe(
+        `[task ended] Task ${res.targetSession} stopped before finishing (approval wait expired). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${res.targetSession}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
       )
       expect((await d.store.listPermissionRequests(agentId))[0]).toMatchObject({
         status: 'denied',

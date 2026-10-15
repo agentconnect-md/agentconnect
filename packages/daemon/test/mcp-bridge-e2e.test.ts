@@ -141,7 +141,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
     expect(listed.tools.map((t) => t.name)).toContain('sendMessage')
     const out = await client.callTool({
       name: 'sendMessage',
-      arguments: { toUser: 'U9', channel: 'C9', message: 'e2e hi' }
+      arguments: { action: 'postMessage', toUser: 'U9', channel: 'C9', message: 'e2e hi' }
     })
     expect(out.isError).toBeFalsy()
     // No `thread` ⇒ post to the channel ROOT (undefined), not the current thread.

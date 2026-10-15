@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { AgentSkillEntry, AgentSpec, InstallableAgentSkills } from './agent.js'
+import { AgentSkillEntry, AgentSpec, InstallableAgentSkills, skillSourceCredential } from './agent.js'
 
 describe('AgentSkillEntry — argument-injection guards', () => {
   it('accepts a normal entry and defaults skills to []', () => {
@@ -72,8 +72,6 @@ describe('AgentSkillEntry — argument-injection guards', () => {
     }
 
     for (const source of [
-      'https://gitlab.com/o/r',
-      'https://example.test/o/r',
       'https://github.com:8443/o/r',
       'ssh://git@github.com:2222/o/r',
       'ssh://deploy@github.com/o/r',
@@ -81,6 +79,52 @@ describe('AgentSkillEntry — argument-injection guards', () => {
     ]) {
       expect(AgentSkillEntry.safeParse({ name: 'x', source, githubRepoId: '1' }).success, source).toBe(false)
     }
+  })
+
+  it('accepts a plain HTTPS address on another host, without a GitHub identity', () => {
+    for (const source of ['https://gitlab.com/group/sub/project', 'https://git.example.test/team/skills.git']) {
+      expect(AgentSkillEntry.safeParse({ name: 'x', source }).success, source).toBe(true)
+      expect(AgentSkillEntry.safeParse({ name: 'x', source, githubRepoId: '1' }).success, source).toBe(false)
+    }
+    for (const source of [
+      'git@gitlab.com:group/project.git',
+      'ssh://git@git.example.test/team/skills.git',
+      'https://git.example.test/team/../skills',
+      'https://user@git.example.test/team/skills',
+      'https://git.example.test/team/skills?x=1'
+    ]) {
+      expect(AgentSkillEntry.safeParse({ name: 'x', source }).success, source).toBe(false)
+    }
+  })
+
+  it('pairs a credential with the host it vouches for', () => {
+    const gitlab = { name: 'x', source: 'https://gitlab.com/group/project' }
+    expect(AgentSkillEntry.safeParse({ ...gitlab, credential: { provider: 'gitlab', projectId: '42' } }).success).toBe(
+      true
+    )
+    expect(AgentSkillEntry.safeParse({ ...gitlab, credential: { provider: 'gitlab', projectId: '042' } }).success).toBe(
+      false
+    )
+    expect(AgentSkillEntry.safeParse({ ...gitlab, credential: { provider: 'github' } }).success).toBe(false)
+    expect(AgentSkillEntry.safeParse({ ...gitlab, private: true }).success).toBe(false)
+
+    const github = { name: 'x', source: 'o/r', githubRepoId: '7' }
+    expect(AgentSkillEntry.safeParse({ ...github, credential: { provider: 'github' }, private: true }).success).toBe(
+      true
+    )
+    expect(AgentSkillEntry.safeParse({ ...github, credential: { provider: 'gitlab', projectId: '1' } }).success).toBe(
+      false
+    )
+  })
+
+  it('reads the legacy private flag as a GitHub credential', () => {
+    expect(skillSourceCredential({ private: true })).toEqual({ provider: 'github' })
+    expect(skillSourceCredential({ private: false })).toBeUndefined()
+    expect(skillSourceCredential({})).toBeUndefined()
+    expect(skillSourceCredential({ credential: { provider: 'gitlab', projectId: '42' } })).toEqual({
+      provider: 'gitlab',
+      projectId: '42'
+    })
   })
 
   it('bounds refs, subdirectories, and selections', () => {
@@ -142,12 +186,19 @@ describe('AgentSkillEntry — argument-injection guards', () => {
       name: 'agent',
       skills: [
         { name: 'old-cp', source: 'o/old' },
-        { name: 'current-cp', source: 'o/current', githubRepoId: '9007199254740993' }
+        { name: 'current-cp', source: 'o/current', githubRepoId: '9007199254740993' },
+        { name: 'credentialed', source: 'https://gitlab.com/g/p', credential: { provider: 'gitlab', projectId: '5' } }
       ]
     })
     expect(rolling.skills).toEqual([
       { name: 'old-cp', source: 'o/old', skills: [] },
-      { name: 'current-cp', source: 'o/current', githubRepoId: '9007199254740993', skills: [] }
+      { name: 'current-cp', source: 'o/current', githubRepoId: '9007199254740993', skills: [] },
+      {
+        name: 'credentialed',
+        source: 'https://gitlab.com/g/p',
+        credential: { provider: 'gitlab', projectId: '5' },
+        skills: []
+      }
     ])
   })
 })

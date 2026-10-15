@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { AgentSpec, RegisterOk } from '@agentconnect.md/protocol'
 import {
+  otherHostSkillSource,
   parseSkillRef,
   redactSourceCredentials,
   resolveAgentSkillEntries,
+  resolveGitlabSkillSourceProjects,
   resolvePrivateSkillSourceRepos
 } from './skillSource.js'
 import type { SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
@@ -22,6 +24,8 @@ function source(over: Partial<SkillSourceRecord>): SkillSourceRecord {
     subDir: null,
     skills: [],
     private: false,
+    credential:
+      over.private && over.githubRepoId !== null ? { provider: 'github', repoId: over.githubRepoId ?? 123n } : null,
     visibility: 'org',
     sharedWith: [],
     createdByUserId: null,
@@ -51,6 +55,37 @@ describe('parseSkillRef', () => {
   it('treats <source>/* and bare <source> as whole-source', () => {
     expect(parseSkillRef('platform/*')).toEqual({ source: 'platform', skill: null })
     expect(parseSkillRef('platform')).toEqual({ source: 'platform', skill: null })
+  })
+})
+
+describe('otherHostSkillSource (source-cache.md §11)', () => {
+  it('admits an HTTPS address on any host other than github.com, normalized', () => {
+    expect(otherHostSkillSource('https://git.example.test/team/skills.git/')).toBe(
+      'https://git.example.test/team/skills.git'
+    )
+    expect(otherHostSkillSource('https://git.example.test:8443/team/skills')).toBe(
+      'https://git.example.test:8443/team/skills'
+    )
+    expect(otherHostSkillSource('git.example.test/team/skills')).toBe('https://git.example.test/team/skills')
+  })
+
+  it('leaves github.com to GitHub admission', () => {
+    expect(otherHostSkillSource('example-org/example-repo')).toBeNull()
+    expect(otherHostSkillSource('https://github.com/example-org/example-repo')).toBeNull()
+  })
+
+  it('refuses what is not a plain credential-free HTTPS address', () => {
+    for (const bad of [
+      'ssh://git@git.example.test/team/skills',
+      'git@git.example.test:team/skills',
+      'https://user:pw@git.example.test/team/skills',
+      'https://git.example.test/team/../skills',
+      'https://git.example.test/team/skills?x=1',
+      'http://git.example.test/team/skills',
+      'file:///srv/skills'
+    ]) {
+      expect(otherHostSkillSource(bad), bad).toBeNull()
+    }
   })
 })
 
@@ -252,9 +287,37 @@ describe('private skill sources (shared-skills.md §3)', () => {
     const repo = repoWith([source({ name: 'platform', private: true }), source({ name: 'public', id: 'id-2' })])
     const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['platform/*', 'public/*'] }, repo)
     expect(entries).toEqual([
-      expect.objectContaining({ name: 'platform', private: true }),
-      expect.not.objectContaining({ private: expect.anything() })
+      expect.objectContaining({ name: 'platform', private: true, credential: { provider: 'github' } }),
+      expect.not.objectContaining({ private: expect.anything(), credential: expect.anything() })
     ])
+  })
+
+  it('projects a GitLab credential by project id, without the GitHub-only legacy flag or identity', async () => {
+    const repo = repoWith([
+      source({
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/group/sub/project',
+        githubRepoId: null,
+        credential: { provider: 'gitlab', repoId: 42n }
+      })
+    ])
+    const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['gitlab/*'] }, repo)
+    expect(entries).toEqual([
+      {
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/group/sub/project',
+        skills: [],
+        credential: { provider: 'gitlab', projectId: '42' }
+      }
+    ])
+  })
+
+  it('projects an anonymous source on another host with neither credential nor GitHub identity', async () => {
+    const repo = repoWith([
+      source({ name: 'elsewhere', source: 'https://git.example.test/team/skills', githubRepoId: null })
+    ])
+    const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['elsewhere/*'] }, repo)
+    expect(entries).toEqual([{ name: 'elsewhere', source: 'https://git.example.test/team/skills', skills: [] }])
   })
 
   it('derives the read-grant set from enabled PRIVATE, bound sources only', async () => {
@@ -267,15 +330,45 @@ describe('private skill sources (shared-skills.md §3)', () => {
         source: 'https://github.com/acme/mono/tree/main/plugins/x'
       }),
       source({ name: 'public', private: false, githubRepoId: 557n }),
-      source({ name: 'unbound', private: true, githubRepoId: null })
+      source({ name: 'unbound', private: true, githubRepoId: null }),
+      source({
+        name: 'gitlab',
+        source: 'https://gitlab.example.test/group/project',
+        githubRepoId: null,
+        credential: { provider: 'gitlab', repoId: 9n }
+      })
     ])
     const grants = await resolvePrivateSkillSourceRepos(
-      { orgId: ORG, skills: ['platform/review', 'tree/*', 'public/*', 'unbound/*', 'missing/*'] },
+      { orgId: ORG, skills: ['platform/review', 'tree/*', 'public/*', 'unbound/*', 'gitlab/*', 'missing/*'] },
       repo
     )
     expect(grants).toEqual([
       { repoId: 555n, repoFullName: 'Acme/Platform-Skills' },
       { repoId: 556n, repoFullName: 'acme/mono' }
     ])
+  })
+
+  it('derives the GitLab read-grant set from enabled credentialed GitLab sources only, once per project', async () => {
+    const gitlab = (name: string, repoId: bigint) =>
+      source({
+        name,
+        id: name,
+        source: `https://gitlab.example.test/group/${name}`,
+        githubRepoId: null,
+        credential: { provider: 'gitlab', repoId }
+      })
+    const repo = repoWith([
+      gitlab('one', 9n),
+      gitlab('same-project', 9n),
+      gitlab('two', 10n),
+      gitlab('not-enabled', 11n),
+      source({ name: 'anon', source: 'https://gitlab.example.test/group/anon', githubRepoId: null }),
+      source({ name: 'platform', private: true, githubRepoId: 555n })
+    ])
+    const projects = await resolveGitlabSkillSourceProjects(
+      { orgId: ORG, skills: ['one/review', 'one/*', 'same-project', 'two/*', 'anon/*', 'platform/*'] },
+      repo
+    )
+    expect(projects).toEqual([9n, 10n])
   })
 })

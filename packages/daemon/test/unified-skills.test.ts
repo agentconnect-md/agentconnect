@@ -360,7 +360,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
         id: 'a1',
         runtime: 'claude',
         skills: [
-          { name: 'legacy', source: 'https://gitlab.com/acme/legacy', skills: [] },
+          { name: 'elsewhere', source: 'https://gitlab.com/acme/legacy', githubRepoId: '7', skills: [] },
           { name: 'unbound-old-cp', source: 'acme/unbound', skills: ['unbound'] },
           { name: 'valid', source: 'acme/valid', githubRepoId: '42', skills: ['valid'] }
         ]
@@ -382,8 +382,37 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(cli.calls).toHaveLength(1)
     expect(result.installed).toContain('.runtime/skills/valid')
     expect(await readFile(join(cwd, '.runtime/skills/valid/SKILL.md'), 'utf8')).toContain('# valid')
+    // A GitHub id on another host and an unbound GitHub source both fail current admission.
     expect(warnings).toContainEqual(expect.stringContaining('omitted historical Git source 1'))
     expect(warnings).toContainEqual(expect.stringContaining('omitted historical Git source 2'))
+  })
+
+  it('acquires a Source on another host through the same installer', async () => {
+    const otherDir = await writeSkill(sources, 'other', 'other')
+    const cli = fakeCli(() => '.runtime')
+    const acquired: Array<{ source: string; ref?: string }> = []
+    const warnings: string[] = []
+    const result = await installSkills(
+      {
+        id: 'a1',
+        runtime: 'claude',
+        skills: [{ name: 'elsewhere', source: 'https://git.example.test/team/skills', ref: 'main', skills: [] }]
+      },
+      cwd,
+      {
+        stateDir,
+        acquireGit: async (entry) => {
+          acquired.push({ source: entry.source, ...(entry.ref ? { ref: entry.ref } : {}) })
+          return { sourceDir: otherDir, resolvedCommit: 'c'.repeat(40) }
+        },
+        runCli: cli.run,
+        warn: (message) => warnings.push(message)
+      }
+    )
+    expect(result.errors).toEqual([])
+    expect(acquired).toEqual([{ source: 'https://git.example.test/team/skills', ref: 'main' }])
+    expect(result.installed).toContain('.runtime/skills/git-skill')
+    expect(warnings.filter((message) => /skipped|omitted/.test(message))).toEqual([])
   })
 
   it('retains a moving Git source commit across unrelated plan invalidations', async () => {

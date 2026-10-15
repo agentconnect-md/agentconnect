@@ -1,117 +1,106 @@
-// The main conversation's stop of a sub-session it opened (assistant-mode.md §1.4, §5.8), through the console's own Stop.
+// An owning session's stop of its own task (send-message-guide.md §8.7), through the console's own Stop core.
 import { z } from 'zod'
-import { originKindOf } from '@agentconnect.md/protocol'
 import { stopIndexedSubsession } from '../../cp/assistant-activity.js'
-import { isSyntheticA2aChannel } from '../../cp/cp-collab-routes.js'
-import { isSubsessionCoordinate } from '../../session/subsession-coordinate.js'
+import {
+  isDelegationCoordinate,
+  isSubsessionCoordinate,
+  SUBSESSION_COORDINATE_PREFIX
+} from '../../session/subsession-coordinate.js'
 import type { AssistantSubsession } from '../../store/assistant-subsessions.js'
 import { sessionKey } from '../../store/local-store.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs, requiredString } from './args.js'
 import type { SessionContext, ToolHandler } from './context.js'
 
-/** Who started the live turn, when today's `!stop` sender rule lets them stop work here, else why not. */
-export type SubsessionStopper =
-  { ok: true; actor: { userId: string; name?: string } } | { ok: false; reason: 'no-person' | 'sender' }
-
 export interface AssistantSubsessionDeps {
   assistantSubsessions?: {
-    stopper(ctx: SessionContext): Promise<SubsessionStopper>
+    /** Who the stop is logged as: the person behind the live turn, else the agent itself. */
+    actor(ctx: SessionContext): { userId: string; name?: string; isBot?: boolean }
+    /** The calling session's outward id, without minting one: a session that has none started no task. */
+    sessionIdOf(key: string): Promise<string | undefined>
     /** The index row of one of the agent's sub-sessions, by its session key or its outward id. */
     find(agentId: string, id: string): Promise<AssistantSubsession | undefined>
     /** The cancel core the console's Stop calls; true when it interrupted a turn. */
-    stopSession(key: string, actor: { userId: string; name?: string }): Promise<boolean>
+    stopSession(key: string, actor: { userId: string; name?: string; isBot?: boolean }): Promise<boolean>
   }
 }
 
-/** A place's own conversation: a chat conversation or webchat, never a sub-session, patrol, task, hook, dream or headless cron run. */
-export function assistantMainConversation(session: {
-  platform: string
-  channel: string
-  thread: string
-  integrationId?: string | undefined
-}): boolean {
-  if (isSubsessionCoordinate(session.thread) || isSyntheticA2aChannel(session.channel)) return false
-  const kind = originKindOf(session.platform) ?? 'chat'
-  return kind === 'webchat' || (kind === 'chat' && session.integrationId !== undefined)
-}
-
-export const STOP_SUBSESSION_ARGS = z.object({
-  sessionId: requiredString('sessionId').max(1024, 'argument sessionId must be at most 1024 characters')
+export const STOP_TASK_ARGS = z.object({
+  taskId: requiredString('taskId').max(1024, 'argument taskId must be at most 1024 characters')
 })
 
-export const STOP_SUBSESSION_TOOL: ToolDescriptor = {
-  name: 'stopSubsession',
+export const STOP_TASK_TOOL: ToolDescriptor = {
+  name: 'stopTask',
   description:
-    'Stop the current turn of a background sub-session that this conversation opened. What it already did is not ' +
+    'Stop a background task this session started with sendMessage startTask, when it is no longer needed: the plan ' +
+    'changed, a task it depended on failed, or its result is not wanted any more. What it already did is not ' +
     'undone, and a process its runtime started in the background (a build, a dev server) may keep running; the ' +
-    'result says so. When it is not clear which sub-session the person means, ask them before stopping one.',
+    'result says so. When it is not clear which task a person means, ask them before stopping one.',
   inputSchema: obj(
     {
-      sessionId: {
+      taskId: {
         type: 'string',
         minLength: 1,
-        description:
-          "The sub-session's id: the `childSessionId` `sendMessage` returned when you opened it, or one listed as " +
-          'running in your standing summary.'
+        description: 'The `taskId` startTask returned, or one listed as running in your reminders.'
       }
     },
-    ['sessionId']
+    ['taskId']
   )
 }
 
-/** The tool every agent's session is offered in a place's main conversation only. */
-export function assistantSubsessionToolsFor(
-  session: Parameters<typeof assistantMainConversation>[0]
-): ToolDescriptor[] {
-  return assistantMainConversation(session) ? [STOP_SUBSESSION_TOOL] : []
+/** The tool every session that can start a task is offered: never inside a task, patrol or approved proposal itself. */
+export function stopTaskToolsFor(session: { thread: string }): ToolDescriptor[] {
+  return isSubsessionCoordinate(session.thread) ? [] : [STOP_TASK_TOOL]
 }
 
 const NOTHING = 'Nothing was stopped.'
 
 const refused = (reason: string) => ({ result: 'refused' as const, reason: `${reason} ${NOTHING}` })
 
-export const stopSubsession: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, deps) => {
-  const { sessionId } = parseArgs(STOP_SUBSESSION_ARGS, args)
+// One answer for an unknown id and every task this session does not own, so a refusal names nothing (send-message-guide.md §8.7).
+const NOT_OWNED = 'This session started no task with that id.'
+
+/** Whether the child key's coordinate is a task's, never a patrol's or an approved proposal's. */
+const taskCoordinateOf = (key: string): boolean => {
+  const at = key.indexOf(`:${SUBSESSION_COORDINATE_PREFIX}`)
+  return at >= 0 && isDelegationCoordinate(key.slice(at + 1))
+}
+
+export const stopTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, deps) => {
+  const { taskId } = parseArgs(STOP_TASK_ARGS, args)
   const port = deps.assistantSubsessions
-  if (!port) return refused('Stopping a sub-session is not available on this daemon.')
-  if (!assistantMainConversation(ctx))
-    return refused('Only the conversation that opened a sub-session can stop it, and this is not one.')
-  const stopper = await port.stopper(ctx)
-  if (!stopper.ok) {
-    return refused(
-      stopper.reason === 'no-person'
-        ? "This turn was not started by a person's message, and only a person here can ask to stop a sub-session."
-        : 'The person whose message started this turn may not stop work in this conversation.'
-    )
-  }
-  // The same answer for an unknown id and another conversation's, so a refusal names nothing.
-  const row = await port.find(ctx.agentId, sessionId)
+  if (!port) return refused('Stopping a task is not available on this daemon.')
+  // A task, a patrol and an approved proposal own no task, so they get the unknown-id answer too.
+  if (isSubsessionCoordinate(ctx.thread)) return refused(NOT_OWNED)
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-  if (!row || row.parentSessionKey !== here) return refused('This conversation opened no sub-session with that id.')
+  const row = await port.find(ctx.agentId, taskId)
+  if (!row || row.kind === 'patrol' || !taskCoordinateOf(row.childSessionKey) || row.parentSessionKey !== here)
+    return refused(NOT_OWNED)
+  // The recorded owner by outward id too: a session recreated on the same key did not start it.
+  const owner = await port.sessionIdOf(here)
+  if (owner === undefined || row.parentSessionId !== owner) return refused(NOT_OWNED)
   const id = row.childSessionKey
-  if (row.state !== 'open') return { result: 'not_running', sessionId: id, note: `It has already ended. ${NOTHING}` }
-  if ((await stopIndexedSubsession(row, port.stopSession, stopper.actor)) === 'stopped') {
+  if (row.state !== 'open') return { result: 'not_running', taskId: id, note: `It has already ended. ${NOTHING}` }
+  if ((await stopIndexedSubsession(row, port.stopSession, port.actor(ctx))) === 'stopped') {
     return {
       result: 'stopped',
-      sessionId: id,
+      taskId: id,
       note:
-        'Its current turn was interrupted, and it reports back here that it ended. Nothing it already did is ' +
-        'undone, and a process its runtime started in the background (a build, a dev server) may keep running.'
+        'Its current turn was interrupted, messages still waiting for it were dropped, and it reports back here that ' +
+        'it ended. Nothing it already did is undone, and a process its runtime started in the background (a build, a ' +
+        'dev server) may keep running. To give it new work later, message it with messageTask and this taskId.'
     }
   }
   return {
     result: 'not_running',
-    sessionId: id,
+    taskId: id,
     note:
       'No turn of it is running. A background process it started may still be running; that cannot be stopped ' +
-      'from here, and the sub-session reports back here when it ends.'
+      'from here, and the task reports back here when it ends.'
   }
 }
 
 /** Registry entries for `ops.ts`. */
-export const ASSISTANT_SUBSESSION_HANDLERS: [string, ToolHandler<AssistantSubsessionDeps>][] = [
-  ['stopSubsession', stopSubsession]
-]
+export const ASSISTANT_SUBSESSION_HANDLERS: [string, ToolHandler<AssistantSubsessionDeps>][] = [['stopTask', stopTask]]
 
-export const ASSISTANT_SUBSESSION_ARG_SCHEMAS: [string, z.ZodType][] = [['stopSubsession', STOP_SUBSESSION_ARGS]]
+export const ASSISTANT_SUBSESSION_ARG_SCHEMAS: [string, z.ZodType][] = [['stopTask', STOP_TASK_ARGS]]

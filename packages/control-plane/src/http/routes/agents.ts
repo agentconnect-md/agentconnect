@@ -64,6 +64,7 @@ import {
   WORKSPACE_SESSION_READ_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  WORKSPACE_UPLOAD_BEGIN_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -79,7 +80,12 @@ import {
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { FileTransferRefusal } from '../../file-transfer/service.js'
+import {
+  FileTransferRefusal,
+  isTransferPending,
+  type WorkspaceDownload,
+  type WorkspaceTransferResult
+} from '../../file-transfer/service.js'
 import {
   type AgentMoveOpts,
   type AgentRecord,
@@ -117,7 +123,11 @@ class McpEnableDenied extends Error {}
 /** The skill-source twin: thrown inside the source-name fence when the in-fence
  *  visibility re-check refuses a submitted skill-ref; the route maps it to a 403. */
 class SkillEnableDenied extends Error {}
-import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
+import {
+  parseSkillRef,
+  redactSourceCredentials,
+  resolveGitlabSkillSourceProjects
+} from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import {
   MemoryHomeRefusedError,
@@ -182,6 +192,7 @@ import {
   AgentPermissionRequestPageDto,
   toPermissionRequestDto,
   AgentSkillSourceListDto,
+  AgentSkillSourceStatusDto,
   AgentPermissionDecisionBody,
   AgentCreatedDto,
   AgentListDto,
@@ -198,6 +209,9 @@ import {
   WorkspaceDownloadQueryDto,
   WorkspaceTransferBody,
   WorkspaceTransferDto,
+  WorkspaceTransferOperationParams,
+  WorkspaceTransferOperationQuery,
+  WorkspaceTransferPendingDto,
   FileUploadBody,
   FileUploadDto,
   WorkspaceDownloadBody,
@@ -873,6 +887,23 @@ function sendTransferRefusal(reply: FastifyReply, err: unknown): boolean {
   return true
 }
 
+/** A transfer's answer: 202 while its upload runs, else the GET once the bytes still match a shared file's digest prefix. */
+function sendTransferResult(reply: FastifyReply, result: WorkspaceTransferResult, sha256Prefix?: string) {
+  if (isTransferPending(result)) return reply.code(202).send(result)
+  const { sha256, ...grant }: WorkspaceDownload = result
+  // The object's digest stands in for the bytes the proxied download would hash.
+  const hex = Buffer.from(sha256, 'base64').toString('hex')
+  if (sha256Prefix && !hex.startsWith(sha256Prefix.toLowerCase())) {
+    return reply.code(409).send({
+      error: 'Conflict',
+      statusCode: 409,
+      message: 'the file changed since it was shared',
+      code: 'WORKSPACE_FILE_CHANGED'
+    })
+  }
+  return reply.code(200).send({ ...grant, expiresAt: new Date(grant.expiresAt).toISOString() })
+}
+
 /** A wake's failure: a removed session sandbox is the read's own 404 and code, so the console stops offering Start; any other daemon-edge failure is 503; null ⇒ rethrow. */
 export function agentWakeFailure(
   err: unknown
@@ -1532,6 +1563,22 @@ export function agentRoutes(deps: HttpDeps) {
           )
         }
       })()
+    }
+
+    // An enable-list change adds or drops the agent as a consumer of each credentialed GitLab skill project (§7.2).
+    const convergeGitlabSkillProjects = (orgId: OrgId, before: string[], after: string[]): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      const warn = (err: unknown): void => app.log.warn({ err }, 'skill source: gitlab converge failed')
+      void (async () => {
+        const [was, now] = await Promise.all([
+          resolveGitlabSkillSourceProjects({ orgId, skills: before }, deps.repos.skillSource),
+          resolveGitlabSkillSourceProjects({ orgId, skills: after }, deps.repos.skillSource)
+        ])
+        // Destinations first, so a shared account keeps a live membership and is never retired mid-move.
+        const changed = [...now.filter((id) => !was.includes(id)), ...was.filter((id) => !now.includes(id))]
+        for (const id of changed) await gitlab.provisioner.convergeProject(orgId, id).catch(warn)
+      })().catch(warn)
     }
 
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
@@ -2226,6 +2273,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
           convergeWorkspaceRepositories(agent.orgId, [agent])
+          convergeGitlabSkillProjects(agent.orgId, [], agent.skills)
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2442,7 +2490,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List an agent’s enabled skill sources',
           description:
-            'Resolve the agent’s skill enable-list ("<source>/<skill>" refs) into the registry rows it references. Gated on viewing the AGENT, not the source: a source restricted away from the caller still resolves, because its definition is part of what this agent installs. Refs to a source that no longer exists are omitted.',
+            'Resolve the agent’s skill enable-list ("<source>/<skill>" refs) into the registry rows it references. Gated on viewing the AGENT, not the source: a source restricted away from the caller still resolves, because its definition is part of what this agent installs. Refs to a source that no longer exists are omitted. `credential` names the code host whose credential acquires the source, or is null when it is acquired anonymously.',
           operationId: 'listAgentSkillSources',
           params: IdParam,
           response: { 200: AgentSkillSourceListDto, 404: ErrorDto }
@@ -2466,11 +2514,39 @@ export function agentRoutes(deps: HttpDeps) {
                   ref: s.ref,
                   subDir: s.subDir,
                   skills: s.skills,
-                  private: s.private
+                  private: s.private,
+                  credential: s.credential ? { provider: s.credential.provider } : null
                 }
               ]
             : []
         )
+      }
+    )
+
+    r.get(
+      '/agents/:id/skill-source-status',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Get an agent’s skill source install status',
+          description:
+            'The latest install failure of each skill source the agent enables, as the daemon serving it reported after its last skill reconcile: the source name, an enumerated reason code (resolution_failed, access_denied, ref_moved, commit_unavailable, sha_fetch_refused, fetch_failed, limits_exceeded or cli_failed) and when the control plane received it. A source that installed, or has not been tried since it was enabled, is not listed. Raw Git or CLI output is never stored; detail stays in the daemon log. Gated on viewing the agent.',
+          operationId: 'getAgentSkillSourceStatus',
+          params: IdParam,
+          response: { 200: AgentSkillSourceStatusDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const rows = (await deps.repos.agentSkillSourceStatus?.list(AgentId(agent.id))) ?? []
+        // A row for a Source the agent no longer enables is stale until its next report.
+        const enabled = new Set(agent.skills.map((ref) => parseSkillRef(ref).source))
+        return {
+          sources: rows
+            .filter((row) => enabled.has(row.sourceName))
+            .map((row) => ({ name: row.sourceName, code: row.code, reportedAt: row.reportedAt.toISOString() }))
+        }
       }
     )
 
@@ -2880,6 +2956,7 @@ export function agentRoutes(deps: HttpDeps) {
           if (agent.daemonId === existing.daemonId) {
             await syncMcpDefsForAgent(agent, existing.mcpServers, agent.mcpServers)
           }
+          if (req.body.skills !== undefined) convergeGitlabSkillProjects(agent.orgId, existing.skills, agent.skills)
           return toDto(
             agent,
             ctxOf(req),
@@ -4021,11 +4098,18 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Get a download link for a workspace file',
           description:
-            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first on a URL the control plane signs, so the call may take as long as that upload; the control plane sees only URLs. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon predates control-plane-signed transfers, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first on a URL the control plane signs; the control plane sees only URLs. Pass poll: true to get 202 with an operationId while that upload runs, then poll GET /agents/{id}/workspace/file/transfer/{operationId}; without it the call waits for the upload, which may take minutes. A repeated request for a revision already uploading joins that upload. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon predates control-plane-signed transfers, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
           operationId: 'transferAgentWorkspaceFile',
           params: IdParam,
           body: WorkspaceTransferBody,
-          response: { 200: WorkspaceTransferDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: {
+            200: WorkspaceTransferDto,
+            202: WorkspaceTransferPendingDto,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -4044,25 +4128,56 @@ export function agentRoutes(deps: HttpDeps) {
           'this agent’s daemon predates control-plane-signed file transfers'
         )
         if (!capable) return reply
+        const daemon = await deps.registry.getAvailable(agent.orgId, daemonId)
+        const begin = daemon?.capabilities.features.includes(WORKSPACE_UPLOAD_BEGIN_FEATURE) ?? false
         try {
-          const { sha256, ...grant } = await transfers.workspaceDownload({
+          const result = await transfers.workspaceDownload({
             orgId: agent.orgId,
             daemonId,
             agentId: agent.id,
             ...target,
-            path: req.body.path
+            path: req.body.path,
+            begin,
+            poll: req.body.poll === true
           })
-          // The object's digest stands in for the bytes the proxied download would hash.
-          const hex = Buffer.from(sha256, 'base64').toString('hex')
-          if (req.body.sha256 && !hex.startsWith(req.body.sha256.toLowerCase())) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'the file changed since it was shared',
-              code: 'WORKSPACE_FILE_CHANGED'
-            })
+          return sendTransferResult(reply, result, req.body.sha256)
+        } catch (err) {
+          if (sendTransferRefusal(reply, err) || sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // One begun workspace transfer: any replica answers it from the shared ticket, so a CP failover loses nothing.
+    r.get(
+      '/agents/:id/workspace/file/transfer/:operationId',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Poll a workspace file transfer',
+          description:
+            'Return the state of a workspace transfer that answered 202: 202 with the same operation while the owning daemon is still uploading, then the presigned GET exactly as the transfer route returns it. Poll about once a second. The operation is bound to the agent it was started for and is readable for ten minutes after the upload settles; 404 WORKSPACE_TRANSFER_UNKNOWN for an unknown or expired operation, after which a new transfer request reuses the uploaded copy. Pass sha256 to require the bytes still match a shared file’s digest prefix (409 WORKSPACE_FILE_CHANGED otherwise). A failed upload answers the transfer route’s errors, such as 409 WORKSPACE_STALE when the file changed while it was copied and 503 WORKSPACE_TRANSFER_FAILED.',
+          operationId: 'getAgentWorkspaceFileTransfer',
+          params: WorkspaceTransferOperationParams,
+          querystring: WorkspaceTransferOperationQuery,
+          response: {
+            200: WorkspaceTransferDto,
+            202: WorkspaceTransferPendingDto,
+            400: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
           }
-          return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getServingAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        const transfers = deps.fileTransfer
+        if (!transfers) return sendTransferUnavailable(reply)
+        try {
+          const result = await transfers.transferStatus({ agentId: agent.id, operationId: req.params.operationId })
+          return sendTransferResult(reply, result, req.query.sha256)
         } catch (err) {
           if (sendTransferRefusal(reply, err) || sendWorkspaceFailure(reply, err)) return
           throw err
@@ -4106,6 +4221,7 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           const grant = await transfers.reserveUpload({
             orgId: agent.orgId,
+            agentId: agent.id,
             size: req.body.size,
             sha256: req.body.sha256
           })

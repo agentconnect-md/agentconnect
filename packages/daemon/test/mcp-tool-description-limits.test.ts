@@ -11,7 +11,7 @@ import {
 } from '../src/mcp/tools.js'
 import { ASSISTANT_ITEM_TOOLS, PATROL_UPDATE_ITEM_TOOL, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS, REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
-import { STOP_SUBSESSION_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { allAttachmentReadTools, allPortPlatforms, allSessionToolDescriptors } from '../src/platforms/read-ports.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -127,7 +127,7 @@ function offeredTools(): ToolDescriptor[] {
     PATROL_UPDATE_ITEM_TOOL,
     ...ASSISTANT_REMINDER_TOOLS,
     ...REMINDER_TOOLS,
-    STOP_SUBSESSION_TOOL,
+    STOP_TASK_TOOL,
     ...externalMemoryTools(new Set(MemoryPluginOperation.options)),
     ...allAttachmentReadTools(),
     ...allSessionToolDescriptors()

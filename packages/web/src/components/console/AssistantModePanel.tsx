@@ -174,15 +174,6 @@ export function AssistantModePanel({
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-sans text-[14px] font-semibold leading-normal">{t('title')}</span>
             <span className="badge bg-(--surface-active) text-(--text-secondary)">{enabled ? t('on') : t('off')}</span>
-            {enabled ? (
-              <span
-                className="badge bg-(--status-paused-soft) text-(--amber-500)"
-                title={t('patrolsDegradedHint')}
-                data-assistant-patrols="degraded"
-              >
-                {t('patrolsDegraded')}
-              </span>
-            ) : null}
             {locked ? (
               <span
                 className="inline-flex items-center gap-1 font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary)"

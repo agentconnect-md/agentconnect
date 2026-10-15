@@ -26,6 +26,8 @@ export interface FakeGitlabOptions {
    *  the workspace derivation runs for an unbound path (git-workspace-model.md §6).
    *  Every other path answers 404, so an unbound private project refuses. */
   publicPaths?: Record<string, number>
+  /** Repository contents by numeric id or namespaced path: blob paths at the default ref plus branch and tag names. */
+  repositories?: Record<string, { files: string[]; branches?: string[]; tags?: string[] }>
   accessLevel?: number
   namespaceKind?: 'group' | 'user'
   /** Refuse service-account creation (Owner verification, §5). */
@@ -252,6 +254,20 @@ export class FakeGitlab {
         }
       }
 
+      const repoRead = /\/api\/v4\/projects\/([^/?]+)\/repository\/(tree|branches|tags)\?/.exec(url)
+      if (repoRead && method === 'GET') {
+        const key = decodeURIComponent(repoRead[1]!)
+        // A private project reads only with a bearer, as real GitLab answers 404 to an anonymous read.
+        const repo = /^\d+$/.test(key) && !authorization ? undefined : this.opts.repositories?.[key]
+        if (!repo) return Response.json({ message: '404 Project Not Found' }, { status: 404 })
+        if (repoRead[2] === 'tree')
+          return page(
+            url,
+            repo.files.map((path) => ({ path, type: 'blob' }))
+          )
+        const names = repoRead[2] === 'branches' ? (repo.branches ?? ['main']) : (repo.tags ?? [])
+        return Response.json(names.map((name) => ({ name })))
+      }
       if (/\/api\/v4\/projects\/\d+$/.test(url)) {
         const id = Number(/projects\/(\d+)$/.exec(url)![1])
         const path = this.pathFor(id)

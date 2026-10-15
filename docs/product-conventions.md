@@ -127,7 +127,8 @@ Three things are outside this setting:
 
 - An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
   whoever could ask there may approve it ("Assistant-mode proposals").
-- Stopping a turn or a sub-session, which follows the `!stop` sender rule.
+- Stopping a turn, which follows the `!stop` sender rule. Stopping a sub-session is the
+  decision of the conversation that started it ("Sub-sessions").
 - Letting the bot join a public channel, which only a person behind the turn answers ("Joining a
   public channel").
 
@@ -417,7 +418,9 @@ wakes, code-host events, and agent-to-agent calls always run as their own turns.
 When the runtime cannot steer — it lacks the capability, it declined because the
 turn was ending as the message arrived, the per-turn steering budget is spent, or
 the operator turned the `sessionSteering` feature off — the message waits behind
-the turn exactly as before. `!cancel` remains the way to abandon the work in
+the turn exactly as before. A console message with uploaded files is never steered
+or folded into the running turn: it waits and runs as its own turn, so the agent
+receives the files and not just their names. `!cancel` remains the way to abandon the work in
 progress rather than redirect it.
 
 ## Slack message attribution footer
@@ -694,13 +697,16 @@ tool calls, memory recall or capture, turn evaluation, or token usage.
 When the post instead carries `toAgent`, it is an explicit activation even when the
 target is the posting agent itself. The visible root and internal wake remain one paired
 delivery, so the new child runs exactly once; the platform's echo is only the second
-observation of that delivery. A postless self-call opens a background sub-session instead, one
-level deep and under a cap (see "Sub-sessions").
+observation of that delivery. A self-call without a channel is refused with the
+`startTask` call to make instead; `startTask` opens a background sub-session, one level deep and
+under a cap (see "Sub-sessions").
 
 ## A parent-session reply is injected, and the parent answers normally
 
-`sendMessage({"sessionId":"<parent>", …})` injects an answer into the session that woke
-the caller. What is invisible is the **report itself**: no component publishes the
+`sendMessage({"action":"replyToSession","messageId":"<id of the message being answered>", …})`
+injects an answer into the session that sent that message. Every message one session sends
+another shows its id and sender; the reply is authorized and routed by that message alone, may
+be sent more than once, and never goes to a session the replier did not hear from. What is invisible is the **report itself**: no component publishes the
 injected body to a platform, so relaying an answer upward is a hand-off rather than a
 broadcast.
 
@@ -1257,7 +1263,7 @@ answer there when asked. An agent outside assistant mode is offered no item tool
 ## Sub-sessions
 
 Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
-background sub-session of its own: `sendMessage` with its own agent id and no `channel`.
+background sub-session of its own: `sendMessage` with action `startTask` and only a `message`.
 Ordinary conversation stays in the main conversation. The main conversation says the work
 has started; the sub-session runs in a session of its own, never the conversation's long
 session; none of its replies is posted anywhere, and it reports back into the conversation
@@ -1269,6 +1275,10 @@ making the main conversation private still makes it private. A sub-session canno
 sub-sessions of its own. At most three run at once, or the limit set in the assistant mode panel for
 an agent in assistant mode; one more is refused, and the agent is told so. Every agent is told
 about this form, and a self-call in any other form than this or the channel-root one is refused.
+The sub-session can message the conversation that opened it at any time, and a message does not end its
+work; the daemon reports the end of each round of work. A later `messageTask` with the `taskId`
+`startTask` returned gives the same sub-session new work in its retained context. An approved
+task or a patrol runs once and is settled by its one report.
 
 Reports follow the language of the people in the conversation they report to. The conversation
 tells a sub-session which language they use; a patrol or an approved task, which sees none of
@@ -1295,11 +1305,13 @@ A person can also ask the conversation that opened a sub-session to stop it, on 
 "stop the one writing the release notes". The agent asks which one is meant only when that is not
 clear, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
 was running, and that a process it started in the background may keep running. Its transcript
-names the person who asked. Only that conversation can stop it, only on a turn a person there
-started, and only for someone `!stop` accepts there; in webchat, anyone who may continue the
-conversation. A sub-session of another conversation is refused in the same words as one that
-does not exist. A sub-session, patrol, approved task, hook or scheduled run cannot stop one. The
-agent is reminded which sub-sessions its conversation has running, by id and label, and the
+names the person who asked, or the agent when no person is behind the turn. The agent stops it
+with `stopTask` and its `taskId`. Only the conversation that started it can stop it, on any of
+its turns: one a person started, a sub-session's report, another agent's reply, a hook or a
+scheduled run, since deciding that a step is no longer needed is that conversation's planning;
+the `!stop` sender rule does not gate it. A sub-session of another conversation, the sub-session
+itself or a sibling, a patrol and an approved task are refused in the same words as one that
+does not exist. The agent is reminded which sub-sessions its conversation has running, by id and label, and the
 reminder is refreshed on the next turn after one starts or ends.
 
 ## Sub-session permission requests
@@ -1360,8 +1372,7 @@ platform write, no `sendMessage`, no new item and no draft, and any other tool i
 Its runtime runs in its own read-only mode (`read-only`, else `plan`) whatever the agent's permission
 mode, and anything that would ask for approval is refused, never asked. It still runs on the
 agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
-keeps it from writing there, and reads over the network that need no approval stay possible. The
-assistant mode panel therefore marks patrols as degraded.
+keeps it from writing there, and reads over the network that need no approval stay possible.
 
 ## Assistant-mode proposals
 

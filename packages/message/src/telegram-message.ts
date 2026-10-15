@@ -77,10 +77,22 @@ export interface TelegramMessage {
   /** Membership service records are metadata, never user-authored agent turns. */
   new_chat_members?: TelegramUser[]
   left_chat_member?: TelegramUser
+  /** Group→supergroup upgrade: the old group's record names the new id, the supergroup's names the old one. */
+  migrate_to_chat_id?: number
+  migrate_from_chat_id?: number
 }
 
 export function isTelegramMembershipServiceMessage(message: TelegramMessage): boolean {
   return message.new_chat_members !== undefined || message.left_chat_member !== undefined
+}
+
+/** The old→new chat id pair of a group→supergroup upgrade record, from either side of it; null otherwise. */
+export function telegramChatMigration(message: TelegramMessage): { from: string; to: string } | null {
+  if (message.migrate_to_chat_id != null)
+    return { from: String(message.chat.id), to: String(message.migrate_to_chat_id) }
+  if (message.migrate_from_chat_id != null)
+    return { from: String(message.migrate_from_chat_id), to: String(message.chat.id) }
+  return null
 }
 
 /** Telegram documents carry an opaque file_id resolved later by the daemon. */

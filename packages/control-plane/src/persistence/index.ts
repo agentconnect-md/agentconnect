@@ -53,6 +53,7 @@ export { PgWebchatMcpOperationRepo } from './repositories/webchat-mcp-operation.
 export { PgWebchatMcpAccessGrantRepo } from './repositories/webchat-mcp-access-grant.repo.js'
 export { PgLaunchRepo } from './repositories/launch.repo.js'
 export { PgSecretLeaseRepo } from './repositories/secret-lease.repo.js'
+export { PgUploadTicketRepo } from './repositories/upload-ticket.repo.js'
 export { PgAgentSecretStore } from './repositories/agent-secret.repo.js'
 export { PgAgentConfigWriter } from './repositories/agent-config.writer.js'
 export { PgMemoryConnectionWriter } from './repositories/memory-connection.writer.js'
@@ -70,6 +71,7 @@ export {
   PgMcpProviderOauthStateStore
 } from './repositories/mcp-oauth.repo.js'
 export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
+export { PgAgentSkillSourceStatusRepo } from './repositories/agent-skill-source-status.repo.js'
 export { PgOrganizationKnowledgeRepo } from './repositories/organization-knowledge.repo.js'
 export {
   PgOrganizationEnvironmentRepo,

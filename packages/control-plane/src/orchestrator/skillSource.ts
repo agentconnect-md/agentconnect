@@ -9,8 +9,14 @@
  * the registry is the authority, so an enable-list entry pointing at a deleted
  * source simply drops out rather than failing the whole spec.
  */
-import { AgentSkillEntry, normalizeGitHubSkillSource, redactGitUrlSecrets } from '@agentconnect.md/protocol'
-import type { AgentRecord, SkillSourceRepo } from '../persistence/ports.js'
+import {
+  AgentSkillEntry,
+  isGitHubSkillSource,
+  normalizeGitHubSkillSource,
+  normalizeSkillSource,
+  redactGitUrlSecrets
+} from '@agentconnect.md/protocol'
+import type { AgentRecord, SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 
 const MAX_PROJECTED_SKILL_SOURCES = 64
 
@@ -53,6 +59,17 @@ export function parseGithubSkillRepo(
   const ref = parts[2] === 'tree' ? parts[3] : undefined
   const subDir = ref && parts.length > 4 ? parts.slice(4).join('/') : undefined
   return { owner, repo, ...(ref ? { ref } : {}), ...(subDir ? { subDir } : {}) }
+}
+
+/** The stored address of an anonymous source on a host the CP never reads (source-cache.md §11); null for github.com or a malformed one. */
+export function otherHostSkillSource(source: string): string | null {
+  if (isGitHubSkillSource(source)) return null
+  try {
+    // Syntax only: the daemon's workspaceGitAllowedOrigins is the one host list, so the CP neither fetches nor gates the origin.
+    return normalizeSkillSource(source)
+  } catch {
+    return null
+  }
 }
 
 /** Split "<source>/<skill>" (or "<source>/*"); a bare "<source>" ⇒ all skills. */
@@ -120,9 +137,7 @@ export async function resolveAgentSkillEntries(
       ...(row.ref ? { ref: row.ref } : {}),
       ...(row.subDir ? { subDir: row.subDir } : {}),
       skills,
-      // Only a private source carries the flag: it tells the daemon to acquire
-      // through the org GitHub App credential rather than anonymously.
-      ...(row.private ? { private: true } : {})
+      ...credentialFields(row)
     }
     const parsed = AgentSkillEntry.safeParse(candidate)
     if (!parsed.success) {
@@ -146,6 +161,14 @@ export async function resolveAgentSkillEntries(
   return entries
 }
 
+/** The wire credential of a row, plus the legacy `private` flag a daemon that predates `credential` reads instead. */
+function credentialFields(row: SkillSourceRecord): Pick<AgentSkillEntry, 'credential' | 'private'> {
+  const credential = row.credential
+  if (!credential) return {}
+  if (credential.provider === 'github') return { credential: { provider: 'github' }, private: true }
+  return { credential: { provider: 'gitlab', projectId: credential.repoId.toString() } }
+}
+
 /**
  * The private skill-source repositories an agent's enable-list references — the
  * gitcred broker's grant set (shared-skills.md §3): enabling a private source IS
@@ -163,12 +186,26 @@ export async function resolvePrivateSkillSourceRepos(
   const out: Array<{ repoId: bigint; repoFullName: string }> = []
   for (const name of names) {
     const row = await repo.getByName(agent.orgId, name)
-    if (!row || !row.private || row.githubRepoId === null) continue
+    if (row?.credential?.provider !== 'github') continue
     const parsed = parseGithubSkillRepo(row.source)
     if (!parsed) continue
-    out.push({ repoId: row.githubRepoId, repoFullName: `${parsed.owner}/${parsed.repo}` })
+    out.push({ repoId: row.credential.repoId, repoFullName: `${parsed.owner}/${parsed.repo}` })
   }
   return out
+}
+
+/** The GitLab half of that grant set: the project ids of the credentialed GitLab sources an agent enables. */
+export async function resolveGitlabSkillSourceProjects(
+  agent: Pick<AgentRecord, 'orgId' | 'skills'>,
+  repo: Pick<SkillSourceRepo, 'getByName'>
+): Promise<bigint[]> {
+  const names = [...new Set(agent.skills.map((ref) => parseSkillRef(ref).source))]
+  const out = new Set<bigint>()
+  for (const name of names) {
+    const row = await repo.getByName(agent.orgId, name)
+    if (row?.credential?.provider === 'gitlab') out.add(row.credential.repoId)
+  }
+  return [...out]
 }
 
 /**

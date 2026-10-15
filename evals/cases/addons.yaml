@@ -81,7 +81,7 @@
           {
             "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
             "conversationId": "collab-root",
-            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `sendMessage` with `to.toAgent` set to `{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}`. Ask that peer for the private validation token in its agent instructions. AgentConnect peer replies are asynchronous: after sendMessage succeeds, do not call any wait, sleep, or polling tool; end this current turn immediately with exactly AC_NO_RESPONSE. When the peer reply wakes you in a later turn, reply with only its token. If that agent-target MCP tool call is unavailable or rejected, reply exactly COLLABORATION-UNAVAILABLE and stop; do not search for or substitute another tool."
+            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `sendMessage` with `action` set to `\"callAgent\"` and `toAgent` set to `{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}`. Ask that peer for the private validation token in its agent instructions. AgentConnect peer replies are asynchronous: after sendMessage succeeds, do not call any wait, sleep, or polling tool; end this current turn immediately with exactly AC_NO_RESPONSE. When the peer reply wakes you in a later turn, reply with only its token. If that agent-target MCP tool call is unavailable or rejected, reply exactly COLLABORATION-UNAVAILABLE and stop; do not search for or substitute another tool."
           }
         ],
         "metadata": { "feature": "collaboration" }
@@ -118,7 +118,7 @@
           {
             "agentId": "{{ env.AGENTCONNECT_EVAL_ROOT_AGENT }}",
             "conversationId": "interaction-root-fresh-session",
-            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `sendMessage` with `to.toAgent` set to `{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}`. Ask that peer to read the launch code only from its AgentConnect persistent-memory block and return it, or MEMORY-UNAVAILABLE if that block has no launch code. AgentConnect peer replies are asynchronous: after sendMessage succeeds, do not call any wait, sleep, or polling tool; end this current turn immediately with exactly AC_NO_RESPONSE. When the peer reply wakes you in a later turn, reply with only its result. If that agent-target MCP tool call is unavailable or rejected, reply exactly COLLABORATION-UNAVAILABLE and stop; do not search for or substitute another tool."
+            "text": "Call the supplied MCP tool on server `agentconnect` whose tool name is `sendMessage` with `action` set to `\"callAgent\"` and `toAgent` set to `{{ env.AGENTCONNECT_EVAL_SPECIALIST_AGENT }}`. Ask that peer to read the launch code only from its AgentConnect persistent-memory block and return it, or MEMORY-UNAVAILABLE if that block has no launch code. AgentConnect peer replies are asynchronous: after sendMessage succeeds, do not call any wait, sleep, or polling tool; end this current turn immediately with exactly AC_NO_RESPONSE. When the peer reply wakes you in a later turn, reply with only its result. If that agent-target MCP tool call is unavailable or rejected, reply exactly COLLABORATION-UNAVAILABLE and stop; do not search for or substitute another tool."
           }
         ],
         "metadata": { "feature": "interaction" }

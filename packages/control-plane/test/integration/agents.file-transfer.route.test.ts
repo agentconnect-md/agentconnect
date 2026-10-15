@@ -1,13 +1,21 @@
 // Console file transfer routes: the CP signs the URLs itself and never sees file bytes.
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
-import { FILE_TRANSFER_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
+import {
+  FILE_TRANSFER_FEATURE,
+  WORKSPACE_SESSION_READ_FEATURE,
+  WORKSPACE_UPLOAD_BEGIN_FEATURE
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { ProtocolError } from '../../src/domain/errors.js'
-import { FileTransferRefusal, type FileTransferService } from '../../src/file-transfer/service.js'
+import {
+  FileTransferRefusal,
+  type FileTransferService,
+  type WorkspaceTransferResult
+} from '../../src/file-transfer/service.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -30,11 +38,14 @@ type Download = Parameters<FileTransferService['workspaceDownload']>[0]
 
 class TransferSpy implements FileTransferService {
   readonly maxBytes = 1024
-  uploads: Array<{ orgId: string; size: number; sha256: string }> = []
+  uploads: Array<{ orgId: string; agentId: string; size: number; sha256: string }> = []
   downloads: Download[] = []
+  statuses: Array<{ agentId: string; operationId: string }> = []
   failure: Error | null = null
+  /** When set, a download answers this operation as still uploading. */
+  pending: string | null = null
 
-  async reserveUpload(input: { orgId: string; size: number; sha256: string }) {
+  async reserveUpload(input: { orgId: string; agentId: string; size: number; sha256: string }) {
     this.uploads.push(input)
     if (this.failure) throw this.failure
     return {
@@ -49,11 +60,27 @@ class TransferSpy implements FileTransferService {
     }
   }
 
-  async workspaceDownload(input: Download) {
+  async workspaceDownload(input: Download): Promise<WorkspaceTransferResult> {
     this.downloads.push(input)
     if (this.failure) throw this.failure
+    if (this.pending) return { operationId: this.pending, path: input.path, size: 42 }
+    return this.ready(input.path)
+  }
+
+  async transferStatus(input: { agentId: string; operationId: string }): Promise<WorkspaceTransferResult> {
+    this.statuses.push(input)
+    if (this.failure) throw this.failure
+    if (this.pending) return { operationId: this.pending, path: 'dist/app.bin', size: 42 }
+    return this.ready('dist/app.bin')
+  }
+
+  async settleUpload(): Promise<never> {
+    throw new Error('unused')
+  }
+
+  private ready(path: string) {
     return {
-      path: input.path,
+      path,
       size: 42,
       url: 'https://store.example.test/bucket/dl?X-Amz-Signature=sig',
       expiresAt: EXPIRES,
@@ -96,7 +123,7 @@ describe('POST /agents/:id/uploads', () => {
       payload: upload
     })
     expect(res.statusCode).toBe(200)
-    expect(transfer.uploads).toEqual([{ orgId: DEFAULT_ORG_ID, size: 1234, sha256: SHA }])
+    expect(transfer.uploads).toEqual([{ orgId: DEFAULT_ORG_ID, agentId: AGENT, size: 1234, sha256: SHA }])
     expect(res.json()).toMatchObject({
       uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
       headers: { 'x-amz-checksum-sha256': SHA },
@@ -167,8 +194,16 @@ describe('POST /agents/:id/workspace/file/transfer', () => {
     })
     expect(session.statusCode).toBe(200)
     expect(transfer.downloads).toEqual([
-      { orgId: DEFAULT_ORG_ID, daemonId: DAEMON, agentId: AGENT, path: 'dist/app.tar.gz' },
-      { orgId: DEFAULT_ORG_ID, daemonId: DAEMON, agentId: AGENT, sessionId: isolated, path: 'out.log' }
+      { orgId: DEFAULT_ORG_ID, daemonId: DAEMON, agentId: AGENT, path: 'dist/app.tar.gz', begin: false, poll: false },
+      {
+        orgId: DEFAULT_ORG_ID,
+        daemonId: DAEMON,
+        agentId: AGENT,
+        sessionId: isolated,
+        path: 'out.log',
+        begin: false,
+        poll: false
+      }
     ])
   })
 
@@ -217,5 +252,70 @@ describe('POST /agents/:id/workspace/file/transfer', () => {
     const refused = await post('dist/app.bin')
     expect(refused.statusCode).toBe(503)
     expect(refused.json()).toMatchObject({ code: 'WORKSPACE_TRANSFER_FAILED' })
+  })
+})
+
+describe('begun workspace transfers', () => {
+  const OPERATION = '0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c'
+
+  it('begins on a daemon that can, answers 202 to a caller that polls, and serves the operation', async () => {
+    await seedTransferAgent([FILE_TRANSFER_FEATURE, WORKSPACE_UPLOAD_BEGIN_FEATURE])
+    const transfer = new TransferSpy()
+    transfer.pending = OPERATION
+    const running = app(transfer)
+    const begun = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/workspace/file/transfer`,
+      payload: { path: 'dist/app.bin', poll: true }
+    })
+    expect(begun.statusCode).toBe(202)
+    expect(begun.json()).toEqual({ operationId: OPERATION, path: 'dist/app.bin', size: 42 })
+    expect(transfer.downloads).toEqual([
+      { orgId: DEFAULT_ORG_ID, daemonId: DAEMON, agentId: AGENT, path: 'dist/app.bin', begin: true, poll: true }
+    ])
+
+    const poll = (query = '') =>
+      running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/workspace/file/transfer/${OPERATION}${query}` })
+    expect((await poll()).statusCode).toBe(202)
+    transfer.pending = null
+    const done = await poll()
+    expect(done.statusCode).toBe(200)
+    expect(done.json()).toMatchObject({ path: 'dist/app.bin', size: 42, expiresAt: new Date(EXPIRES).toISOString() })
+    expect(done.json()).not.toHaveProperty('sha256')
+    expect(transfer.statuses.at(-1)).toEqual({ agentId: AGENT, operationId: OPERATION })
+    const changed = await poll(`?sha256=${'0'.repeat(16)}`)
+    expect(changed.statusCode).toBe(409)
+    expect(changed.json()).toMatchObject({ code: 'WORKSPACE_FILE_CHANGED' })
+  })
+
+  it('answers a poll’s refusals and a failed upload with the transfer route’s codes', async () => {
+    await seedTransferAgent([FILE_TRANSFER_FEATURE, WORKSPACE_UPLOAD_BEGIN_FEATURE])
+    const transfer = new TransferSpy()
+    const running = app(transfer)
+    const poll = (operationId: string) =>
+      running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/workspace/file/transfer/${operationId}` })
+    expect((await poll('not-a-uuid')).statusCode).toBe(400)
+
+    transfer.failure = new FileTransferRefusal(404, 'WORKSPACE_TRANSFER_UNKNOWN', 'no such transfer, or it expired')
+    const unknown = await poll(OPERATION)
+    expect(unknown.statusCode).toBe(404)
+    expect(unknown.json()).toMatchObject({ code: 'WORKSPACE_TRANSFER_UNKNOWN' })
+
+    transfer.failure = ProtocolError.fromFrame({
+      code: 'CONFLICT',
+      message: 'workspace/upload failed: the file changed while it was copied; retry',
+      retryable: false,
+      details: { reason: 'stale' }
+    })
+    const stale = await poll(OPERATION)
+    expect(stale.statusCode).toBe(409)
+    expect(stale.json()).toMatchObject({ code: 'WORKSPACE_STALE' })
+
+    const unconfigured = await app().app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/file/transfer/${OPERATION}`
+    })
+    expect(unconfigured.statusCode).toBe(409)
+    expect(unconfigured.json()).toMatchObject({ code: 'WORKSPACE_TRANSFER_UNAVAILABLE' })
   })
 })

@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
+import { isDelegationCoordinate } from '../subsession-coordinate.js'
+import type { ReceivedSessionMessage } from '../../store/session-messages.js'
 
 // Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
 // context that handle() inlines as a non-meta runtime's first prompt block always
@@ -68,10 +71,10 @@ export type StandingContextInput = {
   /** The agent's own Slack bot user id, on Slack turns only. */
   slackSelfId?: string
   thread: string
-  /** This session's own ACP id, once minted (absent on the turn that mints it). */
+  /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
-  /** The parent session to reply into, when this session was woken by another. */
-  parentSessionId?: string | null
+  /** The session that created this one (send-message-guide.md §9.6): a record only, never a reply address. */
+  originSessionId?: string | null
   /** Key NAMES (never values) of the agent's write-only env secrets. */
   envSecretNames: readonly string[]
   /** Secrets materialized to a private file instead of reaching the child env. */
@@ -80,7 +83,6 @@ export type StandingContextInput = {
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
   /** The directory it clones the authorized repositories it was not handed into, and which those are (decision 20). */
   onDemandClones?: OnDemandCloneContext
-  needsReplyToParent: boolean
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
   /** Whether the host carries standing context on the system-prompt meta channel. */
@@ -98,13 +100,17 @@ export type StandingContext = {
   /** The platform module's standing block; '' when the delivery carried none. */
   platformAppend: string
   collabAppend: string
-  parentReplyAppend: string
+  /** A task's standing block on reporting to the session that started it; '' for every other session. */
+  taskReportingAppend: string
   /** Durable standing rules re-asserted on session/load — no memory index. */
   resumeSystemContext: string
   /** The fresh-session form: the durable rules plus the memory index. */
   sessionContext: string
   /** `sessionContext` when the host has a meta system-prompt channel, else undefined. */
   metaContext: string | undefined
+  /** Digests of `sessionContext` and `resumeSystemContext`, which a resume compares with what the model last received. */
+  sessionDigest: string
+  resumeDigest: string
 }
 
 // Agent memory INDEX (memory/provider.ts), read fresh. It's STANDING context
@@ -157,13 +163,10 @@ function buildAgentMeta(input: StandingContextInput): string {
     // Best-effort and async, so it can be absent for a brand-new channel until resolution
     // catches up — then the id line alone stands.
     ...(input.channelName ? [`- Channel name: ${input.channelName}`] : []),
-    // session-concept §2.3: standing locator lines. `Thread` is this session's thread segment;
-    // `Session` is its own OUTWARD id (§1.1), minted when the slot resolves, so it is there from
-    // the first turn; `Parent session` appears ONLY when this session has a parent (woken by
-    // another session's `sendMessage`) and is the SessionTarget to reply into.
+    // Standing locators: this session's thread and outward id, and the session that created it, a record only (send-message-guide.md §9.6).
     `- Thread: ${input.thread}`,
     ...(input.sessionId ? [`- Session: ${input.sessionId}`] : []),
-    ...(input.parentSessionId ? [`- Parent session: ${input.parentSessionId}`] : []),
+    ...(input.originSessionId ? [`- Created by session: ${input.originSessionId}`] : []),
     ...(input.agentDescription ? ['', input.agentDescription] : []),
     // Key NAMES (never values) of the agent's write-only secrets. The values are merged into
     // the child process env (agents/agent-env.ts) so the agent's commands can USE them; this
@@ -267,43 +270,51 @@ function onDemandCloneTarget(dir: string, repoFullName: string): string {
   return join(dir, segments[0]!, segments.at(-1)!)
 }
 
-// Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer, reach
-// humans, post at a channel root, or reply into a parent session. It has no visible
-// in-thread form: speaking in the current conversation is an ordinary reply. `toAgent`
-// without a `channel` is the postless, channel-invisible wake.
+// Standing collaboration guidance in `sendMessage`'s action forms; the current conversation is always an ordinary reply.
 const COLLAB_BEFORE_SELF =
   `# Collaborating with other agents\n` +
-  `- To reach a specific agent privately, call \`sendMessage\` with ` +
-  `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
-  `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
+  `- Every \`sendMessage\` call names an \`action\`; \`getToolGuide\` \`{"tool":"sendMessage"}\` lists them with ` +
+  `examples. To reach a specific agent privately, call \`sendMessage\` with ` +
+  `\`{"action":"callAgent","toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly ` +
+  `to it (nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
   `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
   `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
-  `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
-  `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
-  `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
+  `— send \`{"action":"callAgent","toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, ` +
+  `which obliges it to report into YOUR session when it finishes or fails. To continue a peer's existing ` +
+  `session — the \`childSessionId\` an earlier call returned — add \`"sessionId":"<that id>"\`: it reaches that ` +
+  `session only, posts nothing, and never starts another. Add a \`channel\` ` +
+  `(\`{"action":"callAgent","toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`) ` +
   `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
-  `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
-  `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. `
-// assistant-mode.md §5.6: every agent's direct self-call opens a background sub-session.
+  `That channel form may target YOURSELF to open and activate one new conversation there — a session of that ` +
+  `conversation, not a task: use your own ID from the # Agent block (also included by \`listAgents\`), never ` +
+  `your platform bot identity. `
+// send-message-guide.md §2.1: every agent's background work of its own is a task of the session that starts it.
 const COLLAB_SELF_DELEGATION =
-  `A direct \`toAgent\` call to yourself without \`channel\` opens a background SUB-SESSION for long work ` +
-  `("fix this bug and open a PR"): it works on its own, posts nothing, and reports back into this conversation ` +
-  `when it finishes or fails, so say it has started and end your turn. Say in its task which language the people ` +
-  `here use, so it reports in that language, and answer them in it whatever language a report comes back in. ` +
-  `Keep ordinary conversation here — questions, lookups and short answers never need one. A sub-session cannot ` +
-  `open sub-sessions of its own. `
+  `For long work of your own ("fix this bug and open a PR"), \`{"action":"startTask","message":"..."}\` starts a ` +
+  `background TASK of this session: it works in a context of its own, posts nothing, and reports back into this ` +
+  `session each time a round of its work finishes or fails. Start it before you explore or begin the work ` +
+  `yourself — it starts from this session's context and finds what it needs — then say it has started and end ` +
+  `your turn. Start independent tasks together; start a task that needs another's result once that result has ` +
+  `arrived. To give one more work later, even after it reported, send ` +
+  `\`{"action":"messageTask","taskId":"<its taskId>","message":"..."}\`: it keeps its context and reports again. ` +
+  `When a task is no longer needed — the plan changed, or a task it depended on failed — stop it with ` +
+  `\`stopTask\` and its taskId. Say in its message which language the people here use, so it reports in that ` +
+  `language, and answer them in it whatever language a report comes back in. Keep ordinary conversation here — ` +
+  `questions, lookups and short answers never need a task. A task cannot start tasks of its own. `
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-  `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
+  `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use \`postMessage\` with \`toUser\` — never put ` +
   `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
-  `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
+  `\`{"action":"postMessage","toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
   `@-mention at the channel root. In that channel form, pass ` +
   `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
-  `message; arrays are never DMs. If you were woken by another ` +
-  `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
-  `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
-  `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
+  `message; arrays are never DMs. A message another session sends you starts with its id ` +
+  `(\`[Message <id>] From …\`); answer it with \`{"action":"replyToSession","messageId":"<that id>","message":"..."}\`: ` +
+  `the reply reaches only the session that sent that message, and you may answer a message more than once. To leave a ` +
+  `visible note others catch up on later without waking anyone, use ` +
+  `\`{"action":"postMessage","channel":"<channel id>","message":"..."}\`. Every visible \`sendMessage\` except a ` +
+  `\`thread\` update lands at a channel root and opens a new conversation there.\n` +
   `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
   `agents unless a human explicitly tells you to.\n` +
   `- Be quiet about successful mechanics: don't narrate each step or post a message per action, and don't restate ` +
@@ -318,27 +329,48 @@ const COLLAB_AFTER_SELF =
 /** The collaboration guidance, the same for every agent. */
 export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
 
-// The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
-// user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
-// guidance rather than in the delivered text (which the model may summarize away). Deliberately
-// scoped to a terminal report: nothing here asks for progress narration, which would turn every
-// delegated task into channel chatter.
-export function buildParentReplyAppend(
-  needsReplyToParent: boolean,
-  parentSessionId: string | null | undefined
-): string {
-  if (!needsReplyToParent) return ''
+// send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
+export function buildTaskReportingAppend(ownerSessionId: string | null | undefined): string {
+  if (!ownerSessionId) return ''
   return (
-    `# Reporting back to your parent session\n` +
-    `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
-    `cannot finish — reply to it with ` +
-    `\`sendMessage\` \`{"sessionId":"${parentSessionId}","message":"..."}\`, saying whether you ` +
-    `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
-    `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
-    `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
-    `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
-    `without repeating the message.`
+    `# Reporting back to the session that started this task\n` +
+    `You are a background task of your own session ${ownerSessionId}, working in a context of your own. It may ` +
+    `send you more messages later; they arrive here, in this same context, each with its id. To send it progress ` +
+    `worth knowing, a question you need answered, or your result, answer one of its messages with \`sendMessage\` ` +
+    `\`{"action":"replyToSession","messageId":"<id of its message>","message":"..."}\`; a reply does not end your ` +
+    `work. Send your result that way before you finish, saying whether you succeeded and what the result was (on ` +
+    `failure, what went wrong). When this round of work ends, the daemon tells that session automatically and ` +
+    `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
+    `question, end your turn; the answer arrives as a new message.`
   )
+}
+
+/** The most answerable messages one turn lists; the rest stay valid and are counted (send-message-guide.md §9.5). */
+export const MAX_LISTED_SESSION_MESSAGES = 8
+
+// send-message-guide.md §9.5: the messages this session may still answer, open obligations first, one line each.
+export function buildSessionMessagesBlock(input: {
+  messages: readonly Pick<
+    ReceivedSessionMessage,
+    'messageId' | 'kind' | 'sourceAgentId' | 'sourceSessionId' | 'inReplyTo' | 'replyState'
+  >[]
+  more: number
+}): string {
+  const lines = input.messages.map(
+    (message) =>
+      `- ${message.messageId}: ${message.kind === 'reply' ? 'a reply' : message.kind === 'report' ? 'a report' : 'a message'} ` +
+      `from agent ${message.sourceAgentId}, session ${message.sourceSessionId}` +
+      (message.inReplyTo ? `, to your message ${message.inReplyTo}` : '') +
+      (message.replyState === 'open' && message.kind !== 'taskInput' ? ' — waiting on your reply' : '')
+  )
+  return [
+    '# Messages you may answer',
+    'Other sessions sent this session these messages. Answer one with `sendMessage` ' +
+      '`{"action":"replyToSession","messageId":"<id>","message":"..."}`; a reply reaches only the session that sent ' +
+      'that message, never the others, so send one call per message that needs an answer:',
+    ...lines,
+    ...(input.more > 0 ? [`- and ${input.more} more earlier messages, which you can still answer.`] : [])
+  ].join('\n')
 }
 
 /** Build standing instructions for native session metadata when supported, or the first prompt block otherwise. */
@@ -348,27 +380,43 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
-  const resumeSystemContext = [
-    agentMeta,
-    workspaceRootsAppend,
-    platformAppend,
-    COLLAB_APPEND,
-    parentReplyAppend,
-    NO_RESPONSE_RULE
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-  const sessionContext = [resumeSystemContext, memoryAppend].filter(Boolean).join('\n\n')
+  const taskReportingAppend = isDelegationCoordinate(input.thread)
+    ? buildTaskReportingAppend(input.originSessionId)
+    : ''
+  const assemble = (meta: string) => {
+    const resume = [meta, workspaceRootsAppend, platformAppend, COLLAB_APPEND, taskReportingAppend, NO_RESPONSE_RULE]
+      .filter(Boolean)
+      .join('\n\n')
+    return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }
+  }
+  const { resume: resumeSystemContext, session: sessionContext } = assemble(agentMeta)
+  // A new session's first turn precedes its own id, which never changes after, so the digests leave that line out.
+  const stable = input.sessionId ? assemble(buildAgentMeta({ ...input, sessionId: undefined })) : undefined
   return {
     memoryAppend,
     agentMeta,
     workspaceRootsAppend,
     platformAppend,
     collabAppend: COLLAB_APPEND,
-    parentReplyAppend,
+    taskReportingAppend,
     resumeSystemContext,
     sessionContext,
-    metaContext: input.usesMeta ? sessionContext || undefined : undefined
+    metaContext: input.usesMeta ? sessionContext || undefined : undefined,
+    sessionDigest: standingDigest(stable?.session ?? sessionContext),
+    resumeDigest: standingDigest(stable?.resume ?? resumeSystemContext)
   }
+}
+
+/** The first line of a resumed session's standing-context refresh, which supersedes the copy its runtime kept. */
+const STANDING_REFRESH_HEADING =
+  '[Standing instructions updated] These replace the standing instructions given earlier in this session; where they differ, follow these.'
+
+/** The inline block that hands a resumed session the current standing context. */
+export function standingRefreshBlock(sessionContext: string): string {
+  return `${STANDING_REFRESH_HEADING}\n\n${sessionContext}`
+}
+
+/** A digest of the standing-context text a model received, recorded on the session row and compared on resume. */
+function standingDigest(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
 }

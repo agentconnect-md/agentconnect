@@ -14,6 +14,14 @@ const AGENT_ID = 'bot-a'
 const CONV = '88888888-8888-4888-8888-888888888888'
 const TURN = '77777777-7777-4777-8777-777777777777'
 const STEER_TURN = '66666666-6666-4666-8666-666666666666'
+const SIGNED_GET = 'https://bucket.example.test/uploads/spec.pdf?sig=1'
+const FILE = {
+  uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c',
+  name: 'spec.pdf',
+  mimeType: 'application/pdf',
+  size: 12,
+  sha256: 'a'.repeat(64)
+}
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-wc-steer-'))
@@ -78,6 +86,7 @@ async function boot(host: unknown) {
     emitUsageReport: vi.fn(),
     emitSessionActivity: vi.fn(),
     organizationScope: () => 'connection' as const,
+    transferGet: vi.fn(async () => ({ url: SIGNED_GET, expiresAt: 4_102_444_800_000 })),
     stop: vi.fn(async () => {})
   }
   ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost: vi.fn() }
@@ -93,11 +102,22 @@ async function startTurn(daemon: Daemon, host: { prompt: ReturnType<typeof vi.fn
   await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 }
 
-const steerOp = (text: string) =>
+const steerOp = (text: string, extra: { files?: (typeof FILE)[]; steer?: boolean } = {}) =>
   rd(
-    { op: 'turn', text, user: 'owner', turnId: STEER_TURN, post: { postId: STEER_TURN, at: 2_000 }, steer: true },
+    {
+      op: 'turn',
+      text,
+      user: 'owner',
+      turnId: STEER_TURN,
+      post: { postId: STEER_TURN, at: 2_000 },
+      steer: extra.steer ?? true,
+      ...(extra.files ? { files: extra.files } : {})
+    },
     { msgId: 'm-2' }
   )
+
+const promptText = (call: unknown): string =>
+  ((call as unknown[])[1] as Array<{ type: string; text?: string }>).map((block) => block.text ?? '').join('\n')
 
 describe('webchat steer-only turns', () => {
   it('acks `steered` once the live turn took the message, and ends that turn stream at once', async () => {
@@ -221,6 +241,57 @@ describe('webchat steer-only turns', () => {
     await vi.waitFor(() => expect(h.host.prompt).toHaveBeenCalledTimes(2), WAIT)
     h.releaseOne()
     await vi.waitFor(() => expect(steerEvents.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    await daemon.stop()
+  })
+
+  it('refuses `busy` for a steer carrying uploaded files without asking the runtime, so the link is never dropped', async () => {
+    const h = steeringHost()
+    const daemon = await boot(h.host)
+    const events: RdChatEvent[] = []
+    await startTurn(daemon, h.host, events)
+
+    const steerEvents: RdChatEvent[] = []
+    const ack = await (daemon as any).handleRelayMsg(steerOp('see the spec', { files: [FILE] }), (e: RdChatEvent) =>
+      steerEvents.push(e)
+    )
+    expect(ack).toEqual({ msgId: 'm-2', accepted: false, turnId: STEER_TURN, reason: 'busy' })
+    expect(h.host.steer).not.toHaveBeenCalled()
+    expect(steerEvents).toEqual([])
+    expect([...(daemon as any).serialQueue.values()].flat()).toHaveLength(0)
+    expect((daemon as any).webchatTransport.webchatStreams.has(`${STEER_TURN}:${AGENT_ID}`)).toBe(false)
+    h.releaseOne()
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    // The browser re-sends it once the turn ends: it runs as its own turn, with the download link.
+    const resend = { ...steerOp('see the spec', { files: [FILE] }), msgId: 'm-3' }
+    expect(await (daemon as any).handleRelayMsg(resend, () => {})).toEqual({
+      msgId: 'm-3',
+      accepted: true,
+      turnId: STEER_TURN
+    })
+    await vi.waitFor(() => expect(h.host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    expect(promptText(h.host.prompt.mock.calls[1])).toContain(SIGNED_GET)
+    expect(h.host.steer).not.toHaveBeenCalled()
+    h.releaseOne()
+    await daemon.stop()
+  })
+
+  it('queues an ordinary turn carrying uploaded files behind the live turn instead of steering it', async () => {
+    const h = steeringHost()
+    const daemon = await boot(h.host)
+    const events: RdChatEvent[] = []
+    await startTurn(daemon, h.host, events)
+
+    const ack = await (daemon as any).handleRelayMsg(steerOp('see the spec', { files: [FILE], steer: false }), () => {})
+    expect(ack).toEqual({ msgId: 'm-2', accepted: true, turnId: STEER_TURN })
+    await vi.waitFor(() => expect([...(daemon as any).serialQueue.values()].flat()).toHaveLength(1), WAIT)
+    expect(h.host.steer).not.toHaveBeenCalled()
+    h.releaseOne()
+    await vi.waitFor(() => expect(h.host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    // The live turn's answer stood: its fence did not fold the upload in as a marker-only context update.
+    expect(events.some((e) => e.kind === 'output' && e.output.event?.kind === 'superseded')).toBe(false)
+    expect(promptText(h.host.prompt.mock.calls[1])).toContain(SIGNED_GET)
+    h.releaseOne()
     await daemon.stop()
   })
 })

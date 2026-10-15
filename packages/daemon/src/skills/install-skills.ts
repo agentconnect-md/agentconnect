@@ -12,7 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants as fsConstants, promises as fsp, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { AgentSkillEntry } from '@agentconnect.md/protocol'
+import { AgentSkillEntry, skillSourceCredential, type SkillSourceFailureCode } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import { containedTarget } from '../fs/contained-path.js'
 import { skillsAgentIdForRuntime } from '../runtimes/skills-capability.js'
@@ -31,8 +31,15 @@ import {
   type SkillFileReceipt
 } from './skill-install-ledger.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
+import { canonicalSkillMutationRoot } from './skill-workspace-mutator.js'
 import { acquireGitSkillSource, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, snapshotLocalSkillSource } from './skill-source-snapshot.js'
+import {
+  SkillSourceFailure,
+  skillSourceFailureCode,
+  uniqueSkillSourceFailures,
+  type SkillSourceFailureEntry
+} from './skill-source-failure.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell, type SkillsCliCellResult } from './skills-cli-cell.js'
 
 export const SKILLS_CLI_SPEC = `skills@${PINNED_SKILLS_CLI_VERSION}`
@@ -150,11 +157,15 @@ export interface InstallSkillsResult {
   /** Checkout-relative roots this daemon owns after the run — what git must be told to ignore. */
   owned: string[]
   errors: Array<{ source: string; error: string }>
+  /** Git Sources this run could not install, by name and §11 code; absent with no Git Source or when the run did not evaluate them all. */
+  sourceFailures?: SkillSourceFailureEntry[]
 }
 
 interface PreparedSource {
   key: string
   name: string
+  /** Set for a Git Source, whose failures are reported by name. */
+  git?: true
   sourceDir: string
   /** `-s` values for the CLI: the SKILL.md frontmatter names it matches. */
   skills: string[]
@@ -232,7 +243,7 @@ async function installSkillsLocked(
     inputFiles += fileCount
     inputBytes += totalBytes
     if (inputFiles > MAX_INPUT_FILES || inputBytes > MAX_INPUT_BYTES) {
-      throw new Error('aggregate skill sources exceed the installer limits')
+      throw new SkillSourceFailure('limits_exceeded', 'aggregate skill sources exceed the installer limits')
     }
   }
   try {
@@ -301,6 +312,7 @@ async function installSkillsLocked(
     ) {
       result.skipped = 'unchanged'
       result.owned = ledger.owned.map((bundle) => bundle.relativeRoot)
+      if (gitSources.length > 0) result.sourceFailures = []
       return result
     }
 
@@ -335,6 +347,7 @@ async function installSkillsLocked(
     // own older commit, so removing them would cost the agent a working skill for
     // an upstream outage. See §6.3.
     const unresolvedScopes = new Set<string>()
+    const sourceFailures: SkillSourceFailureEntry[] = []
     for (const [index, entry] of gitSources.entries()) {
       const definitionDigest = gitResolutionDigest(entry)
       try {
@@ -353,7 +366,7 @@ async function installSkillsLocked(
         })
         const resolvedCommit = acquired.resolvedCommit.toLowerCase()
         if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
-          throw new Error(`Git source "${entry.name}" did not resolve to its planned commit`)
+          throw new SkillSourceFailure('ref_moved', `Git source "${entry.name}" did not resolve to its planned commit`)
         }
         resolutionsByDefinition.set(definitionDigest, resolvedCommit)
         const destination = join(scratch, 'inputs', `git-${index}`)
@@ -368,10 +381,15 @@ async function installSkillsLocked(
         // skills; we independently require the exact resolved leaf-name set
         // below, so a CLI that returns success after installing only a valid
         // subset still fails the transaction.
-        const selection = await resolveSkillSelections(entry.name, destination, snapshot.files, entry.skills)
+        const selection = await resolveSkillSelections(entry.name, destination, snapshot.files, entry.skills).catch(
+          (error: unknown) => {
+            throw new SkillSourceFailure('cli_failed', (error as Error).message)
+          }
+        )
         prepared.push({
           key: `git:${index}:${definitionDigest}:${resolvedCommit}:${gitEntryScopeDigest(entry)}`,
           name: entry.name,
+          git: true,
           sourceDir: destination,
           skills: selection.cliSelections,
           expectedLeaves: selection.expectedLeaves,
@@ -380,6 +398,7 @@ async function installSkillsLocked(
       } catch (error) {
         const message = error instanceof Error ? error.message : 'unknown Git skill source error'
         result.errors.push({ source: entry.name, error: message })
+        sourceFailures.push({ name: entry.name, code: skillSourceFailureCode(error) })
         opts.warn?.(`skills: Git source ${entry.name} unavailable (${message}); keeping what is installed`)
         unresolvedScopes.add(gitSourceScope(definitionDigest, entry))
         // The ledger must keep naming the commit that is ON DISK — the tracking
@@ -406,9 +425,15 @@ async function installSkillsLocked(
     // One source's CLI stage failing — an oversized asset, too many files, a CLI crash — must cost
     // that source its skills for this run, not the agent its session (design §2: degrade, never
     // refuse host startup for content). The failure is named per source so the operator can fix it.
-    const skipSource = async (source: PreparedSource, error: unknown, staged: CandidateSkillBundle[]) => {
+    const skipSource = async (
+      source: PreparedSource,
+      error: unknown,
+      staged: CandidateSkillBundle[],
+      code: SkillSourceFailureCode = 'cli_failed'
+    ) => {
       const message = error instanceof Error ? error.message : 'unknown skills CLI error'
       result.errors.push({ source: source.name, error: message })
+      if (source.git) sourceFailures.push({ name: source.name, code })
       opts.warn?.(`skills: source "${source.name}" skipped this run; keeping what is installed (${message})`)
       const scope = gitSourceKeyScope(source.key)
       if (scope !== undefined) unresolvedScopes.add(scope)
@@ -509,7 +534,8 @@ async function installSkillsLocked(
           new Error(
             `aggregate skills CLI output would exceed the publication limits (${MAX_PUBLISHED_SKILL_BUNDLES} bundles, ${MAX_PUBLISHED_SKILL_FILES} files, ${MAX_PUBLISHED_SKILL_BYTES} bytes)`
           ),
-          staged
+          staged,
+          'limits_exceeded'
         )
         continue
       }
@@ -568,9 +594,23 @@ async function installSkillsLocked(
     result.removed.push(...reconciled.removed)
     result.skipped = reconciled.skipped
     result.owned = reconciled.owned.map((bundle) => bundle.relativeRoot)
+    const sourceByKey = new Map(prepared.map((source) => [source.key, source]))
+    // Conflicts name canonical roots, so an aliased skills directory still maps back to its candidate.
+    const candidateByRoot = new Map<string, CandidateSkillBundle>()
+    if (reconciled.conflicts.length > 0) {
+      for (const candidate of candidates) {
+        const root = await canonicalSkillMutationRoot(cwd, candidate.relativeRoot).catch(() => candidate.relativeRoot)
+        candidateByRoot.set(root, candidate)
+        candidateByRoot.set(candidate.relativeRoot, candidate)
+      }
+    }
     for (const conflict of reconciled.conflicts) {
       result.errors.push({ source: conflict, error: 'destination is not owned by this daemon ledger; skill skipped' })
+      // A Git Source whose bundle could not be published did not install, though it built.
+      const source = sourceByKey.get(candidateByRoot.get(conflict)?.sourceKey ?? '')
+      if (source?.git) sourceFailures.push({ name: source.name, code: 'cli_failed' })
     }
+    if (gitSources.length > 0) result.sourceFailures = uniqueSkillSourceFailures(sourceFailures)
     return result
   } catch (error) {
     if (error instanceof SkillLedgerSafetyError) throw error
@@ -839,7 +879,14 @@ export function gitSourceKeyScope(sourceKey: string): string | undefined {
 
 export function gitResolutionDigest(entry: AgentSkillEntry): string {
   const source = resolveBoundedGitSkillSource(entry)
-  return fingerprint({ githubRepoId: entry.githubRepoId, cloneUrl: source.cloneUrl, ref: source.ref ?? 'HEAD' })
+  const credential = skillSourceCredential(entry)
+  // A GitLab project id joins only that Source's identity, so every GitHub and anonymous digest is unchanged.
+  return fingerprint({
+    githubRepoId: entry.githubRepoId,
+    ...(credential?.provider === 'gitlab' ? { gitlabProjectId: credential.projectId } : {}),
+    cloneUrl: source.cloneUrl,
+    ref: source.ref ?? 'HEAD'
+  })
 }
 
 function fingerprint(value: unknown): string {

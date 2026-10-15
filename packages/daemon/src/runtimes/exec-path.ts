@@ -34,6 +34,12 @@ export function ensureNodeBinOnPath(env: NodeJS.ProcessEnv = process.env): void 
 
 /** Vendor installer bin dirs that only shell profiles put on PATH, keyed by runtime id. */
 export const RUNTIME_INSTALL_BIN_DIRS: Record<string, (env: NodeJS.ProcessEnv) => string[]> = {
+  'muse-acp': (env) => [
+    env.MUSE_INSTALL_DIR ||
+      (process.platform === 'win32'
+        ? join(env.LOCALAPPDATA || join(home(env), 'AppData', 'Local'), 'Programs', 'muse')
+        : join(home(env), '.local', 'bin'))
+  ],
   // Kimi Code CLI's install script drops `kimi` in $KIMI_CODE_HOME/bin (default ~/.kimi-code/bin).
   kimi: (env) => [join(env.KIMI_CODE_HOME || join(home(env), '.kimi-code'), 'bin')]
 }

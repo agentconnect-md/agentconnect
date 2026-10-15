@@ -159,11 +159,12 @@ async function resolve(input: ProviderResolveInput, ctx: ProviderResolveContext)
 export const gitlabRepository: CodeHostRepositoryModule = {
   provider: 'gitlab',
   apiBaseUrl: (spec) => gitlabApiBaseUrl(spec.gitlabHost),
-  // The binding's read PAT (read_api + read_repository) on the glab plane, so the write-capable git key is never touched.
+  // The binding's read PAT (read_api + read_repository) on the glab plane; a named skill project keys apart from the workspace's.
   readTokenAsk: (repository) => ({
     plane: 'glab',
     provider: 'gitlab',
     ...(repository.externalId !== undefined ? { externalRepoId: repository.externalId } : {}),
+    ...(repository.repoFullName !== undefined ? { repoFullName: repository.repoFullName } : {}),
     requestedAccess: 'read'
   }),
   resolve

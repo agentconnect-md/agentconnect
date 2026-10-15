@@ -39,6 +39,7 @@ import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
 import {
   DAEMON_SKILL_WINDOW_SUBJECT,
+  GITLAB_SKILL_WINDOW_PREFIX,
   SkillCredentialWindows,
   type AdmittedSkillWindow,
   type SkillCredentialWindow
@@ -103,6 +104,8 @@ export interface GitCredServerDeps {
   githubAdditionalRepoOf?: (agentId: string, repoFullName: string) => boolean
   /** A PRIVATE GitHub skill source the replicated spec enables (shared-skills.md §3): GitHub on any workspace, issued only inside a skill credential window. */
   privateGithubSkillRepoOf?: (agentId: string, repoFullName: string) => boolean
+  /** The project id of a credentialed GitLab skill source the replicated spec enables at this path, issued only inside a pod skill window. */
+  privateGitlabSkillProjectOf?: (agentId: string, projectPath: string) => string | undefined
   /** The open skill credential windows (source-cache.md §8); absent ⇒ a private registry of this server's own. */
   skillWindows?: SkillCredentialWindows
 }
@@ -121,6 +124,7 @@ export class GitCredServer {
   private readonly qualifiedRepoOf?: GitCredServerDeps['qualifiedRepoOf']
   private readonly githubAdditionalRepoOf?: GitCredServerDeps['githubAdditionalRepoOf']
   private readonly privateGithubSkillRepoOf?: GitCredServerDeps['privateGithubSkillRepoOf']
+  private readonly privateGitlabSkillProjectOf?: GitCredServerDeps['privateGitlabSkillProjectOf']
   readonly skillWindows: SkillCredentialWindows
 
   constructor(
@@ -135,6 +139,7 @@ export class GitCredServer {
     if (deps.qualifiedRepoOf) this.qualifiedRepoOf = deps.qualifiedRepoOf
     if (deps.githubAdditionalRepoOf) this.githubAdditionalRepoOf = deps.githubAdditionalRepoOf
     if (deps.privateGithubSkillRepoOf) this.privateGithubSkillRepoOf = deps.privateGithubSkillRepoOf
+    if (deps.privateGitlabSkillProjectOf) this.privateGitlabSkillProjectOf = deps.privateGitlabSkillProjectOf
     this.skillWindows = deps.skillWindows ?? new SkillCredentialWindows()
   }
 
@@ -209,8 +214,11 @@ export class GitCredServer {
     return admitted.length > 0 ? this.skillWindows.open({ agentId, subject, repos: admitted }) : undefined
   }
 
-  /** Whether a pod skill window for this agent would cover `repo`. */
+  /** Whether a pod skill window for this agent would cover `repo`: a GitHub `owner/repo`, or `gitlab:<project path>`. */
   admitsPodSkillRepo(agentId: string, repo: string): boolean {
+    if (repo.startsWith(GITLAB_SKILL_WINDOW_PREFIX)) {
+      return this.privateGitlabSkillProjectOf?.(agentId, repo.slice(GITLAB_SKILL_WINDOW_PREFIX.length)) !== undefined
+    }
     return this.privateGithubSkillRepoOf?.(agentId, repo) === true
   }
 
@@ -292,6 +300,10 @@ export class GitCredServer {
     const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
     // A window capability opens exactly its own private skill repositories on the git plane, nothing else.
     const window = principal === 'agent' ? undefined : principal
+    // A GitLab skill project is served only through a pod window that names it, read-clamped, by its numeric id.
+    if (window && req.provider === 'gitlab' && plane === 'git' && repo !== undefined) {
+      return await this.serveGitlabSkillWindow(req, reply, window, repo)
+    }
     if (window && (plane !== 'git' || repo === undefined || !privateSkill || !window.covers(repo))) {
       this.audit('denied', req.agentId, plane, repo, true, 'outside skill credential window')
       return reply({
@@ -394,6 +406,47 @@ export class GitCredServer {
         e instanceof GitCredUnavailableError ? e.message : `git credentials unavailable: ${(e as Error).message}`
       this.audit('denied', req.agentId, plane, repo)
       // `denied` tells the helper and the gh wrapper this was a refusal, not an unreachable daemon.
+      const denied = e instanceof GitCredUnavailableError ? e.denied : undefined
+      return reply({ ok: false, error: msg, ...(denied ? { denied } : {}) })
+    }
+  }
+
+  /** One GitLab skill project's read credential inside a window that covers it; the op split mirrors the general path. */
+  private async serveGitlabSkillWindow(
+    req: GitCredIpcRequest,
+    reply: (msg: unknown) => void,
+    window: AdmittedSkillWindow,
+    repo: string
+  ): Promise<void> {
+    const projectId = this.privateGitlabSkillProjectOf?.(req.agentId, repo)
+    if (projectId === undefined || !window.covers(`${GITLAB_SKILL_WINDOW_PREFIX}${repo}`)) {
+      this.audit('denied', req.agentId, 'git', repo, true, 'outside skill credential window')
+      return reply({
+        ok: false,
+        error: 'a skill credential window covers only its own private skill repositories',
+        denied: 'repository'
+      })
+    }
+    // The read PAT on the glab plane, keyed by project path: never the git-plane entry an additional-repository grant may hold writable.
+    const key = { plane: 'glab' as const, repo, provider: 'gitlab' as const }
+    if (req.op === 'erase') {
+      this.cache.invalidate(req.agentId, req.password, key)
+      this.audit('erased', req.agentId, 'git', repo)
+      return reply({ ok: true })
+    }
+    if (req.op !== 'get') return reply({ ok: false, error: 'unsupported op' })
+    try {
+      const cred = await this.cache.get(req.agentId, 'helper', {
+        ...key,
+        externalRepoId: projectId,
+        requestedAccess: 'read'
+      })
+      this.audit('served', req.agentId, 'git', repo)
+      return reply({ ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName })
+    } catch (e) {
+      const msg =
+        e instanceof GitCredUnavailableError ? e.message : `git credentials unavailable: ${(e as Error).message}`
+      this.audit('denied', req.agentId, 'git', repo)
       const denied = e instanceof GitCredUnavailableError ? e.denied : undefined
       return reply({ ok: false, error: msg, ...(denied ? { denied } : {}) })
     }

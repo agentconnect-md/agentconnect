@@ -230,6 +230,7 @@ describe('cluster spawn driver', () => {
           'skills-receipts',
           'skills-git',
           'skills-git-writeback',
+          'skills-git-gitlab',
           'bundle',
           'transfer'
         ],

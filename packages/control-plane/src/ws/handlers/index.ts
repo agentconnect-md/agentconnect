@@ -48,6 +48,7 @@ import { handleChildSessionStatus } from './child-session-status.js'
 import { handleEventSession, handleEventSessionSync } from './event-session.js'
 import { handleSessionActivity } from './event-session-activity.js'
 import { handleAgentActivity } from './agent-activity.js'
+import { handleAgentSkillStatus } from './agent-skill-status.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleLinearCredRequest } from './linearcred.js'
@@ -59,7 +60,7 @@ import { handleApprovalRoute } from './approval-route.js'
 import { handleReadAccess } from './read-access.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
-import { handleTransferGet, handleTransferSign } from './file-transfer.js'
+import { handleTransferGet, handleTransferSettle, handleTransferSign } from './file-transfer.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleCodeHostNoteResult } from './codehost-note-result.js'
 import {
@@ -116,6 +117,7 @@ export class FrameRouter {
       'agent/read-access': handleReadAccess,
       'github/review-authorize': handleGithubReviewAuthorize,
       'transfer/sign': handleTransferSign,
+      'transfer/settle': handleTransferSettle,
       'transfer/get': handleTransferGet,
       'image/original/put': handleSharedImagePut,
       'image/original/get': handleSharedImageGet,
@@ -131,6 +133,7 @@ export class FrameRouter {
       'event/session-sync': handleEventSessionSync,
       'event/session-activity': handleSessionActivity,
       'agent/activity': handleAgentActivity,
+      'agent/skill-status': handleAgentSkillStatus,
       'event/session-purged': handleSessionPurged,
       'gitcred/request': handleGitCredRequest,
       'linearcred/request': handleLinearCredRequest,
@@ -194,6 +197,7 @@ export {
   handleEventSessionSync,
   handleSessionActivity,
   handleAgentActivity,
+  handleAgentSkillStatus,
   handleSessionPurged,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,

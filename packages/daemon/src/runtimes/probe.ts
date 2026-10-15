@@ -214,6 +214,7 @@ function kimiCredentialFiles(root: string): SeededCredentialFile[] {
 }
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
+  'muse-acp': (env) => state(join(xdgConfigHome(env), 'muse'), join('.config', 'muse'), ['settings.json']),
   // Project only the active global file's saved API key and rollout cache; session and MCP state stay private.
   'claude-acp': (env) => {
     const { configDir, globalConfigFile } = resolveClaudeConfigSources(env)
