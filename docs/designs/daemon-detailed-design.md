@@ -827,8 +827,8 @@ through the same path with reason `approval wait expired`. Its cards retire as
 cancelled, the request is recorded as expired, the runtime receives `cancelled`,
 and the conversation is told nobody answered in time. Without it, a turn whose card nobody watches,
 such as a schedule's, holds its host and its sandbox pod forever (#2780). A
-request with a wait cap of its own is left to that cap: background
-work's `permissionWaitHours` (assistant-mode.md §5.6) or an API caller's
+request with a wait cap of its own is left to that cap: a
+task's `permissionWaitHours` (assistant-mode.md §5.6) or an API caller's
 answer timeout.
 
 **A turn a dead process left behind.** A daemon killed mid-turn leaves its row
@@ -1164,10 +1164,10 @@ re-checks the mode, and the asker is the sender of the message that started the 
 session of such an agent with a platform conversation of its own also gets `remind`,
 `listReminders` and `cancelReminder` (`src/mcp/ops/assistant-reminders.ts`, §5.9): the daemon's
 patrol sweep posts a due reminder's text into that conversation, with no turn. Every session
-that can start a background task (every one except a task, a patrol or approved work, of
-every agent, webchat, hook and scheduled runs included) also gets `stopTask {taskId}`
+that can delegate a task (every one except a task itself, whether a delegated task, a patrol or
+an approved proposal, of every agent, webchat, hook and scheduled runs included) also gets `stopTask {taskId}`
 (`src/mcp/ops/assistant-subsessions.ts`, [send-message-guide.md](send-message-guide.md) §8.7):
-it stops a task that same session started, through the console's own Stop core; any other id
+it stops a delegated task that same session started, through the console's own Stop core; any other id
 is refused in one set of words.
 
 A second group is gated by a **declared port** rather than by a platform name
@@ -1313,8 +1313,8 @@ Control Plane's session-visibility verdict for the console user behind the asker
 `read-access-v1`), which needs the agent's sessions in that conversation and fails closed. A turn no
 person is behind reads only public channels on its own bot. The askers are the turn message's sender
 and every message coalesced or steered into it (`QueueEntry.foldedMessages`, recorded before the
-runtime sees the message), a console user for webchat and console continuations, a task's
-opener (in memory), a patrol's or approved work's item asker, and a CP schedule's `askerUserId`. Every
+runtime sees the message), a console user for webchat and console continuations, a delegated task's
+opener (in memory), a patrol's or approved proposal's item asker, and a CP schedule's `askerUserId`. Every
 refusal is the same opaque "I can't share that here", with a sign-in hint for a chat member who
 linked no console account; an allowed read of a private source carries a `privateSource` note.
 

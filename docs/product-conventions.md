@@ -90,7 +90,7 @@ Who counts as "people" depends on whether the product can tell who someone is:
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
-  answers the conversation's approvals, its background work's included, among its pending
+  answers the conversation's approvals, its tasks' included, among its pending
   requests above the composer. Anyone else who tries to change a setting there is told, on their
   own screen only, who may. A conversation started through the agent's chat API belongs to the
   API key's owner.
@@ -127,8 +127,8 @@ Three things are outside this setting:
 
 - An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
   whoever could ask there may approve it ("Assistant-mode proposals").
-- Stopping a turn, which follows the `!stop` sender rule. Stopping a background task is the
-  decision of the conversation that started it ("Background tasks").
+- Stopping a turn, which follows the `!stop` sender rule. Stopping a delegated task is the
+  decision of the conversation that delegated it ("Tasks").
 - Letting the bot join a public channel, which only a person behind the turn answers ("Joining a
   public channel").
 
@@ -698,8 +698,8 @@ When the post instead carries `toAgent`, it is an explicit activation even when 
 target is the posting agent itself. The visible root and internal wake remain one paired
 delivery, so the new child runs exactly once; the platform's echo is only the second
 observation of that delivery. A self-call without a channel is refused with the
-`startTask` call to make instead; `startTask` starts a background task, one level deep and
-under a cap (see "Background tasks").
+`delegateTask` call to make instead; `delegateTask` hands the work to a delegated task, one
+level deep and under a cap (see "Tasks").
 
 ## A parent-session reply is injected, and the parent answers normally
 
@@ -963,9 +963,9 @@ limits and the agent's responsible user (see "Assistant-mode drafts") are in the
 panel on the agent's Configuration tab; the panel names that person and offers no choice of them.
 The console's `assistant-mode` flag decides only whether the mode can be switched on: an agent
 already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
-Background work tab and proposals in the console whatever the flag says.
+its sessions' Tasks tab and proposals in the console whatever the flag says.
 
-Turning the mode on also sets the agent's permission mode, so background work nobody is watching
+Turning the mode on also sets the agent's permission mode, so tasks nobody is watching
 does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
 all, becomes the runtime's auto mode (Claude Code's Auto, Codex's Auto review), or its full-access
 mode where the runtime has no auto mode. An auto or full-access mode, Claude Code's Don't ask, and
@@ -973,7 +973,7 @@ a mode chosen in the same edit are kept, and a runtime with neither keeps its mo
 whether the mode is turned on in the console or through the API, and the agent's permission mode
 row shows the result with no extra text. It is a default, not a requirement: an editor may pick
 another mode afterwards and it stays while the mode is on. With Manual chosen, the assistant mode
-panel warns that background work will often wait for approval; while the switch is being turned
+panel warns that tasks will often wait for approval; while the switch is being turned
 on, it warns only when the runtime keeps the mode. Turning the mode off leaves the permission mode
 as it is.
 
@@ -991,7 +991,7 @@ joining it, found with one user lookup per join (a person who joins several conv
 is looked up once). A member of another workspace of the same Enterprise Grid organization is not
 from outside, and having a console account or not plays no part. Before posting something no
 message from the conversation prompted, such as a scheduled run and its opening message, a report
-from background work, a post from another conversation or an approval card, the agent asks Slack
+from a task, a post from another conversation or an approval card, the agent asks Slack
 whether the conversation is shared now, at most once a minute per conversation. Every agent
 detects outsiders this way, in assistant mode or not, and what it found applies wherever a rule
 names an external conversation. When Slack cannot answer, a post from another conversation waits
@@ -1048,10 +1048,10 @@ shows them to every member.
   their own platform and bot. When a turn takes in messages from several people, every one of them
   must have access;
 - in webchat or a console continuation, the console user;
-- in a background task, the person whose turn started it (a restart forgets them, and it then
-  reads as no one); in a patrol, or approved work, the person who asked for the item; in a
+- in a delegated task, the person whose turn delegated it (a restart forgets them, and it then
+  reads as no one); in a patrol or an approved proposal, the person who asked for the item; in a
   scheduled run, the console user who last edited the schedule, else the one who created it;
-- no one, for a scheduled run that records no person, a hook run, a background task's report,
+- no one, for a scheduled run that records no person, a hook run, a task's report,
   and an agent's message to another agent. Such a turn reads only its own conversation and the
   public channels its own bot confirms. A hook or a schedule anchored to a conversation reads that
   conversation as its own.
@@ -1165,8 +1165,8 @@ conversation's history keeps only what people wrote. The zone is the first of th
    browser's, sent with every message; on Feishu/Lark the zone in their user record, when the
    platform returns one. Telegram, Discord and Google Chat report none.
 2. **A scheduled run**: the time zone its schedule is set in.
-3. **Any other turn no person sent**, such as a patrol, approved work, a background task, a
-   report from background work, or another agent's message: the person who started it, as "Reading other
+3. **Any other turn no person sent**, such as a patrol, an approved proposal, a delegated task, a
+   report from a task, or another agent's message: the person who started it, as "Reading other
    conversations" names them, and for a report or another agent's message the person behind the
    conversation it came from. Their zone comes from the same sources as in step 1: a chat
    member's profile, a console user's browser as last seen, else the profile of the chat account
@@ -1260,64 +1260,99 @@ item asked in a DM. Every conversation of the agent is reminded of the same list
 except one shared with another organization, since the ledger is internal; its item tools still
 answer there when asked. An agent outside assistant mode is offered no item tools.
 
-## Background tasks
+## Tasks
+
+A task is work that runs in the background in a context of its own and belongs to one
+conversation, which it reports to: a delegated task, a patrol (see "Assistant-mode patrols") or
+an approved proposal (see "Assistant-mode proposals"). What the agent's runtime itself reports
+for the current turn, a long command or one of the runtime's own subagents, is not a task of the
+conversation; the session page shows it as this turn's tasks.
 
 Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
-background task of its own: `sendMessage` with action `startTask` and only a `message`.
-Ordinary conversation stays in the main conversation. The conversation says the work has
-started; the task runs in a context of its own, never the conversation's long session; none of
-its replies is posted anywhere, and it reports back into the conversation that started it,
-which then speaks for it. One that stops without reporting is reported as ended, at the latest
+delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Work it
+splits up and can finish within the current turn goes to its runtime's own subagents instead;
+delegating is for work that spans turns, may run a long time, or that people should be able to
+see and stop. Ordinary conversation stays in the main conversation. The conversation says the
+work has started; the task runs in a context of its own, never the conversation's long session;
+none of its replies is posted anywhere, and it reports back into the conversation that delegated
+it, which then speaks for it. One that stops without reporting is reported as ended, at the latest
 about ten minutes after nothing is left running for it, and then no longer counts toward the
-agent's concurrent background work. It takes that conversation's visibility and owner, and its
-visibility cannot be changed on its own; making the conversation private still makes it
-private. A task cannot start tasks of its own. At most three run at once, or the limit set in the
-assistant mode panel for an agent in assistant mode; one more is refused, and the agent is told
-so. Every agent is told about this form, and a self-call in any other form than this or the
-channel-root one is refused. The task can message the conversation that started it at any time,
-and a message does not end its work; the daemon reports the end of each round of work. A later
-`messageTask` with the `taskId` `startTask` returned gives the same task new work in its retained
-context. Approved work and a patrol are background work too, but not tasks: each runs once and is
-settled by its one report.
+agent's concurrent tasks. It takes that conversation's visibility and owner, and its visibility
+cannot be changed on its own; making the conversation private still makes it private. A task
+cannot delegate tasks of its own. At most three run at once, or the limit set in the assistant
+mode panel for an agent in assistant mode; one more is refused, and the agent is told so. Every
+agent is told about this form, and a self-call in any other form than this or the channel-root one
+is refused; so is `startTask`, the action's name in the v2.5.0 release candidates, whose refusal
+gives the `delegateTask` call to make instead. The task can message the conversation that delegated it at any time, and a message does
+not end its work; the daemon reports the end of each round of work. A later `messageTask` with the
+`taskId` `delegateTask` returned gives the same task new work in its retained context. A patrol
+and an approved proposal are tasks too, but nobody delegates them: each runs once, is settled by
+its one report, and cannot be given more work.
+
+The agent lists its conversation's tasks with `listTasks`: its delegated tasks, with the `taskId`
+each is messaged and stopped by, and the patrols and approved proposals that report to it, each
+with its kind, label or title, state, start, how long it has run or when it ended, and whether it
+has handed back a result for its latest round. The list changes nothing, needs no chat
+integration, and never shows another conversation's tasks.
 
 Reports follow the language of the people in the conversation they report to. The conversation
-tells a task which language they use; a patrol or approved work, which sees none of their
-messages, goes by its item's title and summary. The conversation then answers them in their
-language whatever language a report arrived in. Fixed text on cards is not translated.
+tells a delegated task which language they use; a patrol or an approved proposal, which sees none
+of their messages, goes by its item's title and summary. The conversation then answers them in
+their language whatever language a report arrived in. Fixed text on cards is not translated.
 
-The session page of a conversation that started background work has a Background work tab in
-its side panel, for an agent in assistant mode or any agent whose daemon serves Activity outside
-it; no other conversation shows it.
-It lists the background work that conversation started, its tasks, patrols and approved work,
-newest first and a page at a time, each with its state and start. A title and a link to its own
-session appear only to someone who may view that session, as in the Activity view. A task is
-titled by the work it was given, as its cards name it, until its runtime gives it a title.
-Whoever may continue a running piece of background work's session may stop it there: Stop
-interrupts its current turn as the composer's stop does, mutes nothing and undoes nothing it
-already did, and a process its runtime started in the background may keep running. The work then
-reports to the conversation that it ended, its transcript names who stopped it, and the row says
-whether a turn was stopped or nothing was running. The session page of background work, a
-patrol's included, is read-only: it shows the transcript with no composer and no composer stop,
-since nothing sent from there would reach it. An agent whose daemon cannot list one
-conversation's background work says to upgrade it.
+The session page's side panel has one Tasks tab with two groups:
 
-A person can also ask the conversation that started a task to stop it, on any platform:
+- **This turn (reported by the runtime)**: the current turn's long commands and the runtime's own
+  subagents, each with its state and elapsed time. They are only shown: nothing here can be
+  stopped or opened.
+- **Delegated (managed by AgentConnect)**: the conversation's tasks, its delegated tasks, patrols
+  and approved proposals, newest first and a page at a time, each with its state, elapsed time and
+  whether it has handed back a result, a Stop, and a link to its own page.
+
+The tab shows running while anything in either group runs, and settled once both are. It appears
+whenever either group has something to show or the runtime's turn is being tracked; the Delegated
+group appears on a conversation that has tasks, for an agent in assistant mode or any agent whose
+daemon serves Activity outside it. Phones show the same tab and groups. A title and a link to a
+task's own page appear only to someone who may view that session, as in the Activity view. A
+delegated task is titled by the work it was given, as its cards name it, until its runtime gives
+it a title. Whoever may continue a running task's session may stop it there: Stop interrupts its
+current turn as the composer's stop does, mutes nothing and undoes nothing it already did, and a
+process its runtime started in the background may keep running. The task then reports to the
+conversation that it ended, its transcript names who stopped it, and the row says whether a turn
+was stopped or nothing was running. An agent whose daemon cannot list one conversation's tasks
+says to upgrade it.
+
+A task's own page, a patrol's included, opens with a line naming the session it belongs to,
+"Belongs to <that session's title> · task", which links back to it. The page is read-only: it
+shows the transcript, its tool calls included, with no composer and no composer stop, since
+nothing sent from there would reach it.
+
+The session page shows no hierarchy. Its Sessions tab's Related list is flat and holds real
+sessions only, each with a visible label: the session that started this one, "Started by", and
+the sessions this one called or woke, "References", plus a merged conversation's attribution rows.
+Tasks never appear there; they are in the Tasks tab. A phone's related-sessions card follows the
+same rules. The All sessions list leaves tasks out by default and offers a "Show tasks" filter that
+lists them too; the choice is kept in the page's address like the other filters, and the Control
+Plane applies it, so every page of results stays full.
+
+A person can also ask the conversation that delegated a task to stop it, on any platform:
 "stop the one writing the release notes". The agent asks which one is meant only when that is not
 clear, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
 was running, and that a process it started in the background may keep running. Its transcript
 names the person who asked, or the agent when no person is behind the turn. The agent stops it
-with `stopTask` and its `taskId`. Only the conversation that started it can stop it, on any of
+with `stopTask` and its `taskId`. Only the conversation that delegated it can stop it, on any of
 its turns: one a person started, a task's report, another agent's reply, a hook or a scheduled
 run, since deciding that a step is no longer needed is that conversation's planning; the `!stop`
 sender rule does not gate it. A task of another conversation, the task itself or a sibling, a
-patrol and approved work are refused in the same words as one that does not exist. The agent is
-reminded which tasks its conversation has running, by id and label, and the reminder is
-refreshed on the next turn after one starts or ends.
+patrol and an approved proposal are refused in the same words as one that does not exist; a
+patrol or an approved proposal is stopped from the Tasks tab. The agent is reminded which
+delegated tasks its conversation has running, by id and label, and the reminder is refreshed on
+the next turn after one starts or ends.
 
-## Background work permission requests
+## Task permission requests
 
-When a background task or approved work needs permission to run a tool, the request goes to the
-conversation the work belongs to, and the work waits; its turn is not cancelled. A patrol never
+When a delegated task or an approved proposal needs permission to run a tool, the request goes to
+the conversation the task belongs to, and the task waits; its turn is not cancelled. A patrol never
 asks.
 
 - In a Slack, Telegram, Discord, Feishu/Lark or Google Chat conversation where "What people can
@@ -1325,25 +1360,25 @@ asks.
   land: in the conversation's thread (on Telegram its topic or reply chain), or at its top level
   when it is one long conversation. Anyone there may answer it; where permissions are synced
   (Slack, Feishu/Lark), only an Agent editor, and an editor also gets it in a direct message
-  through the agent's Slack integration, when it has one. The card says background work is
-  asking, names and links it, and offers the runtime's own choices, "always allow" included where
+  through the agent's Slack integration, when it has one. The card says a task is asking,
+  names and links it, and offers the runtime's own choices, "always allow" included where
   offered.
 - Where it does not, or the conversation is closed (switched off, admitted per message by a
-  Decision, or routed), the conversation gets a notice that the background work is waiting, and
+  Decision, or routed), the conversation gets a notice that a task is waiting, and
   an Agent editor gets the request in a direct message, as for any other request.
 - A QQ conversation, which has no approval card, gets neither: an Agent editor answers the
   request in the console or in a direct message.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
-  marked as from background work.
+  marked as from a task.
 - A conversation shared with another organization gets no card. It goes to the agent's
   responsible user in a direct message, in assistant mode or not, otherwise to an Agent editor in
   a direct message, as for any other request.
-- Editors can also answer it on the background work's own session page and in the Activity view.
+- Editors can also answer it on the task's own page and in the Activity view.
 
 The first answer from any of these places decides it, and the other cards show that decision. If
 nobody answers within the agent's "Hours to wait for approval" (12 unless set in assistant mode),
-the request is denied, the work stops, and the conversation is told it ended; giving a task the
-work again with `messageTask` asks again. A request whose turn ends any other way, a restart
+the request is denied, the task stops, and the conversation is told it ended; giving a delegated
+task the work again with `messageTask` asks again. A request whose turn ends any other way, a restart
 included, expires and can no longer be answered. A main conversation's own requests keep today's
 behavior. Only assistant mode changes an agent's permission mode, so an agent outside it asks as
 often as its own mode does.
@@ -1351,7 +1386,7 @@ often as its own mode does.
 ## Assistant-mode patrols
 
 When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
-one patrol of it: background work that looks at the item read-only, records what it saw
+one patrol of it: a task of the conversation the item was taken in that looks at the item read-only, records what it saw
 as an observation, sets the next check or marks the item waiting or done, and ends. It has three
 outcomes. When something should be done, it asks for approval to do it (see "Assistant-mode
 proposals"). Otherwise, only when something changed since the latest observation does it report,
@@ -1361,12 +1396,12 @@ When that conversation has no long session the check is skipped, and the item re
 item's own next check wakes a patrol: there is no cadence and no event trigger yet. A next check
 is patrolled once; one missed while the agent was paused is not replayed, and an overdue item is
 checked once. An agent runs one patrol at a time, patrols do not count toward its concurrent
-background work, and it starts at most `dailyPatrolBudget` of them in any 24 hours (50 when unset).
+tasks, and it starts at most `dailyPatrolBudget` of them in any 24 hours (50 when unset).
 A failed patrol is recorded on the item and the next attempt waits min(60, 2ⁿ) minutes, n being
 its failures in a row; a patrol that records nothing counts as failed. After five in a row the
 item is patrolled no more until its next check is set to a new time, and its conversation is told
-once. A failed patrol never sends the "ended without reporting" notice a background task gets.
-A patrol is listed among its conversation's background work; stopping it there ends it silently
+once. A failed patrol never sends the "ended without reporting" notice a delegated task gets.
+A patrol is listed among its conversation's tasks; stopping it there ends it silently
 and counts its check as done.
 
 A patrol is offered only read tools, an item update limited to its own item and `propose`: no
@@ -1387,9 +1422,8 @@ The proposal is carded in the Slack conversation the item was taken in, where th
 replies land: its top level when it is one long conversation, else its thread. Whoever could ask
 the agent there may approve it: in a direct message, that person; in a channel, anyone whose own
 message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
-Approving grants nothing that typing the request there would not: the approved work runs with
-the agent's own permissions, and its permission requests follow "Background work permission
-requests". "What people can do in chat" makes no difference to proposals. A conversation shared
+Approving grants nothing that typing the request there would not: the approved proposal runs with
+the agent's own permissions, and its permission requests follow "Task permission requests". "What people can do in chat" makes no difference to proposals. A conversation shared
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
 user in a direct message, otherwise no card, and it waits in Activity. A post that timed out may
@@ -1404,17 +1438,17 @@ and the first answer decides it.
 
 The card leads with the sentence, shows the reason and the work, and offers Approve and Deny;
 there is no "always allow". Once decided it is rewritten in place: approved by whom and running,
-denied by whom, or expired with nothing run, and later how the approved work ended. A card a restart left unedited is
+denied by whom, or expired with nothing run, and later how the approved proposal ended. A card a restart left unedited is
 rewritten when its integration reconnects. A proposal expires after 24 hours and never runs
 afterwards, and a denied one never runs.
 
-Approval runs the approved work once, in the background, for the conversation the item was taken
-in, under that conversation's long session, with the agent's own permissions rather than a patrol's
+Approval runs the proposal once, in the background, as a task of the conversation the item was
+taken in, under that conversation's long session, with the agent's own permissions rather than a patrol's
 read-only mode. It reports back once: its own report, or the daemon's "ended without reporting"
-when it ends without one. It counts toward the agent's concurrent background work; while that is
+when it ends without one. It counts toward the agent's concurrent tasks; while that is
 full the approval is refused with the reason, nothing runs and the proposal keeps waiting. A proposal whose record changed after it was written, whose item was
 closed or deleted, whose conversation has no long session, or whose agent left assistant mode is
-refused and never runs. When a restart or handover cuts the approved work short before it reports, it is
+refused and never runs. When a restart or handover cuts the approved proposal short before it reports, it is
 never run again: the conversation is told once that it is not sure this went through and should
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
 without reporting, uncertain) is recorded on the item.
@@ -1434,13 +1468,13 @@ While the agent is paused nothing posts; after it resumes, a reminder less than 
 still posts and an older one is dropped. One that the platform refuses three times is dropped.
 Turning assistant mode on or off changes no reminder: one already set still posts at its time. A
 conversation shared with another organization sets and receives reminders like any other (see
-"Assistant-mode places"). Background sessions, patrols and webchat cannot set reminders.
+"Assistant-mode places"). Tasks, patrols included, and webchat cannot set reminders.
 
 ## Assistant-mode Activity
 
 The page of an agent in assistant mode has an Activity tab. Every other agent's page has one too
-once its daemon serves it, with only what such an agent has: its background work and what waits
-for approval, that is its drafts and its background work's permission requests. Items and proposals stay
+once its daemon serves it, with only what such an agent has: its tasks and what waits
+for approval, that is its drafts and its tasks' permission requests. Items and proposals stay
 assistant mode's. An agent whose daemon predates this shows no tab outside assistant mode, and a
 link to it opens Integrations instead. It is read from the agent's daemon when it is shown and kept
 nowhere else; each list shows the most recent entries, up to a limit, and says when more exist.
@@ -1451,8 +1485,8 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   its summary and newest observations. Done and dropped items sit in a collapsed section that is read
   only when opened. An item never shows who follows it or the wording of a conversation. An editor
   may delete an item after a confirmation; the agent stops following it.
-- **Background work** is listed for everyone who can view the agent, running work first, each
-  with its state and start; tasks, patrols and approved work are listed together. Its title, a
+- **Tasks** are listed for everyone who can view the agent, running ones first, each
+  with its state and start; delegated tasks, patrols and approved proposals are listed together. Its title, a
   link to its session and the conversation that started it appear only to someone who may view
   that conversation.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
@@ -1464,9 +1498,9 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   it says to check the destination, since it may have been posted. Proposals are listed here too,
   labelled as proposals: the sentence, the reason, the work, the conversation it runs in, its item,
   who is asked and when it expires, with Approve and Deny. An approved one says it runs in the
-  background and reports back in that conversation; one refused at the background work limit
-  keeps its choices and says why. Background work waiting for permission is listed here as well:
-  which work and conversation (named only to someone who may view them), what it asks to run and
+  background and reports back in that conversation; one refused at the task limit
+  keeps its choices and says why. A task waiting for permission is listed here as well:
+  which task and conversation (named only to someone who may view them), what it asks to run and
   when it is denied unless answered, with the runtime's own choices. An answer here is the same
   decision as the card's, and one answered elsewhere first says it is no longer waiting.
 
@@ -1492,8 +1526,8 @@ with no IM integration at all (webchat, webhook, dreaming, memory-only). A chann
 **narrow** a directory listing as an optional filter; it can never widen one. A caller
 always sees **itself** in a listing, even under a `selected` outbound policy that does not
 name it. That self entry may target the explicit `toAgent` channel-root form described
-above; a self-call without a channel is refused with the `startTask` call to make instead (see
-"Background tasks").
+above; a self-call without a channel is refused with the `delegateTask` call to make instead (see
+"Tasks").
 
 The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,

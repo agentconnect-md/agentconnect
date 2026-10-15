@@ -46,29 +46,38 @@ on its own schedule. A conversation with two agents has two sessions.
 _Avoid_: Conversation, thread (when meaning the agent's private context)
 
 **Task**:
-A step of one session that runs in the background in its own context. It has no
-conversation of its own and does not control other tasks.
-_Avoid_: Sub-session, subagent, child session
+Work that runs in the background in its own context and belongs to one session, the one it
+reports to: a delegated task, a patrol, or an approved proposal. Lists, limits, and permission
+requests that cover all three use this name. A task has no conversation of its own.
+_Avoid_: Background work, sub-session, background session, runtime job
+
+**Delegated task**:
+A task one session hands off with `delegateTask`. It runs for one or more rounds, does not
+control other tasks, and returns each round's result to the session that delegated it.
+_Avoid_: Sub-session, subagent, child session, started task
 
 **Owning session**:
-The session that started a task. Only it can message the task or stop it, and the task's
-results return to it. The relationship lasts across rounds of work.
+The session a task belongs to. For a delegated task it is the session that delegated it: only
+it can message or stop the task, and the task's results return to it. The relationship lasts
+across rounds of work.
 _Avoid_: Parent, sub-session parent, most recent caller
 
 **Patrol**:
-An assistant-mode agent's own read-only check of one item it follows, run when the item's next
-check comes due. It runs once and reports, proposes, or stays silent; it is not a task.
-_Avoid_: Sub-session, patrol sub-session, task
+A task of the conversation an assistant-mode agent checks for: its own read-only check of one
+item it follows, run when the item's next check comes due. It runs once and reports, proposes,
+or stays silent.
+_Avoid_: Sub-session, patrol sub-session, patrol task
 
-**Approved work**:
-The work an approved proposal carries out, once, with the agent's own permissions, reporting to
-the conversation the proposal belongs to. No session starts it as a step, so it is not a task.
-_Avoid_: Approved task, sub-session, task
+**Approved proposal**:
+As a task, the run an approved proposal carries out, once, with the agent's own permissions,
+reporting to the conversation the proposal belongs to.
+_Avoid_: Approved work, approved task, sub-session
 
-**Background work**:
-Everything an agent runs in the background on a conversation's behalf: its tasks, patrols, and
-approved work. Lists, limits, and permission requests that cover all three use this name.
-_Avoid_: Sub-sessions, background sessions
+**This turn's tasks**:
+What the agent's runtime itself reports for the current turn, such as a long shell command
+running in the background or one of the runtime's own subagents. AgentConnect only shows them;
+they are not tasks of the session and cannot be messaged or stopped from AgentConnect.
+_Avoid_: Runtime jobs, background work, delegated task
 
 **Session message**:
 One input that one session sends another: a call, a task instruction, a reply, or a task's

@@ -487,7 +487,7 @@ still failing to constrain recursion precisely. Therefore:
 
 - `source:"agent"` does not enter L1.
 - Self-calls are rejected, except the paired channel-root form. Work of the agent's own without a
-  channel is a task (`startTask`), one level deep under a concurrency cap
+  channel is a delegated task (`delegateTask`), one level deep under a concurrency cap
   ([send-message-guide.md](send-message-guide.md) §3.1, [assistant-mode.md](assistant-mode.md) §5.6).
 - The daemon/relay manages hops; model inputs contain no trusted hop value.
 - Same-daemon and cross-daemon paths both check the cap before admission.

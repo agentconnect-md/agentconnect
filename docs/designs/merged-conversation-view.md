@@ -246,6 +246,12 @@ established session-visibility bar is that a hidden session's existence is
 itself hidden (a hidden parent is indistinguishable from no parent); the
 grouped list and the merged page both hold to it (§7).
 
+Tasks, sessions on a `subsession:` coordinate that belong to an owning session, are
+left out of the list by default and reached from their owning session's Tasks tab.
+A "Show tasks" filter, kept in the URL like the other filters, brings them back. The
+CP applies it as an additive `SessionListFilters` field and list query parameter,
+so paging stays correct; hiding rows in the browser would leave short pages.
+
 ### 5.3 Routes and cross-links
 
 - `/conversations/:key` — the default surfaced page for a multi-participant
@@ -449,23 +455,21 @@ parent at once, so a side-agnostic filter would mislabel one of the two. Rows
 are deduplicated against the ordinary list exactly as family rows are, which
 preserves the displayed-once invariant above.
 
-The rail's Related tree is **exactly three levels — whatever woke the open row,
-the open row, whatever it woke — and direction is drawn as position on them**,
-with no group headings. An in-room `wokenBy` and a cross-room parent are one
-edge seen from two locations, so they share level 0 rather than nesting; `woke`
-and cross-room delegations share level 2 for the same reason. Nesting them
-would assert a chain the lift does not have: §9.2 unions parents across every
-member **without recording which member each one woke**. The headings this
-replaced ("Parent conversation" / "Delegated by" / "Delegated to" /
-"Delegations") each spent a line restating the indent directly beneath them,
-and usually the title too, since a conversation is named after its first
-message — typically the human @mentioning the very agent that then delegates.
-Kind is already in the row: an agent mark and a name that do not click, against
-a platform mark and a title that do. The words move into each row's hover
-tooltip — **the same two words for the navigation row and the attribution row**,
-since they are one edge — and stay as `sr-only` text besides, because
-indentation is a visual relation that a screen reader hears nothing of and a
-tooltip never reaches.
+The rail's Related block is **a flat list of real sessions, and direction is a
+visible label on each row**, with no indentation, no connectors and no group
+headings. A row for whatever woke the open row reads **Started by**; a row for
+whatever the open row called or woke reads **References**. An in-room `wokenBy`
+and a cross-room parent are one edge seen from two locations, so they carry the
+same label; `woke` and cross-room calls likewise share theirs. The list asserts no
+chain, which is also what the lift has: §9.2 unions parents across every member
+**without recording which member each one woke**. Tasks (a `subsession:`
+coordinate) are never rows here: a task belongs to its owning session and is
+listed in that session's Tasks tab, and its own page names the owning session in
+its header with a link back. An earlier shape drew the same rows as a
+three-level tree, whatever woke the open row above it and whatever it woke below,
+with the words only in a hover tooltip; the label replaces both the indentation,
+which a screen reader heard nothing of, and the tooltip, which it never reached. The
+mobile family card follows the same rules.
 
 Each row is built around the AGENT, not the session: agent mark and agent name
 (org roster, then the relation's own projection, then the raw id). A session
@@ -498,9 +502,8 @@ page (parent/sibling/child links) — a page this design stops surfacing for
 multi-participant conversations. The merged page therefore inherits it at
 conversation level: the union of member sessions' lineage links whose target
 lies in a DIFFERENT conversation (§9.1 filters the intra-room ones), each
-mapped to the conversation its target session belongs to, rendered on §9.1's
-three levels — parents above the open row, child conversations below it,
-grouped by the waking member. No new CP surface — the member detail DTOs
+mapped to the conversation its target session belongs to, rendered in §9.1's
+flat list — parents labelled Started by, child conversations labelled References. No new CP surface — the member detail DTOs
 already carry the links, and mapping a session to its conversation key is a
 metadata lookup.
 (C2 ships the links; grouping delegations by waking turn is C3.)
@@ -509,12 +512,12 @@ The lifted shape carries **all** waking conversations in one list, and carries
 no sibling slot at all. A conversation has as many parents as it has members
 woken from elsewhere, and they are peers — the union that produced them does
 not record which member each one woke, so nothing ranks one of them first.
-Level 0 holds every one of them, alongside `wokenBy` for the same reason.
+Every one of them is a Started by row, alongside `wokenBy` for the same reason.
 
 An earlier shape kept a single `parentSession` and spilled the remainder into
 `siblingSessions`, which is where it collided with §9.1's last paragraph: on a
 single-session page that field means the other children of ONE parent, and the
-rail draws it at the open row's own level below a divider. So a conversation
+rail drew it at the open row's own level below a divider. So a conversation
 that WOKE this one was rendered beside the row it woke rather than above it —
 two meanings in one slot, and the wrong one drawn. The conversation-level
 structure therefore names only what it actually has, parents and delegations,
@@ -629,9 +632,9 @@ how divergence starts.
    (same parent session). An edge whose endpoints share the conversation key
    renders as attribution and is excluded from lifted navigation — the
    room-mates-AND-siblings overlap is displayed once, not twice (§9.1).
-   Attribution is surfaced in the rail as tree position around the open row —
-   waker above it, woken below — and kept out of the family shape, whose parent
+   Attribution is surfaced in the rail's flat Related list as a row label —
+   Started by for the waker, References for the woken — and kept out of the family shape, whose parent
    slot means "another conversation" and navigates away (§9.1). The lifted
    family has NO sibling slot: every waking conversation is a parent and
-   shares the level above the open row, so the per-session meaning of
+   carries the Started by label, so the per-session meaning of
    `siblingSessions` is never borrowed to hold one (§9.2).

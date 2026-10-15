@@ -17,7 +17,7 @@ describes how an agent behaves.
 **Console:** the switch sits in the assistant mode panel on the agent's Configuration tab, offered
 behind the `assistant-mode` flag (`features.assistantMode` in the chart, off by default) until it
 changes behavior. The flag gates only switching the mode on: an
-agent already switched on keeps the switch, Activity, the Background work tab and proposals.
+agent already switched on keeps the switch, Activity, the Tasks tab and proposals.
 
 **Builds on:** [resource-visibility.md](resource-visibility.md) §14 (per-conversation triggers
 and their defaults), [session-visibility.md](session-visibility.md) (session visibility, the
@@ -65,24 +65,25 @@ does not pretend to defend against effects it cannot defend against.
 - When the asker can no longer be reached (DM closed, left the channel), reports go to the agent's
   responsible user (§5.1), and otherwise wait in its Activity view.
 
-### 1.3 Long work: background tasks
+### 1.3 Long work: delegated tasks
 
-- A background task is **work the conversation starts on demand**, in a context of its own — "fix
+- A delegated task is **work the conversation hands off on demand**, in a context of its own — "fix
   this bug and open a PR". Ordinary conversation stays in the main conversation.
-- Every agent has them, in assistant mode or not (§5.6). Patrols and approved work also run in the
-  background but are not tasks, and stay assistant mode's.
+- Every agent has them, in assistant mode or not (§5.6). Patrols and approved proposals are tasks
+  of the conversation they report to as well, but no conversation delegates them, and they stay
+  assistant mode's.
 - In an IM: the main conversation says "started", then reports the result with a console link.
   Nothing extra appears on the platform.
-- Stopping and steering go through the conversation that started the task: "stop the PR one",
+- Stopping and steering go through the conversation that delegated the task: "stop the PR one",
   "change the PR task to X" (§5.6, §5.8).
-- In webchat: the background work a conversation started is visible — watch, talk to one
+- In webchat: a conversation's tasks are visible in its Tasks tab — watch, talk to one
   directly, stop one.
 - The workspace is whatever the agent's other sessions get: a worktree each under session
   isolation, the shared primary otherwise.
 - It finishes the work inside the workspace and asks separately for the outward step (push, open
   the PR). If it hits an operation that needs approval midway, it waits; the card goes to the place
   you asked from; it continues once you approve.
-- Tasks are one level deep: a task cannot start tasks. Concurrent ones are capped and queue
+- Tasks are one level deep: a delegated task cannot delegate tasks. Concurrent ones are capped and queue
   beyond the cap, and it tells you.
 
 ### 1.4 Stopping
@@ -94,7 +95,7 @@ does not pretend to defend against effects it cannot defend against.
   current turn; a background process the runtime started itself (a build, a dev server) may keep
   running, and the answer says so.
 - To stop everything, **pause the agent** in the console (today's pause): main conversations
-  and background work stop until resumed. Patrols missed meanwhile are not replayed; items
+  and tasks stop until resumed. Patrols missed meanwhile are not replayed; items
   whose check is overdue are each checked once on the next patrol.
 - Stopping never undoes what is already done.
 
@@ -116,9 +117,9 @@ does not pretend to defend against effects it cannot defend against.
 - A proposal's card lands in the item's place of origin; for an external place, in the approver's
   DM instead (§5.5). Whoever could ask the agent there may approve it: in a DM, that person; in a
   channel, anyone whose own message would start a turn of the agent there; in webchat, whoever may
-  continue the conversation, from its pending requests. Approving runs the approved work with the
+  continue the conversation, from its pending requests. Approving runs the approved proposal with the
   agent's own permissions, which is what asking there gets, so it grants nothing more.
-- A runtime permission request inside that work follows the existing in-chat approval rules: where
+- A runtime permission request inside that run follows the existing in-chat approval rules: where
   "What people can do in chat" includes approving tool calls, anyone who sees the card can click;
   otherwise the console and the editor DM path. That card offers "always allow this tool".
 - The card leads with one plain sentence; the raw arguments are folded underneath.
@@ -128,7 +129,7 @@ does not pretend to defend against effects it cannot defend against.
 ### 1.7 Progress
 
 - "What's on your plate?" lists the items it follows, what it last saw for each, when it checks
-  next, what awaits approval, which background work is running.
+  next, what awaits approval, which tasks are running.
 - The console has the same Activity view plus recent patrols. The ledger is editable; delete an
   item and it drops it.
 
@@ -136,7 +137,7 @@ does not pretend to defend against effects it cannot defend against.
 
 - Switch assistant mode on in the agent's settings. The agent must pass admission (§4.1); an
   agent that does not gets a locked switch with the reason.
-- Background work nobody watches should not stop for approval, so switching it on sets the
+- Tasks nobody watches should not stop for approval, so switching it on sets the
   agent's permission mode to the runtime's auto mode (Claude Code's `auto`, Codex's `agent`,
   which it calls "Auto review"), or to its full-access mode where it has no auto mode. Only an
   unset mode or one that asks for approval or only reads is changed: an auto or full-access
@@ -145,7 +146,7 @@ does not pretend to defend against effects it cannot defend against.
   Control Plane applies it on every edit that switches the mode on, from the console or the
   API. It is a default, never an admission check: an editor may change the mode afterwards and
   the choice sticks while the mode stays on. While it is on, an agent whose mode asks every time
-  gets a warning: background work will wait for approval often.
+  gets a warning: its tasks will wait for approval often.
 - The console's form for a new agent preselects the same mode from the same per-runtime map,
   narrowed to the modes the runtime reports, whether or not the agent will ever be switched on: an
   agent that runs work nobody watches should not wait on approval by default. A runtime with
@@ -208,13 +209,13 @@ does not pretend to defend against effects it cannot defend against.
 
 ### 4.1 Admission (checked on enable; a failing check locks the switch)
 
-| Dimension         | Requirement                                                                                                                                                                                                                                                   | Why                                                                                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the patrol guarantee is stated by layer in §5.9, and a runtime without one shows as degraded | Memory bypass, long sessions and resuming background work after approval depend on it. Registering strict read-only semantics would lock most runtimes out |
-| Memory            | `managed` or `none`; per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies                                                                                                       | The person layer exists for managed memory only; distillation runs on the credentialed warm host                                                           |
-| Self-hosted group | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                                |
-| Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                      | Not possible today either                                                                                                                                  |
-| One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                               |
+| Dimension         | Requirement                                                                                                                                                                                                                                                   | Why                                                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the patrol guarantee is stated by layer in §5.9, and a runtime without one shows as degraded | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out |
+| Memory            | `managed` or `none`; per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies                                                                                                       | The person layer exists for managed memory only; distillation runs on the credentialed warm host                                                 |
+| Self-hosted group | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                      |
+| Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                      | Not possible today either                                                                                                                        |
+| One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                     |
 
 The admission list holds Claude Code (`claude-acp`, and `claude`, its earlier id), Codex (`codex-acp`,
 and `codex`) and OpenCode (`opencode`). A runtime joins it once both facts hold for the version the
@@ -277,8 +278,8 @@ edit sets a mode itself (§1.8); which mode is which comes from a per-runtime ma
 admission list. Workspace isolation is untouched.
 
 **The responsible user is derived, never stored.** It is the member asked when no person is behind
-a draft, a proposal or background work's permission request (the asker, a schedule's creator or
-editor, an item's asker and a task's opener always come first): the agent's creator while they are a
+a draft, a proposal or a task's permission request (the asker, a schedule's creator or
+editor, an item's asker and a delegated task's opener always come first): the agent's creator while they are a
 member who may edit the agent, otherwise the editor who joined the organization first (membership
 time, then user id), otherwise nobody. The Control Plane derives it when it is asked (the approval
 route's `responsible` form, behind `assistant-responsible-route-v1`, so a daemon on an older Control
@@ -363,7 +364,7 @@ unlisted place on one session from its first message (§5.2).
 - **Output no event triggered asks first.** A place learns of a share from its next event, so
   before a post no event from that place triggered — a scheduled or hook run and its anchor
   message, a report round, a post from another place, a
-  background work's permission card, a patrol's proposal card — the daemon asks the platform whether
+  a task's permission card, a patrol's proposal card — the daemon asks the platform whether
   the place is shared now: on Slack the share flags of
   `conversations.info`, read through the channel lookup a platform module declares
   (`sharedConversations`). The answer is cached per place for a minute, the bound the membership
@@ -383,7 +384,7 @@ unlisted place on one session from its first message (§5.2).
 - Telegram groups, Discord channels, Feishu groups: no detection; such a place is internal.
 - DM: never external; what it is told is judged by its one person (§5.5). Webchat is internal by
   construction.
-- A task's place is its owning session's: one started in an external place reports through
+- A delegated task's place is its owning session's: one delegated in an external place reports through
   that place's main session, which answers there like any other turn.
 - **A place turning external (internal → external) has no transition.** A detected share, or a
   guest or outside member joining, interrupts nothing: the turn in flight posts its reply, and
@@ -422,14 +423,14 @@ unlisted place on one session from its first message (§5.2).
 **② The standing summary**: `id`, title, status and followers' places of active and waiting
 items; capped at 30; injected through the existing reminder path (`shouldRemind`, which already
 handles first turn, restart and compaction); every internal place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
-An external place (§5.3) receives none, tasks started there included: the ledger is internal,
+An external place (§5.3) receives none, tasks delegated there included: the ledger is internal,
 and nobody there asked for it. The item tools still answer there when someone asks (#2979, B4).
-Every session that can start tasks, in assistant mode or not, is also told which of its tasks
-are running now, each by its `taskId` and label, at most 10 and then a count. The block is
+Every session that can delegate tasks, in assistant mode or not, is also told which of its
+delegated tasks are running now, each by its `taskId` and label, at most 10 and then a count. The block is
 omitted when none runs. It rides the same points and is re-injected on the next turn after one starts or
 ends, so the list the model holds stays current (§5.8); after the last one ends, that turn says
 none is running. It is kept in an external place: it names only work that conversation itself
-started.
+delegated.
 
 **③ The recall tool** `recall({ place, query })`: reads this agent's transcript excerpts from
 another place, under §5.5. Every agent has it, in assistant mode or not: the read rule it passes
@@ -440,7 +441,7 @@ webchat conversations (§5.5 "Reads", the listing).
 
 **④ The people's local time** is no longer assistant mode's own: every agent's turns carry it,
 by the order in [product conventions](../product-conventions.md#local-time). In assistant mode it
-still rides every turn — main conversations, tasks, patrols, approved work and report rounds — as
+still rides every turn — main conversations, delegated tasks, patrols, approved proposals and report rounds — as
 one line in the turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai,
 UTC+08:00).` The runtime host's clock is never presented as the people's time. The line is
 context, not an instruction; no tool's parameters change, and instants the agent writes
@@ -511,7 +512,7 @@ member (below).
   installing workspace, so they do not approve. A console asker is routed to the member they
   linked, as before.
 - A draft is an approval record (§5.10) whose action is "post this text to this place"; the
-  daemon executes it itself, with no background work. It expires after 24 hours.
+  daemon executes it itself, with no task. It expires after 24 hours.
 - Any card that would land in an external place (a runtime permission request, a `propose`) goes
   to the same DM instead: a card is output too.
 
@@ -620,8 +621,8 @@ member (below).
   that is unreachable, or lacks the feature, refuses the read.
 - **Who is asking** on a turn: the senders of its message and of every message coalesced or steered
   into it, recorded before the runtime sees them; the console user in webchat and a console
-  continuation; a task's opener (kept in memory, so a restart reads it as no one); a patrol's
-  or approved work's item asker (the item's first follower); a schedule's last human editor, else its
+  continuation; a delegated task's opener (kept in memory, so a restart reads it as no one); a patrol's
+  or approved proposal's item asker (the item's first follower); a schedule's last human editor, else its
   creator (`CronUpsert.askerUserId`). Hook runs, report rounds, schedules that record no person and
   agent-to-agent messages are no one: the agent-to-agent frame carries no originating person and was
   not given one.
@@ -634,7 +635,7 @@ member (below).
   person's own DM or webchat conversation it also lists that person's other DMs, on any platform and
   bot of the agent, and their webchat conversations:
   - _Only there._ Exactly one person asks, the current conversation is a DM or webchat conversation,
-    and it is theirs by the rule a read of it from elsewhere passes, so a patrol or approved work run in
+    and it is theirs by the rule a read of it from elsewhere passes, so a patrol or approved proposal run in
     someone's DM for another person lists none. In a channel or group DM, or on a turn nobody or
     several people are behind, none is listed, since everyone present would read the titles. Group
     DMs and private channels are never listed.
@@ -671,55 +672,59 @@ member (below).
   person layer, built for every agent; "allow for this session" is gone for every agent. Runtime
   native memory must be disableable (admission) and is disabled on enable.
 
-### 5.6 Background work
+### 5.6 Tasks
 
-**Every agent has tasks**, in assistant mode or not ([send-message-guide.md](send-message-guide.md)
-§2.1, §8). A session starts one with `sendMessage` action `startTask` and only a `message`, gives
-it more work with `messageTask {taskId}`, and stops it with `stopTask {taskId}` (§5.8); a self-call
-without a channel is refused with the exact `startTask` call to make instead. The session that
-started a task is its **owning session**. The coordinate, inheritance, no nesting, round
+**Every agent has delegated tasks**, in assistant mode or not
+([send-message-guide.md](send-message-guide.md) §2.1, §8). A session delegates one with
+`sendMessage` action `delegateTask` and only a `message`, gives it more work with
+`messageTask {taskId}`, stops it with `stopTask {taskId}` (§5.8), and lists its tasks with
+`listTasks`; a self-call without a channel is refused with the exact `delegateTask` call to make
+instead. The session that delegated a task is its **owning session**. The coordinate, inheritance, no nesting, round
 reports, failure report, permission routing, wait cap, stop and running block are described here
 and in §5.7–§5.8. An agent with an assistant mode policy takes its `limits`; any other agent takes
 the defaults (`maxConcurrentSubsessions` 3, `permissionWaitHours` 12), and there is no new
-setting. Patrols (§5.9) and approved work (§5.10) also run in the background but are not tasks:
-no session starts them as a step, they run once, and they stay assistant mode's. Tasks, patrols
-and approved work together are the agent's **background work**, the name the console and the
-limits that count all of them use.
+setting. Patrols (§5.9) and approved proposals (§5.10) are tasks too, of the conversation they
+report to, but no session delegates them as a step: they run once, are not continued with
+`messageTask` or stopped with `stopTask`, and stay assistant mode's. Delegated tasks, patrols and
+approved proposals together are a session's **tasks**, the name the console and the limits that
+count all of them use.
 
 **P0b shipped the minimal form**: self-delegation as below, a failure report the daemon sends
 when a task ends without reporting (§5.7), and a concurrency cap that refuses beyond
-`maxConcurrentSubsessions` (default 3). A task answers its owning session's messages with
+`maxConcurrentSubsessions` (default 3). A delegated task answers its owning session's messages with
 `replyToSession` by message id, any number of times, and the daemon reports the end of each round
-of work. The persistent outbox, the recovery order, a listing tool, the daily budget and queueing
+of work. The persistent outbox, the recovery order, the daily budget and queueing
 over the cap are deferred until use shows they are needed; the rest of this section and §5.7
 describe that target. Permission-request routing and its wait cap (items 2 and 3 below) have
-shipped, and so have steering with `messageTask` and stopping with `stopTask` (§5.8).
+shipped, and so have steering with `messageTask`, stopping with `stopTask` (§5.8) and listing
+with `listTasks`.
 
-- **Opening**: `startTask` builds a trusted self-delegation from the caller's identity (both
+- **Opening**: `delegateTask` builds a trusted self-delegation from the caller's identity (both
   admission checks exempt it; `targetSessionCoordinate` is skipped), and the task gets **its own
   coordinate**: a reserved `subsession:` thread segment minted per delegation, on which every turn
   runs headless and which the Control Plane also recognises. It inherits the owning session's
-  visibility and owner through the A2A path; **visibility changes on background work are
+  visibility and owner through the A2A path; **visibility changes on tasks are
   refused** (a channel conversation's owner is its first poster).
 - **Workspace**: no dedicated workspace and no change to isolation. Under session isolation each
   session has its own worktree; otherwise (git shared, scratch) tasks share the primary like
   every other session of the agent — turns from several channels already run in parallel there
   today.
-- **Relation to the owning session**: only the owning session messages a task and stops it, on
-  any of its turns; a task cannot start, message or stop tasks. Ownership is the **persistent
+- **Relation to the owning session**: only the owning session messages a delegated task and
+  stops it, on any of its turns; a delegated task cannot delegate, message or stop tasks. Ownership is the **persistent
   parent–child index** (`childSessionLinks` was in memory). A task outlives one round of work, and
   a later `messageTask` gives it new work in its retained context. Listing is the running block of
-  the standing summary (§5.4); a listing tool stays deferred.
+  the standing summary (§5.4) and `listTasks`, which also lists the patrols and approved proposals
+  that report to the session.
 - **Runtime permission requests** (far more common than `propose`):
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
   2. When one fires it is delivered to the place of origin (an external place's to the approver's
      DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card
-     offers "always allow this tool". **Shipped**, for tasks and approved work (a patrol still
+     offers "always allow this tool". **Shipped**, for delegated tasks and approved proposals (a patrol still
      refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
      §11): a Slack, Telegram, Discord, Feishu/Lark or Google Chat place gets the in-chat card where `chatActions` (`approve` or above) lets people
      there answer (only editors where permissions are synced), otherwise a neutral notice plus the editor DM, the notice rewritten in place to how
-     the request settled; the card names the background work (its title, else the work it was
+     the request settled; the card names the task (its title, else the work it was
      given), links it and says how long it waits. It goes to the owning session's own thread, or to the conversation's
      root for an `append` conversation, where reports land too. A webchat place has the console:
      the request carries its conversation (`parentSessionId`), whose page lists it among its own.
@@ -733,7 +738,7 @@ shipped, and so have steering with `messageTask` and stopping with `stopTask` (�
      and a later "continue" grants nothing to the re-triggered request. Host and concurrency slot
      stay occupied (the slot bounds occupied hosts anyway); Activity shows "awaiting approval".
      `permissionWaitHours` (default 12) caps the wait: then deny, report, and the work stops; a
-     task continued with `messageTask` asks again. Cost: on the pool waiting background work
+     delegated task continued with `messageTask` asks again. Cost: on the pool a waiting task
      holds a pod. If that becomes a cost problem, P1 may add "cancel the turn plus a cross-turn
      one-shot grant". **Shipped**: the record is denied with "no answer within N hours" and its
      cards rewritten; the stop is latched (`approval wait expired`) before the runtime is answered
@@ -747,41 +752,42 @@ shipped, and so have steering with `messageTask` and stopping with `stopTask` (�
      an asking mode an editor picks afterwards (asking every time gets the warning in §1.8).
      Nothing else changes the permission mode: an agent outside assistant mode keeps its own, so
      its tasks ask as often as that mode does.
-- **Webchat**: the session-detail dock's Background work panel (#2885) lists the background work
-  a conversation started (patrols included) and stops a running one; who may stop is whoever may
-  continue that session today. A task's or patrol's own page is read-only (#2893): talking to one
-  directly is deferred.
+- **Webchat**: the Delegated group of the session-detail dock's Tasks tab (#2885) lists a
+  conversation's tasks (patrols and approved proposals included) and stops a running one; who may
+  stop is whoever may continue that session today. The tab's This turn group shows, read-only,
+  what the runtime reports for the current turn. A task's own page is read-only (#2893), with a
+  header naming the session it belongs to and a link back: talking to one directly is deferred.
 - **What stopping guarantees**: the current turn; a background process the runtime started may
   keep running; the adapter is never killed.
-- **Limits**: no tasks of tasks; at most `maxConcurrentSubsessions` running (P0b
+- **Limits**: no delegated tasks of tasks; at most `maxConcurrentSubsessions` running (P0b
   refuses beyond it; the target queues the rest persistently with the asker told);
   `dailySubsessionsPerItem` per item per day (§5.7's loop bound, deferred).
 
 ### 5.7 The report channel
 
-> **Background work never speaks on the platform.** Task reports, patrol results,
+> **Tasks never speak on the platform.** Delegated-task reports, patrol results,
 > permission requests and notifications are each one report injected into the target place's main
 > session, which speaks for them.
 
-The daemon reports the end of each round of a task itself: `[task finished]` with the round's
+The daemon reports the end of each round of a delegated task itself: `[task finished]` with the round's
 last output, or `[task ended]` after an error, `!stop`, pause or the stall watchdog, never two.
-Patrols and approved work keep their own one report; when one ends without it, the daemon sends
-one short failure report, headed `[patrol ended]` or `[approved work ended]`, instead. An
+Patrols and approved proposals keep their own one report; when one ends without it, the daemon
+sends one short failure report, headed `[patrol ended]` or `[approved proposal ended]`, instead. An
 interruption that will be replayed sends none. When that replay never runs
 the turn — a same-process replay finds its message already carried by the prompt that was cut, or a
 purge drops the kept delivery — no turn end reports it, and its `open` row would hold a slot under
 the cap for good. So the minute sweep reports it ended, as no longer running, once it has seen
 nothing run for it for ten minutes: no live or queued turn, no delivery left in the inbox, no
-process the runtime started in the background owing it a wake, and the agent not paused. Approved
-work is left to its own recovery (§5.10). The report waits on the task's index row as `reporting`
+process the runtime started in the background owing it a wake, and the agent not paused. An approved
+proposal is left to its own recovery (§5.10). The report waits on the task's index row as `reporting`
 until it
 is admitted: a refused admission is retried on the minute sweep, three attempts in all, a drain or
 restart leaves it to be re-sent on the next start, and a fixed delivery id with the inbox's
-receipt keeps a re-send from arriving twice. Like patrol and approved-work reports, it goes to
+receipt keeps a re-send from arriving twice. Like patrol and approved-proposal reports, it goes to
 the current session of the owning session's place (after `!new`, the new conversation), else the
 recorded owning session. Every report the daemon sends ends by telling that session to answer its
-people in their language, since its framing is English; patrols and approved work are asked to
-write their report in it, and an owning session tells its task which it is. The outbox below is
+people in their language, since its framing is English; patrols and approved proposals are asked to
+write their report in it, and an owning session tells its delegated task which it is. The outbox below is
 the deferred target.
 
 Implemented as a **persistent per-place outbox** (agent-owned, CAS-claimed, duty-gated, re-armed
@@ -795,23 +801,23 @@ on `agentsGained`):
 - **Delivery id** derived from source session + the delivery that woke it + target place +
   sequence number.
 - **Structured fields only across places**: `itemId`, event type, a one-line conclusion already
-  present in the team-visible summary. Background work's own text goes only to its place of birth.
+  present in the team-visible summary. A task's own text goes only to its place of birth.
   Event types include `handoff` (P1) and `permission`.
-- **Failure is reported too**: background work that fails, is fenced or times out gets an outbox
+- **Failure is reported too**: a task that fails, is fenced or times out gets an outbox
   row written by the daemon.
 - **Report rounds are admitted as human messages**, hop reset; the loop bound moves to a chain
-  depth carried on the outbox row and the per-item daily background-work budget.
+  depth carried on the outbox row and the per-item daily task budget.
 - **Anti-nag**: the idempotency key `(agentId, itemId, status, observation version)` doubles as
   the delivery dedup key.
 - **Handover versus failure**: an interruption whose reason is `shutdown` or `superseded`
   (**not `pause`**, which drops queued messages and replays nothing) is recovered per session
   kind, in order:
-  1. **Approved work first, outside generic recovery**: interrupted approved work of an
-     `executing` record marks the record `outcome_unknown` and its inbox row is excluded from
-     replay. Moving the proposal to `executing`, recording the approved work's session id and
+  1. **Approved proposals first, outside generic recovery**: an interrupted approved proposal of
+     an `executing` record marks the record `outcome_unknown` and its inbox row is excluded from
+     replay. Moving the proposal to `executing`, recording the approved proposal's session id and
      writing the marked inbox row happen **in one transaction**.
   2. **Patrols** re-enter silently.
-  3. **Tasks** follow today's handover replay; the re-entry prompt says "re-run
+  3. **Delegated tasks** follow today's handover replay; the re-entry prompt says "re-run
      after an interruption, verify the current state first", and the item gets an observation.
   4. **Report rounds** are re-delivered.
 - Cost: every report round is one long-context turn of the main session; merged delivery and
@@ -819,34 +825,34 @@ on `agentsGained`):
 
 ### 5.8 Stopping
 
-| Action                                        | Effect                                                                                                          | Who                                                                                                      |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                                                                    |
-| Stop one piece of work (named, or in webchat) | Interrupts that work's current turn                                                                             | a named task: its owning session, on any of its turns / whoever may continue that session in the console |
-| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                                                                                |
+| Action                                        | Effect                                                                                                          | Who                                                                                                                |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                                                                              |
+| Stop one piece of work (named, or in webchat) | Interrupts that work's current turn                                                                             | a named delegated task: its owning session, on any of its turns / whoever may continue that session in the console |
+| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                                                                                          |
 
-**Stopping a named task** is the `stopTask` tool, given the task's `taskId`
-([send-message-guide.md](send-message-guide.md) §8.7). Every session that can start a task is
+**Stopping a named delegated task** is the `stopTask` tool, given the task's `taskId`
+([send-message-guide.md](send-message-guide.md) §8.7). Every session that can delegate a task is
 offered it, in assistant mode or not, hook runs, scheduled runs and peer sessions included: never
-a task, a patrol or approved work. It stops only a task whose owning session in the persistent
-index is the calling session, on any of that session's turns: one a person started, a task's
-report, another agent's reply, a reminder or a scheduled run. Deciding that a step is no longer
+a delegated task, a patrol or an approved proposal. It stops only a delegated task whose owning
+session in the persistent index is the calling session, on any of that session's turns: one a
+person started, a delegated task's report, another agent's reply, a reminder or a scheduled run. Deciding that a step is no longer
 needed is the owning session's planning, so the `!stop` sender rule does not gate it; a person
 who wants a task stopped asks that session. Any other id (the task itself, a sibling, the session
-after `!new`, another agent's, a patrol or approved work, an unknown or purged one) is refused
+after `!new`, another agent's, a patrol or an approved proposal, an unknown or purged one) is refused
 with the same words, so nothing about another conversation is revealed. The stop itself is the
 console's Stop: the same daemon core, logged with the person whose message started the live turn,
 else the agent. So it answers the same way: stopped, or not running, adding that a background
 process the runtime started may keep running. A later `messageTask` can give a stopped task new
 work. Stopping one's own task moves no content, so a session marked by a private read (§5.5) may
 still do it. The tool's description tells the agent to ask which task the person means only when
-that is not clear; a clear request is carried out at once. Patrols and approved work are stopped
-from the console.
+that is not clear; a clear request is carried out at once. Patrols and approved proposals are stopped
+from the console, in the session's Tasks tab.
 
 No new "stop everything". The sender rules for `!stop`, `!new` and pause are **unchanged and not
 narrowed** — effects at this level cannot be defended against, and the design does not pretend
 to. Resume: no catch-up; items whose `nextCheck` passed are each checked once on the next patrol;
-stopped background work does not restart. Stopping never undoes completed effects.
+stopped tasks do not restart. Stopping never undoes completed effects.
 
 ### 5.9 Patrol (P1)
 
@@ -855,7 +861,7 @@ stopped background work does not restart. Stopping never undoes completed effect
 - **Wake**: only an item's `nextCheck` wakes a patrol — a duty-gated sweep on the daemon, once per
   `nextCheck` value; pause suspends it and an overdue item is checked once. `patrolSchedule`, hook
   events and triage come later.
-- **Where it runs**: read-only background work on the **agent's own host**, with the agent's
+- **Where it runs**: a read-only task on the **agent's own host**, with the agent's
   credentials, until the credential-less patrol host exists. Read-only rests on layers (a) and (c)
   below: AgentConnect tools filtered to reads plus the item tools it needs to record what it saw,
   and the runtime's read-only mode with a daemon policy that refuses anything needing approval.
@@ -874,7 +880,7 @@ stopped background work does not restart. Stopping never undoes completed effect
   running patrol (its observation baseline and any held report), so an empty replay still counts
   as a failure. A run's reports are admitted before it settles, each under a stable id the inbox
   deduplicates, so a run whose turn ended before it settled is settled on the next replay without
-  a second report. Stopping a patrol from the dock ends it silently with its check done.
+  a second report. Stopping a patrol from the dock's Tasks tab ends it silently with its check done.
 
 Shipped in #2887; `propose` from patrols in #2895. The rest of this section is the target.
 
@@ -885,7 +891,7 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   [optional, P2] Decision triage with a small model
         │
         ▼
-  Patrol: headless read-only background work on a **credential-less host**
+  Patrol: a headless read-only task on a **credential-less host**
   "read these items → check for changes with read tools → update the items (with notify) → end"
         │
   ┌─────┼──────────────┐
@@ -927,7 +933,7 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
     next check instead for something to be checked on at a time; the descriptions are otherwise
     the same.
   - It lands only where the setting session's replies land, that conversation and thread; there is
-    no target argument. It is refused in tasks, patrols and approved work, and in webchat, which has no
+    no target argument. It is refused in delegated tasks, patrols and approved proposals, and in webchat, which has no
     daemon-side post path without a turn. An external place sets and receives reminders like any
     other (#2979, B4).
   - The duty holder's sweep, on the patrol cadence, claims a due reminder atomically and posts it
@@ -965,20 +971,20 @@ patrolSchedule fires / hook event (P2) / an item's nextCheck is due
   `propose` actions come with P1.
 - **Approvers of a proposal are whoever could ask the agent in its place**: a DM's own person; in
   a channel, a person whose own message would start a turn of the agent there, judged at the click
-  by the place's live admission and trigger; never a bot. Approving runs the approved work with the
+  by the place's live admission and trigger; never a bot. Approving runs the approved proposal with the
   agent's own permissions, which is what asking there gets, so it grants nothing more. For an external
   place, the internal member of §5.5; editors always, in Activity. A draft's approvers stay as
   §5.5 says. `chatActions` is not read: it guards runtime approval controls and runtime-setting
   changes in chat, a different decision. Cards exist on Slack only; other platforms use
   the console.
-- Approval ⇒ CAS to `executing`, record the approved work's session id and write the marked inbox
-  row in one transaction ⇒ start the approved work with normal permissions.
+- Approval ⇒ CAS to `executing`, record the approved proposal's session id and write the marked
+  inbox row in one transaction ⇒ start the approved proposal's run with normal permissions.
 - An uncertain outcome ⇒ `outcome_unknown`, never retried automatically; on restart or handover
   see §5.7 step 1.
 - The card reuses `OrganizationSuggestion`'s component, not its review route.
 
 **P1 ships `propose` for patrols only** (#2895): `propose({ sentence, why, task })`, at most once
-per patrol run; an approved proposal starts approved work with the agent's own permission mode in
+per patrol run; an approved proposal runs as a task with the agent's own permission mode in
 the item's origin place, counted against `maxConcurrentSubsessions` (a full cap refuses the
 approval and the proposal stays awaiting review). It departs from the record above in four
 places:
@@ -986,12 +992,12 @@ places:
 1. **Expiry is 24 hours**, as for drafts — a patrol often runs overnight, so 30 minutes would
    expire nearly every proposal.
 2. **The inbox row is not written in the approval transaction**: the transaction holds the state
-   change, the approved work's session key and its index row; its reserved `subsession:task-`
+   change, the approved proposal's session key and its index row; its reserved `subsession:task-`
    coordinate keeps its row out of generic replay, and a recovery sweep catches a crash before the
    row exists.
 3. **The item version is in the hash but does not cancel an approval**: a later update to the
    item would otherwise void every proposal; a closed or deleted item is still refused, and the
-   approved work's prompt shows both versions and says to check the current state first.
+   approved proposal's prompt shows both versions and says to check the current state first.
 4. **Approvers** are the people who could ask the agent in the item's place, through the draft card
    posted there, plus the agent's editors in the console's Activity view; the first answer from any
    surface wins. The responsible user's DM gets the card only when the place cannot (an external
@@ -1004,12 +1010,12 @@ places:
    its own, which pass the conversation to the daemon. The daemon lists only that conversation's
    proposals and refuses a decision on any other. The responsible user is not asked.
 
-A cut execution settles from the approved work's durable end: reported ⇒ `succeeded`, failure report
+A cut execution settles from the approved proposal's durable end: reported ⇒ `succeeded`, failure report
 already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" report.
 
 ### 5.11 Activity
 
-The console's agent page gains an Activity view: items, scheduled wakes, running background work,
+The console's agent page gains an Activity view: items, scheduled wakes, running tasks,
 recent patrols, pending cards — all derived from the ledger, the approval records, the outbox and
 session records, read from the daemon through the BFF proxy. A background report into a webchat
 conversation only raises an unread badge.
@@ -1017,8 +1023,8 @@ conversation only raises an unread badge.
 The first version (#2876) shows what exists today, for assistant-mode agents only, read and
 changed through the daemon without anything persisted on the Control Plane. A daemon that
 advertises `activity-every-agent-v1` answers the same read for an agent outside assistant mode:
-its background work's pending permission requests, its background work and its drafts, with no
-items and with patrols and proposals left out. It also stops such an agent's background work and
+its tasks' pending permission requests, its tasks and its drafts, with no
+items and with patrols and proposals left out. It also stops such an agent's tasks and
 decides its
 drafts from the console, and refuses an item delete or a proposal decision (`assistant-mode-off`);
 an older daemon refuses every request for such an agent:
@@ -1026,57 +1032,57 @@ an older daemon refuses every request for such an agent:
 | Section                             | Who sees it                                                                                                                                                          | Who may change it                                                                                                            |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Items (open, then done and dropped) | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; the next check, which wakes a patrol (§5.9)               | editors delete an item                                                                                                       |
-| Background work                     | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session | —                                                                                                                            |
+| Tasks                               | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session | —                                                                                                                            |
 | Pending drafts                      | editors                                                                                                                                                              | editors approve or discard (#2880) — the same decision path as the card, so a card click and a console decision execute once |
 
 Deleting an item drops it from the standing summary at the next reminder; its followers are not
 told. A console decision that cannot be confirmed keeps its row and tells the editor to check the
-destination (#2881). Background work's runtime permission requests are listed under pending drafts
-for editors (§5.6): the work and conversation where the viewer may open them, the tool, the
+destination (#2881). Tasks' runtime permission requests are listed under pending drafts
+for editors (§5.6): the task and conversation where the viewer may open them, the tool, the
 wait's deadline and the request's own options, answered through the approval queue's decision so
 the first answer from any surface wins. Patrol history and the unread badge are not in it yet.
 
-Every agent has background work, drafts and its background work's permission requests, so every
-agent has those sections, and the Background work tab of the session dock, once its serving daemon advertises
+Every agent has tasks, drafts and its tasks' permission requests, so every
+agent has those sections, and the Delegated group of the session dock's Tasks tab, once its serving daemon advertises
 `activity-every-agent-v1`. Items and proposals stay assistant mode's: the Control Plane refuses
 those routes with `ASSISTANT_MODE_OFF` for any other agent and asks its daemon for drafts without
 proposals. Who sees, stops and decides what is unchanged. Toward a daemon without the feature an
 agent outside assistant mode is refused as before, before any daemon I/O, and the console shows
-it no tab.
+it no Delegated group.
 
 ---
 
 ## 6. Relation to existing mechanisms
 
-| Mechanism                           | Relation                                                                                                         |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Conversation gating (§14)           | Unchanged: `gated` stays restricted visibility alone, and the mode takes the same defaults (§5.3)                |
-| Session visibility                  | The permission rules follow it; DM long sessions are fixed `private`; background work refuses visibility changes |
-| `append`                            | Extended to Slack DMs; retention (assistant agents) and the visibility lock are prerequisites                    |
-| Memory layers                       | The same for every agent; the ledger is its own store                                                            |
-| Dreams / explicit memory writes     | Dreams mine the shared layer's conversations only; writes go to the conversation's layer                         |
-| `sendMessage` / `needsReply`        | Delegation goes through them; a task starts with `startTask`; write targets are limited to the current place     |
-| `replyToSession`                    | The reference for the report channel; replaced by the persistent outbox                                          |
-| Orchestration tool triple           | Removed with its deadline wake; not restored                                                                     |
-| Agent pause (#288)                  | Is "stop everything"; also suspends wakes and the outbox                                                         |
-| Reminder injection (`shouldRemind`) | Carries the standing summary                                                                                     |
-| Dream host                          | The shape of the patrol host                                                                                     |
-| Cron / hooks                        | Patrol triggers; hook routing in P2                                                                              |
-| `OrganizationSuggestion`            | Card component only                                                                                              |
-| `Decision`                          | P2 triage                                                                                                        |
+| Mechanism                           | Relation                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Conversation gating (§14)           | Unchanged: `gated` stays restricted visibility alone, and the mode takes the same defaults (§5.3)                         |
+| Session visibility                  | The permission rules follow it; DM long sessions are fixed `private`; tasks refuse visibility changes                     |
+| `append`                            | Extended to Slack DMs; retention (assistant agents) and the visibility lock are prerequisites                             |
+| Memory layers                       | The same for every agent; the ledger is its own store                                                                     |
+| Dreams / explicit memory writes     | Dreams mine the shared layer's conversations only; writes go to the conversation's layer                                  |
+| `sendMessage` / `needsReply`        | Delegation goes through them; a delegated task starts with `delegateTask`; write targets are limited to the current place |
+| `replyToSession`                    | The reference for the report channel; replaced by the persistent outbox                                                   |
+| Orchestration tool triple           | Removed with its deadline wake; not restored                                                                              |
+| Agent pause (#288)                  | Is "stop everything"; also suspends wakes and the outbox                                                                  |
+| Reminder injection (`shouldRemind`) | Carries the standing summary                                                                                              |
+| Dream host                          | The shape of the patrol host                                                                                              |
+| Cron / hooks                        | Patrol triggers; hook routing in P2                                                                                       |
+| `OrganizationSuggestion`            | Card component only                                                                                                       |
+| `Decision`                          | P2 triage                                                                                                                 |
 
 ---
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                            |
-| **P0b — background work**         | Minimal: direct self-delegation, now `startTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, a listing tool (the standing summary names the running ones; stop and steering have shipped, §5.6, §5.8), the daily budget, queueing over the cap                                                                                                                                                                                 |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat background work panel and read-only background work pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), background work's permission requests routed to their conversation under the wait cap (§5.6), stopping a task from the session that started it (§5.8). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                        |
+| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8). Next: the target patrol (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
+| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -1084,13 +1090,13 @@ it no tab.
 
 - The personal form; one shared context; an output filter as a defense; member enumeration as a
   precondition for recall;
-- a dedicated workspace for background work, changing the agent's isolation, changing the
+- a dedicated workspace for tasks, changing the agent's isolation, changing the
   permission mode other than by the default when the mode is switched on;
 - automatic retry of an uncertain external write; cancelling a waiting permission request to free
   a slot (P0);
 - delegation / report / status tools parallel to `sendMessage`; restoring the orchestration tool
   triple; a new "stop everything";
-- tasks of tasks; background work as platform threads;
+- delegated tasks of tasks; tasks as platform threads;
 - an "add this to the ledger" card; the "allow for this session" memory-write bypass;
   `tool_call.kind`-based retry;
 - per-place restrictions on `!stop`, `!new` or pause; filtering self-initiated Slack joins;
@@ -1133,8 +1139,10 @@ it no tab.
 ## 10. Review record
 
 Each entry records its revision in the vocabulary of its time. Until the forty-first revision,
-"sub-session" named what is now a task, a patrol or approved work, and `stopSubsession` is now
-`stopTask`.
+"sub-session" named what is now a delegated task, a patrol or an approved proposal, and
+`stopSubsession` is now `stopTask`. Until the forty-second, "task" meant only a delegated task,
+`delegateTask` was `startTask`, and "background work" and "approved work" named what are now
+tasks and approved proposals.
 
 **Two design reviews of the second revision (2026-10-06)**: the permission table could not be
 computed on the daemon → trust per place (later: enabling a place trusts it, only a
@@ -1538,3 +1546,14 @@ now state the task contract directly instead of pointing to send-message-guide.m
 `messageTask {taskId}`, `stopTask` from the owning session on any of its turns, and replies by
 message id. Store tables, the `subsession:` coordinate, protocol fields, capability names and the
 `limits` keys keep their names.
+
+**Forty-second revision (2026-10-15)**: task is the umbrella (send-message-guide.md §11 questions
+10–11; §1.3, §5.6–§5.11). A session's tasks are its delegated tasks, which it hands off with
+`delegateTask` (renamed from `startTask`, which shipped only in v2.5.0 release candidates, so no
+alias remains), and the patrols and approved proposals that report to it; the new `listTasks`
+lists them. "Background work" and "approved work" are gone from visible text, and an approved
+proposal's failure report is headed `[approved proposal ended]`. The session dock's Background work
+and Runtime jobs tabs merge into one Tasks tab with two groups: This turn, what the runtime reports
+for the current turn, read-only; and Delegated, the session's tasks, which can be stopped. A
+task's page names the session it belongs to and links back. §1.3 is now "Long work: delegated
+tasks" and §5.6 "Tasks".

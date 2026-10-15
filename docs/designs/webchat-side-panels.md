@@ -18,18 +18,24 @@ Today the session detail page is `[nav · body · rail]`, where the rail is a fi
 250px **session list** (`SessionRail.tsx`). The design turns that rail into a
 **resizable, tabbed dock** — the session list becomes one of its panels:
 
-| Tab             | Icon                    | Badge              | Header action   | What it shows                                                                                                                                                                                                                              |
-| --------------- | ----------------------- | ------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Sessions        | `messages-square`       | —                  | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                                                    |
-| Files           | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                                                  |
-| Git             | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                                            |
-| PR              | `git-pull-request`      | unresolved threads | `external-link` | PR state, description, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with Merge + auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6)       |
-| Runtime jobs    | `list-checks`           | running count      | `refresh-cw`    | the runtime's own background jobs and subagents with state and elapsed, read-only (§3.5 — no per-job cancel exists to wire)                                                                                                                |
-| Background work | `split`                 | running count      | `refresh-cw`    | assistant-mode conversations only, once any was started: the background work this conversation started (tasks, patrols, approved work), newest first and paged, with a Stop on a running one ([assistant-mode.md](assistant-mode.md) §1.3) |
+| Tab      | Icon                    | Badge                      | Header action   | What it shows                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------- | ----------------------- | -------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Sessions | `messages-square`       | —                          | `plus`          | today / yesterday / previous-7-days session groups + agent filter chips                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Files    | `folder-tree`           | —                          | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Git      | `git-commit-horizontal` | changed count              | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log                                                                                                                                                                                                                                                                                                                                                      |
+| PR       | `git-pull-request`      | unresolved threads         | `external-link` | PR state, description, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with Merge + auto-merge — or, with no linked PR, the branch's upstream state and a Create-pull-request action (§12.6)                                                                                                                                                                                                                                                 |
+| Tasks    | `list-checks`           | running count, both groups | `refresh-cw`    | two groups: **This turn (reported by the runtime)**, the runtime's own background commands and subagents with state and elapsed, read-only (§3.5 — no per-job cancel exists to wire); and **Delegated (managed by AgentConnect)**, the session's delegated tasks, patrols and approved proposals, newest first and paged, each with state, elapsed, whether it handed back a result, a link to its record, and a Stop on a running one ([assistant-mode.md](assistant-mode.md) §1.3) |
 
 Dock geometry: width **380–760px, default 480px**, drag handle on the left edge
 (brand-colored while dragging), tab strip with zero gap between tabs. Tab labels
 collapse to icon-only for inactive tabs when the dock is narrow.
+
+The Tasks tab is one tab with two groups, not a kind column. It has one verdict,
+settled when both groups' reads are, and shows whenever either group has something
+to show or the runtime group is tracked; the Delegated group shows whenever the
+session has delegated a task or a patrol or approved proposal reports to it, or its
+read failed and has to say why. The two groups were once separate tabs, "Runtime
+jobs" and "Background work"; mobile and desktop render the same groups.
 
 Beside the dock, the left pane is now **two mutually exclusive modes**:
 
@@ -45,7 +51,7 @@ put in both modes. No work is planned there.
 ## 2. Invariants this must not break
 
 - **Body-locality.** The CP stores no workspace bytes, no diffs, no transcript
-  bodies. Files / Git / Runtime jobs data is pulled live from the owning daemon over the
+  bodies. Files / Git / Tasks data is pulled live from the owning daemon over the
   CP↔daemon WS request/reply frames and proxied, never persisted
   ([`architecture.md`](architecture.md)).
 - **The CP never calls a model provider.** Provider API egress is daemon-owned.
@@ -145,11 +151,11 @@ the tree as it was when the page opened. `dock/auto-refresh.ts` owns the three
 signals, and every panel bumps the same tick a press does — there is no second
 read path to keep in step:
 
-| signal                    | when                                              | who takes it                                                                   |
-| ------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------ |
-| a turn's **falling edge** | the agent's own writes have landed                | Files, Git, PR, Runtime jobs — the highest-value signal, and free of any timer |
-| a **poll**                | the tab is selected AND the document is visible   | Files/Git 15s, PR 60s (§9's GitHub budget), Runtime jobs 5s/20s as before      |
-| the **reveal edge**       | a tab becoming active, or the browser coming back | whoever deferred a turn refresh while hidden                                   |
+| signal                    | when                                              | who takes it                                                            |
+| ------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
+| a turn's **falling edge** | the agent's own writes have landed                | Files, Git, PR, Tasks — the highest-value signal, and free of any timer |
+| a **poll**                | the tab is selected AND the document is visible   | Files/Git 15s, PR 60s (§9's GitHub budget), Tasks 5s/20s as before      |
+| the **reveal edge**       | a tab becoming active, or the browser coming back | whoever deferred a turn refresh while hidden                            |
 
 A refresh is also no longer a RESET. `useWorkspaceTree` used to wipe its cache and
 its expand set on every `refreshTick`, which was defensible for a press and is
@@ -231,10 +237,11 @@ and counts** briefly in memory (rate-limit pressure), never persist **review
 thread bodies** — those are user content and belong to body-locality the same way
 transcripts do.
 
-### 3.5 Runtime jobs — the concept exists, the wire does not
+### 3.5 This turn's tasks — the concept exists, the wire does not
 
-The dock's Runtime jobs tab shows the runtime's own background jobs and subagents —
-not the tasks a session starts with `startTask`. The daemon runs real background tasks: leases, `bg-task lifecycle` logging,
+The Tasks tab's This turn group shows the runtime's own background commands and
+subagents — not the delegated tasks a session hands off with `delegateTask`, which the
+Delegated group lists. The daemon runs real background tasks: leases, `bg-task lifecycle` logging,
 completion announce, deferred wake with a re-arm budget
 ([`background-task-aware-reclaim.md`](background-task-aware-reclaim.md)). None of
 it is exposed — there is no `task/*` frame, no CP route, no console surface.
@@ -269,7 +276,7 @@ the shipped daemon and `@agentclientprotocol/sdk@1.3.0` while building M4:
   adapter without the lifecycle extension, and a session that has emitted no
   accepted lifecycle event all have none. `task/list` reports it as
   `tracked:false` so the panel can say "not reported for this session" instead of
-  "no runtime jobs".
+  "no tasks this turn".
 
 ## 4. Gap analysis — the inline viewer
 
@@ -440,7 +447,7 @@ paragraph's earlier claim that it would was wrong. That gate requires
 `workspaceIsolation === 'session'`, because a shared checkout has no per-session
 worktree and the daemon answers `BAD_PAYLOAD` for one. Background tasks are not a
 checkout: a session on a shared workspace runs them exactly the same, so reusing
-the worktree gate would have 404'd the Runtime jobs panel for most sessions. M4 split the
+the worktree gate would have 404'd the This turn group for most sessions. M4 split the
 session half of that gate out as `visibleAgentSession` — the row must be this
 agent's, un-purged, and pass the session's own private/external visibility rule —
 and `canReadWorkspaceScope` is now that plus the isolation check. The tasks route
@@ -475,7 +482,7 @@ SessionsPanel.tsx      the ex-SessionRail row / pin / filter body, re-hosted
 FilesPanel.tsx         narrow single-column tree over WorkspaceFiles' read model
 GitPanel.tsx           status + numstat + staging + commit box + log
 PullRequestPanel.tsx   the /sessions/:id/pull-request projection + Auto-fix / auto-merge actions
-TasksPanel.tsx         runtime job list (read-only — §3.5); polls while visible, backed off when idle
+TasksPanel.tsx         the Tasks tab's This turn group (read-only — §3.5); polls while visible, backed off when idle
 auto-refresh.ts        the dock's shared cadence: turn edge / poll / reveal edge (§3.3)
 ```
 
@@ -594,7 +601,7 @@ it buys a body whose horizontal position is a constant of the route. That was th
 rail's bargain at a fixed 250px and it is still the right one at 380–760px — the
 width is the reader's own choice, and the resize handle stays available in the
 vacant state so it remains theirs to narrow. The cost also shrinks to nothing as
-the dock fills out: with five tabs, Files, Git and Runtime jobs essentially always have
+the dock fills out: with five tabs, Files, Git and Tasks essentially always have
 something, so `vacant` stops being reachable outside M0.
 
 Do not re-derive this. "Reserve nothing when empty" is a local improvement that
@@ -868,7 +875,7 @@ Known M3 follow-ups:
   which the runner preflight now classifies correctly and earlier. The guard stays for the failures
   that do reach it; its coverage is the classification, not the timeout.
 
-**M4 — Runtime jobs.** `task/list` over the lease, which M4 first extends with a
+**M4 — This turn's tasks.** `task/list` over the lease, which M4 first extends with a
 `startedAt` and a bounded settled-task history (kept in a `settled` array, never
 in `lease.tasks`, so no reclaim decision can see it —
 [`background-task-aware-reclaim.md`](background-task-aware-reclaim.md) and §3.5),
@@ -882,7 +889,7 @@ is not a checkout:
 
 - **No isolation gate.** Files and Git withhold their read until the focused
   session's `workspaceIsolation` has answered, because reading early reads the
-  wrong worktree. Runtime jobs needs neither that round trip nor the `hasSessionWorktree`
+  wrong worktree. The This turn group needs neither that round trip nor the `hasSessionWorktree`
   gate `filesSessionId` applies — a session's background tasks exist whatever it
   is checked out into, which is what the CP route says too. What it does need is
   the CANONICAL session id the lease is keyed by, so a playground session the
@@ -1188,19 +1195,19 @@ mutation.
 
 ## 11. What changed from revision 1
 
-| Area           | Revision 1                   | Revision 2                                                                                           |
-| -------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Left pane      | transcript only              | transcript **or** file/diff viewer, mutually exclusive                                               |
-| Git header     | Fetch / Pull / Stash buttons | branch + ahead/behind only; pull has no UI home                                                      |
-| Git rows       | static                       | click opens the diff; hover `+`/`−` stages the file                                                  |
-| Commit box     | plain textarea               | AI generate button with loading state                                                                |
-| PR threads     | static text                  | four-state auto-fix machine per thread — **scoped down to one Auto-fix action, §5.2**                |
-| PR merge       | plain Merge button           | Merge button (squash) **and** Merge-when-ready checkbox → an edge watcher that says what it waits on |
-| Runtime jobs   | progress bar per job         | no progress bar                                                                                      |
-| Dock min width | 360px                        | 380px                                                                                                |
-| Tab gap        | 2px                          | 0px                                                                                                  |
+| Area              | Revision 1                   | Revision 2                                                                                           |
+| ----------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Left pane         | transcript only              | transcript **or** file/diff viewer, mutually exclusive                                               |
+| Git header        | Fetch / Pull / Stash buttons | branch + ahead/behind only; pull has no UI home                                                      |
+| Git rows          | static                       | click opens the diff; hover `+`/`−` stages the file                                                  |
+| Commit box        | plain textarea               | AI generate button with loading state                                                                |
+| PR threads        | static text                  | four-state auto-fix machine per thread — **scoped down to one Auto-fix action, §5.2**                |
+| PR merge          | plain Merge button           | Merge button (squash) **and** Merge-when-ready checkbox → an edge watcher that says what it waits on |
+| Tasks (This turn) | progress bar per job         | no progress bar                                                                                      |
+| Dock min width    | 360px                        | 380px                                                                                                |
+| Tab gap           | 2px                          | 0px                                                                                                  |
 
-Two revision-1 open questions are now settled by the design itself: the Runtime jobs
+Two revision-1 open questions are now settled by the design itself: the This turn group's
 progress bar is gone (it was unbackable), and `workspace/gitpull` no longer needs
 a `sessionId` (the pull control was removed).
 
@@ -1224,7 +1231,7 @@ list; `HookRun`'s recorded review appears only as the degraded-arm fallback
 4. **Path search.** A client-side filter over the loaded tree is a visibly
    partial answer at 1,284 files. Does Files need a `workspace/search` frame in
    M1, or can it wait?
-5. ~~**Runtime jobs scope.**~~ Settled: per ACP session. `sdkLease` is keyed by
+5. ~~**This turn's tasks scope.**~~ Settled: per ACP session. `sdkLease` is keyed by
    `sdkLeaseKey(agentId, acpSessionId)` and the only per-agent aggregate is the
    `agentHasLiveSdkWork` boolean, so `task/list` requires a `sessionId`.
 6. ~~**PR tab visibility.**~~ Settled: an EMPTY STATE, not a hidden tab. A
