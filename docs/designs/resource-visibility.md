@@ -854,7 +854,12 @@ conversation send `authoritative: false`; these reports upsert observed rows
 without deleting absent ones — so such a reporter names what it has LEFT in
 `removed`, the only way it can retire a row at all (its omissions carry no
 meaning). A named removal deletes whatever the row's kind, including a DM row
-that no authoritative snapshot could ever drop. An explicitly addressed Off group is reported
+that no authoritative snapshot could ever drop. A conversation whose platform id
+changes (a Telegram group upgraded to a supergroup) is named in `migrated` as a
+`{ from, to }` pair: the CP moves `from`'s trigger, session mode, decision binding
+and owner onto `to` — unless an editor already chose `to`'s trigger — and deletes
+`from`. The daemon retracts `from` locally so session history cannot resurrect it.
+An explicitly addressed Off group is reported
 before routing, because it deliberately creates no session. Direct rows are
 reported on first inbound conversation for every integration, carrying the
 counterpart's display name where available. An optional boot-time sweep

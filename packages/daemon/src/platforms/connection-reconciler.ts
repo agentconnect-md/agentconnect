@@ -48,6 +48,7 @@ import {
   telegramConnKey,
   TelegramConnection,
   type TelegramCallback,
+  type TelegramChatMigration,
   type TelegramObservedChat
 } from '../telegram/connection.js'
 import { consolidateDiscord, discordConnKey, DiscordConnection, type DiscordDeps } from '../discord/connection.js'
@@ -180,6 +181,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>
   observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
+  /** Re-key a Telegram group the platform upgraded to a supergroup. */
+  migrateTelegramChat(migration: TelegramChatMigration, integrationIds: readonly string[]): Promise<void>
   /** Report one conversation a connection knows it reaches, ahead of any session row. */
   observePlatformChat(platform: string, chat: ObservedChat, integrationIds: readonly string[]): Promise<void>
   /** The same, for a whole set at once — one report per integration, not one per conversation. */
@@ -740,6 +743,11 @@ export class ConnectionReconciler {
           const integrationIds = new Set(group.integrations.map(({ integrationId }) => integrationId))
           for (const integrationId of this.host.srcIntegrationIds(conn)) integrationIds.add(integrationId)
           await this.host.observeTelegramChat(chat, [...integrationIds])
+        },
+        onChatMigrated: async (migration) => {
+          const integrationIds = new Set(group.integrations.map(({ integrationId }) => integrationId))
+          for (const integrationId of this.host.srcIntegrationIds(conn)) integrationIds.add(integrationId)
+          await this.host.migrateTelegramChat(migration, [...integrationIds])
         },
         onCallback: (cb) => this.host.handleTelegramCallback(cb, conn),
         log: this.log

@@ -382,6 +382,9 @@ export type IntegrationChannel = z.infer<typeof IntegrationChannel>
  * conversation explicitly is the only way to say it. An authoritative reporter
  * needs none of this (its omissions already delete) but may still send it, and
  * a removal is applied even for a conversation absent from `channels`.
+ *
+ * `migrated` names a conversation that kept its identity but changed id. An older CP
+ * strips the field and keeps both rows, which is exactly what it did before.
  */
 export const IntegrationChannels = z.object({
   integrationId: z.string().uuid(),
@@ -389,7 +392,9 @@ export const IntegrationChannels = z.object({
   authoritative: z.boolean().optional(),
   // Optional rather than defaulted: nearly every report has nothing to retract, and
   // an absent field reads the same as an empty one to the CP.
-  removed: z.array(z.string()).optional()
+  removed: z.array(z.string()).optional(),
+  // A conversation whose platform id changed (a Telegram group upgraded to a supergroup): the CP moves `from`'s settings onto `to`.
+  migrated: z.array(z.object({ from: z.string(), to: z.string() })).optional()
 })
 export type IntegrationChannels = z.infer<typeof IntegrationChannels>
 

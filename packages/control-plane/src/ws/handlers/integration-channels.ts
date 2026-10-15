@@ -11,7 +11,7 @@
  * `removed` is the one way a non-authoritative reporter can DELETE: its omissions
  * carry no meaning, so a conversation it has genuinely left has to be named. It
  * applies alongside the upsert, so one report can both refresh what remains and
- * retire what is gone.
+ * retire what is gone. `migrated` re-keys a conversation whose platform id changed.
  *
  * Scope check: the integration's owning agent must be SERVED by the reporting
  * daemon — the same `pinned-to-me ∪ duties I hold` union `register/ok.integrations[]`
@@ -57,6 +57,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   let owner: AgentRecord | null = null
   let seeded: ReadonlyMap<string, SeedTrigger> | undefined
   let externalChanged = false
+  let migrated = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -81,16 +82,18 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     const written = await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger || p.authoritative === false || p.removed?.length
+      defaultTrigger || p.authoritative === false || p.removed?.length || p.migrated?.length
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
             ...(seeded?.size ? { defaultTriggerByChannel: seeded } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
-            ...(p.removed?.length ? { removed: p.removed } : {})
+            ...(p.removed?.length ? { removed: p.removed } : {}),
+            ...(p.migrated?.length ? { migrated: p.migrated } : {})
           }
         : undefined
     )
     externalChanged = written?.externalChanged === true
+    migrated = written?.migrated === true
   } finally {
     release()
   }
@@ -101,7 +104,8 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   // re-reports and repairs it. Outside the mutation lease and best-effort — the
   // register snapshot remains the durable backstop.
   // A detected external place (assistant-mode.md §5.3) rides the spec too, so a change to the set pushes as well.
-  if ((seeded?.size || externalChanged) && owner && deps.integrationConverge) {
+  // A migrated conversation's carried trigger reaches the daemon the same way.
+  if ((seeded?.size || externalChanged || migrated) && owner && deps.integrationConverge) {
     try {
       await deps.integrationConverge(owner)
     } catch {

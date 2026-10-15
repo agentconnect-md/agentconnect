@@ -2569,6 +2569,8 @@ export class Daemon {
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
+      migrateTelegramChat: (migration, integrationIds) =>
+        this.observedChannelsSync.migrateTelegramChat(migration, integrationIds),
       observePlatformChat: (platform, chat, integrationIds) =>
         this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds),
       observePlatformChats: (platform, chats, integrationIds) =>

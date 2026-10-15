@@ -181,6 +181,38 @@ describe('Telegram conversation discovery', () => {
     })
     expect((daemon as any).channelSnapshots.get('i-tg')).toEqual({ channels, authoritative: false })
   })
+
+  it('re-keys a group upgraded to a supergroup and keeps the old id from coming back', async () => {
+    const daemon = await boot()
+    makeTelegramGated(daemon)
+    const emitIntegrationChannels = vi.fn()
+    ;(daemon as any).cpClient = { emitIntegrationChannels, stop: vi.fn().mockResolvedValue(undefined) }
+    ;(daemon as any).channelSnapshots.set('i-tg', {
+      channels: [
+        { id: '-300', name: 'ops', isPrivate: true, kind: 'channel' },
+        { id: '-400', name: 'other', kind: 'channel' }
+      ],
+      authoritative: false
+    })
+
+    await (daemon as any).observedChannelsSync.migrateTelegramChat(
+      { from: '-300', to: '-1003', name: 'ops', isPrivate: true },
+      ['i-tg']
+    )
+
+    const channels = [
+      { id: '-400', name: 'other', kind: 'channel' },
+      { id: '-1003', name: 'ops', isPrivate: true, kind: 'channel' }
+    ]
+    expect(emitIntegrationChannels).toHaveBeenCalledWith({
+      integrationId: 'i-tg',
+      channels,
+      authoritative: false,
+      migrated: [{ from: '-300', to: '-1003' }]
+    })
+    expect((daemon as any).channelSnapshots.get('i-tg')).toEqual({ channels, authoritative: false })
+    expect(await (daemon as any).store.retractedConversations('i-tg')).toEqual(new Set(['-300']))
+  })
 })
 
 describe('Telegram ingress attribution', () => {
