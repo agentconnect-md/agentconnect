@@ -59,7 +59,7 @@ export const EXPLICIT_MENTION_REMINDER =
 export const DIRECT_AGENT_CALL_REMINDER =
   `<system-reminder>\n` +
   `Routing fact: This activation is a trusted direct agent call addressed to you. A leading ` +
-  `\`[Message <id>] From <agent>\` header identifies the caller; it does not address that agent. Follow the request and respond ` +
+  `\`[Message <id>] From <agent>\` header or \`From <agent>:\` label identifies the caller; it does not address that agent. Follow the request and respond ` +
   `normally. Do not return ${NO_RESPONSE_SENTINEL} merely because the body names or discusses another agent.\n` +
   `</system-reminder>`
 

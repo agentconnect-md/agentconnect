@@ -251,7 +251,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
   })
 
   it('forwards a session message id and its answered message only to a daemon that records them', async () => {
-    // send-message-guide.md §9.3–§9.4: an older target would drop the id, so the call fails closed instead.
+    // send-message-guide.md §9.3–§9.4: an older target gets the pre-id delivery instead, so calls keep working across versions.
     const router = new CollaborationRouter()
     router.replace(snap())
     const reply = baseMsg({
@@ -261,8 +261,9 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       messageKind: 'reply',
       inReplyTo: 'msg-call-1'
     })
+    const call = baseMsg({ deliveryId: 'd-call', messageId: 'msg-call-2', messageKind: 'call', text: 'hi there' })
     const older: RdAgentMsgFwd[] = []
-    const refused = await createAgentMsgRouter({
+    const toOlder = createAgentMsgRouter({
       router,
       daemons: () =>
         fakeDaemons({ deliveryId: 'd-1', delivered: true }, older, [
@@ -270,9 +271,17 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
           RD_CODEHOST_REPLY_TARGET_V1
         ]),
       log: noopLog
-    })(D1, reply)
-    expect(refused).toMatchObject({ delivered: false, reason: 'unsupported' })
-    expect(older).toHaveLength(0)
+    })
+    expect((await toOlder(D1, reply)).delivered).toBe(true)
+    expect((await toOlder(D1, call)).delivered).toBe(true)
+    for (const fwd of older) {
+      expect(fwd.messageId).toBeUndefined()
+      expect(fwd.messageKind).toBeUndefined()
+      expect(fwd.inReplyTo).toBeUndefined()
+    }
+    // A reply's text was never framed; a call's carries its sender as a pre-id sender framed it.
+    expect(older[0]).toMatchObject({ deliveryKind: 'session-reply', lineageReplyTo: 'sid-source', text: 'hi' })
+    expect(older[1]!.text).toBe(`From ${A}: hi there`)
     const forwards: RdAgentMsgFwd[] = []
     const route = createAgentMsgRouter({
       router,
@@ -286,6 +295,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     })
     expect((await route(D1, { ...reply, deliveryId: 'd-2' })).delivered).toBe(true)
     expect(forwards[0]).toMatchObject({ messageId: 'msg-reply-1', messageKind: 'reply', inReplyTo: 'msg-call-1' })
+    expect((await route(D1, { ...call, deliveryId: 'd-4' })).delivered).toBe(true)
+    expect(forwards[1]).toMatchObject({ messageId: 'msg-call-2', messageKind: 'call', text: 'hi there' })
     // A wake without an id still reaches an older daemon, as before.
     expect((await route(D1, baseMsg({ deliveryId: 'd-3' }))).delivered).toBe(true)
   })

@@ -10,7 +10,7 @@ import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { executeTool } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
-import { isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { isSubsessionCoordinate, patrolCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { buildStandingContext } from '../src/session/turn/standing-context.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -340,6 +340,11 @@ describe('messageTask continues an existing task of this session', () => {
     expect(res.wake).toMatchObject({ delivered: true, targetSession: child })
     expect(res.taskId).toBe(child)
     await h.settled()
+    // §8.2: never its ACP runtime id.
+    const acp: string = (await h.d.store.getSession(child)).acpSessionId
+    expect(acp).toBeTruthy()
+    const refused = await send(h.d, caller, { action: 'messageTask', taskId: acp, message: 'one more' })
+    expect(refused.wake).toMatchObject({ delivered: false, reason: 'task_not_found' })
     await h.daemon.stop()
   })
 
@@ -672,6 +677,27 @@ describe('one submission, one input', () => {
   })
 })
 
+describe('one startTask submission, one task', () => {
+  it('returns the first receipt for a replayed startTask, in process and from the recorded message', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const args = { action: 'startTask', message: 'investigate the flaky test' }
+    const first = await send(h.d, caller, args, 'nonce-1:7')
+    expect(first.wake).toMatchObject({ delivered: true, subsession: true })
+    expect(await send(h.d, caller, args, 'nonce-1:7')).toEqual(first)
+    await vi.waitFor(async () => expect((await rowOf(h.d, first.taskId))?.state).toBe('done'), WAIT)
+    await h.settled()
+    h.d.collab.callSubmissions.clear()
+    const again = await send(h.d, caller, args, 'nonce-1:7')
+    expect(again.wake).toEqual({ delivered: true, targetSession: first.taskId, subsession: true })
+    expect(again.taskId).toBe(first.taskId)
+    await h.settled()
+    expect(subInputs(h.dispatched)).toHaveLength(1)
+    expect(await h.d.store.assistantSubsessions.list('bot-a', 10)).toHaveLength(1)
+    await h.daemon.stop()
+  })
+})
+
 describe('admission that cannot be decided yet', () => {
   it('sends one input for two concurrent deliveries of one submission', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
@@ -740,6 +766,87 @@ describe('the owning session and its task answer each other’s messages', () =>
       reason: 'message_not_found'
     })
     expect(subInputs(h.dispatched)).toHaveLength(2)
+    await h.daemon.stop()
+  })
+
+  it('delivers another session’s reply to a task’s message like a peer’s, outside the owner’s round admission', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const child = await startAndFinish(h, caller)
+    const taskId = await h.d.store.ensureOutwardSessionId(child, 'bot-a', Date.now())
+    // The channel session the task opened with a self callAgent holds its call.
+    const channel = await seedCaller(h.d, 'bot-a', 'C2')
+    await h.d.store.sessionMessages.recordReceived({
+      messageId: 'msg-from-task',
+      recipientKey: channel.key,
+      recipientAgentId: 'bot-a',
+      sourceSessionId: taskId,
+      sourceAgentId: 'bot-a',
+      kind: 'call',
+      replyState: 'open',
+      hopCount: 1,
+      now: Date.now()
+    })
+    const before = h.dispatched.length
+    const res = await h.d.collab.replyToSession({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerTransportScope: channel.scope,
+      callerChannel: 'C2',
+      callerThread: channel.coordinate,
+      messageId: 'msg-from-task',
+      text: 'Here is what you asked for.'
+    })
+    expect(res).toEqual({ delivered: true, targetSession: child, inReplyTo: 'msg-from-task' })
+    await h.settled()
+    const into = h.dispatched.slice(before).filter((c) => c.msg.thread === h.dispatched[before]?.msg.thread)
+    expect(into[0]!.callMeta).toMatchObject({ messageKind: 'reply', inReplyTo: 'msg-from-task' })
+    expect(into[0]!.callMeta.subsessionRound).toBeUndefined()
+    await h.daemon.stop()
+  })
+
+  it('never wakes an approved proposal or a patrol by answering its message', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    for (const thread of [taskCoordinate('x1'), patrolCoordinate('x2')]) {
+      const key = sessionKey('slack', 'C1', thread, 'bot-a', caller.scope)
+      await h.d.store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        transportScope: caller.scope,
+        acpSessionId: `acp-${thread}`,
+        sessionId: `sid-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const messageId = `msg-${thread}`
+      await h.d.store.sessionMessages.recordReceived({
+        messageId,
+        recipientKey: caller.key,
+        recipientAgentId: 'bot-a',
+        sourceSessionId: `sid-${thread}`,
+        sourceAgentId: 'bot-a',
+        kind: 'reply',
+        replyState: 'open',
+        hopCount: 1,
+        now: Date.now()
+      })
+      const res = await h.d.collab.replyToSession({
+        callerAgentId: 'bot-a',
+        platform: 'slack',
+        callerTransportScope: caller.scope,
+        callerChannel: 'C1',
+        callerThread: caller.coordinate,
+        messageId,
+        text: 'please also do Y'
+      })
+      expect(res).toEqual({ delivered: false, inReplyTo: messageId, reason: 'not_authorized' })
+    }
+    expect(h.dispatched).toHaveLength(0)
     await h.daemon.stop()
   })
 

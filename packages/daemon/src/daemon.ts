@@ -4278,7 +4278,7 @@ export class Daemon {
         find: async (agentId, id) =>
           (await this.store.assistantSubsessions.get(agentId, id)) ??
           (await this.store
-            .getSessionByOutwardId(id, agentId)
+            .getSessionByOutwardIdOnly(id, agentId)
             .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
         stopSession: (key, actor) => this.stopSessionByKey(key, actor)
       },

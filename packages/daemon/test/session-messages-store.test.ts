@@ -1,7 +1,10 @@
 // The session-message record (send-message-guide.md §9.3, §9.6): received and sent messages, obligations, purge, and the origin migration.
+import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
+import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
+import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import type { ReceivedSessionMessage } from '../src/store/session-messages.js'
 import { openTestStore, tempStorePath, usingPostgresStore } from './store-support.js'
 
@@ -178,3 +181,48 @@ describe.skipIf(usingPostgresStore())('the v51 → v52 origin migration on SQLit
     db.close()
   })
 })
+
+describe.skipIf(!usingPostgresStore())(
+  'the v51 → v52 origin migration on PostgreSQL (send-message-guide.md §9.6)',
+  () => {
+    it('migrates a session whose origin is not local when no earlier reply-source table exists', async () => {
+      const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+      const schema = `mig_${randomUUID().replace(/-/g, '')}`
+      const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+      const orgForAgent = (): string => 'org-a'
+      const admin = new pg.Client({ connectionString: databaseUrl })
+      await admin.connect()
+      try {
+        const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+        await fresh.finishSchemaInitialization()
+        const first = await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })
+        await session(first, 'agent-b', 'sid-b1')
+        await first.close()
+
+        await admin.query(`SET search_path TO ${schema}`)
+        await admin.query('DROP TABLE session_message; DROP TABLE session_message_sent')
+        await admin.query(`UPDATE sessions SET originSessionId = 'gone-origin' WHERE key = $1`, [key('agent-b')])
+        await admin.query('UPDATE _local_store_schema_version SET version = 51 WHERE singleton = true')
+
+        const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+        await database.finishSchemaInitialization()
+        const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+        try {
+          expect((await upgraded.sessionMessages.listFor(key('agent-b'), 10))[0]).toMatchObject({
+            sourceSessionId: 'gone-origin',
+            sourceAgentId: '',
+            kind: 'call',
+            legacy: true
+          })
+        } finally {
+          await upgraded.close()
+        }
+        const version = await admin.query('SELECT version FROM _local_store_schema_version')
+        expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+      } finally {
+        await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+        await admin.end()
+      }
+    })
+  }
+)

@@ -96,7 +96,7 @@ describe('runtime matrix sendMessage probe', () => {
   it('shows the origin-reply request under the daemon’s own message header and judges a reply by its id', () => {
     const origin = scenario('origin-reply')
     expect(origin.prompt).toBe(
-      `[Message ${IDS.message}] From agent ${IDS.peer} (session ${IDS.origin}):\n` +
+      `[Message ${IDS.message}] From ${IDS.peer} (agent ${IDS.peer}, session ${IDS.origin}):\n` +
         'Please check whether the release checklist is complete and report the result back to me. ' +
         '(You already checked: all 12 checklist items are done, so the checklist is complete.)\n\n' +
         '[This message waits on your reply. When you finish, or cannot, answer it with sendMessage ' +

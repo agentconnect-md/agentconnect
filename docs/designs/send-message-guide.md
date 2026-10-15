@@ -1094,6 +1094,23 @@ does not provide this contract.
 
 Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coordinate).
 
+- **Handle and receipt (decision).** `taskId` stays the task's session key, as §8.2 says, so
+  the handle the model copies (and the report headers, running-tasks reminder and `stopTask`
+  result that print it) contains the `subsession:` coordinate as an opaque string; the outward
+  id is accepted too, an ACP runtime id never. The `startTask`/`messageTask` receipt's
+  `wake.subsession: true` stays as the flag that marks a task receipt. Neither is presented as
+  vocabulary: no guide, descriptor, error or report text calls the work a sub-session. §12's
+  last sentence admits these two opaque values.
+- **Replays (decision).** A replayed `startTask` or new-session `callAgent` submission (same
+  MCP call id) returns its first receipt: in process from the submission's own outcome, and
+  after a restart from the message its first delivery recorded at the target (the same task,
+  or the same session), so it starts no second task or turn.
+- **Replies into tasks.** Only the owning session's reply to its task's message goes through
+  `messageTask` admission; another session's reply to a task's message (for example the
+  channel session a task's own `callAgent` with `channel` opened) is delivered like a peer's.
+  A reply to a patrol's or approved proposal's message is refused `not_authorized`, since each
+  runs once.
+
 - **Scope.** Rounds apply to tasks, the sessions `startTask` creates.
   An approved task (assistant-mode §5.10) and a patrol (§5.9) run once and are never continued,
   so they keep the one-report lifecycle in which their own report settles them.
@@ -1168,7 +1185,7 @@ stopped.` No turn or sender gate remains; the stop is logged as the person whose
 - **Running tasks.** The reminder is built for every session that can own tasks and lists only
   its tasks, newest first, by `taskId` and label, saying it may stop one with `stopTask` once it
   is no longer needed; patrols and approved proposals are not listed.
-- **Patrols and approved proposals.** The guide and descriptor say that only a task may reply
+- **Patrols and approved proposals.** The replyToSession guide says that only a task may reply
   any time; a patrol's or approved proposal's guide notes that its one reply to the message that
   started it, at the end, settles it. Their starting input is a `call` session message from the
   owning session (an approved proposal's asks for a reply), so they answer it by id; their own
@@ -1443,10 +1460,13 @@ Records the implementation on this branch. Decisions the sections above left ope
   delivery id, the same on every replay, and marked legacy.
 - **Carrying.** The id, its kind and, for a reply, `inReplyTo` ride `CallMeta` (persisted with
   the inbox row) locally, and the `RdAgentMsg`/`RdAgentMsgFwd` fields `messageId`, `messageKind`
-  and `inReplyTo` remotely. The relay forwards a frame carrying either id only to a daemon that
-  advertised `session-message-v1`, else answers `unsupported`, so a call or reply to an older
-  daemon fails closed. An older relay drops the unknown fields instead; that delivery then
-  arrives as a pre-id one and is answered by the pre-id route below. A session message's body
+  and `inReplyTo` remotely. The relay forwards those fields only to a daemon that advertised
+  `session-message-v1`. To an older daemon it strips them and frames a call's text
+  `From <caller label>:` as a pre-id sender did, so calls between daemons of different versions
+  keep working; that delivery arrives as a pre-id one, and its answer comes back without
+  `inReplyTo` and is accepted by the pre-id route below. (Failing closed instead would have
+  broken every ordinary call from an upgraded daemon to an older one, and gained no safety.)
+  An older relay drops the unknown fields too. A session message's body
   travels raw and the receiving daemon frames it; a call from no session is no session message
   and keeps its sender's `From <caller>:` framing.
 - **Records.** The receiving daemon writes `session_message` (store schema v52) when dispatch
@@ -1632,4 +1652,5 @@ revision:
     the earlier revision; product conventions and assistant-mode follow §11 questions 10–11.
 
 Storage names (`assistant_subsession_*` tables, the `subsession:` coordinate) are internal
-and may keep their names; nothing model- or person-facing may show them.
+and may keep their names; nothing model- or person-facing may show them, except as the opaque
+`taskId` string and the receipt's `wake.subsession` flag (§8.9).

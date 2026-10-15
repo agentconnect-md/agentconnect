@@ -503,6 +503,28 @@ describe('A → B1 ← C: replies addressed to the message they answer (send-mes
   })
 })
 
+describe('a replayed new-session call (send-message-guide.md §8.6)', () => {
+  it('gets its first receipt back and runs no second turn, in process and from the recorded message', async () => {
+    const run = await boot()
+    try {
+      const replay = { submissionId: 'call-new-1', text: 'a postless call' }
+      const first = await run.call(C, replay)
+      expect(first.delivered).toBe(true)
+      expect(await run.call(C, replay)).toEqual(first)
+      await vi.waitFor(async () => expect(await run.fromSource(first.targetSession, `sid-${C}`)).toHaveLength(1), WAIT)
+      await settle()
+      // After a restart only the recorded message remains to say where it went.
+      run.d.collab.callSubmissions.clear()
+      expect(await run.call(C, replay)).toEqual({ delivered: true, targetSession: first.targetSession })
+      await settle()
+      expect(run.prompts.get(B)!.filter((text) => text.includes('a postless call'))).toHaveLength(1)
+      expect(await run.fromSource(first.targetSession, `sid-${C}`)).toHaveLength(1)
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+})
+
 describe('sessions from before the upgrade (send-message-guide.md §9.6)', () => {
   it('answer their origin’s outstanding request through the call the upgrade synthesized', async () => {
     const run = await boot()

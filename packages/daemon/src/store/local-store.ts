@@ -1926,12 +1926,14 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       await db.exec('ALTER TABLE assistant_subsession ADD COLUMN round INTEGER NOT NULL DEFAULT 1')
   },
   // v52 addresses replies to session messages: each session's origin becomes one received call (send-message-guide.md §9.6).
-  async (db) => await migrateOriginsToSessionMessages(db)
+  async (db, store) => await migrateOriginsToSessionMessages(db, store.postgres)
 ]
 
 /** Give every session created by another one a synthesized `call` from its origin, carrying an outstanding request. */
-async function migrateOriginsToSessionMessages(db: StoreTx): Promise<void> {
+async function migrateOriginsToSessionMessages(db: StoreTx, postgres: boolean): Promise<void> {
   await db.exec(SESSION_MESSAGE_SCHEMA)
+  // Probed, never queried blind: a failed statement aborts a Postgres migration transaction.
+  const keptSources = await tableExists(db, postgres, 'session_reply_source')
   const sessions = (
     await db.query(
       'SELECT key, agentId, originSessionId, originCodeHostReplyTarget, needsParentReply FROM sessions WHERE originSessionId IS NOT NULL',
@@ -1953,7 +1955,7 @@ async function migrateOriginsToSessionMessages(db: StoreTx): Promise<void> {
       }[]
     )[0]
     // A remote origin's agent and coordinates were only ever known from a recorded source, which an earlier build kept.
-    const source = local ? undefined : await legacyReplySource(db, rec.key, rec.originSessionId)
+    const source = local || !keptSources ? undefined : await legacyReplySource(db, rec.key, rec.originSessionId)
     await db.query(
       `INSERT OR IGNORE INTO session_message
          (messageId, recipientKey, recipientAgentId, sourceSessionId, sourceAgentId, sourcePlatform, sourceChannel,
@@ -1978,7 +1980,15 @@ async function migrateOriginsToSessionMessages(db: StoreTx): Promise<void> {
   await db.exec('DROP TABLE IF EXISTS session_reply_source')
 }
 
-/** A remote origin's route as an earlier build of this branch recorded it, when its table exists. */
+/** Whether `table` exists in the store's schema. */
+async function tableExists(db: StoreTx, postgres: boolean, table: string): Promise<boolean> {
+  const sql = postgres
+    ? 'SELECT 1 AS found FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?'
+    : "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?"
+  return (await db.query(sql, [table])).rows.length > 0
+}
+
+/** A remote origin's route as an earlier build recorded it; the caller has checked that its table exists. */
 async function legacyReplySource(
   db: StoreTx,
   key: string,
@@ -1986,22 +1996,18 @@ async function legacyReplySource(
 ): Promise<
   { sourceAgentId: string; sourcePlatform?: string; sourceChannel?: string; sourceThread?: string } | undefined
 > {
-  try {
-    const row = (
-      await db.query(
-        'SELECT sourceAgentId, sourcePlatform, sourceChannel, sourceThread FROM session_reply_source WHERE sessionKey = ? AND sourceSessionId = ?',
-        [key, sourceSessionId]
-      )
-    ).rows[0] as Record<string, string | null> | undefined
-    if (!row?.sourceAgentId) return undefined
-    return {
-      sourceAgentId: row.sourceAgentId,
-      ...(row.sourcePlatform ? { sourcePlatform: row.sourcePlatform } : {}),
-      ...(row.sourceChannel ? { sourceChannel: row.sourceChannel } : {}),
-      ...(row.sourceThread ? { sourceThread: row.sourceThread } : {})
-    }
-  } catch {
-    return undefined
+  const row = (
+    await db.query(
+      'SELECT sourceAgentId, sourcePlatform, sourceChannel, sourceThread FROM session_reply_source WHERE sessionKey = ? AND sourceSessionId = ?',
+      [key, sourceSessionId]
+    )
+  ).rows[0] as Record<string, string | null> | undefined
+  if (!row?.sourceAgentId) return undefined
+  return {
+    sourceAgentId: row.sourceAgentId,
+    ...(row.sourcePlatform ? { sourcePlatform: row.sourcePlatform } : {}),
+    ...(row.sourceChannel ? { sourceChannel: row.sourceChannel } : {}),
+    ...(row.sourceThread ? { sourceThread: row.sourceThread } : {})
   }
 }
 

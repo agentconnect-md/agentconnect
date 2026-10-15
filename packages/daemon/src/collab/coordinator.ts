@@ -186,6 +186,12 @@ const withoutContinueHint = (text: string): string =>
     /To give it more work in the same context, call sendMessage with \{"action":"(?:messageTask|messageSubsession)"[^\n]*?\}\./,
     ELSEWHERE_HINT
   )
+/** A report kept from before the task rename names the removed messageSubsession action, so its owner gets the current call. */
+const withCurrentContinueHint = (text: string): string =>
+  text.replace(
+    /To give it more work in the same context, call sendMessage with \{"action":"messageSubsession","sessionId":"([^"\n]+)"[^\n]*?\}\./,
+    (_match, key: string) => continueHint(key)
+  )
 
 /** The one report a task's work round ends with (send-message-guide.md §8.5). */
 function subsessionRoundReport(
@@ -412,6 +418,8 @@ export class CollabCoordinator {
   private readonly subsessionFinalOutputs = new Map<string, { round?: number | undefined; text: string }>()
   // Submissions being admitted right now, so a concurrent replay of one waits for its receipt instead.
   private readonly subsessionSubmissions = new Set<string>()
+  // §8.6: each new-session call's first outcome by its submission, so a replay in this process shares it.
+  private readonly callSubmissions = new Map<string, Promise<MessageAgentResult>>()
   // When the sweep first saw an `open` sub-session with nothing running for it, keyed by its session key.
   private readonly subsessionIdleSince = new Map<string, number>()
 
@@ -937,7 +945,10 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: this.renderInput(callMeta, `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`),
+      text: this.renderInput(
+        callMeta,
+        `${elsewhere ? withoutContinueHint(text) : withCurrentContinueHint(text)}\n\n${REPORT_ANSWER_LANGUAGE}`
+      ),
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],
@@ -1086,6 +1097,27 @@ export class CollabCoordinator {
   }
 
   async messageAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
+    if (req.submissionId === undefined || req.targetSessionId !== undefined) return await this.deliverToAgent(req)
+    const id = [
+      req.callerAgentId,
+      req.platform,
+      req.callerChannel,
+      req.callerThread,
+      req.callerTransportScope ?? '',
+      req.submissionId
+    ].join('\n')
+    const prior = this.callSubmissions.get(id)
+    if (prior) return await prior
+    if (this.callSubmissions.size >= 2000) this.callSubmissions.clear()
+    const outcome = this.deliverToAgent(req)
+    this.callSubmissions.set(id, outcome)
+    return await outcome.catch((err) => {
+      this.callSubmissions.delete(id)
+      throw err
+    })
+  }
+
+  private async deliverToAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
     const platform = req.platform
     const callerKey = sessionKey(
       platform,
@@ -1183,6 +1215,12 @@ export class CollabCoordinator {
     const messageId =
       originSessionId !== undefined ? this.messageIdFor(req.callerAgentId, callerKey, req.submissionId) : undefined
     const messageKind: SessionMessageKind = selfDelegation ? 'taskInput' : 'call'
+    // §8.6: a replay of a submission already recorded at its target gets that first receipt, starting nothing.
+    const first =
+      req.submissionId !== undefined && messageId !== undefined
+        ? await this.firstCallReceipt(req, messageId, originSessionId!, callerKey)
+        : undefined
+    if (first) return observe('collaboration.delivery.deduplicated', first)
     if (inbound !== undefined && hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:hop-limit`
       return observe('collaboration.delivery.rejected', {
@@ -1495,6 +1533,29 @@ export class CollabCoordinator {
       .log()
       .info(`messageAgent: ${req.callerAgentId} → ${req.toAgentId} (${targetSession}) delivery=${deliveryId}`)
     return record({ delivered: true, targetSession, ...(selfDelegation ? { subsession: true as const } : {}) })
+  }
+
+  /** The receipt a submission's first delivery earned, read from its recorded message; undefined when the id names none of this call. */
+  private async firstCallReceipt(
+    req: MessageAgentReq,
+    messageId: string,
+    originSessionId: string,
+    callerKey: string
+  ): Promise<MessageAgentResult | undefined> {
+    const store = this.host.store()
+    const received = await store.sessionMessages.received(messageId).catch(() => undefined)
+    if (
+      !received ||
+      received.sourceAgentId !== req.callerAgentId ||
+      received.sourceSessionId !== originSessionId ||
+      received.recipientAgentId !== req.toAgentId
+    )
+      return undefined
+    if (!this.selfDelegation(req)) return { delivered: true, targetSession: received.recipientKey }
+    const task = await store.assistantSubsessions.get(req.callerAgentId, received.recipientKey)
+    return task?.parentSessionKey === callerKey
+      ? { delivered: true, targetSession: received.recipientKey, subsession: true }
+      : undefined
   }
 
   /** send-message-guide.md §9.2, the caller's side: the same caller checks as any call, then the owning daemon's admission. */
@@ -2008,7 +2069,7 @@ export class CollabCoordinator {
     const row =
       (await index.get(agentId, id)) ??
       (await store
-        .getSessionByOutwardId(id, agentId)
+        .getSessionByOutwardIdOnly(id, agentId)
         .then((child) => (child ? index.get(agentId, child.key) : undefined)))
     if (!row || row.kind === 'patrol' || row.parentSessionKey !== callerKey) return undefined
     // The recorded parent, by outward id too: a rotated or recreated caller session is not the one that opened it.
@@ -2310,10 +2371,13 @@ export class CollabCoordinator {
     const sourceHopCount = Math.max(inbound?.hopCount ?? 0, answered.hopCount)
     if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) return failed('hop_limit')
     const local = await store.getSessionByOutwardId(answered.sourceSessionId, answered.sourceAgentId || undefined)
-    // §8.2: answering one's own task is messaging it, under the ownership record.
-    if (local && local.agentId === req.callerAgentId && isDelegationCoordinate(local.thread)) {
+    if (local && local.agentId === req.callerAgentId && isSubsessionCoordinate(local.thread)) {
+      // A patrol or approved proposal runs once (§8.9), so no reply wakes it again.
+      if (!isDelegationCoordinate(local.thread)) return { delivered: false, inReplyTo, reason: 'not_authorized' }
       const row = await store.assistantSubsessions.get(local.agentId, local.key)
-      if (row && row.kind !== 'patrol') return await this.replyIntoTask(req, answered, local.key)
+      // §8.2: the owner answering its own task is messaging it; any other session's reply is delivered like a peer's.
+      if (row && row.kind !== 'patrol' && row.parentSessionKey === callerKey)
+        return await this.replyIntoTask(req, answered, local.key)
     }
     const replierSessionId = callerRec
       ? await store.ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
@@ -2806,20 +2870,7 @@ export class CollabCoordinator {
     return undefined
   }
 
-  /**
-   * session-concept case 2a: an agent's channel-ROOT post seeds a NEW session owned by the same
-   * agent. The post already happened (ops.ts); here the daemon initializes the new-thread session
-   * (keyed by the post's ts) so the top-level message starts its own context,
-   * with the posting session recorded as its creator. This is initialization only: the root is recorded
-   * for replay with the first real reply, but no model turn runs. `headless` remains a transport
-   * backstop, and the hop count remains a defense for replay from an older durable inbox row.
-   *
-   * Lineage travels; the AUDIENCE does not. The seed classifies against the conversation the post
-   * landed in (`platformOrigin`), because a cross-conversation post that inherited the origin's
-   * external binding would leave the new thread bound to a channel it does not live in — every
-   * later human reply there then rejects as a cross-source turn, and the session claims the
-   * origin channel's readers (§3.3, `session-visibility.md` §4.2).
-   */
+  /** session-concept 2a: initialize the session a channel-root post seeds, recording the posting session as its creator and classifying against the post's own conversation; no model turn runs. */
   async spawnChannelRootSession(req: {
     agentId: string
     platform: string

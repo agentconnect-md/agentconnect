@@ -301,6 +301,8 @@ describe('stopTask in a Slack DM conversation', () => {
       expect(await stop(h, dm, theirs)).toEqual(refusal)
       expect(await stop(h, dm, (await h.d.store.getSession(theirs)).sessionId)).toEqual(refusal)
       expect(await stop(h, dm, 'slack:D0ALICE:subsession:unknown:bot-a')).toEqual(refusal)
+      // §8.2: a task's ACP runtime id is no handle, even in its owning session.
+      expect(await stop(h, support, (await h.d.store.getSession(theirs)).acpSessionId)).toEqual(refusal)
       expect(JSON.stringify(refusal)).not.toContain(OTHER_DM)
       expect(cancel).not.toHaveBeenCalled()
       expect(await stateOf(h, theirs)).toBe('open')

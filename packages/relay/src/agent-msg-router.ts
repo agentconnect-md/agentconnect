@@ -200,11 +200,13 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
       return nak(msg.deliveryId, 'unsupported')
     }
 
-    // send-message-guide.md §9.3: a session message's id reaches only a target that records it, so an older daemon fails closed.
-    if ((msg.messageId !== undefined || msg.inReplyTo !== undefined) && !conn.supports(RD_SESSION_MESSAGE_V1)) {
-      deps.log.warn(`relay: rd/agentmsg refused — daemon ${target.daemonId} does not support ${RD_SESSION_MESSAGE_V1}`)
-      return nak(msg.deliveryId, 'unsupported')
-    }
+    // send-message-guide.md §9.3: an older target gets a session message as the pre-id delivery it understands.
+    const sessionMessage =
+      (msg.messageId === undefined && msg.messageKind === undefined && msg.inReplyTo === undefined) ||
+      conn.supports(RD_SESSION_MESSAGE_V1)
+    const label = caller.displayName?.trim() || caller.name || msg.claimedFromAgentId
+    // A pre-id daemon shows a call's text as is, so it carries its sender the way a pre-id sender framed it.
+    const text = sessionMessage || msg.messageKind !== 'call' ? msg.text : `From ${label}: ${msg.text}`
 
     // Delivery detail, NOT authorization: the DEFINITE reply integration (§6.2). The same
     // agent can reach two channels via two different bots, so prefer its placement in the
@@ -219,7 +221,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         orgId,
         toAgentId: msg.toAgentId,
         ...(integrationId !== undefined ? { integrationId } : {}),
-        text: msg.text,
+        text,
         coords: msg.coords,
         hopCount,
         deliveryId: msg.deliveryId,
@@ -251,10 +253,10 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // §9.2: the target session and the calling turn's people, which the target daemon judges participation by.
         ...(msg.targetSessionId !== undefined ? { targetSessionId: msg.targetSessionId } : {}),
         ...(msg.callerAskers !== undefined ? { callerAskers: msg.callerAskers } : {}),
-        // §9.3–§9.4: the message's id, kind and answered message, which the target records and checks.
-        ...(msg.messageId !== undefined ? { messageId: msg.messageId } : {}),
-        ...(msg.messageKind !== undefined ? { messageKind: msg.messageKind } : {}),
-        ...(msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {})
+        // §9.3–§9.4: the message's id, kind and answered message, which a target that records them checks.
+        ...(sessionMessage && msg.messageId !== undefined ? { messageId: msg.messageId } : {}),
+        ...(sessionMessage && msg.messageKind !== undefined ? { messageKind: msg.messageKind } : {}),
+        ...(sessionMessage && msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {})
       })
     } catch (err) {
       // Forward timed out / socket dropped mid-flight → treat as offline (retransmit is

@@ -563,6 +563,8 @@ export const SCENARIOS: SendMessageScenario[] = [
         messageId: IDS.message,
         kind: 'call',
         sourceAgentId: IDS.peer,
+        // What the daemon's agentDisplayLabel gives a peer without a display name.
+        sourceLabel: IDS.peer,
         sourceSessionId: IDS.origin,
         replyRequested: true
       },

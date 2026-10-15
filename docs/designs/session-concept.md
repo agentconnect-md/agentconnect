@@ -10,6 +10,12 @@
 > match; read that document for the verification, hop-transition, and activation
 > rendezvous rules behind them.
 
+> **Reply update:** [`send-message-guide.md`](send-message-guide.md) §9.3–§9.6 is
+> implemented and authoritative for REPLIES. The `# Agent` block's `Parent session` line is
+> now `Created by session`, a record only: a session answers a message by its id with
+> `replyToSession {messageId}`, never by naming a parent session. Passages below that use
+> `Parent session` as a reply address describe the earlier design.
+
 > This document does one thing: define **session** precisely--what it is, what
 > it contains, how messages record source and destination, how agent-to-agent
 > communication and cross-platform sends enter sessions, and how **replies**
@@ -238,7 +244,7 @@ its origin:
 ```text
 - Thread: <current thread id>             # thread segment from sessionKey; session-manager.ts:216
 - Session: <this session id>              # acpSessionId, when available
-- Parent session: <origin session id>     # Only for a session woken by sendMessage
+- Created by session: <origin session id> # Only for a session woken by sendMessage; a record, not a reply address
 ```
 
 - **`Thread`** is the current session's platform thread:
@@ -248,15 +254,13 @@ its origin:
   (`session-manager.ts:312` versus `session-manager.ts:411`), while a new
   `acpSessionId` is returned only by that call. A resumed session can include it
   reliably.
-- **`Parent session`** is the **origin session's ID**, described in section 5.1.
+- **`Created by session`** is the **origin session's ID**, described in section 5.1.
   It appears only when `sendMessage` created or woke this session, as in cases
-  2, 3, and 3b. A human-created root session has no line. This is exactly the
-  `SessionTarget.sessionId` the owner uses to reply. `CallMeta.originSessionId`
+  2, 3, and 3b. A human-created root session has no line. `CallMeta.originSessionId`
   carries it into the daemon, which renders this line.
 
-In other words, a session has a replyable parent exactly when its `# Agent`
-block contains `Parent session`. The agent submits that opaque value as a
-SessionTarget, and the daemon still authorizes the write.
+The line is a record only. A session replies by answering a message it received, by that
+message's id (send-message-guide.md §9.6); it never submits this id as a reply address.
 
 ---
 
