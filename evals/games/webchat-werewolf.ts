@@ -570,6 +570,7 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
         calls.push({
           tool: 'sendMessage',
           args: {
+            action: 'callAgent',
             toAgent: this.seatByAlias.get(seer)!.agentId,
             message: `Inspection result: ${night.inspect} is ${night.inspectResult === 'werewolf' ? 'a werewolf' : 'not a werewolf'}. Keep it private until you can use it.`
           }
@@ -655,7 +656,10 @@ export class WebchatWerewolfReferee implements ScriptedBrain {
     const row: NeedsReplyLogRow = { round, purpose, to: seat.agentId, delivered: false, answered: false }
     this.needsReplyLog.push(row)
     if (purpose !== 'role') this.awaiting.set(purpose, row)
-    return { tool: 'sendMessage', args: { toAgent: { agentId: seat.agentId, needsReply: true }, message } }
+    return {
+      tool: 'sendMessage',
+      args: { action: 'callAgent', toAgent: { agentId: seat.agentId, needsReply: true }, message }
+    }
   }
 
   private settleAwaiting(purpose: NeedsReplyLogRow['purpose']): void {
@@ -695,7 +699,7 @@ export interface ScriptedPlayerDeps {
     tool: string,
     args: Record<string, unknown>
   ) => Promise<{ ok: boolean; error?: string }>
-  parentSessionIdOf: (text: string) => string | undefined
+  replyMessageIdOf: (text: string) => string | undefined
   /** CI cell for the re-prompt lever: this player ignores the public VOTE
    *  call (model vote-reticence, scripted) and answers only the referee's
    *  private re-prompt. */
@@ -742,9 +746,9 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
     text: string,
     message: string
   ): Promise<string> => {
-    const sessionId = deps.parentSessionIdOf(text) ?? parents.get(sessionKey)
-    if (!binding || !sessionId) return `cannot report: binding=${Boolean(binding)} parent=${sessionId}`
-    const result = await deps.callTool(binding, 'sendMessage', { sessionId, message })
+    const messageId = deps.replyMessageIdOf(text) ?? parents.get(sessionKey)
+    if (!binding || !messageId) return `cannot report: binding=${Boolean(binding)} message=${messageId}`
+    const result = await deps.callTool(binding, 'sendMessage', { action: 'replyToSession', messageId, message })
     return result.ok ? 'reported.' : `report failed: ${result.error ?? 'unknown'}`
   }
   const listAfter = (text: string, label: string): string[] => {
@@ -763,8 +767,8 @@ export function scriptedWebchatPlayer(deps: ScriptedPlayerDeps) {
     binding: { endpoint: string; token: string } | undefined
   }): Promise<string | undefined> => {
     const { sessionId, text, binding } = input
-    const parsedParent = deps.parentSessionIdOf(text)
-    if (parsedParent) parents.set(sessionId, parsedParent)
+    const parsedMessage = deps.replyMessageIdOf(text)
+    if (parsedMessage) parents.set(sessionId, parsedMessage)
     // ── the private pairwise session with the referee ──
     // Every pairwise session of ONE caller shares the same synthetic
     // `a2a:<caller>` transcript thread, so a child's context refresh shows the

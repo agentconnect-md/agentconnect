@@ -1,8 +1,9 @@
 // A background sub-session's runtime permission request, routed to the conversation it belongs to (assistant-mode.md §5.6).
 import type { ApprovalRouteTarget } from '@agentconnect.md/protocol'
+import { SESSION_MESSAGE_HEADER } from '../collab/session-message.js'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
-import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { isSubsessionCoordinate, LEGACY_TASK_START_WRAPPER } from '../session/subsession-coordinate.js'
 
 /** How long a sub-session's request waits when the policy sets no `permissionWaitHours`. */
 export const DEFAULT_PERMISSION_WAIT_HOURS = 12
@@ -28,11 +29,14 @@ export interface SubsessionApprover {
   channel: string
 }
 
-// How a self-delegation's message opens (collab/coordinator.ts): no name for the sub-session it opens.
-const DELEGATION_WRAPPER = 'From your own main conversation, as a background sub-session:'
-
-const unwrapped = (text: string | null | undefined): string | undefined =>
-  text?.trimStart().startsWith(DELEGATION_WRAPPER) ? text.trimStart().slice(DELEGATION_WRAPPER.length) : undefined
+// What a task's first message opens with, which names nothing: a header, or a released daemon's wrapper.
+const unwrapped = (text: string | null | undefined): string | undefined => {
+  const trimmed = text?.trimStart()
+  // send-message-guide.md §9.5: a task's first message opens with its session-message header line.
+  const header = trimmed !== undefined ? SESSION_MESSAGE_HEADER.exec(trimmed) : null
+  if (header) return trimmed!.slice(header[0].length)
+  return trimmed?.startsWith(LEGACY_TASK_START_WRAPPER) ? trimmed.slice(LEGACY_TASK_START_WRAPPER.length) : undefined
+}
 
 /** A sub-session's name on its cards: its title, else its task without the delegation wrapper, truncated; null when neither says anything. */
 export function subsessionLabel(title: string | null | undefined, task: string | undefined): string | null {

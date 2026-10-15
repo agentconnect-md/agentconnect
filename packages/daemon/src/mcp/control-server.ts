@@ -123,7 +123,11 @@ export class McpControlServer {
         return
       }
       // Deps, NOT a SessionContext spread: `mcp/ops/memory.ts` keys its provenance ledger by the context IDENTITY from the sessions map, so a per-call copy would orphan it.
-      const deps = askPort ? { ...this.deps, ask: askPort } : this.deps
+      const callId = req.op === 'callTool' && typeof req.callId === 'string' ? req.callId.slice(0, 256) : undefined
+      const deps =
+        askPort || callId
+          ? { ...this.deps, ...(askPort ? { ask: askPort } : {}), ...(callId ? { callId } : {}) }
+          : this.deps
       const result = await executeTool(ctx, req.name, req.args ?? {}, deps)
       reply({ id: req.id, ok: true, result })
     } catch (err) {

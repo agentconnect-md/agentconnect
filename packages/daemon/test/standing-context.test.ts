@@ -14,7 +14,6 @@ const BASE = {
   thread: 'T123',
   envSecretNames: [],
   fileSecrets: [],
-  needsReplyToParent: false,
   memoryIndex: '',
   usesMeta: false
 }

@@ -60,7 +60,9 @@ import {
   WRITE_MEMORY_ARGS,
   type MemoryOpsDeps
 } from './ops/memory.js'
-import { sendMessage, type MessagingDeps } from './ops/messaging.js'
+import type { MessagingDeps } from './ops/messaging.js'
+import { sendMessage, validateSendMessageAction } from './ops/send-message-actions.js'
+import { getToolGuide, GET_TOOL_GUIDE_ARGS } from './ops/tool-guide.js'
 import {
   addReaction,
   ADD_REACTION_ARGS,
@@ -166,7 +168,14 @@ export type {
 export type { SubmitCodeReviewReq } from '../codehost/review-adapter.js'
 export type { CodeHostEffectReq } from './ops/code-host.js'
 export { SEND_MESSAGE_BRANCHES } from './ops/messaging.js'
-export type { MessageAgentReq, MessageAgentResult, ReplyToSessionReq, ReplyToSessionResult } from './ops/messaging.js'
+export { SEND_MESSAGE_ACTIONS, SEND_MESSAGE_ACTION_SCHEMAS } from './ops/send-message-actions.js'
+export type {
+  ContinueSubsessionReq,
+  MessageAgentReq,
+  MessageAgentResult,
+  ReplyToSessionReq,
+  ReplyToSessionResult
+} from './ops/messaging.js'
 export type { SessionStatusReq, SessionStatusResult } from './ops/session.js'
 export { askHost, AskRequired } from './ask.js'
 export type { AskDeps, AskOutcome, AskPort, AskSpec } from './ask.js'
@@ -262,6 +271,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['evaluateDecision', evaluateDecision],
   ['listOrgSkills', listOrgSkills],
   ['sendMessage', sendMessage],
+  ['getToolGuide', getToolGuide],
   ['submitCodeReview', submitCodeReview],
   // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
   ['submitGithubReview', submitCodeReview],
@@ -305,8 +315,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
  * Every dispatchable tool's ARGUMENT schema, by name — the runtime contract each handler
  * parses its input with. Advertised JSON Schemas (`mcp/tools.ts` and the per-platform
  * descriptors) carry the model-facing prose; `test/mcp-tool-args.test.ts` holds the two
- * sides to the same fields so neither can drift. `sendMessage` is a four-branch union and
- * lives in {@link SEND_MESSAGE_BRANCHES} instead.
+ * sides to the same fields so neither can drift. `sendMessage` validates per action, in
+ * {@link SEND_MESSAGE_ACTION_SCHEMAS}, against one flat advertised schema.
  */
 export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['viewSessionStatus', VIEW_SESSION_STATUS_ARGS],
@@ -364,6 +374,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['readCanvas', READ_CANVAS_ARGS],
   ['updateCanvas', UPDATE_CANVAS_ARGS],
   ['recall', RECALL_ARGS],
+  ['getToolGuide', GET_TOOL_GUIDE_ARGS],
   ...ASSISTANT_ITEM_ARG_SCHEMAS,
   ...ASSISTANT_REMINDER_ARG_SCHEMAS,
   ...ASSISTANT_SUBSESSION_ARG_SCHEMAS,
@@ -474,6 +485,8 @@ async function executeRegisteredTool(
   given: Record<string, unknown>,
   deps: OpsDeps
 ): Promise<unknown> {
+  // send-message-guide.md §3.3: the action and its arguments are checked before any lookup or effect.
+  if (name === 'sendMessage') validateSendMessageAction(ctx, given)
   // A channel named by its name is judged and acted on by the one id it resolves to.
   const args = await resolveChannelArg(ctx, name, given, deps)
   // Every agent's reads of another conversation and platform writes are judged by who is asking (§5.5).

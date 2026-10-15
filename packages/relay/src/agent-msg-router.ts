@@ -41,6 +41,8 @@ import {
   hasReachedAgentCallHopLimit,
   isRetryableAgentMsgAck,
   RD_AGENTMSG_NOT_READY,
+  RD_AGENT_SESSION_CALL_V1,
+  RD_SESSION_MESSAGE_V1,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1,
   type RdAgentMsg,
@@ -188,6 +190,24 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
       return nak(msg.deliveryId, 'unsupported')
     }
 
+    // send-message-guide.md §9.2: an existing-session call needs its session, and a target that admits it into that session alone.
+    if (msg.deliveryKind === 'session-call' && msg.targetSessionId === undefined)
+      return nak(msg.deliveryId, 'not_found')
+    if (msg.deliveryKind === 'session-call' && !conn.supports(RD_AGENT_SESSION_CALL_V1)) {
+      deps.log.warn(
+        `relay: rd/agentmsg refused — daemon ${target.daemonId} does not support ${RD_AGENT_SESSION_CALL_V1}`
+      )
+      return nak(msg.deliveryId, 'unsupported')
+    }
+
+    // send-message-guide.md §9.3: an older target gets the pre-id delivery; once the supported daemon floor advertises session-message-v1, this and the framing below go and the relay only forwards.
+    const sessionMessage =
+      (msg.messageId === undefined && msg.messageKind === undefined && msg.inReplyTo === undefined) ||
+      conn.supports(RD_SESSION_MESSAGE_V1)
+    const label = caller.displayName?.trim() || caller.name || msg.claimedFromAgentId
+    // A pre-id daemon shows a call's text as is, so it carries its sender the way a pre-id sender framed it.
+    const text = sessionMessage || msg.messageKind !== 'call' ? msg.text : `From ${label}: ${msg.text}`
+
     // Delivery detail, NOT authorization: the DEFINITE reply integration (§6.2). The same
     // agent can reach two channels via two different bots, so prefer its placement in the
     // coords channel and fall back to the directory entry when it has no row there (an
@@ -201,7 +221,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         orgId,
         toAgentId: msg.toAgentId,
         ...(integrationId !== undefined ? { integrationId } : {}),
-        text: msg.text,
+        text,
         coords: msg.coords,
         hopCount,
         deliveryId: msg.deliveryId,
@@ -229,7 +249,14 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // §8.3: forwarded so the TARGET treats the delivery exactly as the same-daemon path
         // does — dispatch into the named parent session. The capability check above already
         // ran, so a target receiving `session-reply` is known to understand it.
-        ...(msg.deliveryKind !== undefined ? { deliveryKind: msg.deliveryKind } : {})
+        ...(msg.deliveryKind !== undefined ? { deliveryKind: msg.deliveryKind } : {}),
+        // §9.2: the target session and the calling turn's people, which the target daemon judges participation by.
+        ...(msg.targetSessionId !== undefined ? { targetSessionId: msg.targetSessionId } : {}),
+        ...(msg.callerAskers !== undefined ? { callerAskers: msg.callerAskers } : {}),
+        // §9.3–§9.4: the message's id, kind and answered message, which a target that records them checks.
+        ...(sessionMessage && msg.messageId !== undefined ? { messageId: msg.messageId } : {}),
+        ...(sessionMessage && msg.messageKind !== undefined ? { messageKind: msg.messageKind } : {}),
+        ...(sessionMessage && msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {})
       })
     } catch (err) {
       // Forward timed out / socket dropped mid-flight → treat as offline (retransmit is

@@ -673,6 +673,11 @@ member (below).
 
 ### 5.6 Sub-sessions
 
+> **Update:** [`send-message-guide.md`](send-message-guide.md) §2.1 and §8 replace the postless
+> self-call with `startTask {message}`, continue a delegated sub-session (a task) with
+> `messageTask {taskId}`, and refuse a self-call without a channel. Its replies are addressed by
+> message id (§9.4). Patrols and approved proposals below are unchanged.
+
 **Every agent has sub-sessions**, in assistant mode or not: a postless self-call opens one, with
 the coordinate, inheritance, no nesting, reports, failure report, permission routing, wait cap,
 stop and running block described here and in §5.7–§5.8. An agent with an assistant mode policy
@@ -805,6 +810,11 @@ on `agentsGained`):
   "silence when nothing happened" are the main controls.
 
 ### 5.8 Stopping
+
+> **Update:** [`send-message-guide.md`](send-message-guide.md) §8.7 replaces `stopSubsession` with
+> `stopTask {taskId}`, which the owning session may call on any of its turns, without the
+> person-started-turn or `!stop` sender gates below. Every other caller, and a patrol or approved
+> proposal as the target, is refused in the unknown-id words. The console Stop is unchanged.
 
 | Action                                        | Effect                                                                                                          | Who                                                                                   |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |

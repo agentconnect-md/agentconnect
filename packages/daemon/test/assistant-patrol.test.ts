@@ -456,7 +456,7 @@ describe('one patrol at a time, beside the delegations', () => {
     // The running patrol takes none of the user's one place …
     expect(await d.collab.messageAgent(delegation(1))).toMatchObject({ delivered: true, subsession: true })
     // … which the delegation now holds.
-    expect(await d.collab.messageAgent(delegation(2))).toMatchObject({ delivered: false, reason: 'subsession_limit' })
+    expect(await d.collab.messageAgent(delegation(2))).toMatchObject({ delivered: false, reason: 'task_limit' })
     await d.interruptAgentTurns('bot-a', 'stop')
     await settled()
     await daemon.stop()
@@ -497,9 +497,9 @@ describe('a patrol reads and records, nothing else', () => {
       expect(names).not.toContain(write)
     expect(ctx.tools.find((t) => t.name === 'updateItem')).toBe(PATROL_UPDATE_ITEM_TOOL)
     // A name it was not offered is refused, whatever the runtime sends.
-    await expect(executeTool(ctx, 'sendMessage', { toAgent: 'bot-a', message: 'hi' }, deps)).rejects.toThrow(
-      'sendMessage is not available in a read-only patrol'
-    )
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'bot-a', message: 'hi' }, deps)
+    ).rejects.toThrow('sendMessage is not available in a read-only patrol')
     await expect(executeTool(ctx, 'takeItem', { title: 'x', doneWhen: 'y' }, deps)).rejects.toThrow(
       'not available in a read-only patrol'
     )

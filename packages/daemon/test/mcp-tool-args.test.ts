@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { SEND_MESSAGE_BRANCHES, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
+import { SEND_MESSAGE_ACTION_SCHEMAS, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
 import { CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
-import { STOP_SUBSESSION_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -77,7 +77,7 @@ const advertised: ToolDescriptor[] = [
   ...ASSISTANT_ITEM_TOOLS,
   PROPOSE_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,
-  STOP_SUBSESSION_TOOL
+  STOP_TASK_TOOL
 ]
 
 interface ObjectSchemaView {
@@ -115,10 +115,23 @@ describe('advertised tool schemas agree with their zod validators', () => {
     }
   )
 
-  it.each(Object.entries(SEND_MESSAGE_BRANCHES))('sendMessage %s branch matches its oneOf branch', (target, schema) => {
-    const root = byName.get('sendMessage')!.inputSchema as ObjectSchemaView
-    const branch = root.oneOf!.find((candidate) => candidate.required?.includes(target))!
-    expect(validatorFields(schema)).toEqual(fields(branch))
+  it.each(Object.entries(SEND_MESSAGE_ACTION_SCHEMAS))(
+    'sendMessage %s takes only advertised arguments',
+    (_, schema) => {
+      const root = fields(byName.get('sendMessage')!.inputSchema as ObjectSchemaView)
+      const action = validatorFields(schema)
+      expect(action.properties.filter((key) => !root.properties.includes(key))).toEqual([])
+      expect(action.required).toEqual(expect.arrayContaining(root.required))
+    }
+  )
+
+  it('advertises every sendMessage action argument, and requires only action and message', () => {
+    const root = fields(byName.get('sendMessage')!.inputSchema as ObjectSchemaView)
+    const union = new Set(
+      Object.values(SEND_MESSAGE_ACTION_SCHEMAS).flatMap((schema) => validatorFields(schema).properties)
+    )
+    expect(root.properties).toEqual([...union].sort())
+    expect(root.required).toEqual(['action', 'message'])
   })
 })
 

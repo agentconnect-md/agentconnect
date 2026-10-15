@@ -12,6 +12,7 @@ import {
   NOT_SHARED_UNLINKED,
   placeReadMetrics,
   privateSourceNote,
+  readRefusal,
   samePlace,
   type PlaceKind,
   type PlaceReadMetrics,
@@ -26,6 +27,7 @@ import {
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { tellsWorkspaceMembers } from '../../platforms/read-ports.js'
 import type { SessionRecord, TranscriptRow, TranscriptSessionScope } from '../../store/local-store.js'
+import { isSyntheticA2aChannel } from '../../cp/cp-collab-routes.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations, type GatewayDeps } from './gateway.js'
 
@@ -211,6 +213,48 @@ export async function assertPlaceRead(
   return verdict.privateSource
 }
 
+/** send-message-guide.md §9.2: whether a calling turn's people may join an existing session, judged as a read of its conversation. */
+export async function judgeSessionParticipation(input: {
+  /** The caller's current conversation, which the read rule always lets read itself. */
+  callerPlace: PlaceRef
+  /** The target session, as its owning daemon recorded it. */
+  target: Pick<SessionRecord, 'platform' | 'channel' | 'conversationKind' | 'sessionId'>
+  askers: TurnAskers
+  /** The target agent's bot behind the session, which a same-bot asker is judged on. */
+  bot: string | undefined
+  /** The target agent's lookups: the console answers only for that agent's sessions. */
+  lookups: ReadLookups
+  deps: Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'>
+  recorder?: PlaceReadMetrics
+}): Promise<boolean> {
+  const { target, bot, lookups } = input
+  const place: PlaceRef = { platform: target.platform, channel: target.channel }
+  const described = await describePlace(
+    place,
+    kindFromRows(target.platform, [target.conversationKind]),
+    bot,
+    input.deps
+  )
+  const source: SourcePlace = { ...described, sessions: target.sessionId ? [target.sessionId] : [] }
+  const mayRead = (asker: ReadAsker) => askerMayRead(asker, source, bot, lookups)
+  // Every peer one agent woke without a channel shares its `a2a:` coordinate, so that is never the caller's own place.
+  if (isSyntheticA2aChannel(input.callerPlace.channel) || isSyntheticA2aChannel(target.channel)) {
+    const refusal = await readRefusal(source, input.askers, mayRead, false)
+    if (refusal) (input.recorder ?? placeReadMetrics).refused('callAgent', refusal)
+    return refusal === undefined
+  }
+  const refusal = await checkPlaceRead(
+    'callAgent',
+    input.callerPlace,
+    source,
+    input.askers,
+    mayRead,
+    false,
+    input.recorder
+  )
+  return refusal === undefined
+}
+
 /** Where a platform write lands: a conversation (a direct message by its recipient), something new with these people, or a hosted document. */
 export type WriteTarget =
   | { kind: 'conversation'; platform: string; integrationId?: string; channel: string; recipient?: string }
@@ -347,7 +391,7 @@ async function judgeDocument(
   return 'post'
 }
 
-/** Whether `sendMessage` is a platform post: not an agent-to-agent form, and not the parent-session reply. */
+/** Whether `sendMessage` is a platform post: only `postMessage`, never an agent call, a sub-session, or an origin reply. */
 export function isPlatformPost(args: Record<string, unknown>): boolean {
-  return absent(args.sessionId) && absent(args.toAgent)
+  return args.action === 'postMessage' && absent(args.sessionId) && absent(args.toAgent)
 }

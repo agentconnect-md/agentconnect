@@ -44,3 +44,42 @@ An installed adapter whose provider is logged out, rate-limited, or out of quota
 is shown as `U` (provider unavailable), not as a fabricated pass. A feature is
 marked `✓` only after the real adapter/provider path completes. A real behavioral
 failure is `✗` and fails the test command.
+
+## `sendMessage` probe
+
+`AC_RUNTIME_MATRIX_ONLY=sendMessage` measures how each runtime's model uses
+AgentConnect's real messaging tools. The HTTP MCP fixture serves, unmodified, the
+descriptors `toolsForIntegrations` returns for an agent with Slack and Telegram
+integrations in a Slack session, and the daemon's real standing context with
+synthetic ids. A `sendMessage` call runs through the real `executeTool` pipeline up to
+its first dependency, so the model reads the daemon's own argument error; when the
+served tool takes an `action`, a missing or unknown action and a postless `callAgent`
+to itself are also rejected, and a session or task id the scenario's caller does not
+own is refused. Accepted calls get a plausible receipt; `getToolGuide`, when served, returns
+the real guide. Nothing is posted, woken, or injected.
+
+Each scenario runs in a fresh session: ask a peer for a result, background self-work,
+visible work in another channel, a DM, an update in an existing thread, a reply to the
+origin session, a negative case answered in the current thread, and an informational
+check that the model sees `sendMessage` and can quote its description's edges. Calls
+are classified to a semantic operation, so the old target-inferred shape and the
+`action` shape are judged alike; `message-task`, which gives an existing background
+task more work, is new-only, skipped against the old shape, and kept out of the matrix
+cell (its runs carry `comparable: false`).
+
+A scenario passes when the first `sendMessage` call is valid and correct, is
+degraded (`·`) when only the last call is, and fails (`✗`) otherwise or on any call in
+the negative case. `U` means the provider was unavailable.
+
+```bash
+AC_RUNTIME_MATRIX_ONLY=sendMessage \
+  AC_RUNTIME_MATRIX_SENDMESSAGE_OUT=/tmp/send-message-baseline.json \
+  pnpm --filter @agentconnect.md/daemon test:runtime-matrix
+```
+
+- `AC_RUNTIME_MATRIX_SENDMESSAGE_REPS` repeats every scenario (default 1).
+- `AC_RUNTIME_MATRIX_SENDMESSAGE_SCENARIOS` limits the run to a comma list of scenario ids.
+- `AC_RUNTIME_MATRIX_SENDMESSAGE_OUT` receives the JSON report — git head, descriptor
+  sizes and tool names, and per run the verdict, classified operations, call counts,
+  wall time, and token usage — even when cells fail. It is rewritten after every run,
+  and this mode's test timeout grows with targets × scenarios × repetitions.

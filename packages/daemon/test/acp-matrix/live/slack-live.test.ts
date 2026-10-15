@@ -39,7 +39,8 @@ const SHORT: Record<FeatureId, string> = {
   sandbox: 'sbox',
   vm: 'vm',
   mcp: 'mcp',
-  skills: 'skills'
+  skills: 'skills',
+  sendMessage: 'send'
 }
 const CELL: Record<FeatureOutcome['status'], string> = { ok: '✓', degrade: '·', na: '~', fail: '✗' }
 const sw = (s?: { from?: string; to?: string; applied: boolean }) =>
