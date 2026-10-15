@@ -109,7 +109,7 @@ function runtimes() {
 const told = (hosts: any[], text: string): number =>
   hosts.flatMap((h) => h.prompt.mock.calls).filter((c: any) => JSON.stringify(c).includes(text)).length
 
-async function boot(root: string, opts: { spy?: boolean; clock?: FakeClock } = {}) {
+async function boot(root: string, opts: { spy?: boolean; clock?: FakeClock; remotePeers?: string[] } = {}) {
   const rt = runtimes()
   const daemon = new Daemon({
     slackAppFactory: fakeSlackAppFactory(),
@@ -128,6 +128,17 @@ async function boot(root: string, opts: { spy?: boolean; clock?: FakeClock } = {
     outboundPolicy: agent.outboundPolicy,
     allowedTargetAgentIds: agent.allowedTargetAgentIds
   }))
+  // A peer placed on another daemon, which this one reaches only over the relay.
+  for (const agentId of opts.remotePeers ?? [])
+    placements.push({
+      agentId,
+      daemonId: 'other-daemon',
+      name: agentId,
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: []
+    })
   d.cpCollab.replace({
     generation: 0,
     channels: [{ orgId: TEST_ORG, platform: 'slack', channelId: 'C1', agents: placements }],
@@ -618,6 +629,64 @@ describe('a work round, its slot and its outcome', () => {
     releasePeer()
     await vi.waitFor(() => expect(reportedFromWake).toMatchObject({ delivered: true }), WAIT)
     await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.endsWith('\nPEER-RESULT'))).toBe(true), WAIT)
+    await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.includes(finished(child)))).toBe(true), WAIT)
+    await h.settled()
+    await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
+    await h.daemon.stop()
+  })
+
+  it.each([
+    ['naming the message it answers', true],
+    ['from a peer daemon without message ids', false]
+  ])('settles the round once a peer on another daemon replies, %s', async (_name, withIds) => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { remotePeers: ['bot-remote'] })
+    const caller = await seedCaller(h.d)
+    const sent: Record<string, any>[] = []
+    h.d.relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (payload: Record<string, any>) => {
+        sent.push(payload)
+        return { deliveryId: payload.deliveryId, delivered: true, childSessionId: 'slack:C1:200.1:bot-remote' }
+      })
+    }
+    h.rt.behavior.subQueue.push(async () => {
+      const thread = subInputs(h.dispatched)[0]!.msg.thread!
+      const deps = { ...h.d.mcp.deps, canRun: () => true }
+      const call = (await executeTool(
+        { ...toolContext(caller), thread },
+        'sendMessage',
+        { action: 'callAgent', toAgent: { agentId: 'bot-remote', needsReply: true }, message: 'check the schema' },
+        deps
+      )) as any
+      expect(call.wake).toMatchObject({ delivered: true })
+      return 'end_turn'
+    })
+    const created = await send(h.d, caller, { action: 'startTask', message: 'ask bot-remote about the schema' })
+    const child: string = created.taskId
+    await vi.waitFor(() => expect(sent).toHaveLength(1), WAIT)
+    await subInputs(h.dispatched)[0]!.turn
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(await rowOf(h.d, child)).toMatchObject({ state: 'open' })
+    expect(h.reports()).toHaveLength(0)
+    // The peer's reply comes back over the relay into the task that sent the call.
+    const call = sent[0]!
+    expect(
+      await h.d.handleRelayAgentMsg({
+        trustedFromAgentId: 'bot-remote',
+        orgId: TEST_ORG,
+        toAgentId: 'bot-a',
+        text: 'REMOTE-RESULT',
+        coords: { platform: 'slack', channel: 'C1' },
+        hopCount: 2,
+        deliveryId: 'remote-reply-1',
+        originSessionId: 'sid-remote-1',
+        originCoords: { platform: 'slack', channel: 'C1', thread: '200.1' },
+        deliveryKind: 'session-reply',
+        lineageReplyTo: call.originSessionId,
+        ...(withIds ? { messageId: 'msg-remote-reply-1', messageKind: 'reply', inReplyTo: call.messageId } : {})
+      })
+    ).toMatchObject({ delivered: true, childSessionId: child })
+    await vi.waitFor(() => expect(told(h.rt.hosts, 'REMOTE-RESULT')).toBe(1), WAIT)
     await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.includes(finished(child)))).toBe(true), WAIT)
     await h.settled()
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)

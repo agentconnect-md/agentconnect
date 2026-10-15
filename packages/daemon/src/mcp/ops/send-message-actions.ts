@@ -234,7 +234,8 @@ async function callPeerSession(
     text: parseArgs(messageField, args.message),
     channel: ctx.channel,
     ...(needsReply ? { needsReply: true } : {}),
-    targetSessionId: sessionId
+    targetSessionId: sessionId,
+    ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
   })
   if (!wake.delivered) return { ok: true, wake }
   return {

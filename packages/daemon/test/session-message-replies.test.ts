@@ -501,6 +501,76 @@ describe('A → B1 ← C: replies addressed to the message they answer (send-mes
       await run.daemon.stop()
     }
   })
+
+  it('keeps a replayed tool call into an existing session one message, with its first receipt', async () => {
+    const run = await boot()
+    try {
+      const b1 = await openB1(run)
+      await settle()
+      const ctx = {
+        agentId: C,
+        platform: 'webchat',
+        isDm: false,
+        channel: `wc-${C}`,
+        thread: '100.1',
+        deliveryThread: '100.1',
+        tools: [],
+        integrations: []
+      }
+      // The bridge's call id for one MCP request, as a replay of that request carries it again.
+      const deps = { ...run.d.mcp.deps, canRun: () => true, callId: 'nonce-1:7' }
+      const args = {
+        action: 'callAgent',
+        toAgent: { agentId: B, needsReply: true },
+        sessionId: b1.key,
+        message: 'the replayed tool call'
+      }
+      const first = await executeTool(ctx, 'sendMessage', args, deps)
+      expect(first).toMatchObject({ ok: true, wake: { delivered: true, targetSession: b1.key } })
+      expect(await executeTool(ctx, 'sendMessage', args, deps)).toEqual(first)
+      await vi.waitFor(async () => expect(await run.fromSource(b1.key, `sid-${C}`)).toHaveLength(1), WAIT)
+      // Its answer ends C's wait, and a replay after it does not open that wait again.
+      await vi.waitFor(
+        () => expect(run.d.collab.childSessionLinks.get(b1.key)).toMatchObject({ replyState: 'queued-for-parent' }),
+        WAIT
+      )
+      expect(await executeTool(ctx, 'sendMessage', args, deps)).toEqual(first)
+      expect(run.d.collab.childSessionLinks.get(b1.key)).toMatchObject({ replyState: 'queued-for-parent' })
+      await settle()
+      expect(await run.fromSource(b1.key, `sid-${C}`)).toHaveLength(1)
+      expect(run.prompts.get(B)!.filter((text) => text.includes('the replayed tool call'))).toHaveLength(1)
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
+  it('ends a caller’s wait only with a reply to the message it waits on', async () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const run = await boot(scaffold([A, B, C, D]), async (agent, text) => {
+      if (agent === B && text.includes('HOLD')) await held
+      return 'ok.'
+    })
+    try {
+      const b1 = await openB1(run)
+      await settle()
+      expect((await run.call(C, { targetSessionId: b1.key, needsReply: true, text: 'HOLD first' })).delivered).toBe(
+        true
+      )
+      expect((await run.call(C, { targetSessionId: b1.key, needsReply: true, text: 'second' })).delivered).toBe(true)
+      const [m1, m2] = (await run.fromSource(b1.key, `sid-${C}`)).map((m) => m.messageId)
+      const link = () => run.d.collab.childSessionLinks.get(b1.key)
+      expect(link()).toMatchObject({ parentSessionId: `sid-${C}`, replyState: 'awaiting', messageId: m2 })
+      expect((await run.replyFrom(b1, m1!, 'answer one')).delivered).toBe(true)
+      expect(link()).toMatchObject({ replyState: 'awaiting', messageId: m2 })
+      expect((await run.replyFrom(b1, m2!, 'answer two')).delivered).toBe(true)
+      expect(link()).toMatchObject({ replyState: 'queued-for-parent', messageId: m2 })
+    } finally {
+      release()
+      await settle()
+      await run.daemon.stop()
+    }
+  })
 })
 
 describe('a replayed new-session call (send-message-guide.md §8.6)', () => {

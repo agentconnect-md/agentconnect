@@ -15,7 +15,7 @@ import { localMemoryHome } from '../src/memory/home.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { SessionManager } from '../src/session/session-manager.js'
-import { TASK_START_WRAPPER } from '../src/session/subsession-coordinate.js'
+import { LEGACY_TASK_START_WRAPPER } from '../src/session/subsession-coordinate.js'
 import type { AssistantPlace } from '../src/store/assistant-items.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 
@@ -244,7 +244,7 @@ describe('an owning session’s running tasks in the standing summary', () => {
       usesMetaSystemPrompt: () => false
     } as any
     const manager = () => new SessionManager({ store: s, hostFor: async () => host, agentById: () => agent, memory })
-    /** A task started from `parent`, its session titled as a task's first message titles it; `legacy` uses the pre-rename wrapper. */
+    /** A task started from `parent`, its session titled by its task; `legacy` titles it as a released daemon did, by its wrapped message. */
     const delegate = async (parent: string, id: string, now: number, task?: string, legacy = false) => {
       const child = sessionKey('slack', 'D0ALICE', `subsession:${id}`, 'bot-a')
       await s.assistantSubsessions.open({
@@ -267,10 +267,7 @@ describe('an owning session’s running tasks in the standing summary', () => {
           lastDeliveredTs: null,
           updatedAt: now
         })
-        await s.setSessionTitle(
-          child,
-          `${legacy ? 'From your own main conversation, as a background sub-session:' : TASK_START_WRAPPER} ${task}`
-        )
+        await s.setSessionTitle(child, legacy ? `${LEGACY_TASK_START_WRAPPER} ${task}` : task)
       }
       return child
     }

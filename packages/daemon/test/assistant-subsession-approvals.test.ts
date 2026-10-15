@@ -131,7 +131,7 @@ async function world(
     hostKey: OWNER,
     outwardSessionId: 'sid-sub',
     builtinSystemToolCallIds: new Set<string>(),
-    entry: { msg: { text: 'From your own session, as a background task: fix it' } }
+    entry: { msg: { text: 'From your own main conversation, as a background sub-session: fix it' } }
   } as unknown as Pending
   pending.set(pendingTurnKey(OWNER, ACP), p)
   const subsessionApprovalRoute = vi.fn(async () => ('route' in over ? over.route : routeTo(slackPlace())))
@@ -623,7 +623,10 @@ describe('a sub-session’s permission request in the conversation it belongs to
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    await w.store.setSessionTitle(w.p.plan.sessionKey, 'From your own session, as a background task: fix it')
+    await w.store.setSessionTitle(
+      w.p.plan.sessionKey,
+      'From your own main conversation, as a background sub-session: fix it'
+    )
     void w.coordinator.onAcpPermission(OWNER, ACP, params())
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
@@ -760,10 +763,8 @@ describe('the approval queue names the conversation a sub-session asks from', ()
 })
 
 describe('the name a sub-session’s cards give it', () => {
-  it.each([
-    ['From your own session, as a background task: '],
-    ['From your own main conversation, as a background sub-session: ']
-  ])('uses the title, else the task without the wrapper %j, truncated, else none', (wrapped) => {
+  it('uses the title, else the task without a released daemon’s wrapper, truncated, else none', () => {
+    const wrapped = 'From your own main conversation, as a background sub-session: '
     expect(subsessionLabel('Fix the flaky test', `${wrapped}anything`)).toBe('Fix the flaky test')
     // The first-message title a sub-session is born with is the wrapper, so its task is read from the message.
     expect(subsessionLabel(`${wrapped}fix the f…`, `${wrapped}fix the flaky test and open a PR`)).toBe(

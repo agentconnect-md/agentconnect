@@ -200,7 +200,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
       return nak(msg.deliveryId, 'unsupported')
     }
 
-    // send-message-guide.md §9.3: an older target gets a session message as the pre-id delivery it understands.
+    // send-message-guide.md §9.3: an older target gets the pre-id delivery; once the supported daemon floor advertises session-message-v1, this and the framing below go and the relay only forwards.
     const sessionMessage =
       (msg.messageId === undefined && msg.messageKind === undefined && msg.inReplyTo === undefined) ||
       conn.supports(RD_SESSION_MESSAGE_V1)

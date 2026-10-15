@@ -12507,6 +12507,11 @@ export class Daemon {
       })
       const admission = await admitted
       if (!admission.accepted) return record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
+      await this.collab.notePeerReplyAdmitted({
+        fromAgentId: msg.trustedFromAgentId,
+        ...(msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {}),
+        ...(msg.lineageReplyTo !== undefined ? { lineageReplyTo: msg.lineageReplyTo } : {})
+      })
       this.log.info(
         `relay: rd/agentmsg/fwd lineage reply ${msg.trustedFromAgentId} → ${msg.toAgentId} (${origin.key}) delivery=${msg.deliveryId}`
       )

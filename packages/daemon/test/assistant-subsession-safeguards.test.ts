@@ -414,30 +414,6 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
     await daemon.stop()
   })
 
-  it('rewrites a report kept from before the task rename to the current messageTask call', async () => {
-    const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
-    const caller = await seedCaller(d)
-
-    const res = await pauseWith(d, rt, () => d.collab.messageAgent(delegation(caller)))
-    await settled()
-    const key = res.targetSession
-    const oldHint = `To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.`
-    const kept = JSON.parse((await rowOf(d, key)).endReport)
-    kept.text = kept.text.replace(continueHint(key), oldHint)
-    await d.store.assistantSubsessions.db.query(
-      'UPDATE assistant_subsession SET endReport = ? WHERE agentId = ? AND childSessionKey = ?',
-      [JSON.stringify(kept), 'bot-a', key]
-    )
-
-    d.agents.get('bot-a').pause = false
-    await d.collab.resendSubsessionReports(['bot-a'])
-    await settled()
-    expect(reports()).toHaveLength(2)
-    expect(body(reports()[1]!.msg.text)).toContain(continueHint(key))
-    expect(reports()[1]!.msg.text).not.toContain('messageSubsession')
-    await daemon.stop()
-  })
-
   it('gives up a report refused three times, with a WARN naming the sub-session and why', async () => {
     const { daemon, d, rt, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(d)

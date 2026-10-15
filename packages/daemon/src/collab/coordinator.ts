@@ -180,18 +180,16 @@ const continueHint = (key: string): string =>
 /** What replaces the hint where the report lands in a later session of the place, which cannot message the task. */
 const ELSEWHERE_HINT =
   'It belongs to an earlier session of this conversation, so it cannot be given more work from here; start a new task if more is needed.'
-// A report kept from before the task rename still carries the old hint, so both forms are replaced.
+/** A report landing in a later session swaps the continue hint for {@link ELSEWHERE_HINT}. */
 const withoutContinueHint = (text: string): string =>
   text.replace(
-    /To give it more work in the same context, call sendMessage with \{"action":"(?:messageTask|messageSubsession)"[^\n]*?\}\./,
+    /To give it more work in the same context, call sendMessage with \{"action":"messageTask"[^\n]*?\}\./,
     ELSEWHERE_HINT
   )
-/** A report kept from before the task rename names the removed messageSubsession action, so its owner gets the current call. */
-const withCurrentContinueHint = (text: string): string =>
-  text.replace(
-    /To give it more work in the same context, call sendMessage with \{"action":"messageSubsession","sessionId":"([^"\n]+)"[^\n]*?\}\./,
-    (_match, key: string) => continueHint(key)
-  )
+
+/** Whether a reply to `inReplyTo` answers what a wait is on: its own message, or any where either names none. */
+const answers = (link: { messageId?: string }, inReplyTo: string | undefined): boolean =>
+  link.messageId === undefined || inReplyTo === undefined || link.messageId === inReplyTo
 
 /** The one report a task's work round ends with (send-message-guide.md §8.5). */
 function subsessionRoundReport(
@@ -401,6 +399,8 @@ export class CollabCoordinator {
       deliveryId?: string
       dispatchError?: string
       remote?: boolean
+      /** The session message the wait is on (send-message-guide.md §9.3): only a reply to it ends the wait. */
+      messageId?: string
     }
   >()
 
@@ -945,10 +945,7 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: this.renderInput(
-        callMeta,
-        `${elsewhere ? withoutContinueHint(text) : withCurrentContinueHint(text)}\n\n${REPORT_ANSWER_LANGUAGE}`
-      ),
+      text: this.renderInput(callMeta, `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`),
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],
@@ -1343,7 +1340,8 @@ export class CollabCoordinator {
           rowUpdatedAtAtAdmission: null,
           replyRequested: req.needsReply === true,
           replyState: 'awaiting',
-          remote: true
+          remote: true,
+          ...(messageId !== undefined ? { messageId } : {})
         })
       }
       return record(remote)
@@ -1449,7 +1447,8 @@ export class CollabCoordinator {
         rowUpdatedAtAtAdmission: (await this.host.store().getSession(targetSession))?.updatedAt ?? null,
         replyRequested: needsReply,
         replyState: 'awaiting',
-        deliveryId
+        deliveryId,
+        ...(messageId !== undefined ? { messageId } : {})
       })
     }
     // send-message-routing-rework.md §3.2/§8.6: the wake of a paired call is the authority; the platform echo reconciles onto this durable record.
@@ -1636,7 +1635,7 @@ export class CollabCoordinator {
           ? await refuse(PEER_SESSION_NOT_FOUND, PEER_SESSION_NOT_FOUND_MESSAGE)
           : await refuse(admitted.reason)
       }
-      this.noteSessionCallLink(admitted.key, originSessionId, req.toAgentId, needsReply, deliveryId, false)
+      this.noteSessionCallLink(admitted.key, originSessionId, req.toAgentId, needsReply, deliveryId, false, messageId)
       this.host
         .log()
         .info(
@@ -1676,7 +1675,15 @@ export class CollabCoordinator {
         ? await refuse(PEER_SESSION_NOT_FOUND, PEER_SESSION_NOT_FOUND_MESSAGE)
         : await refuse(remote.reason ?? 'offline')
     }
-    this.noteSessionCallLink(remote.targetSession, originSessionId, req.toAgentId, needsReply, deliveryId, true)
+    this.noteSessionCallLink(
+      remote.targetSession,
+      originSessionId,
+      req.toAgentId,
+      needsReply,
+      deliveryId,
+      true,
+      messageId
+    )
     return await observe('collaboration.delivery.admitted', remote, deliveryId)
   }
 
@@ -1687,8 +1694,11 @@ export class CollabCoordinator {
     agentId: string,
     replyRequested: boolean,
     deliveryId: string,
-    remote: boolean
+    remote: boolean,
+    messageId: string
   ): void {
+    // A replayed submission is the same message, so a reply already admitted for it still counts.
+    if (this.childSessionLinks.get(key)?.messageId === messageId) return
     if (this.childSessionLinks.size >= 2000) this.childSessionLinks.clear()
     this.childSessionLinks.set(key, {
       parentSessionId,
@@ -1697,7 +1707,8 @@ export class CollabCoordinator {
       replyRequested,
       replyState: 'awaiting',
       deliveryId,
-      ...(remote ? { remote: true } : {})
+      ...(remote ? { remote: true } : {}),
+      messageId
     })
   }
 
@@ -1984,10 +1995,13 @@ export class CollabCoordinator {
   private async markChildParentReply(
     childSessionKey: string,
     parentSessionId: string,
-    state: 'queued-for-parent' | 'failed'
+    state: 'queued-for-parent' | 'failed',
+    inReplyTo?: string
   ): Promise<void> {
     const existing = this.childSessionLinks.get(childSessionKey)
     if (existing && existing.parentSessionId !== parentSessionId) return
+    // A reply to another message leaves the wait on this one, as a remote reply does (notePeerReplyAdmitted).
+    if (state === 'queued-for-parent' && existing?.replyState === 'awaiting' && !answers(existing, inReplyTo)) return
     const child = await this.host.store().getSession(childSessionKey)
     // Track an unsolicited reply too: `requested` stays false, while the parent can still see
     // that a real reply was queued instead of mistaking it for an outstanding request.
@@ -2001,8 +2015,33 @@ export class CollabCoordinator {
       replyState: state,
       ...(existing?.deliveryId ? { deliveryId: existing.deliveryId } : {}),
       ...(existing?.dispatchError ? { dispatchError: existing.dispatchError } : {}),
-      ...(existing?.remote ? { remote: true } : {})
+      ...(existing?.remote ? { remote: true } : {}),
+      ...(existing?.messageId !== undefined ? { messageId: existing.messageId } : {})
     })
+  }
+
+  /** send-message-guide.md §9.5: a reply admitted from another daemon ends the wait its answered message opened here, as a local reply does. */
+  async notePeerReplyAdmitted(reply: {
+    fromAgentId: string
+    inReplyTo?: string
+    lineageReplyTo?: string
+  }): Promise<void> {
+    const sent =
+      reply.inReplyTo !== undefined
+        ? await this.host
+            .store()
+            .sessionMessages.sent(reply.inReplyTo)
+            .catch(() => undefined)
+        : undefined
+    const source = reply.inReplyTo !== undefined ? sent?.senderSessionId : reply.lineageReplyTo
+    if (source === undefined) return
+    for (const [key, link] of this.childSessionLinks) {
+      if (link.parentSessionId !== source || link.agentId !== reply.fromAgentId || link.replyState !== 'awaiting')
+        continue
+      // A pre-id peer's reply names no message, so it answers the remote call it returns for.
+      if (sent ? link.messageId === sent.messageId : link.remote === true)
+        this.childSessionLinks.set(key, { ...link, replyState: 'queued-for-parent' })
+    }
   }
 
   /** A queued parent report dropped before it ran never reaches the parent, so its link stops promising it. */
@@ -2420,7 +2459,7 @@ export class CollabCoordinator {
         kind: 'reply'
       })
     const delivered = async (targetSession: string): Promise<ReplyToSessionResult> => {
-      await this.markChildParentReply(callerKey, answered.sourceSessionId, 'queued-for-parent')
+      await this.markChildParentReply(callerKey, answered.sourceSessionId, 'queued-for-parent', inReplyTo)
       // §9.5: the first delivered reply settles the message's obligation; later ones are still delivered.
       if (settles)
         await store.sessionMessages.settle(inReplyTo, 'replied', this.host.clock().now()).catch(() => undefined)
