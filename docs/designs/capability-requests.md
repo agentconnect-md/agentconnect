@@ -1,7 +1,8 @@
 # Capability Requests
 
-**Status:** Design, third revision (2026-10-15): per-platform cards with Decline (§4.4), the
-settlement reminder (§4.7), secret delivery without a restart (§4.9). Nothing is implemented yet.
+**Status:** Design, fourth revision (2026-10-15): per-platform cards with Decline (§4.4), the
+settlement reminder (§4.7), secret delivery without a restart (§4.9); asker context and delivery
+keys per origin, settlement generations (review of #3048). Nothing is implemented yet.
 
 **In one sentence:** when an agent finds it cannot do what it was asked because of how it is set up,
 it says what it is missing and why, hands the people present a link, and once someone with the
@@ -139,7 +140,9 @@ requestCapability({
   the agent is told it was declined, by whom, and any note left with it.
 - **One open request per agent and target.** The key is `(agentId, kind, target)`, where the target
   is the provider, skill, repository, connection or secret name, or the settings field. A second
-  request returns the open one and adds the new conversation to its list of places to wake (§4.7).
+  request returns the open one and adds the new conversation to it as **another origin, with its
+  own asker context** (§4.3). Deduplication merges what is asked for, never the authority of the
+  conversations waiting for it.
 - **A cap per conversation**: at most 3 open requests started from one session, so a confused
   agent cannot flood a channel with links.
 
@@ -162,23 +165,32 @@ visibility, sharing, integrations and triggers are not things an agent asks for.
 
 A Control Plane table `capability_request`:
 
-| Column                   | Meaning                                                                                                                    |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `id`                     | uuid                                                                                                                       |
-| `orgId`, `agentId`       |                                                                                                                            |
-| `kind`, `target`         | The deduplication key with `agentId`, unique among open rows                                                               |
-| `want`                   | The validated JSON                                                                                                         |
-| `reason`                 | The agent's sentence, stored as untrusted text                                                                             |
-| `askedByUserId`          | The person whose turn made the request (assistant-mode.md §5.5's per-turn asker), null when nobody is behind it            |
-| `origins`                | The sessions to wake when it settles, each with session id and daemon-side session key; first is the one that asked        |
-| `status`                 | `open` → `completed` / `declined` / `expired` / `withdrawn`                                                                |
-| `outcome`                | On `completed`: the change as the Control Plane observed it (§4.6). On `declined`: the decider and optional note           |
-| `settledBy`              | A console user, or — for a Decline clicked in a chat by someone not linked to one — the platform identity and display name |
-| `wakes`                  | Per origin: `pending` / `delivered` / `gone`, with the attempt count (§4.7)                                                |
-| `createdAt`, `expiresAt` | 7 days                                                                                                                     |
+| Column                   | Meaning                                                                                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                     | uuid                                                                                                                                               |
+| `orgId`, `agentId`       |                                                                                                                                                    |
+| `kind`, `target`         | The deduplication key with `agentId`, unique among open rows                                                                                       |
+| `want`                   | The validated JSON                                                                                                                                 |
+| `reason`                 | The agent's sentence, stored as untrusted text                                                                                                     |
+| `origins`                | The conversations waiting for it, in the order they asked; each with its session id, daemon-side session key and **its own asker context** (below) |
+| `generation`             | Starts at 1; Reopen increments it (§4.5). Every decision and wake names the generation it belongs to                                               |
+| `status`                 | `open` → `completed` / `declined` / `expired` / `withdrawn`                                                                                        |
+| `outcome`                | On `completed`: the change as the Control Plane observed it (§4.6). On `declined`: the decider and optional note                                   |
+| `settledBy`              | A console user, or — for a Decline clicked in a chat by someone not linked to one — the platform identity and display name                         |
+| `wakes`                  | Per origin and generation: `pending` / `delivered` / `gone`, with the attempt count (§4.7)                                                         |
+| `createdAt`, `expiresAt` | 7 days                                                                                                                                             |
 
 The daemon forwards the tool call on its CP socket (`capability/request`, request/reply), carrying
-the session's coordinates and the asker. The CP answers with the row's id and its link.
+the session's coordinates and the asker context. The CP answers with the row's id and its link.
+
+**An origin's asker context** is the daemon's `TurnAskers` for the turn that called the tool,
+captured at the call (`readAskersFor`, assistant-mode.md §5.5): every person the turn's messages
+speak for — console users and platform members by bot (`ReadAsker`), several when messages were
+folded into the turn — and whether some of the turn has nobody behind it. It is stored as given,
+per origin, including an explicit nobody, and never widened: a second conversation that joins the
+request adds its own origin with its own context, so Bob's conversation never continues with
+Alice's authority. The request page shows each origin's people for display; the first origin's
+people head it as "asked by".
 
 ### 4.4 The card, per platform
 
@@ -224,7 +236,7 @@ back is enough. That is why the platforms that decline URL elicitation can still
 | Slack                                      | Block Kit: section text, a context line with the asker, an actions block with a `url` button and a Decline button, as Slack's URL consent card already lays out (`slack/render.ts` `buildUrlConsentCard`)                                                                                                       | Button `action_id` carries the request id; `block_id` carries the shared status target so the relay can route an HTTP-mode click (`encodeSharedSlackStatusTarget`). The `url` button's own `block_actions` is acked and ignored | `chat.update` in place                                                                   |
 | Discord                                    | Embed plus a component row: a style-5 link button and a Decline button with a `custom_id` (`discord/render.ts` `buildStatusComponents` already mixes them)                                                                                                                                                      | `InteractionCreate` on the `custom_id` (≤ 100 chars)                                                                                                                                                                            | Message edit in place                                                                    |
 | Feishu/Lark                                | Interactive card: an `open_url` button and a callback button (`feishu/render.ts`)                                                                                                                                                                                                                               | `card.action.trigger`, over the relay in shared mode or the WS client in direct mode                                                                                                                                            | Card update in place                                                                     |
-| Telegram                                   | Text plus an inline keyboard with a `url` button and a Decline `callback_data` button. Today's `InlineButton` is `{ text, callbackData }` only (`telegram/connection.ts`); it gains an optional `url`, which the Bot API accepts in the same keyboard                                                           | `callback_query` with `cr:<requestId>:d`, within the 64-byte limit                                                                                                                                                              | `editMessageText` in place                                                               |
+| Telegram                                   | Text plus an inline keyboard with a `url` button and a Decline `callback_data` button. Today's `InlineButton` is `{ text, callbackData }` only (`telegram/connection.ts`); it gains an optional `url`, which the Bot API accepts in the same keyboard                                                           | `callback_query` with `cr:<requestId>:<generation>:d`, within the 64-byte limit                                                                                                                                                 | `editMessageText` in place                                                               |
 | Google Chat                                | Card v2 with an `onClick.openLink` button and an action button. Today's cards use action buttons only; the link button is new                                                                                                                                                                                   | The card action, routed by the relay like an elicitation click                                                                                                                                                                  | `patchCards` in place, under the per-project write budget (`googlechat/write-budget.ts`) |
 | QQ                                         | Text with the link and "reply `1` to decline". QQ bot buttons need separate platform approval, so it has no buttons (`qq/elicit-card.ts`)                                                                                                                                                                       | A numbered reply, claimed like an elicitation answer (`claimReply`)                                                                                                                                                             | No message edit: a short follow-up message                                               |
 | Linear, and any platform without the facet | No card. The tool's result gives the agent the sentence with the link to put in its own reply                                                                                                                                                                                                                   | Console only                                                                                                                                                                                                                    | Nothing is rewritten; the agent's continuation is the visible signal                     |
@@ -247,13 +259,15 @@ turn of the agent there, never a bot. This is assistant drafts' rule (`assistant
 - A clicker who may not decline gets the platform's private reply where it has one (Slack
   ephemeral, Telegram callback answer, Discord ephemeral) and nothing changes.
 - An editor who disagrees with a decline can **Reopen** it from the request page, which clears the
-  24-hour memory (§4.1).
+  24-hour memory (§4.1) and starts a new generation (§4.5).
 
 #### 4.4.4 The click path
 
 A Decline never settles anything on the daemon. The daemon verifies the clicker, then sends
-`capability/decide { requestId, decision: 'decline', by }` to the Control Plane (request/reply). The
-Control Plane settles the row with a compare-and-set on `status = 'open'` — the first answer from any
+`capability/decide { requestId, generation, decision: 'decline', by }` to the Control Plane
+(request/reply). The generation comes from the card's control, so a click on a card from an earlier
+generation can never settle a reopened request. The Control Plane settles the row with a
+compare-and-set on `status = 'open' AND generation = <generation>` — the first answer from any
 surface wins, as for permission requests — and answers `settled` or `already_settled`. Everything
 visible then follows from the settlement (§4.7): the card is rewritten and the session is woken by
 the same frame a console decision produces. With the Control Plane unreachable, the clicker is told
@@ -296,7 +310,10 @@ dropped when the rewrite succeeds or the request has been settled for 7 days.
   it, and offers **Forward**: a DM to the responsible user (or a chosen editor) through the existing
   linked-DM path, else an Activity entry.
 - **Decline** with an optional note, which the agent is shown as the decider's words (§4.7).
-  **Reopen** on a declined request, for an editor. **Withdraw** is the agent's own: a later turn may
+  **Reopen** on a declined request, for an editor: it keeps the id and the link, sets the status
+  back to `open`, increments `generation`, rewrites the request's cards back to their open form with
+  the new generation in their controls, and starts the new generation's wakes from `pending`.
+  **Withdraw** is the agent's own: a later turn may
   call `withdrawCapabilityRequest` when it no longer needs it.
 - The agent's Activity tab (assistant mode) and the agent page list open requests, so they are found
   without the link.
@@ -339,8 +356,9 @@ The frame is `session/capability-settled` (CP → daemon), request/reply, shaped
 ```ts
 {
   agentId, sessionId, sessionKey,              // the origin
-  requestId,
+  requestId, generation,
   status: 'completed' | 'declined' | 'expired',
+  askers: TurnAskers,                          // this origin's asker context, as stored (§4.3)
   summary: string,                             // what was asked, as the CP words it from `want`
   outcome: string,                             // CP-computed; for a secret, its name and route only
   by?: { name: string },                       // the decider's display name
@@ -359,8 +377,17 @@ The frame is `session/capability-settled` (CP → daemon), request/reply, shaped
    `dispatchPullRequestFeedback`: a `NormalizedMessage` with `source: 'system'`, `trigger: 'auto'`,
    `conversationContinuation: true`, the session's own delivery thread (`wakeThreadFields`), and
    `requireDurable`, so it lands in the durable inbox before the daemon answers `accepted` and a
-   restart replays it rather than losing it. Its delivery key is `capability:<requestId>`, so a
-   re-sent frame is a duplicate, not a second turn.
+   restart replays it rather than losing it. Its delivery key is
+   `capability:<requestId>:<generation>:<originSessionId>`. The durable inbox keys every row by
+   delivery id across the whole store and treats a conflicting insert as an accepted duplicate
+   (`store/local-store.ts`, `INSERT OR IGNORE INTO inbox`), so the key must be unique per origin
+   and per generation: two origins on one daemon each get their reminder, a re-sent frame for the
+   same origin is a duplicate rather than a second turn, and a completion after Reopen cannot
+   collide with the earlier decline's reminder.
+   The message carries the origin's `askers` on itself (a `capabilityWake` field of the normalized
+   message), and the inbox persists the message whole, so a replay after restart still knows whom
+   it speaks for. The join wake's in-memory `joinWakeOpeners` map is not the model: it is lost on
+   restart. The daemon accepts only askers whose bots are this agent's integrations.
 4. **Answers** `accepted`, or a deferral reason. Answering is about the inbox, not the turn: the
    reminder is accepted once it is durable, even if the session is mid-turn.
 
@@ -370,17 +397,21 @@ The frame is `session/capability-settled` (CP → daemon), request/reply, shaped
   card change and then the agent's reply. It does not pass the place's trigger — a mention-only
   channel still gets the continuation, as with code-host feedback — and it is not attributed to
   anyone as a sender.
-- **It keeps the asker.** For assistant mode's permission rules (assistant-mode.md §5.5), the
-  turn's asker is the request's `askedByUserId`, the person the original turn was serving, so what
-  the agent may read and share when it continues is what it could when it asked. A request with no
-  asker continues with nobody's authority, as a scheduled turn does.
+- **It keeps that origin's askers.** The reminder is a message no person sent, so for assistant
+  mode's permission rules (assistant-mode.md §5.5) it speaks for its opener, the way a background
+  task's messages do: `openerOf` returns the `askers` the message carries. The turn therefore reads
+  and shares for exactly the people that origin's original turn served — several if several asked,
+  members by their bot even when they have no console account — and an origin with nobody behind it
+  continues with nobody's authority, as a scheduled turn does. If people's messages are folded into
+  the reminder's turn, they join it as they would any turn.
 - **Mid-turn**, it queues behind the current turn as a follow-up; it never steers a running turn.
   **Paused**, it is held in the inbox like any message and runs on resume. The deferral `paused` lets
   the Control Plane show "the agent is paused" on the request page.
 - **A session that is gone** (deleted, or reclaimed past retention and not reopenable) answers
   `not_found`. The Control Plane marks that origin `gone` and shows the settlement only in Activity;
   the card rewrite already told the people in the place.
-- **Several origins** are each woken, the one that asked first. Each gets its own reminder.
+- **Several origins** are each woken, the one that asked first. Each gets its own reminder, with
+  its own delivery key and its own askers; none inherits another's.
 - **Retries.** A deferred wake stays `pending` on the request and is offered again with backoff, as
   the pull-request feedback service does when a send is not accepted; after 24 hours it is marked
   `gone`.
@@ -616,15 +647,16 @@ key-server.md) and is a non-goal here.
 
 **P1 — the loop, settings and tools**
 
-1. `capability_request` table, the CP request/reply, settlement predicates for `agent-settings`,
-   `mcp-server`, `skill`; re-evaluation on spec re-projection.
+1. `capability_request` table with per-origin asker contexts and the settlement generation, the
+   CP request/reply, settlement predicates for `agent-settings`, `mcp-server`, `skill`;
+   re-evaluation on spec re-projection.
 2. `requestCapability` / `withdrawCapabilityRequest` on the bridge; the result's message for
    card and no-card platforms; patrol filter; caps.
 3. The request page, reusing the agent configuration and tools dialogs; Forward, Decline, Reopen.
 4. `CapabilityCardFacet` with its Slack implementation (link + Decline, rewrite on settlement), the
    daemon's `capability_card` rows, and `capability/decide`.
-5. `session/capability-settled`: card rewrite, durable reminder, its fixed texts, ordering after the
-   upsert ack, retries.
+5. `session/capability-settled`: card rewrite, durable reminder keyed per origin and generation and
+   carrying that origin's askers, its fixed texts, ordering after the upsert ack, retries.
 6. §4.8 item 1: `mcpServers` changes forget live runtime sessions.
 7. Behind the `capability-requests` flag, offered to agents in assistant mode first.
 
