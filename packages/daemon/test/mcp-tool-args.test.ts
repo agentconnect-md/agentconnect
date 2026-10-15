@@ -5,7 +5,7 @@ import { CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, toolsForIntegrations } fro
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
-import { STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -77,6 +77,7 @@ const advertised: ToolDescriptor[] = [
   ...ASSISTANT_ITEM_TOOLS,
   PROPOSE_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,
+  LIST_TASKS_TOOL,
   STOP_TASK_TOOL
 ]
 

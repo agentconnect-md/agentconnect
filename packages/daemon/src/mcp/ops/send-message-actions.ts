@@ -17,10 +17,16 @@ import {
   USER_TARGETS,
   type MessagingDeps
 } from './messaging.js'
-import { START_TASK_GUIDE_TEXT } from './task-guide.js'
+import { DELEGATE_TASK_GUIDE_TEXT } from './task-guide.js'
 
 /** The operations `sendMessage` performs, one required `action` each (send-message-guide.md §3.1). */
-export const SEND_MESSAGE_ACTIONS = ['callAgent', 'startTask', 'messageTask', 'replyToSession', 'postMessage'] as const
+export const SEND_MESSAGE_ACTIONS = [
+  'callAgent',
+  'delegateTask',
+  'messageTask',
+  'replyToSession',
+  'postMessage'
+] as const
 export type SendMessageAction = (typeof SEND_MESSAGE_ACTIONS)[number]
 
 const isAction = (value: unknown): value is SendMessageAction =>
@@ -29,7 +35,7 @@ const isAction = (value: unknown): value is SendMessageAction =>
 /** Each action's target requirement and accepted keys, besides `action` and `message`. */
 const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; accepts: readonly string[] }> = {
   callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'platform', 'integrationId', 'sessionId'] },
-  startTask: { requires: [], accepts: [] },
+  delegateTask: { requires: [], accepts: [] },
   messageTask: { requires: ['taskId'], accepts: ['taskId'] },
   replyToSession: { requires: ['messageId'], accepts: ['messageId'] },
   postMessage: {
@@ -51,7 +57,7 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     sessionId: requiredString('sessionId').optional(),
     message: messageField
   }),
-  startTask: z.strictObject({ action: action('startTask'), message: messageField }),
+  delegateTask: z.strictObject({ action: action('delegateTask'), message: messageField }),
   messageTask: z.strictObject({
     action: action('messageTask'),
     taskId: requiredString('taskId'),
@@ -77,7 +83,7 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
 const OVERVIEW = '{"tool":"sendMessage"}'
 const MISSING_ACTION =
   'missing required argument `action`. Nothing was sent and no agent was woken. Use an action listed by ' +
-  'getToolGuide for this daemon. The complete tool supports callAgent, startTask, messageTask, replyToSession, ' +
+  'getToolGuide for this daemon. The complete tool supports callAgent, delegateTask, messageTask, replyToSession, ' +
   `and postMessage. Call getToolGuide ${OVERVIEW} to get the arguments and examples, then retry sendMessage with the ` +
   'appropriate action'
 const UNKNOWN_ACTION =
@@ -90,15 +96,19 @@ const strip = (pointer: string) => pointer.replace(/\.$/, '')
 const guided = (text: string, action: SendMessageAction) =>
   `${text}. Call getToolGuide {"tool":"sendMessage","action":"${action}"} for the required arguments, then retry`
 
-/** The `startTask` call to make instead, with the `startTask` guide inline, never echoing the message (send-message-guide.md §3.5). */
-const START_TASK_INSTEAD =
-  'Retry as:\n  sendMessage {"action":"startTask","message":"<the same message>"}\nstartTask guide:\n' +
-  START_TASK_GUIDE_TEXT
+/** The `delegateTask` call to make instead, with the `delegateTask` guide inline, never echoing the message (send-message-guide.md §3.5). */
+const DELEGATE_TASK_INSTEAD =
+  'Retry as:\n  sendMessage {"action":"delegateTask","message":"<the same message>"}\ndelegateTask guide:\n' +
+  DELEGATE_TASK_GUIDE_TEXT
+/** `startTask`, the action's release-candidate name, has no alias: its call fails with the exact `delegateTask` call. */
+const START_TASK_RENAMED =
+  'action `startTask` is now `delegateTask`, with the same arguments. Nothing was sent and no task was started. ' +
+  DELEGATE_TASK_INSTEAD
 const TASK_ID_NEEDED = (unexpected: readonly string[]) =>
-  'action `messageTask` requires `taskId`, the nonempty `taskId` a startTask call in this session returned' +
+  'action `messageTask` requires `taskId`, the nonempty `taskId` a delegateTask call in this session returned' +
   (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
-  '. Nothing was sent, and a missing, null or empty `taskId` never starts a task. To start a new background task, ' +
-  START_TASK_INSTEAD
+  '. Nothing was sent, and a missing, null or empty `taskId` never starts a task. To delegate a new task, ' +
+  DELEGATE_TASK_INSTEAD
 /** §3.5: a reply names the message it answers, never a session; a missing, empty or session-addressed one is an argument error. */
 const MESSAGE_ID_NEEDED = (unexpected: readonly string[]) =>
   'action `replyToSession` requires `messageId`' +
@@ -124,11 +134,11 @@ const POST_SELECTOR_WITHOUT_CHANNEL = guided(
 )
 const SELF_SESSION =
   'action `callAgent` with `sessionId` reaches another agent’s session, never one of yours. Nothing was sent and no ' +
-  'agent was woken. To message a background task of yours, call getToolGuide ' +
+  'agent was woken. To message a task you delegated, call getToolGuide ' +
   '{"tool":"sendMessage","action":"messageTask"} and retry with action `messageTask` and its `taskId`'
 const SELF_CALL =
   'action `callAgent` with your own agent id needs `channel`. Work of your own that needs no conversation is a ' +
-  `background task. Nothing was sent and no agent was woken. ${START_TASK_INSTEAD}\nTo work visibly in a channel ` +
+  `delegated task. Nothing was sent and no agent was woken. ${DELEGATE_TASK_INSTEAD}\nTo work visibly in a channel ` +
   'instead, keep callAgent and add `channel`'
 
 /** The validated action and the target-shaped arguments its existing delivery path takes. */
@@ -145,11 +155,12 @@ export interface ValidatedSendMessage {
 export function validateSendMessageAction(ctx: SessionContext, args: Record<string, unknown>): ValidatedSendMessage {
   const named = args.action
   if (!present(named)) throw new ToolArgumentError([MISSING_ACTION])
+  if (named === 'startTask') throw new ToolArgumentError([START_TASK_RENAMED])
   if (!isAction(named)) throw new ToolArgumentError([UNKNOWN_ACTION])
   const spec = ACTION_KEYS[named]
   const keys = Object.keys(args).filter((key) => key !== 'action' && key !== 'message')
   const unexpected = keys.filter((key) => !spec.accepts.includes(key))
-  // §8.1: a missing, null or empty task id is an argument error that names startTask, never a start.
+  // §8.1: a missing, null or empty task id is an argument error that names delegateTask, never a start.
   if (named === 'messageTask' && (typeof args.taskId !== 'string' || args.taskId.trim() === ''))
     throw new ToolArgumentError([TASK_ID_NEEDED(unexpected)])
   // §9.4: a reply without a nonempty `messageId`, or addressed by `sessionId`, names nothing to answer.
@@ -183,7 +194,7 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
               '`toAgent` as {"agentId":"…","needsReply":true}'
           ]
         : []),
-      ...(named === 'startTask' && unexpected.includes('taskId')
+      ...(named === 'delegateTask' && unexpected.includes('taskId')
         ? ['sends more to an existing task only as action `messageTask` with its `taskId`']
         : [])
     ]
@@ -200,7 +211,7 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
     if (Array.isArray(args.toUser) && !present(args.channel))
       throw new ToolArgumentError([`${USER_ARRAY_NEEDS_CHANNEL}. ${strip(sendMessageGuidePointer('postMessage'))}`])
   }
-  if (named === 'startTask') return { action: named, delivery: { toAgent: ctx.agentId, message: args.message } }
+  if (named === 'delegateTask') return { action: named, delivery: { toAgent: ctx.agentId, message: args.message } }
   if (named === 'messageTask') return { action: named, delivery: {}, taskId: args.taskId as string }
   if (target?.toAgent === ctx.agentId && typeof args.sessionId === 'string') throw new ToolArgumentError([SELF_SESSION])
   if (target?.toAgent === ctx.agentId && !present(args.channel)) {
@@ -273,7 +284,7 @@ export const TASK_MESSAGED =
   'is done. It reports back into this session when this round of its work ends. End this turn and wait; do not ' +
   'send the same message again.'
 
-/** The `messageTask` receipt, in the `startTask` receipt's family (send-message-guide.md §8.6). */
+/** The `messageTask` receipt, in the `delegateTask` receipt's family (send-message-guide.md §8.6). */
 async function messageTask(
   ctx: SessionContext,
   taskId: string,

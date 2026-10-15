@@ -73,7 +73,7 @@ function card(widgets: Record<string, unknown>[]): unknown[] {
 }
 
 /** The console link: the URL is ours, so only it may render as a link. */
-const link = (url: string): string => `<a href="${cardText(url)}">Open the background work</a>`
+const link = (url: string): string => `<a href="${cardText(url)}">Open the task</a>`
 
 function intro(asker: SubsessionAsker): Record<string, unknown> {
   const who = subsessionAskerText(asker.agentName, asker.title, clampTo)

@@ -3360,7 +3360,12 @@ export const SessionRelationDto = z.object({
   /** Session-scoped display projection. It does not grant access to the Agent. */
   agentName: z.string().nullable(),
   platform: z.string(),
-  title: z.string().nullable()
+  title: z.string().nullable(),
+  subsession: z
+    .boolean()
+    .describe(
+      'True when the linked session is a task (a delegated task, a patrol or an approved proposal) running on a `subsession:` thread rather than a conversation of its own.'
+    )
 })
 
 export const SessionDetailDto = z.object({

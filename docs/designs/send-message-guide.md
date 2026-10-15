@@ -1,25 +1,26 @@
 # `sendMessage` Actions, Tasks, and On-Demand Tool Guide
 
-**Status:** Revised: background sub-sessions are replaced by tasks (§2.1), started with
-`startTask`, messaged with `messageTask`, and stopped by their owning session with `stopTask`
-(§8.7); a self `callAgent` needs a channel and opens a session there; and replies are
-addressed to a message, not to a session (§9.3–§9.6). Both halves are implemented: tasks (§12
-items 1–4, recorded in §7.8 and §8.9) and message-addressed replies (§12 items 5–9, recorded in
-§7.8, §8.9 and §9.8). Visible text no longer says sub-session (§11 questions 10–11): "task"
-means only `startTask` work, a patrol and approved work are named as such, and "background work"
-covers all three; internal names are unchanged.
+**Status:** Revised: background sub-sessions are replaced by delegated tasks (§2.1), handed off
+with `delegateTask`, messaged with `messageTask`, stopped by their owning session with
+`stopTask` (§8.7), and listed with `listTasks` (§8.7); a self `callAgent` needs a channel and
+opens a session there; and replies are addressed to a message, not to a session (§9.3–§9.6).
+Both halves are implemented: delegated tasks (§12 items 1–4 and 11, recorded in §7.8 and §8.9)
+and message-addressed replies (§12 items 5–9, recorded in §7.8, §8.9 and §9.8). Visible text
+no longer says sub-session (§11 questions 10–11): "task" is the umbrella for a session's
+delegated tasks, the patrols and approved proposals that report to it; what the runtime itself
+reports for the current turn is "this turn's tasks"; internal names are unchanged.
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
-delivery argument names and semantics remain, except that background work of the agent's own
-is a task (`startTask`, then `messageTask` with its `taskId`), and that `replyToSession` names
+delivery argument names and semantics remain, except that long work of the agent's own
+is a delegated task (`delegateTask`, then `messageTask` with its `taskId`), and that `replyToSession` names
 the message it answers by `messageId`. Calls without `action` are rejected before any
 delivery, with instructions to read the guide and retry. This is an intentional
 input-contract change, not transparent backward compatibility.
 
 The design also includes two explicit capability extensions. Section 8: a session can
-message its own tasks across rounds of work, tasks can message their owning session throughout
-their lifetime, and the owning session can stop them. Section 9 adds explicit peer-session
+message its own delegated tasks across rounds of work, they can message their owning session
+throughout their lifetime, and the owning session can stop and list them. Section 9 adds explicit peer-session
 targeting and message-addressed replies: every message one session sends another carries an
 id and trusted metadata, a reply names that id, and the session's origin only records who
 created it. It replaces the baseline single-effective-origin reply restriction without
@@ -50,10 +51,10 @@ schema or the top-level union. An explicit action makes the intended operation
 visible while retaining one tool name and the existing delivery arguments.
 
 The current tool also gives one shape several meanings. A self-call without a channel
-starts background work; a self-call with a channel starts visible work in that channel;
+starts work in the background; a self-call with a channel starts visible work in that channel;
 both are spelled `toAgent: <own id>`. The background form was called a sub-session, which
 suggests a session hierarchy in which a conversation could hang under a piece of work.
-Section 2.1 replaces that with tasks.
+Section 2.1 replaces that with delegated tasks.
 
 ## 2. Goals and non-goals
 
@@ -67,13 +68,14 @@ Goals:
    through `getToolGuide`, including runnable argument examples with `action`.
 5. Make old calls fail with actionable migration instructions rather than execute
    with inferred intent.
-6. Use `startTask` to start a task of the current session, `messageTask` to message one it
-   owns, and `replyToSession` for the task to message its owning session, across rounds of
-   work (§8).
+6. Use `delegateTask` to hand off a delegated task of the current session, `messageTask` to
+   message one it owns, and `replyToSession` for the task to message its owning session, across
+   rounds of work (§8).
 7. Let an agent call itself only into a channel, opening a session of that conversation
    that references the caller; a self-call without a channel is rejected with the exact
-   `startTask` call to make instead (§3.1, §3.5).
-8. Let the owning session stop its own task with `stopTask` (§8.7).
+   `delegateTask` call to make instead (§3.1, §3.5).
+8. Let the owning session stop its own delegated task with `stopTask` (§8.7), and list all of
+   its tasks with `listTasks` (§8.7).
 9. Allow an authorized caller to address an existing peer session, any number of times (§9.2).
 10. Address every reply to the message it answers: a message from another session carries an
     id and trusted metadata naming its source, `replyToSession` takes that `messageId`, and the
@@ -106,10 +108,13 @@ Three things are kept apart:
   session there; a conversation with two agents has two sessions. Sessions come from inbound
   routing or from the agent's own scheduled work, never from a free-standing "start a
   session" action.
-- A **task** is a step of one session, beside its tool calls, that runs in the background in
-  a context of its own. The session that started it is its **owning session**.
+- A **task** runs in the background in a context of its own and belongs to one session, its
+  **owning session**, to which it reports. A **delegated task** is a step the session hands
+  off, beside its tool calls, with `delegateTask`. Assistant mode's patrols (assistant-mode.md
+  §5.9) and approved proposals (§5.10) are tasks of the conversation they report to too.
 
-A task has these properties:
+In this document, "task" alone means a delegated task unless a patrol or an approved proposal
+is named. A delegated task has these properties:
 
 1. **Owned.** Only the owning session starts it, messages it, and stops it. The task's
    progress, questions, and results go back to the owning session, which speaks for it; none
@@ -138,7 +143,7 @@ Neither is ownership: the conversation can continue after the caller's topic, on
 | Belongs to           | Its owning session                         | Its conversation                                       |
 | Conversation         | None                                       | The channel or the peer conversation                   |
 | Caller's relation    | Owner                                      | Sender of messages it may answer; creator if it was    |
-| Started by           | `startTask` from the owning session        | Inbound routing, or a `callAgent` that reaches it      |
+| Started by           | `delegateTask` from the owning session     | Inbound routing, or a `callAgent` that reaches it      |
 | Further input        | `messageTask` from the owning session only | The conversation, or `callAgent` with `sessionId` (§9) |
 | Reporting            | Automatic, each round, to the owner        | Only what a call requests with `needsReply`            |
 | Stopping             | `stopTask` from the owning session         | That conversation's own stop rules                     |
@@ -149,12 +154,19 @@ conversation to end with the work or lets unrelated talk leak into it; a child t
 only to its parent cannot be joined by anyone else; and every level of nesting needs its own
 stop and lifetime conventions. A task is a step and has none of these.
 
-Assistant mode's patrols (assistant-mode.md §5.9) and approved work (§5.10) also run in the
-background, but no session starts them as one of its steps: a patrol is the agent's own check of
-an item, and approved work starts when its proposal is approved. Neither is a task. They keep
-their one-report lifecycle, are not started with `startTask` or continued with `messageTask`, and
-are not stopped with `stopTask`. Tasks, patrols and approved work together are the agent's
-**background work**, the name the console and the limits that count all of them use.
+A patrol and an approved proposal are tasks too, but no session hands them off as one of its
+steps: a patrol is the agent's own check of an item, and an approved proposal runs when it is
+approved. They keep their one-report lifecycle, are not started with `delegateTask` or continued
+with `messageTask`, and are not stopped with `stopTask`; a person stops one from the console.
+`listTasks` and the console's Tasks tab show all three, and the limits that count tasks count
+all three.
+
+**Runtime subagents and delegated tasks.** The agent's runtime may have its own subagent or
+Task tool, and it reports long shell commands and its own subagents to AgentConnect as this
+turn's tasks, which the console only displays. The division of labour is fixed: work the agent
+splits up and can finish within this turn uses the runtime's own subagent tool; long work that
+spans turns, may run a long time, or that people should be able to see and stop is a delegated
+task. The `delegateTask` description and guide say so (§3.2, §3.4).
 
 ## 3. Design
 
@@ -163,8 +175,8 @@ are not stopped with `stopTask`. Tasks, patrols and approved work together are t
 | `action`         | Purpose                                                                    | Required target       | Optional arguments                                                                                                             |
 | ---------------- | -------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `callAgent`      | Call a peer, optionally in an existing session, or yourself into a channel | `toAgent`             | `channel` or `sessionId` (mutually exclusive), `platform` and `integrationId` with `channel`; a self target requires `channel` |
-| `startTask`      | Start a background task of your current session                            | None                  | None                                                                                                                           |
-| `messageTask`    | Send more work or an answer to a task your current session started         | `taskId`              | None                                                                                                                           |
+| `delegateTask`   | Hand off long work to a delegated task of your current session             | None                  | None                                                                                                                           |
+| `messageTask`    | Send more work or an answer to a task your current session delegated       | `taskId`              | None                                                                                                                           |
 | `replyToSession` | Answer a message another session sent you                                  | `messageId`           | None                                                                                                                           |
 | `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachment`, `platform`, `integrationId`, subject to existing branch rules                                          |
 
@@ -190,23 +202,30 @@ session as its creator (§9.6). The calling session does not own it, cannot mess
 conversation.
 
 A self `callAgent` without `channel` is rejected before effects. The error gives the exact
-`startTask` call to make instead and the `startTask` guide's rules (§3.5): work of your own
-that needs no conversation is a task. A self `callAgent` with `sessionId` is rejected as today.
+`delegateTask` call to make instead and the `delegateTask` guide's rules (§3.5): work of your own
+that needs no conversation is a delegated task. A self `callAgent` with `sessionId` is rejected as today.
 Do not silently reinterpret either or keep a second spelling for starting a task. A plain
 `postMessage` can seed idle context but does not explicitly activate a model turn. Preserve
 these three distinctions, task, visible self-call, and post; the `callAgent` guide includes a
-visible self-call example, and the description steers work without a channel to `startTask`.
+visible self-call example, and the description steers work without a channel to `delegateTask`.
 
-`startTask` requires `action` and `message` and accepts nothing else. It starts a new task of
-the current session, owned by it through trusted caller identity, and returns the task's
+**Delegating versus the runtime's own subagents.** `delegateTask` is for long work that spans
+turns, may run a long time, or that people should be able to see and stop: a delegated task
+reports on its own, appears in the console's Tasks tab, and can be messaged and stopped. Work the
+agent splits up and can finish within this turn belongs to the runtime's own subagent or Task
+tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). The description and
+the `delegateTask` guide state this division.
+
+`delegateTask` requires `action` and `message` and accepts nothing else. It starts a new
+delegated task of the current session, owned by it through trusted caller identity, and returns the task's
 `taskId`. `messageTask` requires `action`, `message`, and a nonempty `taskId`: it sends into an
 existing task, and the daemon must verify that the current session is its owning session. A
 missing, invalid, unrelated, or unavailable task never falls back to starting one; a
-`messageTask` without `taskId` is an argument error that points to `startTask`.
+`messageTask` without `taskId` is an argument error that points to `delegateTask`.
 
 Neither task action accepts `toAgent`, `channel`, `thread`, `platform`, `integrationId`,
 `attachment`, `sessionId`, `messageId`, or `needsReply`. A task reports completion or failure
-automatically; a task cannot start tasks, and active per-agent concurrency limits still apply.
+automatically; a task cannot delegate tasks, and active per-agent concurrency limits still apply.
 Every input the owning session sends a task is a message whose metadata names the owning
 session as its source, so the task answers it with `replyToSession` for progress, questions,
 and results. Message delivery alone must not mark the task's work complete; §8 specifies that
@@ -259,9 +278,10 @@ Draft description:
 ```text
 Send outside your current conversation. Required action: callAgent asks a peer to work
 (sessionId continues an existing peer session); calling yourself needs channel and starts
-visible work in that channel. startTask starts a background task of this session for long
-work you do yourself; messageTask sends a task you started more (taskId). A task reports each
-round's outcome automatically, and stopTask stops it. replyToSession answers a message another
+visible work in that channel. delegateTask hands long work that spans turns, or that people
+should see and stop, to a background task of this session; split work you finish this turn
+belongs to your runtime's own subagents. messageTask sends a task more (taskId). A task
+reports each round's outcome automatically, and stopTask stops it. replyToSession answers a message another
 session sent you, by its messageId, as often as needed; replies are not broadcast. postMessage
 reaches a person, channel, or another existing thread and starts no work. For your current
 conversation, write your ordinary reply. To get a peer's result, use toAgent: {agentId: "...",
@@ -270,26 +290,26 @@ without action fail without sending anything.
 ```
 
 The shipped wording may differ where the runtime matrix (§10) shows a model needs it, for
-example to start a task before exploring long work itself; it stays within 1024 characters.
+example to delegate a task before exploring long work itself; it stays within 1024 characters.
 
 The input schema is a single object, with `action` and `message` required. `taskId` is
 required for `messageTask`, `messageId` for `replyToSession`, and `sessionId` is optional for
 `callAgent`:
 
-| Field           | Type                                                                           | Meaning                                                     |
-| --------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| `action`        | enum: `callAgent`, `startTask`, `messageTask`, `replyToSession`, `postMessage` | Operation to perform; required                              |
-| `message`       | string                                                                         | Message body in Markdown; required                          |
-| `toAgent`       | string or `{agentId, needsReply}`                                              | AgentConnect agent to call; `callAgent` only                |
-| `toUser`        | string or string array                                                         | Human platform member id(s)                                 |
-| `channel`       | string                                                                         | Destination channel or chat                                 |
-| `thread`        | string                                                                         | Existing thread root, for a bare-channel `postMessage` only |
-| `sessionId`     | string                                                                         | Existing peer session, for `callAgent` only                 |
-| `taskId`        | string                                                                         | A task of the current session, for `messageTask` only       |
-| `messageId`     | string                                                                         | The message being answered, for `replyToSession` only       |
-| `attachment`    | string                                                                         | Received image name from an `[attached: …]` marker          |
-| `platform`      | enum of the agent's platforms                                                  | Target platform                                             |
-| `integrationId` | string                                                                         | Bot selection when multiple integrations apply              |
+| Field           | Type                                                                              | Meaning                                                         |
+| --------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `action`        | enum: `callAgent`, `delegateTask`, `messageTask`, `replyToSession`, `postMessage` | Operation to perform; required                                  |
+| `message`       | string                                                                            | Message body in Markdown; required                              |
+| `toAgent`       | string or `{agentId, needsReply}`                                                 | AgentConnect agent to call; `callAgent` only                    |
+| `toUser`        | string or string array                                                            | Human platform member id(s)                                     |
+| `channel`       | string                                                                            | Destination channel or chat                                     |
+| `thread`        | string                                                                            | Existing thread root, for a bare-channel `postMessage` only     |
+| `sessionId`     | string                                                                            | Existing peer session, for `callAgent` only                     |
+| `taskId`        | string                                                                            | A delegated task of the current session, for `messageTask` only |
+| `messageId`     | string                                                                            | The message being answered, for `replyToSession` only           |
+| `attachment`    | string                                                                            | Received image name from an `[attached: …]` marker              |
+| `platform`      | enum of the agent's platforms                                                     | Target platform                                                 |
+| `integrationId` | string                                                                            | Bot selection when multiple integrations apply                  |
 
 Preserve existing accepted field types for existing forms. `taskId` and `messageId` must be
 nonempty strings; a null or empty value is an argument error, never an instruction to start a
@@ -304,12 +324,12 @@ The complete proposal has five actions. Keep them and the `sessionId`, `taskId`,
 turn.
 Today's `toolsForIntegrations` descriptor is built from integrations, not fresh
 per-turn authority. `getToolGuide` may tailor availability notes from trusted
-current context; runtime authorization remains authoritative. Publish each new capability only when its runtime contract is implemented: `startTask`,
-`messageTask`, and `stopTask` (§8), and explicit peer targeting with message-addressed replies
+current context; runtime authorization remains authoritative. Publish each new capability only when its runtime contract is implemented: `delegateTask`,
+`messageTask`, `stopTask`, and `listTasks` (§8), and explicit peer targeting with message-addressed replies
 (§9). Do not advertise a target field that the daemon will silently ignore.
 
 Keep messaging and its guide available without IM integrations: postless agent
-calls, tasks, and replies to messages need no platform posting connection. A self
+calls, delegated tasks, `listTasks`, and replies to messages need no platform posting connection. A self
 `callAgent` needs a channel and so a posting connection. Retain existing runtime-specific and
 read-only patrol tool gates. Any later conditional injection needs proof that resumed
 sessions and changing turn origins cannot lose a valid operation.
@@ -333,7 +353,7 @@ Never infer a missing action, silently choose another action based on the target
 or discard conflicting target fields. The action is a checked contract, not an
 annotation. An adapter may remove the already-validated `action` before passing
 arguments to the existing strict branch parser; it must preserve all other
-validation and the existing write/join wrappers. For `startTask`, construct the internal
+validation and the existing write/join wrappers. For `delegateTask`, construct the internal
 self-delegation from trusted caller identity and `message`. For `messageTask`, validate
 ownership and admit into that existing task instead of invoking the old origin-reply branch.
 For `replyToSession`, resolve `messageId` against the current session's received messages
@@ -344,7 +364,7 @@ Preserve the actual `isPlatformPost` predicate: it excludes both `toAgent` and
 `sessionId`, even when an agent call contains `channel`. Thus `postMessage` keeps
 the place-write/draft rule and join wrapper; `callAgent` with `channel` keeps its
 existing reach check and agent policy, without being newly routed through the
-ordinary-post draft/join path. `startTask`, `messageTask`, and `replyToSession` are
+ordinary-post draft/join path. `delegateTask`, `messageTask`, and `replyToSession` are
 session-only paths, even though their public arguments omit `toAgent`.
 Do not delegate them blindly to the old target inference or platform-post classifier.
 Likewise, `callAgent` with `sessionId` is an explicit peer call, not the old
@@ -358,7 +378,7 @@ error wording is outside the daemon's control. The advertised description and
 ### 3.4 `getToolGuide`
 
 ```text
-getToolGuide { tool: "sendMessage", action?: "callAgent" | "startTask" | "messageTask" | "replyToSession" | "postMessage" }
+getToolGuide { tool: "sendMessage", action?: "callAgent" | "delegateTask" | "messageTask" | "replyToSession" | "postMessage" }
 ```
 
 Without `action`, return the available operations, their required arguments, and
@@ -367,11 +387,13 @@ lookup. With `action`, return that operation's complete argument rules, examples
 and relevant platform/session restrictions. Every example includes `action`.
 
 The agent-call guide covers postless peers, existing peer sessions, repeated calls, and visible
-self-calls into a channel, and says that a self-call without a channel is a task. The
-`startTask` guide covers starting tasks, ordering them (start independent tasks together; start
-a task that needs another's result once that result arrives), automatic reporting, the
-no-nesting rule, and concurrency limits; the `messageTask` guide covers messaging a task and
-`stopTask`. The reply guide covers finding a message's id in the input, replying more than
+self-calls into a channel, and says that a self-call without a channel is a delegated task.
+The `delegateTask` guide opens with the division of labour (§3.1): split work you can finish
+within this turn goes to your runtime's own subagent tool; long work that spans turns, may run a
+long time, or that people should be able to see and stop is a delegated task. It then covers
+ordering tasks (delegate independent tasks together; delegate a task that needs another's
+result once that result arrives), automatic reporting, the no-nesting rule, and concurrency
+limits; the `messageTask` guide covers messaging a task, `stopTask`, and `listTasks`. The reply guide covers finding a message's id in the input, replying more than
 once, and why a reply needs no session id. The posting guide covers
 DMs, human mentions, channel roots, thread updates, and image forwarding. Keep platform
 capabilities and session availability consistent with the descriptor and authoritative
@@ -398,11 +420,11 @@ Example visible work by the same agent in a channel (a session of that conversat
 }
 ```
 
-Example starting a task:
+Example delegating a task:
 
 ```json
 {
-  "action": "startTask",
+  "action": "delegateTask",
   "message": "Investigate the flaky test in the background and report your findings."
 }
 ```
@@ -412,7 +434,7 @@ Example additional instructions to a task, running or previously completed:
 ```json
 {
   "action": "messageTask",
-  "taskId": "<taskId returned by startTask>",
+  "taskId": "<taskId returned by delegateTask>",
   "message": "Continue with the Windows failure and keep your earlier findings."
 }
 ```
@@ -462,8 +484,8 @@ owning session, consistently across starting, messaging, and recovery. Peer-sess
 lists the messages the session may still answer rather than claiming that the latest caller is
 the only one. Optional guide reading cannot replace these instructions.
 
-The guide distinguishes handles: `taskId` in the start receipt names the task and is what
-`messageTask`, `viewSessionStatus`, and `stopTask` accept; `sessionId` names an existing peer
+The guide distinguishes handles: `taskId` in the `delegateTask` receipt (and in `listTasks`)
+names the delegated task and is what `messageTask`, `viewSessionStatus`, and `stopTask` accept; `sessionId` names an existing peer
 session for `callAgent`; `messageId` names a received message for `replyToSession`. Do not teach
 agents to reconstruct ids or copy one kind into another's field. Sending a task reply is messaging, not a signal to close its work round
 (§8).
@@ -482,7 +504,7 @@ MCP `isError` path, rather than a successful result with a migration notice:
 ```text
 sendMessage: missing required argument `action`. Nothing was sent and no agent was woken.
 Use an action listed by getToolGuide for this daemon. The complete tool supports callAgent,
-startTask, messageTask, replyToSession, and postMessage.
+delegateTask, messageTask, replyToSession, and postMessage.
 Call getToolGuide {"tool":"sendMessage"} to get the arguments and examples, then retry
 sendMessage with the appropriate action.
 ```
@@ -498,21 +520,35 @@ Call getToolGuide {"tool":"sendMessage","action":"replyToSession"} for the requi
 then retry with a valid action and target.
 ```
 
-A self `callAgent` without `channel` returns the call to make and the `startTask` guide itself,
-so the agent can retry without a lookup:
+A self `callAgent` without `channel` returns the call to make and the `delegateTask` guide
+itself, so the agent can retry without a lookup:
 
 ```text
 sendMessage: action `callAgent` with your own agent id needs `channel`. Work of your own that
-needs no conversation is a background task. Nothing was sent. Retry as:
-  sendMessage {"action":"startTask","message":"<the same message>"}
-startTask guide:
-<the rules and example getToolGuide {"tool":"sendMessage","action":"startTask"} returns>
+needs no conversation is a delegated task. Nothing was sent. Retry as:
+  sendMessage {"action":"delegateTask","message":"<the same message>"}
+delegateTask guide:
+<the rules and example getToolGuide {"tool":"sendMessage","action":"delegateTask"} returns>
 To work visibly in a channel instead, keep callAgent and add `channel`.
 ```
 
 The error never echoes the supplied message body; the placeholder tells the agent to resend
-its own text. A `messageTask` without `taskId` likewise names the `startTask` call. A reply
-whose `messageId` is unknown, belongs to another session, or may not be answered is a runtime
+its own text. A `messageTask` without `taskId` likewise names the `delegateTask` call and
+carries its guide.
+
+`startTask`, the action's name in the v2.5.0 release candidates, has no alias. A call with
+`action: "startTask"` is an argument error before any effect, and its text gives the exact
+`delegateTask` call without echoing the body, for example:
+
+```text
+sendMessage: action `startTask` is now `delegateTask`, with the same arguments. Nothing was sent
+and no task was started. Retry as:
+  sendMessage {"action":"delegateTask","message":"<the same message>"}
+delegateTask guide:
+<the delegateTask guide>
+```
+
+A reply whose `messageId` is unknown, belongs to another session, or may not be answered is a runtime
 refusal with one wording (§9.4), not an argument error.
 
 Extend the existing self-correcting argument-error path from #2084. Errors include
@@ -535,7 +571,7 @@ Preserve draft receipts and partial/uncertain post outcomes. See the baseline co
 | Existing usage                                              | New behavior                                                                       |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Peer calls or self-calls with `channel`                     | Rejected without effects; read guide and add `action: "callAgent"`                 |
-| Self-call without `channel`                                 | Rejected without effects; the error gives the `startTask` call to make             |
+| Self-call without `channel`                                 | Rejected without effects; the error gives the `delegateTask` call to make          |
 | `sendMessage {sessionId, ...}`                              | Rejected without effects; use `action: "replyToSession"` with the `messageId`      |
 | `sendMessage {toUser, ...}` or `{channel, ...}`             | Rejected without effects; read guide and add `action: "postMessage"`               |
 | `stopSubsession {sessionId}`                                | Replaced by `stopTask {taskId}` with the owning-session authority in §8.7          |
@@ -550,7 +586,7 @@ There is no silent legacy execution path or optional-action transition period.
 Release notes must describe the required-field change for self-hosted deployments.
 Retaining argument names makes migration smaller but does not make old calls valid.
 Task examples must also remove the explicit `toAgent` and any feedback flag, since
-`startTask` derives the owner and reports automatically. A session that was mid-exchange at the
+`delegateTask` derives the owner and reports automatically. A session that was mid-exchange at the
 upgrade has no message ids for inputs received before it; §9.6 migrates its origin into one
 message record.
 
@@ -574,11 +610,11 @@ Acceptance checks:
   platform writes, wakes, session injections, approval requests, or joins.
 - Conflicting action/target fields fail before effects; existing forbidden field
   combinations remain forbidden.
-- `startTask` derives the owner and rejects extra target fields; `messageTask` requires
+- `delegateTask` derives the owner and rejects extra target fields; `messageTask` requires
   `taskId` and verifies the current session is the recorded owner. Both preserve automatic
   completion/failure reports and enforce the no-nesting and concurrency limits. A self
-  `callAgent` without `channel`, and a `messageTask` without `taskId`, fail with the exact
-  `startTask` call.
+  `callAgent` without `channel`, a `messageTask` without `taskId`, and an `action: "startTask"`
+  call fail with the exact `delegateTask` call.
 - A self `callAgent` with `channel` opens a session of that conversation whose input is a
   message from the caller and whose origin records the caller as creator; the caller cannot
   message or stop it as a task.
@@ -657,7 +693,7 @@ in §7.7, the same target, authority, delivery, bookkeeping, and receipt must re
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------- |
 | `toAgent: peer`, no channel                  | Postless, headless peer wake; current routing can reuse target context                                               | `callAgent` with the same target; no new-session guarantee                                           | M, C    |
 | Object `toAgent` with `needsReply`           | Requests reporting; trusted metadata carries the obligation                                                          | Same nested field and normalization under `callAgent`                                                | M, C, S |
-| `toAgent: self`, no channel                  | Fresh `subsession:<deliveryId>` coordinate, inherited parent context, no visible post                                | `startTask` constructs the same trusted self-delegation                                              | C       |
+| `toAgent: self`, no channel                  | Fresh `subsession:<deliveryId>` coordinate, inherited parent context, no visible post                                | `delegateTask` constructs the same trusted self-delegation                                           | C       |
 | `toAgent: peer` plus `channel`               | Attempts one channel-root post before wake, rendering a native mention when available                                | `callAgent` plus `channel`; retain target preflight and actual gateway behavior                      | M, C    |
 | `toAgent: self` plus `channel`               | Visible self-activation; requires a real provider post id and paired delivery evidence                               | Same `callAgent` form; a session of that conversation created by the caller, not a task              | M, C    |
 | Agent call plus `platform` / `integrationId` | Rejected by the strict agent branch                                                                                  | Accepted only with `channel`, choosing the post's platform and bot; the wake lands on that platform  | M, T    |
@@ -711,7 +747,7 @@ where the runtime enforces them, without adding a new fallback in the adapter.
 | Remote reply                     | Needs active inbound coordinates; uses `lineageReplyTo` and `deliveryKind: session-reply`, with existing remote admission/version fences              | Preserve; a durable id alone does not supply missing remote routing coordinates                                    | C    |
 | Feedback opt-in                  | `needsReply` sets standing/turn-scoped guidance; existing persisted obligation can remain sticky                                                      | Preserve; a new bare-id call does not prohibit explicit reports or necessarily clear previous obligations          | C, S |
 | Inferred successful report       | Outstanding `needsReply` wake can forward final prose; empty/no-response output becomes an explicit no-result report                                  | Preserve existing inference and duplicate suppression; do not label it an unimplemented future feature             | C    |
-| Inference exclusions             | No inference for plain no-reply calls, unrelated follow-up turns, suppressed output, resolved obligations, or outstanding background work             | Preserve exact guards; do not promise every final output is forwarded                                              | C    |
+| Inference exclusions             | No inference for plain no-reply calls, unrelated follow-up turns, suppressed output, resolved obligations, or a live background wake                  | Preserve exact guards; do not promise every final output is forwarded                                              | C    |
 | Failure reporting                | Requested peer dispatch failure can wake the parent; sub-session settlement/sweep reports unreported endings with existing admission/retry safeguards | Preserve existing handling and limits for tasks; do not promise infallible delivery                                | C    |
 | Companion tools                  | `viewSessionStatus` reads authorized delegated work; `stopSubsession` has separate main-conversation, human-authority, and lifecycle gates            | `viewSessionStatus` accepts `taskId`; `stopSubsession` becomes `stopTask` with the authority in §8.7               | C, S |
 
@@ -771,7 +807,7 @@ and policy wrappers cannot evade the no-effect migration error.
 
 1. Every call requires `action`; legacy calls fail before target lookup/effects and
    point to `getToolGuide`. The name and existing backend delivery paths remain.
-2. Postless self-delegation is spelled `startTask {message}` instead of `toAgent: self`; a
+2. Postless self-delegation is spelled `delegateTask {message}` instead of `toAgent: self`; a
    self `callAgent` without channel is rejected with that exact call as its repair. This
    changes input shape and vocabulary, not task execution or feedback.
 3. A flat shared descriptor and `getToolGuide` replace the top-level union and
@@ -790,15 +826,23 @@ or described as existing behavior.
 
 ### 7.8 Adapter implementation record
 
-Records the implementation on this branch, in this revision's names (`startTask`, `messageTask`,
-`taskId`, `stopTask`, and `replyToSession` by `messageId`). Decisions the sections above left open:
+Records the implementation on this branch, in this revision's names (`delegateTask`,
+`messageTask`, `taskId`, `stopTask`, `listTasks`, and `replyToSession` by `messageId`). Decisions
+the sections above left open:
+
+- **`startTask` was renamed before the stable release.** The action that hands off a task
+  shipped as `startTask` only in the v2.5.0 release candidates and was renamed `delegateTask`
+  before the stable release, together with the visible vocabulary of §11 questions 10–11. No
+  alias is kept: a `startTask` call is an argument error that gives the exact `delegateTask`
+  call (§3.5).
 
 - **Descriptor.** At the adapter stage the §3.2 draft shipped without its continuation and
   peer-session clauses, because §3.2 publishes each capability only once its runtime exists:
   784 characters of description, a 1668-character flat schema, and `sessionId` described for
   `replyToSession` only. The current revision ships the §3.2 draft with one change: the
-  `startTask` clause keeps the matrix-earned steering "for "fix this bug and open a PR", call it
-  before exploring, say it started, and end your turn". Measured for a Slack + Telegram agent,
+  `delegateTask` clause keeps the matrix-earned steering "for "fix this bug and open a PR", call
+  it before exploring, say it started, and end your turn", and states the division of labour with
+  the runtime's own subagents (§3.1). Measured for a Slack + Telegram agent,
   the description is 971 characters, the flat schema 1956, and `getToolGuide` description plus
   schema 486; `sessionId` is described for `callAgent` only, `taskId` for `messageTask`, and
   `messageId` for `replyToSession`.
@@ -807,11 +851,12 @@ Records the implementation on this branch, in this revision's names (`startTask`
   fails as an argument error (§8.9, §9.8).
 - **Task argument errors.** A `messageTask` whose `taskId` is missing, null, empty or not a
   string, and a self `callAgent` without `channel`, return §3.5's text: the exact
-  `sendMessage {"action":"startTask","message":"<the same message>"}` call, then the
-  `startTask` guide rendered as plain text (purpose, one line per rule, the example). Both
+  `sendMessage {"action":"delegateTask","message":"<the same message>"}` call, then the
+  `delegateTask` guide rendered as plain text (purpose, one line per rule, the example). Both
   guides live in `mcp/ops/task-guide.ts`, so the error and `getToolGuide` cannot drift. A
   `messageTask` carrying the old `sessionId` gets the same error, which also names `sessionId`
-  as not accepted; a `startTask` carrying `taskId` is told to use `messageTask`. A self
+  as not accepted; a `delegateTask` carrying `taskId` is told to use `messageTask`, and an
+  `action: "startTask"` call gets §3.5's rename error. A self
   `callAgent` with `sessionId` points to the `messageTask` guide. A `replyToSession` whose
   `messageId` is missing, null, empty or not a string, or that carries `sessionId`, returns §3.5's
   reply error: it names `messageId`, lists the rejected keys, says to reply with the id shown with
@@ -821,13 +866,13 @@ Records the implementation on this branch, in this revision's names (`startTask`
   it. Validation covers the key check, the per-action zod validator, the existing strict
   branch for `postMessage` (so `thread` and `toUser` array rules fail before any lookup),
   and the postless self-target check. The adapter then removes `action` (or, for
-  `startTask`, builds `{toAgent: <trusted caller>, message}`) for the unchanged delivery path;
+  `delegateTask`, builds `{toAgent: <trusted caller>, message}`) for the unchanged delivery path;
   `messageTask` goes to the task admission of §8.9 instead.
 - **Error text.** Every rejection is a `ToolArgumentError` through the #2084 path, so §3.5's
   sentences appear after `sendMessage: invalid arguments — ` and are followed by the
   accepted-arguments and received-keys lines. That path drops an issue's own leading tool name
   and a doubled final period. Every recognized action's argument error names its action guide,
-  except the two task errors above, which carry the `startTask` guide itself.
+  except the two task errors above, which carry the `delegateTask` guide itself.
   An unknown action is named by argument, not by its supplied value.
 - **Classification.** `isPlatformPost` is true only for `action: "postMessage"` (still
   excluding `toAgent` and `sessionId`), so `callAgent` with `channel`, both task actions and
@@ -837,11 +882,11 @@ Records the implementation on this branch, in this revision's names (`startTask`
   `availability`), and a `next` pointer; an action guide has the same fields plus `rules`
   and `examples` of `{use, arguments}`. Availability notes come from the session's
   integrations (platforms, direct-message and thread-update support) and from the session's
-  coordinate: inside a task, a patrol or approved work both task actions are marked
-  unavailable. The visible self-call example uses the session's own agent id. The guide shows
-  a task's progress question, and its replyToSession text calls an approved proposal's work
-  approved work, not a task (§11 question 11).
-- **Receipts and status.** The `startTask` and `messageTask` receipts carry `taskId` where the
+  coordinate: inside any task (a delegated task, a patrol or an approved proposal) both task
+  actions are marked unavailable. The visible self-call example uses the session's own agent
+  id. The guide shows a delegated task's progress question, and its replyToSession text names a
+  patrol and an approved proposal as such (§11 question 11).
+- **Receipts and status.** The `delegateTask` and `messageTask` receipts carry `taskId` where the
   self-delegation receipt carried `childSessionId`; a peer `callAgent`, with or without
   `channel` or `sessionId`, keeps `childSessionId`, because what it reaches is a session.
   `viewSessionStatus` takes exactly one of `taskId` and `sessionId` (the `childSessionId` of a
@@ -867,10 +912,10 @@ Records the implementation on this branch, in this revision's names (`startTask`
 
 **Status:** Implemented (§8.9), including message-addressed task replies (§9.8).
 
-The original [assistant-mode design §5.6](assistant-mode.md#56-background-work)
-identifies steering as re-delegating into the same background work and explicitly defers it.
-Complete that capability with two actions: `startTask` starts a task and `messageTask` messages
-an existing one by `taskId`. Every owner message is a message whose metadata names the owning
+The original [assistant-mode design §5.6](assistant-mode.md#56-tasks)
+identifies steering as re-delegating into the same task and explicitly defers it.
+Complete that capability with two actions: `delegateTask` hands off a delegated task and
+`messageTask` messages an existing one by `taskId`. Every owner message is a message whose metadata names the owning
 session as its source, so all task-to-owner messages use the existing `replyToSession` action
 on one of those messages' ids. No separate owner-message action is needed.
 
@@ -878,24 +923,24 @@ on one of those messages' ids. No separate owner-message action is needed.
 
 | Input                                                          | Behavior                                                              | Authorization                                                                        |
 | -------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `{action: "startTask", message}`                               | Start a new task of the current session and deliver its instructions  | Trusted caller identity; existing self-delegation, no-nesting, and concurrency gates |
+| `{action: "delegateTask", message}`                            | Start a new task of the current session and deliver its instructions  | Trusted caller identity; existing self-delegation, no-nesting, and concurrency gates |
 | `{action: "messageTask", taskId, message}`                     | Deliver into that existing task, running or retained after completion | The ownership record must name the current session as the owning session             |
 | `{action: "replyToSession", messageId, message}` from the task | Return progress, a question, or results to the owning session         | The answered owner message's metadata (§9.4), which names the owning session         |
 
-`startTask` accepts only `action` and `message`. `messageTask` requires a nonempty `taskId`;
-reject a missing, null, empty, or mistyped id as an argument error that names the `startTask`
+`delegateTask` accepts only `action` and `message`. `messageTask` requires a nonempty `taskId`;
+reject a missing, null, empty, or mistyped id as an argument error that names the `delegateTask`
 call, never treat it as starting. Both reject `toAgent`, `channel`, `thread`, `platform`,
 `integrationId`, `attachment`, `sessionId`, `messageId`, and `needsReply`.
 
 A supplied target that does not exist, is unavailable, or is not owned by the
 current session must fail; never fall back to starting another task. Do not infer
 starting from a lookup failure or use agent identity alone as proof of ownership.
-The distinction is deliberate: `startTask` requests new work in a new task; `messageTask`
+The distinction is deliberate: `delegateTask` requests new work in a new task; `messageTask`
 requests continuity in that exact retained context.
 
 ### 8.2 Persistent ownership, origin, and handles
 
-`startTask` returns the task's handle as `taskId`, which today's receipt carries as
+`delegateTask` returns the task's handle as `taskId`, which today's receipt carries as
 `childSessionId` and which contains the task's session key. The owning session passes it
 unchanged as `taskId` when messaging or stopping the task. Resolve a task key or outward id
 through the persistent task index and verify the recorded owning session against the
@@ -1011,7 +1056,7 @@ the owning session has finished processing it.
 
 ### 8.6 Unified receipts and retry behavior
 
-For `startTask`, preserve the existing self-delegation receipt fields and meanings, with the
+For `delegateTask`, preserve the existing self-delegation receipt fields and meanings, with the
 handle renamed: `ok`, `wake`, `taskId`, `reply`, `nextAction`, and explanatory `message`.
 For messaging an existing task, use that same result family: successful admission identifies
 the same task in `taskId` and `wake.targetSession`, with waiting/reporting
@@ -1060,24 +1105,48 @@ An id that is unknown, purged, or not owned by the calling session is refused wi
 words, so nothing about other sessions is revealed. Stopping a task moves no content, so a
 session marked by a private read (assistant-mode.md §5.5) may still do it. `stopTask` never
 stops a session reached by a self `callAgent` with `channel`: that session belongs to its
-conversation and follows its own stop rules. Patrols and approved proposals keep their
-existing stop paths.
+conversation and follows its own stop rules. `stopTask` accepts only a delegated task's
+`taskId`: patrols and approved proposals carry none and keep their existing stop paths, the
+console's Stop among them.
 
-Standing context reminds the owning session which tasks it has running, by id and label,
-refreshed on the next turn after one starts or ends, and states that it may stop one when it is
-no longer needed. The tool's description tells the agent to ask which task a person means
+Standing context reminds the owning session which delegated tasks it has running, by id and
+label, refreshed on the next turn after one starts or ends, and states that it may stop one when
+it is no longer needed. The tool's description tells the agent to ask which task a person means
 only when that is not clear.
+
+#### Listing tasks
+
+`listTasks` takes no arguments and lists the calling session's tasks: its delegated tasks, and
+the patrols and approved proposals that report to it. Each entry carries:
+
+| Field            | Meaning                                                                                 |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `taskId`         | Delegated tasks only: the handle `messageTask`, `stopTask` and `viewSessionStatus` take |
+| Kind             | Delegated task, patrol, or approved proposal                                            |
+| Label            | The task's label or the proposal's title                                                |
+| State            | Running, or how it ended                                                                |
+| Started          | When it started                                                                         |
+| Elapsed or ended | The running time so far, or when it ended                                               |
+| Handed back      | Whether it has handed back a result for its latest round                                |
+
+It is read-only and changes nothing. Its scope is exactly the running-tasks reminder's and
+§8.2's ownership: a delegated task appears only to the session the ownership record names, and
+a patrol or approved proposal only to the session it reports to; another session of the agent,
+including the one after `!new`, another agent and a task itself see none of them. Like the other
+task tools it needs no IM integration. It does not list this turn's tasks, which the runtime
+reports to the console rather than to the agent (§2.1).
 
 ### 8.8 Acceptance boundary
 
-`startTask` is adapted existing behavior; messaging an existing task, round-aware reporting,
-and owner stop are new runtime work. They may be reviewed separately, but publish the
-complete `startTask`, `messageTask`, and `stopTask` contract only when all of it works. The 586 tests in
+`delegateTask` is adapted existing behavior; messaging an existing task, round-aware
+reporting, owner stop and listing are new runtime work. They may be reviewed separately, but
+publish the complete `delegateTask`, `messageTask`, `stopTask`, and `listTasks` contract only
+when all of it works. The 586 tests in
 §7 verify the original baseline, not this extension.
 
 Required additional behavior tests:
 
-- `startTask` starts a task; `messageTask` with a valid id messages that same task. A
+- `delegateTask` starts a task; `messageTask` with a valid id messages that same task. A
   missing, null, empty, unknown, unavailable, or unowned id never starts a replacement.
 - The current session must be the task's recorded owning session, independent of
   active origin; other tasks, unrelated sessions of the same agent, and other agents are
@@ -1094,6 +1163,8 @@ Required additional behavior tests:
 - `stopTask` from the owning session succeeds on a person's turn, a task-report turn, a peer
   reply turn, and a scheduled turn; it is refused from the task itself, another task, another
   session of the agent, and another agent, in the same words as an unknown id.
+- `listTasks` lists the calling session's delegated tasks, patrols and approved proposals with
+  `taskId` on delegated tasks only, and nothing from another session, agent or task.
 - Pause/drain, queue limits, owner recovery, purged tasks, and uncertain
   receipts behave as specified, without starting extra work or granting unauthorized access.
 - Both messaging directions remain session-only; the owning session's ordinary response
@@ -1110,23 +1181,23 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
 - **Handle and receipt (decision).** `taskId` stays the task's session key, as §8.2 says, so
   the handle the model copies (and the report headers, running-tasks reminder and `stopTask`
   result that print it) contains the `subsession:` coordinate as an opaque string; the outward
-  id is accepted too, an ACP runtime id never. The `startTask`/`messageTask` receipt's
+  id is accepted too, an ACP runtime id never. The `delegateTask`/`messageTask` receipt's
   `wake.subsession: true` stays as the flag that marks a task receipt. Neither is presented as
   vocabulary: no guide, descriptor, error or report text calls the work a sub-session. §12's
   last sentence admits these two opaque values.
-- **Replays (decision).** A replayed `startTask` or new-session `callAgent` submission (same
+- **Replays (decision).** A replayed `delegateTask` or new-session `callAgent` submission (same
   MCP call id) returns its first receipt: in process from the submission's own outcome, and
   after a restart from the message its first delivery recorded at the target (the same task,
   or the same session), so it starts no second task or turn.
 - **Replies into tasks.** Only the owning session's reply to its task's message goes through
   `messageTask` admission; another session's reply to a task's message (for example the
   channel session a task's own `callAgent` with `channel` opened) is delivered like a peer's.
-  A reply to a patrol's or approved work's message is refused `not_authorized`, since each
+  A reply to a patrol's or approved proposal's message is refused `not_authorized`, since each
   runs once.
 
-- **Scope.** Rounds apply to tasks, the sessions `startTask` creates.
-  Approved work (assistant-mode §5.10) and a patrol (§5.9) run once and are never continued,
-  so they keep the one-report lifecycle in which their own report settles them.
+- **Scope.** Rounds apply to delegated tasks, the sessions `delegateTask` creates.
+  An approved proposal (assistant-mode §5.10) and a patrol (§5.9) run once and are never
+  continued, so they keep the one-report lifecycle in which their own report settles them.
 - **Round state.** The task's index row carries `round` (store schema v51). `open` is a
   running round that holds a slot; the round's report waits in `reporting`; `done` and `failed`
   are retained idle states that hold none. Every parent input carries its round in
@@ -1156,8 +1227,9 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   same way. A report that lands in its owning session is a `report` session message (§9.8) under
   an id minted when the report is claimed, so a re-send keeps it; its admission settles every
   open input of the task. One that lands in a later session of the place carries no id. A
-  patrol's one report is headed `[patrol ended]` and approved work's `[approved work ended]`;
-  a report persisted under the earlier `[sub-session ended]` header is still recognised. Each
+  patrol's one report is headed `[patrol ended]`, and an approved proposal's is headed
+  `[approved proposal ended]`; a report persisted under an earlier header, `[sub-session ended]`
+  or `[approved work ended]`, is still recognised. Each
   round's report has its own delivery
   identity. A joined input whose admission fails after the round's last turn ended leaves the
   round to the existing idle sweep. A clean turn end does not settle the round while the child
@@ -1183,27 +1255,29 @@ message for this background task:`, each followed by its text and the exact `rep
   and the pre-header wrappers of older rows, from a task's label. A task's standing reporting
   block, headed `# Reporting back to the session that started this task`, says to answer one of
   its owner's messages by id, that a reply does not end its work, and that the daemon reports
-  each round's end. The standing collaboration text teaches `startTask`, ordering independent and
-  dependent tasks, `messageTask` and `stopTask`.
+  each round's end. The standing collaboration text teaches `delegateTask` and when to use the
+  runtime's own subagents instead, ordering independent and dependent tasks, `messageTask`,
+  `stopTask` and `listTasks`.
 - **Stop.** `stopTask {taskId}` goes through the cancel core the console's Stop uses, whose
   interrupt drains the task's queued inputs. Authority is the index row alone: a delegation
-  row (never a patrol's, and never approved work's `subsession:task-` coordinate) whose
+  row (never a patrol's, and never an approved proposal's `subsession:task-` coordinate) whose
   recorded owner key and outward id are both the calling session's. Anything else — the task
   itself, a sibling, the session after `!new`, a recreated session on the same key, another
   agent, an unknown or purged id — gets `This session started no task with that id. Nothing was
 stopped.` No turn or sender gate remains; the stop is logged as the person whose message
   started the live turn, else as the agent itself (`isBot`). The tool is offered in every
-  session that can start a task, so in every session except a task, a patrol or approved
-  work, which now includes hook runs, scheduled runs and peer sessions. There is no alias
+  session that can delegate a task, so in every session except a task (delegated, patrol or
+  approved proposal), which now includes hook runs, scheduled runs and peer sessions. There is no alias
   for `stopSubsession` (§4). The stop note always names `messageTask`.
 - **Running tasks.** The reminder is built for every session that can own tasks and lists only
-  its tasks, newest first, by `taskId` and label, saying it may stop one with `stopTask` once it
-  is no longer needed; patrols and approved work are not listed.
-- **Patrols and approved work.** The replyToSession guide says that only a task may reply
-  any time; a patrol's or approved work's guide notes that its one reply to the message that
-  started it, at the end, settles it. Their starting input is a `call` session message from the
-  owning session (approved work's asks for a reply), so they answer it by id; their own
-  daemon report carries no id.
+  its delegated tasks, newest first, by `taskId` and label, saying it may stop one with
+  `stopTask` once it is no longer needed; patrols and approved proposals are not listed there,
+  but `listTasks` shows them (§8.7).
+- **Patrols and approved proposals.** The replyToSession guide says that only a delegated task
+  may reply any time; a patrol's or approved proposal's guide notes that its one reply to the
+  message that started it, at the end, settles it. Their starting input is a `call` session
+  message from the owning session (an approved proposal's asks for a reply), so they answer it
+  by id; their own daemon report carries no id.
 
 ## 9. Peer sessions and message-addressed replies — explicit capability extension
 
@@ -1292,7 +1366,7 @@ target's established output behavior and trusted delivery rules.
    daemon's terminal verify apply them again, as for an ordinary wake.
 2. On the owning daemon, `sessionId` resolves to a session of the agent named by `toAgent`: by
    its session key (the handle a call returned) or by its outward id, never by an ACP
-   id. A task, a patrol, and an approved proposal's work are refused, and so is the
+   id. A delegated task, a patrol, and an approved proposal are refused, and so is the
    caller's own session.
 3. The people on the calling turn may read the target session's conversation under the
    daemon's existing cross-conversation read rule — the one `getChannelHistory` and `recall`
@@ -1328,7 +1402,7 @@ submission is collapsed (§8.6).
 ### 9.3 Session messages and their metadata
 
 A **session message** is one input that one session delivers into another: a `callAgent` call,
-including into an existing session or a channel; a `startTask` or `messageTask` instruction;
+including into an existing session or a channel; a `delegateTask` or `messageTask` instruction;
 a `replyToSession` reply; and a task's automatic round report. People's platform messages and
 `postMessage` posts are not session messages and carry no message id; a person is answered in
 the conversation as today.
@@ -1479,7 +1553,7 @@ Records the implementation on this branch. Decisions the sections above left ope
   request id), so a transport replay keeps it and nobody can derive it; a call without `callId`
   gets `msg-` and a random UUID. A task input uses its own submission identity the same way. A
   round report's id is minted when the report is claimed and kept on the `reporting` row; a
-  patrol's or approved work's starting input mints one that rides its persisted call
+  patrol's or approved proposal's starting input mints one that rides its persisted call
   metadata. A delivery that arrives without an id — from a peer that predates ids, or an inbox
   row persisted before the upgrade — is recorded under `msg-` and a hash of its source agent and
   delivery id, the same on every replay, and marked legacy.
@@ -1566,7 +1640,7 @@ under every admitted runtime.
   call's arguments and runs the real action validators; it never posts, wakes an
   agent, or injects into a session.
 - **Prompts.** One prompt per case: ask a peer for a result (feedback must be
-  requested), start long work of your own in the background (a task), open visible work in
+  requested), start long work of your own in the background (a delegated task), open visible work in
   a channel, DM a person, post an update into an existing thread, reply to a received message, and give
   an existing task more work. One negative prompt asks for a reply in the current
   conversation, where no tool call is correct. The task prompts say "background task", never
@@ -1593,8 +1667,8 @@ no transition period (§4); nested field unions kept, with no top-level `needsRe
 (§3.2); the names `action`, `getToolGuide` and `replyToSession`; receipt shapes unchanged
 except the task handle and the reply's `inReplyTo` (§7.5, §9.4). They record the questions as
 raised against an earlier, compatibility-first revision. For the task revision, 7 and 8 are
-resolved (`startTask`; reject with the exact `startTask` call), 9 is deferred with §8.7 as
-written, and 10–11 are resolved by renaming visible text only.
+resolved (a separate start action, now `delegateTask`; reject with the exact call), 9 is
+deferred with §8.7 as written, and 10–11 are resolved by renaming visible text only.
 
 1. **Required `action` versus an unchanged contract.** The earlier revision kept every
    existing call valid; a survey of one production deployment found the old forms in
@@ -1620,26 +1694,33 @@ written, and 10–11 are resolved by renaming visible text only.
    `listChannelAgents`, `listAgents`, and `shareFile` also exceed the limit. They are
    out of scope unless the §10 baseline shows Codex drops oversized tools rather than
    truncating them.
-7. **Action name.** Resolved: `startTask` starts a task and `messageTask {taskId}` messages
-   one, instead of one start-or-message `messageTask`. The extra action costs description
+7. **Action name.** Resolved: `delegateTask` starts a delegated task and `messageTask {taskId}`
+   messages one, instead of one start-or-message `messageTask`. The start action shipped as
+   `startTask` in the v2.5.0 release candidates and was renamed before the stable release
+   (§7.8). The extra action costs description
    budget; the description stays under 1024 characters (§3.2).
 8. **Self-call without a channel.** Resolved: rejected, and the error returns the exact
-   `startTask` call and the `startTask` guide (§3.5). Running it as a task with a notice would
+   `delegateTask` call and the `delegateTask` guide (§3.5). Running it as a task with a notice would
    keep two spellings for one operation.
 9. **Owner stop on turns no person started.** Deferred: §8.7 stands as written, so a task
    report, a peer's reply, or a scheduled run may lead the owning session to stop a task.
    Revisit whether a peer's reply should be excluded, since its text comes from another agent.
-10. **Product vocabulary.** Resolved: visible text no longer says sub-session. Work a session
-    started with `startTask` is a task (a background task where the context needs it); the
-    umbrella for tasks, patrols and approved work, as in the console tab, Activity, permission
-    cards and limits that count all of them, is "background work". Store tables, the
+10. **Product vocabulary.** Resolved: visible text no longer says sub-session, "background
+    work", "approved work" or "Runtime jobs". "Task" is the umbrella for the work that belongs
+    to one session and reports to it, as in the console's Tasks tab, `listTasks`, Activity,
+    permission cards and the limits that count all of them. Work a session hands off with
+    `delegateTask` is a delegated task; what the runtime itself reports for the current turn
+    (long commands, its own subagents) is this turn's tasks, whose wake text is
+    `[background task finished]`. Store tables, the
     `subsession:` coordinate, protocol fields, capability names, API paths and log events keep
     their names. Text the daemon or Control Plane parses back, such as a persisted report header,
     is recognised in both its old and new wording.
-11. **Patrols and approved proposals.** Resolved: "task" has one meaning. A patrol is a patrol,
-    never a patrol sub-session or a task; an approved proposal's work is approved work, never an
-    approved task. Their one report is headed `[patrol ended]` or `[approved work ended]`
-    instead of `[sub-session ended]`.
+11. **Patrols and approved proposals.** Resolved: both are kinds of task, of the conversation
+    they report to, beside delegated tasks; neither is a delegated task, so neither is started
+    with `delegateTask` or messaged and stopped by `taskId`. A patrol is never a patrol
+    sub-session, and an approved proposal's run is "an approved proposal", never approved work
+    or an approved task. Their one report is headed `[patrol ended]` or `[approved proposal
+ended]` instead of `[sub-session ended]`.
 
 ## 12. Changes from the sub-session revision
 
@@ -1647,15 +1728,15 @@ The branch implemented §3–§9 in sub-session and multi-origin terms. Items 1�
 §8.9, §9.8), and so is item 10, with the visible rename of §11 questions 10–11. To reach this
 revision:
 
-1. **Task actions and field.** Split `messageSubsession` into `startTask {message}` and
-   `messageTask {taskId, message}`, with `taskId` required on `messageTask`, in the schema,
-   validators, guide (a `startTask` and a `messageTask` entry), errors, and every generated
+1. **Task actions and field.** Split `messageSubsession` into `delegateTask {message}` (first
+   shipped as `startTask`, item 11) and `messageTask {taskId, message}`, with `taskId` required
+   on `messageTask`, in the schema, validators, guide (a `delegateTask` and a `messageTask` entry), errors, and every generated
    text. `sessionId` is then no longer accepted on either.
 2. **Receipt.** Name the self-delegation and continuation handle `taskId` instead of
    `childSessionId`; `viewSessionStatus` and `stopTask` accept it. Refusal reasons such as
    `subsession_not_found` become task names (`task_not_found`, `task_reporting`, `task_ended`).
 3. **Self `callAgent`.** Keep the channel form; the rejection without a channel, and a
-   `messageTask` without `taskId`, return the exact `startTask` call and the `startTask` guide
+   `messageTask` without `taskId`, return the exact `delegateTask` call and the `delegateTask` guide
    (§3.5). Add a regression test that the channel session can answer the caller's message.
 4. **Stop.** Rename `stopSubsession` to `stopTask`, drop the person-started-turn and `!stop`
    sender gates, and refuse every caller other than the owning session (§8.7). Update the stop
@@ -1683,7 +1764,16 @@ revision:
     the earlier revision, and rename visible text in product conventions, assistant mode, the
     console and agent- and person-facing messages (§11 questions 10–11).
 
+11. **Delegated tasks.** Rename `startTask` to `delegateTask` with no alias; a `startTask` call
+    is an argument error giving the exact `delegateTask` call (§3.5). State the division of
+    labour with the runtime's own subagents in the description and guide (§3.1, §3.4), and add
+    `listTasks` (§8.7). Rename visible text to the task vocabulary of §11 questions 10–11. The
+    console merges its two task lists into one Tasks tab, keeps tasks out of the session page's
+    Related list, and hides them from All sessions unless asked (product-conventions.md).
+
 Internal names (`assistant_subsession_*` tables, the `subsession:` coordinate, protocol fields,
 capability names, API paths and log events) keep their names; nothing model- or person-facing
 shows them, except the opaque `taskId` string and the receipt's `wake.subsession` flag (§8.9).
-Visible text says task, patrol, approved work and background work, never sub-session.
+
+Visible text says task, delegated task, patrol, approved proposal and this turn's tasks, never
+sub-session, background work, approved work or runtime jobs.

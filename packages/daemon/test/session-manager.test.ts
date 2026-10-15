@@ -2604,7 +2604,7 @@ describe('SessionManager — collaboration preamble', () => {
     // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
     expect(first).toContain('`sendMessage`')
     expect(first).toContain('{"action":"callAgent","toAgent":"<agent id>","message":"..."}')
-    expect(first).toContain('{"action":"startTask","message":"..."}')
+    expect(first).toContain('{"action":"delegateTask","message":"..."}')
     expect(first).toContain('getToolGuide')
     expect(first).toContain('channel form may target YOURSELF')
     expect(first).toContain('use your own ID from the # Agent block')
@@ -2724,11 +2724,11 @@ describe('SessionManager — collaboration preamble', () => {
         ts: '100.1',
         source: 'agent',
         sender: { id: 'background-task:task-1', isBot: true },
-        text: '[background job finished] task-1'
+        text: '[background task finished] task-1'
       })
     )
 
-    expect(withoutNow(blocks)).toEqual([{ type: 'text', text: '[background job finished] task-1' }])
+    expect(withoutNow(blocks)).toEqual([{ type: 'text', text: '[background task finished] task-1' }])
     await (await store).close()
   })
 

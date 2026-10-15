@@ -82,14 +82,16 @@ describe('sendMessage requires an explicit action', () => {
       const text = await rejection(legacy)
       expect(text).toMatch(/^sendMessage: invalid arguments — missing required argument `action`\. Nothing was sent/)
       expect(text).toContain('Call getToolGuide {"tool":"sendMessage"} to get the arguments and examples')
-      expect(text).toContain('callAgent, startTask, messageTask, replyToSession, and postMessage')
+      expect(text).toContain('callAgent, delegateTask, messageTask, replyToSession, and postMessage')
     }
   })
 
   it('rejects an unknown or mistyped action and points to the overview', async () => {
     for (const action of ['wakeAgent', 'CallAgent', 3, true, {}]) {
       const text = await rejection({ action, toAgent: 'peer-1', message: 'm' })
-      expect(text).toContain('`action` must be one of callAgent, startTask, messageTask, replyToSession, postMessage')
+      expect(text).toContain(
+        '`action` must be one of callAgent, delegateTask, messageTask, replyToSession, postMessage'
+      )
       expect(text).toContain('getToolGuide {"tool":"sendMessage"}')
       // Argument names only: a supplied value never enters the error.
       expect(text).not.toContain('wakeAgent')
@@ -176,7 +178,7 @@ describe('sendMessage requires an explicit action', () => {
     for (const [args, action] of [
       [{ action: 'callAgent', toAgent: 'peer-1', sessionId: 's-1', channel: 'C1', message: 'm' }, 'callAgent'],
       [{ action: 'callAgent', toAgent: 'peer-1', sessionId: '', message: 'm' }, 'callAgent'],
-      [{ action: 'startTask', taskId: 't-1', message: 'm' }, 'startTask'],
+      [{ action: 'delegateTask', taskId: 't-1', message: 'm' }, 'delegateTask'],
       [{ action: 'messageTask', taskId: 't-1', sessionId: 's-1', message: 'm' }, 'messageTask']
     ] as const) {
       const text = await rejection(args)
@@ -186,10 +188,10 @@ describe('sendMessage requires an explicit action', () => {
   })
 })
 
-describe('startTask', () => {
+describe('delegateTask', () => {
   it('starts the trusted self-delegation from `message` alone, postless, and names its handle taskId', async () => {
     const { deps, calls, gatewayFor } = wakeDeps()
-    const res = (await executeTool(ctx, 'sendMessage', { action: 'startTask', message: 'fix it' }, deps)) as Record<
+    const res = (await executeTool(ctx, 'sendMessage', { action: 'delegateTask', message: 'fix it' }, deps)) as Record<
       string,
       unknown
     >
@@ -221,31 +223,49 @@ describe('startTask', () => {
       'sessionId',
       'messageId'
     ]) {
-      expect(await rejection({ action: 'startTask', [extra]: 'x', message: 'm' })).toContain(
-        `action \`startTask\` does not accept \`${extra}\``
+      expect(await rejection({ action: 'delegateTask', [extra]: 'x', message: 'm' })).toContain(
+        `action \`delegateTask\` does not accept \`${extra}\``
       )
     }
-    expect(await rejection({ action: 'startTask', taskId: 't-1', message: 'm' })).toContain(
+    expect(await rejection({ action: 'delegateTask', taskId: 't-1', message: 'm' })).toContain(
       'sends more to an existing task only as action `messageTask` with its `taskId`'
     )
   })
 })
 
+describe('startTask, the release-candidate name', () => {
+  it('is an argument error that names the exact delegateTask call, without effects or the body', async () => {
+    for (const args of [
+      { action: 'startTask', message: 'the private body' },
+      { action: 'startTask', taskId: 't-1', message: 'the private body' }
+    ]) {
+      const text = await rejection(args)
+      expect(text).toContain('action `startTask` is now `delegateTask`, with the same arguments')
+      expect(text).toContain('Nothing was sent and no task was started')
+      expect(text).toContain('Retry as:\n  sendMessage {"action":"delegateTask","message":"<the same message>"}')
+      expect(text).toContain('delegateTask guide:')
+      expect(text).not.toContain('the private body')
+    }
+    expect(SEND_MESSAGE_ACTIONS).not.toContain('startTask')
+    expect(sendMessageGuide(ctx).actions).not.toContainEqual(expect.objectContaining({ action: 'startTask' }))
+  })
+})
+
 describe('messageTask', () => {
-  it('rejects a missing, null, empty or mistyped taskId with the exact startTask call and its guide', async () => {
+  it('rejects a missing, null, empty or mistyped taskId with the exact delegateTask call and its guide', async () => {
     for (const taskId of [undefined, '', '  ', null, 7, {}]) {
       const args = { action: 'messageTask', message: 'the secret body', ...(taskId !== undefined ? { taskId } : {}) }
       const text = await rejection(args)
       expect(text).toContain('action `messageTask` requires `taskId`')
       expect(text).toContain('never starts a task')
-      expect(text).toContain('sendMessage {"action":"startTask","message":"<the same message>"}')
-      expect(text).toContain('startTask guide:')
+      expect(text).toContain('sendMessage {"action":"delegateTask","message":"<the same message>"}')
+      expect(text).toContain('delegateTask guide:')
       expect(text).toContain('A task cannot start tasks of its own')
       // The supplied body is never echoed.
       expect(text).not.toContain('the secret body')
     }
     const legacy = await rejection({ action: 'messageTask', sessionId: 'slack:C:subsession:1:a', message: 'm' })
-    expect(legacy).toContain('requires `taskId`, the nonempty `taskId` a startTask call in this session returned')
+    expect(legacy).toContain('requires `taskId`, the nonempty `taskId` a delegateTask call in this session returned')
     expect(legacy).toContain('and does not accept `sessionId`')
   })
 
@@ -316,13 +336,14 @@ describe('messageTask', () => {
 })
 
 describe('callAgent', () => {
-  it('refuses a postless self-target with the exact startTask call and the startTask guide inline', async () => {
+  it('refuses a postless self-target with the exact delegateTask call and the delegateTask guide inline', async () => {
     for (const toAgent of ['agent-self', { agentId: 'agent-self', needsReply: true }, '{"agentId":"agent-self"}']) {
       const text = await rejection({ action: 'callAgent', toAgent, message: 'the private body' })
       expect(text).toContain('action `callAgent` with your own agent id needs `channel`')
-      expect(text).toContain('Work of your own that needs no conversation is a background task. Nothing was sent')
-      expect(text).toContain('Retry as:\n  sendMessage {"action":"startTask","message":"<the same message>"}')
-      expect(text).toContain('startTask guide:\nStart a background task of this session')
+      expect(text).toContain('Work of your own that needs no conversation is a delegated task. Nothing was sent')
+      expect(text).toContain('Retry as:\n  sendMessage {"action":"delegateTask","message":"<the same message>"}')
+      expect(text).toContain('delegateTask guide:\nDelegate long work of your own to a task of this session')
+      expect(text).toContain('goes to your runtime’s own subagent or Task tool instead')
       expect(text).toContain('Order tasks by what they need')
       expect(text).toContain('To work visibly in a channel instead, keep callAgent and add `channel`')
       expect(text).not.toContain('the private body')
@@ -346,7 +367,7 @@ describe('write and join classification', () => {
     expect(isPlatformPost({ action: 'postMessage', channel: 'C1' })).toBe(true)
     expect(isPlatformPost({ action: 'postMessage', toUser: 'U1' })).toBe(true)
     expect(isPlatformPost({ action: 'callAgent', toAgent: 'peer-1', channel: 'C1' })).toBe(false)
-    expect(isPlatformPost({ action: 'startTask' })).toBe(false)
+    expect(isPlatformPost({ action: 'delegateTask' })).toBe(false)
     expect(isPlatformPost({ action: 'messageTask', taskId: 't' })).toBe(false)
     expect(isPlatformPost({ action: 'replyToSession', messageId: 'msg-1' })).toBe(false)
     expect(isPlatformPost({ channel: 'C1' })).toBe(false)
@@ -384,11 +405,11 @@ describe('getToolGuide', () => {
   })
 
   it('advertises task start, task messages, and explicit peer sessions', () => {
-    expect(examples(sendMessageGuide(ctx, 'startTask')).map((example) => example.arguments)).toEqual([
-      { action: 'startTask', message: expect.any(String) }
+    expect(examples(sendMessageGuide(ctx, 'delegateTask')).map((example) => example.arguments)).toEqual([
+      { action: 'delegateTask', message: expect.any(String) }
     ])
     expect(examples(sendMessageGuide(ctx, 'messageTask')).map((example) => example.arguments)).toContainEqual(
-      expect.objectContaining({ taskId: '<taskId returned by startTask>' })
+      expect.objectContaining({ taskId: '<taskId returned by delegateTask>' })
     )
     expect(JSON.stringify(sendMessageGuide(ctx, 'messageTask'))).toContain('stopTask {\\"taskId\\":\\"<taskId>\\"}')
     expect(JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))).toContain('a reply does not end its work')
@@ -399,11 +420,11 @@ describe('getToolGuide', () => {
       })
     expect(sendMessageGuide({ ...ctx, thread: 'subsession:d-1' }, 'replyToSession')).not.toHaveProperty('availability')
     const send = toolsForIntegrations([slack as Integration]).find((tool) => tool.name === 'sendMessage')!
-    expect(send.description).toContain('messageTask sends a task you started more (taskId)')
-    expect(send.description).toContain('and stopTask stops it')
+    expect(send.description).toContain('messageTask sends a task more (taskId)')
+    expect(send.description).toContain('listTasks lists them, stopTask stops one')
     expect(send.description).toContain('sessionId continues an existing peer session')
     expect(send.description).toContain('replies are not broadcast')
-    expect(send.description).toContain('by its messageId, as often as needed')
+    expect(send.description).toContain('by its messageId;')
     // §3.4: the reply guide teaches finding the id in the input, answering more than once, and needing no session id.
     const reply = JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))
     expect(reply).toContain('[Message <id>] From …')
@@ -432,9 +453,9 @@ describe('getToolGuide', () => {
         'name `platform`.'
     )
     const inside = { ...ctx, thread: subsessionCoordinate('1') }
-    for (const action of ['startTask', 'messageTask'] as const) {
+    for (const action of ['delegateTask', 'messageTask'] as const) {
       expect(sendMessageGuide(inside, action).availability).toMatch(
-        /^Unavailable here: .*cannot start or message tasks/
+        /^Unavailable here: .*cannot delegate or message tasks/
       )
       expect(sendMessageGuide(ctx, action)).not.toHaveProperty('availability')
     }

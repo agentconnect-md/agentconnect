@@ -256,10 +256,7 @@ function cursorPosition(cursor: string): { createdAt: number; childSessionKey: s
   } catch {
     // Falls through to the refusal below.
   }
-  throw new AssistantActivityViolationError(
-    'the background work page cursor is not one this daemon issued',
-    'bad-cursor'
-  )
+  throw new AssistantActivityViolationError('the task page cursor is not one this daemon issued', 'bad-cursor')
 }
 
 const clipText = (text: string | null, max: number): string | null =>

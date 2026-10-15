@@ -72,11 +72,11 @@ export interface AssistantTasksHost {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** The approved work's first message: what was approved, by whom, and the item it serves. */
+/** The approved proposal's first message: what was approved, by whom, and the item it serves. */
 export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { name: string | null }): string {
   const proposal = draft.proposal!
   return [
-    `[approved work] Your patrol of item ${item.id} proposed this, and ${by.name ?? 'an approver'} approved it. ` +
+    `[approved proposal] Your patrol of item ${item.id} proposed this, and ${by.name ?? 'an approver'} approved it. ` +
       'Carry it out now in this background session, with your normal tools and permissions. Nothing you write here ' +
       'is posted anywhere.',
     '',
@@ -146,8 +146,8 @@ export class AssistantTasks {
       return {
         kind: 'busy',
         reason:
-          `${agent?.name ?? 'The agent'} already runs as much background work as it may at once (${limit}). ` +
-          'Approve again once some of it finishes; this proposal is still waiting.'
+          `${agent?.name ?? 'The agent'} already has ${limit} task${limit === 1 ? '' : 's'} running, the most it runs at once. ` +
+          'Approve again once one of them finishes; this proposal is still waiting.'
       }
     }
     // send-message-guide.md §9.3: its input is a session message from the session that started it, answerable by id.
@@ -175,7 +175,7 @@ export class AssistantTasks {
       mentionedBots: [],
       isDm: false,
       headless: true,
-      initialSessionTitle: `Approved work: ${oneLine(proposal.sentence).slice(0, 80)}`
+      initialSessionTitle: `Approved proposal: ${oneLine(proposal.sentence).slice(0, 80)}`
     }
     // A delegated sub-session's lineage: it owes its parent one report, and the daemon sends one if it does not.
     const callMeta: CallMeta = {
@@ -293,7 +293,7 @@ export class AssistantTasks {
         agentId,
         at,
         parentSessionId,
-        `[approved work cut short] Not sure this went through, please check: the approved work "${oneLine(proposal.sentence)}"` +
+        `[approved proposal cut short] Not sure this went through, please check: the approved proposal "${oneLine(proposal.sentence)}"` +
           (item ? ` for item ${item.id} ("${oneLine(item.title)}")` : '') +
           ' was cut short by a restart or handover before it reported back. It may have partly run, and it will ' +
           'not be run again. Tell the people here to check.',

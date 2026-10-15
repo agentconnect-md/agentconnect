@@ -195,7 +195,7 @@ describe('self-delegation: every agent opens a sub-session', () => {
         text: 'fix the flaky test and open a PR',
         turnBody: {
           prompt: expect.stringMatching(
-            /^\[Message msg-[^\]]+\] From your own session \(session sid-parent-1\), as a background task:\nfix the flaky test and open a PR\n\n\[Send progress, a question, or your result for it with sendMessage \{"action":"replyToSession","messageId":"msg-/
+            /^\[Message msg-[^\]]+\] From your own session \(session sid-parent-1\), as a delegated task:\nfix the flaky test and open a PR\n\n\[Send progress, a question, or your result for it with sendMessage \{"action":"replyToSession","messageId":"msg-/
           ),
           sessionMessage: expect.objectContaining({ kind: 'taskInput', startsTask: true, replyRequested: true })
         },
@@ -394,7 +394,7 @@ describe('self-delegation: through the sendMessage tool', () => {
       const started = (await executeTool(
         ctx(caller),
         'sendMessage',
-        { action: 'startTask', message: 'fix it' },
+        { action: 'delegateTask', message: 'fix it' },
         deps
       )) as any
       expect(started).toMatchObject({
@@ -411,7 +411,7 @@ describe('self-delegation: through the sendMessage tool', () => {
       const nested = (await executeTool(
         inside,
         'sendMessage',
-        { action: 'startTask', message: 'and this' },
+        { action: 'delegateTask', message: 'and this' },
         deps
       )) as any
       expect(nested.wake).toMatchObject({ delivered: false, reason: 'task_nesting' })
@@ -496,8 +496,8 @@ describe('self-delegation: what the runtime is told', () => {
           .flatMap(({ host }) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
       )
     for (const agentId of ['bot-a', 'bot-b']) {
-      expect(told(agentId)).toContain('startTask')
-      expect(told(agentId)).toContain('starts a background TASK of this session')
+      expect(told(agentId)).toContain('delegateTask')
+      expect(told(agentId)).toContain('delegates it to a TASK of this session')
       expect(told(agentId)).not.toContain('may not target yourself')
     }
     await daemon.stop()
@@ -518,7 +518,7 @@ describe('a sub-session never speaks on the platform', () => {
       thread,
       transportScope: scope,
       sender: { id: 'background-task:t1', isBot: true },
-      text: '[background job finished] build',
+      text: '[background task finished] build',
       mentionedBots: [],
       isDm: false
     })

@@ -288,17 +288,19 @@ const COLLAB_BEFORE_SELF =
   `That channel form may target YOURSELF to open and activate one new conversation there — a session of that ` +
   `conversation, not a task: use your own ID from the # Agent block (also included by \`listAgents\`), never ` +
   `your platform bot identity. `
-// send-message-guide.md §2.1: every agent's background work of its own is a task of the session that starts it.
+// send-message-guide.md §2.1: every agent's long work of its own is a task delegated by the session that starts it.
 const COLLAB_SELF_DELEGATION =
-  `For long work of your own ("fix this bug and open a PR"), \`{"action":"startTask","message":"..."}\` starts a ` +
-  `background TASK of this session: it works in a context of its own, posts nothing, and reports back into this ` +
-  `session each time a round of its work finishes or fails. Start it before you explore or begin the work ` +
-  `yourself — it starts from this session's context and finds what it needs — then say it has started and end ` +
-  `your turn. Start independent tasks together; start a task that needs another's result once that result has ` +
-  `arrived. To give one more work later, even after it reported, send ` +
+  `For long work of your own ("fix this bug and open a PR") that spans turns, may run a long time, or that people ` +
+  `should be able to see and stop, \`{"action":"delegateTask","message":"..."}\` delegates it to a TASK of this ` +
+  `session: it works in a context of its own, posts nothing, and reports back into this ` +
+  `session each time a round of its work finishes or fails. Work you can finish within this turn, even split into ` +
+  `parallel parts, goes to your runtime's own subagent or Task tool instead. Delegate before you explore or begin ` +
+  `the work yourself — the task starts from this session's context and finds what it needs — then say it has ` +
+  `started and end your turn. Delegate independent tasks together; delegate a task that needs another's result ` +
+  `once that result has arrived. To give one more work later, even after it reported, send ` +
   `\`{"action":"messageTask","taskId":"<its taskId>","message":"..."}\`: it keeps its context and reports again. ` +
-  `When a task is no longer needed — the plan changed, or a task it depended on failed — stop it with ` +
-  `\`stopTask\` and its taskId. Say in its message which language the people here use, so it reports in that ` +
+  `\`listTasks\` lists this session's tasks. When a task is no longer needed — the plan changed, or a task it ` +
+  `depended on failed — stop it with \`stopTask\` and its taskId. Say in its message which language the people here use, so it reports in that ` +
   `language, and answer them in it whatever language a report comes back in. Keep ordinary conversation here — ` +
   `questions, lookups and short answers never need a task. A task cannot start tasks of its own. `
 const COLLAB_AFTER_SELF =
@@ -334,7 +336,7 @@ export function buildTaskReportingAppend(ownerSessionId: string | null | undefin
   if (!ownerSessionId) return ''
   return (
     `# Reporting back to the session that started this task\n` +
-    `You are a background task of your own session ${ownerSessionId}, working in a context of your own. It may ` +
+    `You are a task your own session ${ownerSessionId} delegated, working in a context of your own. It may ` +
     `send you more messages later; they arrive here, in this same context, each with its id. To send it progress ` +
     `worth knowing, a question you need answered, or your result, answer one of its messages with \`sendMessage\` ` +
     `\`{"action":"replyToSession","messageId":"<id of its message>","message":"..."}\`; a reply does not end your ` +

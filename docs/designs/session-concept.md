@@ -18,7 +18,7 @@
 > **All sending uses one `sendMessage` tool.** It combines the existing
 > `sendPlatformMessage`, which posts to a platform channel or user at
 > `mcp/tools.ts:65`, with `messageAgent`, which wakes another agent at
-> `mcp/tools.ts:409`. Agent-to-agent calls, a session's own background tasks,
+> `mcp/tools.ts:409`. Agent-to-agent calls, a session's delegated tasks,
 > cross-platform messages, and replies to session messages all use
 > `sendMessage`, each selected by an explicit `action`; see section 3 and
 > [send-message-guide.md](send-message-guide.md).
@@ -268,7 +268,7 @@ After consolidation:
 
 ```ts
 sendMessage({ action, message, ...arguments }): Receipt
-// action: 'callAgent' | 'startTask' | 'messageTask' | 'replyToSession' | 'postMessage'
+// action: 'callAgent' | 'delegateTask' | 'messageTask' | 'replyToSession' | 'postMessage'
 ```
 
 Every call names its `action`, and the daemon validates the action's arguments before any
@@ -276,8 +276,8 @@ effect ([send-message-guide.md](send-message-guide.md) §3). `callAgent` wakes a
 the caller itself into a channel, and `postMessage` reaches one or more humans or a channel: the
 **two addressing modes** below, `toAgent` and `toUser`, each with **two delivery forms**
 selected by the presence of `channel` (direct / channel root), plus a bare `channel`-only post
-(no recipient). The session-addressed actions are in section 3.2: `startTask` and
-`messageTask` for the session's own tasks, `replyToSession` to answer a session message by its
+(no recipient). The session-addressed actions are in section 3.2: `delegateTask` and
+`messageTask` for the session's delegated tasks, `replyToSession` to answer a session message by its
 id, and `callAgent` with `sessionId` for an existing peer session.
 
 The only visible in-thread form is the **update**: a bare `channel` post carrying
@@ -326,8 +326,8 @@ recipient modes the form is decided by the presence of `channel`:
 
 Only the bare `channel` branch accepts `thread`; supplying one on `toAgent`, `toUser`, or a
 session-addressed action is rejected rather than silently posted at the root. A `callAgent` with
-the caller's own id needs `channel`: work of its own that needs no conversation is a task, and
-the refusal gives the exact `startTask` call to make instead.
+the caller's own id needs `channel`: work of its own that needs no conversation is a delegated task,
+and the refusal gives the exact `delegateTask` call to make instead.
 
 - The target must identify an action: `toAgent`, `toUser`, or `channel`. The
   daemon rejects an empty action and rejects mixing `toAgent` with `toUser` in
@@ -383,7 +383,7 @@ the refusal gives the exact `startTask` call to make instead.
 ```ts
 // action: 'callAgent' — a new message into an existing session of the named peer.
 type PeerSessionTarget = { toAgent: AgentRef; sessionId: string } // stable handle from section 1.1
-// action: 'startTask' takes only `message`; action: 'messageTask' names one of this session's tasks.
+// action: 'delegateTask' takes only `message`; action: 'messageTask' names one of this session's delegated tasks.
 type TaskTarget = { taskId: string }
 // action: 'replyToSession' — answer a session message this session received.
 type ReplyTarget = { messageId: string }
@@ -394,10 +394,12 @@ type ReplyTarget = { messageId: string }
 - `callAgent` with `sessionId` reaches an existing peer session only when it resolves
   to the agent named by `toAgent` and the people on the calling turn may read that
   session's conversation (send-message-guide.md §9.2). It is exclusive with `channel`.
-- `startTask` starts a background task of the current session and returns its `taskId`;
-  `messageTask` sends that task more work. Only the task's **owning session**, the
-  session that started it, may message it or stop it with `stopTask`, on any of its turns
-  (send-message-guide.md §2.1, §8).
+- `delegateTask` hands work off as a delegated task of the current session and returns its
+  `taskId`; `messageTask` sends that task more work. Only the task's **owning session**, the
+  session that delegated it, may message it or stop it with `stopTask`, on any of its turns
+  (send-message-guide.md §2.1, §8). The read-only `listTasks` tool lists the session's tasks:
+  its delegated tasks, with their `taskId`, and the patrols and approved proposals that report
+  to it.
 - `replyToSession` answers one session message by its id, and goes only to the session
   that sent it (section 5). It never names a session.
 - An unknown, foreign, or unowned id is refused in words that reveal nothing about other
@@ -566,7 +568,7 @@ work therefore needs a handle on the child and a way to ask how it is going.
 
 - **The handle.** An admitted peer wake returns `childSessionId` alongside
   `wake` — the child's logical session key, the same value as
-  `wake.targetSession`. A `startTask` returns the same kind of handle as
+  `wake.targetSession`. A `delegateTask` returns the same kind of handle as
   `taskId`. A refused wake opened nothing, so the field is absent
   and `wake.reason` explains why.
 - **Polling: `viewSessionStatus`.** The read counterpart of a reply, authorized
@@ -806,8 +808,8 @@ B, because the anchor is the post's timestamp and that exists only after the sen
 
 There is no double-trigger risk because no platform mention exists. B replies
 with `replyToSession` on message m1 exactly as in case 2b. A postless `callAgent`
-accepts only a peer: work A does itself without a conversation is a task
-(`startTask`), not a self-call.
+accepts only a peer: work A does itself without a conversation is a delegated task
+(`delegateTask`), not a self-call.
 
 ### 7.4 Case 3: send from Telegram to a Slack channel without mentioning another agent
 

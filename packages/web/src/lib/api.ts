@@ -551,6 +551,8 @@ export interface SessionListFilters {
   channel?: string
   triggeredBy?: string
   githubRepoId?: string
+  /** Leave tasks (delegated tasks, patrols and approved proposals) out of the rows, the total and the facets. */
+  excludeTasks?: boolean
 }
 
 export interface SessionFacets {
@@ -583,6 +585,8 @@ export interface SessionRelationDto {
   agentName?: string | null
   platform: string
   title: string | null
+  /** A task (delegated task, patrol or approved proposal) rather than a conversation; absent on older Control Planes. */
+  subsession?: boolean
 }
 
 export interface SessionDetailDto {
@@ -2590,6 +2594,7 @@ function appendSessionFilters(q: URLSearchParams, filters: SessionListFilters): 
   if (filters.channel) q.set('channel', filters.channel)
   if (filters.triggeredBy) q.set('triggeredBy', filters.triggeredBy)
   if (filters.githubRepoId) q.set('githubRepoId', filters.githubRepoId)
+  if (filters.excludeTasks) q.set('tasks', 'exclude')
 }
 
 export async function fetchSessionFacets(orgId?: string, filters: SessionListFilters = {}): Promise<SessionFacets> {

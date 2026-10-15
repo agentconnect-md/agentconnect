@@ -131,7 +131,7 @@ describe('console approval requests', () => {
     expect(mocks.decide).toHaveBeenCalledWith('example-agent', 'request-1', 'deny', undefined)
   })
 
-  it('shows a conversation what its background work asks, linked to that work', async () => {
+  it('shows a conversation what its task asks, linked to that task', async () => {
     mocks.rows = [
       request({ id: 'own', sessionId: 'sid-parent', command: 'Bash: ls' }),
       request({ id: 'child', sessionId: 'sid-sub', parentSessionId: 'sid-parent', command: 'Write src/app.ts' }),
@@ -142,10 +142,10 @@ describe('console approval requests', () => {
     expect(host!.textContent).toContain('Write src/app.ts')
     expect(host!.textContent).not.toContain('Bash: rm')
     const links = [...host!.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
-    expect(links).toEqual([['Background work', '/example/sessions/sid-sub']])
+    expect(links).toEqual([['Task', '/example/sessions/sid-sub']])
     expect(buttons()).toHaveLength(4)
 
-    // The background work's own page shows it as its own request, with no link back to itself.
+    // The task's own page shows it as its own request, with no link back to itself.
     act(() => root?.unmount())
     host?.remove()
     await render('sid-sub')
@@ -235,7 +235,7 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     await confirm('proposal-1')
     expect(mocks.decideProposal).toHaveBeenCalledWith('example-agent', 'sid-webchat', 'proposal-1', 'approve')
     expect(row('proposal-1')!.textContent).toContain(
-      'Approved. It runs in the background and reports back in this conversation.'
+      'Approved. It runs as a task and reports back in this conversation.'
     )
     expect(buttons()).not.toContain('Approve')
     // Dismissed, nothing is left to show.
@@ -259,9 +259,9 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     expect(row('proposal-2')!.textContent).toContain('Already decided.')
   })
 
-  it('keeps one waiting with its choices while the agent’s background work is at its limit', async () => {
+  it('keeps one waiting with its choices while the agent runs as many tasks as it may', async () => {
     mocks.proposals = [proposal()]
-    const limit = 'The agent already has 3 tasks and approved work running; approve again once one finishes.'
+    const limit = 'The agent already has 3 tasks running; approve again once one finishes.'
     mocks.decideProposal.mockRejectedValueOnce(new mocks.ApiError(limit, 409, 'SUBSESSION_LIMIT'))
     await renderStrip(false)
     await choose('proposal-1', 'Approve')

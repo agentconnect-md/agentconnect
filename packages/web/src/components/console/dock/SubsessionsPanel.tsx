@@ -1,7 +1,7 @@
 'use client'
 
-// The dock's Background work tab (assistant-mode.md §1.3, §5.6): the tasks, patrols and approved work this conversation started, read from the agent's daemon through the CP and kept nowhere else.
-// Each row links to its own session page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
+// The Tasks tab's Delegated group (assistant-mode.md §1.3, §5.6): the delegated tasks, patrols and approved proposals of this conversation, read from the agent's daemon through the CP and kept nowhere else.
+// Each row links to its own page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
@@ -17,7 +17,7 @@ import {
   type AssistantSubsessionsPageDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
-import type { DockTabStatus } from './SessionDock'
+import { TaskGroupHeading, formatTaskElapsed } from './task-group'
 
 /** Rows one read asks for; "Show more" pages on by the cursor the last one returned. */
 export const SUBSESSIONS_PAGE = 20
@@ -30,22 +30,24 @@ const POLL_MS = 5_000
 const IDLE_POLL_MS = 20_000
 // A hidden panel still reads, slowly: its verdict is what puts the tab in the strip once the conversation opens its first one.
 const HIDDEN_POLL_MS = 60_000
+/** How often a running row's elapsed time redraws; arithmetic, no request. */
+const TICK_MS = 1_000
 
-/** What the tab needs from the panel; the caller owns the descriptor, as for every dock tab. */
+/** What the Tasks panel needs from this group. */
 export interface SubsessionsPanelVerdict {
   /** The first read of this conversation has answered. */
   settled: boolean
-  /** Rows on screen; 0 drops the tab. */
+  /** Rows on screen; 0 drops the group. */
   count: number
   /** Running rows on screen, for the badge. */
   running: number
-  /** The read failed with nothing to show, so the tab stays to say why. */
+  /** The read failed with nothing to show, so the group stays to say why. */
   failed: boolean
 }
 
 export const SUBSESSIONS_UNSETTLED: SubsessionsPanelVerdict = { settled: false, count: 0, running: 0, failed: false }
 
-/** Offered once the conversation has opened one, or when the read failed and the tab has to say why. */
+/** Shown once the conversation has one, or when the read failed and the group has to say why. */
 export function subsessionsTabShown(verdict: SubsessionsPanelVerdict): boolean {
   return verdict.settled && (verdict.failed || verdict.count > 0)
 }
@@ -101,9 +103,9 @@ export function SubsessionsPanel({
   onVerdictChange
 }: {
   agentId: string
-  /** The conversation's own session: only the background work it started is listed. */
+  /** The conversation's own session: only its tasks are listed. */
   sessionId: string
-  /** Whether this tab is the selected one; a hidden panel reads slowly. */
+  /** Whether the Tasks tab is the selected one; a hidden group reads slowly. */
   active?: boolean
   /** A turn streaming in this conversation; its falling edge is where a delegation lands. */
   turnActive?: boolean
@@ -152,6 +154,7 @@ export function SubsessionsPanel({
   const settled = current !== null
   const failed = current?.error != null && rows.length === 0
   const stopById = stops.scope === scope ? stops.byId : {}
+  const [now, setNow] = useState(() => Date.now())
 
   // The activation edge reads once, so a tab opened after a quiet minute is not stale.
   const wasActive = useRef(active)
@@ -168,6 +171,13 @@ export function SubsessionsPanel({
     intervalMs: !active ? HIDDEN_POLL_MS : running > 0 ? POLL_MS : IDLE_POLL_MS,
     onRefresh: () => setOwnTick((tick) => tick + 1)
   })
+
+  // Elapsed redraws from `startedAt` alone while one runs on screen.
+  useEffect(() => {
+    if (!active || running === 0) return
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(timer)
+  }, [active, running])
 
   // Reported on the edge, so a poll that finds the same rows does not re-render the whole session page.
   const reported = useRef<string | null>(null)
@@ -214,23 +224,33 @@ export function SubsessionsPanel({
     [agentId, scope]
   )
 
-  // The dock's own placeholder speaks until the first read answers.
-  if (!settled) return null
+  // The dock's own placeholder speaks until the first read answers; an empty conversation has no group at all.
+  if (!settled || !subsessionsTabShown({ settled, count: rows.length, running, failed })) return null
 
   return (
-    <div data-subsessions-panel="" className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 flex-col gap-[6px] overflow-auto px-3 py-[10px]">
+    <section
+      data-subsessions-panel=""
+      data-task-group="delegated"
+      aria-label={t('group')}
+      className="flex flex-none flex-col gap-[6px]"
+    >
+      <TaskGroupHeading
+        title={t('group')}
+        hint={t('groupHint')}
+        census={rows.length > 0 ? censusText(rows, t) : undefined}
+      />
+      <div className="flex flex-none flex-col gap-[6px]">
         {current?.error ? (
           <PanelNotice
             text={t(noticeKey(current.error.status, current.error.code))}
             warn={current.error.status !== 503}
           />
         ) : null}
-        {rows.length === 0 && !current?.error ? <PanelNotice text={t('empty')} /> : null}
         {rows.map((row, i) => (
           <SubsessionRow
             key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
             row={row}
+            now={now}
             stop={row.sessionId ? stopById[row.sessionId] : undefined}
             onStop={stop}
           />
@@ -248,8 +268,22 @@ export function SubsessionsPanel({
           </div>
         ) : null}
       </div>
-    </div>
+    </section>
   )
+}
+
+/** The group's census, counted off the rows on screen. */
+function censusText(
+  rows: AssistantSubsessionDto[],
+  t: ReturnType<typeof useTranslations<'Sessions.detail.subsessionsPanel'>>
+): string {
+  const running = rows.filter((row) => row.state === 'open').length
+  const failed = rows.filter((row) => row.state === 'failed').length
+  const reported = rows.length - running - failed
+  const parts = [t('census.running', { count: running })]
+  if (reported > 0) parts.push(t('census.reported', { count: reported }))
+  if (failed > 0) parts.push(t('census.failed', { count: failed }))
+  return parts.join(' · ')
 }
 
 const ACCENT: Record<AssistantSubsessionDto['state'], string> = {
@@ -278,10 +312,12 @@ const stopNotice = (stop: Exclude<StopState, 'busy'>, state: AssistantSubsession
 
 function SubsessionRow({
   row,
+  now,
   stop,
   onStop
 }: {
   row: AssistantSubsessionDto
+  now: number
   stop: StopState | undefined
   onStop: (sessionId: string) => Promise<void>
 }) {
@@ -347,6 +383,14 @@ function SubsessionRow({
             time: format.dateTime(new Date(row.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
           })}
         </time>
+        {runningNow ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span data-subsession-elapsed="" className="mono text-[11px]">
+              {formatTaskElapsed(row.startedAt, now)}
+            </span>
+          </>
+        ) : null}
       </div>
       {stop && stop !== 'busy' ? (
         <div
@@ -375,8 +419,4 @@ function PanelNotice({ text, warn = false }: { text: string; warn?: boolean }) {
       <span>{text}</span>
     </div>
   )
-}
-
-export function subsessionsTabStatus(settled: boolean): DockTabStatus {
-  return settled ? 'ready' : 'loading'
 }

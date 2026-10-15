@@ -90,7 +90,7 @@ function runtimes() {
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
         // A task's own input names it; the owning session's list of its running tasks does not count.
         const text = JSON.stringify(blocks)
-        const sub = /as a background task|for this background task/.test(text)
+        const sub = /as a delegated task|a new message for this task/.test(text)
         if (sub) subPrompts.push(sessionId)
         const matched = behavior.byText.find(([pattern]) => pattern.test(text))?.[1]
         const act = matched ?? (sub ? (behavior.subQueue.shift() ?? behavior.sub) : behavior.plain)
@@ -289,7 +289,7 @@ const finished = (key: string) => `[task finished] Task ${key} finished this rou
 
 /** Start one task through the tool and let its first round finish. */
 async function startAndFinish(h: Awaited<ReturnType<typeof boot>>, caller: { scope: string; coordinate: string }) {
-  const created = await send(h.d, caller, { action: 'startTask', message: 'investigate the flaky test' })
+  const created = await send(h.d, caller, { action: 'delegateTask', message: 'investigate the flaky test' })
   expect(created.wake).toMatchObject({ delivered: true, subsession: true })
   const child: string = created.taskId
   await vi.waitFor(async () => expect((await rowOf(h.d, child))?.state).toBe('done'), WAIT)
@@ -323,8 +323,8 @@ describe('messageTask continues an existing task of this session', () => {
     // §9.5: the input shows its message id, its source, and the reply call.
     const messageId = inputs[1]!.callMeta.messageId as string
     expect(modelText(inputs[1]!.msg)).toBe(
-      `[Message ${messageId}] From the session that started this task (session sid-parent-1), a new message for this ` +
-        `background task:\nalso Windows\n\n[Send progress, a question, or your result for it with sendMessage ` +
+      `[Message ${messageId}] From the session that delegated this task (session sid-parent-1), a new message for ` +
+        `this task:\nalso Windows\n\n[Send progress, a question, or your result for it with sendMessage ` +
         `{"action":"replyToSession","messageId":"${messageId}","message":"..."}; a reply does not end your work.]`
     )
     expect(inputs[1]!.callMeta).toMatchObject({
@@ -342,7 +342,7 @@ describe('messageTask continues an existing task of this session', () => {
       replyRequested: true,
       notes: [expect.stringContaining('"action":"replyToSession"')]
     })
-    expect(modelText(inputs[0]!.msg)).toContain(`From your own session (session sid-parent-1), as a background task:`)
+    expect(modelText(inputs[0]!.msg)).toContain(`From your own session (session sid-parent-1), as a delegated task:`)
     expect((await h.d.store.getSession(child))?.acpSessionId).toBe(firstSession)
     expect(await h.d.store.assistantSubsessions.list('bot-a', 10)).toHaveLength(1)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
@@ -391,8 +391,8 @@ describe('messageTask continues an existing task of this session', () => {
       delivered: false,
       reason: 'task_not_found',
       message:
-        'This session started no task with that id. Nothing was sent. Pass the `taskId` a startTask call in this session ' +
-        'returned, or use startTask to start a new task.'
+        'This session started no task with that id. Nothing was sent. Pass the `taskId` a delegateTask call in this ' +
+        'session returned (listTasks shows them), or use delegateTask to delegate a new task.'
     }
     const unknown = 'slack:C1:subsession:404:bot-a'
     expect(await send(h.d, caller, { action: 'messageTask', taskId: unknown, message: 'm' })).toEqual({
@@ -455,12 +455,12 @@ describe('a work round, its slot and its outcome', () => {
       await new Promise<void>((resolve) => (finish = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'startTask', message: 'repair the parser' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'repair the parser' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'open' })
     // Its slot is still held: a second task is refused.
-    expect((await send(h.d, caller, { action: 'startTask', message: 'another' })).wake).toMatchObject({
+    expect((await send(h.d, caller, { action: 'delegateTask', message: 'another' })).wake).toMatchObject({
       delivered: false,
       reason: 'task_limit'
     })
@@ -488,7 +488,7 @@ describe('a work round, its slot and its outcome', () => {
       await new Promise<void>((resolve) => (finish = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'startTask', message: 'repair the parser' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'repair the parser' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(1), WAIT)
 
@@ -563,7 +563,7 @@ describe('a work round, its slot and its outcome', () => {
     const first = await startAndFinish(h, caller)
     // The finished child holds no slot, so a new one starts; while that one runs, the first cannot reopen.
     h.rt.behavior.subQueue.push('hang')
-    const second = await send(h.d, caller, { action: 'startTask', message: 'second task' })
+    const second = await send(h.d, caller, { action: 'delegateTask', message: 'second task' })
     expect(second.wake).toMatchObject({ delivered: true })
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(2), WAIT)
     const refused = await send(h.d, caller, { action: 'messageTask', taskId: first, message: 'more' })
@@ -574,7 +574,7 @@ describe('a work round, its slot and its outcome', () => {
         targetSession: first,
         reason: 'task_limit',
         message:
-          'You already run as much background work as allowed at once (1). Nothing was sent; message it again once some of it reports.'
+          'You already have 1 task running, the most allowed at once. Nothing was sent; message it again once one of them reports.'
       }
     })
     expect(await rowOf(h.d, first)).toMatchObject({ state: 'done' })
@@ -642,7 +642,7 @@ describe('a work round, its slot and its outcome', () => {
       expect(call.wake).toMatchObject({ delivered: true })
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'startTask', message: 'ask bot-b about the schema' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'ask bot-b about the schema' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(told(h.rt.hosts, 'PEER-TASK')).toBeGreaterThanOrEqual(1), WAIT)
     // The child's turn ended while the peer still works: its round stays open and nothing is reported.
@@ -685,7 +685,7 @@ describe('a work round, its slot and its outcome', () => {
       expect(call.wake).toMatchObject({ delivered: true })
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'startTask', message: 'ask bot-remote about the schema' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'ask bot-remote about the schema' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(sent).toHaveLength(1), WAIT)
     await subInputs(h.dispatched)[0]!.turn
@@ -721,7 +721,7 @@ describe('a work round, its slot and its outcome', () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     h.rt.behavior.subQueue.push('hang')
-    const created = await send(h.d, caller, { action: 'startTask', message: 'long task' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'long task' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(1), WAIT)
     expect((await h.d.collab.continueSubsession(continuation(caller, child, 'queued'))).delivered).toBe(true)
@@ -770,11 +770,11 @@ describe('one submission, one input', () => {
   })
 })
 
-describe('one startTask submission, one task', () => {
-  it('returns the first receipt for a replayed startTask, in process and from the recorded message', async () => {
+describe('one delegateTask submission, one task', () => {
+  it('returns the first receipt for a replayed delegateTask, in process and from the recorded message', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
-    const args = { action: 'startTask', message: 'investigate the flaky test' }
+    const args = { action: 'delegateTask', message: 'investigate the flaky test' }
     const first = await send(h.d, caller, args, 'nonce-1:7')
     expect(first.wake).toMatchObject({ delivered: true, subsession: true })
     expect(await send(h.d, caller, args, 'nonce-1:7')).toEqual(first)
@@ -811,7 +811,7 @@ describe('admission that cannot be decided yet', () => {
   it('opens no round while the previous round’s report still waits for admission', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: true })
     const caller = await seedCaller(h.d)
-    const created = await send(h.d, caller, { action: 'startTask', message: 'task' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'task' })
     const child: string = created.taskId
     expect(await h.d.store.assistantSubsessions.claimReport('bot-a', child, '{"text":"held"}')).toBe(true)
     const res = await h.d.collab.continueSubsession(continuation(caller, child))
@@ -953,7 +953,7 @@ describe('the owning session and its task answer each other’s messages', () =>
       await new Promise<void>((resolve) => (settleRound = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'startTask', message: 'long work' })
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'long work' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     const input = await lastReceived(h.d, child, 'taskInput')
@@ -989,7 +989,7 @@ describe('a task’s standing context', () => {
     expect(standing.taskReportingAppend).toContain(
       '`{"action":"replyToSession","messageId":"<id of its message>","message":"..."}`; a reply does not end your work.'
     )
-    expect(standing.taskReportingAppend).toContain('You are a background task of your own session sid-parent-1')
+    expect(standing.taskReportingAppend).toContain('You are a task your own session sid-parent-1 delegated')
     expect(standing.taskReportingAppend).toContain('the daemon tells that session automatically')
     expect(standing.taskReportingAppend).not.toContain('Send it exactly once')
   })

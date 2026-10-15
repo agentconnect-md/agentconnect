@@ -65,7 +65,7 @@ async function settledTask(thread: string, replyThread: string | undefined) {
     clock.advance(BG_TASK_WAKE_GRACE_MS)
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1), WAIT)
     const [, msg] = dispatch.mock.calls[0] as unknown as [string, NormalizedMessage]
-    expect(msg.text).toContain('[background job finished] Run the test suite')
+    expect(msg.text).toContain('[background task finished] Run the test suite')
     await store.close()
     return msg
   }

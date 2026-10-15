@@ -53,7 +53,7 @@ const wire = vi.hoisted(() => ({
   steps: undefined as unknown[] | undefined,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
   drafts: [] as string[],
-  /** The agent is in assistant mode; the Background work tab reads for one, or for any agent whose daemon serves every agent's. */
+  /** The agent is in assistant mode; the Tasks tab's Delegated group reads for one, or for any agent whose daemon serves every agent's. */
   assistantMode: false,
   /** What the agent's daemon advertises; unset lists no daemon at all. */
   daemonFeatures: undefined as string[] | undefined,
@@ -1072,9 +1072,7 @@ describe('the Tasks tab', () => {
     expect(container?.querySelector('[data-tasks-panel]')).not.toBeNull()
 
     await openTab('tasks')
-    expect(container?.querySelector('[data-dock-action="tasks"]')?.getAttribute('aria-label')).toBe(
-      'Refresh runtime jobs'
-    )
+    expect(container?.querySelector('[data-dock-action="tasks"]')?.getAttribute('aria-label')).toBe('Refresh tasks')
     expect(container?.querySelector('[data-dock-empty]')).toBeNull()
   })
 
@@ -1128,14 +1126,18 @@ describe('the Tasks tab', () => {
     expect(wire.taskCalls).toEqual([])
   })
 
-  it('draws an untracked session as data, with no badge and no error', async () => {
-    // A runtime that publishes no task lifecycle holds no lease at all. That is an answer, not a failure, and it is a different sentence from "nothing is running".
-    wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
+  it('names the tab Tasks', async () => {
     await render()
     await openTab('tasks')
-    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('doesn’t report its jobs')
-    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toBe('Runtime jobs')
-    expect(container?.querySelector('[data-dock-empty]')).toBeNull()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toBe('Tasks')
+  })
+
+  it('drops the tab for an untracked session with nothing delegated', async () => {
+    // A runtime that publishes no task lifecycle holds no lease: an answer, not a failure, and nothing to draw.
+    wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
+    await render()
+    expect(wire.taskCalls).toHaveLength(1)
+    expect(container?.querySelector('[data-dock-tab="tasks"]')).toBeNull()
   })
 })
 
@@ -1368,7 +1370,7 @@ describe('a session with no agent behind it', () => {
   })
 })
 
-describe('the Background work tab', () => {
+describe('the Tasks tab’s Delegated group', () => {
   const openTab = async (key: string) => {
     await act(async () => {
       container?.querySelector<HTMLElement>(`[data-dock-tab="${key}"]`)?.click()
@@ -1389,8 +1391,12 @@ describe('the Background work tab', () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
     wire.assistantMode = true
   }
+  // An untracked runtime has no group of its own, so the tab is there only for what the conversation delegated.
+  const untracked = () => {
+    wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
+  }
 
-  it('lists the background work this conversation started, badged with the running ones', async () => {
+  it('lists this conversation’s delegated tasks in the Tasks tab, badged with the running ones', async () => {
     assistant()
     wire.subsessions = [child, { ...child, sessionId: 'child-2', title: 'Old work', state: 'done', canStop: false }]
     await render()
@@ -1398,12 +1404,15 @@ describe('the Background work tab', () => {
       agentId: 'agent-1',
       opts: { parentSessionId: 'session-1', limit: 20 }
     })
-    const tab = container?.querySelector('[data-dock-tab="subsessions"]')
+    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+    const tab = container?.querySelector('[data-dock-tab="tasks"]')
     expect(tab?.textContent).toContain('1')
-    await openTab('subsessions')
-    expect(container?.querySelector('[data-dock-action="subsessions"]')?.getAttribute('aria-label')).toBe(
-      'Refresh background work'
+    await openTab('tasks')
+    expect(container?.querySelector('[data-dock-action="tasks"]')?.getAttribute('aria-label')).toBe('Refresh tasks')
+    const groups = Array.from(container?.querySelectorAll<HTMLElement>('[data-task-group]') ?? []).map(
+      (group) => group.dataset.taskGroup
     )
+    expect(groups).toEqual(['turn', 'delegated'])
     const panel = container?.querySelector('[data-subsessions-panel]')
     expect(panel?.textContent).toContain('Fix the flaky test')
     expect(panel?.querySelector('a[href="/acme/sessions/child-1"]')).not.toBeNull()
@@ -1413,7 +1422,7 @@ describe('the Background work tab', () => {
     assistant()
     wire.subsessions = [child]
     await render()
-    await openTab('subsessions')
+    await openTab('tasks')
     const stop = Array.from(
       container?.querySelectorAll<HTMLButtonElement>('[data-subsessions-panel] button') ?? []
     ).find((button) => button.textContent?.includes('Stop'))
@@ -1426,42 +1435,46 @@ describe('the Background work tab', () => {
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Stopped.')
   })
 
-  it('offers no tab for a conversation that opened none', async () => {
+  it('offers no tab for an untracked session whose conversation delegated nothing', async () => {
     assistant()
+    untracked()
     await render()
     expect(wire.subsessionCalls).toHaveLength(1)
-    expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')).toBeNull()
   })
 
   it('keeps the tab with the console flag off for an agent already in assistant mode', async () => {
     wire.assistantMode = true
+    untracked()
     wire.subsessions = [child]
     await render()
     expect(wire.subsessionCalls).toHaveLength(1)
-    expect(container?.querySelector('[data-dock-tab="subsessions"]')).not.toBeNull()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')).not.toBeNull()
   })
 
-  it('reads nothing and offers no tab for an agent outside assistant mode whose daemon lists only assistant mode’s, flag or not', async () => {
+  it('reads nothing and draws no group for an agent outside assistant mode whose daemon lists only assistant mode’s, flag or not', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
     wire.assistantMode = false
+    untracked()
     wire.subsessions = [child]
     for (const features of [undefined, ['assistant-activity-v1', 'assistant-subsession-panel-v1']]) {
       wire.daemonFeatures = features
       await render()
-      expect(container?.querySelector('[data-dock-tab="subsessions"]')).toBeNull()
+      expect(container?.querySelector('[data-dock-tab="tasks"]')).toBeNull()
       expect(container?.querySelector('[data-subsessions-panel]')).toBeNull()
       expect(wire.subsessionCalls).toEqual([])
     }
   })
 
-  it('lists and stops an agent’s background work outside assistant mode when its daemon serves every agent’s', async () => {
+  it('lists and stops an agent’s delegated tasks outside assistant mode when its daemon serves every agent’s', async () => {
     wire.assistantMode = false
     wire.daemonFeatures = ['assistant-activity-v1', 'assistant-subsession-panel-v1', 'activity-every-agent-v1']
+    untracked()
     wire.subsessions = [child]
     await render()
     expect(wire.subsessionCalls[0]).toEqual({ agentId: 'agent-1', opts: { parentSessionId: 'session-1', limit: 20 } })
-    expect(container?.querySelector('[data-dock-tab="subsessions"]')?.textContent).toContain('1')
-    await openTab('subsessions')
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toContain('1')
+    await openTab('tasks')
     const panel = container?.querySelector('[data-subsessions-panel]')
     expect(panel?.textContent).toContain('Fix the flaky test')
     const stop = Array.from(panel?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) =>
@@ -1493,9 +1506,9 @@ describe('the Background work tab', () => {
         wire.mobileAction?.onClick()
         await Promise.resolve()
       })
-      await openTab('subsessions')
+      await openTab('tasks')
       // The sheet labels only the active tab, so this one carries its name for screen readers alone while inactive.
-      expect(container?.querySelector('[data-dock-tab="subsessions"]')?.textContent).toContain('Background work')
+      expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toContain('Tasks')
       expect(container?.querySelector('[role="dialog"]')?.querySelector('[data-subsessions-panel]')).not.toBeNull()
       const panel = container?.querySelector('[data-subsessions-panel]')
       expect(Array.from(panel?.querySelectorAll('button') ?? []).some((b) => b.textContent?.includes('Stop'))).toBe(

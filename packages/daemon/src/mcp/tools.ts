@@ -14,7 +14,7 @@ import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
-import { STOP_TASK_TOOL } from './ops/assistant-subsessions.js'
+import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
 import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
 
@@ -24,16 +24,15 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   return {
     name: 'sendMessage',
     description:
-      'Send outside your current conversation. Required action: callAgent asks another agent to work or answer ' +
-      'you (sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
-      'there. startTask starts a background task of this session for long work you do yourself: for "fix this ' +
-      'bug and open a PR", call it before exploring, say it started, and end your turn. messageTask sends a task ' +
-      'you started more (taskId); a task reports each round’s outcome, and stopTask stops it. replyToSession ' +
-      'answers a message another session sent you, by its messageId, as often as needed; replies are not ' +
-      'broadcast. postMessage ' +
-      'reaches a person, channel, or another thread; it starts no work and gets no reply, even mentioning an ' +
-      'agent’s bot. For your current conversation, write your ordinary reply. To get a peer’s result, use ' +
-      'toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
+      'Send outside your current conversation. Required action: callAgent asks a peer to work or answer you ' +
+      '(sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
+      'there. delegateTask hands long work of your own, spanning turns, to a task of this session that people can ' +
+      'see and stop: call it before exploring, say so, end your turn. Work you finish within this turn goes to your ' +
+      'runtime’s own subagent tool. messageTask sends a task more (taskId); a task reports each round itself; ' +
+      'listTasks lists them, stopTask stops one. replyToSession answers a message another session sent you, by its ' +
+      'messageId; replies are not broadcast. postMessage reaches a person, channel, or another thread; it starts no ' +
+      'work and gets no reply. For your current conversation, write your ordinary reply. To get a peer’s result, ' +
+      'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
       'examples. Calls without action fail without sending anything.',
     inputSchema: obj(
       {
@@ -72,7 +71,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
           minLength: 1,
           description: 'callAgent only: that agent’s existing session (a childSessionId), instead of channel.'
         },
-        taskId: { type: 'string', minLength: 1, description: 'messageTask only: the taskId startTask returned.' },
+        taskId: { type: 'string', minLength: 1, description: 'messageTask only: the taskId delegateTask returned.' },
         messageId: {
           type: 'string',
           minLength: 1,
@@ -815,7 +814,7 @@ const LIST_AGENTS_DESCRIPTION =
   '@mentioning member ids in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents ' +
   'present in that channel. Only agents you are allowed to reach are returned. Your own entry is included so you ' +
   'can use its agent id in `callAgent` with `channel` to open and activate a new channel-root conversation with ' +
-  'yourself; for background work of your own, use `startTask` instead (see `getToolGuide`).'
+  'yourself; to hand long work of your own to a task, use `delegateTask` instead (see `getToolGuide`).'
 
 export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
@@ -833,11 +832,11 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
     name: 'viewSessionStatus',
     description:
-      'Read execution and reply-delivery state for a task or session YOU started. Pass the `taskId` a startTask ' +
+      'Read execution and reply-delivery state for a task or session YOU started. Pass the `taskId` a delegateTask ' +
       'returned, or the `childSessionId` a callAgent returned as `sessionId`, then follow the returned `nextAction`. ' +
       'This is diagnostic only; it never returns the reply body.',
     inputSchema: obj({
-      taskId: { type: 'string', minLength: 1, description: 'The `taskId` a `sendMessage` startTask returned.' },
+      taskId: { type: 'string', minLength: 1, description: 'The `taskId` a `sendMessage` delegateTask returned.' },
       sessionId: {
         type: 'string',
         minLength: 1,
@@ -1114,6 +1113,7 @@ export const ALL_TOOL_NAMES = [
       ...ASSISTANT_ITEM_TOOLS,
       PROPOSE_TOOL,
       ...ASSISTANT_REMINDER_TOOLS,
+      LIST_TASKS_TOOL,
       STOP_TASK_TOOL
     ]
       .map((t) => t.name)

@@ -7,7 +7,7 @@ import { offersDirectMessages, platformLabel } from '../../platforms/read-ports.
 import { optionalEnum, parseArgs, requiredEnum } from './args.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { SEND_MESSAGE_ACTIONS, type SendMessageAction } from './send-message-actions.js'
-import { MESSAGE_TASK_GUIDE, START_TASK_GUIDE, type GuideExample } from './task-guide.js'
+import { DELEGATE_TASK_GUIDE, MESSAGE_TASK_GUIDE, type GuideExample } from './task-guide.js'
 
 export type { GuideExample }
 
@@ -60,8 +60,8 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'conversation, so without needsReply nothing comes back, not even a failure. A bare id asks for no report ' +
           'on this call; it does not forbid one or clear an earlier request.',
         'Without `channel` the call is postless: nothing is posted anywhere. It reaches a peer only; your own id ' +
-          'without `channel` is refused — work of your own that needs no conversation is a background task: use ' +
-          'startTask.',
+          'without `channel` is refused — work of your own that needs no conversation is a delegated task: use ' +
+          'delegateTask.',
         'With `channel` it also posts one visible message at that channel’s root, @-mentions the target, and ' +
           `anchors the target to that post. Your own id (${ctx.agentId}) with \`channel\` opens and activates a ` +
           'visible conversation of your own there, where people can follow and respond. That session belongs to the ' +
@@ -76,7 +76,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'its context and its other callers. Every call, even a repeat into the same session, is a new message it ' +
           'answers by that message’s id. It cannot be combined ' +
           'with `channel`, never names your own sessions (use messageTask for your task), and never ' +
-          'falls back to another session: an unknown id, another agent’s id, a background task, or a ' +
+          'falls back to another session: an unknown id, another agent’s id, a task, or a ' +
           'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
           '"session_not_found"`.',
         'Not accepted: `thread`, `attachment`, `toUser`.',
@@ -139,7 +139,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         }
       ]
     },
-    startTask: START_TASK_GUIDE,
+    delegateTask: DELEGATE_TASK_GUIDE,
     messageTask: MESSAGE_TASK_GUIDE,
     replyToSession: {
       action: 'replyToSession',
@@ -158,9 +158,9 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'The message is injected into that session; nothing is posted on a platform, and that session’s own reply ' +
           'keeps its visible route. Never post the answer at that conversation’s channel root instead: that starts ' +
           'a separate conversation.',
-        'A task started with startTask answers the messages of the session that started it any time — progress, a ' +
+        'A task delegated with delegateTask answers the messages of the session that started it any time — progress, a ' +
           'question, or its result — and a reply does not end its work; the daemon reports the end of each round of ' +
-          'work itself. An approved proposal’s work or a patrol replies once, at the end, and that reply settles it.',
+          'work itself. An approved proposal or a patrol replies once, at the end, and that reply settles it.',
         'Only `action`, `messageId`, and `message` are accepted; `sessionId`, `taskId` and `childSessionId` are not ' +
           'message ids.',
         'The result is {delivered, targetSession?, inReplyTo, reason?} with no `ok` wrapper. An id that names no ' +
@@ -263,9 +263,9 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
   const notes: Partial<Record<SendMessageAction, string>> = {}
   if (isSubsessionCoordinate(ctx.thread)) {
     const unavailable =
-      'Unavailable here: this session is itself background work and cannot start or message tasks. Do the work ' +
-      'here, or report back with replyToSession and let the session that started it decide.'
-    notes.startTask = unavailable
+      'Unavailable here: this session is itself a task, a patrol or an approved proposal and cannot delegate or ' +
+      'message tasks. Do the work here, or report back with replyToSession and let the session that started it decide.'
+    notes.delegateTask = unavailable
     notes.messageTask = unavailable
   }
   if (isTaskCoordinate(ctx.thread) || isPatrolCoordinate(ctx.thread)) {

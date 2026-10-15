@@ -77,7 +77,7 @@ async function boot() {
     prompt: vi.fn(async (sid: string, blocks: unknown[]) => {
       const prompt = JSON.stringify(blocks)
       prompts.push(prompt)
-      const text = prompt.includes('as a background task') ? 'the build is green' : `answer ${prompts.length}`
+      const text = prompt.includes('as a delegated task') ? 'the build is green' : `answer ${prompts.length}`
       onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
       return { stopReason: 'end_turn' }
     }),
@@ -201,8 +201,8 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
 
   it.each([
     ['patrol', patrolCoordinate('p-1'), '[patrol] two new issues need you'],
-    ['task', taskCoordinate('t-1'), '[approved work] the approved change is merged'],
-    ['failure', subsessionCoordinate('s-1'), '[approved work ended] it stopped before finishing']
+    ['task', taskCoordinate('t-1'), '[approved proposal] the approved change is merged'],
+    ['failure', subsessionCoordinate('s-1'), '[approved proposal ended] it stopped before finishing']
   ])('from a daemon %s report, in D1 and C1', async (kind, callerThread, text) => {
     const b = await boot()
     for (const [i, channel] of CHANNELS.entries()) {

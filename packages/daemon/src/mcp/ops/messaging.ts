@@ -261,7 +261,7 @@ export interface ContinueSubsessionReq {
   callerTransportScope?: string
   callerChannel: string
   callerThread: string
-  /** The task's handle: the `taskId` `startTask` returned, or its outward id. */
+  /** The task's handle: the `taskId` `delegateTask` returned, or its outward id. */
   sessionId: string
   text: string
   /** A stable id of this submission, so a replay of it is admitted once; minted by the daemon when absent. */

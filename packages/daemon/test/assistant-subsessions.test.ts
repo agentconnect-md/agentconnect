@@ -191,6 +191,38 @@ describe('the assistant sub-session index', () => {
     ])
     expect(await s.assistantSubsessions.listForParent(a, 'sid-unknown', { limit: 10 })).toEqual([])
   })
+
+  it('lists every row reporting to one owning session by id and key, running first, with the total', async () => {
+    const s = await open()
+    const [a, b] = [agent(), agent()]
+    const index = s.assistantSubsessions
+    const owner = { sessionId: 'sid-parent-1', key: row(a, 'x').parentSessionKey }
+    await index.open({ ...row(a, 'done'), now: 1_000 })
+    await index.open({ ...row(a, 'task-approved'), now: 2_000 })
+    await index.openPatrol({ ...row(a, 'patrol-1'), now: 3_000 }, { startedSince: 0, staleBefore: 0 })
+    await index.open({ ...row(a, 'running'), now: 500 })
+    await index.finish(a, childKey(a, 'done'), 'done')
+    await index.finish(a, childKey(a, 'patrol-1'), 'failed')
+    // Another owner by id, the same id on another key (a session recreated elsewhere), and another agent.
+    await index.open({ ...row(a, 'elsewhere', 'sid-parent-2'), now: 4_000 })
+    await index.open({ ...row(a, 'other-key'), parentSessionKey: 'slack:C0GENERAL:append:2:x', now: 4_000 })
+    await index.open({ ...row(b, 'theirs'), now: 4_000 })
+    const keys = (rows: { childSessionKey: string }[]) => rows.map((r) => r.childSessionKey)
+
+    const all = await index.listForOwner(a, owner, 10)
+    expect(all.total).toBe(4)
+    expect(keys(all.rows)).toEqual([
+      childKey(a, 'task-approved'),
+      childKey(a, 'running'),
+      childKey(a, 'patrol-1'),
+      childKey(a, 'done')
+    ])
+    expect(all.rows.find((r) => r.childSessionKey === childKey(a, 'patrol-1'))).toMatchObject({ kind: 'patrol' })
+    const capped = await index.listForOwner(a, owner, 1)
+    expect([keys(capped.rows), capped.total]).toEqual([[childKey(a, 'task-approved')], 4])
+    expect(await index.listForOwner(a, { ...owner, sessionId: 'sid-unknown' }, 10)).toEqual({ rows: [], total: 0 })
+    expect(await index.listForOwner(b, owner, 10)).toEqual({ rows: [], total: 0 })
+  })
 })
 
 describe('the failure report a sub-session index row holds (assistant-mode.md §5.7)', () => {

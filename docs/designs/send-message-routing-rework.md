@@ -520,8 +520,8 @@ Agent-authored text cannot issue in-conversation control commands such as
 session message the calling session received. It is authorized and routed by that message's
 record alone ([`send-message-guide.md`](send-message-guide.md) §9.4): the reply goes only to the
 session that sent the message, and a message may be answered more than once. A session's origin
-records who created it and authorizes no reply (§9.6). A session's own background work is a task
-(`startTask`), and its replies and round reports reach its owning session the same way (§8).
+records who created it and authorizes no reply (§9.6). Work a session hands off is a delegated task
+(`delegateTask`), and its replies and round reports reach its owning session the same way (§8).
 Historical note: this section first authorized `sendMessage({"sessionId":"<parent>"})` against
 the caller's active or persisted origin; the delivery behavior below is unchanged.
 
