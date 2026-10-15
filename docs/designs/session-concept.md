@@ -10,12 +10,6 @@
 > match; read that document for the verification, hop-transition, and activation
 > rendezvous rules behind them.
 
-> **Reply update:** [`send-message-guide.md`](send-message-guide.md) §9.3–§9.6 is
-> implemented and authoritative for REPLIES. The `# Agent` block's `Parent session` line is
-> now `Created by session`, a record only: a session answers a message by its id with
-> `replyToSession {messageId}`, never by naming a parent session. Passages below that use
-> `Parent session` as a reply address describe the earlier design.
-
 > This document does one thing: define **session** precisely--what it is, what
 > it contains, how messages record source and destination, how agent-to-agent
 > communication and cross-platform sends enter sessions, and how **replies**
@@ -24,9 +18,10 @@
 > **All sending uses one `sendMessage` tool.** It combines the existing
 > `sendPlatformMessage`, which posts to a platform channel or user at
 > `mcp/tools.ts:65`, with `messageAgent`, which wakes another agent at
-> `mcp/tools.ts:409`. Agent-to-agent calls,
-> cross-platform messages, and replies to a parent session all use
-> `sendMessage`; see section 3.
+> `mcp/tools.ts:409`. Agent-to-agent calls, a session's own background tasks,
+> cross-platform messages, and replies to session messages all use
+> `sendMessage`, each selected by an explicit `action`; see section 3 and
+> [send-message-guide.md](send-message-guide.md).
 >
 > This terminology is shared by
 > [agent-collaboration-implementation.md](agent-collaboration-implementation.md),
@@ -63,8 +58,8 @@ sessionId                                                // Stable opaque addres
   - **Ownership is unique.** The final `agentId` segment of `sessionKey` is the
     owner. Every `type: agent` message in the session has that owner in `from`.
 - A session is logically addressed by `sessionKey`. Its runtime row also
-  contains `acpSessionId` created by `host.newSession(...)`. The
-  `SessionTarget.sessionId` used by `sendMessage` is this stable handle; it is
+  contains `acpSessionId` created by `host.newSession(...)`. The `sessionId` a
+  `callAgent` names to reach an existing peer session is this stable handle; it is
   also the value shown on the `Session` line of the `# Agent` block in section
   2.3. A model treats it as opaque.
 
@@ -101,13 +96,14 @@ its slot by the outward id (falling back to the ACP id, which is what a pre-v12 
 reported under) and works internally in ACP terms from there.
 
 LINEAGE is outward for the same reason, and it is the case where the ACP id fails hardest: an
-`originSessionId`, a `lineageReplyTo`, a `sendMessage` SessionTarget and a reported
-`parentSessionId` all name a session to someone who is not its runtime — another agent, another
-daemon, the CP. A lineage link written in the runtime's name matches nothing on the other side:
-the control plane keys its session rows by the outward id, so a child reporting an ACP-named
-parent is a child whose parent "does not exist" — no console lineage, and no visibility to
-inherit (session-visibility.md §5.1). The `Session` and `Parent session` lines of the `# Agent`
-block are the same id, which is what makes them usable as a SessionTarget at all.
+`originSessionId`, a `lineageReplyTo`, a session message's source, a `callAgent` `sessionId`
+and a reported `parentSessionId` all name a session to someone who is not its runtime — another
+agent, another daemon, the CP. A lineage link written in the runtime's name matches nothing on
+the other side: the control plane keys its session rows by the outward id, so a child reporting
+an ACP-named parent is a child whose parent "does not exist" — no console lineage, and no
+visibility to inherit (session-visibility.md §5.1). The `Session` and `Created by session` lines
+of the `# Agent` block carry the same kind of id, so either names a session the console, a status
+view or another daemon can find.
 
 What this rules out, in both directions:
 
@@ -181,7 +177,7 @@ type: 'text' | 'tool' | 'reasoning' | 'plan' | ...
 
 - `text` is a text segment.
 - `tool` is a tool call and its result. Agent-to-agent communication,
-  cross-platform sending, and replying to a parent all use the one
+  cross-platform sending, and replying to a session message all use the one
   `sendMessage` tool.
 - `reasoning` is reasoning work.
 - `plan` is the turn's task list. An ACP plan update carries the whole list
@@ -271,13 +267,18 @@ message's id (send-message-guide.md §9.6); it never submits this id as a reply 
 After consolidation:
 
 ```ts
-sendMessage(target: AgentTarget | UserTarget | ChannelTarget | SessionTarget, message: string): void
+sendMessage({ action, message, ...arguments }): Receipt
+// action: 'callAgent' | 'startTask' | 'messageTask' | 'replyToSession' | 'postMessage'
 ```
 
-The arguments are a top-level union of **two addressing modes** — `toAgent` (wake
-a peer agent) and `toUser` (reach one or more humans) — each with **two delivery forms**
-selected by the presence of `channel` (direct / channel root) — plus a bare
-`channel`-only post (no recipient) and the separate `sessionId` reply branch.
+Every call names its `action`, and the daemon validates the action's arguments before any
+effect ([send-message-guide.md](send-message-guide.md) §3). `callAgent` wakes a peer agent, or
+the caller itself into a channel, and `postMessage` reaches one or more humans or a channel: the
+**two addressing modes** below, `toAgent` and `toUser`, each with **two delivery forms**
+selected by the presence of `channel` (direct / channel root), plus a bare `channel`-only post
+(no recipient). The session-addressed actions are in section 3.2: `startTask` and
+`messageTask` for the session's own tasks, `replyToSession` to answer a session message by its
+id, and `callAgent` with `sessionId` for an existing peer session.
 
 The only visible in-thread form is the **update**: a bare `channel` post carrying
 `thread`, which places a message in an existing conversation the agent is NOT answering
@@ -290,13 +291,13 @@ See [send-message-routing-rework.md](send-message-routing-rework.md) §2.
 ### 3.1 AgentTarget / UserTarget: who to reach, and in which form
 
 ```ts
-// Mode 1 — wake one AgentConnect peer.
+// Mode 1 — action: 'callAgent', wake one AgentConnect peer (or yourself, with channel).
 type AgentTarget = {
   toAgent: string | { agentId: string; needsReply?: boolean } // object form: see section 5.4
-  channel?: string // absent ⇒ direct (postless wake); present ⇒ channel-root post + wake
+  channel?: string // absent ⇒ direct (postless wake, peers only); present ⇒ channel-root post + wake
 }
 
-// Mode 2 — reach human platform members.
+// Mode 2 — action: 'postMessage', reach human platform members.
 type UserTarget = {
   toUser: string | string[]  // one member id; the channel-root form also accepts a non-empty unique-id array
   platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // dm defaults to Slack; channel form defaults to current session
@@ -304,7 +305,7 @@ type UserTarget = {
   integrationId?: string     // pick a specific bot when the agent has several on the platform
 }
 
-// Bare post — publish a visible message without waking an agent or addressing a human,
+// Bare post — action: 'postMessage', publish a visible message without waking an agent or addressing a human,
 // at the channel root or, with `thread`, as an update inside an existing conversation.
 type ChannelTarget = {
   channel: string            // the channel ROOT unless `thread` names a conversation in it
@@ -317,14 +318,16 @@ type ChannelTarget = {
 Exactly one target key is required: `toAgent`, `toUser`, or `channel`. For the two
 recipient modes the form is decided by the presence of `channel`:
 
-| Mode             | direct                                                          | channel root                                                                                       |
-| ---------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post that @-mentions A, plus the wake |
-| `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM to one person         | `{"toUser":["U1","U2"],"channel":"C","message":"…"}` — one root post mentioning all listed users   |
-| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient; with `thread`, an update in that thread |
+| Mode             | direct                                                                               | channel root                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `toAgent`        | `{"action":"callAgent","toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"action":"callAgent","toAgent":"A","channel":"C","message":"…"}` — visible root post that @-mentions A, plus the wake   |
+| `toUser`         | `{"action":"postMessage","toUser":"U","message":"…"}` — Slack DM to one person       | `{"action":"postMessage","toUser":["U1","U2"],"channel":"C","message":"…"}` — one root post mentioning all listed users   |
+| `channel` (bare) | —                                                                                    | `{"action":"postMessage","channel":"C","message":"…"}` — root post, no recipient; with `thread`, an update in that thread |
 
-Only the bare `channel` branch accepts `thread`; supplying one on `toAgent`, `toUser`, or
-`sessionId` is rejected rather than silently posted at the root.
+Only the bare `channel` branch accepts `thread`; supplying one on `toAgent`, `toUser`, or a
+session-addressed action is rejected rather than silently posted at the root. A `callAgent` with
+the caller's own id needs `channel`: work of its own that needs no conversation is a task, and
+the refusal gives the exact `startTask` call to make instead.
 
 - The target must identify an action: `toAgent`, `toUser`, or `channel`. The
   daemon rejects an empty action and rejects mixing `toAgent` with `toUser` in
@@ -368,33 +371,43 @@ Only the bare `channel` branch accepts `thread`; supplying one on `toAgent`, `to
   (case 2a). That is deliberate: normal owner output already replies in the current
   thread, so an explicit `sendMessage` is for somewhere else. Addressing the current
   thread is the ordinary reply's job, not a coordinate on this tool. This is platform
-  placement, distinct from replying to a parent by SessionTarget, which uses only
-  `sessionId`.
+  placement, distinct from answering a session message with `replyToSession`, which uses
+  only `messageId`.
 - A `toAgent + channel` post renders the target's exact platform-native mention into the
   visible body, resolved from the daemon's conversation directory (never from model
   text). A target with no address in that conversation still receives its internal wake;
   the post is simply unaddressed.
 
-### 3.2 SessionTarget: session addressing
+### 3.2 Session addressing: `sessionId`, `taskId`, and `messageId`
 
 ```ts
-type SessionTarget = {
-  sessionId: string // Stable target handle from section 1.1
-}
+// action: 'callAgent' — a new message into an existing session of the named peer.
+type PeerSessionTarget = { toAgent: AgentRef; sessionId: string } // stable handle from section 1.1
+// action: 'startTask' takes only `message`; action: 'messageTask' names one of this session's tasks.
+type TaskTarget = { taskId: string }
+// action: 'replyToSession' — answer a session message this session received.
+type ReplyTarget = { messageId: string }
 ```
 
-- Inject the message directly into that session without platform or channel;
+- Each injects the message directly into a session without platform or channel;
   the daemon knows where it lives, even across platforms or daemons.
-- This implements a reply to a parent:
-  `sendMessage({ sessionId: <origin> }, message)`.
-- The caller may address only a session it may write, such as its origin or a
-  visible session. The daemon validates `sessionId`; an agent cannot inject into
-  an arbitrary session.
+- `callAgent` with `sessionId` reaches an existing peer session only when it resolves
+  to the agent named by `toAgent` and the people on the calling turn may read that
+  session's conversation (send-message-guide.md §9.2). It is exclusive with `channel`.
+- `startTask` starts a background task of the current session and returns its `taskId`;
+  `messageTask` sends that task more work. Only the task's **owning session**, the
+  session that started it, may message it or stop it with `stopTask`, on any of its turns
+  (send-message-guide.md §2.1, §8).
+- `replyToSession` answers one session message by its id, and goes only to the session
+  that sent it (section 5). It never names a session.
+- An unknown, foreign, or unowned id is refused in words that reveal nothing about other
+  sessions; an agent cannot inject into an arbitrary session.
 
 ### 3.3 Discrimination and invariants
 
-- If the call has `sessionId`, it is a SessionTarget; otherwise it must name
-  exactly one of `toAgent` / `toUser`.
+- The `action` selects the operation and its validator; the daemon never infers the
+  operation from which target fields are present, and a call without `action` is
+  rejected before any effect.
 - A `sendMessage` call is always recorded in the caller's session as a
   `{ type: agent, from: <caller> }` tool message. Its effects--posting an IM,
   waking another agent, or injecting another session--happen in other sessions,
@@ -437,103 +450,111 @@ silent.
 
 ---
 
-## 5. Replies: origin sessions and SessionTarget
+## 5. Replies: session messages and the origin
 
-In cases 2 and 3, one session is created by another session's `sendMessage`.
-The new session needs a path to return results to its creator. A reply uses
-`sendMessage` with a **SessionTarget**. There is no separate
-`replyToParentSession` tool.
+In cases 2 and 3, one session's `sendMessage` reaches another session. Every such
+input, whether a call, a task instruction, a reply, or a task's report, is a
+**session message**: it has its own id and trusted metadata naming the session and
+agent that sent it. A reply answers one session message, by its id, with
+`sendMessage({action: "replyToSession", messageId, message})`. There is no separate
+`replyToParentSession` tool, and no reply is addressed to a session. The full contract
+is [send-message-guide.md](send-message-guide.md) §9.
 
 ### 5.1 Origin session
 
-When session A wakes and creates session B, B stores a reference to A: its
-**origin session**, also called parent. This lineage edge is the only reliable
-way to find the destination of a reply. It cannot be derived from B's
-`sessionKey`, because B may live in another thread or platform. Capture it
-explicitly at wake-up and carry it through B's turn. It is independent of
-channel, thread, platform, and owner equality.
+When session A's call creates session B, B records A as its **origin session**: the
+creating agent and session, the kind of message that created it, and when. It is
+written once, when B's row is created, and later calls never overwrite it; a session a
+person or a schedule created has none. It cannot be derived from B's `sessionKey`,
+because B may live in another thread or platform, so the daemon takes it from the
+waking call's trusted lineage.
 
-### 5.2 Reply with `sendMessage({ sessionId: <origin> }, message)`
+The origin records creation only. The `# Agent` block shows it as `Created by session`,
+status views and the console may show it, and it still authorizes `viewSessionStatus`
+(section 5.4), but it authorizes no reply, routes no reply, and is no standing reply
+address. The creating call is itself a session message, so B answers its creator by
+that message's id like any other.
+
+### 5.2 Reply with `sendMessage({action: "replyToSession", messageId, message})`
 
 The operation **does not create a session**. It inserts a system message into
-the existing origin.
+the session that sent the answered message.
 
-- In the child session, the call is an ordinary
-  `{ type: agent, from: <child owner> }` tool record.
-- Its effect is an insertion into the origin:
+- In the replying session, the call is an ordinary
+  `{ type: agent, from: <replier> }` tool record.
+- Its effect is an insertion into the source session:
 
   ```text
-  { type: system, from: <child owner> }: <message>
+  { type: system, from: <replier> }: <message>
   ```
 
-  This feeds the reply as **system input** to the origin's owner and resumes or
+  This feeds the reply as **system input** to the source's owner and resumes or
   wakes that existing session, unlike cases 2 and 3, which create a session.
 
 As in agent-to-agent delivery, there is one outbound and one inbound record.
-`from` always identifies the child owner that initiated the reply.
+`from` always identifies the replier.
 
-A child can reply only when it has the origin `sessionId`. The daemon exposes
-`originSessionId` in inbound context only when a session has a parent. A
-human-created root session has no origin and receives no ID. The daemon rejects
-any SessionTarget the caller is not allowed to write. With one tool, parent
-availability is represented by the presence of an origin ID plus daemon
+The answered message's record alone decides the reply: the id must name a message
+the calling session received, and the reply goes only to that message's source. An
+unknown, foreign, or forged id is refused with `message_not_found`, which reveals
+nothing about other sessions. A message may be answered more than once, a reply is
+itself a session message its recipient can answer in turn, and which message woke the
+current turn or which caller came last is never consulted. With one tool, what a
+session may answer is represented by the messages it received plus daemon
 authorization, not by injecting or omitting a separate reply tool.
 
-### 5.3 Implementation: how a reply finds its parent
+### 5.3 Implementation: how a reply finds its source
 
-The parent is not discovered later; it is **captured at wake-up** and carried by
-the daemon as trusted per-turn `CallMeta`. Existing `messageAgent` already
-implements the same-thread form, and unified `sendMessage` reuses it.
+The source is not discovered later; it is **recorded when the message is admitted**,
+from lineage the daemon carries as trusted per-turn `CallMeta`, a daemon-created
+structure that is not model-visible prompt content.
 
-1. **Capture the lineage edge at wake-up.** When agent A calls `sendMessage` to
-   wake B, the daemon calls
-   `dispatch(toAgentId, msg, integrationId, undefined, callMeta)` at
-   `daemon.ts:3608`. `CallMeta`, defined at `daemon.ts:426`, is a daemon-created
-   trusted structure and is not model-visible prompt content:
+1. **Carry the lineage with the call.** When agent A's `sendMessage` reaches B, the
+   sending daemon mints the message id from the submission identity, so a transport
+   replay keeps it, and dispatches with:
 
    ```ts
    interface CallMeta {
      callFrom: string // Caller agent ID
      hopCount: number // Agent-call depth for loop limits
      deliveryId: string
-     originSessionId: string // Stable caller session address
+     originSessionId?: string // The sending session's outward id: the message's source
+     messageId?: string // This session message's id
+     messageKind?: SessionMessageKind // call, taskInput, reply, or report
+     inReplyTo?: string // For a reply, the message it answers
+     needsReply?: boolean // The sender asked for an outcome
    }
    ```
 
-   `originSessionId` is new relative to existing `CallMeta`. Existing
-   same-thread `messageAgent` can reuse child coordinates and needs only
-   `callFrom`; cases 2, 3, and 3b may place the child in another thread or
-   platform, so the parent cannot be inferred and must be addressed directly.
+   Across daemons the same fields ride the relay frames; the relay forwards the
+   message fields only to a daemon that advertises them (send-message-guide.md §9.8).
 
-2. **Attach it to the child's turn and expose it to the child.** When B's turn
-   starts, the daemon calls
-   `this.activeTurnCallMeta.set(key, callMeta)` at `daemon.ts:6303`, where `key`
-   is B's logical `sessionKey`, and deletes it at turn end at `daemon.ts:6605`.
-   It also writes `originSessionId` as `Parent session` in B's `# Agent`
-   system-prompt block at `session-manager.ts:312`. B can then call
-   `sendMessage({sessionId: <Parent session>})`. Only when the wake carries
-   `needsReply` does the daemon also inject a report-back directive into the
-   child session: reply exactly once at completion, then end the turn without
-   repeating the result in ordinary child-session output.
-3. **Authorize and inject on reply.** When B calls a SessionTarget, the daemon:
-   - Gets `inbound` from `activeTurnCallMeta.get(callerKey)` at
-     `daemon.ts:3491`.
-   - Verifies that the target is writable by B, such as
-     `inbound.originSessionId` or another visible session.
-   - Carries no reply correlation: the origin lineage alone routes the reply
-     (`correlationId` was removed with orchestration, #2979).
+2. **Record the message on both sides.** The receiving daemon records the message
+   when it admits the input, before the model sees it: its recipient, source session
+   and agent, the return route a reply needs, its kind, and whether a reply was
+   requested. The sending daemon records what it sent. B's input opens with
+   `[Message <id>]` and its source and, when a reply is requested, closes with the
+   exact `replyToSession` call; standing context lists the messages B may still answer.
+   A task's input names its owning session as the source.
+3. **Authorize and route on reply.** When B calls `replyToSession`, the daemon reads
+   the record by id, refuses unless its recipient is B, and delivers to the source by
+   the recorded return route: a local injection, or over the relay as
+   `deliveryKind: "session-reply"` with `lineageReplyTo` and `inReplyTo`. The source's
+   daemon admits it only into the session its own sent record names for that id. A
+   reply to one of B's own tasks is admitted like `messageTask`.
 4. **Preserve boundaries and invariants:**
-   - Caller identity comes from daemon session context. `sessionId` is a tool
-     input but is authorized, so an agent cannot inject arbitrary sessions.
-   - A root human-created session has no `callMeta` or origin and is not
-     authorized to reply elsewhere.
+   - Caller identity comes from daemon session context. `messageId` is a tool
+     input but is authorized against the record, so an agent cannot inject
+     arbitrary sessions.
+   - A root human-created session has no origin and, until another session
+     messages it, nothing to answer.
    - Reply injection is another agent call and obeys `hopCount` with
      `MAX_AGENT_CALL_HOPS` at `daemon.ts:3493`. Same-owner loops from cases 2a
      and 3 are bounded by [loop-breaker-design.md](loop-breaker-design.md).
-   - The origin may already be running. Injection must pass through the
+   - The source may already be running. Injection must pass through the
      per-session serialization gate in section 4 of
      `agent-collaboration-implementation.md` to avoid racing its pending turn.
-   - The origin may live on another daemon. Body delivery uses the relay data
+   - The source may live on another daemon. Body delivery uses the relay data
      plane through `routeAgentMsgCrossDaemon` at `daemon.ts:3623`, never the
      Control Plane.
 
@@ -545,12 +566,12 @@ work therefore needs a handle on the child and a way to ask how it is going.
 
 - **The handle.** An admitted peer wake returns `childSessionId` alongside
   `wake` — the child's logical session key, the same value as
-  `wake.targetSession`. A refused wake opened nothing, so the field is absent
+  `wake.targetSession`. A `startTask` returns the same kind of handle as
+  `taskId`. A refused wake opened nothing, so the field is absent
   and `wake.reason` explains why.
-- **Polling: `viewSessionStatus(sessionId)`.** The read counterpart of a
-  SessionTarget reply, and authorized as its mirror image: a child may reply
-  **up** its lineage, a parent may read **down** it, and neither may reach
-  sideways. The tool takes the `childSessionId` and returns
+- **Polling: `viewSessionStatus`.** The read counterpart of a reply, authorized
+  by lineage: a parent may read **down** it, and nobody may reach sideways. The
+  tool takes the `childSessionId` (as `sessionId`) or a task's `taskId` and returns
   `{ sessionId, agentId, status, state, updatedAt }`, where `status`
   collapses the section 7.3 lifecycle plus the last turn's outcome:
 
@@ -604,39 +625,38 @@ work therefore needs a handle on the child and a way to ask how it is going.
   window before its session row exists is still answered (`starting`) and still
   authorized.
 
-- **A child may have more than one parent.** The same logical session can be woken
-  by different parents over its life. Both the durable first-wins
+- **A child may have more than one caller.** The same logical session can be
+  woken by different sessions over its life. Both the durable first-wins
   `originSessionId` and the most recent waker recorded at admission are authorized
-  to read it — denying the second would refuse a parent the child it just started.
-  The write side matches: the report-back directive names the current waker.
+  to read it — denying the second would refuse a caller the child it just started.
+  Replies need no such rule: each call is its own message, answered by its id.
 
-- **Push: `toAgent.needsReply`.** Polling tells the parent _that_ the child
+- **Push: `toAgent.needsReply`.** Polling tells the caller _that_ the child
   stopped, never _what_ it produced. `needsReply: true` asks for the result
   instead: the daemon carries the flag as trusted `CallMeta` (never in the
-  delivered text) and prompt assembly turns it into a standing directive in the
-  child's system-prompt append, naming `originSessionId` as the reply target.
-  It travels cross-daemon on the `rd/agentmsg` frames, so a remote child takes on
-  the same obligation. The obligation is persisted on the child session and
-  therefore sticky — it survives resume and later human-triggered turns — and it
-  does **not** cascade: a grandchild is obliged only if its own parent asks.
-  Prefer this over a tight polling loop.
-
-  A session may be woken by more than one parent. The directive always names the
-  parent **this turn** may actually reply to (the turn's wake origin, which is
-  what the SessionTarget authorizer accepts), and is restated as a turn-scoped
-  block when the standing context named a previous one — the durable link itself
-  stays first-wins.
+  delivered text), and it opens a reply obligation on that one message. The
+  message's input closes with the exact `replyToSession` call for its id, and
+  standing context lists the messages the child may still answer, open obligations
+  first. It travels cross-daemon on the `rd/agentmsg` frames, so a remote child
+  takes on the same obligation. The obligation is persisted with the message
+  record — it survives resume and later human-triggered turns — and it does
+  **not** cascade: a grandchild is obliged only if its own caller asks. Answering
+  one message settles only that message's obligation. A task needs no flag: every
+  round reports its outcome to the owning session automatically. Prefer this over
+  a tight polling loop.
 
 ### 5.5 Two reply shapes
 
 - **Cross-agent reply, cases 2b and 3b:** child owner B inserts
-  `{ type: system, from: agentB }` into agent A's origin. This is the
-  worker-to-main result collection path from section 3 of
-  `agent-collaboration-implementation.md`.
-- **Same-agent reply, cases 2a and 3:** child and origin are both owned by A.
-  The child inserts `{ type: system, from: agentA }` into A's older session.
-  This creates a self-loop whose stopping rule belongs to
-  [loop-breaker-design.md](loop-breaker-design.md).
+  `{ type: system, from: agentB }` into the session of agent A that sent the
+  answered message. This is the worker-to-main result collection path from
+  section 3 of `agent-collaboration-implementation.md`.
+- **Same-agent reply:** a session A opened with a self `callAgent` into a
+  channel, or a task of A's session, inserts `{ type: system, from: agentA }`
+  into A's older session. This creates a self-loop whose stopping rule belongs to
+  [loop-breaker-design.md](loop-breaker-design.md). A session initialized by a
+  bare post (cases 2a and 3) received no session message, so it has nothing to
+  answer.
 
 ---
 
@@ -648,15 +668,18 @@ work therefore needs a handle on the child and a way to ask how it is going.
   to A       | {type: human, from: humanA}     @agentA request            |
              |                                                            |
   A output ->| {type: agent, from: agentA}     text: "..."                |
-             | {type: agent, from: agentA}                               |
-             |   tool: sendMessage({toAgent:"agentB", ...}, ...)          |-- A2A origin
-             +-----------------------------------------------^------------+
-                    | wake and create, B.origin = A           | SessionTarget A
-                    v                                          | inserts system from B
-             +---------------- session B (owner: agentB) ------+----------+
-  inbound -> | {type: system, from: agentA}     @agentB request           |
-  B output ->| {type: agent, from: agentB}                               |
-             |   tool: sendMessage({sessionId: A}, ...)                   |-- reply origin
+             | {type: agent, from: agentA}                                |
+             |   tool: sendMessage({action:"callAgent",                   |
+             |                      toAgent:"agentB", ...})               |-- A2A call
+             +------------------------------------------------^-----------+
+                    | message m1, source A;                   | reply to m1
+                    | creates B, B.origin = A                 | inserts system from B
+                    v                                         |
+             +---------------- session B (owner: agentB) -----+-----------+
+  inbound -> | {type: system, from: agentA}     [Message m1] request      |
+  B output ->| {type: agent, from: agentB}                                |
+             |   tool: sendMessage({action:"replyToSession",              |
+             |                      messageId:"m1", ...})                 |-- reply
              +------------------------------------------------------------+
 ```
 
@@ -675,16 +698,17 @@ A system prompt starts the session, followed by a human mention:
 --- session 1 started ---            (owner: agentA)
 {type: system}:                      (system prompt)
                                      # Agent ... - Thread: T1 - Session: S1
-                                     # No "Parent session" line
+                                     # No "Created by session" line
 {type: human, from: humanA}:         @agentA Please handle this.
 ```
 
-Both messages are inbound to agent A. Session 1 is a root, so it has no
-`Parent session` and nowhere to reply through SessionTarget.
+Both messages are inbound to agent A. Session 1 is a root, so it has no origin,
+and having received no session message it has nothing to answer with
+`replyToSession`.
 
 ### 7.2 Case 2a: post to a channel without mentioning another agent
 
-Agent A calls `sendMessage` with only `channel`, no `toUser` or `toAgent`.
+Agent A calls `sendMessage` with action `postMessage` and only `channel`, no `toUser` or `toAgent`.
 This is a plain channel post. It initializes a new idle session owned by A,
 keyed by the returned platform message id, but does **not** run a model turn.
 The post is A's own output rather than a new request, so activating on it would
@@ -694,7 +718,7 @@ allow `sendMessage` to recursively create more roots.
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {channel: "#channel"},
+                                       {action: "postMessage", channel: "#channel"},
                                        msg="Please review this.")
 
 --- session 2 initialized ---        (owner: agentA; origin: session 1; idle)
@@ -710,8 +734,8 @@ allow `sendMessage` to recursively create more roots.
 Session 1 records A's outbound tool, while session 2 records the root for
 transcript display and replays it as context with the first real reply. Session
 initialization performs no prompt, tools, memory recall/capture, evaluation turn,
-or usage accounting. Session 2 can later reply to session 1 through SessionTarget
-after a real activation.
+or usage accounting. Session 2 records session 1 as its origin, but a post is not
+a session message, so session 2 has no message from session 1 to answer.
 
 ### 7.3 Case 2b: post to a channel and mention another agent
 
@@ -722,18 +746,18 @@ This wakes a new session owned by B.
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {toAgent: "agentB", channel: "#channel"},
+                                       {action: "callAgent", toAgent: "agentB", channel: "#channel"},
                                        msg="Please investigate this.")
 
 --- session 2 created ---            (owner: agentB; origin: session 1)
 {type: system}:                      (system prompt)
                                      # Agent ... - Thread: T2 - Session: S2
-                                     # Parent session: S1
-{type: system, from: agentA}:        @agentB Please investigate this.
+                                     # Created by session: S1
+{type: system, from: agentA}:        [Message m1] @agentB Please investigate this.
 
-  ... agentB finishes and reports using Parent session ...
+  ... agentB finishes and answers message m1 ...
 {type: agent, from: agentB}:         tool: sendMessage(
-                                       {sessionId: S1},
+                                       {action: "replyToSession", messageId: "m1"},
                                        msg="Done. Here is the result.")
 
 --- session 1 continued ---          (owner: agentA)
@@ -748,8 +772,8 @@ This wakes a new session owned by B.
   hop depth, and the privacy gate — so a platform observation whose wake never arrives is
   recorded as a delivery failure rather than becoming a lineage-less B session. See
   [send-message-routing-rework.md](send-message-routing-rework.md) §3.2 / §8.6.
-- B's SessionTarget reply inserts into the existing origin without creating a
-  session, and the resumed origin turn is **session-only**: it produces no automatic IM
+- B's reply to m1 inserts into session 1, which sent it, without creating a
+  session, and the resumed turn is **session-only**: it produces no automatic IM
   output (§7 of the routing rework).
 
 ### 7.3b Case 2c: wake another agent without posting any IM
@@ -769,19 +793,21 @@ B, because the anchor is the post's timestamp and that exists only after the sen
 --- session 1 ---                    (owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {toAgent: "agentB"},
+                                       {action: "callAgent", toAgent: "agentB"},
                                        msg="Run X and report back.")
 
 --- session 2 created ---            (owner: agentB; origin: session 1)
 {type: system}:                      (system prompt)
                                      # Agent ... - Session: S2
-                                     # Parent session: S1
+                                     # Created by session: S1
                                      # No Thread because there is no channel
-{type: system, from: agentA}:        Run X and report back.
+{type: system, from: agentA}:        [Message m1] Run X and report back.
 ```
 
 There is no double-trigger risk because no platform mention exists. B replies
-through `sendMessage({sessionId: S1})` exactly as in case 2b.
+with `replyToSession` on message m1 exactly as in case 2b. A postless `callAgent`
+accepts only a peer: work A does itself without a conversation is a task
+(`startTask`), not a self-call.
 
 ### 7.4 Case 3: send from Telegram to a Slack channel without mentioning another agent
 
@@ -791,7 +817,7 @@ A's session lives on Telegram, but `sendMessage` targets Slack:
 --- session 1 ---                    (platform: telegram, owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {platform: slack, channel: "#channel"},
+                                       {action: "postMessage", platform: slack, channel: "#channel"},
                                        msg="Please review this.")
 
 --- session 2 initialized ---        (platform: slack, owner: agentA; origin: session 1; idle)
@@ -812,15 +838,15 @@ waking B in a Slack session.
 --- session 1 ---                    (platform: telegram, owner: agentA)
   ...
 {type: agent, from: agentA}:         tool: sendMessage(
-                                       {toAgent: "agentB", platform: slack, channel: "#channel"},
+                                       {action: "callAgent", toAgent: "agentB", platform: slack, channel: "#channel"},
                                        msg="Please investigate this.")
 
 --- session 2 created ---            (platform: slack, owner: agentB; origin: session 1)
-{type: system, from: agentA}:        @agentB Please investigate this.
+{type: system, from: agentA}:        [Message m1] @agentB Please investigate this.
 
   ... agentB finishes ...
 {type: agent, from: agentB}:         tool: sendMessage(
-                                       {sessionId: "session 1"},
+                                       {action: "replyToSession", messageId: "m1"},
                                        msg="Done. Here is the result.")
 
 --- session 1 continued ---          (platform: telegram, owner: agentA)
@@ -830,9 +856,9 @@ waking B in a Slack session.
 - Session 1 lives on Telegram; session 2 lives on Slack. Agent-to-agent delivery
   naturally crosses platforms.
 - The real Slack `@agentB` event must not trigger B twice.
-- SessionTarget returns across platforms without specifying platform or
-  channel. The daemon resolves session 1 from its ID and inserts system input
-  from B into the Telegram-side session.
+- The reply returns across platforms without specifying platform or
+  channel. The daemon resolves session 1 from m1's record and inserts system
+  input from B into the Telegram-side session.
 
 ---
 
@@ -845,24 +871,29 @@ waking B in a Slack session.
 3. **The session is complete truth:** output mode decides whether outbound
    agent messages reach IM, but every message remains in the session.
 4. **One sending tool:** `sendMessage` combines `sendPlatformMessage` and
-   `messageAgent`. Agent-to-agent, cross-platform, and parent replies all use
-   it. `to` is either a MessageTarget, whose optional platform and channel
-   control IM while `toUser` and `toAgent` control mention and wake-up, or a
-   SessionTarget with `sessionId`.
+   `messageAgent`. Agent-to-agent calls, tasks, cross-platform posts, and
+   replies all use it, each selected by a required `action`. Platform and
+   channel control IM while `toUser` and `toAgent` control mention and
+   wake-up; `sessionId`, `taskId`, and `messageId` address an existing peer
+   session, one of the session's own tasks, and a received session message.
 5. **Visible post and wake-up are independent:** `toAgent` wakes; `channel`
    controls whether an IM is visible. `toAgent` alone is silent. The caller
    records an outbound agent tool, and the receiver records inbound system input
    from the caller.
-6. **Replies use the origin edge:** a session woken by `sendMessage` has an
-   origin. `sendMessage({sessionId: origin})` inserts system input from the
-   child owner into that existing origin without creating a session, even
-   across platforms.
+6. **Replies are addressed to messages:** every input one session sends
+   another is a session message with an id and a recorded source.
+   `replyToSession` with that `messageId` inserts system input from the replier
+   into the message's source session, without creating a session, even across
+   platforms. It never reads the origin, which records creation only.
 7. **Startup metadata:** the `# Agent` system-prompt block includes `Thread` and
-   `Session` when available. It includes `Parent session`, equal to the origin
-   ID, if and only if a parent exists.
-8. **Caller identity cannot be forged, and SessionTarget is authorized:** the
-   daemon injects the caller ID and validates every target ID. An agent can
-   write only its origin or another visible session.
+   `Session` when available. It includes `Created by session`, equal to the
+   origin ID, if and only if the session has an origin; the line is a record,
+   not a reply address.
+8. **Caller identity cannot be forged, and every target is authorized:** the
+   daemon injects the caller ID and validates every target ID. A reply goes
+   only to the source of a message the session received, a task message only
+   to a task the session owns, and a peer-session call only where the calling
+   turn's people may read.
 9. **No double trigger:** when an agent-to-agent call with `channel` leaves a
    real `@agentB` message, that platform event cannot create a second session
    for an AgentConnect-managed agent. Silent delegation has no such event.
@@ -870,8 +901,9 @@ waking B in a Slack session.
     where it lives. `sendMessage.platform` may differ, and the two sides of
     agent-to-agent delivery may live on different platforms.
 11. **Lineage is readable in exactly one direction:** an admitted wake returns
-    the child's `childSessionId`, and `viewSessionStatus` accepts only a session
-    whose parent is the calling session. Unknown and unauthorized ids are
-    indistinguishable. `status: done` means the child's turn ended, not that it
-    reported back — `toAgent.needsReply` is what obliges it to report, as a
-    sticky standing directive on the child, never as delivered message text.
+    the child's `childSessionId` (a task's is its `taskId`), and
+    `viewSessionStatus` accepts only a session whose parent is the calling
+    session. Unknown and unauthorized ids are indistinguishable. `status: done`
+    means the child's turn ended, not that it reported back —
+    `toAgent.needsReply` is what obliges it to report, as an obligation on that
+    message, never as delivered message text.

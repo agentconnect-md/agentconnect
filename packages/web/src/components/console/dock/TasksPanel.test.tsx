@@ -171,7 +171,7 @@ describe('TasksPanel answers that are not rows', () => {
     // The distinction the `tracked` field exists for: a non-Claude runtime and an adapter without the lifecycle extension both have no lease, which is a different statement from "idle".
     wire.data = tasks({ tracked: false })
     await render()
-    expect(text()).toContain('doesn’t report background tasks')
+    expect(text()).toContain('doesn’t report its jobs')
     expect(rows()).toHaveLength(0)
     // Null rather than 0: an unknown count must not wear a badge saying "none running".
     expect(last()).toEqual({ settled: true, running: null })
@@ -179,14 +179,14 @@ describe('TasksPanel answers that are not rows', () => {
 
   it('says the session is idle when it IS tracked and has nothing', async () => {
     await render()
-    expect(text()).toContain('No background tasks in this session')
-    expect(text()).not.toContain('doesn’t report background tasks')
+    expect(text()).toContain('No runtime jobs in this session')
+    expect(text()).not.toContain('doesn’t report its jobs')
   })
 
   it('names the version answer for a daemon too old to report tasks', async () => {
     wire.failure = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
     await render()
-    expect(text()).toContain('cannot report background tasks')
+    expect(text()).toContain('cannot report runtime jobs')
     expect(text()).toContain('Update the agent')
     expect(last()).toEqual({ settled: true, running: null })
   })
@@ -237,7 +237,7 @@ describe('TasksPanel rows', () => {
     wire.data = tasks({ tasks: [task({ description: null })] })
     await render()
     expect(rows()).toHaveLength(1)
-    expect(text()).toContain('Unnamed task')
+    expect(text()).toContain('Unnamed job')
   })
 
   it('CARRIES subagent rows and marks them, rather than filtering them out', async () => {

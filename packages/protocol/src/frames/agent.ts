@@ -739,7 +739,7 @@ export const AgentPermissionRequestRecord = z.object({
   resolvedByName: z.string().nullable().optional(),
   // The live request's own options; absent once it is settled, for an elicitation, or from an older daemon.
   options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional(),
-  // A background sub-session's request (assistant-mode.md §5.6): the conversation it belongs to, by outward id; absent from an older daemon.
+  // A request from background work (assistant-mode.md §5.6): the conversation it belongs to, by outward id; absent from an older daemon.
   parentSessionId: z.string().min(1).optional(),
   // A pending confirmation before the bot joins a channel (#2979), whatever the agent's chat level; absent for any other request.
   kind: z.enum(['join']).optional(),
@@ -754,7 +754,7 @@ export const CONVERSATION_PERMISSION_REQUESTS_FEATURE = 'conversation-permission
 /** A decision bound to a conversation named a request of another conversation. */
 export const PERMISSION_REQUEST_NOT_IN_CONVERSATION = 'permission request is not in this conversation'
 
-/** A conversation by its session's outward id: its own requests and its background sub-sessions'. */
+/** A conversation by its session's outward id: its own requests and those of the background work it started. */
 export const AgentPermissionConversation = z.object({ sessionId: z.string().min(1).max(512) })
 export type AgentPermissionConversation = z.infer<typeof AgentPermissionConversation>
 

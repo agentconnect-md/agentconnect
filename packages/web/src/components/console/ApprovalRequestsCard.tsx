@@ -100,7 +100,7 @@ export function ApprovalRequestsCard({
   // Collapse follows what is listed, and a toggle overrides it only until the listed ids change: a count can repeat with new rows.
   const [collapseOverride, setCollapseOverride] = useState<{ key: string; collapsed: boolean } | null>(null)
   const [decisionError, setDecisionError] = useState<string | null>(null)
-  // A conversation also answers what its background sub-sessions ask (assistant-mode.md §5.6).
+  // A conversation also answers what its background work asks (assistant-mode.md §5.6).
   const fromSubsession = (request: AgentPermissionRequestDto) =>
     sessionId !== undefined && request.parentSessionId === sessionId && request.sessionId !== sessionId
   const sessionRequests = sessionId
@@ -186,7 +186,7 @@ export function ApprovalRequestsCard({
       return null
     } catch (err) {
       const code = err instanceof ApiError ? err.code : undefined
-      // The agent runs as many sub-sessions as it may: the proposal keeps waiting, and says why.
+      // The agent runs as much background work as it may: the proposal keeps waiting, and says why.
       if (code === 'SUBSESSION_LIMIT') return (err as ApiError).message
       if (code === 'DECISION_UNCONFIRMED') {
         setUnconfirmed((prev) => ({ ...prev, [proposal.id]: proposal }))

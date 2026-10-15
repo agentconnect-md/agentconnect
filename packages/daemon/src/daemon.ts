@@ -22999,7 +22999,7 @@ export class Daemon {
     const agentId = hostKeyAgentId(owner)
     if (this.draining) return
     const lease = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
-    const what = description?.trim() || 'background task'
+    const what = description?.trim() || 'background job'
     if (!lease) {
       this.log.debug(`bg-task wake skipped (host reclaimed): "${what}" on ${acpSessionId}`)
       return
@@ -23104,13 +23104,13 @@ export class Daemon {
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: `background-task:${taskId}`, isBot: true },
       text:
-        `[background task finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
-        (summary ? `Task summary: ${summary}\n\n` : '') +
-        `This is a daemon notification, not a message from anyone. A background task you started ` +
+        `[background job finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
+        (summary ? `Job summary: ${summary}\n\n` : '') +
+        `This is a daemon notification, not a message from anyone. A background job you started ` +
         `settled after your turn had already ended, so nothing you said about it reached anyone. Read its ` +
-        `output now (its task id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
+        `output now (its job id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
         `is the one that is actually delivered. If you owe a report to another session, send it, unless ` +
-        `you already sent it after the task finished; do not report the same result twice. If the result ` +
+        `you already sent it after the job finished; do not report the same result twice. If the result ` +
         `needs no action at all, stay silent.`,
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
       isDm: rec.conversationKind === 'dm',

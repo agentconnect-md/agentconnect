@@ -614,7 +614,7 @@ export function sessionRoutes(deps: HttpDeps) {
       return { session, access }
     }
 
-    // assistant-mode.md §5.6: the lineage that recognises an agent's own sub-session, read only on its coordinate.
+    // assistant-mode.md §5.6: the lineage that recognises an agent's own background work, read only on its coordinate.
     const subsessionFacts = async (
       req: FastifyRequest,
       session: SessionMetaRecord

@@ -1,6 +1,6 @@
 'use client'
 
-// The dock's Sub-sessions tab (assistant-mode.md §1.3, §5.6): the background sub-sessions this conversation opened, read from the agent's daemon through the CP and kept nowhere else.
+// The dock's Background work tab (assistant-mode.md §1.3, §5.6): the tasks, patrols and approved work this conversation started, read from the agent's daemon through the CP and kept nowhere else.
 // Each row links to its own session page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -101,7 +101,7 @@ export function SubsessionsPanel({
   onVerdictChange
 }: {
   agentId: string
-  /** The conversation's own session: only the sub-sessions it opened are listed. */
+  /** The conversation's own session: only the background work it started is listed. */
   sessionId: string
   /** Whether this tab is the selected one; a hidden panel reads slowly. */
   active?: boolean
@@ -272,7 +272,7 @@ const STOP_RESULT: Record<Exclude<StopState, 'busy'>, 'stopped' | 'notRunning' |
   upgrade: 'upgradeDaemon'
 }
 
-// No turn to stop on a row that has not reported: a background task its turn started may still be running.
+// No turn to stop on a row that has not reported: a background process its turn started may still be running.
 const stopNotice = (stop: Exclude<StopState, 'busy'>, state: AssistantSubsessionDto['state']) =>
   stop === 'not_running' && state === 'open' ? 'notRunningBackground' : STOP_RESULT[stop]
 

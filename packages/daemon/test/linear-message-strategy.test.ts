@@ -390,7 +390,7 @@ describe('§10.1 acknowledgement copy', () => {
   })
 
   it('marks the queued variant when the session is already working', () => {
-    expect(linearAckBody('review-bot', ext(), { queued: true })).toBe('**review-bot** · queued behind the current task')
+    expect(linearAckBody('review-bot', ext(), { queued: true })).toBe('**review-bot** · queued behind the current turn')
   })
 
   it('falls back to the session id when the issue has no identifier', () => {

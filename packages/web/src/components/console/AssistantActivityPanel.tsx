@@ -1,6 +1,6 @@
 'use client'
 
-// An agent's Activity view (assistant-mode.md §1.7, §5.11): its sub-sessions and what waits for approval, and in assistant mode its items.
+// An agent's Activity view (assistant-mode.md §1.7, §5.11): its background work and what waits for approval, and in assistant mode its items.
 import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -48,10 +48,10 @@ const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = 
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
 
-/** How an answer to a sub-session's permission request ended here; `gone` is one another surface answered first. */
+/** How an answer to background work's permission request ended here; `gone` is one another surface answered first. */
 type PermissionResult = 'allowed' | 'denied' | 'gone'
 
-/** How a decision on a draft ended: its outcome, why the daemon refused it, sent without an answer, or a proposal left waiting at the sub-session limit. */
+/** How a decision on a draft ended: its outcome, why the daemon refused it, sent without an answer, or a proposal left waiting at the background work limit. */
 type DraftResult =
   | { outcome: AssistantDraftOutcomeDto }
   | { refused: 'expired' | 'decided' | 'gone' }
@@ -127,7 +127,7 @@ export function AssistantActivityPanel({
 }: {
   agentId: string
   canEdit: boolean
-  /** In assistant mode, with its items; any other agent has only sub-sessions and what waits for approval. */
+  /** In assistant mode, with its items; any other agent has only background work and what waits for approval. */
   assistant: boolean
 }) {
   const t = useTranslations('Agents.detail.activity')
@@ -177,7 +177,7 @@ export function AssistantActivityPanel({
     const result = decided[id]?.result
     return result !== undefined && !('unconfirmed' in result) && !('busy' in result)
   }
-  // A sub-session's permission request answered here keeps its row and what happened, like a draft.
+  // Background work's permission request answered here keeps its row and what happened, like a draft.
   const [answered, setAnswered] = useState<
     Record<string, { request: AssistantPermissionRequestDto; result: PermissionResult }>
   >({})
@@ -204,7 +204,7 @@ export function AssistantActivityPanel({
       await decideAgentPermissionRequest(agentId, request.requestId, decision, optionId)
       settle(decision === 'allow' ? 'allowed' : 'denied')
     } catch (err) {
-      // Answered elsewhere first, or its sub-session ended: whichever surface answered first won.
+      // Answered elsewhere first, or its background work ended: whichever surface answered first won.
       if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
         settle('gone')
         void drafts.mutate()
@@ -221,7 +221,7 @@ export function AssistantActivityPanel({
     } catch (err) {
       const refused = err instanceof ApiError ? DRAFT_REFUSALS[err.code ?? ''] : undefined
       if (refused) return settle({ refused })
-      // The agent runs as many sub-sessions as it may: the proposal keeps waiting, and says why.
+      // The agent runs as much background work as it may: the proposal keeps waiting, and says why.
       if (err instanceof ApiError && err.code === 'SUBSESSION_LIMIT') return settle({ busy: err.message })
       if (err instanceof ApiError && err.status === 404) return settle({ refused: 'gone' })
       if (err instanceof ApiError && err.code === 'DECISION_UNCONFIRMED') {
@@ -554,7 +554,7 @@ function SubsessionRow({ subsession, first }: { subsession: AssistantSubsessionD
   )
 }
 
-/** A background sub-session waiting for permission (assistant-mode.md §5.6): which one, what it asks to run, and the same answers its card offers. */
+/** Background work waiting for permission (assistant-mode.md §5.6): which one, what it asks to run, and the same answers its card offers. */
 function PermissionRequestRow({
   request,
   first,

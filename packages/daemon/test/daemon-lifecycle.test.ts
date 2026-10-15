@@ -2510,7 +2510,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       clock.advance(4000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       const woken = JSON.stringify((host.prompt as any).mock.calls[1])
-      expect(woken).toContain('background task finished')
+      expect(woken).toContain('background job finished')
       expect(woken).toContain('Sleep 30s then print the time')
       expect(woken).toContain('t1')
       await daemon.stop()
@@ -3031,7 +3031,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       clock.advance(4000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       const woken = JSON.stringify((host.prompt as any).mock.calls[1])
-      expect(woken).toContain('Task summary: slept five seconds, printed done')
+      expect(woken).toContain('Job summary: slept five seconds, printed done')
       expect(woken).toContain('nothing you said') // no drain delivery happened
       await daemon.stop()
     })

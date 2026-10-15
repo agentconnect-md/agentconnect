@@ -3891,7 +3891,7 @@ export interface AgentPermissionRequestDto {
   resolvedByName?: string | null
   /** The live request's own options; absent for an elicitation, a settled request, or an older daemon. */
   options?: AgentPermissionOptionDto[]
-  /** Set on a background sub-session's request: the conversation it belongs to, which shows it too. */
+  /** Set on background work's request: the conversation it belongs to, which shows it too. */
   parentSessionId?: string
   /** A pending confirmation before the bot joins a channel, answered only by a person behind its turn, at any chat level. */
   kind?: 'join'
@@ -3923,7 +3923,7 @@ export async function decideAgentPermissionRequest(
   )
 }
 
-/** One webchat conversation's requests and its sub-sessions', for its owner where people in chat may approve, and for editors. */
+/** One webchat conversation's requests and its background work's, for its owner where people in chat may approve, and for editors. */
 export async function fetchSessionPermissionRequests(sessionId: string): Promise<AgentPermissionRequestDto[]> {
   const page = await apiGet<{ requests: AgentPermissionRequestDto[] }>(
     `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/permission-requests`
@@ -3987,7 +3987,7 @@ export interface AssistantSubsessionDto {
 export interface AssistantSubsessionsPageDto {
   subsessions: AssistantSubsessionDto[]
   truncated: boolean
-  /** The next page of one conversation's sub-sessions; null on its last page and for the agent-wide list. */
+  /** The next page of one conversation's background work; null on its last page and for the agent-wide list. */
   nextCursor: string | null
 }
 
@@ -4054,7 +4054,7 @@ export async function deleteAssistantItem(agentId: string, itemId: string): Prom
   await apiDelete(`${assistantBase(agentId)}/items/${encodeURIComponent(itemId)}`)
 }
 
-/** The agent's sub-sessions, or with `parentSessionId` only those that conversation opened, newest first, a page at a time. */
+/** The agent's background work, or with `parentSessionId` only what that conversation started, newest first, a page at a time. */
 export async function fetchAssistantSubsessions(
   agentId: string,
   opts: { parentSessionId?: string; cursor?: string; limit?: number } = {}
@@ -4067,7 +4067,7 @@ export async function fetchAssistantSubsessions(
   return apiGet(`${assistantBase(agentId)}/subsessions${query ? `?${query}` : ''}`)
 }
 
-/** Interrupt a sub-session's current turn; `not_running` when it had none. */
+/** Interrupt background work's current turn; `not_running` when it had none. */
 export async function stopAssistantSubsession(
   agentId: string,
   sessionId: string
@@ -4075,12 +4075,12 @@ export async function stopAssistantSubsession(
   return apiPost(`${assistantBase(agentId)}/subsessions/${encodeURIComponent(sessionId)}/stop`, {})
 }
 
-/** A background sub-session's runtime permission request waiting on an answer; decided like any approval request. */
+/** Background work's runtime permission request waiting on an answer; decided like any approval request. */
 export interface AssistantPermissionRequestDto {
   requestId: string
   tool: string
   createdAt: string
-  /** When it is denied and the sub-session stops, unless someone answers first. */
+  /** When it is denied and the background work stops, unless someone answers first. */
   expiresAt: string
   options?: AgentPermissionOptionDto[]
   /** Present only when the viewer may open it. */

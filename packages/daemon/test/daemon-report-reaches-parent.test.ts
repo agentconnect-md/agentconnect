@@ -201,8 +201,8 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
 
   it.each([
     ['patrol', patrolCoordinate('p-1'), '[patrol] two new issues need you'],
-    ['task', taskCoordinate('t-1'), '[task] the approved change is merged'],
-    ['failure', subsessionCoordinate('s-1'), '[sub-session ended] it stopped before finishing']
+    ['task', taskCoordinate('t-1'), '[approved work] the approved change is merged'],
+    ['failure', subsessionCoordinate('s-1'), '[approved work ended] it stopped before finishing']
   ])('from a daemon %s report, in D1 and C1', async (kind, callerThread, text) => {
     const b = await boot()
     for (const [i, channel] of CHANNELS.entries()) {

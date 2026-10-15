@@ -4,6 +4,7 @@ import { deriveTitle } from '../session/derive-title.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
   isDelegationCoordinate,
+  isPatrolCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
   subsessionCoordinate
@@ -214,11 +215,17 @@ function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
       : (end.reason ?? 'interrupted')
 }
 
-/** The one short report a task sub-session that ended without its own gets in its parent. */
-function subsessionEndReport(key: string, end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
-  const tail = 'It sent no result; delegate again if the work is still needed.'
-  if (end.outcome === 'completed') return `[sub-session ended] Sub-session ${key} ended without reporting back. ${tail}`
-  return `[sub-session ended] Sub-session ${key} stopped before finishing (${endReason(end)}). ${tail}`
+/** The one short report a patrol or approved work that ended without its own gets in its owning session. */
+export function subsessionEndReport(
+  key: string,
+  end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
+  thread: string | null | undefined
+): string {
+  const [header, name, tail] = isPatrolCoordinate(thread)
+    ? ['[patrol ended]', 'Patrol', 'It sent no result.']
+    : ['[approved work ended]', 'Approved work', 'It sent no result; start a task if the work is still needed.']
+  if (end.outcome === 'completed') return `${header} ${name} ${key} ended without reporting back. ${tail}`
+  return `${header} ${name} ${key} stopped before finishing (${endReason(end)}). ${tail}`
 }
 
 /** Records one delivery verdict as an evaluation event and hands it back. */
@@ -600,7 +607,7 @@ export class CollabCoordinator {
         }
         // The claim: whoever moves the row out of `open` is the one report, kept on the row until it is admitted.
         const report: SubsessionEndReport = {
-          text: subsessionEndReport(key, end),
+          text: subsessionEndReport(key, end, sessionThreadOf(end.msg)),
           hopCount: end.hopCount ?? 0,
           caller: {
             platform: end.msg.platform,
@@ -818,7 +825,7 @@ export class CollabCoordinator {
         const ended = { outcome: 'interrupted' as const, reason: 'no longer running' }
         const round = current.round ?? 1
         if (!isDelegationCoordinate(caller.thread)) {
-          const text = subsessionEndReport(key, ended)
+          const text = subsessionEndReport(key, ended, caller.thread)
           return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
         }
         const report: SubsessionEndReport = {
@@ -1424,7 +1431,7 @@ export class CollabCoordinator {
           delivered: false,
           targetSession,
           reason: TASK_LIMIT,
-          message: `You already have ${limit} tasks running, the limit. Finish this here or wait for one to report.`
+          message: `You already run as much background work as allowed at once (${limit}). Finish this here, or wait until some of it reports.`
         })
       }
       this.host.noteSubsessionOpened?.(targetSession, callerKey)
@@ -2246,7 +2253,7 @@ export class CollabCoordinator {
             opened === 'limit'
               ? refuse(
                   TASK_LIMIT,
-                  `You already have ${limit} tasks running, the limit. Nothing was sent; message it again once one reports.`,
+                  `You already run as much background work as allowed at once (${limit}). Nothing was sent; message it again once some of it reports.`,
                   key
                 )
               : refuse('busy', 'The task changed while this message was admitted. Nothing was sent.', key)

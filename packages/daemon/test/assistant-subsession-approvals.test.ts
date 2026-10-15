@@ -204,7 +204,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     const [channel, , , thread] = w.place.postBlocks.mock.calls[0] as unknown[]
     expect([channel, thread]).toEqual(['C1', '100.1'])
     const card = blocksOf(w.place)
-    expect(card).toContain('background sub-session')
+    expect(card).toContain('background work “')
     expect(card).toContain('Fix the flaky test')
     expect(card).toContain('https://console.example.test/sessions/sid-sub')
     expect(card).toContain('12 hours')
@@ -225,7 +225,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     })
     // The rewrite keeps who was asking, and the card's handle leaves the row with it.
     const rewritten = JSON.stringify((w.place.updateBlocks.mock.calls[0] as unknown[])[2])
-    expect(rewritten).toContain('background sub-session')
+    expect(rewritten).toContain('background work “')
     expect(rewritten).toContain('Always allow — Ada Example')
     expect(await w.store.takeOrphanedPermissionNotices('int-1')).toEqual([])
 
@@ -251,7 +251,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     expect(notice).not.toContain('"actions"')
     // The editor DM names the sub-session; a sub-session's turn has no requester to route from.
     expect((w.cp.mock.calls[0]![0] as { requesterId?: string }).requesterId).toBeUndefined()
-    expect(blocksOf(w.place, 1)).toContain('background sub-session')
+    expect(blocksOf(w.place, 1)).toContain('background work “')
     expect((w.place.postBlocks.mock.calls[1] as unknown[])[0]).toBe('D-ed')
 
     const ack = await w.coordinator.decideEditorPermission({
@@ -304,8 +304,8 @@ describe('a sub-session’s permission request in the conversation it belongs to
 
     const [settled, ...more] = rewritesOf(w.place, '200.1')
     expect(more).toEqual([])
-    expect(settled).toContain(`*Butler*’s background sub-session “Fix the flaky test” ${line}`)
-    expect(settled).toContain('Open the sub-session')
+    expect(settled).toContain(`*Butler*’s background work “Fix the flaky test” ${line}`)
+    expect(settled).toContain('Open the background work')
     expect(settled).not.toContain('Write src/app.ts')
     expect(await w.store.takeOrphanedSubsessionNotices('int-1')).toEqual([])
     await w.store.close()
@@ -369,7 +369,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     // Only the editor DM goes out; the conversation's own page is its surface.
     await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(1))
     expect(w.place.openDirectMessage).toHaveBeenCalledWith('U-ed')
-    expect(blocksOf(w.place)).toContain('background sub-session')
+    expect(blocksOf(w.place)).toContain('background work “')
     await w.coordinator.releaseApprovals(OWNER, ACP)
     await w.store.close()
   })
@@ -641,7 +641,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     const [channel, ts, blocks] = restarted.place.updateBlocks.mock.calls[0] as unknown[]
     expect([channel, ts]).toEqual(['C1', '200.1'])
     const settled = JSON.stringify(blocks)
-    expect(settled).toContain('*Butler*’s background sub-session “fix it” no longer needs permission.')
+    expect(settled).toContain('*Butler*’s background work “fix it” no longer needs permission.')
     expect(settled).toContain('https://console.example.test/sessions/sid-sub')
     // The editor DM's card is still its own sweep's to retire.
     expect(await restarted.store.takeOrphanedPermissionNotices('int-1')).toMatchObject([
@@ -669,7 +669,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     expect(main.subsessionApprovalRoute).not.toHaveBeenCalled()
     // Today's editor DM: routed from the turn's requester, and no wait cap.
     expect((main.cp.mock.calls[0]![0] as { requesterId?: string }).requesterId).toBe(AGENT)
-    expect(blocksOf(main.place)).not.toContain('background sub-session')
+    expect(blocksOf(main.place)).not.toContain('background work “')
     expect(main.coordinator.pendingSubsessionApprovals(AGENT)).toEqual([])
     expect(main.clock.pending).toBe(0)
     expect(main.coordinator.hasOwnWaitCap(OWNER, ACP)).toBe(false)
@@ -682,7 +682,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await vi.waitFor(() => expect(plain.place.postBlocks).toHaveBeenCalledTimes(1))
     expect(plain.subsessionApprovalRoute).toHaveBeenCalledTimes(1)
     expect((plain.place.postBlocks.mock.calls[0] as unknown[])[3]).toBeUndefined()
-    expect(blocksOf(plain.place)).not.toContain('background sub-session')
+    expect(blocksOf(plain.place)).not.toContain('background work “')
     expect(plain.clock.pending).toBe(0)
     await plain.coordinator.releaseApprovals(OWNER, ACP)
     await plain.store.close()
@@ -786,7 +786,7 @@ describe('the name a sub-session’s cards give it', () => {
         waitHours: 12
       })
     )
-    expect(notice).toContain('*Butler*’s background task is waiting for permission.')
+    expect(notice).toContain('*Butler*’s background work is waiting for permission.')
     expect(notice).not.toContain('“')
   })
 })
@@ -972,7 +972,7 @@ describe('through the daemon', () => {
       // An append conversation has no platform thread of its own, so the card goes to its root, as its reports do.
       const [channel, blocks, , thread] = post.mock.calls[0]!
       expect([channel, thread]).toEqual(['C1', undefined])
-      expect(JSON.stringify(blocks)).toContain('background sub-session')
+      expect(JSON.stringify(blocks)).toContain('background work “')
       expect(JSON.stringify(blocks)).toContain(cardWait)
       expect(JSON.stringify(blocks)).toContain('Always allow')
       // Named by its task, not by the wrapper its first message carries.
@@ -1012,7 +1012,7 @@ describe('through the daemon', () => {
     )
     // Only the direct message: nothing is posted into the conversation shared with another organization.
     await vi.waitFor(() => expect(post.mock.calls.map((call) => call[0])).toEqual(['D_FAKE']), WAIT)
-    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('background sub-session')
+    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('background work “')
     expect(d.permissions.pendingSubsessionApprovals('bot-b')).toMatchObject([{ parentSessionId: 'sid-parent-1' }])
     // Unanswered, it ends at the default cap like any other.
     clock.advance(12 * HOUR)

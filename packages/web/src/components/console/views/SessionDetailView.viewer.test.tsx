@@ -53,7 +53,7 @@ const wire = vi.hoisted(() => ({
   steps: undefined as unknown[] | undefined,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
   drafts: [] as string[],
-  /** The agent is in assistant mode; the Sub-sessions tab reads for one, or for any agent whose daemon serves every agent's. */
+  /** The agent is in assistant mode; the Background work tab reads for one, or for any agent whose daemon serves every agent's. */
   assistantMode: false,
   /** What the agent's daemon advertises; unset lists no daemon at all. */
   daemonFeatures: undefined as string[] | undefined,
@@ -1073,7 +1073,7 @@ describe('the Tasks tab', () => {
 
     await openTab('tasks')
     expect(container?.querySelector('[data-dock-action="tasks"]')?.getAttribute('aria-label')).toBe(
-      'Refresh background tasks'
+      'Refresh runtime jobs'
     )
     expect(container?.querySelector('[data-dock-empty]')).toBeNull()
   })
@@ -1133,8 +1133,8 @@ describe('the Tasks tab', () => {
     wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
     await render()
     await openTab('tasks')
-    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('doesn’t report background tasks')
-    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toBe('Tasks')
+    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('doesn’t report its jobs')
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toBe('Runtime jobs')
     expect(container?.querySelector('[data-dock-empty]')).toBeNull()
   })
 })
@@ -1368,7 +1368,7 @@ describe('a session with no agent behind it', () => {
   })
 })
 
-describe('the Sub-sessions tab', () => {
+describe('the Background work tab', () => {
   const openTab = async (key: string) => {
     await act(async () => {
       container?.querySelector<HTMLElement>(`[data-dock-tab="${key}"]`)?.click()
@@ -1390,7 +1390,7 @@ describe('the Sub-sessions tab', () => {
     wire.assistantMode = true
   }
 
-  it('lists the sub-sessions this conversation opened, badged with the running ones', async () => {
+  it('lists the background work this conversation started, badged with the running ones', async () => {
     assistant()
     wire.subsessions = [child, { ...child, sessionId: 'child-2', title: 'Old work', state: 'done', canStop: false }]
     await render()
@@ -1402,7 +1402,7 @@ describe('the Sub-sessions tab', () => {
     expect(tab?.textContent).toContain('1')
     await openTab('subsessions')
     expect(container?.querySelector('[data-dock-action="subsessions"]')?.getAttribute('aria-label')).toBe(
-      'Refresh sub-sessions'
+      'Refresh background work'
     )
     const panel = container?.querySelector('[data-subsessions-panel]')
     expect(panel?.textContent).toContain('Fix the flaky test')
@@ -1454,7 +1454,7 @@ describe('the Sub-sessions tab', () => {
     }
   })
 
-  it('lists and stops an agent’s sub-sessions outside assistant mode when its daemon serves every agent’s', async () => {
+  it('lists and stops an agent’s background work outside assistant mode when its daemon serves every agent’s', async () => {
     wire.assistantMode = false
     wire.daemonFeatures = ['assistant-activity-v1', 'assistant-subsession-panel-v1', 'activity-every-agent-v1']
     wire.subsessions = [child]
@@ -1495,7 +1495,7 @@ describe('the Sub-sessions tab', () => {
       })
       await openTab('subsessions')
       // The sheet labels only the active tab, so this one carries its name for screen readers alone while inactive.
-      expect(container?.querySelector('[data-dock-tab="subsessions"]')?.textContent).toContain('Sub-sessions')
+      expect(container?.querySelector('[data-dock-tab="subsessions"]')?.textContent).toContain('Background work')
       expect(container?.querySelector('[role="dialog"]')?.querySelector('[data-subsessions-panel]')).not.toBeNull()
       const panel = container?.querySelector('[data-subsessions-panel]')
       expect(Array.from(panel?.querySelectorAll('button') ?? []).some((b) => b.textContent?.includes('Stop'))).toBe(

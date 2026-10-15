@@ -99,7 +99,7 @@ describe('assistant/activity frames', () => {
     expect(decodes('assistant/activity/write/result', { operation: 'delete-item', found: false })).toBe(true)
   })
 
-  it('round-trips one conversation’s sub-session page and a stop', () => {
+  it('round-trips one conversation’s background work page and a stop', () => {
     const parent = { sessionId: 'sid-1' }
     expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'subsessions', limit: 20, parent })).toBe(
       true
@@ -191,7 +191,7 @@ describe('assistant/activity frames', () => {
         operation: 'decide-draft',
         result: 'busy',
         status: 'awaiting_review',
-        failure: 'The agent already has 3 sub-sessions running.'
+        failure: 'The agent already has 3 pieces of background work running.'
       })
     ).toBe(true)
   })
@@ -232,7 +232,7 @@ describe('assistant/activity frames', () => {
     expect(AssistantActivityDraft.parse(proposal)).not.toHaveProperty('inConversation')
   })
 
-  it('carries sub-sessions’ permission requests beside the drafts, and either side may predate them', () => {
+  it('carries background work’s permission requests beside the drafts, and either side may predate them', () => {
     const permission = {
       requestId: '22222222-2222-4222-8222-222222222222',
       sessionId: 'sid-sub',
@@ -255,7 +255,7 @@ describe('assistant/activity frames', () => {
     expect(AssistantActivityPermission.safeParse({ ...permission, requestId: 'not-a-uuid' }).success).toBe(false)
     expect(AssistantActivityPermission.safeParse({ ...permission, tool: 'x'.repeat(241) }).success).toBe(false)
 
-    // The approval queue names the conversation a sub-session's request belongs to; an older daemon's rows have none.
+    // The approval queue names the conversation a request from background work belongs to; an older daemon's rows have none.
     const record = {
       id: permission.requestId,
       agentId: AGENT_ID,

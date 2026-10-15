@@ -52,7 +52,7 @@ interface TelegramApprovalDraft {
 
 /** The lines above a sub-session's request naming who asks, how long it waits, and where it is. */
 function intro(asker: SubsessionAsker): string {
-  return `${subsessionAskerText(asker.agentName, asker.title, clampTo)} is asking for permission. ${subsessionWaitText(asker.waitHours)}\nOpen the sub-session: ${asker.sessionUrl}\n\n`
+  return `${subsessionAskerText(asker.agentName, asker.title, clampTo)} is asking for permission. ${subsessionWaitText(asker.waitHours)}\nOpen the background work: ${asker.sessionUrl}\n\n`
 }
 
 /** Plain text needs no defusing: the card is posted with no `parse_mode`. */
@@ -99,7 +99,7 @@ export const telegramApprovalCards: ApprovalCardFacet = {
     const who = subsessionAskerText(asker.agentName, asker.title, clampTo)
     return {
       text: plain(
-        `🔒 ${who} is waiting for permission. Ask an Agent editor to allow it from the Agent or Session page. ${subsessionWaitText(asker.waitHours)}\nOpen the sub-session: ${asker.sessionUrl}`
+        `🔒 ${who} is waiting for permission. Ask an Agent editor to allow it from the Agent or Session page. ${subsessionWaitText(asker.waitHours)}\nOpen the background work: ${asker.sessionUrl}`
       )
     } satisfies TelegramApprovalDraft
   },
@@ -108,7 +108,7 @@ export const telegramApprovalCards: ApprovalCardFacet = {
     const line = subsessionSettledText(subsessionAskerText(view.agentName, view.title, clampTo), outcome, (s) =>
       clampTo(s, 60)
     )
-    const link = view.sessionUrl ? `\nOpen the sub-session: ${view.sessionUrl}` : ''
+    const link = view.sessionUrl ? `\nOpen the background work: ${view.sessionUrl}` : ''
     return { text: plain(`${line}${link}`) } satisfies TelegramApprovalDraft
   },
 

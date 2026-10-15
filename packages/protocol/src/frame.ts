@@ -551,7 +551,7 @@ export const FRAME_SCHEMAS = {
   // ── background tasks: a read of the daemon's in-memory lease. No cancel frame — see task.ts.
   'task/list': TaskListReq,
   'task/list/result': TaskList,
-  // ── assistant-mode Activity: the owning daemon's ledger, drafts and sub-session index, proxied and never stored.
+  // ── assistant-mode Activity: the owning daemon's ledger, drafts and background work index, proxied and never stored.
   'assistant/activity/read': AssistantActivityReadReq,
   'assistant/activity/read/result': AssistantActivityReadResult,
   'assistant/activity/write': AssistantActivityWriteReq,

@@ -550,7 +550,8 @@ describe('a work round, its slot and its outcome', () => {
         delivered: false,
         targetSession: first,
         reason: 'task_limit',
-        message: 'You already have 1 tasks running, the limit. Nothing was sent; message it again once one reports.'
+        message:
+          'You already run as much background work as allowed at once (1). Nothing was sent; message it again once some of it reports.'
       }
     })
     expect(await rowOf(h.d, first)).toMatchObject({ state: 'done' })

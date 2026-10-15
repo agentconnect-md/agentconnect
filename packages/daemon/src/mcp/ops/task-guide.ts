@@ -37,7 +37,7 @@ export const START_TASK_GUIDE: TaskActionGuide = {
     'Only `action` and `message` are accepted; the daemon derives you from trusted context.',
     'A task cannot start tasks of its own, and only a few run at once. Refusals arrive as `wake.delivered: false` ' +
       'with a `wake.reason` and `wake.message`: `task_nesting` (this session is itself a task) and `task_limit` ' +
-      '(too many running at once; a finished one holds no slot).',
+      '(too much background work running at once; a finished task holds no slot).',
     'The result carries `taskId`, the handle messageTask, viewSessionStatus and stopTask take. It is not a message ' +
       'id for replyToSession or a session id for callAgent.',
     'To work visibly as yourself in a channel instead, use callAgent with your own id and `channel`: that is a ' +

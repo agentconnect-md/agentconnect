@@ -63,7 +63,7 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
       reply: FastifyReply
     ): Promise<{ row: SessionMetaRecord; agent: AgentRecord; daemonId: DaemonId; joinsOnly: boolean } | null> => {
       const row = await deps.repos.session.get(orgOf(req), SessionId((req.params as { sessionId: string }).sessionId))
-      // A sub-session's page is read-only: its requests are answered in the conversation it belongs to.
+      // Background work's page is read-only: its requests are answered in the conversation that started it.
       if (!row || row.platform !== 'webchat' || isSubsessionCoordinate(row.thread)) {
         await send(reply, notFound('conversation not found'))
         return null
@@ -132,7 +132,7 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'List a webchat conversation’s approval requests',
           description:
-            'Proxies the owning daemon’s bounded, secret-masked approval requests of one webchat conversation and of its background sub-sessions, pending ones first. Callers who can edit the agent may read them, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); at any level the owner reads the join confirmations (`kind: join`) that ask them. The conversation must be one the caller may view. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot narrow its requests to one conversation. Nothing is stored by this call.',
+            'Proxies the owning daemon’s bounded, secret-masked approval requests of one webchat conversation and of the background work it started, pending ones first. Callers who can edit the agent may read them, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); at any level the owner reads the join confirmations (`kind: join`) that ask them. The conversation must be one the caller may view. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot narrow its requests to one conversation. Nothing is stored by this call.',
           operationId: 'listSessionPermissionRequests',
           params: ConversationParam,
           response: { 200: AgentPermissionRequestPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -158,7 +158,7 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Decide a webchat conversation’s approval request',
           description:
-            'Allows or denies one pending runtime request of a webchat conversation or of one of its background sub-sessions, optionally by one of the options it offers, exactly as an Agent editor’s decision would. Callers who can edit the agent may decide, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); at any level the owner answers a join confirmation (`kind: join`) that asks them. The decider is recorded. Whichever surface answers first decides it: one no longer pending answers 409, and a request of another conversation answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
+            'Allows or denies one pending runtime request of a webchat conversation or of background work it started, optionally by one of the options it offers, exactly as an Agent editor’s decision would. Callers who can edit the agent may decide, and so may the conversation’s owner while the agent lets people in chat approve tool calls (`chatActions` `approve` or `settings`); at any level the owner answers a join confirmation (`kind: join`) that asks them. The decider is recorded. Whichever surface answers first decides it: one no longer pending answers 409, and a request of another conversation answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
           operationId: 'decideSessionPermissionRequest',
           params: DecisionParam,
           body: AgentPermissionDecisionBody,

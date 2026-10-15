@@ -827,8 +827,8 @@ through the same path with reason `approval wait expired`. Its cards retire as
 cancelled, the request is recorded as expired, the runtime receives `cancelled`,
 and the conversation is told nobody answered in time. Without it, a turn whose card nobody watches,
 such as a schedule's, holds its host and its sandbox pod forever (#2780). A
-request with a wait cap of its own is left to that cap: a background
-sub-session's `permissionWaitHours` (assistant-mode.md §5.6) or an API caller's
+request with a wait cap of its own is left to that cap: background
+work's `permissionWaitHours` (assistant-mode.md §5.6) or an API caller's
 answer timeout.
 
 **A turn a dead process left behind.** A daemon killed mid-turn leaves its row
@@ -1164,7 +1164,7 @@ re-checks the mode, and the asker is the sender of the message that started the 
 session of such an agent with a platform conversation of its own also gets `remind`,
 `listReminders` and `cancelReminder` (`src/mcp/ops/assistant-reminders.ts`, §5.9): the daemon's
 patrol sweep posts a due reminder's text into that conversation, with no turn. Every session
-that can start a background task (every one except a task, patrol or approved proposal, of
+that can start a background task (every one except a task, a patrol or approved work, of
 every agent, webchat, hook and scheduled runs included) also gets `stopTask {taskId}`
 (`src/mcp/ops/assistant-subsessions.ts`, [send-message-guide.md](send-message-guide.md) §8.7):
 it stops a task that same session started, through the console's own Stop core; any other id
@@ -1313,8 +1313,8 @@ Control Plane's session-visibility verdict for the console user behind the asker
 `read-access-v1`), which needs the agent's sessions in that conversation and fails closed. A turn no
 person is behind reads only public channels on its own bot. The askers are the turn message's sender
 and every message coalesced or steered into it (`QueueEntry.foldedMessages`, recorded before the
-runtime sees the message), a console user for webchat and console continuations, a sub-session's
-opener (in memory), a patrol's or task's item asker, and a CP schedule's `askerUserId`. Every
+runtime sees the message), a console user for webchat and console continuations, a task's
+opener (in memory), a patrol's or approved work's item asker, and a CP schedule's `askerUserId`. Every
 refusal is the same opaque "I can't share that here", with a sign-in hint for a chat member who
 linked no console account; an allowed read of a private source carries a `privateSource` note.
 
@@ -1351,7 +1351,7 @@ background; `deliverJoinOutcome` hands its result, or why it did nothing, to the
 message (`joinOutcomeText`) in the thread the asking turn replied in (`JoinParked.thread`, from the
 offer), with the session's own coordinate as `sessionThread` where the two differ, as in a direct
 message that is one long conversation. A result's wake carries the person who answered Join
-(`JoinAnswer.by`) as its turn's asker, the way a sub-session's opener does (`joinWakeOpeners`, read
+(`JoinAnswer.by`) as its turn's asker, the way a task's opener does (`joinWakeOpeners`, read
 by `openerOf`), so the turn that continues the request reads and writes as them; a refusal's wake
 speaks for no one.
 Blocking was not an option because runtimes bound an MCP tool call on

@@ -72,15 +72,15 @@ export interface AssistantTasksHost {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** The task sub-session's first message: what was approved, by whom, and the item it serves. */
+/** The approved work's first message: what was approved, by whom, and the item it serves. */
 export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { name: string | null }): string {
   const proposal = draft.proposal!
   return [
-    `[approved task] Your patrol of item ${item.id} proposed this, and ${by.name ?? 'an approver'} approved it. ` +
+    `[approved work] Your patrol of item ${item.id} proposed this, and ${by.name ?? 'an approver'} approved it. ` +
       'Carry it out now in this background session, with your normal tools and permissions. Nothing you write here ' +
       'is posted anywhere.',
     '',
-    `Task: ${draft.text.trim()}`,
+    `Work: ${draft.text.trim()}`,
     `Why: ${proposal.why.trim() === '' ? 'not given' : proposal.why.trim()}`,
     `Proposed as: ${oneLine(proposal.sentence)}`,
     '',
@@ -89,8 +89,8 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
     `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,
     '',
     `The item was at version ${proposal.itemVersion} when this was proposed and is at version ${item.version} now. ` +
-      'Check the current state first, and do not act if the task no longer applies; say so in your report instead. ' +
-      'Do exactly this task, nothing more. Write your report in the language the people in the item’s conversation ' +
+      'Check the current state first, and do not act if the work no longer applies; say so in your report instead. ' +
+      'Do exactly this work, nothing more. Write your report in the language the people in the item’s conversation ' +
       'use; without a message of theirs to go by, use the language of the item’s title and summary.'
   ].join('\n')
 }
@@ -146,8 +146,8 @@ export class AssistantTasks {
       return {
         kind: 'busy',
         reason:
-          `${agent?.name ?? 'The agent'} already has ${limit} sub-sessions running, the most it runs at once. ` +
-          'Approve again once one finishes; this proposal is still waiting.'
+          `${agent?.name ?? 'The agent'} already runs as much background work as it may at once (${limit}). ` +
+          'Approve again once some of it finishes; this proposal is still waiting.'
       }
     }
     // send-message-guide.md §9.3: its input is a session message from the session that started it, answerable by id.
@@ -175,7 +175,7 @@ export class AssistantTasks {
       mentionedBots: [],
       isDm: false,
       headless: true,
-      initialSessionTitle: `Task: ${oneLine(proposal.sentence).slice(0, 80)}`
+      initialSessionTitle: `Approved work: ${oneLine(proposal.sentence).slice(0, 80)}`
     }
     // A delegated sub-session's lineage: it owes its parent one report, and the daemon sends one if it does not.
     const callMeta: CallMeta = {
@@ -293,7 +293,7 @@ export class AssistantTasks {
         agentId,
         at,
         parentSessionId,
-        `[task] Not sure this went through, please check: the approved task "${oneLine(proposal.sentence)}"` +
+        `[approved work cut short] Not sure this went through, please check: the approved work "${oneLine(proposal.sentence)}"` +
           (item ? ` for item ${item.id} ("${oneLine(item.title)}")` : '') +
           ' was cut short by a restart or handover before it reported back. It may have partly run, and it will ' +
           'not be run again. Tell the people here to check.',

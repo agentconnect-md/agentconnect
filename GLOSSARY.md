@@ -55,6 +55,21 @@ The session that started a task. Only it can message the task or stop it, and th
 results return to it. The relationship lasts across rounds of work.
 _Avoid_: Parent, sub-session parent, most recent caller
 
+**Patrol**:
+An assistant-mode agent's own read-only check of one item it follows, run when the item's next
+check comes due. It runs once and reports, proposes, or stays silent; it is not a task.
+_Avoid_: Sub-session, patrol sub-session, task
+
+**Approved work**:
+The work an approved proposal carries out, once, with the agent's own permissions, reporting to
+the conversation the proposal belongs to. No session starts it as a step, so it is not a task.
+_Avoid_: Approved task, sub-session, task
+
+**Background work**:
+Everything an agent runs in the background on a conversation's behalf: its tasks, patrols, and
+approved work. Lists, limits, and permission requests that cover all three use this name.
+_Avoid_: Sub-sessions, background sessions
+
 **Session message**:
 One input that one session sends another: a call, a task instruction, a reply, or a task's
 report. It has its own id and records which session and agent sent it.

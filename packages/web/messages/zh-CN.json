@@ -563,13 +563,13 @@
       "files": "文件",
       "refreshFiles": "刷新文件",
       "refreshGit": "刷新 Git 状态",
-      "refreshTasks": "刷新后台任务",
+      "refreshTasks": "刷新运行时作业",
       "git": "Git",
       "pullRequest": "PR",
       "openPullRequest": "在 GitHub 中打开拉取请求",
-      "tasks": "任务",
-      "subsessions": "子会话",
-      "refreshSubsessions": "刷新子会话",
+      "tasks": "运行时作业",
+      "subsessions": "后台工作",
+      "refreshSubsessions": "刷新后台工作",
       "tryAgain": "重试",
       "backToSessions": "返回会话列表",
       "conversationNotFound": "未找到对话",
@@ -803,14 +803,14 @@
         "lastCheck": "上次检查：{error}"
       },
       "tasksPanel": {
-        "backgroundTasks": "后台任务",
-        "noBackgroundTasks": "暂无后台任务",
-        "runtimeDoesNotReport": "此 Agent 的 Runtime 不报告后台任务，因此这里没有可监控的任务。其工作仍会流入对话。",
-        "noTasksInSession": "此会话没有后台任务，Agent 运行的所有工作均已在其回合内完成。",
-        "unnamedTask": "未命名任务",
+        "backgroundTasks": "运行时作业",
+        "noBackgroundTasks": "暂无运行时作业",
+        "runtimeDoesNotReport": "此 Agent 的 Runtime 不报告其作业，因此这里没有可监控的作业。其工作仍会流入对话。",
+        "noTasksInSession": "此会话没有运行时作业，Agent 运行的所有工作均已在其回合内完成。",
+        "unnamedTask": "未命名作业",
         "subagent": "子 Agent",
         "subagentTitle": "Runtime 内部子 Agent 调用",
-        "olderTasksHidden": "更早的任务未显示，Daemon 只保留有限历史记录。"
+        "olderTasksHidden": "更早的作业未显示，Daemon 只保留有限历史记录。"
       },
       "subsessionsPanel": {
         "state": {
@@ -818,19 +818,19 @@
           "done": "已回报",
           "failed": "失败"
         },
-        "untitled": "未命名的子会话",
+        "untitled": "未命名的后台工作",
         "starting": "启动中…",
         "hidden": "你无权查看",
         "started": "开始于 {time}",
         "stop": "停止",
         "stopped": "已停止。",
         "notRunning": "没有正在运行的回合。",
-        "notRunningBackground": "没有正在运行的回合。它启动的后台任务可能仍在运行，无法在这里停止；该任务结束后，子会话会回报。",
+        "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
         "stopFailed": "停止失败，请重试。",
-        "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里查看子会话。",
-        "notReadable": "无法读取此会话的子会话。",
-        "unavailable": "暂时无法读取子会话。",
-        "empty": "还没有子会话。",
+        "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里查看后台工作。",
+        "notReadable": "无法读取此会话的后台工作。",
+        "unavailable": "暂时无法读取后台工作。",
+        "empty": "还没有后台工作。",
         "more": "显示更多",
         "moreFailed": "加载失败，请重试。"
       },
@@ -2820,7 +2820,7 @@
         "offline": "离线",
         "approvalRequests": "审批请求",
         "pendingRequests": "待处理请求",
-        "fromSubsession": "后台子会话",
+        "fromSubsession": "后台工作",
         "joinRequest": "加入频道",
         "pendingCount": "{count} 个待处理",
         "requestUpdateError": "无法更新此审批请求，请重试。",
@@ -3097,9 +3097,9 @@
         "enable": "开启助理模式",
         "limits": "限制",
         "limit": {
-          "maxConcurrentSubsessions": "并发子会话数",
+          "maxConcurrentSubsessions": "并发任务与已批准工作数",
           "dailyPatrolBudget": "每日巡查次数",
-          "dailySubsessionsPerItem": "每项每日子会话数",
+          "dailySubsessionsPerItem": "每项每日后台工作数",
           "permissionWaitHours": "等待审批的小时数"
         },
         "defaultLimit": "默认",
@@ -3144,14 +3144,14 @@
           "deleteFailed": "删除事项失败。"
         },
         "subsessions": {
-          "title": "子会话",
-          "empty": "还没有子会话。",
+          "title": "后台工作",
+          "empty": "还没有后台工作。",
           "state": {
             "open": "运行中",
             "done": "已回报",
             "failed": "失败"
           },
-          "untitled": "未命名的子会话",
+          "untitled": "未命名的后台工作",
           "starting": "启动中…",
           "hidden": "你无权查看",
           "from": "来自 {name}",
@@ -3190,12 +3190,12 @@
           "proposal": {
             "badge": "提议",
             "why": "原因：{why}",
-            "details": "原因和任务",
+            "details": "原因和详情",
             "item": "事项：{title}",
             "runsIn": "在 {place} 中执行",
             "deny": "拒绝",
-            "approveConfirm": "现在执行这项任务？结果会回报到 {place}。",
-            "approveConfirmHere": "现在执行这项任务？结果会回报到此对话。",
+            "approveConfirm": "现在执行？结果会回报到 {place}。",
+            "approveConfirmHere": "现在执行？结果会回报到此对话。",
             "denyConfirm": "拒绝这项提议？不会执行任何操作。",
             "dismiss": "关闭",
             "outcome": {
@@ -3218,7 +3218,7 @@
           "deny": "拒绝",
           "decideFailed": "操作失败，请重试。",
           "outcome": {
-            "allowed": "已允许，子会话继续执行。",
+            "allowed": "已允许，后台工作继续执行。",
             "denied": "已拒绝。",
             "gone": "已不在等待批准。"
           }

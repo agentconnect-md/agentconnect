@@ -59,14 +59,14 @@ const ConversationDto = z.object({
 const PermissionRequestDto = z.object({
   /** Decided like any approval request, through `decideAgentPermissionRequest`. */
   requestId: z.string(),
-  /** What the sub-session asks to run. */
+  /** What the background work asks to run. */
   tool: z.string(),
   createdAt: z.string(),
-  /** When it is denied and the sub-session stops, unless someone answers first. */
+  /** When it is denied and the background work stops, unless someone answers first. */
   expiresAt: z.string(),
   /** The request's own options; absent when it takes a plain Allow or Deny. */
   options: z.array(AgentPermissionOption).optional(),
-  /** The sub-session asking, when the caller may view it. */
+  /** The background work asking, when the caller may view it. */
   subsession: z.object({ sessionId: z.string(), title: z.string().nullable() }).nullable(),
   /** The conversation it belongs to, when the caller may view it. */
   parent: ConversationDto.nullable()
@@ -74,16 +74,16 @@ const PermissionRequestDto = z.object({
 const DraftsPageDto = z.object({
   drafts: z.array(AssistantActivityDraft),
   truncated: z.boolean(),
-  /** Background sub-sessions' permission requests waiting on an answer, oldest first; empty from an agent version that does not list them. */
+  /** Background work's permission requests waiting on an answer, oldest first; empty from an agent version that does not list them. */
   permissionRequests: z.array(PermissionRequestDto)
 })
 const SubsessionDto = z.object({
-  /** The sub-session's id, present only when the caller may open it. */
+  /** The background work's session id, present only when the caller may open it. */
   sessionId: z.string().nullable(),
   title: z.string().nullable(),
   state: AssistantActivitySubsessionState,
   startedAt: z.string(),
-  /** The caller may see this sub-session's conversation; otherwise only its state and start are shown. */
+  /** The caller may see this background work's conversation; otherwise only its state and start are shown. */
   visible: z.boolean(),
   /** The caller may stop its current turn: it is running and they may continue its session. */
   canStop: z.boolean(),
@@ -93,11 +93,11 @@ const SubsessionDto = z.object({
 const SubsessionsPageDto = z.object({
   subsessions: z.array(SubsessionDto),
   truncated: z.boolean(),
-  /** Passed back as `cursor` for the next page of one conversation's sub-sessions; null on the last page and without `parentSessionId`. */
+  /** Passed back as `cursor` for the next page of one conversation's background work; null on the last page and without `parentSessionId`. */
   nextCursor: z.string().nullable()
 })
 const SubsessionsQuery = z.object({
-  /** Only the sub-sessions this conversation opened, newest first. */
+  /** Only the background work this conversation started, newest first. */
   parentSessionId: z.string().min(1).max(512).optional(),
   /** A previous page's `nextCursor`; only with `parentSessionId`. */
   cursor: AssistantSubsessionCursor.optional(),
@@ -119,13 +119,13 @@ const ACTIVITY = {
 }
 const SUBSESSION_PANEL = {
   feature: ASSISTANT_SUBSESSION_PANEL_FEATURE,
-  refusal: 'this agent version cannot list or stop a conversation’s sub-sessions; upgrade its daemon'
+  refusal: 'this agent version cannot list or stop a conversation’s background work; upgrade its daemon'
 }
 const ConversationParam = IdParam.extend({ sessionId: z.string().min(1).max(512) })
 const ConversationProposalParam = ConversationParam.extend({ draftId: z.string().min(1).max(512) })
 const ProposalDecisionBody = z.object({ decision: z.enum(['approve', 'deny']) })
 const PROPOSAL_CHOICE = { approve: 'approve', deny: 'discard' } as const
-/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the task and its item. */
+/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the work it asks to do and its item. */
 const ConversationProposalDto = z.object({
   /** Decided with `decideAssistantConversationProposal`. */
   id: z.string(),
@@ -141,7 +141,7 @@ const ConversationProposalDto = z.object({
 })
 const ConversationProposalsDto = z.object({ proposals: z.array(ConversationProposalDto), truncated: z.boolean() })
 const ProposalDecisionDto = z.object({
-  /** `executing` started its task, `denied` dropped it, `failed` ran nothing. */
+  /** `executing` started its work, `denied` dropped it, `failed` ran nothing. */
   status: AssistantDraftStatus,
   /** Why it could not run. */
   failure: z.string().nullable()
@@ -221,12 +221,12 @@ const DRAFT_REFUSED: Record<'expired' | 'already-decided' | 'busy', Failure> = {
   busy: {
     status: 409,
     error: 'Conflict',
-    message: 'the agent’s sub-sessions are at their limit; the proposal is still waiting',
+    message: 'the agent’s background work is at its limit; the proposal is still waiting',
     code: 'SUBSESSION_LIMIT'
   }
 }
 
-/** The same refusals for a proposal, worded for a task that never ran. */
+/** The same refusals for a proposal, worded for work that never ran. */
 const PROPOSAL_REFUSED: Record<'expired' | 'already-decided', Failure> = {
   expired: { ...DRAFT_REFUSED.expired, message: 'the proposal expired; nothing was run' },
   'already-decided': { ...DRAFT_REFUSED['already-decided'], message: 'the proposal was already decided' }
@@ -267,7 +267,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       agent: AgentRecord
     ): Promise<SessionMetaRecord | null> => {
       const row = await deps.repos.session.get(orgOf(req), SessionId((req.params as { sessionId: string }).sessionId))
-      // A sub-session's page is read-only and not a conversation of its own.
+      // Background work's page is read-only and not a conversation of its own.
       if (!row || row.agentId !== agent.id || row.platform !== 'webchat' || isSubsessionCoordinate(row.thread)) {
         await send(reply, notFound('conversation not found'))
         return null
@@ -278,7 +278,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         await send(reply, notFound('conversation not found'))
         return null
       }
-      // The same authority the composer and a sub-session's stop need, or the agent's editors'.
+      // The same authority the composer and stopping background work need, or the agent's editors'.
       if (!canEdit(agent, ctx) && !canContinueSession(row, ctx, audience.identitySet, audience.externalAccess)) {
         await reply.code(403).send({
           error: 'Forbidden',
@@ -471,8 +471,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'List an agent’s sub-sessions',
-          description: `Lists the background sub-sessions the agent opened, running ones first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only those that conversation opened, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that opened it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s sub-sessions, and 409 \`ASSISTANT_MODE_OFF\` otherwise. Nothing is stored by this call.`,
+          summary: 'List an agent’s background work',
+          description: `Lists the background work the agent started (its tasks, patrols and approved work), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s background work, and 409 \`ASSISTANT_MODE_OFF\` otherwise. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
@@ -528,7 +528,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           subsessions: listed.map((s) => {
             const child = s.sessionId ? viewable.get(s.sessionId) : undefined
             const parent = viewable.get(s.parentSessionId)
-            // A sub-session takes its parent's audience; until its own row exists the parent decides.
+            // Background work takes its owning session's audience; until its own row exists the owner decides.
             const visible = s.sessionId && rows.some((row) => String(row.id) === s.sessionId) ? !!child : !!parent
             return {
               sessionId: child ? String(child.id) : null,
@@ -555,9 +555,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Agents],
-          summary: 'Stop an agent’s sub-session',
+          summary: 'Stop an agent’s background work',
           description:
-            'Interrupts the current turn of one background sub-session the agent opened, exactly as a stop from the conversation composer would: nothing is muted, the sub-session reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that sub-session’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop a sub-session, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s.',
+            'Interrupts the current turn of one piece of background work the agent started (a task, a patrol or approved work), exactly as a stop from the conversation composer would: nothing is muted, it reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that background work’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop background work, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s.',
           operationId: 'stopAssistantSubsession',
           params: SubsessionParam,
           response: { 200: SubsessionStopDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -567,19 +567,19 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         const admitted = await admit(req, reply, false, SUBSESSION_PANEL, true)
         if (!admitted) return reply
         const row = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
-        // A sub-session of this agent only: its coordinate is the one the daemon mints for a delegation.
+        // Background work of this agent only: its coordinate is the one the daemon mints for it.
         if (!row || row.agentId !== admitted.agent.id || !isSubsessionCoordinate(row.thread)) {
-          return send(reply, notFound('sub-session not found'))
+          return send(reply, notFound('background work not found'))
         }
         const ctx = ctxOf(req)
         const audience = await access.forSessions(req, [row])
         if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess)) {
-          return send(reply, notFound('sub-session not found'))
+          return send(reply, notFound('background work not found'))
         }
         if (!canContinueSession(row, ctx, audience.identitySet, audience.externalAccess)) {
           return reply
             .code(403)
-            .send({ error: 'Forbidden', statusCode: 403, message: 'not authorized to stop this sub-session' })
+            .send({ error: 'Forbidden', statusCode: 403, message: 'not authorized to stop this background work' })
         }
         const answer = await writeEdit(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
@@ -588,7 +588,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           actor: await actorOf(req)
         })
         if (!answer) return reply
-        if (answer.result === 'not-found') return send(reply, notFound('sub-session not found'))
+        if (answer.result === 'not-found') return send(reply, notFound('background work not found'))
         return { result: answer.result === 'stopped' ? ('stopped' as const) : ('not_running' as const) }
       }
     )
@@ -599,7 +599,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check of an assistant-mode agent asks to do: its sentence, its reason and its item, with the task as its text; it runs in the conversation its item was taken in once approved. \`permissionRequests\` lists the runtime permission requests background sub-sessions are waiting on, oldest first: what each asks to run, when it is denied and its sub-session stops unless someone answers, and its options; the sub-session and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check of an assistant-mode agent asks to do: its sentence, its reason and its item, with the work it asks to do as its text; once approved it runs in the conversation its item was taken in. \`permissionRequests\` lists the runtime permission requests background work is waiting on, oldest first: what each asks to run, when it is denied and its background work stops unless someone answers, and its options; the background work and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -650,7 +650,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide an agent’s pending draft',
           description:
-            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its task in a background session and answers `executing`, and while the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. An agent outside assistant mode is answered only when its daemon serves every agent’s Activity, and 409 `ASSISTANT_MODE_OFF` otherwise. Only callers who can edit the agent may decide, and they are recorded as the decider.',
+            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts its work in a background session and answers `executing`, and while the agent already runs as much background work as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. An agent outside assistant mode is answered only when its daemon serves every agent’s Activity, and 409 `ASSISTANT_MODE_OFF` otherwise. Only callers who can edit the agent may decide, and they are recorded as the decider.',
           operationId: 'decideAssistantDraft',
           params: DraftParam,
           body: DraftDecisionBody,
@@ -698,7 +698,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List a webchat conversation’s pending proposals',
-          description: `Lists what the agent’s scheduled checks propose to do for items taken in one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the task a background session would carry out, its item and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
+          description: `Lists what the agent’s scheduled checks propose to do for items taken in one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out, its item and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
           operationId: 'listAssistantConversationProposals',
           params: ConversationParam,
           response: { 200: ConversationProposalsDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -745,7 +745,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide a webchat conversation’s pending proposal',
           description:
-            'Approves or denies one proposal waiting in a webchat conversation, exactly as Activity would: `approve` starts its task in a background session of that conversation and answers `executing`, `deny` drops it and runs nothing. While the agent already runs as many sub-sessions as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. Whichever surface answers first decides it: one that expired or was already decided is refused with 409 and runs nothing, and a proposal of another conversation answers 404. Only callers who may continue that conversation, or who can edit the agent, may decide, and they are recorded as the decider. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
+            'Approves or denies one proposal waiting in a webchat conversation, exactly as Activity would: `approve` starts its work in a background session of that conversation and answers `executing`, `deny` drops it and runs nothing. While the agent already runs as much background work as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. Whichever surface answers first decides it: one that expired or was already decided is refused with 409 and runs nothing, and a proposal of another conversation answers 404. Only callers who may continue that conversation, or who can edit the agent, may decide, and they are recorded as the decider. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
           operationId: 'decideAssistantConversationProposal',
           params: ConversationProposalParam,
           body: ProposalDecisionBody,

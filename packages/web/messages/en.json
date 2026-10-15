@@ -563,13 +563,13 @@
       "files": "Files",
       "refreshFiles": "Refresh files",
       "refreshGit": "Refresh git status",
-      "refreshTasks": "Refresh background tasks",
+      "refreshTasks": "Refresh runtime jobs",
       "git": "Git",
       "pullRequest": "PR",
       "openPullRequest": "Open the pull request on GitHub",
-      "tasks": "Tasks",
-      "subsessions": "Sub-sessions",
-      "refreshSubsessions": "Refresh sub-sessions",
+      "tasks": "Runtime jobs",
+      "subsessions": "Background work",
+      "refreshSubsessions": "Refresh background work",
       "tryAgain": "Try again",
       "backToSessions": "Back to sessions",
       "conversationNotFound": "Conversation not found",
@@ -803,14 +803,14 @@
         "lastCheck": "Last check: {error}"
       },
       "tasksPanel": {
-        "backgroundTasks": "Background tasks",
-        "noBackgroundTasks": "No background tasks",
-        "runtimeDoesNotReport": "This agent’s runtime doesn’t report background tasks, so there is nothing to watch here. Its work still streams into the conversation.",
-        "noTasksInSession": "No background tasks in this session — everything the agent ran finished inside its turn.",
-        "unnamedTask": "Unnamed task",
+        "backgroundTasks": "Runtime jobs",
+        "noBackgroundTasks": "No runtime jobs",
+        "runtimeDoesNotReport": "This agent’s runtime doesn’t report its jobs, so there is nothing to watch here. Its work still streams into the conversation.",
+        "noTasksInSession": "No runtime jobs in this session — everything the agent ran finished inside its turn.",
+        "unnamedTask": "Unnamed job",
         "subagent": "subagent",
         "subagentTitle": "The runtime’s own internal subagent invocation",
-        "olderTasksHidden": "Older tasks are not shown — the daemon keeps a bounded history."
+        "olderTasksHidden": "Older jobs are not shown — the daemon keeps a bounded history."
       },
       "subsessionsPanel": {
         "state": {
@@ -818,19 +818,19 @@
           "done": "Reported",
           "failed": "Failed"
         },
-        "untitled": "Untitled sub-session",
+        "untitled": "Untitled background work",
         "starting": "Starting…",
         "hidden": "Not visible to you",
         "started": "Started {time}",
         "stop": "Stop",
         "stopped": "Stopped.",
         "notRunning": "Nothing was running.",
-        "notRunningBackground": "No turn is running. A background task it started may still be running; it can’t be stopped from here, and the sub-session reports when that task ends.",
+        "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
         "stopFailed": "Couldn’t stop it. Try again.",
-        "upgradeDaemon": "Upgrade this agent’s daemon to see its sub-sessions here.",
-        "notReadable": "This conversation’s sub-sessions can’t be read.",
-        "unavailable": "Sub-sessions are unavailable right now.",
-        "empty": "No sub-sessions yet.",
+        "upgradeDaemon": "Upgrade this agent’s daemon to see its background work here.",
+        "notReadable": "This conversation’s background work can’t be read.",
+        "unavailable": "Background work is unavailable right now.",
+        "empty": "No background work yet.",
         "more": "Show more",
         "moreFailed": "Couldn’t load more. Try again."
       },
@@ -2820,7 +2820,7 @@
         "offline": "offline",
         "approvalRequests": "Approval requests",
         "pendingRequests": "Pending requests",
-        "fromSubsession": "Background sub-session",
+        "fromSubsession": "Background work",
         "joinRequest": "Join a channel",
         "pendingCount": "{count} pending",
         "requestUpdateError": "This approval request could not be updated. Try again.",
@@ -3097,9 +3097,9 @@
         "enable": "Turn on assistant mode",
         "limits": "Limits",
         "limit": {
-          "maxConcurrentSubsessions": "Concurrent sub-sessions",
+          "maxConcurrentSubsessions": "Concurrent tasks and approved work",
           "dailyPatrolBudget": "Patrols per day",
-          "dailySubsessionsPerItem": "Sub-sessions per item per day",
+          "dailySubsessionsPerItem": "Background work per item per day",
           "permissionWaitHours": "Hours to wait for approval"
         },
         "defaultLimit": "Default",
@@ -3144,14 +3144,14 @@
           "deleteFailed": "Couldn’t delete the item."
         },
         "subsessions": {
-          "title": "Sub-sessions",
-          "empty": "No sub-sessions yet.",
+          "title": "Background work",
+          "empty": "No background work yet.",
           "state": {
             "open": "Running",
             "done": "Reported",
             "failed": "Failed"
           },
-          "untitled": "Untitled sub-session",
+          "untitled": "Untitled background work",
           "starting": "Starting…",
           "hidden": "Not visible to you",
           "from": "From {name}",
@@ -3190,12 +3190,12 @@
           "proposal": {
             "badge": "Proposal",
             "why": "Why: {why}",
-            "details": "Reason and task",
+            "details": "Reason and details",
             "item": "For {title}",
             "runsIn": "Runs in {place}",
             "deny": "Deny",
-            "approveConfirm": "Run this task now? It reports back in {place}.",
-            "approveConfirmHere": "Run this task now? It reports back in this conversation.",
+            "approveConfirm": "Run this now? It reports back in {place}.",
+            "approveConfirmHere": "Run this now? It reports back in this conversation.",
             "denyConfirm": "Deny this proposal? Nothing is run.",
             "dismiss": "Dismiss",
             "outcome": {
@@ -3218,7 +3218,7 @@
           "deny": "Deny",
           "decideFailed": "Couldn’t decide. Try again.",
           "outcome": {
-            "allowed": "Allowed. The sub-session continues.",
+            "allowed": "Allowed. The background work continues.",
             "denied": "Denied.",
             "gone": "No longer waiting for approval."
           }

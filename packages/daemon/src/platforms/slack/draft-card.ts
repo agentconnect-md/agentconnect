@@ -21,7 +21,7 @@ type DraftCardConnection = Pick<
 
 const fallbackText = (view: AssistantDraftCardView): string =>
   view.kind === 'task'
-    ? `${view.agentName} is asking for your approval to run a task`
+    ? `${view.agentName} is asking for your approval to run background work`
     : `${view.agentName} is waiting for your approval to post`
 
 /** The draft card port of one Slack integration; the block id lets a relayed click find its daemon. */

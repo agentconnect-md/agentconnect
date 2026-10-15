@@ -613,7 +613,7 @@ export class AssistantDrafts {
         : { kind: 'lost' }
       : this.host.startTask
         ? await this.host.startTask(draft, by)
-        : { kind: 'busy', reason: 'this daemon cannot run approved tasks' }
+        : { kind: 'busy', reason: 'this daemon cannot run approved work' }
     switch (started.kind) {
       case 'lost':
         return await this.refused(draft.id, now)
@@ -672,14 +672,14 @@ export class AssistantDrafts {
         text = `Proposal ${what} expired without a decision; nothing was run.`
         break
       case 'succeeded':
-        text = `The approved task ${what} reported back.`
+        text = `The approved work ${what} reported back.`
         break
       case 'outcome_unknown':
-        text = `The approved task ${what} was cut short before it reported; it may have partly run and will not run again.`
+        text = `The approved work ${what} was cut short before it reported; it may have partly run and will not run again.`
         break
       case 'failed':
         text = draft.subsessionKey
-          ? `The approved task ${what} ended without reporting back.`
+          ? `The approved work ${what} ended without reporting back.`
           : `Proposal ${what} could not run: ${draft.failure ?? 'unknown error'}.`
         break
       default:
