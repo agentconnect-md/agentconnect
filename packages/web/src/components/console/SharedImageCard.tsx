@@ -180,6 +180,7 @@ export function SharedImageCard({
 }
 
 type Size = { w: number; h: number }
+type ImageSize = Size & { vector: boolean }
 type Offset = { x: number; y: number }
 
 const STAGE_PADDING = 16
@@ -196,18 +197,18 @@ type View = { fit: boolean; zoom: number; offset: Offset }
 
 const FIT_VIEW: View = { fit: true, zoom: 1, offset: { x: 0, y: 0 } }
 
-/** The scale that fits the whole image inside the padded stage, never above actual size. */
-function fitScaleOf(image: Size | null, stage: Size): number {
+/** The scale that fits the whole image inside the padded stage; only a vector image may grow past its intrinsic size. */
+function fitScaleOf(image: ImageSize | null, stage: Size): number {
   if (!image) return 1
   return Math.min(
-    1,
+    image.vector ? Infinity : 1,
     Math.max(0, stage.w - STAGE_PADDING * 2) / image.w,
     Math.max(0, stage.h - STAGE_PADDING * 2) / image.h
   )
 }
 
 /** Zooms by a factor about a stage point (relative to its center), keeping that point under the cursor. */
-function zoomAt(view: View, factor: number, at: Offset, image: Size | null, stage: Size): View {
+function zoomAt(view: View, factor: number, at: Offset, image: ImageSize | null, stage: Size): View {
   const scale = view.fit ? fitScaleOf(image, stage) : view.zoom
   const from = clampOffset(view.offset, image, stage, scale)
   const next = Math.min(8, Math.max(0.1, scale * factor))
@@ -217,7 +218,7 @@ function zoomAt(view: View, factor: number, at: Offset, image: Size | null, stag
 }
 
 /** Moves the image by a delta, clamped to the stage. */
-function panBy(view: View, dx: number, dy: number, image: Size | null, stage: Size): View {
+function panBy(view: View, dx: number, dy: number, image: ImageSize | null, stage: Size): View {
   const scale = view.fit ? fitScaleOf(image, stage) : view.zoom
   const from = clampOffset(view.offset, image, stage, scale)
   return { ...view, offset: clampOffset({ x: from.x + dx, y: from.y + dy }, image, stage, scale) }
@@ -239,7 +240,7 @@ function OriginalViewer({
   const [blob, setBlob] = useState<Blob | null>(null)
   const [refusal, setRefusal] = useState<OriginalRefusal | null>(null)
   const [view, setView] = useState<View>(FIT_VIEW)
-  const [natural, setNatural] = useState<Size | null>(null)
+  const [natural, setNatural] = useState<ImageSize | null>(null)
   const [stage, setStage] = useState<Size>({ w: 0, h: 0 })
   const [dragging, setDragging] = useState(false)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -413,11 +414,16 @@ function OriginalViewer({
               alt={alt}
               draggable={false}
               onLoad={(e) =>
-                setNatural({ w: e.currentTarget.naturalWidth || 300, h: e.currentTarget.naturalHeight || 150 })
+                setNatural({
+                  w: e.currentTarget.naturalWidth || 300,
+                  h: e.currentTarget.naturalHeight || 150,
+                  vector: blob?.type === 'image/svg+xml'
+                })
               }
               className={`absolute top-1/2 left-1/2 max-w-none ${natural ? '' : 'invisible'}`}
-              // Zoom and pan are data-driven, so they ride an inline style (STYLE.md rule 8).
+              // Layout size is pinned to the measured size the zoom math uses (STYLE.md rule 8 covers the data-driven style).
               style={{
+                ...(natural ? { width: natural.w, height: natural.h } : {}),
                 transform: `translate(-50%, -50%) translate(${shown.x}px, ${shown.y}px) scale(${scale})`
               }}
             />
