@@ -9,6 +9,7 @@ import {
   CODE_HOST_PROVIDERS,
   isCodeHostProvider,
   GENERIC_HOOK_KIND,
+  SUBSESSION_COORDINATE_PREFIX,
   type CodeHostProvider,
   type HookKind,
   type Platform,
@@ -348,6 +349,9 @@ function pageWhereSql(
   if (q.channel) filters.push(Prisma.sql`${a}."channel" = ${q.channel}`)
   if (q.triggeredBy) filters.push(Prisma.sql`${a}."triggeredBy" = ${q.triggeredBy}`)
   if (q.activityState) filters.push(Prisma.sql`${a}."activityState" = ${q.activityState}::"ActivityState"`)
+  if (q.excludeSubsessions) {
+    filters.push(Prisma.sql`(${a}."thread" IS NULL OR ${a}."thread" NOT LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`})`)
+  }
   if (q.hookTriggerIds) {
     const repository = hookTriggerSql(q.hookTriggerIds, a)
     const installation = q.hookTriggerInstallationChannel

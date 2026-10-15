@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   detail: null as unknown,
   subsessions: [] as unknown[],
   drafts: [] as unknown[],
-  /** Unset: a Control Plane that does not list background work's permission requests. */
+  /** Unset: a Control Plane that does not list tasks' permission requests. */
   permissions: undefined as unknown[] | undefined,
   failure: null as Error | null,
   outcome: { status: 'succeeded', failure: null } as unknown,
@@ -318,7 +318,7 @@ describe('the Activity view for anyone who can view the agent', () => {
     expect(host.querySelector('[data-assistant-item="item-3"]')?.textContent).toContain('Done')
   })
 
-  it('links the background work the viewer may open and hides the rest', async () => {
+  it('links the tasks the viewer may open and hides the rest', async () => {
     const host = await mount(false)
     const subsessions = section(host, 'subsessions')!
     const visible = subsessions.querySelector('[data-assistant-subsession="sid-child"]')!
@@ -529,7 +529,7 @@ describe('the Activity view for an editor', () => {
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'proposal-1', 'approve')
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
-      'Approved. It runs in the background and reports back in #support.'
+      'Approved. It runs as a task and reports back in #support.'
     )
     expect(row.querySelector('button')).toBeNull()
   })
@@ -546,9 +546,9 @@ describe('the Activity view for an editor', () => {
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Denied. Nothing was run.')
   })
 
-  it('keeps a proposal waiting, with its choices, while the agent’s background work is at its limit', async () => {
+  it('keeps a proposal waiting, with its choices, while the agent runs as many tasks as it may', async () => {
     mocks.drafts = [PROPOSAL]
-    const limit = 'bot already has 3 tasks and approved work running, the most it runs at once.'
+    const limit = 'bot already has 3 tasks running, the most it runs at once.'
     mocks.decideFailure = new ApiError(limit, 409, 'SUBSESSION_LIMIT')
     const host = await mount(true)
     const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
@@ -561,11 +561,11 @@ describe('the Activity view for an editor', () => {
     await click(button(row, 'Approve'))
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
-      'Approved. It runs in the background and reports back in #support.'
+      'Approved. It runs as a task and reports back in #support.'
     )
   })
 
-  it('lists background work waiting for permission and answers it with its own choices', async () => {
+  it('lists tasks waiting for permission and answers them with their own choices', async () => {
     mocks.permissions = [PERMISSION, HIDDEN_PERMISSION]
     const host = await mount(true)
     const drafts = section(host, 'drafts')!
@@ -590,7 +590,7 @@ describe('the Activity view for an editor', () => {
 
     await click(button(row, 'Always allow'))
     expect(api.decideAgentPermissionRequest).toHaveBeenCalledWith(AGENT, 'request-1', 'allow', 'o-always')
-    expect(row.querySelector('[role="status"]')?.textContent).toBe('Allowed. The background work continues.')
+    expect(row.querySelector('[role="status"]')?.textContent).toBe('Allowed. The task continues.')
     expect(row.querySelector('button')).toBeNull()
     expect(waiting()).toBe('2')
 
@@ -643,7 +643,7 @@ describe('the Activity view of an agent outside assistant mode', () => {
   const sections = (host: HTMLElement) =>
     [...host.querySelectorAll('[data-activity-section]')].map((s) => s.getAttribute('data-activity-section'))
 
-  it('shows an editor its background work, permission requests and drafts, and reads no items', async () => {
+  it('shows an editor its tasks, permission requests and drafts, and reads no items', async () => {
     mocks.permissions = [PERMISSION]
     const host = await mount(true, false)
     expect(sections(host)).toEqual(['subsessions', 'drafts'])
@@ -667,7 +667,7 @@ describe('the Activity view of an agent outside assistant mode', () => {
     expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'draft-1', 'approve')
   })
 
-  it('shows anyone else its background work alone', async () => {
+  it('shows anyone else its tasks alone', async () => {
     const host = await mount(false, false)
     expect(sections(host)).toEqual(['subsessions'])
     expect(api.fetchAssistantItems).not.toHaveBeenCalled()
@@ -697,7 +697,7 @@ describe('the Activity view of an agent outside assistant mode', () => {
         {node}
       </NextIntlClientProvider>
     ))
-    expect(section(host, 'subsessions')?.firstElementChild?.textContent).toContain('后台工作')
+    expect(section(host, 'subsessions')?.firstElementChild?.textContent).toContain('任务')
     expect(section(host, 'subsessions')?.textContent).toContain('运行中')
     expect(section(host, 'drafts')?.firstElementChild?.textContent).toContain('等待批准')
     expect(host.querySelector('[data-assistant-permission="request-1"] .badge')?.textContent).toBe('权限')

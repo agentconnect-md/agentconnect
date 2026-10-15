@@ -311,14 +311,16 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         agentId: AGENT,
         agentName: defaultAgentName(AGENT),
         platform: 'telegram',
-        title: 'Check the database'
+        title: 'Check the database',
+        subsession: false
       },
       {
         id: secondChild,
         agentId: AGENT,
         agentName: defaultAgentName(AGENT),
         platform: 'discord',
-        title: 'Check the API'
+        title: 'Check the API',
+        subsession: false
       }
     ])
     expect((parentRes.json() as { parentSession: unknown }).parentSession).toBeNull()
@@ -334,7 +336,8 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       agentId: AGENT,
       agentName: defaultAgentName(AGENT),
       platform: 'slack',
-      title: 'Coordinate the rollout'
+      title: 'Coordinate the rollout',
+      subsession: false
     })
     expect((childRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([
       {
@@ -342,10 +345,83 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         agentId: AGENT,
         agentName: defaultAgentName(AGENT),
         platform: 'discord',
-        title: 'Check the API'
+        title: 'Check the API',
+        subsession: false
       }
     ])
     expect((childRes.json() as { childSessions: unknown[] }).childSessions).toEqual([])
+  })
+
+  it('marks a task among the links and leaves tasks out of the list, its total and its facets on request', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    const conversation = 'acp-conversation'
+    const task = 'acp-task'
+    const called = 'acp-called'
+    const base = { agentId: AGENT, phase: 'start', platform: 'slack' }
+    await reportSession({
+      ...base,
+      sessionId: conversation,
+      channel: 'C1',
+      thread: '1700000000.000100',
+      title: 'Plan the release',
+      ts: '2026-07-05T00:00:00.000Z'
+    })
+    await reportSession({
+      ...base,
+      sessionId: task,
+      parentSessionId: conversation,
+      channel: 'conv-task',
+      thread: 'subsession:1700000000000',
+      title: 'Check the changelog',
+      ts: '2026-07-05T00:01:00.000Z'
+    })
+    await reportSession({
+      ...base,
+      sessionId: called,
+      parentSessionId: conversation,
+      channel: 'C9',
+      thread: '1700000000.000200',
+      title: 'Ask the release channel',
+      ts: '2026-07-05T00:02:00.000Z'
+    })
+
+    const detail = (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${conversation}` })).json() as {
+      childSessions: Array<{ id: string; subsession: boolean }>
+    }
+    expect(detail.childSessions.map(({ id, subsession }) => ({ id, subsession }))).toEqual([
+      { id: task, subsession: true },
+      { id: called, subsession: false }
+    ])
+
+    const list = async (query: string) =>
+      (await running!.app.inject({ method: 'GET', url: `${ORG}/sessions?${query}` })).json() as {
+        sessions?: Array<{ sessionId: string }>
+        conversations?: Array<{ sessions: Array<{ sessionId: string }> }>
+        total: number
+      }
+    const flatAll = await list('view=flat')
+    expect(flatAll.sessions?.map((row) => row.sessionId).sort()).toEqual([called, conversation, task].sort())
+    expect(flatAll.total).toBe(3)
+    const flatReal = await list('view=flat&tasks=exclude')
+    expect(flatReal.sessions?.map((row) => row.sessionId).sort()).toEqual([called, conversation].sort())
+    expect(flatReal.total).toBe(2)
+    const grouped = await list('tasks=exclude')
+    expect(grouped.conversations?.flatMap((c) => c.sessions.map((row) => row.sessionId)).sort()).toEqual(
+      [called, conversation].sort()
+    )
+    expect(grouped.total).toBe(2)
+    expect((await list('tasks=include&view=flat')).total).toBe(3)
+
+    const facets = async (query: string) =>
+      (await running!.app.inject({ method: 'GET', url: `${ORG}/sessions/facets?${query}` })).json() as {
+        channels: Array<{ value: string }>
+      }
+    expect((await facets('')).channels.map((c) => c.value)).toContain('conv-task')
+    expect((await facets('tasks=exclude')).channels.map((c) => c.value)).not.toContain('conv-task')
+    expect((await running.app.inject({ method: 'GET', url: `${ORG}/sessions?tasks=sometimes` })).statusCode).toBe(400)
   })
 
   it('stores a Slack-path session (non-UUID ACP id, no launchId) and serves it', async () => {

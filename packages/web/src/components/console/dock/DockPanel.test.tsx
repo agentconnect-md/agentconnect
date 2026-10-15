@@ -199,7 +199,7 @@ function Host({ activeKey, sessions }: { activeKey: string; sessions: Session[] 
           agentIds={[]}
           filterTouched={false}
           onAgentIdsChange={() => {}}
-          family={{ parentSessions: [], siblingSessions: [], childSessions: [] }}
+          family={{ parentSessions: [], childSessions: [] }}
           flatView={false}
           onSelect={() => {}}
           onWouldHideChange={setSessionsWouldHide}

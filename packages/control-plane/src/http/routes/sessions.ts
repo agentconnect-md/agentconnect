@@ -113,7 +113,13 @@ const SessionFilterQueryDto = z.object({
   githubRepoId: z
     .string()
     .regex(/^[1-9]\d*$/)
+    .optional(),
+  tasks: z
+    .enum(['include', 'exclude'])
     .optional()
+    .describe(
+      'Whether tasks are listed: the delegated tasks, patrols and approved proposals that run on a `subsession:` thread of the session they belong to. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
+    )
 })
 
 const SessionQueryDto = SessionFilterQueryDto.extend({
@@ -207,7 +213,7 @@ function agentDisplayName(agent: { name: string; displayName?: string | null }):
 }
 
 function sessionRelation(
-  s: { id: string; agentId: string; platform: string | null; title: string | null },
+  s: { id: string; agentId: string; platform: string | null; thread: string | null; title: string | null },
   agentNames: ReadonlyMap<string, string>
 ) {
   return {
@@ -215,7 +221,8 @@ function sessionRelation(
     agentId: s.agentId,
     agentName: agentNames.get(s.agentId) ?? null,
     platform: s.platform ?? 'slack',
-    title: s.title
+    title: s.title,
+    subsession: isSubsessionCoordinate(s.thread)
   }
 }
 
@@ -760,7 +767,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'List session filter facets',
           description:
-            'Lists each distinct session filter facet after applying every other active filter visible to the caller.',
+            'Lists each distinct session filter facet after applying every other active filter visible to the caller. `tasks=exclude` leaves tasks out of every facet, as it does on `listSessions`.',
           operationId: 'listSessionFacets',
           querystring: SessionFilterQueryDto,
           response: { 200: SessionFacetsDto }
@@ -792,6 +799,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
+          ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
           codeHostHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(repoInstallation ? { hookTriggerInstallationChannel: repoInstallation } : {})
@@ -820,7 +828,8 @@ export function sessionRoutes(deps: HttpDeps) {
             'daemon-local. Returns one row per CONVERSATION by default (merged-conversation-view.md §5.2) — sessions ' +
             'sharing a thread group into `conversations`, each carrying its current member sessions. `view=flat` ' +
             'returns the raw `sessions` rows (the pre-grouped shape); `conversationKey` resolves one conversation’s ' +
-            'members directly.',
+            'members directly. `tasks=exclude` leaves tasks (delegated tasks, patrols and approved proposals) out of ' +
+            'the page and its total.',
           operationId: 'listSessions',
           querystring: SessionQueryDto,
           response: { 200: SessionListPageDto, 400: ErrorDto }
@@ -895,6 +904,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
           ...(req.query.activityState ? { activityState: req.query.activityState } : {}),
+          ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
           ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(repoInstallation ? { hookTriggerInstallationChannel: repoInstallation } : {}),

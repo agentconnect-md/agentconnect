@@ -16,19 +16,31 @@ export function useSessionFacets(
   const channel = filters.channel ?? ''
   const triggeredBy = filters.triggeredBy ?? ''
   const githubRepoId = filters.githubRepoId ?? ''
+  const tasks = filters.excludeTasks ? 'exclude' : ''
 
   return useSWR<SessionFacets>(
-    consoleKeys.sessionFacets(orgId, agentId, integration, platform, channel, triggeredBy, githubRepoId),
+    consoleKeys.sessionFacets(orgId, agentId, integration, platform, channel, triggeredBy, githubRepoId, tasks),
     (args) => {
-      const [, keyOrgId, , keyAgentId, keyIntegration, keyPlatform, keyChannel, keyTriggeredBy, keyGithubRepoId] =
-        args as SessionFacetKey
+      const [
+        ,
+        keyOrgId,
+        ,
+        keyAgentId,
+        keyIntegration,
+        keyPlatform,
+        keyChannel,
+        keyTriggeredBy,
+        keyGithubRepoId,
+        keyTasks
+      ] = args as SessionFacetKey
       return fetchSessionFacets(keyOrgId, {
         ...(keyAgentId ? { agentId: keyAgentId.split(',') } : {}),
         ...(keyIntegration ? { integration: keyIntegration } : {}),
         ...(keyPlatform ? { platform: keyPlatform } : {}),
         ...(keyChannel ? { channel: keyChannel } : {}),
         ...(keyTriggeredBy ? { triggeredBy: keyTriggeredBy } : {}),
-        ...(keyGithubRepoId ? { githubRepoId: keyGithubRepoId } : {})
+        ...(keyGithubRepoId ? { githubRepoId: keyGithubRepoId } : {}),
+        ...(keyTasks === 'exclude' ? { excludeTasks: true } : {})
       })
     },
     { fallbackData }

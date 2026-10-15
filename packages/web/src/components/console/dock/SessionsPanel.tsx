@@ -2,7 +2,7 @@
 
 // The dock's Sessions tab, hosted at 380–760px: the open session's family, then global pins, then the agent's other sessions by recency.
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -43,8 +43,8 @@ interface PanelRow {
   tooltip: string
   /** Last activity, inline beside the title. Absent on a relation row, whose wire shape carries no timestamp. */
   time?: string
-  /** The edge this row sits on, for readers the indent does not reach. Absent on a plain list row, which sits on none. */
-  relationLabel?: string
+  /** How this row relates to the open one, drawn as words around its title. Absent on a plain list row. */
+  relation?: RelationKind
   /** Where the row goes. A multi-participant row is a CONVERSATION, whose merged page is its default view (§5.3). */
   href: string
   /** The id this row's pin toggle writes: the member already pinned, if any, so unpinning releases the pin actually claiming the row. */
@@ -53,6 +53,14 @@ interface PanelRow {
 }
 
 const EMPTY_RELATIONS: SessionRelationDto[] = []
+
+/** The session that started the open one, or a session the open one called or woke. */
+type RelationKind = 'startedBy' | 'references'
+
+/** Real sessions only: a task (delegated task, patrol, approved proposal) belongs to its session and is listed in its Tasks tab. */
+export function relatedSessions(relations: readonly SessionRelationDto[]): SessionRelationDto[] {
+  return relations.filter((relation) => relation.subsession !== true)
+}
 
 /** {@link sessionPinIds} over a panel row, whose id is canonical — a live playground row still carries its synthetic route id. */
 function pinIdsOf(session: Session): string[] {
@@ -67,7 +75,7 @@ export function sessionsPanelWouldHide(input: {
   total: number
   /** The FULL row set — page + hydrated pins + the open session — not the caller's page, which never carried another agent's pin. */
   rowCount: number
-  /** Lineage keeps a one-row page worth drawing, since it renders its own Related tree. */
+  /** Lineage keeps a one-row page worth drawing, since it renders its own Related list. */
   hasFamily: boolean
   filterTouched: boolean
 }): boolean {
@@ -137,20 +145,18 @@ export function SessionsPanel({
   filterTouched: boolean
   /** Edit the filter. The caller owns it — this panel is not the only thing it scopes. */
   onAgentIdsChange: (agentIds: string[]) => void
-  /** Direct lineage in the panel's own three levels, not either source's wire shape. Undefined while it is unavailable. */
+  /** Direct lineage, not either source's wire shape; tasks among it are dropped here. Undefined while it is unavailable. */
   family?: {
-    /** LEVEL 0 — whatever woke the open row: at most one parent for a session, one per externally woken member for a conversation. */
+    /** Whatever started the open row: at most one parent for a session, one per externally woken member for a conversation. */
     parentSessions: SessionRelationDto[]
-    /** LEVEL 1, beside the open row under a divider: the other children of its parent. A conversation has none, so its caller omits this. */
-    siblingSessions?: SessionRelationDto[]
-    /** LEVEL 2 — whatever the open row woke. */
+    /** Whatever the open row called or woke. */
     childSessions: SessionRelationDto[]
   }
   /** Keep raw session rows and links instead of collapsing into conversations. */
   flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
-  /** Attribution INSIDE the open conversation — both ends are participants here, so neither is a navigation target (§9.1). */
+  /** Attribution INSIDE the open conversation: both ends are participants here, so neither is a navigation target (§9.1). */
   roomLineage?: { wokenBy: SessionRelationDto | null; woke: SessionRelationDto[] }
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
@@ -194,26 +200,23 @@ export function SessionsPanel({
   )
 
   const currentId = canonicalSessionId(current)
-  const parents = family?.parentSessions ?? EMPTY_RELATIONS
-  const siblings = family?.siblingSessions ?? EMPTY_RELATIONS
-  const children = family?.childSessions ?? EMPTY_RELATIONS
-  // Fellow PARTICIPANTS, kept apart from `family`: same tree level as the matching slot, never its navigate-away meaning.
-  const wokenBy = roomLineage?.wokenBy ?? null
-  const woke = roomLineage?.woke ?? EMPTY_RELATIONS
-  const hasFamily = Boolean(
-    parents.length > 0 || siblings.length > 0 || children.length > 0 || wokenBy || woke.length > 0
-  )
+  const parents = useMemo(() => relatedSessions(family?.parentSessions ?? EMPTY_RELATIONS), [family?.parentSessions])
+  const children = useMemo(() => relatedSessions(family?.childSessions ?? EMPTY_RELATIONS), [family?.childSessions])
+  // Fellow PARTICIPANTS, kept apart from `family`: the same edges, never its navigate-away meaning.
+  const roomWokenBy = roomLineage?.wokenBy ?? null
+  const wokenBy = roomWokenBy?.subsession === true ? null : roomWokenBy
+  const woke = useMemo(() => relatedSessions(roomLineage?.woke ?? EMPTY_RELATIONS), [roomLineage?.woke])
+  const hasFamily = Boolean(parents.length > 0 || children.length > 0 || wokenBy || woke.length > 0)
   const relatedIds = useMemo(() => {
     const ids = new Set<string>()
     if (!hasFamily) return ids
     ids.add(currentId)
     if (wokenBy) ids.add(wokenBy.id)
     for (const relation of parents) ids.add(relation.id)
-    for (const relation of siblings) ids.add(relation.id)
     for (const relation of children) ids.add(relation.id)
     for (const relation of woke) ids.add(relation.id)
     return ids
-  }, [children, currentId, hasFamily, parents, siblings, wokenBy, woke])
+  }, [children, currentId, hasFamily, parents, wokenBy, woke])
 
   // Every MEMBER of a listed conversation counts as loaded: hydrating one would put the same conversation in the list twice.
   const loadedIds = useMemo(
@@ -259,7 +262,7 @@ export function SessionsPanel({
     )
   }, [sessions, current, hydratedPins])
 
-  // Family rows keep their place in the tree, so they leave the list below and lineage never appears twice.
+  // Related rows leave the list below, so lineage never appears twice.
   const ordinaryRows = useMemo(
     () => (hasFamily ? rows.filter((session) => !relatedIds.has(session.id)) : rows),
     [hasFamily, relatedIds, rows]
@@ -299,19 +302,26 @@ export function SessionsPanel({
       session: s
     }
   }
-  // `relationLabel` names the edge in the tooltip and in sr-only text — the same words an attribution row uses, because it is the same edge.
-  const relationRow = (relation: SessionRelationDto, relationLabel?: string): PanelRow => {
+  const relationRow = (relation: SessionRelationDto, kind: RelationKind): PanelRow => {
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return {
       id: relation.id,
       platform: relation.platform,
       title,
-      tooltip: relationLabel ? `${relationLabel}\n${title}` : title,
-      ...(relationLabel ? { relationLabel } : {}),
+      tooltip: title,
+      relation: kind,
       href: orgPath(`/sessions/${encodeURIComponent(relation.id)}${flatSearch}`),
       pinId: relation.id
     }
   }
+  // The edge in words around the name, the same for a navigation row and an attribution row, because it is the same edge.
+  const labelled = (kind: RelationKind | undefined, name: string, nameClass: string): ReactNode =>
+    kind
+      ? t.rich(kind, {
+          name,
+          session: (chunks) => <span className={nameClass}>{chunks}</span>
+        })
+      : name
   const isPinned = (sessionId: string) => pins.some((pin) => pin.id === sessionId)
   // A conversation row is pinned when ANY member is, and unpinning must release that same pin or it keeps claiming the row.
   const rowPin = (s: Session) => {
@@ -319,7 +329,7 @@ export function SessionsPanel({
     return { pinned: ids.some(isPinned), id: ids.find(isPinned) ?? canonicalSessionId(s) }
   }
   // Attribution answers WHO, so the row is built around the AGENT: participants share a title and a platform, so those two name nobody.
-  const attributionRow = (relation: SessionRelationDto, depth: 0 | 1 | 2, relationLabel: string) => {
+  const attributionRow = (relation: SessionRelationDto, kind: RelationKind) => {
     const agent = agents.find((candidate) => candidate.id === relation.agentId)
     // As the filter chips resolve names: the org roster first, then the relation's own projection (older CPs omit it), then the raw id.
     const name = agent ? agentLabel(agent) : relation.agentName?.trim() || relation.agentId
@@ -328,31 +338,25 @@ export function SessionsPanel({
       // Not navigation (§9.1): the target is a participant of the conversation already open, so no link — and no pin either.
       <div
         key={`attribution-${relation.id}`}
-        title={`${relationLabel} ${name}\n${title}`}
-        className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[9px] text-(--text-secondary) ${
-          depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
-        }`}
+        data-related-row={kind}
+        title={`${name}\n${title}`}
+        className="flex w-full min-w-0 items-center gap-2 rounded-sm px-[9px] py-[6px] text-(--text-secondary)"
       >
-        {depth > 0 && (
-          <span
-            aria-hidden="true"
-            className="-mt-2 h-[15px] w-[13px] flex-none rounded-bl-[4px] border-b-[1.5px] border-l-[1.5px] border-(--border-strong)"
-          />
-        )}
         <span className="av h-[18px] w-[18px] flex-none rounded-xs">
           <AgentIconView icon={agent?.icon} runtime={agent?.runtime ?? ''} size={18} />
         </span>
-        {/* Direction is the row's place in the tree, which a screen reader hears nothing of — hence these words, and the tooltip's. */}
-        <span className="sr-only">{relationLabel}</span>
-        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">{name}</span>
+        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          {labelled(kind, name, 'font-medium text-(--text-secondary)')}
+        </span>
       </div>
     )
   }
 
-  const row = (item: PanelRow, pinnedRow: boolean, depth: 0 | 1 | 2 = 0, on = false) => {
+  const row = (item: PanelRow, pinnedRow: boolean, on = false) => {
     return (
       <div
         key={item.id}
+        {...(item.relation ? { 'data-related-row': item.relation } : {})}
         className={`group relative w-full rounded-sm ${
           on
             ? 'bg-(--brand-soft) text-(--text-primary)'
@@ -371,27 +375,24 @@ export function SessionsPanel({
             }
             if (item.session) onSelect(item.session)
           }}
-          className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[34px] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
-            depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
-          }`}
+          className="flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[34px] pl-[9px] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
         >
-          {depth > 0 && (
-            <span
-              aria-hidden="true"
-              className="-mt-2 h-[15px] w-[13px] flex-none rounded-bl-[4px] border-b-[1.5px] border-l-[1.5px] border-(--border-strong)"
-            />
-          )}
           <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
             <PlatformMark platform={item.platform} fillPct={100} />
           </span>
-          {item.relationLabel && <span className="sr-only">{item.relationLabel}</span>}
-          <span
-            className={`min-w-0 flex-1 truncate font-sans text-[12.5px] leading-normal ${
-              on ? 'font-semibold' : 'font-medium'
-            }`}
-          >
-            {item.title}
-          </span>
+          {item.relation ? (
+            <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              {labelled(item.relation, item.title, 'font-medium text-(--text-secondary)')}
+            </span>
+          ) : (
+            <span
+              className={`min-w-0 flex-1 truncate font-sans text-[12.5px] leading-normal ${
+                on ? 'font-semibold' : 'font-medium'
+              }`}
+            >
+              {item.title}
+            </span>
+          )}
           {/* Mono, tertiary and last: the dock's width makes it affordable, but you read it after finding the row, not while scanning. */}
           {item.time && (
             <span className="flex-none font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -415,11 +416,6 @@ export function SessionsPanel({
       </div>
     )
   }
-
-  // Three levels, and the indent is the only thing saying which is which: whatever woke the open row, the open row, whatever it woke.
-  const aboveCurrent = Boolean(parents.length > 0 || wokenBy)
-  const currentDepth = aboveCurrent ? 1 : 0
-  const delegatedDepth = aboveCurrent ? 2 : 1
 
   const allSessionsQuery = new URLSearchParams()
   if (flatView) allSessionsQuery.set('view', 'flat')
@@ -448,12 +444,12 @@ export function SessionsPanel({
             <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
               {t('related')}
             </div>
-            {/* Level 0, all of it: the lift unions parents without recording which member each woke, so nesting them would invent a chain. */}
-            {parents.map((parent) => row(relationRow(parent, t('delegatedBy')), isPinned(parent.id)))}
-            {/* Attribution, not navigation: a parent's edge, but living in THIS conversation, so a link would come right back. */}
-            {wokenBy && attributionRow(wokenBy, 0, t('delegatedBy'))}
-            {row(sessionRow(current), rowPin(current).pinned, currentDepth, true)}
-            {woke.map((target) => attributionRow(target, delegatedDepth, 'Delegated to'))}
+            {/* One flat list, each row labelled with its edge: what started the open row, the row itself, what it called or woke. */}
+            {parents.map((parent) => row(relationRow(parent, 'startedBy'), isPinned(parent.id)))}
+            {/* Attribution, not navigation: the edge lives in THIS conversation, so a link would come right back. */}
+            {wokenBy && attributionRow(wokenBy, 'startedBy')}
+            {row(sessionRow(current), rowPin(current).pinned, true)}
+            {woke.map((target) => attributionRow(target, 'references'))}
             {children.map((child, index) => {
               const origin = childOriginById?.get(child.id)
               const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
@@ -465,17 +461,14 @@ export function SessionsPanel({
                       {t('via', { agent: originAgent ? agentLabel(originAgent) : origin })}
                     </div>
                   )}
-                  {row(relationRow(child, t('delegatedTo')), isPinned(child.id), delegatedDepth)}
+                  {row(relationRow(child, 'references'), isPinned(child.id))}
                 </Fragment>
               )
             })}
-            {/* Lineage siblings share the open row's parent, so they sit at ITS level under a divider — and on neither edge the words name. */}
-            {siblings.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
-            {siblings.map((sibling) => row(relationRow(sibling), isPinned(sibling.id), 1))}
             {ordinaryRows.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
           </>
         )}
-        {pinned.map((s) => row(sessionRow(s), true, 0, canonicalSessionId(s) === currentId))}
+        {pinned.map((s) => row(sessionRow(s), true, canonicalSessionId(s) === currentId))}
         {pinned.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
         {groups.map((g, i) => (
           <Fragment key={g.bucket}>
@@ -487,7 +480,7 @@ export function SessionsPanel({
             >
               {g.label}
             </div>
-            {g.rows.map((s) => row(sessionRow(s), false, 0, canonicalSessionId(s) === currentId))}
+            {g.rows.map((s) => row(sessionRow(s), false, canonicalSessionId(s) === currentId))}
           </Fragment>
         ))}
       </div>

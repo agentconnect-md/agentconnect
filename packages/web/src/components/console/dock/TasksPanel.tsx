@@ -1,11 +1,11 @@
 'use client'
 
-// The dock's Runtime jobs tab (§3.5): the open session's runtime jobs (the runtime's own background tasks and subagents), live ones first and then the daemon's bounded settled history, each with its state, its description, how long it has been running or how long ago it ended, and the outcome the runtime reported when it named one.
-// A READ-ONLY surface, by measurement rather than by omission: no agent-protocol primitive can address ONE background task, so a per-row control could only cancel unrelated work or report a stop it did not perform. There is no cancel frame or route to wire, and the escape hatch is the composer's own turn-scoped stop.
-// The lease lives only in the owning daemon's memory and is proxied through the CP without being stored (body-locality, §2), so an offline daemon, a daemon too old for the frame, a runtime that reports no task lifecycle, and a session that simply has no tasks are all expected answers drawn as data.
-// What the design asked for and the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line, and no "Logs" link (§3.5 records the measurement behind each).
+// The dock's Tasks tab (§3.5): one session's tasks in two groups — what the runtime reports for this turn, read-only, and the tasks AgentConnect manages for it (delegated tasks, patrols, approved proposals), which can be stopped.
+// The runtime group is READ-ONLY by measurement: no agent-protocol primitive can address ONE background command, so a per-row control could only cancel unrelated work; the composer's turn-scoped stop is the escape hatch.
+// Both reads are proxied through the CP from the owning daemon and stored nowhere (body-locality, §2), so an offline daemon, an old daemon and an untracked session are expected answers drawn as data.
+// What the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line, and no "Logs" link (§3.5 records the measurement behind each).
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
@@ -13,6 +13,13 @@ import { formatFileMtime } from '@/components/console/FileBrowser'
 import { ApiError, fetchAgentTasks, type AgentTaskDto, type AgentTasksDto } from '@/lib/api'
 import { useDockRefresh } from '@/components/console/dock/auto-refresh'
 import type { DockTabStatus } from './SessionDock'
+import { TaskGroupHeading, formatTaskElapsed } from './task-group'
+import {
+  SUBSESSIONS_UNSETTLED,
+  SubsessionsPanel,
+  subsessionsTabShown,
+  type SubsessionsPanelVerdict
+} from './SubsessionsPanel'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
@@ -21,42 +28,44 @@ const codeOf = (e: unknown) => (e instanceof ApiError && e.code ? e.code : null)
 /** How often a visible panel re-reads while something is running. */
 const POLL_MS = 5_000
 
-/** How often a visible panel re-reads while NOTHING is running. A visible panel must keep reading
- *  even from an idle snapshot: what it watches is a SESSION, not the rows it happens to be showing,
- *  and the session starts new background tasks — most directly when the reader leaves this tab open
- *  and sends another prompt from the composer beside it. Nothing in that path bumps this panel's
- *  revision, so an idle panel that stopped polling would never observe the 0 -> running edge and
- *  the new task would stay invisible until a manual refresh. Backed off rather than equal to
- *  {@link POLL_MS} because an idle session usually stays idle. */
+/** A visible idle panel still polls, backed off: the session can start a task at any time and nothing else bumps this read. */
 const IDLE_POLL_MS = 20_000
 
 /** How often a running row's elapsed time redraws. Client-side arithmetic, no request. */
 const TICK_MS = 1_000
 
-/** What the Tasks tab reports upward. The caller owns the tab descriptor, so the panel reports its verdict rather than applying it — the same shape the Files and Git tabs use. */
+/** What the Tasks tab reports upward; the caller owns the tab descriptor, as for the Files and Git tabs. */
 export interface TasksPanelVerdict {
-  /** The scoped read has answered, one way or another. */
+  /** Every group's first read of this scope has answered. */
   settled: boolean
-  /** Running tasks for the tab's badge; null while unknown, and for a session the daemon does not track. */
+  /** Running tasks in both groups, for the badge; null while unknown and when neither group has a count. */
   running: number | null
+  /** Either group has something to show, or the runtime tracks this session. */
+  shown: boolean
 }
 
-/** The Tasks tab's status: `loading` covers the first read of a scope only. */
-// Never `empty` — and here, unlike the Files and Git tabs that inherit the choice for a corner case, it is the decision about this panel's NORMAL state. `empty` costs four things, measured against the dock: the dock's centred "Nothing to show" replaces the body, and it cannot tell an untracked session from an idle one; it only reads correctly if the panel returns null there, which throws away the sentence that draws exactly that distinction; it marks the steady state as non-ready in the strip, so a reader who opens Tasks is told nothing is there rather than that nothing is running; and it puts `vacant` (every tab non-ready) back in reach, where the dock withholds its whole tab strip and the tab a reader asked for cannot be opened at all. What `ready` costs instead is one click to learn nothing is running — the cheaper half, because the answer is a sentence and a sentence needs a panel to draw it.
+export const TASKS_UNSETTLED: TasksPanelVerdict = { settled: false, running: null, shown: false }
+
+/** Offered while its reads are pending, then only when a group has something to show. */
+export function tasksTabShown(verdict: TasksPanelVerdict): boolean {
+  return !verdict.settled || verdict.shown
+}
+
+/** The runtime group's own answer, which the panel folds into {@link TasksPanelVerdict}. */
+interface TurnVerdict {
+  settled: boolean
+  running: number | null
+  /** The runtime tracks this session, or the read failed and the group stays to say why. */
+  shown: boolean
+}
+
+const TURN_UNSETTLED: TurnVerdict = { settled: false, running: null, shown: false }
+
+export { formatTaskElapsed }
+
+/** `loading` covers the first read of a scope only; never `empty`, since a settled panel with nothing to show drops its tab instead. */
 export function tasksTabStatus(settled: boolean): DockTabStatus {
   return settled ? 'ready' : 'loading'
-}
-
-/** How long a running task has been running. Seconds below a minute, `m s` below an hour, `h m` above it — the shape the design draws, and never a negative from a daemon clock ahead of ours. */
-export function formatTaskElapsed(startedAt: string, now: number): string {
-  const started = new Date(startedAt).getTime()
-  if (Number.isNaN(started)) return ''
-  const seconds = Math.max(0, Math.round((now - started) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
-  const hours = Math.floor(minutes / 60)
-  return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`
 }
 
 interface TasksRead {
@@ -69,18 +78,18 @@ interface TasksRead {
 
 const PENDING: TasksRead = { loading: true, err: null, errStatus: null, errCode: null, data: null }
 
-// Why the list is missing. 409 `DAEMON_FEATURE_MISSING` is the version answer the CP added for the task frame; 404 is an agent or session this reader cannot see, or one whose content was purged. Everything else (503 for both an offline daemon and an unplaced agent, plus network failures) is the offline story.
-function noticeText(status: number | null, code: string | null): string {
-  if (status === 409 && code === 'DAEMON_FEATURE_MISSING') {
-    return 'This agent runs a daemon version that cannot report runtime jobs. Update the agent to watch them here.'
-  }
-  if (status === 409) return 'This agent runs a daemon version that cannot report runtime jobs.'
-  if (status === 404) return 'This session’s runtime jobs are not available to read.'
-  return 'Runtime jobs are unavailable — the owning daemon may be offline.'
+// Why the list is missing: 409 `DAEMON_FEATURE_MISSING` is the version answer, 404 a session this reader cannot see; everything else (503, network) is the offline story.
+function noticeKey(
+  status: number | null,
+  code: string | null
+): 'upgradeDaemon' | 'oldDaemon' | 'notReadable' | 'unavailable' {
+  if (status === 409 && code === 'DAEMON_FEATURE_MISSING') return 'upgradeDaemon'
+  if (status === 409) return 'oldDaemon'
+  if (status === 404) return 'notReadable'
+  return 'unavailable'
 }
 
-/** One scoped read, re-issued whenever `revision` moves. The answer is held PER SCOPE and the pending state DERIVED from it rather than reset by an effect: a new scope reads as pending on the very render that changes it, so the previous session's rows are never on screen and its census can never reach the tab's badge, while a re-read of the SAME scope replaces the rows in place instead of strobing the list back to a spinner on every poll. */
-// Deriving it is also what keeps one read per revision. Measured on the version that reset from an effect and zeroed a separate poll counter beside it: after any poll had fired, a scope switch and a tab-action refresh each issued TWO reads, because zeroing the counter re-triggered the read it was there to describe.
+// One read per revision, held PER SCOPE so a new session reads as pending at once and a re-read of the same one replaces rows in place.
 function useAgentTasks(agentId: string, sessionId: string, revision: number): TasksRead {
   const scope = `${agentId}\n${sessionId}`
   const [answered, setAnswered] = useState<{ scope: string; read: TasksRead } | null>(null)
@@ -100,28 +109,106 @@ function useAgentTasks(agentId: string, sessionId: string, revision: number): Ta
   return answered?.scope === scope ? answered.read : PENDING
 }
 
+/** Both groups in one scroll, and one verdict for the tab: settled when both are, badged with what runs in either. */
 export function TasksPanel({
   agentId,
   sessionId,
+  delegated = false,
   active = true,
   turnActive = false,
   refreshTick = 0,
   onVerdictChange
 }: {
   agentId: string
-  /** The ACP session whose lease this reads. REQUIRED, unlike the workspace panels' optional scope: the daemon tracks tasks per (agent, ACP session) and holds no per-agent aggregate to answer with, so an unscoped read would be a 400 rather than a guess. */
+  /** The ACP session whose tasks this reads; the daemon keys both groups by it. */
   sessionId: string
-  /** Whether this tab is the visible one. A hidden panel neither polls nor ticks nor re-reads; its rows are then as fresh as its last read, which is what the Git tab's changed count already is. */
+  /** Whether the delegated group is read: the agent is in assistant mode, or its daemon lists every agent's tasks. */
+  delegated?: boolean
+  /** Whether this tab is the visible one. */
   active?: boolean
-  /** Whether a turn is streaming in this session. Its falling edge re-reads, for the same reason the idle poll exists: a turn is where new background tasks come from. Deferred to the reveal edge while the tab is hidden — the count on the badge is worth a read the reader can see, not one they cannot. */
+  /** Whether a turn is streaming in this session; its falling edge is where new tasks come from. */
   turnActive?: boolean
-  /** Bumped by the tab's `refresh-cw` action: re-reads without remounting. */
+  /** Bumped by the tab's `refresh-cw` action: re-reads both groups without remounting. */
   refreshTick?: number
-  /** The inputs to {@link tasksTabStatus} and the tab's badge. */
   onVerdictChange?: (verdict: TasksPanelVerdict) => void
 }) {
+  const scope = `${agentId}\n${sessionId}`
+  // Held per scope, so a switch never folds the previous session's answer into the new one's verdict.
+  const [turnHeard, setTurnHeard] = useState<{ scope: string; verdict: TurnVerdict } | null>(null)
+  const [delegatedHeard, setDelegatedHeard] = useState<{ scope: string; verdict: SubsessionsPanelVerdict } | null>(null)
+  const onTurnVerdict = useCallback((verdict: TurnVerdict) => setTurnHeard({ scope, verdict }), [scope])
+  const onDelegatedVerdict = useCallback(
+    (verdict: SubsessionsPanelVerdict) => setDelegatedHeard({ scope, verdict }),
+    [scope]
+  )
+  const turn = turnHeard?.scope === scope ? turnHeard.verdict : TURN_UNSETTLED
+  const delegatedVerdict = !delegated
+    ? null
+    : delegatedHeard?.scope === scope
+      ? delegatedHeard.verdict
+      : SUBSESSIONS_UNSETTLED
+  const settled = turn.settled && (delegatedVerdict?.settled ?? true)
+  const delegatedRunning = delegatedVerdict?.running ?? 0
+  const running = turn.running === null && delegatedVerdict === null ? null : (turn.running ?? 0) + delegatedRunning
+  const shown = turn.shown || (delegatedVerdict !== null && subsessionsTabShown(delegatedVerdict))
+
+  // Reported on the EDGE: the caller's callback is a fresh closure per render and a poll usually finds the same census.
+  const reported = useRef<string | null>(null)
+  useEffect(() => {
+    const key = `${settled}:${running ?? ''}:${shown}`
+    if (reported.current === key) return
+    reported.current = key
+    onVerdictChange?.({ settled, running, shown })
+  }, [onVerdictChange, running, settled, shown])
+
+  // Mounted while pending so both groups read; drawn only once both have answered, so the dock's own placeholder speaks alone.
+  return (
+    <div
+      data-tasks-panel={settled ? '' : undefined}
+      className={settled ? 'flex min-h-0 flex-1 flex-col overflow-auto px-3 py-[10px]' : 'hidden'}
+    >
+      <div className="flex flex-none flex-col gap-4">
+        <TurnTasksGroup
+          agentId={agentId}
+          sessionId={sessionId}
+          active={active}
+          turnActive={turnActive}
+          refreshTick={refreshTick}
+          onVerdictChange={onTurnVerdict}
+        />
+        {delegated ? (
+          <SubsessionsPanel
+            agentId={agentId}
+            sessionId={sessionId}
+            active={active}
+            turnActive={turnActive}
+            refreshTick={refreshTick}
+            onVerdictChange={onDelegatedVerdict}
+          />
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** The runtime's own tasks for this session: long commands and its subagents, read-only. */
+function TurnTasksGroup({
+  agentId,
+  sessionId,
+  active,
+  turnActive,
+  refreshTick,
+  onVerdictChange
+}: {
+  agentId: string
+  sessionId: string
+  active: boolean
+  turnActive: boolean
+  refreshTick: number
+  onVerdictChange: (verdict: TurnVerdict) => void
+}) {
   const t = useTranslations('Sessions.detail.tasksPanel')
-  // Reads the panel asks for ITSELF: one per poll interval while something runs, and one on the edge where the reader opens the tab, because a list read ten minutes ago is not an answer about now. Only ever increasing, and summed with the tab action's counter, so every source names one distinct read.
+  // Reads the group asks for ITSELF (polls and the reveal edge), summed with the tab action's counter so every source names one read.
   const [ownTick, setOwnTick] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const read = useAgentTasks(agentId, sessionId, refreshTick + ownTick)
@@ -136,14 +223,11 @@ export function TasksPanel({
     wasActive.current = active
   }, [active])
 
-  // A VISIBLE panel always polls; only the cadence depends on what it is showing. Visibility is the
-  // whole gate because a hidden panel is a request nobody is looking at, whereas an idle VISIBLE one
-  // still has the 0 -> running edge to discover (see {@link IDLE_POLL_MS}). Through the dock's shared
-  // hook, so a backgrounded BROWSER counts as hidden here exactly as it does for the other tabs — and
-  // a turn's falling edge is a read too: a turn that ended may have left a task behind it.
+  // A visible group always polls (an idle session still has the 0 -> running edge to discover); a hidden one reads on a turn's falling edge, which is what reveals the tab once the runtime starts tracking the session.
   useDockRefresh({
     active,
     turnActive,
+    whileHidden: true,
     intervalMs: running > 0 ? POLL_MS : IDLE_POLL_MS,
     onRefresh: () => setOwnTick((tick) => tick + 1)
   })
@@ -155,35 +239,31 @@ export function TasksPanel({
     return () => clearInterval(timer)
   }, [active, running])
 
-  // `running` is null for anything that is not a counted answer — a failed read AND an untracked session. A `0` there would assert "nothing is running" about a lease we were never shown.
+  // `running` is null for anything that is not a counted answer: a failed read and an untracked session.
   const counted = read.data?.tracked ? running : null
-  // Reported on the EDGE: the caller's callback is a fresh closure per render and a poll usually finds the same census, so re-reporting the verdict the tab already holds would write parent state — re-rendering the whole session page — once per interval.
+  const shown = read.err !== null || read.data?.tracked === true
   const reported = useRef<string | null>(null)
   useEffect(() => {
-    const key = `${settled}:${counted ?? ''}`
+    const key = `${settled}:${counted ?? ''}:${shown}`
     if (reported.current === key) return
     reported.current = key
-    onVerdictChange?.({ settled, running: counted })
-  }, [counted, onVerdictChange, settled])
+    onVerdictChange({ settled, running: counted, shown })
+  }, [counted, onVerdictChange, settled, shown])
 
-  // Withheld until the first read of this scope answers, so the dock's own "Loading…" placeholder speaks alone rather than beside a second one of the panel's making.
-  if (!settled) return null
+  // An untracked session has nothing in this group: a runtime that reports no task lifecycle is not an idle one, and the tab shows only what the delegated group holds.
+  if (!settled || !shown) return null
 
   const body = () => {
-    if (read.err) return <PanelNotice text={noticeText(read.errStatus, read.errCode)} warn={read.errStatus !== 503} />
-    // Two different answers the design would otherwise collapse into one empty state: a runtime that reports no task lifecycle at all has NO lease, which is not the same statement as a tracked session that happens to be idle.
-    if (!read.data?.tracked) {
-      return <PanelNotice text={t('runtimeDoesNotReport')} />
+    if (read.err) {
+      return <PanelNotice text={t(noticeKey(read.errStatus, read.errCode))} warn={read.errStatus !== 503} />
     }
-    if (tasks.length === 0) {
-      return <PanelNotice text={t('noTasksInSession')} />
-    }
+    if (tasks.length === 0) return <PanelNotice text={t('noTasksInSession')} />
     return (
       <>
         {tasks.map((task) => (
           <TaskRow key={task.id} task={task} now={now} />
         ))}
-        {read.data.truncated ? (
+        {read.data?.truncated ? (
           <div className="px-3 pt-1 pb-[10px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
             {t('olderTasksHidden')}
           </div>
@@ -193,30 +273,29 @@ export function TasksPanel({
   }
 
   return (
-    <div data-tasks-panel="" className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-[10px]">
-        <span
-          data-tasks-census=""
-          className="min-w-0 flex-1 font-sans text-[11px] font-normal leading-normal text-(--text-secondary)"
-        >
-          {summaryText(read.data, tasks, t)}
-        </span>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-[6px] overflow-auto px-3 py-[10px]">{body()}</div>
-    </div>
+    <section data-task-group="turn" aria-label={t('groupTurn')} className="flex flex-none flex-col gap-[6px]">
+      <TaskGroupHeading
+        title={t('groupTurn')}
+        hint={t('groupTurnHint')}
+        census={read.err ? undefined : summaryText(tasks, t)}
+      />
+      {body()}
+    </section>
   )
 }
 
-/** The header's one-line census. Counts what is on screen, so it can never disagree with the rows. */
-function summaryText(data: AgentTasksDto | null, tasks: AgentTaskDto[], t: ReturnType<typeof useTranslations>): string {
-  if (!data?.tracked) return t('backgroundTasks')
+/** The group's one-line census. Counts what is on screen, so it can never disagree with the rows. */
+function summaryText(
+  tasks: AgentTaskDto[],
+  t: ReturnType<typeof useTranslations<'Sessions.detail.tasksPanel'>>
+): string {
   if (tasks.length === 0) return t('noBackgroundTasks')
   const running = tasks.filter((task) => task.state === 'running').length
   const failed = tasks.filter((task) => task.state === 'failed').length
   const done = tasks.length - running - failed
-  const parts = [`${running} running`]
-  if (done > 0) parts.push(`${done} done`)
-  if (failed > 0) parts.push(`${failed} failed`)
+  const parts = [t('census.running', { count: running })]
+  if (done > 0) parts.push(t('census.done', { count: done }))
+  if (failed > 0) parts.push(t('census.failed', { count: failed }))
   return parts.join(' · ')
 }
 
@@ -263,7 +342,7 @@ function TaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
           }`}
           title={task.description ?? undefined}
         >
-          {task.description ?? t('unnamedTask')}
+          {task.description ?? (task.subagent ? t('unnamedSubagent') : t('unnamedTask'))}
         </span>
         {/* Subagent rows are CARRIED rather than filtered: the same records fence reclaim, so hiding them here would show "no tasks" beside a host refusing to be reclaimed. Marked instead. */}
         {task.subagent ? (

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The dock's Tasks panel: what it reports to its tab, the two DIFFERENT answers it refuses to collapse into one empty state (a daemon that tracks no lease for the session versus a tracked session with nothing running), and what it draws for every degraded answer the task wire can give — a daemon too old to report tasks, a session this reader cannot see, and an offline daemon.
+// The dock's Tasks panel: its two groups (this turn's tasks from the runtime, delegated tasks from AgentConnect), the one verdict it reports to its tab, the untracked session it does not draw, and every degraded answer the task wire can give.
 // It also pins the two absences §3.5 argued for, so a later change has to argue with them rather than drift past: there is NO per-task cancel control (no agent-protocol primitive can address one background task, so a row-level stop could only cancel unrelated work or report one it did not perform), and NO progress bar or step line (the runtime reports neither, and inventing them would be a lie the reader cannot check).
 
 import { act } from 'react'
@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const wire = vi.hoisted(() => ({
   data: null as unknown,
+  /** The delegated group's one page. */
+  delegated: { subsessions: [] as unknown[], truncated: false, nextCursor: null as string | null },
   failure: null as null | { status: number; code?: string },
   calls: [] as Array<{ agentId: string; sessionId: string }>,
   // Set to hand back a promise the test resolves by hand, so the panel is observable WHILE its first read is in flight.
@@ -33,12 +35,20 @@ vi.mock('@/lib/api', () => {
       if (wire.failure) return Promise.reject(new ApiError('nope', wire.failure.status, wire.failure.code))
       if (wire.hold) return wire.hold()
       return Promise.resolve(wire.data)
-    })
+    }),
+    fetchAssistantSubsessions: vi.fn(() => Promise.resolve(wire.delegated)),
+    stopAssistantSubsession: vi.fn(() => Promise.resolve({ result: 'stopped' }))
   }
 })
 
-import { TasksPanel, formatTaskElapsed, tasksTabStatus, type TasksPanelVerdict } from './TasksPanel'
-import type { AgentTaskDto, AgentTasksDto } from '@/lib/api'
+vi.mock('next/link', () => ({
+  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>
+}))
+
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
+
+import { TasksPanel, formatTaskElapsed, tasksTabShown, tasksTabStatus, type TasksPanelVerdict } from './TasksPanel'
+import type { AgentTaskDto, AgentTasksDto, AssistantSubsessionDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -101,8 +111,22 @@ const rows = () => Array.from(container?.querySelectorAll<HTMLElement>('[data-ta
 const states = () => rows().map((row) => row.dataset.taskRow ?? '')
 const last = () => verdicts.at(-1)
 
+function delegatedRow(overrides: Partial<AssistantSubsessionDto> = {}): AssistantSubsessionDto {
+  return {
+    sessionId: 'child-1',
+    title: 'Check the changelog',
+    state: 'open',
+    startedAt: '2026-08-11T11:57:46.000Z',
+    visible: true,
+    canStop: true,
+    parent: null,
+    ...overrides
+  }
+}
+
 beforeEach(() => {
   wire.data = tasks()
+  wire.delegated = { subsessions: [], truncated: false, nextCursor: null }
   wire.failure = null
   wire.calls = []
   wire.hold = null
@@ -148,7 +172,7 @@ describe('TasksPanel scope', () => {
   it('reads the lease by (agent, session) and reports settled once it answers', async () => {
     await render()
     expect(wire.calls).toEqual([{ agentId: 'agent-a', sessionId: 'session-1' }])
-    expect(last()).toEqual({ settled: true, running: 0 })
+    expect(last()).toEqual({ settled: true, running: 0, shown: true })
     // Reported on the EDGE, against an unstable callback like the fresh closure this harness passes per render: re-reporting the held verdict would write parent state once per render, and a parent that re-renders on it would hand back another fresh closure — a loop.
     const heard = verdicts.length
     await rerender()
@@ -162,33 +186,35 @@ describe('TasksPanel scope', () => {
     })
     await render()
     expect(rows()).toHaveLength(3)
-    expect(last()).toEqual({ settled: true, running: 2 })
+    expect(last()).toEqual({ settled: true, running: 2, shown: true })
   })
 })
 
 describe('TasksPanel answers that are not rows', () => {
-  it('says the runtime reports no tasks for an UNTRACKED session, not that there are none', async () => {
-    // The distinction the `tracked` field exists for: a non-Claude runtime and an adapter without the lifecycle extension both have no lease, which is a different statement from "idle".
+  it('draws no group for an UNTRACKED session, and drops the tab when nothing else has anything to show', async () => {
+    // A non-Claude runtime and an adapter without the lifecycle extension have no lease, which is a different statement from "idle".
     wire.data = tasks({ tracked: false })
     await render()
-    expect(text()).toContain('doesn’t report its jobs')
+    expect(container?.querySelector('[data-task-group="turn"]')).toBeNull()
     expect(rows()).toHaveLength(0)
     // Null rather than 0: an unknown count must not wear a badge saying "none running".
-    expect(last()).toEqual({ settled: true, running: null })
+    expect(last()).toEqual({ settled: true, running: null, shown: false })
+    expect(tasksTabShown(last()!)).toBe(false)
   })
 
   it('says the session is idle when it IS tracked and has nothing', async () => {
     await render()
-    expect(text()).toContain('No runtime jobs in this session')
-    expect(text()).not.toContain('doesn’t report its jobs')
+    expect(container?.querySelector('[data-task-group="turn"]')).not.toBeNull()
+    expect(text()).toContain('No background commands or subagents')
+    expect(container?.querySelector('[data-tasks-census]')?.textContent).toBe('None in this turn')
   })
 
   it('names the version answer for a daemon too old to report tasks', async () => {
     wire.failure = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
     await render()
-    expect(text()).toContain('cannot report runtime jobs')
+    expect(text()).toContain('cannot report this turn’s tasks')
     expect(text()).toContain('Update the agent')
-    expect(last()).toEqual({ settled: true, running: null })
+    expect(last()).toEqual({ settled: true, running: null, shown: true })
   })
 
   it('says a session it cannot read is unavailable, and folds everything else into the offline story', async () => {
@@ -237,7 +263,7 @@ describe('TasksPanel rows', () => {
     wire.data = tasks({ tasks: [task({ description: null })] })
     await render()
     expect(rows()).toHaveLength(1)
-    expect(text()).toContain('Unnamed job')
+    expect(text()).toContain('Unnamed background command')
   })
 
   it('CARRIES subagent rows and marks them, rather than filtering them out', async () => {
@@ -371,7 +397,7 @@ describe('TasksPanel polling', () => {
     vi.useFakeTimers()
     wire.data = tasks({ tracked: false })
     await render({ active: true })
-    expect(last()).toEqual({ settled: true, running: null })
+    expect(last()).toEqual({ settled: true, running: null, shown: false })
 
     wire.data = tasks({ tasks: [task()] })
     await act(async () => {
@@ -381,7 +407,7 @@ describe('TasksPanel polling', () => {
       await Promise.resolve()
     })
     expect(rows()).toHaveLength(1)
-    expect(last()).toEqual({ settled: true, running: 1 })
+    expect(last()).toEqual({ settled: true, running: 1, shown: true })
   })
 
   it('re-reads on the tab action, without waiting for a poll', async () => {
@@ -404,14 +430,14 @@ describe('TasksPanel polling', () => {
     expect(wire.calls.at(-1)).toEqual({ agentId: 'agent-a', sessionId: 'session-2' })
     // Pending for the scope on screen, not answered with the previous one: no rows, and a verdict that pulls the badge rather than carrying session-1's count over.
     expect(rows()).toHaveLength(0)
-    expect(last()).toEqual({ settled: false, running: null })
+    expect(last()).toEqual({ settled: false, running: null, shown: false })
 
     await act(async () => {
       release?.(tasks({ sessionId: 'session-2', tasks: [task({ id: 't2', description: 'the new scope’s task' })] }))
       await Promise.resolve()
     })
     expect(text()).toContain('the new scope’s task')
-    expect(last()).toEqual({ settled: true, running: 1 })
+    expect(last()).toEqual({ settled: true, running: 1, shown: true })
   })
 
   it('re-reads ONCE for a scope switch and ONCE for a refresh, even after a poll has fired', async () => {
@@ -455,21 +481,22 @@ describe('TasksPanel polling', () => {
     wire.hold = () => new Promise((resolve) => (release = resolve))
     await render()
     expect(container?.querySelector('[data-tasks-panel]')).toBeNull()
-    expect(last()).toEqual({ settled: false, running: null })
+    expect(last()).toEqual({ settled: false, running: null, shown: false })
+    expect(tasksTabShown(last()!)).toBe(true)
 
     await act(async () => {
       release?.(tasks({ tasks: [task()] }))
       await Promise.resolve()
     })
     expect(container?.querySelector('[data-tasks-panel]')).not.toBeNull()
-    expect(last()).toEqual({ settled: true, running: 1 })
+    expect(last()).toEqual({ settled: true, running: 1, shown: true })
   })
 })
 
 // Tasks already polled; what the shared cadence adds is a turn's falling edge (a finished turn is where
 // a background task comes from) and the browser-visibility gate the other tabs get.
 describe('TasksPanel auto refresh', () => {
-  it('re-reads when a turn settles on screen, and defers that read while the tab is hidden', async () => {
+  it('re-reads when a turn settles, even while the tab is hidden, since that read can reveal the tab', async () => {
     await render({ active: true })
     expect(wire.calls).toHaveLength(1)
 
@@ -477,10 +504,63 @@ describe('TasksPanel auto refresh', () => {
     await rerender({ active: true, turnActive: false })
     expect(wire.calls).toHaveLength(2)
 
+    // A session the runtime starts tracking during the turn is how a hidden Tasks tab comes into the strip.
     await rerender({ active: false, turnActive: true })
     await rerender({ active: false, turnActive: false })
-    expect(wire.calls).toHaveLength(2)
-    await rerender({ active: true, turnActive: false })
     expect(wire.calls).toHaveLength(3)
+  })
+})
+
+describe('TasksPanel groups', () => {
+  const groups = () =>
+    Array.from(container?.querySelectorAll<HTMLElement>('[data-task-group]') ?? []).map((g) => g.dataset.taskGroup)
+  const headings = () => Array.from(container?.querySelectorAll('h3') ?? []).map((h) => h.textContent)
+
+  it('draws this turn’s tasks and the delegated ones as two groups, and badges what runs in both', async () => {
+    wire.data = tasks({ tasks: [task(), task({ id: 't2', state: 'done', endedAt: NOW_ISO })] })
+    wire.delegated = {
+      subsessions: [delegatedRow(), delegatedRow({ sessionId: 'child-2', state: 'done', canStop: false })],
+      truncated: false,
+      nextCursor: null
+    }
+    await render({ delegated: true })
+    expect(groups()).toEqual(['turn', 'delegated'])
+    expect(headings()).toEqual(['This turn', 'Delegated'])
+    expect(text()).toContain('(reported by the runtime)')
+    expect(text()).toContain('(managed by AgentConnect)')
+    // Only the delegated group can be stopped; this turn's stays read-only.
+    const turn = container?.querySelector('[data-task-group="turn"]')
+    const delegated = container?.querySelector('[data-task-group="delegated"]')
+    expect(turn?.querySelectorAll('button')).toHaveLength(0)
+    expect(Array.from(delegated?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual(['Stop'])
+    // A running delegated task shows how long it has run; a finished one whether it reported back.
+    expect(delegated?.querySelector('[data-subsession-elapsed]')?.textContent).toBe('2m 14s')
+    expect(
+      Array.from(delegated?.querySelectorAll('[data-subsession-state]') ?? []).map((el) => el.textContent)
+    ).toEqual(['Running', 'Reported'])
+    expect(last()).toEqual({ settled: true, running: 2, shown: true })
+  })
+
+  it('keeps the tab for delegated tasks alone, leaving out an untracked runtime’s group', async () => {
+    wire.data = tasks({ tracked: false })
+    wire.delegated = {
+      subsessions: [delegatedRow({ state: 'failed', canStop: false })],
+      truncated: false,
+      nextCursor: null
+    }
+    await render({ delegated: true })
+    expect(groups()).toEqual(['delegated'])
+    expect(last()).toEqual({ settled: true, running: 0, shown: true })
+  })
+
+  it('leaves the delegated group out while the conversation has none, and does not read it when not asked', async () => {
+    await render({ delegated: true })
+    expect(groups()).toEqual(['turn'])
+    await act(async () => root?.unmount())
+    container?.remove()
+    const api = await import('@/lib/api')
+    vi.mocked(api.fetchAssistantSubsessions).mockClear()
+    await render()
+    expect(api.fetchAssistantSubsessions).not.toHaveBeenCalled()
   })
 })

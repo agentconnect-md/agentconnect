@@ -67,7 +67,7 @@ const relation = (id: string): SessionRelationDto => ({
   platform: 'slack'
 })
 
-const NO_FAMILY = { parentSessions: [], siblingSessions: [], childSessions: [] }
+const NO_FAMILY = { parentSessions: [], childSessions: [] }
 
 const SESSIONS_TAB: DockTab = { key: 'sessions', label: 'Sessions', icon: 'messages-square' }
 
@@ -84,7 +84,6 @@ function panelMarkup({
   total?: number
   family?: {
     parentSessions: SessionRelationDto[]
-    siblingSessions?: SessionRelationDto[]
     childSessions: SessionRelationDto[]
   }
   filterTouched?: boolean
@@ -114,10 +113,6 @@ function panelMarkup({
     </SessionDock>
   )
 }
-
-/** The depth elbow and the divider, read out of the markup because level is what this list communicates and text assertions cannot see it. */
-const ELBOW = 'rounded-bl-[4px]'
-const DIVIDER = 'bg-(--border-subtle)'
 
 // The reserved track and its breakpoint gate. The width is the property the pre-paint script sets — the reader's own, and never a function of the DATA.
 const COLUMN = 'w-[var(--dock-width)]'
@@ -253,7 +248,7 @@ describe('SessionsPanel room attribution', () => {
     title: 'Session current'
   })
 
-  it('names the agents when the participants share a session title', () => {
+  it('names the agents, each with its edge in words', () => {
     const markup = panelMarkup({
       roomLineage: {
         wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'),
@@ -261,25 +256,19 @@ describe('SessionsPanel room attribution', () => {
       }
     })
 
-    // Direction is drawn as indent, so the words live in the tooltip and in sr-only text, never in a heading that restates the indent.
-    expect(markup).toContain('title="Delegated by Alert Analyzer')
-    expect(markup).toContain('title="Delegated to node-operator')
-    expect(markup).toContain('<span class="sr-only">Delegated by</span>')
-    expect(markup).toContain('<span class="sr-only">Delegated to</span>')
-    // The identities, which the shared title cannot carry.
-    expect(markup).toContain('Alert Analyzer')
-    expect(markup).toContain('node-operator')
-    expect(markup).toContain('db-operator')
+    expect(markup).toMatch(/Started by <span[^>]*>Alert Analyzer<\/span>/)
+    expect(markup).toMatch(/References <span[^>]*>node-operator<\/span>/)
+    expect(markup).toMatch(/References <span[^>]*>db-operator<\/span>/)
+    expect(markup).not.toContain('sr-only')
   })
 
   it('gives the navigation rows the same words', () => {
-    // A cross-room parent is `wokenBy`'s edge seen from elsewhere, and a screen reader has no indent, so both kinds of row carry the words.
     const markup = panelMarkup({
       family: { ...NO_FAMILY, parentSessions: [relation('rel-p')], childSessions: [relation('rel-k')] }
     })
 
-    expect(markup).toContain('<span class="sr-only">Delegated by</span>')
-    expect(markup).toContain('<span class="sr-only">Delegated to</span>')
+    expect(markup).toMatch(/Started by <span[^>]*>Session rel-p<\/span>/)
+    expect(markup).toMatch(/References <span[^>]*>Session rel-k<\/span>/)
   })
 
   it('falls back to the agent id when nothing can name the agent', () => {
@@ -312,52 +301,53 @@ describe('SessionsPanel room attribution', () => {
   })
 })
 
-// Level 0 over a MERGED page, the one that can have several parents. The drawn level is the ONLY thing naming a relation, so misplacing one misreports it.
-describe('SessionsPanel conversation parents', () => {
-  it('draws every waking conversation on the level above the open row', () => {
-    // The regression: with one parent slot the second waker rode in `siblingSessions` and was drawn BELOW the open row, under the divider.
+// The Related list is flat: each row says how it relates in words, nothing is indented or connected, and tasks are not sessions of their own here.
+describe('SessionsPanel Related list', () => {
+  const related = (markup: string) => [...markup.matchAll(/data-related-row="(\w+)"/g)].map((m) => m[1])
+
+  it('lists every waking conversation above the open row, all on one level', () => {
     const markup = panelMarkup({
-      family: { parentSessions: [relation('parent-a'), relation('parent-b')], childSessions: [] }
+      family: { parentSessions: [relation('parent-a'), relation('parent-b')], childSessions: [relation('callee')] }
     })
 
     const first = markup.indexOf('href="/sessions/parent-a"')
     const second = markup.indexOf('href="/sessions/parent-b"')
     const open = markup.indexOf('href="/sessions/current"')
+    const callee = markup.indexOf('href="/sessions/callee"')
     expect(first).toBeGreaterThan(-1)
     expect(second).toBeGreaterThan(first)
     expect(open).toBeGreaterThan(second)
-    // Level 0 draws no elbow, so the only one belongs to the open row beneath them — and nothing was set aside behind a divider.
-    expect(markup.split(ELBOW).length - 1).toBe(1)
-    expect(markup).not.toContain(DIVIDER)
+    expect(callee).toBeGreaterThan(open)
+    expect(related(markup)).toEqual(['startedBy', 'startedBy', 'references'])
+    // No elbow connectors and no extra indent for any level.
+    expect(markup).not.toContain('rounded-bl-[4px]')
+    expect(markup).not.toContain('pl-[26px]')
   })
 
-  it('gives each waking conversation the same edge words', () => {
-    // Both are the same edge, so the words a screen reader hears must not depend on which parent came second.
-    const markup = panelMarkup({
-      family: { parentSessions: [relation('parent-a'), relation('parent-b')], childSessions: [] }
-    })
-
-    expect(markup.split('<span class="sr-only">Delegated by</span>').length - 1).toBe(2)
-  })
-
-  it('keeps lineage siblings beside the open row, which is what they are', () => {
-    // The other meaning, on a single-session page: siblings share the open session's PARENT, so they sit at its level past the divider.
+  it('leaves tasks out, whichever edge they sit on', () => {
+    const task = (id: string): SessionRelationDto => ({ ...relation(id), subsession: true })
     const markup = panelMarkup({
       family: {
         parentSessions: [relation('parent-a')],
-        siblingSessions: [relation('sibling-a')],
-        childSessions: []
-      }
+        childSessions: [task('task-1'), relation('callee'), task('task-2')]
+      },
+      roomLineage: { wokenBy: null, woke: [task('task-3')] }
     })
 
-    const open = markup.indexOf('href="/sessions/current"')
-    const divider = markup.indexOf(DIVIDER)
-    const sibling = markup.indexOf('href="/sessions/sibling-a"')
-    expect(divider).toBeGreaterThan(open)
-    expect(sibling).toBeGreaterThan(divider)
-    // Both the open row and the sibling hang off the parent above them.
-    expect(markup.split(ELBOW).length - 1).toBe(2)
-    // A sibling sits on neither edge the two words name, so it carries neither.
-    expect(markup.split('<span class="sr-only">Delegated by</span>').length - 1).toBe(1)
+    expect(markup).not.toContain('task-1')
+    expect(markup).not.toContain('task-2')
+    expect(markup).not.toContain('task-3')
+    expect(related(markup)).toEqual(['startedBy', 'references'])
+  })
+
+  it('draws no Related block when the only links are tasks', () => {
+    const markup = panelMarkup({
+      sessions: [session('other-1'), session('other-2')],
+      total: 2,
+      family: { parentSessions: [], childSessions: [{ ...relation('task-1'), subsession: true }] }
+    })
+
+    expect(markup).not.toContain('Related')
+    expect(markup).not.toContain('task-1')
   })
 })

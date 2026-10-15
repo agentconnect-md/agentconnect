@@ -156,18 +156,22 @@ import { SessionVisibilityControl } from '@/components/console/SessionVisibility
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
-import { SessionsPanel, SessionsPanelSkeleton, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
+import {
+  SessionsPanel,
+  SessionsPanelSkeleton,
+  relatedSessions,
+  sessionsTabStatus
+} from '@/components/console/dock/SessionsPanel'
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
 import { useSandboxKeepAlive } from '@/components/console/dock/sandbox-keep-alive'
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
-import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
 import {
-  SUBSESSIONS_UNSETTLED,
-  SubsessionsPanel,
-  subsessionsTabShown,
-  subsessionsTabStatus,
-  type SubsessionsPanelVerdict
-} from '@/components/console/dock/SubsessionsPanel'
+  TASKS_UNSETTLED,
+  TasksPanel,
+  tasksTabShown,
+  tasksTabStatus,
+  type TasksPanelVerdict
+} from '@/components/console/dock/TasksPanel'
 import {
   PullRequestPanel,
   pullRequestTabStatus,
@@ -2279,17 +2283,21 @@ function SessionHumanFaces({ participants }: { participants: SessionParticipant[
 
 function SessionRelationLink({
   relation,
+  kind,
   agent,
   orgPath,
   flatView = false,
   bordered = false
 }: {
   relation: SessionRelationDto
+  /** The edge, drawn as words around the title: the session that started this one, or one this one called or woke. */
+  kind: 'startedBy' | 'references'
   agent?: Agent
   orgPath: (path: string) => string
   flatView?: boolean
   bordered?: boolean
 }) {
+  const t = useTranslations('Sessions.panel')
   const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
   const agentName = agent ? agentLabel(agent) : (relation.agentName ?? relation.agentId)
   return (
@@ -2304,7 +2312,15 @@ function SessionRelationLink({
         <PlatformMark platform={relation.platform} />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
-        <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">{title}</span>
+        <span
+          data-related-row={kind}
+          className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+        >
+          {t.rich(kind, {
+            name: title,
+            session: (chunks) => <span className="font-semibold text-(--text-primary)">{chunks}</span>
+          })}
+        </span>
         <span className="truncate font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
           {agentName}
         </span>
@@ -2319,124 +2335,69 @@ function SessionRelationLink({
   )
 }
 
+/** The Sessions tab's Related list on a phone: one flat, labelled list of real sessions, tasks left out. */
 function MobileSessionFamilyLinks({
   parents,
-  siblings,
   children,
   agentById,
   orgPath,
-  conversation = false,
   flatView = false,
   childOriginById
 }: {
-  /** Whatever woke this page. A session has at most one parent; a merged
-   *  conversation has one per member woken from another room, and they are all
-   *  parents — none of them is a sibling of anything. */
+  /** Whatever started this page: one parent for a session, one per member woken from another room for a conversation. */
   parents: SessionRelationDto[]
-  /** LINEAGE siblings: the other children of this session's parent. A
-   *  conversation has no such relation and passes none. */
-  siblings: SessionRelationDto[]
+  /** Whatever this page called or woke. */
   children: SessionRelationDto[]
   agentById: ReadonlyMap<string, Agent>
   orgPath: (path: string) => string
-  /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels
-   *  the sections and groups delegations by their waking member. */
-  conversation?: boolean
   flatView?: boolean
-  /** Delegation target id → waking member agentId (conversation mode). */
+  /** Callee id → the member agent that called it (conversation mode), drawn as a "via" line. */
   childOriginById?: ReadonlyMap<string, string>
 }) {
   const t = useTranslations('Sessions.detail')
-  if (parents.length === 0 && siblings.length === 0 && children.length === 0) return null
+  const tp = useTranslations('Sessions.panel')
+  const startedBy = relatedSessions(parents)
+  const references = relatedSessions(children)
+  if (startedBy.length === 0 && references.length === 0) return null
   return (
-    <div className="card mx-4 mt-4 overflow-hidden desktop:hidden">
-      {parents.length > 0 && (
-        <div
-          className={`grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 ${
-            siblings.length > 0 || children.length > 0 ? 'border-b border-(--border-subtle)' : ''
-          }`}
-        >
-          <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {conversation
-              ? parents.length === 1
-                ? t('parentConversation')
-                : t('parentConversations', { count: parents.length })
-              : t('parentSession')}
-          </span>
-          <div className="min-w-0">
-            {parents.map((parent, index) => (
-              <SessionRelationLink
-                key={parent.id}
-                relation={parent}
-                agent={agentById.get(parent.agentId)}
-                orgPath={orgPath}
-                flatView={flatView}
-                bordered={index > 0}
-              />
-            ))}
+    <div data-related-card="" className="card mx-4 mt-4 overflow-hidden px-4 desktop:hidden">
+      <div className="pt-[10px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+        {tp('related')}
+      </div>
+      {startedBy.map((parent, index) => (
+        <SessionRelationLink
+          key={parent.id}
+          relation={parent}
+          kind="startedBy"
+          agent={agentById.get(parent.agentId)}
+          orgPath={orgPath}
+          flatView={flatView}
+          bordered={index > 0}
+        />
+      ))}
+      {references.map((child, index) => {
+        const origin = childOriginById?.get(child.id)
+        const previousOrigin = index > 0 ? childOriginById?.get(references[index - 1]!.id) : undefined
+        const originAgent = origin ? agentById.get(origin) : undefined
+        const newGroup = origin !== undefined && origin !== previousOrigin
+        return (
+          <div key={child.id}>
+            {newGroup && (
+              <div className="pt-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
+                {t('viaAgent', { agent: originAgent ? agentLabel(originAgent) : origin })}
+              </div>
+            )}
+            <SessionRelationLink
+              relation={child}
+              kind="references"
+              agent={agentById.get(child.agentId)}
+              orgPath={orgPath}
+              flatView={flatView}
+              bordered={(startedBy.length > 0 || index > 0) && !newGroup}
+            />
           </div>
-        </div>
-      )}
-      {siblings.length > 0 && (
-        <div
-          className={`grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 ${
-            children.length > 0 ? 'border-b border-(--border-subtle)' : ''
-          }`}
-        >
-          <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {siblings.length === 1 ? t('siblingSession') : t('siblingSessions', { count: siblings.length })}
-          </span>
-          <div className="min-w-0">
-            {siblings.map((sibling, index) => (
-              <SessionRelationLink
-                key={sibling.id}
-                relation={sibling}
-                agent={agentById.get(sibling.agentId)}
-                orgPath={orgPath}
-                flatView={flatView}
-                bordered={index > 0}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-      {children.length > 0 && (
-        <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4">
-          <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {conversation
-              ? children.length === 1
-                ? t('delegation')
-                : t('delegations', { count: children.length })
-              : children.length === 1
-                ? t('childSession')
-                : t('childSessions', { count: children.length })}
-          </span>
-          <div className="min-w-0">
-            {children.map((child, index) => {
-              const origin = childOriginById?.get(child.id)
-              const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
-              const originAgent = origin ? agentById.get(origin) : undefined
-              const newGroup = origin !== undefined && origin !== previousOrigin
-              return (
-                <div key={child.id}>
-                  {newGroup && (
-                    <div className="pt-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
-                      {t('viaAgent', { agent: originAgent ? agentLabel(originAgent) : origin })}
-                    </div>
-                  )}
-                  <SessionRelationLink
-                    relation={child}
-                    agent={agentById.get(child.agentId)}
-                    orgPath={orgPath}
-                    flatView={flatView}
-                    bordered={index > 0 && !newGroup}
-                  />
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+        )
+      })}
     </div>
   )
 }
@@ -2454,20 +2415,13 @@ const DOCK_TABS: DockTab[] = [
   },
   // PR's `external-link` action is spliced on below, once a 200 has carried a URL for it to open.
   { key: 'pr', label: 'PR', icon: 'git-pull-request' },
+  // This turn's tasks the runtime reports, and the tasks AgentConnect manages for the session, in one tab.
   {
     key: 'tasks',
-    label: 'Runtime jobs',
+    label: 'Tasks',
     icon: 'list-checks',
     actionIcon: 'refresh-cw',
-    actionLabel: 'Refresh runtime jobs'
-  },
-  // A conversation's background work (tasks, patrols, approved work), offered only once it has started some.
-  {
-    key: 'subsessions',
-    label: 'Background work',
-    icon: 'split',
-    actionIcon: 'refresh-cw',
-    actionLabel: 'Refresh background work'
+    actionLabel: 'Refresh tasks'
   }
 ]
 
@@ -2994,8 +2948,7 @@ export default function SessionDetailView() {
     reconcileLiveSteps
   })
 
-  // The lineage links the Sessions panel and the mobile card draw, in their three levels rather than either source's wire shape: what woke the open row, the row itself, what it woke.
-  // A conversation contributes no lineage SIBLINGS: "the other children of my parent session" is a per-session fact the CP derives and a room has no version of, so the slot stays absent rather than carrying this page's additional parent conversations under a name that means something else — those are parents and render as parents.
+  // The Related links the Sessions panel and the mobile card draw: what started the open row and what it called or woke; both drop tasks.
   const familyLinks = useMemo(() => {
     if (conversationFamily) {
       return { parentSessions: conversationFamily.parentSessions, childSessions: conversationFamily.childSessions }
@@ -3003,7 +2956,6 @@ export default function SessionDetailView() {
     if (!currentSessionDetail || currentSessionDetail.id !== session?.id) return undefined
     return {
       parentSessions: currentSessionDetail.parentSession ? [currentSessionDetail.parentSession] : [],
-      siblingSessions: currentSessionDetail.siblingSessions ?? [],
       childSessions: currentSessionDetail.childSessions
     }
   }, [conversationFamily, currentSessionDetail, session?.id])
@@ -3204,7 +3156,7 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // The conversation whose background work the dock lists: the focused participant's session, while that agent is in assistant mode or its daemon lists every agent's.
+  // Whether the Tasks tab reads the focused session's delegated tasks: that agent is in assistant mode or its daemon lists every agent's.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
   const subsessionsListed =
     !!subsessionsAgent &&
@@ -3268,7 +3220,12 @@ export default function SessionDetailView() {
     sessions: seededRailRows,
     total: seededRailTotal,
     isLoading: seededRailLoading
-  } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {}, { grouped: !flatView })
+  } = useSessionList(
+    MOCK_MODE || !railQuery ? null : activeOrg?.id,
+    // Tasks belong to their session's Tasks tab, so the rail lists sessions only, as All sessions does by default.
+    { ...(railQuery ?? {}), excludeTasks: true },
+    { grouped: !flatView }
+  )
   // Which panel is on screen. Sessions is where a session page opens; every other tab is one the reader asked for.
   const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
@@ -3298,12 +3255,9 @@ export default function SessionDetailView() {
     tracking: null,
     base: null
   })
-  // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
+  // The Tasks tab's own `refresh-cw` and verdict: its settle state feeds the tab status, whether it has anything the tab's presence, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
-  const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
-  // The Background work tab's own refresh and verdict: whether the conversation started any, and how many run.
-  const [subsessionsRefreshTick, setSubsessionsRefreshTick] = useState(0)
-  const [subsessionsVerdict, setSubsessionsVerdict] = useState<SubsessionsPanelVerdict>(SUBSESSIONS_UNSETTLED)
+  const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>(TASKS_UNSETTLED)
   // The PR tab's verdict, reported by its panel: whether this session HAS a linked run at all (`none` drops the tab), the unresolved-thread badge, and the URL its `external-link` action opens.
   const [prVerdict, setPrVerdict] = useState<PullRequestPanelVerdict>({
     answer: 'pending',
@@ -3352,18 +3306,14 @@ export default function SessionDetailView() {
                 ? t('git')
                 : tab.key === 'pr'
                   ? t('pullRequest')
-                  : tab.key === 'subsessions'
-                    ? t('subsessions')
-                    : t('tasks'),
+                  : t('tasks'),
         ...(tab.key === 'files'
           ? { actionLabel: t('refreshFiles') }
           : tab.key === 'git'
             ? { actionLabel: t('refreshGit') }
             : tab.key === 'tasks'
               ? { actionLabel: t('refreshTasks') }
-              : tab.key === 'subsessions'
-                ? { actionLabel: t('refreshSubsessions') }
-                : {})
+              : {})
       })),
     [t]
   )
@@ -3375,14 +3325,12 @@ export default function SessionDetailView() {
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
             : tab.key === 'tasks'
-              ? // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
-                filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE
-              : tab.key === 'subsessions'
-                ? subsessionsSessionId !== null && subsessionsTabShown(subsessionsVerdict)
-                : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
-                  tab.key !== 'pr' ||
-                  (prSessionId !== null &&
-                    (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
+              ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group.
+                filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict)
+              : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
+                tab.key !== 'pr' ||
+                (prSessionId !== null &&
+                  (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
         )
         .map((tab) =>
           tab.key === 'sessions'
@@ -3412,13 +3360,7 @@ export default function SessionDetailView() {
                         // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
-                    : tab.key === 'subsessions'
-                      ? {
-                          ...tab,
-                          status: subsessionsTabStatus(subsessionsVerdict.settled),
-                          ...(subsessionsVerdict.running ? { badge: subsessionsVerdict.running } : {})
-                        }
-                      : tab
+                    : tab
         ),
     [
       filesAgentId,
@@ -3433,11 +3375,9 @@ export default function SessionDetailView() {
       prVerdict.url,
       sessionsStatus,
       localizedDockTabs,
-      subsessionsSessionId,
-      subsessionsVerdict,
       tasksSessionId,
       tasksStatus,
-      tasksVerdict.running
+      tasksVerdict
     ]
   )
   // The active tab has to be one that exists: a Files tab dropped under the reader would otherwise leave the dock with no active tab and an unlabelled panel.
@@ -3445,7 +3385,7 @@ export default function SessionDetailView() {
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
     railSeedWidened ? activeOrg?.id : null,
-    {},
+    { excludeTasks: true },
     { grouped: !flatView }
   )
   const railSessionRows = railSeedWidened ? widenedRailRows : seededRailRows
@@ -3455,13 +3395,13 @@ export default function SessionDetailView() {
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
-    if (railAgentIds.length === 0) return allSessions
-    if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!)
+    if (railAgentIds.length === 0) return allSessions.filter((s) => !s.subsession)
+    if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!).filter((s) => !s.subsession)
     // The demo fixtures carry no conversation grouping, so the channel stands in for it — enough for the multi-agent filter to behave like the real one.
     const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform}\0${s.channel}`))
     const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
     return allSessions.filter(
-      (s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform}\0${s.channel}`)
+      (s) => !s.subsession && railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform}\0${s.channel}`)
     )
   }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
   // The open row as the Sessions panel sees it: its conversation and, where the resolver has answered, that conversation's full membership — both identity the panel matches on, and neither on the session row itself.
@@ -3896,7 +3836,7 @@ export default function SessionDetailView() {
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
-  // Background work's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its owning session's Background work panel.
+  // A task's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its owning session's Tasks tab.
   const readOnlySubsession = session.subsession === true
   // Continuation is server-computed (webchat-cross-integration-continuation.md §6.5): a transient blocker disables the composer, unauthorized/unsupported stay read-only.
   const isContinuable = !readOnlySubsession && !isPg && !isWebchat && composerDetail?.canContinue === true
@@ -5082,6 +5022,35 @@ export default function SessionDetailView() {
         the flush divider with the transcript, with no blank gap under the line. */}
         <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none">
           <div>
+            {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
+            {readOnlySubsession && currentSessionDetail ? (
+              <div
+                data-task-owner=""
+                className="flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-[6px]"
+              >
+                <Icon name="corner-up-left" size={13} className="flex-none" />
+                <span className="min-w-0 truncate">
+                  {currentSessionDetail.parentSession
+                    ? t.rich('taskBelongsTo', {
+                        title:
+                          currentSessionDetail.parentSession.title?.trim() ||
+                          `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`,
+                        session: (chunks) => (
+                          <Link
+                            className="lnk font-medium text-(--text-link)"
+                            href={orgPath(
+                              `/sessions/${encodeURIComponent(currentSessionDetail.parentSession!.id)}${flatView ? '?view=flat' : ''}`
+                            )}
+                            title={t('backToOwningSession')}
+                          >
+                            {chunks}
+                          </Link>
+                        )
+                      })
+                    : t('taskOwnerHidden')}
+                </span>
+              </div>
+            ) : null}
             {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
             in the top-bar crumb; with the crumb gone the page has to name itself. The
             mobile title/status live in Shell's app bar, so this region is desktop-only. */}
@@ -5337,11 +5306,9 @@ export default function SessionDetailView() {
           {familyLinks && (
             <MobileSessionFamilyLinks
               parents={familyLinks.parentSessions}
-              siblings={familyLinks.siblingSessions ?? []}
               children={familyLinks.childSessions}
               agentById={agentById}
               orgPath={orgPath}
-              conversation={conversationMode}
               flatView={flatView}
               childOriginById={conversationLineage?.childOriginById}
             />
@@ -6409,7 +6376,6 @@ export default function SessionDetailView() {
           // PR's action is the design's `external-link`, not a refresh: it opens the PR's own page (the panel body carries its own refresh).
           if (key === 'pr' && prVerdict.url) window.open(prVerdict.url, '_blank', 'noopener,noreferrer')
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
-          if (key === 'subsessions') setSubsessionsRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
         label={t('panels')}
@@ -6506,29 +6472,17 @@ export default function SessionDetailView() {
             />
           ) : null}
         </DockPanel>
-        {/* No isolation gate and no withheld state: the lease is keyed by the session, not by a checkout, so there is nothing to resolve first. `active` is what keeps a hidden panel from polling. */}
+        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once either group has something to show. */}
         <DockPanel active={dockTabKey === 'tasks'}>
           {filesAgentId && tasksSessionId ? (
             <TasksPanel
               agentId={filesAgentId}
               sessionId={tasksSessionId}
+              delegated={subsessionsSessionId !== null}
               active={dockTabKey === 'tasks'}
               turnActive={focusBusy}
               refreshTick={tasksRefreshTick}
               onVerdictChange={setTasksVerdict}
-            />
-          ) : null}
-        </DockPanel>
-        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once the conversation starts background work. */}
-        <DockPanel active={dockTabKey === 'subsessions'}>
-          {filesAgentId && subsessionsSessionId ? (
-            <SubsessionsPanel
-              agentId={filesAgentId}
-              sessionId={subsessionsSessionId}
-              active={dockTabKey === 'subsessions'}
-              turnActive={focusBusy}
-              refreshTick={subsessionsRefreshTick}
-              onVerdictChange={setSubsessionsVerdict}
             />
           ) : null}
         </DockPanel>

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// Background work's own page is read-only: its channel is synthetic and its thread no platform thread, so a composer there could reach neither it nor its turn.
+// A task's own page is read-only (its channel is synthetic and its thread no platform thread, so a composer could reach neither it nor its turn) and names the session it belongs to.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -16,7 +16,7 @@ const wire = vi.hoisted(() => ({
   busy: false,
   draft: 'more please'
 }))
-const spies = vi.hoisted(() => ({ pgAttach: vi.fn(), pgCancel: vi.fn() }))
+const spies = vi.hoisted(() => ({ pgAttach: vi.fn(), pgCancel: vi.fn(), listFilters: [] as unknown[] }))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'session-1' }),
@@ -104,7 +104,10 @@ vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: (
 vi.mock('@/lib/stick-to-bottom', () => ({ useStickToBottom: () => ({ pin: () => {}, awayFromBottom: false }) }))
 vi.mock('@/lib/auth', () => ({ isAuthConfigured: () => false }))
 vi.mock('@/lib/use-session-list', () => ({
-  useSessionList: () => ({ sessions: [], total: 0, isLoading: false, nextCursor: null, loadingMore: false })
+  useSessionList: (orgId: string | null, filters: unknown) => {
+    if (orgId) spies.listFilters.push(filters)
+    return { sessions: [], total: 0, isLoading: false, nextCursor: null, loadingMore: false }
+  }
 }))
 
 vi.mock('@/components/console/Shell', () => ({
@@ -187,11 +190,13 @@ const listRow = (origin: Origin): Session =>
   } as unknown as SessionDto)
 
 // The Control Plane's own verdict: a Slack-origin task still reads as continuable there.
-const detailOf = (origin: Origin): SessionDetailDto => {
+const OWNER = { id: 'owner-1', agentId: 'agent-1', agentName: 'Ops bot', platform: 'slack', title: 'Deploy the thing' }
+
+const detailOf = (origin: Origin, parentSession: SessionDetailDto['parentSession'] = null): SessionDetailDto => {
   const canContinue = origin.platform !== 'webchat'
   return {
     id: 'session-1',
-    parentSession: null,
+    parentSession,
     siblingSessions: [],
     childSessions: [],
     agentId: 'agent-1',
@@ -241,9 +246,12 @@ async function settle() {
   }
 }
 
-async function open(origin: Origin, { listed = true } = {}) {
+async function open(
+  origin: Origin,
+  { listed = true, parent = null }: { listed?: boolean; parent?: SessionDetailDto['parentSession'] } = {}
+) {
   wire.rows = listed ? [listRow(origin)] : []
-  wire.detail = detailOf(origin)
+  wire.detail = detailOf(origin, parent)
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -302,7 +310,7 @@ const SUBSESSIONS = [
 describe.each([
   ['on a desktop', false],
   ['on a phone', true]
-])('background work’s own page %s', (_viewport, mobile) => {
+])('a task’s own page %s', (_viewport, mobile) => {
   beforeEach(() => setViewport(mobile))
 
   it.each(SUBSESSIONS)('keeps %s readable but offers no composer', async (_name, origin) => {
@@ -335,6 +343,28 @@ describe.each([
     expect(text()).toContain('TRANSCRIPT MARKER')
     expect(container?.querySelector('textarea')).toBeNull()
   })
+
+  it.each(SUBSESSIONS)('names the session %s belongs to and links back to it', async (_name, origin) => {
+    await open(origin, { parent: OWNER })
+
+    const owner = container?.querySelector('[data-task-owner]')
+    expect(owner?.textContent).toBe('Belongs to Deploy the thing · task')
+    expect(owner?.querySelector('a')?.getAttribute('href')).toMatch(/\/sessions\/owner-1$/)
+    // Its tool calls stay in its own transcript, and the owner is a plain labelled link, not a tree.
+    expect(text()).toContain('TRANSCRIPT MARKER')
+    const related = container?.querySelector('[data-related-card]')
+    expect(related?.querySelector('[data-related-row="startedBy"]')?.textContent).toContain(
+      'Started by Deploy the thing'
+    )
+  })
+
+  it('says the owning session is not visible rather than inventing a link', async () => {
+    await open(SLACK_SUBSESSION)
+
+    const owner = container?.querySelector('[data-task-owner]')
+    expect(owner?.textContent).toBe('Task · the session it belongs to isn’t visible to you')
+    expect(owner?.querySelector('a')).toBeNull()
+  })
 })
 
 describe.each([
@@ -359,5 +389,20 @@ describe.each([
 
     expect(composer()).not.toBeNull()
     expect(button('Send message')).not.toBeNull()
+  })
+
+  it('keeps tasks out of the Sessions rail, as All sessions does by default', async () => {
+    spies.listFilters.length = 0
+    await open(SLACK)
+
+    expect(spies.listFilters.length).toBeGreaterThan(0)
+    for (const filters of spies.listFilters) expect(filters).toMatchObject({ excludeTasks: true })
+  })
+
+  it('carries no task header, even with a session that started it', async () => {
+    await open(SLACK, { parent: OWNER })
+
+    expect(container?.querySelector('[data-task-owner]')).toBeNull()
+    expect(container?.querySelector('[data-related-row="startedBy"]')).not.toBeNull()
   })
 })
