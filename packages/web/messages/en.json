@@ -185,6 +185,30 @@
       "goHome": "Go to home",
       "search": "Search",
       "shortcut": "⌘K"
+    },
+    "followUp": {
+      "kind": "Follow-up",
+      "status": {
+        "waiting": "Waiting",
+        "waitingNext": "Waiting · next check {time}",
+        "checking": "Checking",
+        "paused": "Paused",
+        "done": "Done",
+        "stopped": "Stopped"
+      },
+      "nextCheck": "Next check {time}",
+      "showChecks": "Show checks",
+      "hideChecks": "Hide checks",
+      "doneWhen": "Done when: {text}",
+      "noChecks": "No checks yet.",
+      "reported": "Reported",
+      "notReported": "Not reported",
+      "end": "End follow-up",
+      "endConfirm": "End this follow-up? The agent stops checking.",
+      "keep": "Keep",
+      "ended": "Follow-up ended.",
+      "alreadyEnded": "It had already ended.",
+      "endFailed": "Couldn’t end it. Try again."
     }
   },
   "Profile": {
@@ -833,7 +857,9 @@
         "groupHint": "(managed by AgentConnect)",
         "census": {
           "running": "{count} running",
+          "waiting": "{count} waiting",
           "reported": "{count} reported",
+          "ended": "{count} ended",
           "failed": "{count} failed"
         },
         "state": {

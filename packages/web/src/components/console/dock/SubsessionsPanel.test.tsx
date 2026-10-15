@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The Tasks tab's Delegated group: it lists only the delegated tasks, patrols and approved proposals of this conversation, links only those the reader may open, stops one through the console's stop route, pages on, and reports the verdict that puts its tab in the strip.
+// The Tasks tab's Delegated group: it lists only the delegated tasks, patrols or follow-ups, and approved proposals of this conversation, links only those the reader may open, stops one (or ends a follow-up) through the console's stop route, pages on, and reports the verdict that puts its tab in the strip.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -66,7 +66,7 @@ import {
   subsessionsTabShown,
   type SubsessionsPanelVerdict
 } from './SubsessionsPanel'
-import type { AssistantSubsessionDto } from '@/lib/api'
+import type { AssistantFollowUpDto, AssistantFollowUpStatus, AssistantSubsessionDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -85,6 +85,31 @@ function row(overrides: Partial<AssistantSubsessionDto> = {}): AssistantSubsessi
     parent: { sessionId: 'session-1', title: 'support', platform: 'slack', channelName: 'support' },
     ...overrides
   }
+}
+
+/** A follow-up row as a daemon with `follow-up-tasks-v1` lists it. */
+function followUp(
+  status: AssistantFollowUpStatus,
+  overrides: Partial<AssistantSubsessionDto> = {},
+  details: Partial<AssistantFollowUpDto> = {}
+): AssistantSubsessionDto {
+  return row({
+    sessionId: `fu-${status}`,
+    title: `Watch the ${status} release`,
+    state: status === 'done' || status === 'stopped' ? 'done' : 'open',
+    kind: 'follow-up',
+    followUp: {
+      status,
+      nextCheck: status === 'waiting' ? '2026-10-16T09:00:00.000Z' : null,
+      doneWhen: 'The release is published',
+      recentChecks: [
+        { at: '2026-10-15T09:00:00.000Z', observation: 'The tag exists; the release is a draft.', reported: true },
+        { at: '2026-10-14T09:00:00.000Z', observation: 'No tag yet.', reported: false }
+      ],
+      ...details
+    },
+    ...overrides
+  })
 }
 
 const page = (subsessions: AssistantSubsessionDto[], nextCursor: string | null = null) => ({
@@ -140,6 +165,8 @@ const buttons = (label: string) =>
     b.textContent?.includes(label)
   )
 const last = () => verdicts.at(-1)
+const labelled = (label: string, scope: ParentNode | undefined = container) =>
+  scope?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
 
 beforeEach(() => {
   wire.pages = [page([])]
@@ -324,6 +351,118 @@ describe('SubsessionsPanel', () => {
     expect(rows()).toHaveLength(1)
     expect(text()).toContain('Delegated tasks are unavailable right now.')
     expect(last()).toEqual({ settled: true, count: 1, running: 1, failed: false })
+  })
+
+  it('draws a follow-up in each state with its kind, and counts only a check as running', async () => {
+    wire.pages = [
+      page([
+        followUp('waiting'),
+        followUp('checking'),
+        followUp('paused'),
+        followUp('done', { canStop: false }),
+        followUp('stopped', { canStop: false }),
+        row({ sessionId: 'child-9', state: 'done', canStop: false, kind: 'delegated' })
+      ])
+    ]
+    await render()
+    expect(rows().map((r) => r.dataset.followUp)).toEqual([
+      'waiting',
+      'checking',
+      'paused',
+      'done',
+      'stopped',
+      undefined
+    ])
+    expect(rows().map((r) => r.querySelector('[data-subsession-state]')?.textContent)).toEqual([
+      'Waiting · next check Oct 16, 2026, 9:00 AM',
+      'Checking',
+      'Paused',
+      'Done',
+      'Stopped',
+      'Reported'
+    ])
+    expect(rows()[0]?.textContent).toContain('Follow-up')
+    expect(rows()[0]?.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/fu-waiting')
+    // Weeks of waiting are not elapsed time, and not a running task for the tab's badge or the poll.
+    expect(container?.querySelector('[data-subsession-elapsed]')).toBeNull()
+    expect(container?.querySelector('[data-tasks-census]')?.textContent).toBe(
+      '1 running · 2 waiting · 1 reported · 2 ended'
+    )
+    expect(last()).toEqual({ settled: true, count: 6, running: 1, failed: false })
+    // Every open follow-up the reader may stop can be ended; an ended one cannot.
+    expect(buttons('End follow-up')).toHaveLength(3)
+    expect(buttons('Stop')).toHaveLength(0)
+  })
+
+  it('shows a follow-up’s done-when and recent checks only where the reader may see it', async () => {
+    wire.pages = [
+      page([
+        followUp('waiting'),
+        followUp(
+          'paused',
+          { sessionId: null, title: null, visible: false, canStop: false, parent: null },
+          { doneWhen: null, recentChecks: [] }
+        ),
+        followUp('checking', { sessionId: null }, { doneWhen: null, recentChecks: [] })
+      ])
+    ]
+    await render()
+    expect(container?.querySelector('[data-follow-up-checks]')).toBeNull()
+    expect(container?.querySelectorAll('button[aria-label="Show checks"]')).toHaveLength(2)
+    expect(labelled('Show checks', rows()[1])).toBeNull()
+    expect(rows()[1]?.textContent).toContain('Not visible to you')
+    // Visible but not yet openable: its label, never "Starting…".
+    expect(rows()[2]?.textContent).toContain('Watch the checking release')
+    expect(rows()[2]?.querySelector('a')).toBeNull()
+
+    await click(labelled('Show checks', rows()[0]))
+    const checks = rows()[0]?.querySelector('[data-follow-up-checks]')
+    expect(checks?.textContent).toContain('Done when: The release is published')
+    const items = Array.from(checks?.querySelectorAll<HTMLElement>('[data-follow-up-check]') ?? [])
+    expect(items.map((li) => li.dataset.followUpCheck)).toEqual(['reported', 'silent'])
+    expect(items[0]?.querySelector('time')?.getAttribute('dateTime')).toBe('2026-10-15T09:00:00.000Z')
+    expect(items[0]?.textContent).toContain('Oct 15, 2026, 9:00 AM')
+    expect(items[0]?.textContent).toContain('Reported')
+    expect(items[0]?.textContent).toContain('The tag exists; the release is a draft.')
+    expect(items[1]?.textContent).toContain('Not reported')
+    await click(labelled('Hide checks'))
+    expect(container?.querySelector('[data-follow-up-checks]')).toBeNull()
+
+    await click(labelled('Show checks', rows()[2]))
+    expect(rows()[2]?.querySelector('[data-follow-up-checks]')?.textContent).toBe('No checks yet.')
+  })
+
+  it('ends a follow-up only after a confirmation, and says it ended', async () => {
+    wire.pages = [page([followUp('waiting')]), page([followUp('stopped', { sessionId: 'fu-waiting', canStop: false })])]
+    await render()
+    await click(buttons('End follow-up')[0])
+    expect(wire.stops).toEqual([])
+    const confirm = container?.querySelector('[role="group"]')
+    expect(confirm?.textContent).toContain('End this follow-up? The agent stops checking.')
+    await click(Array.from(confirm?.querySelectorAll('button') ?? []).find((b) => b.textContent === 'Keep'))
+    expect(container?.querySelector('[role="group"]')).toBeNull()
+    expect(wire.stops).toEqual([])
+
+    await click(buttons('End follow-up')[0])
+    await click(container?.querySelector('[role="group"]')?.querySelector('button'))
+    expect(wire.stops).toEqual([{ agentId: 'agent-a', sessionId: 'fu-waiting' }])
+    expect(container?.querySelector('[role="group"]')).toBeNull()
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Follow-up ended.')
+    expect(rows()[0]?.querySelector('[data-subsession-state]')?.textContent).toBe('Stopped')
+    expect(buttons('End follow-up')).toHaveLength(0)
+  })
+
+  it.each([
+    [{ result: 'not_running' }, null, 'It had already ended.'],
+    [null, { status: 503, code: 'DAEMON_OFFLINE' }, 'Couldn’t end it. Try again.']
+  ])('says when a follow-up had already ended or could not be ended', async (answer, failure, notice) => {
+    wire.pages = [page([followUp('paused')])]
+    if (answer) wire.stopAnswer = answer
+    wire.stopFailure = failure
+    await render()
+    await click(buttons('End follow-up')[0])
+    await click(container?.querySelector('[role="group"]')?.querySelector('button'))
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe(notice)
   })
 
   it('starts over for another conversation, never showing the previous one’s rows', async () => {

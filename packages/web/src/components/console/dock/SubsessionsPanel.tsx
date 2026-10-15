@@ -1,6 +1,6 @@
 'use client'
 
-// The Tasks tab's Delegated group (assistant-mode.md §1.3, §5.6): the delegated tasks, patrols and approved proposals of this conversation, read from the agent's daemon through the CP and kept nowhere else.
+// The Tasks tab's Delegated group (assistant-mode.md §1.3, §5.6, §5.12): the delegated tasks, patrols or follow-ups, and approved proposals of this conversation, read from the agent's daemon through the CP and kept nowhere else.
 // Each row links to its own page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -13,10 +13,19 @@ import {
   ApiError,
   fetchAssistantSubsessions,
   stopAssistantSubsession,
+  type AssistantFollowUpStatus,
   type AssistantSubsessionDto,
   type AssistantSubsessionsPageDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+import {
+  FollowUpChecks,
+  FollowUpChecksToggle,
+  followUpOf,
+  taskRunning,
+  useFollowUpStatusText
+} from '@/components/console/follow-up'
 import { TaskGroupHeading, formatTaskElapsed } from './task-group'
 
 /** Rows one read asks for; "Show more" pages on by the cursor the last one returned. */
@@ -150,7 +159,7 @@ export function SubsessionsPanel({
   useEffect(() => {
     loaded.current = { scope, rows: rows.length }
   }, [rows.length, scope])
-  const running = rows.filter((row) => row.state === 'open').length
+  const running = rows.filter(taskRunning).length
   const settled = current !== null
   const failed = current?.error != null && rows.length === 0
   const stopById = stops.scope === scope ? stops.byId : {}
@@ -277,11 +286,15 @@ function censusText(
   rows: AssistantSubsessionDto[],
   t: ReturnType<typeof useTranslations<'Sessions.detail.subsessionsPanel'>>
 ): string {
-  const running = rows.filter((row) => row.state === 'open').length
+  const running = rows.filter(taskRunning).length
   const failed = rows.filter((row) => row.state === 'failed').length
-  const reported = rows.length - running - failed
+  const waiting = rows.filter((row) => followUpOf(row) && row.state === 'open' && !taskRunning(row)).length
+  const ended = rows.filter((row) => followUpOf(row) && row.state === 'done').length
+  const reported = rows.length - running - waiting - ended - failed
   const parts = [t('census.running', { count: running })]
+  if (waiting > 0) parts.push(t('census.waiting', { count: waiting }))
   if (reported > 0) parts.push(t('census.reported', { count: reported }))
+  if (ended > 0) parts.push(t('census.ended', { count: ended }))
   if (failed > 0) parts.push(t('census.failed', { count: failed }))
   return parts.join(' · ')
 }
@@ -299,11 +312,33 @@ const BORDER: Record<AssistantSubsessionDto['state'], string> = {
   failed: 'border-l-(--red-600)'
 }
 
+const FOLLOW_UP_ICON: Record<AssistantFollowUpStatus, { name: string; color: string }> = {
+  waiting: { name: 'clock', color: 'var(--status-info)' },
+  checking: { name: 'clock', color: 'var(--status-info)' },
+  paused: { name: 'circle-pause', color: 'var(--status-paused)' },
+  done: { name: 'circle-check', color: 'var(--status-online)' },
+  stopped: { name: 'circle-slash', color: 'var(--text-tertiary)' }
+}
+
+const FOLLOW_UP_BORDER: Record<AssistantFollowUpStatus, string> = {
+  waiting: 'border-l-(--status-info)',
+  checking: 'border-l-(--status-info)',
+  paused: 'border-l-(--status-paused)',
+  done: 'border-l-(--status-online)',
+  stopped: 'border-l-(--border-strong)'
+}
+
 const STOP_RESULT: Record<Exclude<StopState, 'busy'>, 'stopped' | 'notRunning' | 'stopFailed' | 'upgradeDaemon'> = {
   stopped: 'stopped',
   not_running: 'notRunning',
   failed: 'stopFailed',
   upgrade: 'upgradeDaemon'
+}
+
+const END_RESULT: Record<Exclude<StopState, 'busy' | 'upgrade'>, 'ended' | 'alreadyEnded' | 'endFailed'> = {
+  stopped: 'ended',
+  not_running: 'alreadyEnded',
+  failed: 'endFailed'
 }
 
 // No turn to stop on a row that has not reported: a background process its turn started may still be running.
@@ -322,20 +357,34 @@ function SubsessionRow({
   onStop: (sessionId: string) => Promise<void>
 }) {
   const t = useTranslations('Sessions.detail.subsessionsPanel')
+  const tf = useTranslations('Common.followUp')
   const format = useFormatter()
   const { orgPath } = useOrgs()
-  const runningNow = row.state === 'open'
-  const stoppable = runningNow && row.canStop && row.sessionId !== null
+  const statusText = useFollowUpStatusText()
+  const [expanded, setExpanded] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const followUp = followUpOf(row)
+  const runningNow = taskRunning(row)
+  const stoppable = row.state === 'open' && row.canStop && row.sessionId !== null
+  const icon = followUp ? FOLLOW_UP_ICON[followUp.status] : null
+  // Ending a follow-up is asked once more; stopping a turn is not.
+  const askStop = () => {
+    if (followUp) setConfirming(true)
+    else void onStop(row.sessionId!)
+  }
   return (
     <div
       data-subsession-row={row.state}
-      className={`flex flex-none flex-col gap-[5px] rounded-md border-y border-r border-l-2 border-y-(--border-subtle) border-r-(--border-subtle) bg-(--surface-card) px-[10px] py-2 ${BORDER[row.state]}`}
+      data-follow-up={followUp?.status}
+      className={`flex flex-none flex-col gap-[5px] rounded-md border-y border-r border-l-2 border-y-(--border-subtle) border-r-(--border-subtle) bg-(--surface-card) px-[10px] py-2 ${followUp ? FOLLOW_UP_BORDER[followUp.status] : BORDER[row.state]}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         {runningNow ? (
           <span className="flex flex-none items-center">
             <Spinner size={12} />
           </span>
+        ) : icon ? (
+          <Icon name={icon.name} size={13} color={icon.color} className="flex-none" />
         ) : (
           <Icon
             name={row.state === 'failed' ? 'circle-x' : 'circle-check'}
@@ -353,6 +402,8 @@ function SubsessionRow({
             >
               {row.title ?? t('untitled')}
             </Link>
+          ) : row.visible && followUp ? (
+            <span title={row.title ?? undefined}>{row.title ?? t('untitled')}</span>
           ) : row.visible ? (
             <span className="font-normal text-(--text-secondary)">{t('starting')}</span>
           ) : (
@@ -362,28 +413,41 @@ function SubsessionRow({
             </span>
           )}
         </span>
+        {followUp && row.visible ? (
+          <FollowUpChecksToggle expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+        ) : null}
         {stoppable ? (
           <Button
             variant="secondary"
             size="xs"
             className="flex-none"
-            disabled={stop === 'busy'}
-            onClick={() => void onStop(row.sessionId!)}
+            disabled={stop === 'busy' || confirming}
+            onClick={askStop}
           >
             <Icon name="square" size={11} />
-            {t('stop')}
+            {followUp ? tf('end') : t('stop')}
           </Button>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 pl-[21px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-        <span data-subsession-state="">{t(`state.${row.state}`)}</span>
-        <span aria-hidden="true">·</span>
-        <time dateTime={row.startedAt}>
-          {t('started', {
-            time: format.dateTime(new Date(row.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
-          })}
-        </time>
-        {runningNow ? (
+        {followUp ? (
+          <>
+            <span>{tf('kind')}</span>
+            <span aria-hidden="true">·</span>
+            <span data-subsession-state="">{statusText(followUp)}</span>
+          </>
+        ) : (
+          <>
+            <span data-subsession-state="">{t(`state.${row.state}`)}</span>
+            <span aria-hidden="true">·</span>
+            <time dateTime={row.startedAt}>
+              {t('started', {
+                time: format.dateTime(new Date(row.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
+              })}
+            </time>
+          </>
+        )}
+        {runningNow && !followUp ? (
           <>
             <span aria-hidden="true">·</span>
             <span data-subsession-elapsed="" className="mono text-[11px]">
@@ -392,6 +456,21 @@ function SubsessionRow({
           </>
         ) : null}
       </div>
+      {followUp && expanded ? (
+        <div className="pl-[21px]">
+          <FollowUpChecks followUp={followUp} />
+        </div>
+      ) : null}
+      {confirming && stoppable ? (
+        <ConfirmStrip
+          prompt={tf('endConfirm')}
+          confirm={tf('end')}
+          keep={tf('keep')}
+          busy={stop === 'busy'}
+          onConfirm={() => void onStop(row.sessionId!).then(() => setConfirming(false))}
+          onKeep={() => setConfirming(false)}
+        />
+      ) : null}
       {stop && stop !== 'busy' ? (
         <div
           role="status"
@@ -400,7 +479,7 @@ function SubsessionRow({
             stop === 'failed' || stop === 'upgrade' ? 'text-(--status-error)' : 'text-(--text-secondary)'
           }`}
         >
-          {t(stopNotice(stop, row.state))}
+          {followUp && stop !== 'upgrade' ? tf(END_RESULT[stop]) : t(stopNotice(stop, row.state))}
         </div>
       ) : null}
     </div>
