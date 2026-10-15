@@ -1,4 +1,4 @@
-// The sendMessage, getToolGuide and listAgents surfaces teach background tasks to every agent (send-message-guide.md §2.1).
+// The sendMessage, getToolGuide and listAgents surfaces teach delegated tasks to every agent (send-message-guide.md §2.1).
 import { describe, it, expect } from 'vitest'
 import { COLLABORATION_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -34,29 +34,30 @@ const ctx = (ints: Integration[]): SessionContext => ({
 const allText = (ints: Integration[]) =>
   [
     sendTool(ints).description,
-    ...(sendMessageGuide(ctx(ints), 'startTask').rules as string[]),
+    ...(sendMessageGuide(ctx(ints), 'delegateTask').rules as string[]),
     ...(sendMessageGuide(ctx(ints), 'callAgent').rules as string[])
   ].join('\n')
 
 const listTool = (ints: Integration[], name: string) => toolsForIntegrations(ints).find((t) => t.name === name)!
 
 describe('listAgents self-delegation wording', () => {
-  it.each(['listAgents', 'listChannelAgents'])('%s steers every agent’s own background work to startTask', (name) => {
+  it.each(['listAgents', 'listChannelAgents'])('%s steers every agent’s own long work to delegateTask', (name) => {
     const tool = listTool([slackInt], name)
     expect(tool).toEqual(COLLABORATION_TOOLS.find((t) => t.name === name))
     expect(listTool([], name)).toEqual(tool)
     expect(tool.description).toMatch(
-      /conversation with yourself; for background work of your own, use `startTask` instead \(see `getToolGuide`\)\.$/
+      /conversation with yourself; to hand long work of your own to a task, use `delegateTask` instead \(see `getToolGuide`\)\.$/
     )
     expect(tool.description).not.toContain('a postless self-call is rejected')
   })
 })
 
 describe('sendMessage self-delegation wording', () => {
-  it.each([[[slackInt]], [[]]])('explains the background task to every agent (%#)', (ints) => {
+  it.each([[[slackInt]], [[]]])('explains the delegated task to every agent (%#)', (ints) => {
     const text = allText(ints)
-    expect(text).toContain('startTask starts a background task of this session for long work you do yourself')
-    expect(text).toContain('Use it for long work of your own ("fix this bug and open a PR")')
+    expect(text).toContain('delegateTask hands long work of your own, spanning turns, to a task of this session')
+    expect(text).toContain('long work that spans turns, may run a long time, or that people should be able to see')
+    expect(text).toContain('("fix this bug and open a PR")')
     expect(text).toContain(
       'reports back into this session automatically each time a round of its work finishes or fails'
     )
@@ -67,5 +68,19 @@ describe('sendMessage self-delegation wording', () => {
     expect(text).toContain('Your own id (bot-a) with `channel` opens and activates a visible conversation of your own')
     expect(text).not.toContain('this form cannot target yourself')
     expect(text).not.toContain('A self wake is valid only in')
+  })
+
+  it.each([[[slackInt]], [[]]])('splits work between the runtime’s own subagents and delegateTask (%#)', (ints) => {
+    const description = sendTool(ints).description
+    // Within this turn → the runtime's own subagent tool; spanning turns, seen and stoppable → delegateTask.
+    expect(description).toContain('Work you finish within this turn goes to your runtime’s own subagent tool.')
+    expect(description).toContain('to a task of this session that people can see and stop')
+    const guide = sendMessageGuide(ctx(ints), 'delegateTask')
+    expect((guide.rules as string[])[0]).toBe(
+      'Work you can finish within this turn, even split into parallel parts, goes to your runtime’s own subagent ' +
+        'or Task tool instead. Use delegateTask for long work that spans turns, may run a long time, or that people ' +
+        'should be able to see and stop ("fix this bug and open a PR").'
+    )
+    expect(guide.purpose).toContain('outlives this turn, which people can see and stop')
   })
 })

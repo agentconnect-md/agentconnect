@@ -639,7 +639,7 @@ describe.each(['feishu', 'googlechat'] as const)('a sub-session’s request in i
     await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
     const card = w.posts()[0]!
     expect(card).toMatchObject({ channel: PLACE[platform].channel, thread: PLACE[platform].thread, live: true })
-    expect(card.text).toContain('background work “Fix the flaky test” is asking for permission')
+    expect(card.text).toContain('task “Fix the flaky test” is asking for permission')
     expect(card.text).toContain('https://console.example.test/sessions/sid-sub')
     await vi.waitFor(() => expect(w.coordinator.dmNotifiedVia(id, AGENT, INT)).toBe(true))
     await w.coordinator.handlePermissionChoice({ requestId: id, option: 0, actor: ADA })

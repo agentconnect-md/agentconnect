@@ -4275,7 +4275,7 @@ export class Daemon {
         },
         now: () => this.clock.now()
       },
-      // An owning session's stop of its own task (send-message-guide.md §8.7), through the console's Stop core.
+      // An owning session's list of its tasks and stop of one (send-message-guide.md §8.7), the stop through the console's Stop core.
       assistantSubsessions: {
         actor: (ctx) => this.taskStopper(ctx),
         sessionIdOf: async (key) => (await this.store.getSession(key))?.sessionId ?? undefined,
@@ -4284,7 +4284,13 @@ export class Daemon {
           (await this.store
             .getSessionByOutwardIdOnly(id, agentId)
             .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
-        stopSession: (key, actor) => this.stopSessionByKey(key, actor)
+        stopSession: (key, actor) => this.stopSessionByKey(key, actor),
+        listForOwner: (agentId, parent, limit) => this.store.assistantSubsessions.listForOwner(agentId, parent, limit),
+        sessionOf: async (key) => {
+          const rec = await this.store.getSession(key)
+          return rec ? { title: rec.title ?? null, updatedAt: rec.updatedAt } : undefined
+        },
+        now: () => this.clock.now()
       },
       // Resolved from trusted session coordinates at call time, so a place that changes audience applies at once.
       memoryScope: (ctx, call) => this.memoryToolScope(ctx, call),
@@ -4624,7 +4630,7 @@ export class Daemon {
         tools = [...tools, ...assistantItemToolsFor(agent)]
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-        // Stopping a task it started (send-message-guide.md §8.7), in every session that can start one.
+        // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
         tools = [...tools, ...stopTaskToolsFor({ thread })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
@@ -23003,7 +23009,7 @@ export class Daemon {
     const agentId = hostKeyAgentId(owner)
     if (this.draining) return
     const lease = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
-    const what = description?.trim() || 'background job'
+    const what = description?.trim() || 'background task'
     if (!lease) {
       this.log.debug(`bg-task wake skipped (host reclaimed): "${what}" on ${acpSessionId}`)
       return
@@ -23108,13 +23114,13 @@ export class Daemon {
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: `background-task:${taskId}`, isBot: true },
       text:
-        `[background job finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
-        (summary ? `Job summary: ${summary}\n\n` : '') +
-        `This is a daemon notification, not a message from anyone. A background job you started ` +
+        `[background task finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
+        (summary ? `Task summary: ${summary}\n\n` : '') +
+        `This is a daemon notification, not a message from anyone. A background task you started ` +
         `settled after your turn had already ended, so nothing you said about it reached anyone. Read its ` +
-        `output now (its job id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
+        `output now (its task id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
         `is the one that is actually delivered. If you owe a report to another session, send it, unless ` +
-        `you already sent it after the job finished; do not report the same result twice. If the result ` +
+        `you already sent it after the task finished; do not report the same result twice. If the result ` +
         `needs no action at all, stay silent.`,
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
       isDm: rec.conversationKind === 'dm',

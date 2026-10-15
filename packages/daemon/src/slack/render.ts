@@ -581,7 +581,7 @@ export function buildApprovalDmIntro(info: {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${subsessionAsker(info.agentName, title)} is waiting on an approval. ${subsessionWaitNote(waitHours)}\n<${info.sessionUrl}|Open the background work>`
+          text: `${subsessionAsker(info.agentName, title)} is waiting on an approval. ${subsessionWaitNote(waitHours)}\n<${info.sessionUrl}|Open the task>`
         }
       }
     ]
@@ -606,14 +606,14 @@ export function buildApprovalDmIntro(info: {
   ]
 }
 
-/** "Agent's background work “label”", the subject of every background work approval card; no quote without a label. */
+/** "Agent's task “label”", the subject of every task approval card; no quote without a label. */
 function subsessionAsker(agentName: string, title: string | null): string {
-  const agent = `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s background work`
+  const agent = `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s task`
   return title?.trim() ? `${agent} “${escapeMrkdwnLabel(clampTo(title.trim(), 80))}”` : agent
 }
 
 const subsessionWaitNote = (hours: number): string =>
-  `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the background work stops.`
+  `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the task stops.`
 
 /** The header of a sub-session's approval card in the conversation it belongs to (assistant-mode.md §5.6). Pure. */
 export function buildSubsessionApprovalIntro(info: {
@@ -627,7 +627,7 @@ export function buildSubsessionApprovalIntro(info: {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `${subsessionAsker(info.agentName, info.title)} is asking for permission. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the background work>`
+        text: `${subsessionAsker(info.agentName, info.title)} is asking for permission. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the task>`
       }
     }
   ]
@@ -647,7 +647,7 @@ export function buildSubsessionApprovalNotice(info: {
         type: 'mrkdwn',
         text:
           `:lock: ${subsessionAsker(info.agentName, info.title)} is waiting for permission. Ask an Agent editor to ` +
-          `allow it from the Agent or Session page. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the background work>`
+          `allow it from the Agent or Session page. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the task>`
       }
     }
   ]
@@ -662,7 +662,7 @@ export function buildSubsessionApprovalSettledNotice(
   info: { agentName: string; title: string | null; sessionUrl?: string },
   outcome: SubsessionNoticeOutcome
 ): unknown[] {
-  const link = info.sessionUrl ? `\n<${info.sessionUrl}|Open the background work>` : ''
+  const link = info.sessionUrl ? `\n<${info.sessionUrl}|Open the task>` : ''
   return [
     {
       type: 'section',

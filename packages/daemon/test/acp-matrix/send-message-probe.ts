@@ -136,7 +136,7 @@ export function classifySendMessage(args: Record<string, unknown>, selfId: strin
           ...(sessionId ? { sessionId } : {})
         }
       }
-      case 'startTask':
+      case 'delegateTask':
         return { kind: 'task-start' }
       case 'messageTask': {
         const taskId = str(args.taskId)
@@ -568,8 +568,9 @@ export const SCENARIOS: SendMessageScenario[] = [
     prompt: humanMessage(
       'Please migrate every integration test in this repository to the new fixtures and open a PR. It will take a while, so run it in the background and let me know here when it is done.'
     ),
+    // The action shape spells it `delegateTask`; the legacy shape's postless self-call maps to the same operation.
     expect: (op) => op.kind === 'task-start',
-    expected: 'task-start'
+    expected: 'task-start (delegateTask)'
   },
   {
     id: 'visible-work-in-channel',

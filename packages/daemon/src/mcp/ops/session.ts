@@ -87,7 +87,7 @@ export async function viewSessionStatus(
   if (!status) {
     throw new Error(
       `viewSessionStatus: ${sessionId} is not a task or session started by this session. You can only check what ` +
-        'you started yourself — use the `taskId` a startTask call returned, or the `childSessionId` a callAgent returned.'
+        'you started yourself — use the `taskId` a delegateTask call returned, or the `childSessionId` a callAgent returned.'
     )
   }
   return status

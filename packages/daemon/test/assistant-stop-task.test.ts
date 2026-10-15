@@ -10,6 +10,7 @@ import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
 import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
+import { LIST_TASKS_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -25,7 +26,7 @@ const DM = 'D0ALICE'
 const OTHER_DM = 'D0BOB'
 const ON = { enabled: true }
 // Only a task's first input carries this in its message header (send-message-guide.md §9.5); its owning session's never does.
-const DELEGATED = '), as a background task:'
+const DELEGATED = '), as a delegated task:'
 
 function scaffold(assistantMode: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-stopsub-'))
@@ -191,7 +192,7 @@ async function liveTurn(h: Harness, c: Conversation, over: Partial<NormalizedMes
   await vi.waitFor(async () => expect((await h.d.store.getSession(c.key))?.sessionId).toBeTruthy(), WAIT)
 }
 
-/** Start a task from the conversation, as `sendMessage` `startTask` does, and wait until its turn runs. */
+/** Start a task from the conversation, as `sendMessage` `delegateTask` does, and wait until its turn runs. */
 async function delegate(h: Harness, c: Conversation, text = 'write the release notes'): Promise<string> {
   const before = h.rt.subPrompts.length
   const req: MessageAgentReq = {
@@ -491,7 +492,12 @@ describe('who is offered stopTask', () => {
           ...session
         })
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
-        return h.d.mcp.sessions.get(token)!.tools.find((t: { name: string }) => t.name === 'stopTask')
+        const tools = h.d.mcp.sessions.get(token)!.tools as { name: string }[]
+        const stopTool = tools.find((t) => t.name === 'stopTask')
+        // listTasks is offered exactly where stopTask is, right before it.
+        expect(tools.find((t) => t.name === 'listTasks')).toEqual(stopTool ? LIST_TASKS_TOOL : undefined)
+        if (stopTool) expect(tools[tools.indexOf(stopTool) - 1]!.name).toBe('listTasks')
+        return stopTool
       }
       const offered = (agent: Record<string, unknown>, session: Record<string, unknown>): boolean =>
         tool(agent, session) !== undefined
@@ -499,17 +505,17 @@ describe('who is offered stopTask', () => {
       expect(tool(on, {})).toEqual({
         name: 'stopTask',
         description:
-          'Stop a background task this session started with sendMessage startTask, when it is no longer needed: the ' +
-          'plan changed, a task it depended on failed, or its result is not wanted any more. What it already did is ' +
-          'not undone, and a process its runtime started in the background (a build, a dev server) may keep running; ' +
-          'the result says so. When it is not clear which task a person means, ask them before stopping one.',
+          'Stop a task this session delegated with sendMessage delegateTask, when it is no longer needed: the plan ' +
+          'changed, a task it depended on failed, or its result is not wanted any more. What it already did is not ' +
+          'undone, and a process its runtime started in the background (a build, a dev server) may keep running; the ' +
+          'result says so. When it is not clear which task a person means, ask them before stopping one.',
         inputSchema: {
           type: 'object',
           properties: {
             taskId: {
               type: 'string',
               minLength: 1,
-              description: 'The `taskId` startTask returned, or one listed as running in your reminders.'
+              description: 'The `taskId` delegateTask returned, or one listTasks or your reminders show.'
             }
           },
           required: ['taskId'],
@@ -664,5 +670,178 @@ describe('the stop note and authority, from the index row alone', () => {
     expect((await resultFor('subsession:d-1')).note).toContain('message it with messageTask')
     expect(await resultFor('subsession:task-d-1')).toEqual(NOT_OWNED)
     expect(await resultFor('subsession:patrol-d-1', 'patrol')).toEqual(NOT_OWNED)
+  })
+})
+
+describe('listTasks (send-message-guide.md §8.7)', () => {
+  const list = (h: Harness, c: Conversation) => executeTool(c.ctx, 'listTasks', {}, h.deps) as Promise<any>
+
+  it('lists only the tasks this session delegated, with their handle, and nothing to another session', async () => {
+    const h = await boot()
+    try {
+      const dm = await conversation(h, DM)
+      await liveTurn(h, dm)
+      const first = await delegate(h, dm)
+      const second = await delegate(h, dm, 'update the changelog')
+      const other = await conversation(h, OTHER_DM)
+      await liveTurn(h, other, { sender: { id: 'U0BOB', isBot: false, name: 'Bob' } })
+      const theirs = await delegate(h, other, 'sort the backlog')
+
+      const mine = await list(h, dm)
+      expect(mine.tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([second, first])
+      for (const task of mine.tasks) {
+        expect(task).toMatchObject({ kind: 'delegated task', state: 'running', handedBackResult: false })
+        expect(task.elapsed).toMatch(/min|under a minute/)
+        expect(Date.parse(task.startedAt)).not.toBeNaN()
+        expect(task).not.toHaveProperty('endedAt')
+      }
+      expect(mine.note).toContain('Only a delegated task has a taskId')
+      expect(JSON.stringify(mine)).not.toContain(theirs)
+      expect((await list(h, other)).tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([theirs])
+
+      // A stopped task stays listed as ended, with no result handed back.
+      expect(await stop(h, dm, first)).toMatchObject({ result: 'stopped' })
+      await vi.waitFor(async () => expect(await stateOf(h, first)).toBe('failed'), WAIT)
+      const after = await list(h, dm)
+      expect(after.tasks.map((t: { taskId?: string; state: string }) => [t.taskId, t.state])).toEqual([
+        [second, 'running'],
+        [first, 'ended']
+      ])
+      expect(after.tasks[1]).toMatchObject({ handedBackResult: false, endedAt: expect.any(String) })
+      expect(after.tasks[1]).not.toHaveProperty('elapsed')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('answers a session with no tasks, and a task itself, with an empty list', async () => {
+    const h = await boot({ assistantMode: false })
+    try {
+      const dm = await conversation(h, DM)
+      await liveTurn(h, dm)
+      expect(await list(h, dm)).toEqual({ tasks: [], note: 'This session has no tasks.' })
+      const child = await delegate(h, dm)
+      const { thread } = await h.d.store.getSession(child)
+      expect(await list(h, { ...dm, ctx: { ...dm.ctx, thread } })).toEqual({
+        tasks: [],
+        note: 'This session has no tasks.'
+      })
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe('listTasks kinds, states and results, from the index rows alone', () => {
+  const ctx = {
+    agentId: AGENT,
+    platform: 'slack',
+    integrationId: INT,
+    isDm: true,
+    channel: DM,
+    thread: '100.1',
+    tools: []
+  } as unknown as SessionContext
+  const parent = sessionKey('slack', DM, '100.1', AGENT)
+  const child = (thread: string) => sessionKey('slack', DM, thread, AGENT)
+  const NOW = Date.parse('2026-01-01T12:00:00Z')
+  const row = (thread: string, state: string, createdAt: number, kind?: 'patrol') => ({
+    agentId: AGENT,
+    childSessionKey: child(thread),
+    parentSessionKey: parent,
+    parentSessionId: 'sid-owner',
+    state,
+    createdAt,
+    ...(kind ? { kind } : {})
+  })
+  const rows = [
+    row('subsession:d-run', 'open', NOW - 75 * 60_000),
+    row('subsession:d-done', 'done', NOW - 3 * 3_600_000),
+    row('subsession:d-failed', 'failed', NOW - 4 * 3_600_000),
+    row('subsession:d-reporting', 'reporting', NOW - 5 * 3_600_000),
+    row('subsession:patrol-p-1', 'done', NOW - 6 * 3_600_000, 'patrol'),
+    row('subsession:task-t-1', 'failed', NOW - 7 * 3_600_000)
+  ]
+  const deps = (owner: string | undefined, listed = rows, unlisted = 2) => {
+    const listForOwner = vi.fn(async () => ({ rows: listed as never[], total: listed.length + unlisted }))
+    return {
+      listForOwner,
+      deps: {
+        assistantSubsessions: {
+          actor: () => ({ userId: 'u-1' }),
+          sessionIdOf: async () => owner,
+          find: async () => undefined,
+          stopSession: async () => true,
+          listForOwner,
+          sessionOf: async (key: string) =>
+            key === child('subsession:d-run')
+              ? {
+                  title:
+                    '[Message msg-1] From your own session (session sid-owner), as a delegated task:\nfix the flaky test',
+                  updatedAt: NOW
+                }
+              : { title: `Title of ${key.split(':')[3]}`, updatedAt: NOW - 60_000 },
+          now: () => NOW
+        }
+      }
+    }
+  }
+
+  it('names each kind and state, gives only a delegated task its handle, and flags a handed-back result', async () => {
+    const { deps: d, listForOwner } = deps('sid-owner')
+    const res = (await executeTool(ctx, 'listTasks', {}, d as never)) as any
+    expect(listForOwner).toHaveBeenCalledWith(AGENT, { sessionId: 'sid-owner', key: parent }, 20)
+    const ended = new Date(NOW - 60_000).toISOString()
+    expect(res.tasks).toEqual([
+      {
+        taskId: child('subsession:d-run'),
+        kind: 'delegated task',
+        label: 'fix the flaky test',
+        state: 'running',
+        startedAt: new Date(NOW - 75 * 60_000).toISOString(),
+        elapsed: '1 h 15 min',
+        handedBackResult: false
+      },
+      expect.objectContaining({
+        taskId: child('subsession:d-done'),
+        state: 'finished',
+        endedAt: ended,
+        handedBackResult: true
+      }),
+      expect.objectContaining({ taskId: child('subsession:d-failed'), state: 'ended', handedBackResult: false }),
+      expect.objectContaining({ taskId: child('subsession:d-reporting'), state: 'reporting', handedBackResult: false }),
+      {
+        kind: 'patrol',
+        label: 'Title of patrol-p-1',
+        state: 'finished',
+        startedAt: expect.any(String),
+        endedAt: ended,
+        handedBackResult: true
+      },
+      {
+        kind: 'approved proposal',
+        label: 'Title of task-t-1',
+        state: 'ended',
+        startedAt: expect.any(String),
+        endedAt: ended,
+        handedBackResult: false
+      }
+    ])
+    expect(res.more).toBe(2)
+  })
+
+  it('lists nothing for a session with no outward id, or inside a task, patrol or approved proposal', async () => {
+    const empty = { tasks: [], note: 'This session has no tasks.' }
+    const none = deps(undefined)
+    expect(await executeTool(ctx, 'listTasks', {}, none.deps as never)).toEqual(empty)
+    expect(none.listForOwner).not.toHaveBeenCalled()
+    for (const thread of ['subsession:d-1', 'subsession:patrol-d-1', 'subsession:task-d-1']) {
+      const owned = deps('sid-owner')
+      // A patrol runs only the tools it was offered, so the handler is asked as if it had been.
+      const inside = { ...ctx, thread, tools: [LIST_TASKS_TOOL] }
+      expect(await executeTool(inside, 'listTasks', {}, owned.deps as never)).toEqual(empty)
+      expect(owned.listForOwner).not.toHaveBeenCalled()
+    }
+    expect(await executeTool(ctx, 'listTasks', {}, deps('sid-owner', [], 0).deps as never)).toEqual(empty)
   })
 })

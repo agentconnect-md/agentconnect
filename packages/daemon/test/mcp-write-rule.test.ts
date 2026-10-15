@@ -606,7 +606,7 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
     }
     await executeTool(inDmOfP, 'updateItem', { itemId: taken.item.id, version: taken.item.version, summary: 'x' }, deps)
     await executeTool(inDmOfP, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'look into it' }, deps)
-    await executeTool(inDmOfP, 'sendMessage', { action: 'startTask', message: 'work on it' }, deps)
+    await executeTool(inDmOfP, 'sendMessage', { action: 'delegateTask', message: 'work on it' }, deps)
     expect(gw.postMessage).toHaveBeenCalledTimes(2)
     expect(deps.messageAgent).toHaveBeenCalledTimes(2)
     expect(draftPost).not.toHaveBeenCalled()

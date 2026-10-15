@@ -8,7 +8,7 @@ export type AssistantSubsessionState = 'open' | 'reporting' | 'done' | 'failed'
 
 export interface AssistantSubsession {
   agentId: string
-  /** The child's logical session key, the `taskId` `startTask` handed back. */
+  /** The child's logical session key, the `taskId` `delegateTask` handed back. */
   childSessionKey: string
   /** The parent session's outward id, the lineage id the child's own row carries. */
   parentSessionId: string
@@ -138,7 +138,7 @@ export class AssistantSubsessionIndex {
     claim: (tx: StoreTx) => Promise<boolean>
   ): Promise<'opened' | 'limit' | 'refused'> {
     const db = this.db
-    if (!db.transaction) throw new Error('the background work index has no transaction to claim in')
+    if (!db.transaction) throw new Error('the task index has no transaction to claim in')
     return await this.opening.run(async () => {
       try {
         return await db.transaction!<'opened' | 'limit'>(async (tx) => {
@@ -240,7 +240,7 @@ export class AssistantSubsessionIndex {
     claim: (tx: StoreTx, ended: 'cut' | 'done' | 'failed' | 'missing') => Promise<boolean>
   ): Promise<'cut' | 'done' | 'failed' | 'missing' | undefined> {
     const db = this.db
-    if (!db.transaction) throw new Error('the background work index has no transaction to claim in')
+    if (!db.transaction) throw new Error('the task index has no transaction to claim in')
     try {
       return await db.transaction!<'cut' | 'done' | 'failed' | 'missing'>(async (tx) => {
         const { changes } = await tx.query(
@@ -434,6 +434,28 @@ export class AssistantSubsessionIndex {
     const rows = (
       await this.db.query(
         `SELECT * FROM assistant_subsession ${where} ORDER BY createdAt DESC, childSessionKey LIMIT ?`,
+        [...params, limit]
+      )
+    ).rows as Row[]
+    return { rows: rows.map(subsessionOf), total }
+  }
+
+  /** Every row one owning session's reports go to — its tasks, patrols and approved proposals — running first, then newest, at most `limit`, with the total. */
+  async listForOwner(
+    agentId: string,
+    parent: { sessionId: string; key: string },
+    limit: number
+  ): Promise<{ rows: AssistantSubsession[]; total: number }> {
+    const where = 'WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ?'
+    const params = [agentId, parent.sessionId, parent.key]
+    const count = (await this.db.query(`SELECT COUNT(*) AS n FROM assistant_subsession ${where}`, params)).rows[0] as
+      Row | undefined
+    const total = Number(count?.n ?? 0)
+    if (total === 0) return { rows: [], total }
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession ${where}
+          ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, createdAt DESC, childSessionKey LIMIT ?`,
         [...params, limit]
       )
     ).rows as Row[]

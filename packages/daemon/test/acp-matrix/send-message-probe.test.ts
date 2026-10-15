@@ -49,7 +49,7 @@ describe('runtime matrix sendMessage probe', () => {
     expect(op({ action: 'callAgent', toAgent: { agentId: IDS.peer, needsReply: 'true' }, message: 'm' })).toBe(
       `agent-call(${IDS.peer},needsReply)`
     )
-    expect(op({ action: 'startTask', message: 'm' })).toBe('task-start')
+    expect(op({ action: 'delegateTask', message: 'm' })).toBe('task-start')
     expect(op({ action: 'messageTask', taskId: IDS.task, message: 'm' })).toBe(`task-message(${IDS.task})`)
     expect(op({ action: 'replyToSession', messageId: IDS.message, message: 'm' })).toBe(`origin-reply(${IDS.message})`)
     expect(op({ action: 'postMessage', toUser: IDS.human, message: 'm' })).toBe(`post-dm(${IDS.human})`)
@@ -58,7 +58,17 @@ describe('runtime matrix sendMessage probe', () => {
   it('returns the daemon validation error a model reads', async () => {
     const tools = probeTools()
     expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.peer, message: 'm' }, tools)).toBeUndefined()
-    expect(await validateSendMessage({ action: 'startTask', message: 'm' }, tools)).toBeUndefined()
+    expect(await validateSendMessage({ action: 'delegateTask', message: 'm' }, tools)).toBeUndefined()
+    // The release-candidate name fails with the exact call to make, so a model still using it is judged a correction.
+    const renamed = await validateSendMessage({ action: 'startTask', message: 'm' }, tools)
+    expect(renamed).toMatch(/action `startTask` is now `delegateTask`/)
+    const background = scenario('background-self-work')
+    expect(
+      judge(background, [
+        { tool: 'sendMessage', args: { action: 'startTask', message: 'm' }, error: renamed! },
+        { tool: 'sendMessage', args: { action: 'delegateTask', message: 'm' } }
+      ]).verdict
+    ).toBe('DEGRADED')
     expect(
       await validateSendMessage(
         { action: 'postMessage', channel: IDS.updateChannel, thread: IDS.updateThread, message: 'm' },
@@ -137,7 +147,7 @@ describe('runtime matrix sendMessage probe', () => {
     expect(judge(peer, [{ tool: 'sendMessage', args: legacy, error: error! }]).verdict).toBe('FAIL')
     expect(await validateSendMessage({ ...legacy, action: 'wakeAgent' }, tools)).toMatch(/`action` must be one of/)
     expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.self, message: 'm' }, tools)).toMatch(
-      /sendMessage \{"action":"startTask","message":"<the same message>"\}/
+      /sendMessage \{"action":"delegateTask","message":"<the same message>"\}/
     )
     expect(
       await validateSendMessage(
@@ -177,7 +187,7 @@ describe('runtime matrix sendMessage probe', () => {
     const continued = { action: 'messageTask', taskId: IDS.task, message: 'm' }
     expect(await validateSendMessage(continued, probeTools(), { task: IDS.task })).toBeUndefined()
     expect(await validateSendMessage({ ...continued, taskId: '' }, probeTools())).toMatch(
-      /action `messageTask` requires `taskId`[^]*"action":"startTask"/
+      /action `messageTask` requires `taskId`[^]*"action":"delegateTask"/
     )
     // Explicit peer sessions (§9): the daemon admits the shape; only its own rules on the combination refuse it.
     const peerSession = { action: 'callAgent', toAgent: IDS.peer, sessionId: IDS.child, message: 'm' }

@@ -32,8 +32,8 @@ function headline(view: SessionMessageView): string {
   switch (view.kind) {
     case 'taskInput':
       return view.startsTask
-        ? `From your own session (session ${view.sourceSessionId}), as a background task:`
-        : `From the session that started this task (session ${view.sourceSessionId}), a new message for this background task:`
+        ? `From your own session (session ${view.sourceSessionId}), as a delegated task:`
+        : `From the session that delegated this task (session ${view.sourceSessionId}), a new message for this task:`
     case 'reply':
       return `Reply from ${who}${view.inReplyTo ? ` to your message ${view.inReplyTo}` : ''}:`
     case 'report':

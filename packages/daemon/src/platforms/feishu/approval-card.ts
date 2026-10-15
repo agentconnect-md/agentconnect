@@ -73,7 +73,7 @@ const typeOf = (kind: string): string =>
 /** The console link as a markdown element: the URL is ours, so only it may render as a link. */
 const link = (url: string): Record<string, unknown> => ({
   tag: 'markdown',
-  content: `[Open the background work](${url})`
+  content: `[Open the task](${url})`
 })
 
 /** The elements above a sub-session's request naming who asks, how long it waits, and where it is; agent words stay plain text. */

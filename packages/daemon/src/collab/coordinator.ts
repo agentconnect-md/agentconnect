@@ -70,7 +70,7 @@ import type {
   SessionStatusResult
 } from '../mcp/ops.js'
 
-/** send-message-guide.md §2.1: the reason a task's own `startTask` is refused, and the sentence the agent reads. */
+/** send-message-guide.md §2.1: the reason a task's own `delegateTask` is refused, and the sentence the agent reads. */
 export const TASK_NESTING = 'task_nesting'
 const TASK_NESTING_MESSAGE =
   'A task cannot start another task. Do this work here, or report back to the session that started you and let it decide.'
@@ -84,8 +84,8 @@ export const SUBSESSION_IDLE_END_MS = 10 * 60_000
 /** send-message-guide.md §8.6: one refusal for an unknown task and another session's, so it names nothing. */
 export const TASK_NOT_FOUND = 'task_not_found'
 export const TASK_NOT_FOUND_MESSAGE =
-  'This session started no task with that id. Nothing was sent. Pass the `taskId` a startTask call in this session ' +
-  'returned, or use startTask to start a new task.'
+  'This session started no task with that id. Nothing was sent. Pass the `taskId` a delegateTask call in this ' +
+  'session returned (listTasks shows them), or use delegateTask to delegate a new task.'
 /** The previous round's end report is still on its way to the owning session, so no new round opens yet. */
 export const TASK_REPORTING = 'task_reporting'
 /** send-message-guide.md §8.5: a settled round's late reply is refused, never a second report. */
@@ -100,7 +100,7 @@ export const MESSAGE_ID_IN_USE = 'message_id_in_use'
 export const PEER_SESSION_NOT_FOUND = 'session_not_found'
 export const PEER_SESSION_NOT_FOUND_MESSAGE =
   'That agent has no session with that id that this conversation may join. Nothing was sent and no new session was ' +
-  'started. Pass the `childSessionId` an earlier callAgent returned, or omit `sessionId`; a background task takes ' +
+  'started. Pass the `childSessionId` an earlier callAgent returned, or omit `sessionId`; a delegated task takes ' +
   'messages only from the session that started it, through messageTask.'
 
 /** How a sub-session's turn, or its refused start, ended (assistant-mode.md §5.7). */
@@ -192,7 +192,7 @@ const continueHint = (key: string): string =>
 
 /** What replaces the hint where the report lands in a later session of the place, which cannot message the task. */
 const ELSEWHERE_HINT =
-  'It belongs to an earlier session of this conversation, so it cannot be given more work from here; start a new task if more is needed.'
+  'It belongs to an earlier session of this conversation, so it cannot be given more work from here; delegate a new task if more is needed.'
 /** A report landing in a later session swaps the continue hint for {@link ELSEWHERE_HINT}. */
 const withoutContinueHint = (text: string): string =>
   text.replace(
@@ -231,7 +231,7 @@ function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
       : (end.reason ?? 'interrupted')
 }
 
-/** The one short report a patrol or approved work that ended without its own gets in its owning session. */
+/** The one short report a patrol or approved proposal that ended without its own gets in its owning session. */
 export function subsessionEndReport(
   key: string,
   end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
@@ -239,7 +239,11 @@ export function subsessionEndReport(
 ): string {
   const [header, name, tail] = isPatrolCoordinate(thread)
     ? ['[patrol ended]', 'Patrol', 'It sent no result.']
-    : ['[approved work ended]', 'Approved work', 'It sent no result; start a task if the work is still needed.']
+    : [
+        '[approved proposal ended]',
+        'Approved proposal',
+        'It sent no result; delegate a task if the work is still needed.'
+      ]
   if (end.outcome === 'completed') return `${header} ${name} ${key} ended without reporting back. ${tail}`
   return `${header} ${name} ${key} stopped before finishing (${endReason(end)}). ${tail}`
 }
@@ -1483,7 +1487,7 @@ export class CollabCoordinator {
           delivered: false,
           targetSession,
           reason: TASK_LIMIT,
-          message: `You already run as much background work as allowed at once (${limit}). Finish this here, or wait until some of it reports.`
+          message: `You already have ${limit} task${limit === 1 ? '' : 's'} running, the most allowed at once. Finish this here, or wait until one of them reports.`
         })
       }
       this.host.noteSubsessionOpened?.(targetSession, callerKey)
@@ -2305,7 +2309,7 @@ export class CollabCoordinator {
             opened === 'limit'
               ? refuse(
                   TASK_LIMIT,
-                  `You already run as much background work as allowed at once (${limit}). Nothing was sent; message it again once some of it reports.`,
+                  `You already have ${limit} task${limit === 1 ? '' : 's'} running, the most allowed at once. Nothing was sent; message it again once one of them reports.`,
                   key
                 )
               : refuse('busy', 'The task changed while this message was admitted. Nothing was sent.', key)

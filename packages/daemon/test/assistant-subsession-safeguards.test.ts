@@ -94,7 +94,7 @@ function runtimes() {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-        const sub = /background work “|as a background task|for this background task/.test(JSON.stringify(blocks))
+        const sub = /’s task “|as a delegated task|a new message for this task/.test(JSON.stringify(blocks))
         if (sub) subPrompts.push(sessionId)
         const act = sub ? behavior.sub : behavior.plain
         if (act === 'throw') throw new Error('the runtime exited')
@@ -220,7 +220,7 @@ const continueHint = (key: string) =>
 const stoppedReport = (key: string, why: string) =>
   `[task ended] Task ${key} stopped before finishing (${why}). Anything it sent before this is all it reported. ${continueHint(key)}\n\n${REPORT_ANSWER_LANGUAGE}`
 
-describe('the end report the daemon sends for a patrol or approved work', () => {
+describe('the end report the daemon sends for a patrol or approved proposal', () => {
   it('names a patrol a patrol, never a task or a sub-session', () => {
     const thread = patrolCoordinate('p-1')
     expect(subsessionEndReport('k-1', { outcome: 'completed' }, thread)).toBe(
@@ -231,13 +231,13 @@ describe('the end report the daemon sends for a patrol or approved work', () => 
     )
   })
 
-  it('names an approved proposal’s work approved work', () => {
+  it('names an approved proposal an approved proposal', () => {
     const thread = taskCoordinate('t-1')
     expect(subsessionEndReport('k-2', { outcome: 'completed' }, thread)).toBe(
-      '[approved work ended] Approved work k-2 ended without reporting back. It sent no result; start a task if the work is still needed.'
+      '[approved proposal ended] Approved proposal k-2 ended without reporting back. It sent no result; delegate a task if the work is still needed.'
     )
     expect(subsessionEndReport('k-2', { outcome: 'interrupted', reason: 'stop' }, thread)).toBe(
-      '[approved work ended] Approved work k-2 stopped before finishing (stop). It sent no result; start a task if the work is still needed.'
+      '[approved proposal ended] Approved proposal k-2 stopped before finishing (stop). It sent no result; delegate a task if the work is still needed.'
     )
   })
 })
@@ -559,7 +559,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
         thread: sub.thread,
         transportScope: sub.transportScope,
         sender: { id: 'background-task:t1', isBot: true },
-        text: '[background job finished] build',
+        text: '[background task finished] build',
         mentionedBots: [],
         isDm: false
       },
@@ -748,7 +748,7 @@ describe('the sub-session cap', () => {
         delivered: false,
         reason: 'task_limit',
         message:
-          'You already run as much background work as allowed at once (3). Finish this here, or wait until some of it reports.'
+          'You already have 3 tasks running, the most allowed at once. Finish this here, or wait until one of them reports.'
       })
       expect(await stateOf(d, refused.targetSession)).toBeUndefined()
       expect(d.collab.childSessionLinks.has(refused.targetSession)).toBe(false)
@@ -778,14 +778,14 @@ describe('the sub-session cap', () => {
     }
     const deps = { ...d.mcp.deps, canRun: () => true }
 
-    const first = (await executeTool(ctx, 'sendMessage', { action: 'startTask', message: 'one' }, deps)) as any
+    const first = (await executeTool(ctx, 'sendMessage', { action: 'delegateTask', message: 'one' }, deps)) as any
     expect(first.wake).toMatchObject({ delivered: true, subsession: true })
-    const second = (await executeTool(ctx, 'sendMessage', { action: 'startTask', message: 'two' }, deps)) as any
+    const second = (await executeTool(ctx, 'sendMessage', { action: 'delegateTask', message: 'two' }, deps)) as any
     expect(second.wake).toMatchObject({
       delivered: false,
       reason: 'task_limit',
       message:
-        'You already run as much background work as allowed at once (1). Finish this here, or wait until some of it reports.'
+        'You already have 1 task running, the most allowed at once. Finish this here, or wait until one of them reports.'
     })
     expect(second.taskId).toBeUndefined()
     expect(dispatched).toHaveLength(1)

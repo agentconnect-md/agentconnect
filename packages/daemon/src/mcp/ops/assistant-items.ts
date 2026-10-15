@@ -331,7 +331,7 @@ export const PROPOSE_TOOL: ToolDescriptor = {
     'reported. `sentence` is the one plain sentence the approver reads first ("I want to do X because Y"); `why` ' +
     'is the reason; `task` is exactly what a background session with your normal permissions should do once ' +
     'approved, e.g. "rebase PR #12 onto main and push". Nothing runs until a person approves it, within 24 hours; ' +
-    'the approved work then reports back in the conversation the item was taken in. Propose at most once per patrol ' +
+    'the approved proposal then reports back in the conversation the item was taken in. Propose at most once per patrol ' +
     'and do not also report it; still record what you saw with updateItem.',
   inputSchema: obj(
     {

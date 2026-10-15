@@ -595,7 +595,7 @@ describe.each(['telegram', 'discord'] as const)('a sub-session’s request in it
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
     const card = w.posts()[0]!
-    expect(card.text).toContain('background work “Fix the flaky test” is asking for permission')
+    expect(card.text).toContain('task “Fix the flaky test” is asking for permission')
     expect(card.text).toContain('https://console.example.test/sessions/sid-sub')
     expect(card.labels).toEqual(['Always allow', 'Allow', 'Deny'])
     if (platform === 'telegram') expect(card).toMatchObject({ channel: CHAT, anchor: { replyTo: 55 } })
@@ -606,7 +606,7 @@ describe.each(['telegram', 'discord'] as const)('a sub-session’s request in it
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'always' } })
     await vi.waitFor(() => expect(w.rewrites()).toHaveLength(1))
     const settled = w.rewrites()[0]!
-    expect(settled.text).toContain('background work “Fix the flaky test”')
+    expect(settled.text).toContain('task “Fix the flaky test”')
     expect(settled.text).toContain('✅ Always allow — Ada Example')
     expect(settled.live).toBe(false)
     await w.store.close()
