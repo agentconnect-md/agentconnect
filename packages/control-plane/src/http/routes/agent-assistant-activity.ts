@@ -146,7 +146,7 @@ const ConversationParam = IdParam.extend({ sessionId: z.string().min(1).max(512)
 const ConversationProposalParam = ConversationParam.extend({ draftId: z.string().min(1).max(512) })
 const ProposalDecisionBody = z.object({ decision: z.enum(['approve', 'deny']) })
 const PROPOSAL_CHOICE = { approve: 'approve', deny: 'discard' } as const
-/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the work it asks to do and its item. */
+/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the work it asks to do and its follow-up. */
 const ConversationProposalDto = z.object({
   /** Decided with `decideAssistantConversationProposal`. */
   id: z.string(),
@@ -155,7 +155,7 @@ const ConversationProposalDto = z.object({
   /** What the background session would carry out. */
   task: z.string(),
   itemId: z.string(),
-  /** The item's title as the agent last saw it; null once the item is gone. */
+  /** The follow-up's title as the agent last saw it; null once it is gone. */
   itemTitle: z.string().nullable(),
   createdAt: z.string(),
   expiresAt: z.string()
@@ -654,7 +654,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check of an assistant-mode agent asks to do: its sentence, its reason and its item, with the work it asks to do as its text; once approved it runs in the conversation its item was taken in. \`permissionRequests\` lists the runtime permission requests tasks are waiting on, oldest first: what each asks to run, when it is denied and its task stops unless someone answers, and its options; the task and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a check of an assistant-mode agent’s follow-up asks to do: its sentence, its reason and its follow-up (\`itemId\`, \`itemTitle\`), with the work it asks to do as its text; once approved it runs in the conversation its follow-up belongs to. \`permissionRequests\` lists the runtime permission requests tasks are waiting on, oldest first: what each asks to run, when it is denied and its task stops unless someone answers, and its options; the task and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -753,7 +753,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List a webchat conversation’s pending proposals',
-          description: `Lists what the agent’s scheduled checks propose to do for items taken in one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out, its item and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
+          description: `Lists what the agent’s scheduled checks propose to do for follow-ups of one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out, its follow-up and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
           operationId: 'listAssistantConversationProposals',
           params: ConversationParam,
           response: { 200: ConversationProposalsDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }

@@ -130,17 +130,17 @@ export const ASSISTANT_PROPOSAL_WHY_MAX = 2_000
 /** The longest task a proposal asks to run. */
 export const ASSISTANT_PROPOSAL_TASK_MAX = 8_000
 
-/** What a patrol proposes to do (assistant-mode.md §5.10): the card's sentence, its reason and the item it came from; the task is the draft's `text`. */
+/** What a follow-up's check proposes to do (assistant-mode.md §5.10): the card's sentence, its reason and its follow-up, by `itemId`; the task is the draft's `text`. */
 export const AssistantActivityProposal = z.object({
   sentence: z.string().min(1).max(ASSISTANT_PROPOSAL_SENTENCE_MAX),
   why: z.string().max(ASSISTANT_PROPOSAL_WHY_MAX),
   itemId: ref,
-  /** The item's title as the daemon last saw it; null once the item is gone. */
+  /** The follow-up's title as the daemon last saw it; null once it is gone. */
   itemTitle: z.string().max(300).nullable()
 })
 export type AssistantActivityProposal = z.infer<typeof AssistantActivityProposal>
 
-/** A draft awaiting approval: where it would post, the exact text, who approves, and when it lapses; a `task` is a proposal, run in the item's place once approved. */
+/** A draft awaiting approval: where it would post, the exact text, who approves, and when it lapses; a `task` is a proposal, run in its follow-up's place once approved. */
 export const AssistantActivityDraft = z.object({
   id: ref,
   kind: z.enum(['reply', 'elsewhere', 'task']),
