@@ -859,7 +859,8 @@ stopped tasks do not restart. Stopping never undoes completed effects.
 ### 5.9 Patrol (P1)
 
 §5.12 proposes making an item's patrols the checks of a follow-up; wake, limits and recovery stay
-as below.
+as below. A check reports only to the follow-up's place, so where the target below says "patrol"
+read a check, and "each follower's place" becomes that place.
 
 **P1 ships a minimal patrol first**, ahead of the target below:
 
@@ -1070,7 +1071,7 @@ the agent keeps a second list beside `listTasks`, a person cannot stop a patrol 
 ledger shows every place that a commitment exists, including one made in a DM. A **follow-up**
 folds an item and its patrols into one task.
 
-**What a follow-up is.** A task of the conversation it was taken in, beside delegated tasks and
+**What a follow-up is.** A task of the place it was taken in, beside delegated tasks and
 approved proposals, so a session's tasks are its delegated tasks, its follow-ups and its approved
 proposals.
 
@@ -1079,14 +1080,29 @@ proposals.
 - **Woken by time.** A round starts when the follow-up's next check falls due. It ends by
   recording what it saw and, unless the follow-up is done, when to look again.
 - **Retained.** Rounds run in the follow-up's own retained context, as a delegated task's rounds
-  do (§5.6), so what it saw last time is in its context. The daemon still stores the last
-  observation, which recovery needs.
-- **Addressable.** It has a `taskId`.
-  - `listTasks` lists it.
-  - The owning session stops it with `stopTask`, which ends the follow-up.
-  - `messageTask` gives it new instructions and runs a check round at once.
-- **Visible where its conversation is.** It inherits its conversation's visibility, as every task
-  does. The organization-visible ledger goes away.
+  do (§5.6), so what it saw last time is in its context. The runtime's own compaction bounds that
+  context. Whenever the context is reopened (lost on a restart, or reopened by the daemon), the
+  stored last observation is the handover, so recovery needs it too. Whether to reopen after a
+  fixed number of checks is §9 Q6.
+- **Owned by its place.** A follow-up belongs to the place it was taken in, not to one session
+  row. Its owning session is that place's current long session: after `!new` or a rollover, the
+  new one. That session lists it with `listTasks`, gives it new instructions with `messageTask`
+  and ends it with `stopTask`. Its reports already go there (§5.7).
+  - This departs from delegated tasks on purpose. A delegated task is bounded by one piece of
+    work, so §5.8 refuses the session after `!new`. A follow-up is a commitment that lives for
+    weeks, and `!new` is routine, so a session-bound follow-up would soon be unaddressable from
+    chat.
+  - A session of the agent in any other place still cannot address it.
+- **Addressable by `taskId`.**
+  - `stopTask` ends the follow-up, not just one check.
+  - `messageTask` gives it new instructions and runs a check at once, counted against the daily
+    budget. While a check runs, the message waits for the next input, as a delegated task's does;
+    with the day's budget spent, it is refused with the time the budget resets.
+- **Visible where its place is.** It inherits its conversation's visibility, as every task does.
+  The organization-visible ledger goes away.
+- **Its asker.** A check's asker for §5.5 "Reads" is the person who confirmed `followUp` (a
+  migrated item's first follower). A check started by `messageTask` also counts the sender of the
+  message that led to it, as every sender counts on a turn.
 
 The word "patrol" leaves visible text; a round of a follow-up is a check.
 
@@ -1097,7 +1113,7 @@ The word "patrol" leaves visible text; a round of a follow-up is a check.
 | `takeItem { title, doneWhen, nextCheck?, summary? }` | `followUp` with the same parameters; returns the `taskId`                              |
 | `listItems`                                          | `listTasks`                                                                            |
 | `updateItem` in the main conversation                | `messageTask` to change what or when to check, `stopTask` to end it                    |
-| `followItem`                                         | Removed: one follow-up belongs to one conversation                                     |
+| `followItem`                                         | Removed: one follow-up belongs to one place                                            |
 | a patrol's `updateItem`                              | `recordCheck { observation, report?, nextCheck?, done? }`, offered only inside a check |
 | `propose`                                            | Unchanged, at most once per check                                                      |
 
@@ -1127,19 +1143,24 @@ The word "patrol" leaves visible text; a round of a follow-up is a check.
   checks, with one report, until it is messaged;
 - recovery settles from the stored observation baseline and held report, as today.
 
-A `messageTask` check counts against the budget like any other. The target in §5.9 (scheduled
-and hook-woken checks, the credential-less host) applies to follow-ups unchanged.
+The target in §5.9 (scheduled and hook-woken checks, the credential-less host) applies to
+follow-ups unchanged.
 
 **The standing list** replaces §5.4 ②, keeping its injection points, its cap of 30 and its
-absence from external places. A place's list holds the open follow-ups whose conversation that
-place may read under §5.5 "Reads":
+absence from external places. It is keyed by place:
 
 - one taken in a public channel is listed in every internal place;
 - one taken in a private channel or group DM is listed only there;
-- one taken in a DM is listed only there and in that person's webchat conversations.
+- one taken in a DM is listed only there.
+
+This derives from §5.5 "Reads" but is stricter for DMs. On a platform whose session access is not
+synced, a DM is `org`-visible ([session-visibility.md](session-visibility.md) §3), yet its
+follow-ups stay in that DM. Listing a DM's follow-ups in that person's webchat conversations too
+needs the chat identity's console user on the injection path, which arrives with identity links
+pushed to the daemon (§7, P1); until then they are not listed there.
 
 Each entry has its label, the place it belongs to, its state and its next check. Only the owning
-conversation also sees its `taskId`. The running-tasks block of §5.4 ② stays as it is.
+place also sees its `taskId`. The running-tasks block of §5.4 ② stays as it is.
 
 **Console.**
 
@@ -1151,9 +1172,10 @@ conversation also sees its `taskId`. The running-tasks block of §5.4 ② stays 
 
 **Migration** happens in one daemon store version, with no cross-version downgrade.
 
-- Each active or waiting item becomes a follow-up owned by its origin place's current long
-  session. It carries over its title, done-when, summary, latest observation and next check.
-- Followers other than the origin are dropped; done and dropped items are not carried.
+- Each active or waiting item becomes a follow-up of its origin place. It carries over its title,
+  done-when, summary, latest observation and next check; its first follower becomes its asker.
+- Followers other than the origin are dropped, and they are not told. Done and dropped items are
+  not carried.
 - A pending proposal keeps pointing at the follow-up its item became.
 - A patrol in flight at the upgrade settles as that follow-up's check.
 - A daemon that advertises `follow-up-tasks-v1` answers Activity without items, and the console
@@ -1166,6 +1188,9 @@ else, and nobody but its own conversation is told of it.
 
 - §2.1: follow-ups replace patrols in the list of task kinds, and they are messaged and stopped by
   `taskId`;
+- §6's "ownership never spans a conversation", §8.2 and §8.7: a follow-up is owned by its place,
+  so after `!new` or a rollover the place's new session may message, stop and list it, the one
+  exception to the session-recreated refusal;
 - §8.7: only approved proposals lack a `taskId`;
 - the `listTasks` kinds: delegated task, follow-up, approved proposal.
 
@@ -1202,7 +1227,7 @@ else, and nobody but its own conversation is told of it.
 | **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                               |
 | **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                       |
 | P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8). Next: follow-ups in place of the ledger and patrols (§5.12); the target patrol (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
-| P2 — cost and events              | Hook events routed to patrols; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| P2 — cost and events              | Hook events routed to follow-up checks (§5.12); Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ---
@@ -1231,8 +1256,9 @@ else, and nobody but its own conversation is told of it.
 
 ## 9. Open questions
 
-1. **Automatic context rollover**: a threshold on `contextUsed`; whether items and followers stay
-   attached to the same place after a rollover.
+1. **Automatic context rollover**: a threshold on `contextUsed`. Under §5.12 a follow-up belongs
+   to its place, so a rollover hands it to the place's new session as `!new` does; what remains
+   open is the threshold.
 2. **Run-state reclaim for permanent sessions** (the follow-up to §4.2 item 1).
 3. **Slack DM `append` versus Slack assistant threads** (`assistant_thread_started` is already
    supported): whether a "new conversation" button still means anything.
@@ -1240,7 +1266,9 @@ else, and nobody but its own conversation is told of it.
 5. **Trust drift**: a place whose members change after the agent first answered there;
    member-joined coverage per platform beyond Slack guests.
 6. **Cost**: one long conversation per place and one main-session turn per report round; needs
-   P0 measurements.
+   P0 measurements. A follow-up (§5.12) may run hundreds of checks in one retained context: whether
+   the daemon reopens it after a fixed number of checks, with the stored observation as the
+   handover, or leaves it to the runtime's compaction.
 7. **Wording of item summaries**: the restatement when an item is taken is the only review point
    for what becomes team-visible. Moot under §5.12, where a follow-up is listed only where its
    conversation may be read.
@@ -1681,11 +1709,13 @@ task's page names the session it belongs to and links back. §1.3 is now "Long w
 tasks" and §5.6 "Tasks".
 
 **Forty-third revision (2026-10-15)**: §5.12 proposes follow-ups in place of the item ledger and
-patrols. A follow-up is a read-only task of the conversation it was taken in, woken by time, with
-a `taskId` the owning session can message and stop. `followUp` replaces `takeItem`;
-`recordCheck` replaces a patrol's `updateItem`; `listItems`, the main conversation's `updateItem`
-and `followItem` go away. It is a tool of its own rather than a `delegateTask` option: a
-follow-up needs the person's confirmation and is read-only by construction, and `sendMessage`
-stays unchanged. The organization-visible ledger is dropped: a follow-up is listed only where its
-conversation may be read. Wake, limits and recovery are the minimal patrol's. §5.4, §5.9–§5.11,
-§7 and §9 point to §5.12; nothing else changes until it ships.
+patrols. A follow-up is a read-only task of the place it was taken in, woken by time, with a
+`taskId` the place's current long session can message and stop, after `!new` or a rollover too:
+a stated departure from delegated tasks, which stay bound to the session row. Its asker is the
+person who confirmed it. `followUp` replaces `takeItem`; `recordCheck` replaces a patrol's
+`updateItem`; `listItems`, the main conversation's `updateItem` and `followItem` go away. It is a
+tool of its own rather than a `delegateTask` option: a follow-up needs the person's confirmation
+and is read-only by construction, and `sendMessage` stays unchanged. The organization-visible
+ledger is dropped: the standing list is keyed by place, stricter than §5.5 for DMs. Wake, limits
+and recovery are the minimal patrol's. §5.4, §5.9–§5.11, §7 and §9 point to §5.12; nothing else
+changes until it ships.
