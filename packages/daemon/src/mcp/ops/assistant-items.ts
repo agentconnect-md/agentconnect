@@ -128,10 +128,11 @@ export const FOLLOW_UP_TOOL: ToolDescriptor = {
     'background and reports here only if something changed. It only looks and records what it saw, so promise a ' +
     'check then, never an action. First restate in your reply what you will watch, what counts as done and when ' +
     'to look next, and call this only after the person confirms. Call listTasks before restating: when an open ' +
-    'follow-up of this conversation already covers the request, offer to send it the change with sendMessage ' +
-    'messageTask instead of taking a second one. The follow-up belongs to this conversation: here it is listed ' +
-    'with listTasks, given new instructions with messageTask and ended with stopTask, by the `taskId` this returns. ' +
-    'Taken in a public channel, its title is also listed in your other internal conversations, so name it plainly.',
+    'follow-up of this conversation already covers the request, offer to send the change to it with sendMessage ' +
+    'action `messageTask` instead of taking a second one. The follow-up belongs to this conversation: here it is ' +
+    'listed with listTasks, given new instructions with messageTask and ended with stopTask, by the `taskId` this ' +
+    'returns. Taken in a public channel, its title is also listed in your other internal conversations, so name it ' +
+    'plainly.',
   inputSchema: obj(
     {
       title: {

@@ -116,7 +116,9 @@ describe('the follow-up tools are offered only to assistant-mode agents', () => 
     const text = FOLLOW_UP_TOOL.description
     expect(text).toContain('call this only after the person confirms')
     expect(text).toContain('Call listTasks before restating')
-    expect(text).toContain('offer to send it the change with sendMessage messageTask instead of taking a second one')
+    expect(text).toContain(
+      'offer to send the change to it with sendMessage action `messageTask` instead of taking a second one'
+    )
     expect(text).toContain('promise a check then, never an action')
     expect(text).toContain('by the `taskId` this returns')
   })
