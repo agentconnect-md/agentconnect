@@ -7,7 +7,7 @@ opens a session there; and replies are addressed to a message, not to a session 
 Both halves are implemented: delegated tasks (§12 items 1–4 and 11, recorded in §7.8 and §8.9)
 and message-addressed replies (§12 items 5–9, recorded in §7.8, §8.9 and §9.8). Visible text
 no longer says sub-session (§11 questions 10–11): "task" is the umbrella for a session's
-delegated tasks, the patrols and approved proposals that report to it; what the runtime itself
+delegated tasks, its follow-ups and the approved proposals that report to it; what the runtime itself
 reports for the current turn is "this turn's tasks"; internal names are unchanged.
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
@@ -110,10 +110,10 @@ Three things are kept apart:
   session" action.
 - A **task** runs in the background in a context of its own and belongs to one session, its
   **owning session**, to which it reports. A **delegated task** is a step the session hands
-  off, beside its tool calls, with `delegateTask`. Assistant mode's patrols (assistant-mode.md
-  §5.9) and approved proposals (§5.10) are tasks of the conversation they report to too.
+  off, beside its tool calls, with `delegateTask`. Assistant mode's follow-ups (assistant-mode.md
+  §5.12) and approved proposals (§5.10) are tasks of the conversation they report to too.
 
-In this document, "task" alone means a delegated task unless a patrol or an approved proposal
+In this document, "task" alone means a delegated task unless a follow-up or an approved proposal
 is named. A delegated task has these properties:
 
 1. **Owned.** Only the owning session starts it, messages it, and stops it. The task's
@@ -154,12 +154,16 @@ conversation to end with the work or lets unrelated talk leak into it; a child t
 only to its parent cannot be joined by anyone else; and every level of nesting needs its own
 stop and lifetime conventions. A task is a step and has none of these.
 
-A patrol and an approved proposal are tasks too, but no session hands them off as one of its
-steps: a patrol is the agent's own check of an item, and an approved proposal runs when it is
-approved. They keep their one-report lifecycle, are not started with `delegateTask` or continued
-with `messageTask`, and are not stopped with `stopTask`; a person stops one from the console.
-`listTasks` and the console's Tasks tab show all three, and the limits that count tasks count
-all three.
+A follow-up and an approved proposal are tasks too, but no session hands them off as one of its
+steps. A follow-up is taken with its own tool, `followUp`, after the person confirms it: a
+read-only commitment whose rounds are checks, woken by time. It belongs to the place it was taken
+in, not to one session row, so the place's current long session, after `!new` or a rollover the
+new one, messages it with `messageTask`, which runs a check at once, ends it with `stopTask` and
+lists it, by its `taskId`; this is the one exception to the rule that a recreated session does not
+inherit a task (assistant-mode.md §5.12). An approved proposal runs when it is approved, keeps its
+one-report lifecycle, is not continued with `messageTask` and is not stopped with `stopTask`; a
+person stops one from the console. `listTasks` and the console's Tasks tab show all three, and the
+limits that count tasks count all three.
 
 **Runtime subagents and delegated tasks.** The agent's runtime may have its own subagent or
 Task tool, and it reports long shell commands and its own subagents to AgentConnect as this
@@ -638,15 +642,15 @@ Acceptance checks:
 
 ## 6. Trade-offs
 
-| Aspect           | Consequence                                                                                                    |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| Intent           | Required `action` identifies the operation within one tool                                                     |
-| Migration        | Tool name remains; every call adds `action`, and tasks omit the explicit agent target                          |
-| Schema           | One flat schema; action-specific combinations require runtime validation                                       |
-| Documentation    | Short common description plus on-demand guides, with lookup or error-recovery cost for unfamiliar calls        |
-| Model            | Task and session are distinct: ownership never spans a conversation, and a conversation never hangs under work |
-| Replies          | The model copies a message id instead of a session id; the daemon checks one record instead of session state   |
-| Runtime behavior | Baseline audited; §8 adds task continuity and owner stop, §9 adds peer sessions and message-addressed replies  |
+| Aspect           | Consequence                                                                                                                                                       |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Intent           | Required `action` identifies the operation within one tool                                                                                                        |
+| Migration        | Tool name remains; every call adds `action`, and tasks omit the explicit agent target                                                                             |
+| Schema           | One flat schema; action-specific combinations require runtime validation                                                                                          |
+| Documentation    | Short common description plus on-demand guides, with lookup or error-recovery cost for unfamiliar calls                                                           |
+| Model            | Task and session are distinct: ownership never spans a conversation (a follow-up's passes to its place's next session), and a conversation never hangs under work |
+| Replies          | The model copies a message id instead of a session id; the daemon checks one record instead of session state                                                      |
+| Runtime behavior | Baseline audited; §8 adds task continuity and owner stop, §9 adds peer sessions and message-addressed replies                                                     |
 
 Explicit operation selection does not remove every conditional: `channel` still
 changes agent-call delivery, and the shared schema exposes several operations'
@@ -962,6 +966,12 @@ by sharing a channel. Existing daemon-authored report recovery after `!new` is n
 by itself a grant for a replacement session to steer or stop the old task: any
 ownership migration must be explicit trusted state and validated consistently.
 
+A follow-up (assistant-mode.md §5.12) is that explicit state: it records the place it belongs
+to, not a session row, and its owner is always that place's current long session. After `!new`
+or a rollover the new session may message, stop and list it, and its index row is re-pointed to
+the new session the first time that session addresses it or a check starts; the retired session,
+a thread session of the same place and every other place are refused in the unknown-id words.
+
 Ordinary non-task replies follow §9. A task's reply reaches the owning session as a message
 too, so the owning session may answer it with `replyToSession` on its id; direct messaging
 should use `messageTask`, whose durable ownership check does not depend on any one message.
@@ -1086,12 +1096,12 @@ stopped, and answers stopped or nothing was running, adding that a process the t
 started in the background may keep running. Stopping undoes nothing already done; only a later
 explicit `messageTask` opens another round.
 
-| Caller                                                       | `stopTask`                |
-| ------------------------------------------------------------ | ------------------------- |
-| The owning session, on any of its turns                      | Allowed for its own tasks |
-| The task itself, or another task of the same owning session  | Refused                   |
-| Another session of the agent, including the one after `!new` | Refused                   |
-| Another agent, a patrol, an approved proposal, a hook        | Refused                   |
+| Caller                                                           | `stopTask`                                                   |
+| ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| The owning session, on any of its turns                          | Allowed for its own tasks                                    |
+| The task itself, or another task of the same owning session      | Refused                                                      |
+| Another session of the agent, including the one after `!new`     | Refused, but for a follow-up of the place's new long session |
+| Another agent, a follow-up's check, an approved proposal, a hook | Refused                                                      |
 
 "Any of its turns" includes a turn a person started, a task's report, a reply from a peer, a
 reminder, and a scheduled run. The owning session is the authority because the task is its own
@@ -1105,8 +1115,9 @@ An id that is unknown, purged, or not owned by the calling session is refused wi
 words, so nothing about other sessions is revealed. Stopping a task moves no content, so a
 session marked by a private read (assistant-mode.md §5.5) may still do it. `stopTask` never
 stops a session reached by a self `callAgent` with `channel`: that session belongs to its
-conversation and follows its own stop rules. `stopTask` accepts only a delegated task's
-`taskId`: patrols and approved proposals carry none and keep their existing stop paths, the
+conversation and follows its own stop rules. `stopTask` accepts a delegated task's or a
+follow-up's `taskId`; stopping a follow-up ends it, not just one check, and drops the messages
+waiting for it. Only approved proposals carry no `taskId` and keep their existing stop path, the
 console's Stop among them.
 
 Standing context reminds the owning session which delegated tasks it has running, by id and
@@ -1116,22 +1127,24 @@ only when that is not clear.
 
 #### Listing tasks
 
-`listTasks` takes no arguments and lists the calling session's tasks: its delegated tasks, and
-the patrols and approved proposals that report to it. Each entry carries:
+`listTasks` takes no arguments and lists the calling session's tasks: its delegated tasks, its
+place's follow-ups when it is the place's current long session, and the approved proposals that
+report to it. Each entry carries:
 
-| Field            | Meaning                                                                                 |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| `taskId`         | Delegated tasks only: the handle `messageTask`, `stopTask` and `viewSessionStatus` take |
-| Kind             | Delegated task, patrol, or approved proposal                                            |
-| Label            | The task's label or the proposal's title                                                |
-| State            | Running, or how it ended                                                                |
-| Started          | When it started                                                                         |
-| Elapsed or ended | The running time so far, or when it ended                                               |
-| Handed back      | Whether it has handed back a result for its latest round                                |
+| Field            | Meaning                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------- |
+| `taskId`         | Delegated tasks and follow-ups: the handle `messageTask`, `stopTask` and `viewSessionStatus` take |
+| Kind             | Delegated task, follow-up, or approved proposal                                                   |
+| Label            | The task's label or the proposal's title                                                          |
+| State            | Running, or how it ended                                                                          |
+| Started          | When it started                                                                                   |
+| Elapsed or ended | The running time so far, or when it ended                                                         |
+| Handed back      | Whether it has handed back a result for its latest round                                          |
 
 It is read-only and changes nothing. Its scope is exactly the running-tasks reminder's and
 §8.2's ownership: a delegated task appears only to the session the ownership record names, and
-a patrol or approved proposal only to the session it reports to; another session of the agent,
+a follow-up only to its place's current long session, and an approved proposal only to the
+session it reports to; another session of the agent,
 including the one after `!new`, another agent and a task itself see none of them. Like the other
 task tools it needs no IM integration. It does not list this turn's tasks, which the runtime
 reports to the console rather than to the agent (§2.1).
@@ -1163,8 +1176,9 @@ Required additional behavior tests:
 - `stopTask` from the owning session succeeds on a person's turn, a task-report turn, a peer
   reply turn, and a scheduled turn; it is refused from the task itself, another task, another
   session of the agent, and another agent, in the same words as an unknown id.
-- `listTasks` lists the calling session's delegated tasks, patrols and approved proposals with
-  `taskId` on delegated tasks only, and nothing from another session, agent or task.
+- `listTasks` lists the calling session's delegated tasks, its place's follow-ups and the approved
+  proposals that report to it, with `taskId` on all but approved proposals, and nothing from another
+  session, agent or task.
 - Pause/drain, queue limits, owner recovery, purged tasks, and uncertain
   receipts behave as specified, without starting extra work or granting unauthorized access.
 - Both messaging directions remain session-only; the owning session's ordinary response
@@ -1775,5 +1789,5 @@ Internal names (`assistant_subsession_*` tables, the `subsession:` coordinate, p
 capability names, API paths and log events) keep their names; nothing model- or person-facing
 shows them, except the opaque `taskId` string and the receipt's `wake.subsession` flag (§8.9).
 
-Visible text says task, delegated task, patrol, approved proposal and this turn's tasks, never
-sub-session, background work, approved work or runtime jobs.
+Visible text says task, delegated task, follow-up, check, approved proposal and this turn's tasks,
+never sub-session, patrol, item, background work, approved work or runtime jobs.

@@ -589,7 +589,7 @@ describe('a daemon’s turns', () => {
     }
   })
 
-  it('read a patrol as its item’s asker and a sub-session report as its opener, through their linked account or last known zone', async () => {
+  it('read a follow-up’s check as its asker and a sub-session report as its opener, through their linked account or last known zone', async () => {
     const { d, scope, stop } = await liveDaemon({ U0ALICE: 'Asia/Shanghai', U0BOB: 'Europe/Berlin' })
     const keys: string[] = []
     const live = (thread: string, entry: Record<string, unknown>): string => {
@@ -599,16 +599,16 @@ describe('a daemon’s turns', () => {
       return key
     }
     try {
-      // A patrol reads as the person recorded as having asked for its item, in their profile's zone.
+      // A follow-up's check reads as the person who confirmed it, in their profile's zone.
       const tenant = await d.tenantScopeForIntegration(d.integrationConfigById(INT))
       const origin = { platform: 'slack', channel: 'D0ALICE', transportScope: scope }
-      const item = await d.store.assistantItems.create({
+      await d.store.assistantItems.create({
         agentId: AGENT,
         title: 'ship the release notes',
         origin,
-        followers: [{ identity: `slack:${tenant}:U0ALICE`, place: origin }]
+        taskKey: sessionKey('slack', 'D0ALICE', patrolCoordinate('r1'), AGENT, scope),
+        asker: `slack:${tenant}:U0ALICE`
       })
-      vi.spyOn(d.patrols, 'itemFor').mockResolvedValue(item.id)
       const patrol = live(patrolCoordinate('r1'), {
         msg: background('D0ALICE', patrolCoordinate('r1')),
         integrationId: INT

@@ -2,7 +2,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ASSISTANT_ACTIVITY_OBSERVATIONS_MAX,
   ASSISTANT_ACTIVITY_RESULT_BYTES,
   AssistantActivityReadResult,
   AssistantActivityWriteResult,
@@ -19,12 +18,11 @@ import {
 } from '../src/cp/assistant-activity.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { ASSISTANT_DRAFT_TTL_MS } from '../src/store/assistant-drafts.js'
+import { ASSISTANT_ITEM_LIMITS } from '../src/store/assistant-items.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
 
-const DM = { platform: 'slack', channel: 'D0ALICE', transportScope: 'T0EXAMPLE' }
 const SUPPORT = { platform: 'slack', channel: 'C0SUPPORT', transportScope: 'T0EXAMPLE' }
-const WEBCHAT = { platform: 'webchat', channel: 'conv-1', transportScope: null }
 const NOW = 10_000
 /** A background sub-session's request awaiting an answer, as the permission path lists it. */
 const PERMISSION: AssistantActivityPermission = {
@@ -86,96 +84,224 @@ async function read<O extends AssistantActivityReadReq['operation']>(
   return result as Extract<ReadResult, { operation: O }>
 }
 
-const createItem = (s: LocalStore, agentId: string, over: Record<string, unknown> = {}) =>
-  s.assistantItems.create({
+/** A follow-up taken in the support channel, with its index row under that channel's long session. */
+async function createFollowUp(s: LocalStore, agentId: string, over: Record<string, unknown> = {}) {
+  const key = sessionKey('slack', 'C0SUPPORT', `subsession:patrol-${randomUUID()}`, agentId, 'T0EXAMPLE')
+  const item = await s.assistantItems.create({
     agentId,
     title: 'Ship the release notes',
     doneWhen: 'The notes are published',
-    origin: DM,
-    followers: [
-      { identity: 'slack:T0EXAMPLE:U0ALICE', place: DM },
-      { identity: 'slack:T0EXAMPLE:U0BOB', place: SUPPORT },
-      { identity: 'slack:T0EXAMPLE:U0CAROL', place: SUPPORT }
-    ],
+    origin: SUPPORT,
+    taskKey: key,
+    asker: 'slack:T0EXAMPLE:U0ALICE',
     now: 1_000,
     ...over
   })
+  await s.assistantSubsessions.openFollowUp({
+    agentId,
+    childSessionKey: key,
+    parentSessionId: 'sid-parent',
+    parentSessionKey: sessionKey('slack', 'C0SUPPORT', 'append:1', agentId, 'T0EXAMPLE'),
+    now: Number(over.now ?? 1_000)
+  })
+  return item
+}
 
-describe('the Activity view: items', () => {
-  it('lists open and closed items apart, with places and never a follower’s identity', async () => {
-    const { s, a, b, activity } = await setup()
-    const open = await createItem(s, a, { nextCheck: 86_400_000, now: 1_000 })
-    const waiting = await createItem(s, a, { title: 'Wait for the review', status: 'waiting', now: 2_000 })
-    const done = await createItem(s, a, { title: 'Rotate the key', status: 'done', now: 3_000 })
-    await createItem(s, b, { title: 'Another agent’s item' })
-
-    const page = await read(activity, { agentId: a, operation: 'items', section: 'open', limit: 50 })
-    expect(page.truncated).toBe(false)
-    expect(page.items.map((i) => i.id)).toEqual([waiting.id, open.id])
-    expect(page.items[1]).toEqual({
-      id: open.id,
-      title: 'Ship the release notes',
-      status: 'active',
-      doneWhen: 'The notes are published',
-      nextCheck: '1970-01-02T00:00:00.000Z',
-      origin: { platform: 'slack', channel: 'D0ALICE' },
-      places: [
-        { platform: 'slack', channel: 'D0ALICE' },
-        { platform: 'slack', channel: 'C0SUPPORT' }
-      ],
-      createdAt: '1970-01-01T00:00:01.000Z',
-      updatedAt: '1970-01-01T00:00:01.000Z'
-    })
-    expect(JSON.stringify(page)).not.toContain('U0ALICE')
-
-    const closed = await read(activity, { agentId: a, operation: 'items', section: 'closed', limit: 50 })
-    expect(closed.items.map((i) => i.id)).toEqual([done.id])
-    const first = await read(activity, { agentId: a, operation: 'items', section: 'open', limit: 1 })
-    expect(first).toMatchObject({ items: [{ id: waiting.id }], truncated: true })
+/** Start one check of a follow-up at `at`. */
+const begin = (s: LocalStore, agentId: string, item: { id: string; taskKey: string }, at: number) =>
+  s.assistantPatrols.begin(agentId, item.id, {
+    key: item.taskKey,
+    nextCheck: null,
+    observationVersion: 0,
+    input: null,
+    now: at,
+    staleBefore: 0,
+    exclusive: false
   })
 
-  it('stops a list short of the wire budget and says so', async () => {
+describe('the Activity view: follow-ups in place of items', () => {
+  it('answers no items, and deletes none, from a daemon that keeps follow-ups', async () => {
     const { s, a, activity } = await setup()
-    // Each item is ~6 KB of UTF-8, so a hundred of them could never ride one frame.
-    for (let i = 0; i < 40; i++) await createItem(s, a, { doneWhen: '完'.repeat(2_000), now: i })
-    const page = await read(activity, { agentId: a, operation: 'items', section: 'open', limit: 100 })
-    expect(page.truncated).toBe(true)
-    expect(page.items.length).toBeGreaterThan(0)
-    expect(page.items.length).toBeLessThan(40)
-    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(ASSISTANT_ACTIVITY_RESULT_BYTES)
-  })
-
-  it('reads one item’s summary and its newest observations, newest first; another agent’s reads as absent', async () => {
-    const { s, a, b, activity } = await setup()
-    const item = await createItem(s, a, { summary: 'Draft is in review.' })
-    for (let i = 1; i <= ASSISTANT_ACTIVITY_OBSERVATIONS_MAX + 2; i++) {
-      await s.assistantItems.appendObservation(a, item.id, { text: `check ${i}`, author: 'user:usr-1', now: i * 1_000 })
-    }
-    const { item: detail } = await read(activity, { agentId: a, operation: 'item', itemId: item.id })
-    expect(detail?.summary).toBe('Draft is in review.')
-    expect(detail?.observations).toHaveLength(ASSISTANT_ACTIVITY_OBSERVATIONS_MAX)
-    expect(detail?.observations[0]).toEqual({ text: 'check 12', at: '1970-01-01T00:00:12.000Z' })
-    expect(detail?.observations.at(-1)?.text).toBe('check 3')
-    expect(JSON.stringify(detail)).not.toContain('usr-1')
-    expect((await read(activity, { agentId: b, operation: 'item', itemId: item.id })).item).toBeNull()
-  })
-
-  it('deletes an item of the agent named, and only that agent’s', async () => {
-    const { s, a, b, activity } = await setup()
-    const item = await createItem(s, a)
-    expect(await activity.write({ agentId: b, operation: 'delete-item', itemId: item.id })).toEqual({
+    const item = await createFollowUp(s, a)
+    expect(await read(activity, { agentId: a, operation: 'items', section: 'open', limit: 50 })).toEqual({
+      operation: 'items',
+      items: [],
+      truncated: false
+    })
+    expect((await read(activity, { agentId: a, operation: 'item', itemId: item.id })).item).toBeNull()
+    expect(await activity.write({ agentId: a, operation: 'delete-item', itemId: item.id })).toEqual({
       operation: 'delete-item',
       found: false
     })
     expect(await s.assistantItems.get(a, item.id)).toBeDefined()
-    expect(await activity.write({ agentId: a, operation: 'delete-item', itemId: item.id })).toEqual({
-      operation: 'delete-item',
-      found: true
+  })
+
+  it('lists a follow-up as a task with its state, next check and newest finished checks', async () => {
+    const { s, a, activity } = await setup()
+    const item = await createFollowUp(s, a, { nextCheck: 86_400_000 })
+    for (let i = 1; i <= 7; i++) {
+      const begun = await begin(s, a, item, i * 1_000)
+      await s.assistantPatrols.endCheck(a, item.id, begun!.checkNo, {
+        observation: `check ${i}`,
+        reported: i === 7,
+        now: i * 1_000 + 1
+      })
+      await s.assistantPatrols.succeed(a, item.id, item.taskKey, i * 1_000 + 1)
+    }
+    // A running check has seen nothing yet, so it is not among them.
+    await begin(s, a, item, 8_000)
+    const page = await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })
+    expect(page.followUps).toBe(true)
+    expect(page.subsessions).toEqual([
+      {
+        sessionId: null,
+        parentSessionId: 'sid-parent',
+        state: 'open',
+        createdAt: '1970-01-01T00:00:01.000Z',
+        kind: 'follow-up',
+        followUp: {
+          title: 'Ship the release notes',
+          doneWhen: 'The notes are published',
+          status: 'waiting',
+          nextCheck: '1970-01-02T00:00:00.000Z',
+          recentChecks: [7, 6, 5, 4, 3].map((i) => ({
+            at: new Date(i * 1_000).toISOString(),
+            observation: `check ${i}`,
+            reported: i === 7
+          }))
+        }
+      }
+    ])
+  })
+
+  it('keeps a page of follow-ups inside the wire budget, paging on from the last row it carries', async () => {
+    const { s, a, activity } = await setup()
+    const long = 'x'.repeat(ASSISTANT_ITEM_LIMITS.observation)
+    for (let f = 0; f < 30; f++) {
+      const item = await createFollowUp(s, a, { now: 1_000 + f })
+      for (let i = 1; i <= 5; i++) {
+        const at = (f * 10 + i) * 1_000
+        const begun = await begin(s, a, item, at)
+        await s.assistantPatrols.endCheck(a, item.id, begun!.checkNo, {
+          observation: long,
+          reported: false,
+          now: at + 1
+        })
+        await s.assistantPatrols.succeed(a, item.id, item.taskKey, at + 1)
+      }
+    }
+    const bytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result), 'utf8')
+    const all = await read(activity, { agentId: a, operation: 'subsessions', limit: 30 })
+    expect(bytes(all)).toBeLessThanOrEqual(ASSISTANT_ACTIVITY_RESULT_BYTES)
+    expect(all.subsessions.length).toBeLessThan(30)
+    expect(all.truncated).toBe(true)
+    // One conversation's pages carry every row once, each inside the budget.
+    const seen: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await read(activity, {
+        agentId: a,
+        operation: 'subsessions',
+        limit: 30,
+        parent: { sessionId: 'sid-parent', ...(cursor ? { cursor } : {}) }
+      })
+      expect(bytes(page)).toBeLessThanOrEqual(ASSISTANT_ACTIVITY_RESULT_BYTES)
+      seen.push(...page.subsessions.map((row) => row.createdAt))
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    expect(new Set(seen).size).toBe(30)
+  })
+
+  it('names a running check, checks paused after failures, and how a follow-up ended', async () => {
+    const { s, a, activity } = await setup()
+    const status = async () =>
+      (await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })).subsessions.map((r) => [
+        r.kind,
+        r.state,
+        r.followUp?.status,
+        r.followUp?.nextCheck
+      ])
+    const item = await createFollowUp(s, a, { nextCheck: 5_000 })
+    await s.assistantSubsessions.checking(a, item.taskKey)
+    expect(await status()).toEqual([['follow-up', 'open', 'checking', '1970-01-01T00:00:05.000Z']])
+    await s.assistantSubsessions.finish(a, item.taskKey, 'failed')
+    // Five failed checks in a row pause it until it is messaged.
+    for (let n = 0; n < 5; n++) {
+      await begin(s, a, item, 6_000 + n)
+      await s.assistantPatrols.fail(a, item.id, item.taskKey, 6_000 + n, 5_000)
+    }
+    expect(await status()).toEqual([['follow-up', 'open', 'paused', '1970-01-01T00:00:05.000Z']])
+    await s.assistantItems.schedule(a, item.id, { status: 'done', nextCheck: null })
+    expect(await status()).toEqual([['follow-up', 'done', 'done', null]])
+    const other = await createFollowUp(s, a, { title: 'Watch the build', now: 2_000 })
+    await s.assistantItems.schedule(a, other.id, { status: 'dropped', nextCheck: null })
+    expect((await status())[0]).toEqual(['follow-up', 'done', 'stopped', null])
+  })
+
+  it('lists a place’s follow-ups under its current long session, and none outside assistant mode', async () => {
+    const { s, a, off, activity } = await setup()
+    const item = await createFollowUp(s, a)
+    const coordinate = await s.resolveAppendCoordinate(a, 'C0SUPPORT', 'T0EXAMPLE', 1)
+    const place = sessionKey('slack', 'C0SUPPORT', coordinate, a, 'T0EXAMPLE')
+    await s.upsertSession({
+      key: place,
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0SUPPORT',
+      thread: coordinate,
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: 'acp-current',
+      sessionId: 'sid-current',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 2_000
     })
-    expect(await s.assistantItems.get(a, item.id)).toBeUndefined()
-    expect(await activity.write({ agentId: a, operation: 'delete-item', itemId: item.id })).toMatchObject({
-      found: false
+    const under = async (sessionId: string) =>
+      (await read(activity, { agentId: a, operation: 'subsessions', limit: 10, parent: { sessionId } })).subsessions
+    expect(await under('sid-current')).toEqual([
+      expect.objectContaining({ kind: 'follow-up', parentSessionId: 'sid-current' })
+    ])
+    expect(await under('sid-parent')).toEqual([])
+    expect((await s.assistantSubsessions.get(a, item.taskKey))?.parentSessionKey).toBe(place)
+    await createFollowUp(s, off)
+    expect((await read(activity, { agentId: off, operation: 'subsessions', limit: 10 })).subsessions).toEqual([])
+  })
+
+  it('ends a follow-up on the console’s Stop, not only its check', async () => {
+    const { s, a, activity, stopSession } = await setup()
+    const stopFollowUp = vi.fn(async (): Promise<'stopped' | 'ended'> => 'stopped')
+    const withStop = createAssistantActivity({
+      store: () => s,
+      agent: () => ({ assistantMode: { enabled: true } }),
+      now: () => NOW,
+      decideDraft: async () => ({ result: 'not-found', status: null, failure: null }),
+      stopSession,
+      stopFollowUp
     })
+    const item = await createFollowUp(s, a)
+    await s.upsertSession({
+      key: item.taskKey,
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0SUPPORT',
+      thread: item.taskKey.split(':')[2]!,
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: 'acp-follow-up',
+      sessionId: 'sid-follow-up',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    const actor = { userId: 'usr-1', name: 'Grace' }
+    const stop = (on: AssistantActivity) =>
+      on.write({ agentId: a, operation: 'stop-subsession', sessionId: 'sid-follow-up', actor })
+    expect(await stop(withStop)).toEqual({ operation: 'stop-subsession', result: 'stopped' })
+    expect(stopFollowUp).toHaveBeenCalledWith(a, expect.objectContaining({ id: item.id }), actor)
+    stopFollowUp.mockResolvedValueOnce('ended')
+    expect(await stop(withStop)).toEqual({ operation: 'stop-subsession', result: 'not-running' })
+    expect(stopSession).not.toHaveBeenCalled()
+    // A daemon that cannot end a follow-up from the console stops nothing.
+    expect(await stop(activity)).toEqual({ operation: 'stop-subsession', result: 'not-found' })
   })
 })
 
@@ -208,16 +334,30 @@ describe('the Activity view: sub-sessions', () => {
     expect(page).toEqual({
       operation: 'subsessions',
       subsessions: [
-        { sessionId: null, parentSessionId: 'sid-parent', state: 'open', createdAt: '1970-01-01T00:00:03.000Z' },
+        {
+          sessionId: null,
+          parentSessionId: 'sid-parent',
+          state: 'open',
+          createdAt: '1970-01-01T00:00:03.000Z',
+          kind: 'delegated'
+        },
         {
           sessionId: 'sid-running',
           parentSessionId: 'sid-parent',
           state: 'open',
-          createdAt: '1970-01-01T00:00:02.000Z'
+          createdAt: '1970-01-01T00:00:02.000Z',
+          kind: 'delegated'
         },
-        { sessionId: null, parentSessionId: 'sid-parent', state: 'done', createdAt: '1970-01-01T00:00:01.000Z' }
+        {
+          sessionId: null,
+          parentSessionId: 'sid-parent',
+          state: 'done',
+          createdAt: '1970-01-01T00:00:01.000Z',
+          kind: 'delegated'
+        }
       ],
-      truncated: false
+      truncated: false,
+      followUps: true
     })
     expect((await read(activity, { agentId: a, operation: 'subsessions', limit: 2 })).truncated).toBe(true)
   })
@@ -333,7 +473,13 @@ describe('the Activity view: stopping a sub-session', () => {
     expect(await s.assistantSubsessions.claimReport(a, key, '{"text":"ended"}')).toBe(true)
     const page = await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })
     expect(page.subsessions).toEqual([
-      { sessionId: 'sid-child', parentSessionId: 'sid-parent', state: 'failed', createdAt: '1970-01-01T00:00:01.000Z' }
+      {
+        sessionId: 'sid-child',
+        parentSessionId: 'sid-parent',
+        state: 'failed',
+        createdAt: '1970-01-01T00:00:01.000Z',
+        kind: 'delegated'
+      }
     ])
     expect(await stop(activity, a, 'sid-child')).toEqual({ operation: 'stop-subsession', result: 'not-running' })
     expect(stopSession).not.toHaveBeenCalled()
@@ -652,7 +798,7 @@ describe('the Activity view: deciding a draft', () => {
 describe('the Activity view: who it answers', () => {
   it('refuses an agent it does not hold before touching the store', async () => {
     const { s, a, activity } = await setup()
-    const item = await createItem(s, a)
+    const item = await createFollowUp(s, a)
     const refusal = async (run: () => Promise<unknown>) => {
       const err = await run().then(
         () => undefined,
@@ -681,7 +827,7 @@ describe('the Activity view: who it answers', () => {
   it('answers an agent outside assistant mode with its permission requests, sub-sessions and drafts, and no items, patrols or proposals', async () => {
     const { s, off, activity, stopSession } = await setup()
     // What the agent kept from a time it was in assistant mode stays out of view.
-    const item = await createItem(s, off)
+    const item = await createFollowUp(s, off)
     const parentKey = sessionKey('webchat', 'conv-1', 'webchat:conv-1', off)
     await s.upsertSession({
       key: parentKey,
@@ -699,10 +845,7 @@ describe('the Activity view: who it answers', () => {
     const child = (id: string) => sessionKey('webchat', 'conv-1', subsessionCoordinate(id), off)
     const open = { agentId: off, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
     await s.assistantSubsessions.open({ ...open, childSessionKey: child('delegated'), now: 1_000 })
-    await s.assistantSubsessions.openPatrol(
-      { ...open, childSessionKey: child('patrol-1'), now: 2_000 },
-      { startedSince: 0, staleBefore: 0 }
-    )
+    await s.assistantSubsessions.openFollowUp({ ...open, childSessionKey: child('patrol-1'), now: 2_000 })
     await s.upsertSession({
       key: child('delegated'),
       agentId: off,
@@ -762,10 +905,12 @@ describe('the Activity view: who it answers', () => {
           sessionId: 'sid-delegated',
           parentSessionId: 'sid-parent',
           state: 'open',
-          createdAt: '1970-01-01T00:00:01.000Z'
+          createdAt: '1970-01-01T00:00:01.000Z',
+          kind: 'delegated'
         }
       ],
-      truncated: false
+      truncated: false,
+      followUps: true
     })
     expect(
       await read(activity, { agentId: off, operation: 'subsessions', limit: 10, parent: { sessionId: 'sid-parent' } })
@@ -783,9 +928,10 @@ describe('the Activity view: who it answers', () => {
       await read(activity, { agentId: off, operation: 'drafts', limit: 10, conversation: { sessionId: 'sid-parent' } })
     ).toEqual({ operation: 'drafts', drafts: [], truncated: false })
 
-    // Deleting an item is refused; a sub-session stops as any agent's does.
-    await expect(activity.write({ agentId: off, operation: 'delete-item', itemId: item.id })).rejects.toMatchObject({
-      reason: 'assistant-mode-off'
+    // No item is deleted; a sub-session stops as any agent's does.
+    expect(await activity.write({ agentId: off, operation: 'delete-item', itemId: item.id })).toEqual({
+      operation: 'delete-item',
+      found: false
     })
     expect(await s.assistantItems.get(off, item.id)).toBeDefined()
     expect(

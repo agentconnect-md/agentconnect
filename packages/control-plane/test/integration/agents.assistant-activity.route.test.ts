@@ -7,6 +7,7 @@ import {
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  FOLLOW_UP_TASKS_V1_FEATURE,
   SUBSESSION_COORDINATE_PREFIX,
   TASK_LIST_FEATURE,
   type AssistantActivityDraft,
@@ -391,6 +392,95 @@ describe('the assistant Activity routes', () => {
     const asOwner = (await get(app(control), '/subsessions')).json()
     expect(asOwner.subsessions[2]).toMatchObject({ sessionId: dmChild, visible: true, parent: { sessionId: dm } })
     expect(asOwner.subsessions[3]).toMatchObject({ sessionId: null, visible: false, parent: null })
+  })
+
+  it('carries a follow-up from a daemon that keeps them, its details only to those who may view it, and refuses items', async () => {
+    await seedAssistant({ features: [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE] })
+    const member = await makeUser(`activity-member-${randomUUID()}`, 'collaborator')
+    const [team, dm] = [randomUUID(), randomUUID()]
+    await seedSessionMeta(prisma, team, AGENT, { daemonId: DAEMON, channel: 'C0SUPPORT' })
+    await seedSessionMeta(prisma, dm, AGENT, {
+      daemonId: DAEMON,
+      visibility: 'private',
+      ownerIdentity: `user:${DEFAULT_OWNER_ID}`
+    })
+    const control = new ActivitySpy()
+    const CHECKS = [{ at: '2026-10-09T09:00:00.000Z', observation: 'The build is still running.', reported: false }]
+    const followUp = (title: string) => ({
+      title,
+      doneWhen: 'The release is published',
+      status: 'waiting' as const,
+      nextCheck: '2026-10-10T09:00:00.000Z',
+      recentChecks: CHECKS
+    })
+    control.subsessions = [
+      {
+        sessionId: null,
+        parentSessionId: team,
+        state: 'open',
+        createdAt: '2026-10-09T08:00:00.000Z',
+        kind: 'follow-up',
+        followUp: followUp('Watch the release')
+      },
+      {
+        sessionId: null,
+        parentSessionId: dm,
+        state: 'open',
+        createdAt: '2026-10-09T07:00:00.000Z',
+        kind: 'follow-up',
+        followUp: followUp('Renew the certificate')
+      },
+      {
+        sessionId: null,
+        parentSessionId: team,
+        state: 'done',
+        createdAt: '2026-10-09T06:00:00.000Z',
+        kind: 'delegated'
+      }
+    ]
+
+    const asMember = (await get(app(control, member), '/subsessions')).json()
+    expect(asMember.followUps).toBe(true)
+    expect(asMember.subsessions).toEqual([
+      expect.objectContaining({
+        title: 'Watch the release',
+        state: 'open',
+        visible: true,
+        canStop: false,
+        kind: 'follow-up',
+        followUp: {
+          status: 'waiting',
+          nextCheck: '2026-10-10T09:00:00.000Z',
+          doneWhen: 'The release is published',
+          recentChecks: CHECKS
+        }
+      }),
+      // Its conversation is not the member's to see: its state and next check only.
+      expect.objectContaining({
+        title: null,
+        visible: false,
+        kind: 'follow-up',
+        followUp: { status: 'waiting', nextCheck: '2026-10-10T09:00:00.000Z', doneWhen: null, recentChecks: [] }
+      }),
+      expect.objectContaining({ state: 'done', kind: 'delegated' })
+    ])
+    expect(asMember.subsessions[2]).not.toHaveProperty('followUp')
+    expect((await get(app(control), '/subsessions')).json().subsessions[1]).toMatchObject({
+      title: 'Renew the certificate',
+      visible: true
+    })
+
+    // Items became follow-ups: their routes are refused before any daemon I/O.
+    const reads = control.reads.length
+    const running = app(control)
+    for (const res of [
+      await get(running, '/items'),
+      await get(running, '/items/item-1'),
+      await del(running, '/items/item-1')
+    ])
+      expect(res.json()).toMatchObject({ statusCode: 409, code: 'FOLLOW_UP_TASKS' })
+    expect(control.reads).toHaveLength(reads)
+    expect(control.writes).toEqual([])
   })
 
   it('lists sub-sessions’ permission requests for editors, naming each sub-session and conversation only to those who may view it', async () => {

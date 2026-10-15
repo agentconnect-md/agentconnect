@@ -1001,8 +1001,14 @@ export class SessionManager {
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
       reminded = true
     }
-    const place = { platform: msg.platform, channel: msg.channel, thread, integrationId }
-    // Assistant mode's standing summary rides the same points: first turn, restart, compaction, every 12th turn (§5.4 ②).
+    const place = {
+      platform: msg.platform,
+      channel: msg.channel,
+      transportScope: msg.transportScope ?? null,
+      thread,
+      integrationId
+    }
+    // The follow-ups this place may see ride the same points: first turn, restart, compaction, every 12th turn (§5.12).
     if (opening || reminded) {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
       if (summary) promptPrelude.push({ type: 'text', text: summary })

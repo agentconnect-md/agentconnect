@@ -3,6 +3,7 @@ import { NOBODY, type ConsoleVerdict, type ReadAsker, type TurnAskers } from '..
 import { PlaceMembers, turnAskers, type TurnMessage } from '../src/assistant/place-members.js'
 import type { PostInterception } from '../src/assistant/drafts.js'
 import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
 import type { PlaceSnapshotRow, PlaceStore } from '../src/mcp/ops/place-gate.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { PlatformDocumentReach } from '../src/platforms/contract.js'
@@ -579,13 +580,25 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
     expect(draftPost).not.toHaveBeenCalled()
   })
 
-  it('lets a DM that read a private channel post elsewhere, change items and send to another agent', async () => {
+  it('lets a DM that read a private channel post elsewhere, take a follow-up and send to another agent', async () => {
     store = await openTestStore()
     const ledger = store.assistantItems
     const { deps: base, gw, draftPost } = harness({ assistant: true })
     const deps: OpsDeps = {
       ...base,
-      assistantItems: { ledgerFor: () => ledger, askerFor: async () => `slack:T1:${P}` }
+      assistantItems: {
+        ledgerFor: () => ledger,
+        askerFor: async () => `slack:T1:${P}`,
+        take: async (ctx, input) =>
+          await ledger.create({
+            agentId: ctx.agentId,
+            title: input.title,
+            doneWhen: input.doneWhen,
+            origin: { platform: ctx.platform, channel: ctx.channel, transportScope: ctx.transportScope ?? null },
+            taskKey: 'slack:D_P:subsession:patrol-1:agent',
+            asker: input.asker
+          })
+      }
     }
     await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
     expect(gw.getChannelHistory).toHaveBeenCalledWith('C_PRIV', {})
@@ -601,16 +614,18 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
       { action: 'postMessage', channel: 'C_PRIV', message: 'for leadership' },
       deps
     )
-    const taken = (await executeTool(inDmOfP, 'takeItem', { title: 'Ship it', doneWhen: 'shipped' }, deps)) as {
-      item: { id: string; version: number }
-    }
-    await executeTool(inDmOfP, 'updateItem', { itemId: taken.item.id, version: taken.item.version, summary: 'x' }, deps)
+    const taken = (await executeTool(
+      { ...inDmOfP, tools: [...inDmOfP.tools, FOLLOW_UP_TOOL] },
+      'followUp',
+      { title: 'Ship it', doneWhen: 'shipped' },
+      deps
+    )) as { taskId: string }
     await executeTool(inDmOfP, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'look into it' }, deps)
     await executeTool(inDmOfP, 'sendMessage', { action: 'delegateTask', message: 'work on it' }, deps)
     expect(gw.postMessage).toHaveBeenCalledTimes(2)
     expect(deps.messageAgent).toHaveBeenCalledTimes(2)
     expect(draftPost).not.toHaveBeenCalled()
-    expect((await ledger.get(AGENT, taken.item.id))?.summary).toBe('x')
+    expect((await ledger.byTaskKey(AGENT, taken.taskId))?.title).toBe('Ship it')
   })
 })
 

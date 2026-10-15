@@ -154,20 +154,20 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
       d.subsessionOpeners.clear()
       expect(await d.readAskersFor(childCtx)).toEqual(NOBODY)
 
-      // A patrol and a task read as the person recorded as having asked for their item.
+      // A follow-up's check and an approved proposal read as the person who confirmed the follow-up.
       const tenant = await d.tenantScopeForIntegration(d.integrationConfigById(INT))
       const origin = { platform: 'slack', channel: DM, transportScope: scope }
       const item = await d.store.assistantItems.create({
         agentId: AGENT,
         title: 'ship the release notes',
         origin,
-        followers: [{ identity: `slack:${tenant}:U0ALICE`, place: origin }]
+        taskKey: sessionKey('slack', DM, 'subsession:patrol-r1', AGENT, scope),
+        asker: `slack:${tenant}:U0ALICE`
       })
       const agentMsg = { ...msg, source: 'agent', sender: { id: AGENT, isBot: true } }
       for (const thread of ['subsession:patrol-r1', 'subsession:task-r1']) {
         d.activeGateEntries.set(sessionKey('slack', DM, thread, AGENT, scope), { msg: agentMsg, integrationId: INT })
       }
-      vi.spyOn(d.patrols, 'itemFor').mockResolvedValue(item.id)
       vi.spyOn(d.store.assistantDrafts, 'taskBySubsession').mockResolvedValue({ proposal: { itemId: item.id } })
       expect(await d.readAskersFor({ ...ctx, thread: 'subsession:patrol-r1' })).toEqual({
         people: [ALICE],
@@ -177,7 +177,14 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
         people: [ALICE],
         nobody: false
       })
-      vi.spyOn(d.patrols, 'itemFor').mockResolvedValue(undefined)
+      // A check a message started also reads as the people behind that message.
+      const BOB = { kind: 'member', platform: 'slack', integrationId: INT, userId: 'U0BOB' }
+      vi.spyOn(d.patrols, 'askersFor').mockResolvedValue({ item, extra: { people: [BOB], nobody: false } })
+      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:patrol-r1' })).toEqual({
+        people: [ALICE, BOB],
+        nobody: false
+      })
+      vi.spyOn(d.patrols, 'askersFor').mockResolvedValue({ extra: { people: [], nobody: false } })
       expect(await d.readAskersFor({ ...ctx, thread: 'subsession:patrol-r1' })).toEqual(NOBODY)
 
       // A schedule's run reads as the console user its row records, and as nobody without one.

@@ -12,12 +12,7 @@ import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { SESSION_MESSAGE_HEADER } from '../src/collab/session-message.js'
-import {
-  isSubsessionCoordinate,
-  patrolCoordinate,
-  subsessionCoordinate,
-  taskCoordinate
-} from '../src/session/subsession-coordinate.js'
+import { isSubsessionCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -220,23 +215,12 @@ const continueHint = (key: string) =>
 const stoppedReport = (key: string, why: string) =>
   `[task ended] Task ${key} stopped before finishing (${why}). Anything it sent before this is all it reported. ${continueHint(key)}\n\n${REPORT_ANSWER_LANGUAGE}`
 
-describe('the end report the daemon sends for a patrol or approved proposal', () => {
-  it('names a patrol a patrol, never a task or a sub-session', () => {
-    const thread = patrolCoordinate('p-1')
-    expect(subsessionEndReport('k-1', { outcome: 'completed' }, thread)).toBe(
-      '[patrol ended] Patrol k-1 ended without reporting back. It sent no result.'
-    )
-    expect(subsessionEndReport('k-1', { outcome: 'failed' }, thread)).toBe(
-      '[patrol ended] Patrol k-1 stopped before finishing (error). It sent no result.'
-    )
-  })
-
+describe('the end report the daemon sends for an approved proposal', () => {
   it('names an approved proposal an approved proposal', () => {
-    const thread = taskCoordinate('t-1')
-    expect(subsessionEndReport('k-2', { outcome: 'completed' }, thread)).toBe(
+    expect(subsessionEndReport('k-2', { outcome: 'completed' })).toBe(
       '[approved proposal ended] Approved proposal k-2 ended without reporting back. It sent no result; delegate a task if the work is still needed.'
     )
-    expect(subsessionEndReport('k-2', { outcome: 'interrupted', reason: 'stop' }, thread)).toBe(
+    expect(subsessionEndReport('k-2', { outcome: 'interrupted', reason: 'stop' })).toBe(
       '[approved proposal ended] Approved proposal k-2 stopped before finishing (stop). It sent no result; delegate a task if the work is still needed.'
     )
   })

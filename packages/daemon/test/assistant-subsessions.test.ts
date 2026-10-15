@@ -199,7 +199,7 @@ describe('the assistant sub-session index', () => {
     const owner = { sessionId: 'sid-parent-1', key: row(a, 'x').parentSessionKey }
     await index.open({ ...row(a, 'done'), now: 1_000 })
     await index.open({ ...row(a, 'task-approved'), now: 2_000 })
-    await index.openPatrol({ ...row(a, 'patrol-1'), now: 3_000 }, { startedSince: 0, staleBefore: 0 })
+    await index.openFollowUp({ ...row(a, 'patrol-1'), now: 3_000 })
     await index.open({ ...row(a, 'running'), now: 500 })
     await index.finish(a, childKey(a, 'done'), 'done')
     await index.finish(a, childKey(a, 'patrol-1'), 'failed')
@@ -218,6 +218,12 @@ describe('the assistant sub-session index', () => {
       childKey(a, 'done')
     ])
     expect(all.rows.find((r) => r.childSessionKey === childKey(a, 'patrol-1'))).toMatchObject({ kind: 'patrol' })
+    // A session that does not own its place's follow-ups lists none of them.
+    const without = await index.listForOwner(a, owner, 10, { followUps: false })
+    expect([keys(without.rows), without.total]).toEqual([
+      [childKey(a, 'task-approved'), childKey(a, 'running'), childKey(a, 'done')],
+      3
+    ])
     const capped = await index.listForOwner(a, owner, 1)
     expect([keys(capped.rows), capped.total]).toEqual([[childKey(a, 'task-approved')], 4])
     expect(await index.listForOwner(a, { ...owner, sessionId: 'sid-unknown' }, 10)).toEqual({ rows: [], total: 0 })
@@ -263,7 +269,8 @@ describe('the failure report a sub-session index row holds (assistant-mode.md §
     const index = s.assistantSubsessions
     await index.open({ ...row(a, '1'), now: 2_000 })
     for (const id of ['2', '3', '4']) await index.open(row(a, id))
-    await index.openPatrol(row(a, 'patrol-5'), { startedSince: 0, staleBefore: 0 })
+    await index.openFollowUp(row(a, 'patrol-5'))
+    await index.checking(a, childKey(a, 'patrol-5'))
     await index.open(row(b, '6'))
     await index.finish(a, childKey(a, '3'), 'done')
     const kept = `inbox-${a}`
@@ -446,7 +453,7 @@ describe.skipIf(!usingPostgresStore())('the v43 → v44 failure report columns o
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {
   it('adds the table to a v37 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(52)
+    expect(SCHEMA_VERSION).toBe(53)
     const path = tempStorePath('ac-assistant-v37-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
@@ -492,7 +499,8 @@ describe.skipIf(!usingPostgresStore())('the v37 → v38 sub-session index on Pos
       const item = await first.assistantItems.create({
         agentId: a,
         title: 'Kept across the upgrade',
-        origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null }
+        origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
+        taskKey: 'slack:C0GENERAL:subsession:patrol-1:kept'
       })
       await first.close()
 

@@ -15,6 +15,9 @@ export const ASSISTANT_SUBSESSION_PANEL_FEATURE = 'assistant-subsession-panel-v1
 /** Daemon serves a `drafts` read narrowed to one webchat conversation's proposals and a `decide-draft` bound to one; an older daemon would ignore both and answer for every draft. */
 export const ASSISTANT_CONVERSATION_PROPOSALS_FEATURE = 'assistant-conversation-proposals-v1'
 
+/** Daemon keeps follow-ups in place of items (assistant-mode.md §5.12): its `subsessions` read carries them, and it answers no items. */
+export const FOLLOW_UP_TASKS_V1_FEATURE = 'follow-up-tasks-v1'
+
 /** JSON bytes one read result may take, leaving envelope headroom below the 256 KiB wire cap; a list stops short and says so. */
 export const ASSISTANT_ACTIVITY_RESULT_BYTES = 192 * 1024
 
@@ -26,6 +29,8 @@ export const ASSISTANT_ACTIVITY_PERMISSIONS_MAX = 50
 export const ASSISTANT_ACTIVITY_PLACES_MAX = 20
 /** Newest observations carried by one item read. */
 export const ASSISTANT_ACTIVITY_OBSERVATIONS_MAX = 10
+/** Newest checks carried per follow-up. */
+export const ASSISTANT_ACTIVITY_CHECKS_MAX = 5
 
 /** Why the daemon refused a request, carried on a `BAD_PAYLOAD` error frame's `details.reason`; `bad-cursor` is a page cursor it did not mint. */
 export const AssistantActivityErrorReason = z.enum(['unknown-agent', 'assistant-mode-off', 'bad-cursor'])
@@ -76,13 +81,45 @@ export type AssistantActivitySubsessionState = z.infer<typeof AssistantActivityS
 /** Opaque to everyone but the daemon that minted it: where the next page of one conversation's background work starts. */
 export const AssistantSubsessionCursor = z.string().min(1).max(1_024)
 
+/** Which kind of task a row is; an older daemon names none. */
+export const AssistantActivityTaskKind = z.enum(['delegated', 'follow-up', 'approved-proposal'])
+export type AssistantActivityTaskKind = z.infer<typeof AssistantActivityTaskKind>
+
+/** One finished check of a follow-up: when it started, what it saw (or why it failed), and whether its report reached the conversation. */
+export const AssistantActivityCheck = z.object({
+  at: time,
+  observation: z.string().max(2_000),
+  reported: z.boolean()
+})
+export type AssistantActivityCheck = z.infer<typeof AssistantActivityCheck>
+
+/** `waiting` between checks, `checking` while one runs, `paused` after five failed checks in a row until it is messaged, then `done` or `stopped`. */
+export const AssistantActivityFollowUpStatus = z.enum(['waiting', 'checking', 'paused', 'done', 'stopped'])
+export type AssistantActivityFollowUpStatus = z.infer<typeof AssistantActivityFollowUpStatus>
+
+/** A follow-up's own fields (assistant-mode.md §5.12); its row's `state` is `open` until it is done or stopped. */
+export const AssistantActivityFollowUp = z.object({
+  /** Its label; shown only where the row's conversation may be viewed. */
+  title: z.string().max(300),
+  doneWhen: z.string().max(2_000).nullable(),
+  status: AssistantActivityFollowUpStatus,
+  /** The next scheduled check; null when it waits until it is messaged, or has ended. */
+  nextCheck: time.nullable(),
+  /** Newest first. */
+  recentChecks: z.array(AssistantActivityCheck).max(ASSISTANT_ACTIVITY_CHECKS_MAX)
+})
+export type AssistantActivityFollowUp = z.infer<typeof AssistantActivityFollowUp>
+
 export const AssistantActivitySubsession = z.object({
   /** The background work's outward session id; null until its session exists. */
   sessionId: ref.nullable(),
-  /** The conversation that opened it, by its session's outward id. */
+  /** The conversation that opened it, by its session's outward id; for a follow-up, its place's current long session. */
   parentSessionId: ref,
   state: AssistantActivitySubsessionState,
-  createdAt: time
+  createdAt: time,
+  kind: AssistantActivityTaskKind.optional(),
+  /** Present on a follow-up, from a daemon with `follow-up-tasks-v1`. */
+  followUp: AssistantActivityFollowUp.optional()
 })
 export type AssistantActivitySubsession = z.infer<typeof AssistantActivitySubsession>
 
@@ -93,17 +130,17 @@ export const ASSISTANT_PROPOSAL_WHY_MAX = 2_000
 /** The longest task a proposal asks to run. */
 export const ASSISTANT_PROPOSAL_TASK_MAX = 8_000
 
-/** What a patrol proposes to do (assistant-mode.md §5.10): the card's sentence, its reason and the item it came from; the task is the draft's `text`. */
+/** What a follow-up's check proposes to do (assistant-mode.md §5.10): the card's sentence, its reason and its follow-up, by `itemId`; the task is the draft's `text`. */
 export const AssistantActivityProposal = z.object({
   sentence: z.string().min(1).max(ASSISTANT_PROPOSAL_SENTENCE_MAX),
   why: z.string().max(ASSISTANT_PROPOSAL_WHY_MAX),
   itemId: ref,
-  /** The item's title as the daemon last saw it; null once the item is gone. */
+  /** The follow-up's title as the daemon last saw it; null once it is gone. */
   itemTitle: z.string().max(300).nullable()
 })
 export type AssistantActivityProposal = z.infer<typeof AssistantActivityProposal>
 
-/** A draft awaiting approval: where it would post, the exact text, who approves, and when it lapses; a `task` is a proposal, run in the item's place once approved. */
+/** A draft awaiting approval: where it would post, the exact text, who approves, and when it lapses; a `task` is a proposal, run in its follow-up's place once approved. */
 export const AssistantActivityDraft = z.object({
   id: ref,
   kind: z.enum(['reply', 'elsewhere', 'task']),
@@ -203,7 +240,9 @@ export const AssistantActivityReadResult = z.discriminatedUnion('operation', [
     subsessions: z.array(AssistantActivitySubsession).max(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX),
     truncated: z.boolean(),
     /** Where the next page of a `parent` read starts; null on its last page and on every unnarrowed read. */
-    nextCursor: AssistantSubsessionCursor.nullable().optional()
+    nextCursor: AssistantSubsessionCursor.nullable().optional(),
+    /** True from a daemon with `follow-up-tasks-v1`: follow-ups are rows here, and it keeps no items. */
+    followUps: z.boolean().optional()
   }),
   z.object({
     operation: z.literal('drafts'),

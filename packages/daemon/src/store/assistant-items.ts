@@ -1,4 +1,4 @@
-// The assistant item ledger (assistant-mode.md §5.4 ①): an agent's tracked items, in the daemon store, partitioned by agent.
+// An agent's follow-ups (assistant-mode.md §5.12), kept in the item ledger's tables, in the daemon store, partitioned by agent.
 import { randomUUID } from 'node:crypto'
 import type { SessionRecord } from './local-store.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
@@ -8,12 +8,6 @@ export type AssistantItemStatus = (typeof ASSISTANT_ITEM_STATUSES)[number]
 
 /** A place (§5.2) in the coordinate a session row wears; an absent transport scope reads back as null. */
 export type AssistantPlace = Pick<SessionRecord, 'platform' | 'channel' | 'transportScope'>
-
-/** `identity` is `'<platform>:<scope>:<uid>'` or `'user:<id>'`; followers are never merged across platforms (§5.4). */
-export interface AssistantFollower {
-  identity: string
-  place: AssistantPlace
-}
 
 export interface AssistantObservation {
   /** The item's observation version this entry was appended at — what the outbox's dedup key names (§5.7). */
@@ -30,16 +24,22 @@ export interface AssistantItem {
   doneWhen: string | null
   nextCheck: number | null
   status: AssistantItemStatus
-  followers: AssistantFollower[]
+  /** The place it belongs to, whose current long session owns it. */
   origin: AssistantPlace
+  /** Its own session's key: the `taskId`, whose context every check resumes. */
+  taskKey: string
+  /** Who confirmed it, as `'<platform>:<scope>:<uid>'` or `'user:<id>'`; null when unknown. */
+  asker: string | null
+  /** Its place is a public channel, so every internal place lists it (§5.12). */
+  shared: boolean
   summary: string
   /** The newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT} observations, oldest first. */
   observations: AssistantObservation[]
-  /** Bumped by every append; independent of `version`, so a patrol's append never fails a transition's CAS. */
+  /** Bumped by every append, independently of `version`; a check that raised it recorded what it saw. */
   observationVersion: number
   subsessions: string[]
   proposals: string[]
-  /** The CAS counter `transition` checks; only transitions bump it. */
+  /** Bumped by every schedule change; a proposal is bound to the version it was made at (§5.10). */
   version: number
   createdAt: number
   updatedAt: number
@@ -55,39 +55,31 @@ export interface AssistantItemCreate {
   nextCheck?: number
   status?: AssistantItemStatus
   origin: AssistantPlace
-  followers?: AssistantFollower[]
+  taskKey: string
+  asker?: string
+  shared?: boolean
   summary?: string
   now?: number
 }
 
 export interface AssistantItemFilter {
   status?: AssistantItemStatus | AssistantItemStatus[]
-  /** Items this identity follows, from any place. */
-  followerIdentity?: string
-  /** Items followed from this place. */
-  place?: AssistantPlace
   /** Items born in this place. */
   origin?: AssistantPlace
+  /** Items this place may see listed: its own, and every shared one. */
+  visibleFrom?: AssistantPlace
   limit?: number
 }
 
-/** The fields a transition may set; `null` clears an optional one. */
-export interface AssistantItemPatch {
-  status?: AssistantItemStatus
-  nextCheck?: number | null
-  title?: string
-  doneWhen?: string | null
-  summary?: string
+/** A follow-up's schedule after a check or a stop: open with or without a next check, or ended. */
+export interface AssistantItemSchedule {
+  status: AssistantItemStatus
+  nextCheck: number | null
 }
-
-export type AssistantTransitionResult =
-  | { ok: true; item: AssistantItem }
-  | { ok: false; reason: 'conflict'; current: AssistantItem }
-  | { ok: false; reason: 'not_found' }
 
 export type AssistantItemLinkKind = 'subsession' | 'proposal'
 
-/** History kept per item: ~7 weeks of a daily patrol, while an item read stays one bounded query (≤ 50 × 2,000 chars). */
+/** History kept per follow-up: ~7 weeks of daily checks, while a read stays one bounded query (≤ 50 × 2,000 chars). */
 export const ASSISTANT_ITEM_OBSERVATIONS_KEPT = 50
 export const ASSISTANT_ITEM_LIST_DEFAULT = 50
 export const ASSISTANT_ITEM_LIST_MAX = 200
@@ -98,10 +90,11 @@ export const ASSISTANT_ITEM_LIMITS = {
   observation: 2_000,
   identity: 512,
   author: 512,
-  refId: 256
+  refId: 256,
+  taskKey: 1_024
 } as const
 
-// Normalized children, not JSON columns: each is written piecewise and concurrently, and two of them are list filters.
+// Normalized children, not JSON columns: each is written piecewise and concurrently.
 export const ASSISTANT_ITEM_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_item (
         id TEXT PRIMARY KEY,
@@ -113,6 +106,9 @@ export const ASSISTANT_ITEM_SCHEMA = `
         originPlatform TEXT NOT NULL,
         originChannel TEXT NOT NULL,
         originTransportScope TEXT NOT NULL DEFAULT '',
+        taskKey TEXT NOT NULL DEFAULT '',
+        asker TEXT,
+        shared INTEGER NOT NULL DEFAULT 0,
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -122,19 +118,7 @@ export const ASSISTANT_ITEM_SCHEMA = `
       CREATE INDEX IF NOT EXISTS assistant_item_by_agent ON assistant_item (agentId, status, updatedAt);
       CREATE INDEX IF NOT EXISTS assistant_item_by_origin
         ON assistant_item (agentId, originPlatform, originChannel, originTransportScope);
-      CREATE TABLE IF NOT EXISTS assistant_item_follower (
-        itemId TEXT NOT NULL,
-        agentId TEXT NOT NULL,
-        identity TEXT NOT NULL,
-        platform TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        transportScope TEXT NOT NULL DEFAULT '',
-        addedAt INTEGER NOT NULL,
-        PRIMARY KEY (itemId, identity, platform, channel, transportScope)
-      );
-      CREATE INDEX IF NOT EXISTS assistant_item_follower_identity ON assistant_item_follower (agentId, identity);
-      CREATE INDEX IF NOT EXISTS assistant_item_follower_place
-        ON assistant_item_follower (agentId, platform, channel, transportScope);
+      CREATE INDEX IF NOT EXISTS assistant_item_by_task ON assistant_item (agentId, taskKey);
       CREATE TABLE IF NOT EXISTS assistant_item_observation (
         itemId TEXT NOT NULL,
         agentId TEXT NOT NULL,
@@ -170,19 +154,14 @@ interface ItemRow {
   originPlatform: string
   originChannel: string
   originTransportScope: string
+  taskKey: string
+  asker: string | null
+  shared: number
   summary: string
   observationVersion: number
   version: number
   createdAt: number
   updatedAt: number
-}
-
-interface FollowerRow {
-  itemId: string
-  identity: string
-  platform: string
-  channel: string
-  transportScope: string
 }
 
 interface LinkRow {
@@ -208,6 +187,9 @@ const ITEM_COLUMNS = [
   'originPlatform',
   'originChannel',
   'originTransportScope',
+  'taskKey',
+  'asker',
+  'shared',
   'summary',
   'observationVersion',
   'version',
@@ -225,34 +207,34 @@ export class AssistantItemLedger {
     checkText('title', input.title, ASSISTANT_ITEM_LIMITS.title, true)
     checkText('doneWhen', input.doneWhen, ASSISTANT_ITEM_LIMITS.doneWhen)
     checkText('summary', input.summary, ASSISTANT_ITEM_LIMITS.summary)
+    checkText('taskKey', input.taskKey, ASSISTANT_ITEM_LIMITS.taskKey, true)
+    if (input.asker !== undefined) checkAsker(input.asker)
     checkStatus(status)
     checkNextCheck(input.nextCheck)
     checkPlace(input.origin)
-    const followers = dedupeFollowers(input.followers ?? [])
-    for (const follower of followers) checkFollower(follower)
     const id = randomUUID()
-    await this.db.transaction(async (tx) => {
-      await tx.query(
-        `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
-           originTransportScope, summary, observationVersion, version, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
-        [
-          id,
-          input.agentId,
-          input.title,
-          input.doneWhen ?? null,
-          input.nextCheck ?? null,
-          status,
-          input.origin.platform,
-          input.origin.channel,
-          scopeOf(input.origin),
-          input.summary ?? '',
-          now,
-          now
-        ]
-      )
-      for (const follower of followers) await insertFollower(tx, input.agentId, id, follower, now)
-    })
+    await this.db.query(
+      `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
+         originTransportScope, taskKey, asker, shared, summary, observationVersion, version, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+      [
+        id,
+        input.agentId,
+        input.title,
+        input.doneWhen ?? null,
+        input.nextCheck ?? null,
+        status,
+        input.origin.platform,
+        input.origin.channel,
+        scopeOf(input.origin),
+        input.taskKey,
+        input.asker ?? null,
+        input.shared === true ? 1 : 0,
+        input.summary ?? '',
+        now,
+        now
+      ]
+    )
     return (await this.get(input.agentId, id))!
   }
 
@@ -260,24 +242,19 @@ export class AssistantItemLedger {
     const row = (
       await this.db.query(`SELECT ${itemColumns()} FROM assistant_item WHERE agentId = ? AND id = ?`, [agentId, itemId])
     ).rows[0] as ItemRow | undefined
-    if (!row) return undefined
-    const [overview] = await this.withChildren(agentId, [row])
-    const observations = (
-      await this.db.query(
-        `SELECT observationVersion, text, author, observedAt FROM assistant_item_observation
-         WHERE agentId = ? AND itemId = ? ORDER BY observationVersion`,
-        [agentId, itemId]
-      )
-    ).rows as ObservationRow[]
-    return {
-      ...overview!,
-      observations: observations.map((o) => ({
-        version: o.observationVersion,
-        text: o.text,
-        author: o.author,
-        at: o.observedAt
-      }))
-    }
+    return row ? await this.withObservations(agentId, row) : undefined
+  }
+
+  /** The follow-up whose own session this is, by its `taskId`. */
+  async byTaskKey(agentId: string, taskKey: string): Promise<AssistantItem | undefined> {
+    if (taskKey === '') return undefined
+    const row = (
+      await this.db.query(`SELECT ${itemColumns()} FROM assistant_item WHERE agentId = ? AND taskKey = ?`, [
+        agentId,
+        taskKey
+      ])
+    ).rows[0] as ItemRow | undefined
+    return row ? await this.withObservations(agentId, row) : undefined
   }
 
   /** The agent's items, most recently updated first. */
@@ -290,20 +267,13 @@ export class AssistantItemLedger {
       where.push(`i.status IN (${statuses.map(() => '?').join(', ')})`)
       params.push(...statuses)
     }
-    if (filter.followerIdentity !== undefined) {
-      where.push(
-        'EXISTS (SELECT 1 FROM assistant_item_follower f WHERE f.agentId = i.agentId AND f.itemId = i.id AND f.identity = ?)'
-      )
-      params.push(filter.followerIdentity)
-    }
-    if (filter.place !== undefined) {
-      where.push(`EXISTS (SELECT 1 FROM assistant_item_follower p WHERE p.agentId = i.agentId AND p.itemId = i.id
-        AND p.platform = ? AND p.channel = ? AND p.transportScope = ?)`)
-      params.push(filter.place.platform, filter.place.channel, scopeOf(filter.place))
-    }
     if (filter.origin !== undefined) {
       where.push('i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?')
       params.push(filter.origin.platform, filter.origin.channel, scopeOf(filter.origin))
+    }
+    if (filter.visibleFrom !== undefined) {
+      where.push('(i.shared = 1 OR (i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?))')
+      params.push(filter.visibleFrom.platform, filter.visibleFrom.channel, scopeOf(filter.visibleFrom))
     }
     const limit = Math.min(
       Math.max(1, Math.floor(filter.limit ?? ASSISTANT_ITEM_LIST_DEFAULT)),
@@ -317,23 +287,7 @@ export class AssistantItemLedger {
         params
       )
     ).rows as ItemRow[]
-    return await this.withChildren(agentId, rows)
-  }
-
-  /** Idempotent on (identity, place); undefined when the item is gone. Under the item's row lock, so it cannot race a delete. */
-  async attachFollower(
-    agentId: string,
-    itemId: string,
-    follower: AssistantFollower,
-    now = Date.now()
-  ): Promise<{ added: boolean } | undefined> {
-    checkFollower(follower)
-    return await this.db.transaction(async (tx) => {
-      if (!(await lockItem(tx, agentId, itemId))) return undefined
-      const added = await insertFollower(tx, agentId, itemId, follower, now)
-      if (added) await touchItem(tx, agentId, itemId, now)
-      return { added }
-    })
+    return await this.withLinks(agentId, rows)
   }
 
   /** Field-level append: no version check, keeps the newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT}. */
@@ -369,50 +323,27 @@ export class AssistantItemLedger {
     })
   }
 
-  /** CAS on `version`: a stale writer gets the current item back instead of an exception. */
-  async transition(
-    agentId: string,
-    itemId: string,
-    expectedVersion: number,
-    patch: AssistantItemPatch,
-    now = Date.now()
-  ): Promise<AssistantTransitionResult> {
-    const sets: string[] = []
-    const params: unknown[] = []
-    const set = (column: string, value: unknown): void => {
-      sets.push(`${column} = ?`)
-      params.push(value)
-    }
-    if (patch.status !== undefined) {
-      checkStatus(patch.status)
-      set('status', patch.status)
-    }
-    if (patch.nextCheck !== undefined) {
-      checkNextCheck(patch.nextCheck ?? undefined)
-      set('nextCheck', patch.nextCheck)
-    }
-    if (patch.title !== undefined) {
-      checkText('title', patch.title, ASSISTANT_ITEM_LIMITS.title, true)
-      set('title', patch.title)
-    }
-    if (patch.doneWhen !== undefined) {
-      checkText('doneWhen', patch.doneWhen ?? undefined, ASSISTANT_ITEM_LIMITS.doneWhen)
-      set('doneWhen', patch.doneWhen)
-    }
-    if (patch.summary !== undefined) {
-      checkText('summary', patch.summary, ASSISTANT_ITEM_LIMITS.summary)
-      set('summary', patch.summary)
-    }
-    if (sets.length === 0) throw new Error('assistant item transition needs at least one field')
+  /** Set an open follow-up's schedule or end it, with no version handshake; false once it has ended. */
+  async schedule(agentId: string, itemId: string, next: AssistantItemSchedule, now = Date.now()): Promise<boolean> {
+    checkStatus(next.status)
+    checkNextCheck(next.nextCheck ?? undefined)
     const { changes } = await this.db.query(
-      `UPDATE assistant_item SET ${sets.join(', ')}, version = version + 1, updatedAt = ?
-       WHERE agentId = ? AND id = ? AND version = ?`,
-      [...params, now, agentId, itemId, expectedVersion]
+      `UPDATE assistant_item SET status = ?, nextCheck = ?, version = version + 1, updatedAt = ?
+       WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting')`,
+      [next.status, next.nextCheck, now, agentId, itemId]
     )
-    const item = await this.get(agentId, itemId)
-    if (!item) return { ok: false, reason: 'not_found' }
-    if (changes === 0) return { ok: false, reason: 'conflict', current: item }
-    return { ok: true, item }
+    return changes > 0
+  }
+
+  /** Whether every internal place lists it, as its place's audience was last judged. */
+  async setShared(agentId: string, itemId: string, shared: boolean): Promise<void> {
+    const value = shared ? 1 : 0
+    await this.db.query('UPDATE assistant_item SET shared = ? WHERE agentId = ? AND id = ? AND shared <> ?', [
+      value,
+      agentId,
+      itemId,
+      value
+    ])
   }
 
   /** True when the link was added; false when it existed or the item is gone. */
@@ -454,16 +385,6 @@ export class AssistantItemLedger {
     })
   }
 
-  /** An editor removing one item; the item row goes first, so a concurrent child write waits on it and then finds nothing. */
-  async delete(agentId: string, itemId: string): Promise<boolean> {
-    return await this.db.transaction(async (tx) => {
-      const { changes } = await tx.query('DELETE FROM assistant_item WHERE agentId = ? AND id = ?', [agentId, itemId])
-      for (const table of CHILD_TABLES)
-        await tx.query(`DELETE FROM ${table} WHERE agentId = ? AND itemId = ?`, [agentId, itemId])
-      return changes > 0
-    })
-  }
-
   /** Every item of a deleted agent; returns how many items went. */
   async deleteForAgent(agentId: string): Promise<number> {
     return await this.db.transaction(async (tx) => {
@@ -473,17 +394,30 @@ export class AssistantItemLedger {
     })
   }
 
-  private async withChildren(agentId: string, rows: ItemRow[]): Promise<AssistantItemOverview[]> {
+  private async withObservations(agentId: string, row: ItemRow): Promise<AssistantItem> {
+    const [overview] = await this.withLinks(agentId, [row])
+    const observations = (
+      await this.db.query(
+        `SELECT observationVersion, text, author, observedAt FROM assistant_item_observation
+         WHERE agentId = ? AND itemId = ? ORDER BY observationVersion`,
+        [agentId, row.id]
+      )
+    ).rows as ObservationRow[]
+    return {
+      ...overview!,
+      observations: observations.map((o) => ({
+        version: Number(o.observationVersion),
+        text: o.text,
+        author: o.author,
+        at: Number(o.observedAt)
+      }))
+    }
+  }
+
+  private async withLinks(agentId: string, rows: ItemRow[]): Promise<AssistantItemOverview[]> {
     if (rows.length === 0) return []
     const ids = rows.map((row) => row.id)
     const marks = ids.map(() => '?').join(', ')
-    const followers = (
-      await this.db.query(
-        `SELECT itemId, identity, platform, channel, transportScope FROM assistant_item_follower
-         WHERE agentId = ? AND itemId IN (${marks}) ORDER BY addedAt, identity, platform, channel, transportScope`,
-        [agentId, ...ids]
-      )
-    ).rows as FollowerRow[]
     const links = (
       await this.db.query(
         `SELECT itemId, kind, refId FROM assistant_item_link
@@ -498,10 +432,10 @@ export class AssistantItemLedger {
       doneWhen: row.doneWhen,
       nextCheck: row.nextCheck === null ? null : Number(row.nextCheck),
       status: row.status,
-      followers: followers
-        .filter((f) => f.itemId === row.id)
-        .map((f) => ({ identity: f.identity, place: placeOf(f.platform, f.channel, f.transportScope) })),
       origin: placeOf(row.originPlatform, row.originChannel, row.originTransportScope),
+      taskKey: row.taskKey,
+      asker: row.asker ?? null,
+      shared: Number(row.shared) === 1,
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
       subsessions: links.filter((l) => l.itemId === row.id && l.kind === 'subsession').map((l) => l.refId),
@@ -513,12 +447,12 @@ export class AssistantItemLedger {
   }
 }
 
-// The patrol state (assistant-patrols.ts) is keyed the same way and goes with its item.
+// The check state and log (assistant-patrols.ts) are keyed the same way and go with their follow-up.
 const CHILD_TABLES = [
-  'assistant_item_follower',
   'assistant_item_observation',
   'assistant_item_link',
-  'assistant_patrol'
+  'assistant_patrol',
+  'assistant_check'
 ] as const
 
 /** Takes the item's row lock for the rest of the transaction without changing it; false when the item is gone. */
@@ -534,21 +468,6 @@ async function touchItem(tx: StoreTx, agentId: string, itemId: string, now: numb
   await tx.query('UPDATE assistant_item SET updatedAt = ? WHERE agentId = ? AND id = ?', [now, agentId, itemId])
 }
 
-async function insertFollower(
-  tx: StoreTx,
-  agentId: string,
-  itemId: string,
-  follower: AssistantFollower,
-  now: number
-): Promise<boolean> {
-  const { changes } = await tx.query(
-    `INSERT OR IGNORE INTO assistant_item_follower (itemId, agentId, identity, platform, channel, transportScope, addedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [itemId, agentId, follower.identity, follower.place.platform, follower.place.channel, scopeOf(follower.place), now]
-  )
-  return changes > 0
-}
-
 // Stored as '' like append_reservation and thread_participation, so equality needs no NULL handling.
 const scopeOf = (place: AssistantPlace): string => place.transportScope ?? ''
 
@@ -558,23 +477,12 @@ const placeOf = (platform: string, channel: string, transportScope: string): Ass
   transportScope: transportScope === '' ? null : transportScope
 })
 
-function dedupeFollowers(followers: AssistantFollower[]): AssistantFollower[] {
-  const seen = new Set<string>()
-  return followers.filter((f) => {
-    const key = [f.identity, f.place.platform, f.place.channel, scopeOf(f.place)].join('\0')
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
 const IDENTITY_PATTERN = /^(user:[^:\s]+|[^:\s]+:[^\s]*:[^\s]+)$/
 
-function checkFollower(follower: AssistantFollower): void {
-  checkText('identity', follower.identity, ASSISTANT_ITEM_LIMITS.identity, true)
-  if (!IDENTITY_PATTERN.test(follower.identity))
-    throw new Error("assistant item follower identity must be '<platform>:<scope>:<uid>' or 'user:<id>'")
-  checkPlace(follower.place)
+function checkAsker(identity: string): void {
+  checkText('asker', identity, ASSISTANT_ITEM_LIMITS.identity, true)
+  if (!IDENTITY_PATTERN.test(identity))
+    throw new Error("assistant item asker must be '<platform>:<scope>:<uid>' or 'user:<id>'")
 }
 
 function checkPlace(place: AssistantPlace): void {

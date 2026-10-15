@@ -901,7 +901,7 @@ describe('a proposal in the conversation its item belongs to', () => {
   it('is carded there, in the thread its replies land in, and nowhere else', async () => {
     const w = await world()
     const { draft, approver } = await w.propose(GENERAL)
-    expect(approver).toBe('the people in the conversation the item was taken in')
+    expect(approver).toBe('the people in the conversation the follow-up belongs to')
     expect(w.port.postCard).toHaveBeenCalledTimes(1)
     expect(w.port.postCard.mock.calls[0]).toEqual([
       'C0GENERAL',
@@ -1038,7 +1038,7 @@ describe('a proposal in the conversation its item belongs to', () => {
       throw Object.assign(new Error('send queue: task timed out'), { sendQueueTimeout: true })
     })
     const { draft, approver } = await w.propose(GENERAL)
-    expect(approver).toBe('the people in the conversation the item was taken in')
+    expect(approver).toBe('the people in the conversation the follow-up belongs to')
     expect(w.port.postCard.mock.calls.map((c) => c[0])).toEqual(['C0GENERAL'])
     expect(draft).toMatchObject({ approver: { kind: 'place', channel: 'C0GENERAL' }, cardTs: null })
     // The card may have landed late, and the place's people still decide it.

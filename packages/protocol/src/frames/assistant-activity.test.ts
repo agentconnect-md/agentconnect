@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ASSISTANT_ACTIVITY_CHECKS_MAX,
   ASSISTANT_ACTIVITY_ITEMS_MAX,
   ASSISTANT_ACTIVITY_RESULT_BYTES,
   AgentPermissionRequestRecord,
@@ -90,6 +91,41 @@ describe('assistant/activity frames', () => {
         truncated: false
       })
     ).toBe(true)
+  })
+
+  it('round-trips follow-ups among the tasks, with their newest checks', () => {
+    const check = { at: '2026-10-09T09:00:00.000Z', observation: 'The build is still running.', reported: false }
+    const followUp = {
+      title: 'Watch the release',
+      doneWhen: null,
+      status: 'paused',
+      nextCheck: null,
+      recentChecks: Array.from({ length: ASSISTANT_ACTIVITY_CHECKS_MAX }, () => check)
+    }
+    const row = {
+      sessionId: null,
+      parentSessionId: 'sid-1',
+      state: 'open',
+      createdAt: '2026-10-09T08:00:00.000Z',
+      kind: 'follow-up',
+      followUp
+    }
+    const page = { operation: 'subsessions', subsessions: [row], truncated: false, followUps: true }
+    expect(decodes('assistant/activity/read/result', page)).toBe(true)
+    const withRow = (over: Record<string, unknown>) => ({ ...page, subsessions: [{ ...row, ...over }] })
+    expect(decodes('assistant/activity/read/result', withRow({ kind: 'approved-proposal', followUp: undefined }))).toBe(
+      true
+    )
+    expect(decodes('assistant/activity/read/result', withRow({ kind: 'patrol' }))).toBe(false)
+    expect(decodes('assistant/activity/read/result', withRow({ followUp: { ...followUp, status: 'active' } }))).toBe(
+      false
+    )
+    expect(
+      decodes(
+        'assistant/activity/read/result',
+        withRow({ followUp: { ...followUp, recentChecks: [...followUp.recentChecks, check] } })
+      )
+    ).toBe(false)
   })
 
   it('round-trips an item deletion and its answer', () => {

@@ -48,17 +48,17 @@ export const CANCEL_REMINDER_ARGS = z.object({
 })
 
 /** What `remind` tells an agent in assistant mode to take instead for a check at a time. */
-const ITEM_INSTEAD = '; for something to be checked on at a time, take an item with a next check instead'
+const FOLLOW_UP_INSTEAD = '; for something to be checked on at a time, take a follow-up with a next check instead'
 
-/** The `remind` descriptor; only an agent in assistant mode, which has items, is pointed at one for a check. */
-function remindTool(items: boolean): ToolDescriptor {
+/** The `remind` descriptor; only an agent in assistant mode, which has follow-ups, is pointed at one for a check. */
+function remindTool(followUps: boolean): ToolDescriptor {
   return {
     name: 'remind',
     description:
       'Set a reminder in this conversation. At `at` the daemon posts `message` here exactly as written, where your ' +
       'replies here land, with no model turn: you are not woken, the text is not rephrased, and nothing follows it. ' +
       'It posts into this conversation only, never anywhere else. Use it for fixed text at a set time ("remind me at ' +
-      `9 to send the report")${items ? ITEM_INSTEAD : ''}. ` +
+      `9 to send the report")${followUps ? FOLLOW_UP_INSTEAD : ''}. ` +
       'Say the time and the exact text in your reply. It posts within about a minute of `at`; while the agent is ' +
       'paused nothing is posted, and a reminder more than 24 hours late is dropped.',
     inputSchema: obj(
@@ -100,7 +100,7 @@ const CANCEL_REMINDER_TOOL: ToolDescriptor = {
 /** The reminder tools of an agent in assistant mode. */
 export const ASSISTANT_REMINDER_TOOLS: ToolDescriptor[] = [remindTool(true), LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL]
 
-/** The reminder tools of an agent outside assistant mode, whose `remind` names no item. */
+/** The reminder tools of an agent outside assistant mode, whose `remind` names no follow-up. */
 export const REMINDER_TOOLS: ToolDescriptor[] = [remindTool(false), LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL]
 
 /** The reminder tools a session is offered, for every agent: in a platform conversation of its own, never a background session. */

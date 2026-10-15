@@ -303,6 +303,13 @@ async function messageTask(
     ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
   })
   if (!wake.delivered) return { ok: true, wake }
+  if (wake.followUp)
+    return {
+      ok: true,
+      wake,
+      taskId: wake.targetSession,
+      message: wake.followUp === 'checking' ? FOLLOW_UP_CHECKS : FOLLOW_UP_QUEUED
+    }
   return {
     ok: true,
     wake,
@@ -312,3 +319,12 @@ async function messageTask(
     message: TASK_MESSAGED
   }
 }
+
+const FOLLOW_UP_REPORTS =
+  'It keeps its earlier context, and it reports into this session only if that check finds something to report. ' +
+  'Do not send the same message again.'
+/** The guidance a follow-up's message hands back (assistant-mode.md §5.12). */
+export const FOLLOW_UP_CHECKS = `Message delivered to the follow-up, which runs a check with it now. ${FOLLOW_UP_REPORTS}`
+export const FOLLOW_UP_QUEUED =
+  'Message delivered to the follow-up, whose check is running now; its next check takes the message as soon as ' +
+  `that one ends. ${FOLLOW_UP_REPORTS}`

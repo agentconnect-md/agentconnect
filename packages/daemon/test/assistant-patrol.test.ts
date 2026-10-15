@@ -1,4 +1,4 @@
-// Assistant-mode patrols (assistant-mode.md §5.9, minimal): woken by a due next check, read-only, silent unless something changed.
+// Follow-ups (assistant-mode.md §5.12): read-only checks in one retained session, woken by a due next check or a message from their place, silent unless something changed.
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -6,11 +6,8 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
-import {
-  ASSISTANT_ITEM_TOOLS,
-  PATROL_UPDATE_ITEM_ARGS,
-  PATROL_UPDATE_ITEM_TOOL
-} from '../src/mcp/ops/assistant-items.js'
+import { FOLLOW_UP_TOOL, RECORD_CHECK_ARGS, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
+import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { DEFAULT_DAILY_PATROL_BUDGET, patrolPrompt, patrolTools } from '../src/assistant/patrol.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
@@ -31,16 +28,16 @@ const modelText = (msg: { text: string; turnBody?: { prompt?: string } }): strin
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true }
 const MINUTE = 60_000
-const PATROL_OPENING = '[patrol] A scheduled, read-only check'
-// The patrol writes in its people's language, and the conversation answers in it whatever the report's.
-const PATROL_LANGUAGE =
-  'Write `report` and `propose`’s sentence in the language the people in the item’s conversation use; without a ' +
-  'message of theirs to go by, use the language of the item’s title and summary.'
+const CHECK_OPENING = '[follow-up check] A read-only check'
+// The check writes in its people's language, and the conversation answers in it whatever the report's.
+const CHECK_LANGUAGE =
+  'Write `report` and `propose`’s sentence in the language the people in its conversation use; without a message ' +
+  'of theirs to go by, use the language of its title and summary.'
 const ANSWER_LANGUAGE = 'Speak to the people here in the language they use, even when this report is in another.'
 
 /** One Slack agent per entry, each appending in `C1`. */
 function scaffold(agents: { id: string; assistantMode?: Record<string, unknown>; permissionMode?: string }[]): string {
-  const root = mkdtempSync(join(tmpdir(), 'ac-patrol-'))
+  const root = mkdtempSync(join(tmpdir(), 'ac-follow-up-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
@@ -80,11 +77,11 @@ function scaffold(agents: { id: string; assistantMode?: Record<string, unknown>;
   return root
 }
 
-/** What a patrol's runtime does with its prompt, given the bridge context the patrol was registered with. */
-type PatrolBehavior = (ctx: SessionContext) => Promise<unknown>
+/** What a check's runtime does with its prompt, given the bridge context the check was registered with. */
+type CheckBehavior = (ctx: SessionContext) => Promise<unknown>
 
 async function boot(root: string) {
-  const behavior: { patrol: PatrolBehavior | 'hang' | 'throw' } = { patrol: async () => 'end_turn' }
+  const behavior: { check: CheckBehavior | 'hang' | 'throw' } = { check: async () => 'end_turn' }
   const hosts: any[] = []
   const hostFactory = () => {
     let cancelled: (() => void) | undefined
@@ -101,14 +98,14 @@ async function boot(root: string) {
         modes.set(sessionId, mode)
         return true
       }),
-      prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-        if (!JSON.stringify(blocks).includes(PATROL_OPENING)) return 'end_turn'
-        if (behavior.patrol === 'throw') throw new Error('the runtime exited')
-        if (behavior.patrol === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
+      prompt: vi.fn(async (_sessionId: string, blocks: unknown[]) => {
+        if (!JSON.stringify(blocks).includes(CHECK_OPENING)) return 'end_turn'
+        if (behavior.check === 'throw') throw new Error('the runtime exited')
+        if (behavior.check === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
         const ctx = [...registered].reverse().find((c) => isPatrolCoordinate(c.thread))!
         // A behavior that never returns waits, like `hang`, until the turn is cancelled.
         return await Promise.race([
-          behavior.patrol(ctx).then(() => 'end_turn'),
+          behavior.check(ctx).then(() => 'end_turn'),
           new Promise((resolve) => (cancelled = () => resolve('cancelled')))
         ])
       }),
@@ -156,9 +153,9 @@ async function boot(root: string) {
     dispatched.push({ agentId, msg, callMeta, turn: turn.catch(() => undefined) })
     return turn
   }
-  const patrols = () => dispatched.filter((c) => isPatrolCoordinate(c.msg.thread))
+  const checks = () => dispatched.filter((c) => isPatrolCoordinate(c.msg.thread))
   const reports = () => dispatched.filter((c) => c.msg.parentReport === true)
-  /** Every turn dispatched so far, and any it dispatched in turn, has settled, and so has the patrol bookkeeping. */
+  /** Every turn dispatched so far, and any it dispatched in turn, has settled, and so has the check bookkeeping. */
   const settled = async () => {
     for (let seen = -1; seen !== dispatched.length;) {
       seen = dispatched.length
@@ -167,12 +164,12 @@ async function boot(root: string) {
     }
   }
   const deps = { ...d.mcp.deps, canRun: () => true }
-  return { daemon, d, behavior, hosts, registered, dispatched, patrols, reports, settled, deps }
+  return { daemon, d, behavior, hosts, registered, dispatched, checks, reports, settled, deps }
 }
 
 const scopeOf = (d: any, agentId = 'bot-a'): string => d.transportScopeForIntegrationIds([`int-${agentId}`])
 
-/** The conversation's long session in C1, which an item taken there reports into. */
+/** The conversation's long session in C1, which a follow-up taken there belongs to. */
 async function seedPlace(d: any, agentId = 'bot-a') {
   const scope = scopeOf(d, agentId)
   const coordinate = await d.store.resolveAppendCoordinate(agentId, 'C1', scope, 1)
@@ -193,83 +190,122 @@ async function seedPlace(d: any, agentId = 'bot-a') {
   return { key, scope, coordinate }
 }
 
-async function takeItem(d: any, over: { agentId?: string; nextCheck?: number; title?: string } = {}) {
+/** Take a follow-up in C1, as `followUp` would for Alice. */
+async function takeFollowUp(
+  d: any,
+  over: { agentId?: string; nextCheck?: number | null; title?: string } = {}
+): Promise<AssistantItem> {
   const agentId = over.agentId ?? 'bot-a'
-  return await d.store.assistantItems.create({
+  const scope = scopeOf(d, agentId)
+  const nextCheck = over.nextCheck === undefined ? Date.now() - MINUTE : over.nextCheck
+  return await d.patrols.take({
     agentId,
+    origin: { platform: 'slack', channel: 'C1', transportScope: scope },
+    caller: { sessionId: `sid-parent-${agentId}`, key: sessionKey('slack', 'C1', 'append:0', agentId, scope) },
     title: over.title ?? 'Watch the release build',
     doneWhen: 'The release is published',
-    nextCheck: over.nextCheck ?? Date.now() - MINUTE,
-    origin: { platform: 'slack', channel: 'C1', transportScope: scopeOf(d, agentId) },
-    followers: [
-      {
-        identity: 'slack:T0EXAMPLE:U0ALICE',
-        place: { platform: 'slack', channel: 'C1', transportScope: scopeOf(d, agentId) }
-      }
-    ],
-    summary: 'Alice asked to hear when the release is out.'
+    ...(nextCheck !== null ? { nextCheck } : {}),
+    summary: 'Alice asked to hear when the release is out.',
+    asker: 'slack:T0EXAMPLE:U0ALICE'
   })
 }
 
-/** A patrol that saw nothing new: one observation and the next check, no report. */
+/** A check that saw nothing new: what it saw and the next check, no report. */
 const quiet =
-  (deps: any): PatrolBehavior =>
+  (deps: any): CheckBehavior =>
   async (ctx) => {
-    const itemId = await deps.assistantItems.patrol.itemFor(ctx)
-    const current = ((await executeTool(ctx, 'listItems', { itemId }, deps)) as any).items[0]
     await executeTool(
       ctx,
-      'updateItem',
-      {
-        itemId: current.id,
-        version: current.version,
-        observation: 'The build is still running.',
-        nextCheck: new Date(Date.now() + 60 * MINUTE).toISOString()
-      },
+      'recordCheck',
+      { observation: 'The build is still running.', nextCheck: new Date(Date.now() + 60 * MINUTE).toISOString() },
       deps
     )
   }
 
-const patrolState = (d: any, itemId: string) => d.store.assistantPatrols.get('bot-a', itemId)
+/** A check that saw a change: it records it as done and reports it, after `first` ran in its turn. */
+const reporting =
+  (deps: any, first: () => Promise<void> = async () => {}): CheckBehavior =>
+  async (ctx) => {
+    await first()
+    await executeTool(
+      ctx,
+      'recordCheck',
+      { observation: 'The release is published.', done: true, report: 'The release is out.' },
+      deps
+    )
+  }
 
-describe('a due next check wakes one patrol', () => {
-  it('patrols a due item once, in a read-only sub-session of the place, and stays silent when nothing changed', async () => {
-    const { daemon, d, behavior, hosts, patrols, reports, settled, deps } = await boot(
+const checkState = (d: any, itemId: string) => d.store.assistantPatrols.get('bot-a', itemId)
+
+/** The place's long session in C1, as its bridge context would carry it. */
+const placeCtx = (place: { coordinate: string; scope: string }): SessionContext => ({
+  agentId: 'bot-a',
+  platform: 'slack',
+  integrationId: 'int-bot-a',
+  transportScope: place.scope,
+  isDm: false,
+  channel: 'C1',
+  thread: place.coordinate,
+  deliveryThread: '100.1',
+  tools: [FOLLOW_UP_TOOL, LIST_TASKS_TOOL, STOP_TASK_TOOL]
+})
+
+/** `messageTask` from a session of C1 to a follow-up. */
+const message = (d: any, from: { coordinate: string; scope: string }, taskId: string, text: string) =>
+  d.collab.continueSubsession({
+    callerAgentId: 'bot-a',
+    platform: 'slack',
+    callerChannel: 'C1',
+    callerThread: from.coordinate,
+    callerTransportScope: from.scope,
+    sessionId: taskId,
+    text,
+    submissionId: randomUUID()
+  })
+
+describe('a due next check wakes one check', () => {
+  it('checks a due follow-up once, in its own read-only session of the place, and stays silent when nothing changed', async () => {
+    const { daemon, d, behavior, hosts, checks, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON, permissionMode: 'bypassPermissions' }])
     )
     const place = await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = quiet(deps)
+    const item = await takeFollowUp(d)
+    behavior.check = quiet(deps)
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
 
-    const [patrol] = patrols()
-    expect(patrol!.msg).toMatchObject({ channel: 'C1', source: 'agent', headless: true })
-    expect(isSubsessionCoordinate(patrol!.msg.thread)).toBe(true)
-    expect(modelText(patrol!.msg)).toContain(`Item ${item.id}`)
-    expect(modelText(patrol!.msg)).toContain('Watch the release build')
-    // It inherits the place's long session, and owes no report back.
-    expect(patrol!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, originSessionId: 'sid-parent-bot-a' })
-    expect(patrol!.callMeta.needsReply).toBeUndefined()
-    const key = sessionKey('slack', 'C1', patrol!.msg.thread!, 'bot-a', place.scope)
-    expect(await d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({
+    const [check] = checks()
+    expect(check!.msg).toMatchObject({ channel: 'C1', source: 'agent', headless: true })
+    expect(isSubsessionCoordinate(check!.msg.thread)).toBe(true)
+    expect(sessionKey('slack', 'C1', check!.msg.thread!, 'bot-a', place.scope)).toBe(item.taskKey)
+    expect(modelText(check!.msg)).toContain(`Follow-up ${item.taskKey}`)
+    expect(modelText(check!.msg)).toContain('Watch the release build')
+    // It belongs to the place's long session, and owes no report back.
+    expect(check!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, originSessionId: 'sid-parent-bot-a' })
+    expect(check!.callMeta.needsReply).toBeUndefined()
+    expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
       kind: 'patrol',
       state: 'done',
-      parentSessionId: 'sid-parent-bot-a'
+      parentSessionId: 'sid-parent-bot-a',
+      parentSessionKey: place.key
     })
-    expect(await d.store.getSession(key)).toMatchObject({ originSessionId: 'sid-parent-bot-a' })
-    // Nothing changed, so nothing reached the conversation.
+    expect(await d.store.getSession(item.taskKey)).toMatchObject({ originSessionId: 'sid-parent-bot-a' })
+    // Nothing changed, so nothing reached the conversation; the check is in its log.
     expect(reports()).toHaveLength(0)
     const after = await d.store.assistantItems.get('bot-a', item.id)
-    expect(after.observations.map((o: any) => [o.text, o.author])).toEqual([['The build is still running.', 'patrol']])
+    expect(after.observations.map((o: any) => [o.text, o.author])).toEqual([['The build is still running.', 'check']])
+    expect(after).toMatchObject({ status: 'active' })
+    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([
+      expect.objectContaining({ checkNo: 1, observation: 'The build is still running.', reported: false })
+    ])
 
     // The runtime's own read-only mode, never the agent's, and no plan-mode exit nobody could approve.
-    const host = hosts.find((h) => h.prompt.mock.calls.some((c: any) => JSON.stringify(c).includes(PATROL_OPENING)))
-    const patrolSession = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(PATROL_OPENING))[0]
+    const host = hosts.find((h) => h.prompt.mock.calls.some((c: any) => JSON.stringify(c).includes(CHECK_OPENING)))
+    const checkSession = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(CHECK_OPENING))[0]
     expect(
-      host.setSessionPermissionMode.mock.calls.filter((c: any) => c[0] === patrolSession).map((c: any) => c[1])
+      host.setSessionPermissionMode.mock.calls.filter((c: any) => c[0] === checkSession).map((c: any) => c[1])
     ).toEqual(['plan'])
     expect(host.newSession.mock.calls.at(-1)?.[6]).toEqual(CLAUDE_HEADLESS_DISALLOWED_TOOLS)
 
@@ -277,30 +313,36 @@ describe('a due next check wakes one patrol', () => {
     await d.patrols.sweep()
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(1)
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 
-  it('reports a change into the conversation the item was taken in, once', async () => {
-    const { daemon, d, behavior, hosts, patrols, reports, settled, deps } = await boot(
+  it('runs every check of a follow-up in the same retained session', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    await seedPlace(d)
+    const item = await takeFollowUp(d)
+    behavior.check = quiet(deps)
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
+    await settled()
+    await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
+    await settled()
+    expect(checks()[1]!.msg.thread).toBe(checks()[0]!.msg.thread)
+    // The second check is handed what the first one saw.
+    expect(modelText(checks()[1]!.msg)).toContain('The build is still running.')
+    expect((await d.store.assistantPatrols.checks('bot-a', item.id, 10)).map((c: any) => c.checkNo)).toEqual([2, 1])
+    await daemon.stop()
+  })
+
+  it('reports a change into the conversation the follow-up belongs to, once', async () => {
+    const { daemon, d, behavior, hosts, checks, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
     const place = await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = async (ctx) => {
-      await executeTool(
-        ctx,
-        'updateItem',
-        {
-          itemId: item.id,
-          version: item.version,
-          status: 'done',
-          observation: 'The release is published.',
-          report: 'The release is out.'
-        },
-        deps
-      )
-    }
+    const item = await takeFollowUp(d)
+    behavior.check = reporting(deps)
 
     await d.patrols.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
@@ -309,140 +351,134 @@ describe('a due next check wakes one patrol', () => {
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate, source: 'agent' })
     expect(modelText(report!.msg)).toContain(
-      `The scheduled check of item ${item.id} ("Watch the release build") found a change`
+      `The check of follow-up ${item.taskKey} ("Watch the release build") found a change`
     )
-    expect(modelText(report!.msg)).toContain('The release is out.')
     expect(modelText(report!.msg).endsWith(`The release is out.\n\n${ANSWER_LANGUAGE}`)).toBe(true)
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
-    // The patrol is asked for its people's language, and the conversation's runtime is told to answer in it.
+    // The check is asked for its people's language, and the conversation's runtime is told to answer in it.
     const prompts = hosts.flatMap((h) => h.prompt.mock.calls.map((c: any) => JSON.stringify(c[1])))
-    expect(prompts.find((p: string) => p.includes(PATROL_OPENING))).toContain(PATROL_LANGUAGE)
+    expect(prompts.find((p: string) => p.includes(CHECK_OPENING))).toContain(CHECK_LANGUAGE)
     expect(prompts.find((p: string) => p.includes('found a change'))).toContain(ANSWER_LANGUAGE)
-    expect(reports()).toHaveLength(1)
     expect((await d.store.assistantItems.get('bot-a', item.id)).status).toBe('done')
-    expect(patrols()).toHaveLength(1)
+    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([
+      expect.objectContaining({ observation: 'The release is published.', reported: true })
+    ])
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 
-  it('records why when the item’s conversation has no session to report to, and does not try that check again', async () => {
-    const { daemon, d, patrols, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
-    const item = await takeItem(d)
+  it('records why when the follow-up’s conversation has no session to report to, and does not try that check again', async () => {
+    const { daemon, d, checks, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const item = await takeFollowUp(d)
 
     await d.patrols.sweep()
     await d.patrols.sweep()
     await settled()
 
-    expect(patrols()).toHaveLength(0)
+    expect(checks()).toHaveLength(0)
     const after = await d.store.assistantItems.get('bot-a', item.id)
     expect(after.observations.map((o: any) => o.text)).toEqual([
-      'No scheduled check ran: the conversation this item was taken in has no ongoing session to report to.'
+      'No scheduled check ran: the conversation this follow-up belongs to has no ongoing session to report to.'
     ])
     await daemon.stop()
   })
 
-  it('patrols nothing while the agent is paused, then an overdue item exactly once', async () => {
-    const { daemon, d, behavior, patrols, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+  it('checks nothing while the agent is paused, then an overdue follow-up exactly once', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    await takeItem(d, { nextCheck: Date.now() - 3 * 60 * MINUTE })
-    behavior.patrol = quiet(deps)
+    await takeFollowUp(d, { nextCheck: Date.now() - 3 * 60 * MINUTE })
+    behavior.check = quiet(deps)
 
     d.agents.get('bot-a').pause = true
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(0)
+    expect(checks()).toHaveLength(0)
 
     d.agents.get('bot-a').pause = false
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(1)
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 
-  it('leaves the check due when a pause stops the patrol, and runs it once after', async () => {
-    const { daemon, d, behavior, patrols, reports, settled, deps } = await boot(
+  it('leaves the check due when a pause stops it, and runs it once after', async () => {
+    const { daemon, d, behavior, checks, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
     await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = 'hang'
+    const item = await takeFollowUp(d)
+    behavior.check = 'hang'
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     d.agents.get('bot-a').pause = true
     await d.interruptAgentTurns('bot-a', 'pause')
     await settled()
-    expect(await patrolState(d, item.id)).toMatchObject({ failures: 0, runningKey: null, patrolledNextCheck: null })
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, runningKey: null, patrolledNextCheck: null })
+    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([])
     expect(reports()).toHaveLength(0)
 
     d.agents.get('bot-a').pause = false
-    behavior.patrol = quiet(deps)
+    behavior.check = quiet(deps)
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(2), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
     await settled()
-    expect(await patrolState(d, item.id)).toMatchObject({ patrolledNextCheck: item.nextCheck })
+    expect(await checkState(d, item.id)).toMatchObject({ patrolledNextCheck: item.nextCheck })
     await daemon.stop()
   })
 
-  it('leaves the patrolling to the daemon holding the agent’s duty', async () => {
-    const { daemon, d, patrols, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+  it('leaves the checking to the daemon holding the agent’s duty, and to assistant mode', async () => {
+    const { daemon, d, checks, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }, { id: 'bot-b' }]))
     await seedPlace(d)
-    await takeItem(d)
-    d.servesAgent = () => false
-
-    await d.patrols.sweep()
-    await settled()
-    expect(patrols()).toHaveLength(0)
-    await daemon.stop()
-  })
-
-  it('patrols nothing for an agent outside assistant mode', async () => {
-    const { daemon, d, patrols, settled } = await boot(scaffold([{ id: 'bot-b' }]))
     await seedPlace(d, 'bot-b')
-    await takeItem(d, { agentId: 'bot-b' })
+    await takeFollowUp(d)
+    await takeFollowUp(d, { agentId: 'bot-b' })
+    const serves = d.servesAgent.bind(d)
+    d.servesAgent = (agentId: string) => agentId !== 'bot-a' && serves(agentId)
 
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(0)
+    expect(checks()).toHaveLength(0)
     await daemon.stop()
   })
 })
 
-describe('one patrol at a time, beside the delegations', () => {
-  it('runs one patrol per agent, and the next item once it ends', async () => {
-    const { daemon, d, behavior, patrols, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+describe('one scheduled check at a time, beside the delegations', () => {
+  it('runs one scheduled check per agent, and the next follow-up’s once it ends', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    await takeItem(d, { title: 'First', nextCheck: Date.now() - 2 * MINUTE })
-    await takeItem(d, { title: 'Second', nextCheck: Date.now() - MINUTE })
-    behavior.patrol = 'hang'
+    const first = await takeFollowUp(d, { title: 'First', nextCheck: Date.now() - 2 * MINUTE })
+    await takeFollowUp(d, { title: 'Second', nextCheck: Date.now() - MINUTE })
+    behavior.check = 'hang'
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await d.patrols.sweep()
-    expect(patrols()).toHaveLength(1)
-    expect(modelText(patrols()[0]!.msg)).toContain('Title: First')
+    expect(checks()).toHaveLength(1)
+    expect(modelText(checks()[0]!.msg)).toContain('Title: First')
 
-    behavior.patrol = quiet(deps)
-    await d.interruptTurn('bot-a', sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', scopeOf(d)), 'stop')
+    behavior.check = quiet(deps)
+    await d.interruptTurn('bot-a', first.taskKey, 'stop')
     await settled()
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(2), WAIT)
-    expect(modelText(patrols()[1]!.msg)).toContain('Title: Second')
+    await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
+    expect(modelText(checks()[1]!.msg)).toContain('Title: Second')
     await settled()
     await daemon.stop()
   })
 
-  it('keeps patrols out of the concurrent sub-session limit, both ways', async () => {
-    const { daemon, d, behavior, patrols, settled } = await boot(
+  it('keeps checks out of the concurrent task limit, both ways', async () => {
+    const { daemon, d, behavior, checks, settled } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { maxConcurrentSubsessions: 1 } } }])
     )
     const place = await seedPlace(d)
-    await takeItem(d)
-    behavior.patrol = 'hang'
+    await takeFollowUp(d)
+    behavior.check = 'hang'
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
 
     const delegation = (n: number): MessageAgentReq => ({
       callerAgentId: 'bot-a',
@@ -456,7 +492,7 @@ describe('one patrol at a time, beside the delegations', () => {
       thread: `100.${n}`,
       postless: true
     })
-    // The running patrol takes none of the user's one place …
+    // The running check takes none of the user's one place …
     expect(await d.collab.messageAgent(delegation(1))).toMatchObject({ delivered: true, subsession: true })
     // … which the delegation now holds.
     expect(await d.collab.messageAgent(delegation(2))).toMatchObject({ delivered: false, reason: 'task_limit' })
@@ -466,28 +502,29 @@ describe('one patrol at a time, beside the delegations', () => {
   })
 })
 
-describe('a patrol reads and records, nothing else', () => {
-  it('is offered the reads and its own updateItem, never a write, a post, a new item or a draft', async () => {
-    const { daemon, d, behavior, registered, patrols, settled, deps } = await boot(
+describe('a check reads and records, nothing else', () => {
+  it('is offered the reads, recordCheck and propose, never a write, a post, a follow-up or a draft', async () => {
+    const { daemon, d, behavior, registered, checks, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
     await seedPlace(d)
-    await takeItem(d)
-    behavior.patrol = quiet(deps)
+    await takeFollowUp(d)
+    behavior.check = quiet(deps)
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
 
     const ctx = registered.find((c) => isPatrolCoordinate(c.thread))!
     const names = ctx.tools.map((t) => t.name)
     expect(names).toEqual(
-      expect.arrayContaining(['listItems', 'updateItem', 'recall', 'getChannelHistory', 'readMemory'])
+      expect.arrayContaining(['recordCheck', 'propose', 'recall', 'getChannelHistory', 'readMemory'])
     )
     for (const write of [
       'sendMessage',
       'shareFile',
-      'takeItem',
-      'followItem',
+      'followUp',
+      'listTasks',
+      'stopTask',
       'addReaction',
       'deleteMessage',
       'writeMemory',
@@ -498,25 +535,22 @@ describe('a patrol reads and records, nothing else', () => {
       'viewSessionStatus'
     ])
       expect(names).not.toContain(write)
-    expect(ctx.tools.find((t) => t.name === 'updateItem')).toBe(PATROL_UPDATE_ITEM_TOOL)
+    expect(ctx.tools.find((t) => t.name === 'recordCheck')).toBe(RECORD_CHECK_TOOL)
     // A name it was not offered is refused, whatever the runtime sends.
     await expect(
       executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'bot-a', message: 'hi' }, deps)
-    ).rejects.toThrow('sendMessage is not available in a read-only patrol')
-    await expect(executeTool(ctx, 'takeItem', { title: 'x', doneWhen: 'y' }, deps)).rejects.toThrow(
-      'not available in a read-only patrol'
-    )
+    ).rejects.toThrow('sendMessage is not available in a follow-up’s read-only check')
     // Another session of the agent keeps its whole tool set.
     const other = registered.find((c) => !isPatrolCoordinate(c.thread))
     if (other) expect(other.tools.map((t) => t.name)).toContain('sendMessage')
     await daemon.stop()
   })
 
-  it('refuses whatever would need approval in a patrol, without asking anyone', async () => {
-    const { daemon, d, behavior, patrols, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+  it('refuses whatever would need approval in a check, without asking anyone', async () => {
+    const { daemon, d, behavior, checks, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    await takeItem(d)
-    behavior.patrol = 'hang'
+    await takeFollowUp(d)
+    behavior.check = 'hang'
     await d.patrols.sweep()
     await vi.waitFor(
       () => expect([...d.pending.values()].some((p: any) => isPatrolCoordinate(p.plan.sessionThread))).toBe(true),
@@ -534,63 +568,56 @@ describe('a patrol reads and records, nothing else', () => {
     expect(answer).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } })
     await d.interruptAgentTurns('bot-a', 'stop')
     await settled()
-    expect(patrols()).toHaveLength(1)
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 
-  it('writes only its own item, never sooner than five minutes, and never drops it', async () => {
-    const { daemon, d, behavior, patrols, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+  it('never sets its next check sooner than five minutes, nor both ends and reschedules', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    const item = await takeItem(d)
-    const other = await takeItem(d, { title: 'Other', nextCheck: Date.now() + 60 * MINUTE })
+    const item = await takeFollowUp(d)
     const results: unknown[] = []
-    behavior.patrol = async (ctx) => {
+    behavior.check = async (ctx) => {
       for (const args of [
-        { itemId: other.id, observation: 'x' },
-        {
-          itemId: item.id,
-          version: item.version,
-          nextCheck: new Date(Date.now() + MINUTE).toISOString(),
-          observation: 'x'
-        },
-        { itemId: item.id, version: item.version, status: 'dropped', observation: 'x' }
+        { observation: 'x', nextCheck: new Date(Date.now() + MINUTE).toISOString() },
+        { observation: 'x', done: true, nextCheck: new Date(Date.now() + 60 * MINUTE).toISOString() }
       ])
-        results.push(await executeTool(ctx, 'updateItem', args, deps).catch((err: Error) => err.message))
+        results.push(await executeTool(ctx, 'recordCheck', args, deps).catch((err: Error) => err.message))
       await quiet(deps)(ctx)
     }
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    expect(results[0]).toBe(`this patrol checks item ${item.id} only; nothing was written`)
-    expect(results[1]).toBe('nextCheck must be at least five minutes from now; nothing was written')
-    expect(String(results[2])).toContain('argument status must be one of: active, waiting, done')
-    expect((await d.store.assistantItems.get('bot-a', other.id)).observations).toEqual([])
+    expect(results[0]).toBe('nextCheck must be at least five minutes from now; nothing was written')
+    expect(results[1]).toBe('recordCheck takes `done` or `nextCheck`, not both; nothing was written')
+    expect((await d.store.assistantItems.get('bot-a', item.id)).observations).toHaveLength(1)
     await daemon.stop()
   })
 })
 
 describe('failures back off and stop', () => {
-  it('records a failure, backs off, and after five in a row stops and tells the conversation once', async () => {
-    const { daemon, d, behavior, patrols, reports, settled } = await boot(
-      scaffold([{ id: 'bot-a', assistantMode: ON }])
-    )
-    await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = 'throw'
+  it('records a failure, backs off, and after five in a row stops and tells the conversation once, until it is messaged', async () => {
+    const { daemon, d, behavior, checks, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const place = await seedPlace(d)
+    const item = await takeFollowUp(d)
+    behavior.check = 'throw'
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    const first = await patrolState(d, item.id)
+    const first = await checkState(d, item.id)
     expect(first).toMatchObject({ failures: 1, stopped: false, patrolledNextCheck: null })
     expect(first.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
     expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
       'Scheduled check failed (error); the next attempt is in 2 minutes.'
     ])
+    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([
+      expect.objectContaining({ observation: 'Scheduled check failed (error); the next attempt is in 2 minutes.' })
+    ])
     // Backing off: nothing before the wait is over.
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(1)
+    expect(checks()).toHaveLength(1)
 
     for (let n = 2; n <= PATROL_MAX_FAILURES; n++) {
       await d.store.assistantPatrols.db.query(
@@ -598,36 +625,44 @@ describe('failures back off and stop', () => {
         ['bot-a', item.id]
       )
       await d.patrols.sweep()
-      await vi.waitFor(() => expect(patrols()).toHaveLength(n), WAIT)
+      await vi.waitFor(() => expect(checks()).toHaveLength(n), WAIT)
       await settled()
     }
-    expect(await patrolState(d, item.id)).toMatchObject({ failures: PATROL_MAX_FAILURES, stopped: true })
+    expect(await checkState(d, item.id)).toMatchObject({ failures: PATROL_MAX_FAILURES, stopped: true })
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain(
-      `Scheduled checks of item ${item.id} ("Watch the release build") stopped after 5`
+      `Checks of follow-up ${item.taskKey} ("Watch the release build") stopped after 5 failed attempts in a row. ` +
+        'They resume once it is messaged with messageTask.'
     )
     expect(modelText(reports()[0]!.msg)).toContain(`Tell the people here.\n\n${ANSWER_LANGUAGE}`)
 
-    await d.store.assistantPatrols.db.query(
-      'UPDATE assistant_patrol SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
-      ['bot-a', item.id]
-    )
+    // A new next check does not resume it.
+    await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(PATROL_MAX_FAILURES)
-    expect(reports()).toHaveLength(1)
+    expect(checks()).toHaveLength(PATROL_MAX_FAILURES)
+    // A message does, at once and with a fresh streak.
+    behavior.check = 'hang'
+    expect(await message(d, place, item.taskKey, 'Try again now.')).toMatchObject({
+      delivered: true,
+      followUp: 'checking'
+    })
+    await vi.waitFor(() => expect(checks()).toHaveLength(PATROL_MAX_FAILURES + 1), WAIT)
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, stopped: false })
+    await d.interruptAgentTurns('bot-a', 'stop')
+    await settled()
     await daemon.stop()
   })
 
-  it('counts a patrol that recorded nothing as a failure, and sends no "ended without reporting" into the place', async () => {
-    const { daemon, d, patrols, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+  it('counts a check that recorded nothing as a failure, and sends no "ended without reporting" into the place', async () => {
+    const { daemon, d, checks, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    const item = await takeItem(d)
+    const item = await takeFollowUp(d)
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    expect(await patrolState(d, item.id)).toMatchObject({ failures: 1 })
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 1 })
     expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
       'Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.'
     ])
@@ -636,20 +671,132 @@ describe('failures back off and stop', () => {
   })
 })
 
-describe('a patrol in its conversation’s sub-session panel', () => {
-  it('is listed under the conversation, and the panel’s stop ends it silently with its check done', async () => {
-    const { daemon, d, behavior, patrols, reports, settled } = await boot(
-      scaffold([{ id: 'bot-a', assistantMode: ON }])
+describe('a follow-up owned by its place', () => {
+  it('is listed, messaged and ended by the place’s current long session alone', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const place = await seedPlace(d)
+    const item = await takeFollowUp(d, { nextCheck: Date.now() + 60 * MINUTE })
+    const here = placeCtx(place)
+
+    const listed = (await executeTool(here, 'listTasks', {}, deps)) as any
+    expect(listed.tasks).toEqual([
+      {
+        taskId: item.taskKey,
+        kind: 'follow-up',
+        label: 'Watch the release build',
+        state: 'waiting',
+        startedAt: expect.any(String),
+        nextCheck: new Date(item.nextCheck!).toISOString(),
+        handedBackResult: true
+      }
+    ])
+
+    // A message runs a check at once, with the message in it.
+    behavior.check = 'hang'
+    expect(await message(d, place, item.taskKey, 'Check the staging build too.')).toMatchObject({
+      delivered: true,
+      targetSession: item.taskKey,
+      followUp: 'checking'
+    })
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
+    expect(modelText(checks()[0]!.msg)).toContain('Check: asked for by its conversation now')
+    expect(modelText(checks()[0]!.msg)).toContain('Check the staging build too.')
+    expect(((await executeTool(here, 'listTasks', {}, deps)) as any).tasks[0]).toMatchObject({ state: 'checking' })
+    // One that arrives while it checks waits for the next check, which takes it once this one ends.
+    expect(await message(d, place, item.taskKey, 'And the docs build.')).toMatchObject({
+      delivered: true,
+      followUp: 'queued'
+    })
+    behavior.check = quiet(deps)
+    await d.interruptTurn('bot-a', item.taskKey, 'stop')
+    await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
+    await settled()
+    expect(modelText(checks()[1]!.msg)).toContain('And the docs build.')
+    expect(modelText(checks()[1]!.msg)).not.toContain('Check the staging build too.')
+    expect(checks()[1]!.msg.thread).toBe(checks()[0]!.msg.thread)
+
+    // stopTask ends the follow-up itself.
+    const stopped = (await executeTool(here, 'stopTask', { taskId: item.taskKey }, deps)) as any
+    expect(stopped).toMatchObject({ result: 'stopped', taskId: item.taskKey })
+    expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'dropped', nextCheck: null })
+    expect(await executeTool(here, 'stopTask', { taskId: item.taskKey }, deps)).toMatchObject({ result: 'not_running' })
+    expect(await message(d, place, item.taskKey, 'More?')).toMatchObject({ delivered: false, reason: 'task_ended' })
+    expect(((await executeTool(here, 'listTasks', {}, deps)) as any).tasks[0]).toMatchObject({ state: 'stopped' })
+    await daemon.stop()
+  })
+
+  it('passes to the place’s new session after `!new`, and no other session addresses it', async () => {
+    const { daemon, d, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const place = await seedPlace(d)
+    const item = await takeFollowUp(d, { nextCheck: Date.now() + 60 * MINUTE })
+    const next = await d.store.advanceAppendCoordinate('bot-a', 'C1', place.coordinate, place.scope)
+    await d.store.upsertSession({
+      key: sessionKey('slack', 'C1', next, 'bot-a', place.scope),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: next,
+      transportScope: place.scope,
+      acpSessionId: 'acp-current-bot-a',
+      sessionId: 'sid-current-bot-a',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const old = placeCtx(place)
+    const current = placeCtx({ coordinate: next, scope: place.scope })
+    const notOwned = { result: 'refused', reason: 'This session started no task with that id. Nothing was stopped.' }
+    // The retired session no longer owns it, and does not see it.
+    expect(await executeTool(old, 'stopTask', { taskId: item.taskKey }, deps)).toEqual(notOwned)
+    expect(await message(d, place, item.taskKey, 'x')).toMatchObject({ delivered: false, reason: 'task_not_found' })
+    expect(((await executeTool(old, 'listTasks', {}, deps)) as any).tasks).toEqual([])
+    // The new one lists it, and its row names the new session.
+    expect(((await executeTool(current, 'listTasks', {}, deps)) as any).tasks).toEqual([
+      expect.objectContaining({ taskId: item.taskKey, kind: 'follow-up' })
+    ])
+    expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
+      parentSessionId: 'sid-current-bot-a'
+    })
+    // A thread of the place and another place are not its owner.
+    const thread = { ...current, thread: '100.1' }
+    expect(await executeTool(thread, 'stopTask', { taskId: item.taskKey }, deps)).toEqual(notOwned)
+    const elsewhere = { ...current, channel: 'C2' }
+    expect(await executeTool(elsewhere, 'stopTask', { taskId: item.taskKey }, deps)).toEqual(notOwned)
+    expect((await d.store.assistantItems.get('bot-a', item.id)).status).toBe('active')
+    expect(await executeTool(current, 'stopTask', { taskId: item.taskKey }, deps)).toMatchObject({ result: 'stopped' })
+    await settled()
+    await daemon.stop()
+  })
+
+  it('refuses a message once the day’s budget is spent, naming when it resets', async () => {
+    expect(DEFAULT_DAILY_PATROL_BUDGET).toBe(50)
+    const { daemon, d, behavior, checks, settled, deps } = await boot(
+      scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { dailyPatrolBudget: 1 } } }])
     )
-    await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = 'hang'
+    const place = await seedPlace(d)
+    const item = await takeFollowUp(d)
+    behavior.check = quiet(deps)
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
-    const key = sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', scopeOf(d))
-    await vi.waitFor(async () => expect((await d.store.getSession(key))?.sessionId).toBeTruthy(), WAIT)
-    const sessionId = (await d.store.getSession(key)).sessionId
-    // The same seam the control plane's frames reach, with the daemon's own cancel core behind its stop.
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
+    await settled()
+    const [first] = await d.store.assistantPatrols.checks('bot-a', item.id, 1)
+    const refused = await message(d, place, item.taskKey, 'Check again.')
+    expect(refused).toMatchObject({ delivered: false, reason: 'budget' })
+    expect(refused.message).toContain(new Date(first.startedAt + 24 * 60 * MINUTE).toISOString())
+    expect(checks()).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('is listed in its conversation’s Tasks panel, whose stop ends it', async () => {
+    const { daemon, d, behavior, checks, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    await seedPlace(d)
+    const item = await takeFollowUp(d)
+    behavior.check = 'hang'
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
+    await vi.waitFor(async () => expect((await d.store.getSession(item.taskKey))?.sessionId).toBeTruthy(), WAIT)
+    const sessionId = (await d.store.getSession(item.taskKey)).sessionId
+    // The same seam the control plane's frames reach, with the daemon's own stops behind it.
     const activity = createAssistantActivity({
       store: () => d.store,
       agent: (agentId) => d.agents.get(agentId),
@@ -657,7 +804,8 @@ describe('a patrol in its conversation’s sub-session panel', () => {
       decideDraft: async () => {
         throw new Error('not used')
       },
-      stopSession: (k, actor) => d.commands.cancelSessionByKey(k, actor)
+      stopSession: (k, actor) => d.commands.cancelSessionByKey(k, actor),
+      stopFollowUp: (agentId, followUp, actor) => d.patrols.stop(agentId, followUp, actor)
     })
 
     const listed = (await activity.read({
@@ -666,7 +814,14 @@ describe('a patrol in its conversation’s sub-session panel', () => {
       limit: 10,
       parent: { sessionId: 'sid-parent-bot-a' }
     })) as any
-    expect(listed.subsessions).toEqual([expect.objectContaining({ sessionId, state: 'open' })])
+    expect(listed.subsessions).toEqual([
+      expect.objectContaining({
+        sessionId,
+        state: 'open',
+        kind: 'follow-up',
+        followUp: expect.objectContaining({ status: 'checking' })
+      })
+    ])
 
     expect(
       await activity.write({
@@ -676,49 +831,48 @@ describe('a patrol in its conversation’s sub-session panel', () => {
         actor: { userId: 'usr-1', name: 'Grace' }
       })
     ).toEqual({ operation: 'stop-subsession', result: 'stopped' })
-    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.runningKey).toBeNull(), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeNull(), WAIT)
     await settled()
 
-    // Settled by the patrol path: no "ended without reporting" into the place, and the check is done.
+    // Ended with its check done, silently.
     expect(reports()).toHaveLength(0)
-    expect(await patrolState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
-    expect(await d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ kind: 'patrol', state: 'failed' })
+    expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'dropped' })
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 0 })
+    expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
+      kind: 'patrol',
+      state: 'failed'
+    })
     await daemon.stop()
   })
 })
 
-describe('a patrol replayed after a handover', () => {
-  /** The patrol's turn is cut for a handover that keeps it, then a fresh patrol service replays it, as a successor daemon would. */
-  async function handOver(d: any, behavior: { patrol: unknown }, next: PatrolBehavior) {
+describe('a check replayed after a handover', () => {
+  /** The check's turn is cut for a handover that keeps it, then a fresh follow-up service replays it, as a successor daemon would. */
+  async function handOver(d: any, behavior: { check: unknown }, next: CheckBehavior) {
     await d.interruptAgentTurns('bot-a', 'handover', 'handoff')
     d.assistantPatrolService = undefined
     d.absorbedContextTs.clear()
-    behavior.patrol = next
+    behavior.check = next
     await d.replayInbox(new Set(['bot-a']))
   }
-  const nothing: PatrolBehavior = async () => {}
+  const nothing: CheckBehavior = async () => {}
 
   it('counts an empty completion on a fresh service as a failure, backs off and keeps the check due', async () => {
-    const { daemon, d, behavior, patrols, reports, settled } = await boot(
-      scaffold([{ id: 'bot-a', assistantMode: ON }])
-    )
+    const { daemon, d, behavior, checks, reports, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = 'hang'
+    const item = await takeFollowUp(d)
+    behavior.check = 'hang'
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
-    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.runningKey).toBeTruthy(), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeTruthy(), WAIT)
 
     await handOver(d, behavior, nothing)
-    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.failures).toBe(1), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.id))?.failures).toBe(1), WAIT)
     await settled()
 
-    const state = await patrolState(d, item.id)
+    const state = await checkState(d, item.id)
     expect(state).toMatchObject({ failures: 1, stopped: false, patrolledNextCheck: null, runningKey: null })
     expect(state.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
-    expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
-      'Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.'
-    ])
     expect(reports()).toHaveLength(0)
     // The check stays due once the backoff is over.
     expect(await d.store.assistantPatrols.due('bot-a', Date.now() + 3 * MINUTE, 10)).toEqual([
@@ -728,17 +882,17 @@ describe('a patrol replayed after a handover', () => {
   })
 
   it('still delivers the report and counts the observation the cut turn recorded', async () => {
-    const { daemon, d, behavior, patrols, reports, settled, deps } = await boot(
+    const { daemon, d, behavior, checks, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
     await seedPlace(d)
-    const item = await takeItem(d)
+    const item = await takeFollowUp(d)
     let recorded = false
-    behavior.patrol = async (ctx) => {
+    behavior.check = async (ctx) => {
       await executeTool(
         ctx,
-        'updateItem',
-        { itemId: item.id, observation: 'The release is published.', report: 'The release is out.' },
+        'recordCheck',
+        { observation: 'The release is published.', report: 'The release is out.' },
         deps
       )
       recorded = true
@@ -752,31 +906,12 @@ describe('a patrol replayed after a handover', () => {
     await settled()
 
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    expect(await patrolState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
-    // The replay ran the same patrol; no second one started.
-    expect(new Set(patrols().map((c) => c.msg.thread)).size).toBe(1)
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
+    // The replay ran the same check; no second one started.
+    expect(new Set(checks().map((c) => c.msg.thread)).size).toBe(1)
     await daemon.stop()
   })
 })
-
-/** A patrol that saw a change: it records it and reports it, after `first` ran in its turn. */
-const reporting =
-  (deps: any, item: any, first: () => Promise<void> = async () => {}): PatrolBehavior =>
-  async (ctx) => {
-    await first()
-    await executeTool(
-      ctx,
-      'updateItem',
-      {
-        itemId: item.id,
-        version: item.version,
-        status: 'done',
-        observation: 'The release is published.',
-        report: 'The release is out.'
-      },
-      deps
-    )
-  }
 
 /** How many turns of the conversation's sessions were prompted with `text`. */
 const told = (hosts: any[], text: string): number =>
@@ -794,39 +929,39 @@ function watchReports(d: any, hold: Promise<unknown> = Promise.resolve()) {
   return seen
 }
 
-describe('a patrol passes on what it found before it settles', () => {
-  it('settles a run only once its report is in', async () => {
+describe('a check passes on what it found before it settles', () => {
+  it('settles a check only once its report is in', async () => {
     const { daemon, d, behavior, reports, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = reporting(deps, item)
+    const item = await takeFollowUp(d)
+    behavior.check = reporting(deps)
     let release!: () => void
     const seen = watchReports(d, new Promise<void>((resolve) => (release = resolve)))
 
     await d.patrols.sweep()
     await vi.waitFor(() => expect(seen.calls).toBe(1), WAIT)
-    // The report is still on its way, so the run still holds it and its check is not done.
-    const held = await patrolState(d, item.id)
+    // The report is still on its way, so the check still holds it and is not done.
+    const held = await checkState(d, item.id)
     expect(held).toMatchObject({ runningReport: 'The release is out.', patrolledNextCheck: null })
     expect(held.runningKey).toBeTruthy()
 
     release()
-    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.runningKey).toBeNull(), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeNull(), WAIT)
     await settled()
     expect(reports()).toHaveLength(1)
-    expect(await patrolState(d, item.id)).toMatchObject({ patrolledNextCheck: item.nextCheck, runningReport: null })
+    expect(await checkState(d, item.id)).toMatchObject({ patrolledNextCheck: item.nextCheck, runningReport: null })
     await daemon.stop()
   })
 
   it('delivers again after a crash between its report and its settling, and the conversation hears it once', async () => {
-    const { daemon, d, behavior, hosts, patrols, reports, settled, deps } = await boot(
+    const { daemon, d, behavior, hosts, checks, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
-    const place = await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = reporting(deps, item)
+    await seedPlace(d)
+    const item = await takeFollowUp(d)
+    behavior.check = reporting(deps)
     const seen = watchReports(d)
-    // The process dies after the report is in, before the run is settled.
+    // The process dies after the report is in, before the check is settled.
     const ledger = d.store.assistantPatrols
     const succeed = ledger.succeed.bind(ledger)
     let crashed = false
@@ -840,43 +975,42 @@ describe('a patrol passes on what it found before it settles', () => {
     await vi.waitFor(() => expect(crashed).toBe(true), WAIT)
     await settled()
     expect(reports()).toHaveLength(1)
-    expect((await patrolState(d, item.id)).runningKey).toBeTruthy()
+    expect((await checkState(d, item.id)).runningKey).toBeTruthy()
 
-    // The next start finds the run its turn left unsettled, and settles it without a second report.
+    // The next start finds the check its turn left unsettled, and settles it without a second report.
     d.assistantPatrolService = undefined
     await d.replayInbox(new Set(['bot-a']))
     await settled()
 
-    const key = sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', place.scope)
-    expect(await patrolState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
-    expect(await d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: 'done' })
+    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
+    expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({ state: 'done' })
     expect(seen.calls).toBe(2)
     expect(reports()).toHaveLength(1)
     expect(told(hosts, 'The release is out.')).toBe(1)
     expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
       'The release is published.'
     ])
-    expect(patrols()).toHaveLength(1)
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 
   it('leaves a report a drain held back to the next start, which delivers it once', async () => {
-    const { daemon, d, behavior, patrols, reports, settled, deps } = await boot(
+    const { daemon, d, behavior, checks, reports, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: ON }])
     )
     await seedPlace(d)
-    const item = await takeItem(d)
-    // The daemon starts draining as the patrol's turn ends.
-    behavior.patrol = async (ctx) => {
-      await reporting(deps, item)(ctx)
+    const item = await takeFollowUp(d)
+    // The daemon starts draining as the check's turn ends.
+    behavior.check = async (ctx) => {
+      await reporting(deps)(ctx)
       d.draining = true
     }
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(reports()).toHaveLength(0)
-    expect(await patrolState(d, item.id)).toMatchObject({
+    expect(await checkState(d, item.id)).toMatchObject({
       runningReport: 'The release is out.',
       patrolledNextCheck: null
     })
@@ -890,32 +1024,35 @@ describe('a patrol passes on what it found before it settles', () => {
 
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    expect(await patrolState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
-    expect(patrols()).toHaveLength(1)
+    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 
-  it('records a report the conversation refused on the item and settles the run as before', async () => {
+  it('records a report the conversation refused on the follow-up and settles the check as before', async () => {
     const { daemon, d, behavior, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = reporting(deps, item)
+    const item = await takeFollowUp(d)
+    behavior.check = reporting(deps)
     d.reportIntoParent = async () => false
 
     await d.patrols.sweep()
-    await vi.waitFor(async () => expect((await patrolState(d, item.id))?.patrolledNextCheck).toBe(item.nextCheck), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.id))?.patrolledNextCheck).toBe(item.nextCheck), WAIT)
     await settled()
 
-    expect(await patrolState(d, item.id)).toMatchObject({ runningKey: null, failures: 0 })
+    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, failures: 0 })
     expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
       'The release is published.',
-      'A report from a scheduled check could not reach the conversation the item was taken in.'
+      'A report from a check could not reach the conversation this follow-up belongs to.'
+    ])
+    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 1)).toEqual([
+      expect.objectContaining({ reported: false })
     ])
     await daemon.stop()
   })
 })
 
-describe('a patrol report after `!new`', () => {
+describe('a check’s report after `!new`', () => {
   /** `!new` rotates the conversation onto a fresh coordinate; `speak` also starts its session, as the next message would. */
   async function rotate(d: any, place: { coordinate: string; scope: string }, speak: boolean): Promise<string> {
     const next = await d.store.advanceAppendCoordinate('bot-a', 'C1', place.coordinate, place.scope)
@@ -936,16 +1073,24 @@ describe('a patrol report after `!new`', () => {
     return next
   }
 
-  it('lands in the conversation’s current session, not the one the patrol started under', async () => {
-    const { daemon, d, behavior, patrols, reports, settled, deps } = await boot(
-      scaffold([{ id: 'bot-a', assistantMode: ON }])
-    )
+  it('lands in the conversation’s current session, which owns the follow-up from its next check', async () => {
+    const { daemon, d, behavior, reports, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const place = await seedPlace(d)
-    const item = await takeItem(d)
+    const item = await takeFollowUp(d)
     let next = ''
-    behavior.patrol = reporting(deps, item, async () => {
+    behavior.check = async (ctx) => {
       next = await rotate(d, place, true)
-    })
+      await executeTool(
+        ctx,
+        'recordCheck',
+        {
+          observation: 'The release is published.',
+          report: 'The release is out.',
+          nextCheck: new Date(Date.now() + 60 * MINUTE).toISOString()
+        },
+        deps
+      )
+    }
 
     await d.patrols.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
@@ -954,20 +1099,30 @@ describe('a patrol report after `!new`', () => {
     expect(next).not.toBe(place.coordinate)
     expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    // The patrol still belongs to the session it started under.
-    const key = sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', place.scope)
-    expect(await d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({
+    // The check ran under the session it started under; the next one is the new session's.
+    expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
       parentSessionId: 'sid-parent-bot-a',
       state: 'done'
     })
+    await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
+    behavior.check = quiet(deps)
+    await d.patrols.sweep()
+    await vi.waitFor(
+      async () =>
+        expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
+          parentSessionId: 'sid-current-bot-a'
+        }),
+      WAIT
+    )
+    await settled()
     await daemon.stop()
   })
 
   it('falls back to the session it started under while the new one has not begun', async () => {
     const { daemon, d, behavior, reports, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const place = await seedPlace(d)
-    const item = await takeItem(d)
-    behavior.patrol = reporting(deps, item, async () => {
+    await takeFollowUp(d)
+    behavior.check = reporting(deps, async () => {
       await rotate(d, place, false)
     })
 
@@ -980,85 +1135,73 @@ describe('a patrol report after `!new`', () => {
   })
 })
 
-describe('the daily patrol budget', () => {
-  it('starts no patrol past the agent’s budget in 24 hours', async () => {
-    expect(DEFAULT_DAILY_PATROL_BUDGET).toBe(50)
-    const { daemon, d, behavior, patrols, settled, deps } = await boot(
+describe('the daily check budget', () => {
+  it('starts no scheduled check past the agent’s budget in 24 hours', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(
       scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { dailyPatrolBudget: 1 } } }])
     )
     await seedPlace(d)
-    await takeItem(d, { title: 'First', nextCheck: Date.now() - 2 * MINUTE })
-    await takeItem(d, { title: 'Second', nextCheck: Date.now() - MINUTE })
-    behavior.patrol = quiet(deps)
+    await takeFollowUp(d, { title: 'First', nextCheck: Date.now() - 2 * MINUTE })
+    await takeFollowUp(d, { title: 'Second', nextCheck: Date.now() - MINUTE })
+    behavior.check = quiet(deps)
 
     await d.patrols.sweep()
-    await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     await d.patrols.sweep()
     await settled()
-    expect(patrols()).toHaveLength(1)
+    expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
 })
 
-describe('item tool text', () => {
-  it('says a next check schedules a read-only check that reports only a change', () => {
-    const text = (name: string) => JSON.stringify(ASSISTANT_ITEM_TOOLS.find((t) => t.name === name))
-    expect(text('takeItem')).toContain('A next check schedules a read-only check of the item at that time')
-    expect(text('takeItem')).toContain('reports here only if something changed')
-    expect(text('takeItem')).not.toContain('cannot wake yourself')
-    expect(text('updateItem')).toContain('A new nextCheck schedules the next read-only check of the item')
-    expect(text('takeItem')).not.toContain('nothing wakes you')
-    expect(text('updateItem')).not.toContain('nothing wakes you')
+describe('follow-up tool text', () => {
+  const followUp = {
+    id: 'item-1',
+    taskKey: 'slack:C1:subsession:patrol-1:bot-a',
+    version: 1,
+    status: 'active',
+    title: 'Confirm the new build works',
+    doneWhen: null,
+    summary: '',
+    observations: []
+  } as unknown as AssistantItem
+
+  it('says a next check runs a read-only check that reports only a change', () => {
+    const text = JSON.stringify(FOLLOW_UP_TOOL)
+    expect(text).toContain('at each next check a read-only check runs in the background and reports here only if')
+    expect(text).not.toContain('nothing wakes you')
   })
 
-  it('tells a patrol its report promises no later message, time or check', () => {
-    const item = {
-      id: 'item-1',
-      version: 1,
-      status: 'active',
-      title: 'Confirm the new build works',
-      doneWhen: null,
-      summary: '',
-      observations: []
-    } as unknown as AssistantItem
-    const prompt = patrolPrompt(item, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
+  it('tells a check its report promises no later message, time or check', () => {
+    const prompt = patrolPrompt(followUp, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
     expect(prompt).toContain(
       '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no ' +
-        'next check. When the item should be looked at again, set `nextCheck`; the people following the item are ' +
-        'not told about it.'
+        'next check. When it should be looked at again, set `nextCheck`; the people in its conversation are not ' +
+        'told about it.'
     )
     // The report-only-on-a-change rule is unchanged.
     expect(prompt).toContain('Otherwise leave `report` out: nothing is said.')
-    const report = JSON.stringify((PATROL_UPDATE_ITEM_TOOL.inputSchema as ObjectToolSchema).properties.report)
+    const report = JSON.stringify((RECORD_CHECK_TOOL.inputSchema as ObjectToolSchema).properties.report)
     expect(report).toContain('promises no later message, no time anyone will hear back and no next check')
   })
 
-  it('asks a patrol to write in the language of the people in its item’s conversation', () => {
-    const item = {
-      id: 'item-1',
-      version: 1,
-      status: 'active',
-      title: '确认新版本可用',
-      doneWhen: null,
-      summary: '',
-      observations: []
-    } as unknown as AssistantItem
-    const prompt = patrolPrompt(item, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
-    expect(prompt).toContain(`The item gets its observation either way. ${PATROL_LANGUAGE}`)
+  it('asks a check to write in the language of the people in its conversation', () => {
+    const prompt = patrolPrompt({ ...followUp, title: '确认新版本可用' }, { itemId: 'item-1', nextCheck: 0 })
+    expect(prompt).toContain(`The check records its observation either way. ${CHECK_LANGUAGE}`)
   })
 
-  it('advertises exactly the patrol updateItem’s arguments', () => {
+  it('advertises exactly recordCheck’s arguments', () => {
     const view = (schema: { properties?: Record<string, unknown>; required?: string[] }) => ({
       properties: Object.keys(schema.properties ?? {}).sort(),
       required: [...(schema.required ?? [])].sort()
     })
-    expect(view(z.toJSONSchema(PATROL_UPDATE_ITEM_ARGS, { io: 'input', unrepresentable: 'any' }) as never)).toEqual(
-      view(PATROL_UPDATE_ITEM_TOOL.inputSchema as never)
+    expect(view(z.toJSONSchema(RECORD_CHECK_ARGS, { io: 'input', unrepresentable: 'any' }) as never)).toEqual(
+      view(RECORD_CHECK_TOOL.inputSchema as never)
     )
   })
 
-  it('filters a tool list to reads and the patrol’s own updateItem', () => {
+  it('filters a tool list to reads, recordCheck and propose', () => {
     const all = [
       ...toolsForIntegrations(
         [
@@ -1078,12 +1221,12 @@ describe('item tool text', () => {
         ],
         { organizationKnowledge: true, decisions: true, currentPlatform: 'slack' }
       ),
-      ...ASSISTANT_ITEM_TOOLS
+      FOLLOW_UP_TOOL
     ]
     const names = patrolTools(all).map((t) => t.name)
     expect(names).not.toContain('sendMessage')
-    expect(names).not.toContain('takeItem')
+    expect(names).not.toContain('followUp')
     expect(names).not.toContain('evaluateDecision')
-    expect(names.filter((n) => n === 'updateItem')).toHaveLength(1)
+    expect(names.filter((n) => n === 'recordCheck')).toHaveLength(1)
   })
 })

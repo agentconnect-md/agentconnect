@@ -47,7 +47,7 @@ _Avoid_: Conversation, thread (when meaning the agent's private context)
 
 **Task**:
 Work that runs in the background in its own context and belongs to one session, the one it
-reports to: a delegated task, a patrol, or an approved proposal. Lists, limits, and permission
+reports to: a delegated task, a follow-up, or an approved proposal. Lists, limits, and permission
 requests that cover all three use this name. A task has no conversation of its own.
 _Avoid_: Background work, sub-session, background session, runtime job
 
@@ -59,14 +59,16 @@ _Avoid_: Sub-session, subagent, child session, started task
 **Owning session**:
 The session a task belongs to. For a delegated task it is the session that delegated it: only
 it can message or stop the task, and the task's results return to it. The relationship lasts
-across rounds of work.
+across rounds of work. A follow-up belongs to its place instead: its owning session is that
+place's current long session, the new one after `!new`.
 _Avoid_: Parent, sub-session parent, most recent caller
 
-**Patrol**:
-A task of the conversation an assistant-mode agent checks for: its own read-only check of one
-item it follows, run when the item's next check comes due. It runs once and reports, proposes,
-or stays silent.
-_Avoid_: Sub-session, patrol sub-session, patrol task
+**Follow-up**:
+An assistant-mode agent's read-only task of the place it was taken in, which it takes with
+`followUp` once the person confirms. Each round is a **check**, run in the follow-up's one retained
+context when its next check comes due or its place messages it; a check reports, proposes, or
+stays silent. It is addressed by `taskId` and lasts until it is done or stopped.
+_Avoid_: Item, patrol, ledger
 
 **Approved proposal**:
 As a task, the run an approved proposal carries out, once, with the agent's own permissions,

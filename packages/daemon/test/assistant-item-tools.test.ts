@@ -1,4 +1,4 @@
-// The assistant item tools (assistant-mode.md §1.2, §5.4): offered only in assistant mode, writing the ledger as the asker.
+// The follow-up tools (assistant-mode.md §5.12): `followUp` in assistant mode only, and `recordCheck` inside a follow-up's check only.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,10 +6,11 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 import {
-  ASSISTANT_ITEM_TOOLS,
   askerIdentity,
-  assistantItemToolsFor,
-  type AssistantItemLedgerPort
+  FOLLOW_UP_TOOL,
+  followUpToolsFor,
+  PROPOSE_TOOL,
+  RECORD_CHECK_TOOL
 } from '../src/mcp/ops/assistant-items.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -19,8 +20,8 @@ import { openTestStore } from './store-support.js'
 
 const AGENT = 'agent-a'
 const ALICE = 'slack:T0EXAMPLE:U0ALICE'
-const BOB = 'slack:T0EXAMPLE:U0BOB'
-const ITEM_TOOL_NAMES = ['takeItem', 'listItems', 'updateItem', 'followItem']
+const NOW = Date.UTC(2026, 9, 9, 0, 0)
+const TASK_KEY = 'slack:D0ALICE:subsession:patrol-1:agent-a:slack:scope-1'
 
 const session = (over: Partial<SessionContext> = {}): SessionContext => ({
   agentId: AGENT,
@@ -31,11 +32,11 @@ const session = (over: Partial<SessionContext> = {}): SessionContext => ({
   channel: 'D0ALICE',
   thread: 'append:1',
   deliveryThread: '1700000000.000100',
-  tools: ASSISTANT_ITEM_TOOLS,
+  tools: [FOLLOW_UP_TOOL],
   ...over
 })
 const ALICE_DM = session()
-const GENERAL = session({ channel: 'C0GENERAL', isDm: false })
+const CHECK = session({ thread: 'subsession:patrol-1', tools: [RECORD_CHECK_TOOL, PROPOSE_TOOL] })
 
 let store: LocalStore | undefined
 afterEach(async () => {
@@ -43,203 +44,188 @@ afterEach(async () => {
   store = undefined
 })
 
-/** Real SQLite ledger behind the deps; the asker is whoever the test says started the turn. */
+/** A real store behind the deps; the asker is whoever the test says started the turn, and a check runs while `checking` holds. */
 async function setup(options: { enabled?: boolean } = {}) {
   store = await openTestStore()
-  const ledger: AssistantItemLedgerPort = store.assistantItems
+  const s = store
   let asker: string | undefined = ALICE
+  let checking: string | undefined
+  const reports: string[] = []
   const deps = {
     assistantItems: {
-      ledgerFor: () => (options.enabled === false ? undefined : ledger),
-      askerFor: async () => asker
+      ledgerFor: () => (options.enabled === false ? undefined : s.assistantItems),
+      askerFor: async () => asker,
+      take: async (
+        ctx: SessionContext,
+        input: { title: string; doneWhen: string; nextCheck?: number; summary?: string; asker: string }
+      ) =>
+        await s.assistantItems.create({
+          agentId: ctx.agentId,
+          title: input.title,
+          doneWhen: input.doneWhen,
+          ...(input.nextCheck !== undefined ? { nextCheck: input.nextCheck } : {}),
+          status: input.nextCheck !== undefined ? 'active' : 'waiting',
+          ...(input.summary !== undefined ? { summary: input.summary } : {}),
+          origin: { platform: ctx.platform, channel: ctx.channel, transportScope: ctx.transportScope ?? null },
+          taskKey: TASK_KEY,
+          asker: input.asker
+        }),
+      patrol: {
+        itemFor: async () => checking,
+        report: async (_ctx: SessionContext, _itemId: string, text: string) => {
+          if (!checking) return false
+          reports.push(text)
+          return true
+        },
+        now: () => NOW
+      }
     }
   } as unknown as OpsDeps
   const call = (ctx: SessionContext, name: string, args: Record<string, unknown>) =>
     executeTool(ctx, name, args, deps) as Promise<any>
   return {
-    ledger: store.assistantItems,
+    s,
     call,
+    reports,
     askAs: (identity: string | undefined) => {
       asker = identity
+    },
+    check: (itemId: string | undefined) => {
+      checking = itemId
     }
   }
 }
 
-describe('item tools are offered only to assistant-mode agents', () => {
-  it('derives the offered set from the agent’s switch and reserves every name', () => {
-    expect(assistantItemToolsFor({})).toEqual([])
-    expect(assistantItemToolsFor({ assistantMode: { enabled: false } })).toEqual([])
-    expect(assistantItemToolsFor({ assistantMode: { enabled: true } }).map((t) => t.name)).toEqual(ITEM_TOOL_NAMES)
-    expect(ALL_TOOL_NAMES).toEqual(expect.arrayContaining(ITEM_TOOL_NAMES))
+describe('the follow-up tools are offered only to assistant-mode agents', () => {
+  it('derives the offered set from the agent’s switch and reserves every name, the item tools gone', () => {
+    expect(followUpToolsFor({})).toEqual([])
+    expect(followUpToolsFor({ assistantMode: { enabled: false } })).toEqual([])
+    expect(followUpToolsFor({ assistantMode: { enabled: true } }).map((t) => t.name)).toEqual(['followUp'])
+    expect(ALL_TOOL_NAMES).toEqual(expect.arrayContaining(['followUp', 'recordCheck', 'propose']))
+    for (const gone of ['takeItem', 'listItems', 'updateItem', 'followItem']) expect(ALL_TOOL_NAMES).not.toContain(gone)
   })
 
-  it('refuses every item tool once the agent is not in assistant mode', async () => {
+  it('refuses followUp once the agent is not in assistant mode', async () => {
     const { call } = await setup({ enabled: false })
-    for (const [name, args] of [
-      ['takeItem', { title: 'x', doneWhen: 'y' }],
-      ['listItems', {}],
-      ['updateItem', { itemId: 'i', observation: 'seen' }],
-      ['followItem', { itemId: 'i' }]
-    ] as const)
-      await expect(call(ALICE_DM, name, args)).rejects.toThrow('only to an agent in assistant mode')
+    await expect(call(ALICE_DM, 'followUp', { title: 'x', doneWhen: 'y' })).rejects.toThrow(
+      'only to an agent in assistant mode'
+    )
   })
 
-  it('carries the confirmation, team-visibility and duplicate rules in the descriptions', () => {
-    const take = ASSISTANT_ITEM_TOOLS.find((t) => t.name === 'takeItem')!.description
-    expect(take).toContain('only after the person confirms')
-    const privateRule = 'never quote or paraphrase a direct message, a private channel or a private group conversation'
-    expect(take).toContain(privateRule)
-    expect(take).toContain('visible to the whole organization and records only who asked for what')
-    expect(take).toContain('attach this to <who>’s item?')
-    const update = ASSISTANT_ITEM_TOOLS.find((t) => t.name === 'updateItem')!.description
-    expect(update).toContain('record the conflict in the summary')
-    expect(update).toContain(privateRule)
+  it('carries the confirmation and duplicate rules in followUp’s description', () => {
+    const text = FOLLOW_UP_TOOL.description
+    expect(text).toContain('call this only after the person confirms')
+    expect(text).toContain('Call listTasks before restating')
+    expect(text).toContain(
+      'offer to send the change to it with sendMessage action `messageTask` instead of taking a second one'
+    )
+    expect(text).toContain('promise a check then, never an action')
+    expect(text).toContain('by the `taskId` this returns')
   })
 })
 
-describe('takeItem', () => {
-  it('records the asker and the current place as origin and first follower', async () => {
-    const { call, ledger } = await setup()
-    const { item } = await call(ALICE_DM, 'takeItem', {
+describe('followUp', () => {
+  it('takes a follow-up of this conversation for the person asking and hands back its taskId', async () => {
+    const { call, s } = await setup()
+    const taken = await call(ALICE_DM, 'followUp', {
       title: 'Ship the release notes',
       doneWhen: 'The notes are posted in the release channel',
       nextCheck: '2026-10-09T09:00:00+08:00',
       summary: 'Alice asked for the release notes.'
     })
-    expect(item).toEqual({
-      id: expect.any(String),
-      title: 'Ship the release notes',
-      status: 'active',
-      doneWhen: 'The notes are posted in the release channel',
-      nextCheck: '2026-10-09T01:00:00.000Z',
-      summary: 'Alice asked for the release notes.',
-      origin: { platform: 'slack', channel: 'D0ALICE' },
-      followers: [{ identity: ALICE, place: { platform: 'slack', channel: 'D0ALICE' }, here: true }],
-      version: 1,
-      updatedAt: expect.any(String),
-      observations: []
+    expect(taken).toEqual({
+      taskId: TASK_KEY,
+      followUp: {
+        title: 'Ship the release notes',
+        doneWhen: 'The notes are posted in the release channel',
+        nextCheck: '2026-10-09T01:00:00.000Z',
+        summary: 'Alice asked for the release notes.'
+      },
+      note: expect.stringContaining('Its first check runs at nextCheck')
     })
-    const place = { platform: 'slack', channel: 'D0ALICE', transportScope: 'slack:scope-1' }
-    expect(await ledger.get(AGENT, item.id)).toMatchObject({ origin: place, followers: [{ identity: ALICE, place }] })
+    expect(await s.assistantItems.byTaskKey(AGENT, TASK_KEY)).toMatchObject({
+      status: 'active',
+      asker: ALICE,
+      origin: { platform: 'slack', channel: 'D0ALICE', transportScope: 'slack:scope-1' }
+    })
   })
 
   it('needs a person who asked, a done-when and an instant with an offset', async () => {
-    const { call, askAs, ledger } = await setup()
-    await expect(call(ALICE_DM, 'takeItem', { title: 'x' })).rejects.toThrow('doneWhen')
+    const { call, askAs, s } = await setup()
+    await expect(call(ALICE_DM, 'followUp', { title: 'x' })).rejects.toThrow('doneWhen')
     await expect(
-      call(ALICE_DM, 'takeItem', { title: 'x', doneWhen: 'y', nextCheck: '2026-10-09T09:00:00' })
+      call(ALICE_DM, 'followUp', { title: 'x', doneWhen: 'y', nextCheck: '2026-10-09T09:00:00' })
     ).rejects.toThrow('ISO-8601 instant with an offset')
-    await expect(call(ALICE_DM, 'takeItem', { title: 'x'.repeat(301), doneWhen: 'y' })).rejects.toThrow('300')
+    await expect(call(ALICE_DM, 'followUp', { title: 'x'.repeat(301), doneWhen: 'y' })).rejects.toThrow('300')
     askAs(undefined)
-    await expect(call(ALICE_DM, 'takeItem', { title: 'x', doneWhen: 'y' })).rejects.toThrow("needs a person's request")
-    expect(await ledger.list(AGENT)).toEqual([])
+    await expect(call(ALICE_DM, 'followUp', { title: 'x', doneWhen: 'y' })).rejects.toThrow("needs a person's request")
+    expect(await s.assistantItems.list(AGENT)).toEqual([])
+  })
+
+  it('takes one with no next check as waiting until it is messaged', async () => {
+    const { call, s } = await setup()
+    const taken = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
+    expect(taken.note).toContain('until you message it with messageTask')
+    expect(await s.assistantItems.byTaskKey(AGENT, TASK_KEY)).toMatchObject({ status: 'waiting', nextCheck: null })
   })
 })
 
-describe('listItems', () => {
-  it('lists active and waiting items by default, one item with its observations on request', async () => {
-    const { call, ledger } = await setup()
-    const a = (await call(ALICE_DM, 'takeItem', { title: 'a', doneWhen: 'done' })).item
-    const b = (await call(ALICE_DM, 'takeItem', { title: 'b', doneWhen: 'done' })).item
-    const c = (await call(ALICE_DM, 'takeItem', { title: 'c', doneWhen: 'done' })).item
-    await call(ALICE_DM, 'updateItem', { itemId: b.id, version: 1, status: 'waiting' })
-    await call(ALICE_DM, 'updateItem', { itemId: c.id, version: 1, status: 'done' })
-    await ledger.create({ agentId: 'agent-b', title: 'not mine', origin: { ...a.origin, transportScope: null } })
+describe('recordCheck', () => {
+  it('records what the check saw, sets the next check or ends the follow-up, and keeps a report', async () => {
+    const { call, check, reports, s } = await setup()
+    const { taskId } = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
+    const item = (await s.assistantItems.byTaskKey(AGENT, taskId))!
+    check(item.id)
 
-    const open = await call(GENERAL, 'listItems', {})
-    expect(open.items.map((item: { title: string }) => item.title).sort()).toEqual(['a', 'b'])
-    expect(open.items[0].followers[0]).not.toHaveProperty('here')
-    expect(open).not.toHaveProperty('more')
-    expect((await call(GENERAL, 'listItems', { status: ['done'] })).items.map((i: any) => i.id)).toEqual([c.id])
-    expect(await call(GENERAL, 'listItems', { limit: 1 })).toMatchObject({ items: [{}], more: true })
-
-    await call(ALICE_DM, 'updateItem', { itemId: a.id, observation: 'Draft is in review' })
-    const one = await call(GENERAL, 'listItems', { itemId: a.id })
-    expect(one.items).toEqual([
-      expect.objectContaining({
-        id: a.id,
-        observations: [{ text: 'Draft is in review', author: ALICE, at: expect.any(String) }]
-      })
-    ])
-    await expect(call(GENERAL, 'listItems', { itemId: 'missing' })).rejects.toThrow('no item missing')
-    await expect(call(GENERAL, 'listItems', { status: ['paused'] })).rejects.toThrow('status')
-  })
-})
-
-describe('updateItem', () => {
-  it('changes fields only on the current version and reports a stale one as a conflict', async () => {
-    const { call, ledger } = await setup()
-    const { item } = await call(ALICE_DM, 'takeItem', {
-      title: 'Fix the flaky test',
-      doneWhen: 'Ten green runs in a row',
-      nextCheck: '2026-10-09T09:00:00Z'
-    })
-    const moved = await call(ALICE_DM, 'updateItem', {
-      itemId: item.id,
-      version: 1,
-      status: 'waiting',
-      summary: 'Waiting on the CI fix; Bob wants it skipped instead, Alice wants it fixed.'
-    })
-    expect(moved).toMatchObject({ ok: true, item: { status: 'waiting', version: 2 } })
-
-    const stale = await call(ALICE_DM, 'updateItem', {
-      itemId: item.id,
-      version: 1,
-      status: 'dropped',
-      observation: 'should not land'
-    })
-    expect(stale).toMatchObject({
-      ok: false,
-      reason: 'conflict',
-      message: expect.stringContaining('retry with version 2'),
-      current: { status: 'waiting', version: 2 }
-    })
-    expect((await ledger.get(AGENT, item.id))?.observations).toEqual([])
-
-    const closed = await call(ALICE_DM, 'updateItem', { itemId: item.id, version: 2, status: 'done' })
-    expect(closed).toMatchObject({ ok: true, item: { status: 'done', nextCheck: null, version: 3 } })
-  })
-
-  it('appends an observation without a version and refuses empty or unversioned changes', async () => {
-    const { call, askAs } = await setup()
-    const { item } = await call(ALICE_DM, 'takeItem', { title: 'Watch the deploy', doneWhen: 'It is live' })
-    askAs(undefined)
-    const observed = await call(ALICE_DM, 'updateItem', { itemId: item.id, observation: 'Rollout at 40%' })
-    expect(observed).toMatchObject({
+    const later = new Date(NOW + 60 * 60_000).toISOString()
+    expect(await call(CHECK, 'recordCheck', { observation: 'Rollout at 40%', nextCheck: later })).toEqual({
       ok: true,
-      item: { version: 1, observations: [{ text: 'Rollout at 40%', author: null }] }
+      followUp: { state: 'waiting', nextCheck: later }
     })
-    await expect(call(ALICE_DM, 'updateItem', { itemId: item.id })).rejects.toThrow('needs a change')
-    await expect(call(ALICE_DM, 'updateItem', { itemId: item.id, status: 'done' })).rejects.toThrow('version')
-    await expect(call(ALICE_DM, 'updateItem', { itemId: 'missing', version: 1, status: 'done' })).rejects.toThrow(
-      'no item missing'
-    )
-    await expect(call(ALICE_DM, 'updateItem', { itemId: 'missing', observation: 'x' })).rejects.toThrow(
-      'no item missing'
-    )
+    expect(await s.assistantItems.get(AGENT, item.id)).toMatchObject({ status: 'active', nextCheck: NOW + 60 * 60_000 })
+    expect(await call(CHECK, 'recordCheck', { observation: 'Rollout paused' })).toMatchObject({
+      followUp: { state: 'waiting', nextCheck: null }
+    })
+    expect(await s.assistantItems.get(AGENT, item.id)).toMatchObject({ status: 'waiting', nextCheck: null })
+    expect(
+      await call(CHECK, 'recordCheck', { observation: 'It is live', done: true, report: 'The deploy is live.' })
+    ).toEqual({ ok: true, followUp: { state: 'done', nextCheck: null }, report: 'passed on when this check ends' })
+    expect(reports).toEqual(['The deploy is live.'])
+    const after = (await s.assistantItems.get(AGENT, item.id))!
+    expect(after.status).toBe('done')
+    expect(after.observations.map((o) => [o.text, o.author])).toEqual([
+      ['Rollout at 40%', 'check'],
+      ['Rollout paused', 'check'],
+      ['It is live', 'check']
+    ])
+    // An ended follow-up still takes what its last check saw, and stays ended.
+    expect(await call(CHECK, 'recordCheck', { observation: 'Seen again', nextCheck: later })).toMatchObject({
+      followUp: { state: 'ended', nextCheck: null }
+    })
+    expect((await s.assistantItems.get(AGENT, item.id))?.status).toBe('done')
   })
-})
 
-describe('followItem', () => {
-  it('attaches the asker in the current place once', async () => {
-    const { call, askAs } = await setup()
-    const { item } = await call(ALICE_DM, 'takeItem', { title: 'Renew the certificate', doneWhen: 'Renewed' })
-    askAs(BOB)
-    const followed = await call(GENERAL, 'followItem', { itemId: item.id })
-    expect(followed).toMatchObject({
-      added: true,
-      item: {
-        version: 1,
-        followers: [
-          { identity: ALICE, place: { platform: 'slack', channel: 'D0ALICE' } },
-          { identity: BOB, place: { platform: 'slack', channel: 'C0GENERAL' }, here: true }
-        ]
-      }
-    })
-    expect((await call(GENERAL, 'followItem', { itemId: item.id })).added).toBe(false)
-    await expect(call(GENERAL, 'followItem', { itemId: 'missing' })).rejects.toThrow('no item missing')
-    askAs(undefined)
-    await expect(call(GENERAL, 'followItem', { itemId: item.id })).rejects.toThrow("needs a person's request")
+  it('refuses outside a check, without an observation, too soon, or both ending and rescheduling', async () => {
+    const { call, check, s } = await setup()
+    const { taskId } = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
+    const item = (await s.assistantItems.byTaskKey(AGENT, taskId))!
+    await expect(
+      call({ ...ALICE_DM, tools: [RECORD_CHECK_TOOL] }, 'recordCheck', { observation: 'x' })
+    ).rejects.toThrow('available only in a follow-up’s check')
+    await expect(call(CHECK, 'recordCheck', { observation: 'x' })).rejects.toThrow('this check has ended')
+    check(item.id)
+    await expect(call(CHECK, 'recordCheck', {})).rejects.toThrow('observation')
+    await expect(
+      call(CHECK, 'recordCheck', { observation: 'x', nextCheck: new Date(NOW + 60_000).toISOString() })
+    ).rejects.toThrow('at least five minutes from now')
+    await expect(
+      call(CHECK, 'recordCheck', { observation: 'x', done: true, nextCheck: new Date(NOW + 3_600_000).toISOString() })
+    ).rejects.toThrow('not both')
+    // A name a check was not offered is refused, whatever the runtime sends.
+    await expect(call(CHECK, 'followUp', { title: 'x', doneWhen: 'y' })).rejects.toThrow(
+      'followUp is not available in a follow-up’s read-only check'
+    )
+    expect((await s.assistantItems.get(AGENT, item.id))?.observations).toEqual([])
   })
 })
 
@@ -278,13 +264,13 @@ describe('askerIdentity', () => {
   })
 })
 
-describe('the daemon offers the item tools by the agent’s switch', () => {
+describe('the daemon offers followUp by the agent’s switch', () => {
   const dirs: string[] = []
   afterAll(() => {
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
   })
 
-  it('registers them for an assistant-mode agent only, and hands the ledger out by the live switch', async () => {
+  it('registers it for an assistant-mode agent only, and hands the follow-ups out by the live switch', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-assistant-tools-'))
     dirs.push(root)
     writeFileSync(
@@ -337,24 +323,26 @@ describe('the daemon offers the item tools by the agent’s switch', () => {
           deps: OpsDeps
         }
       }
-      const registeredTools = (agent: Record<string, unknown>): string[] => {
+      const registeredTools = (agent: Record<string, unknown>, thread = '1'): string[] => {
         const [server] = seam.sessions.deps.mcpServersFor({
           agent: { name: 'x', runtime: 'claude', integrations: [], mcpServers: [], ...agent },
           platform: 'slack',
           channel: 'C1',
-          thread: '1',
+          thread,
           deliveryThread: '1',
           isDm: false,
-          sessionKey: `slack:C1:1:${String(agent.id)}`
+          sessionKey: `slack:C1:${thread}:${String(agent.id)}`
         })
         const token = server!.env.find((entry) => entry.name === 'AC_MCP_TOKEN')!.value
         return seam.mcp.sessions.get(token)!.tools.map((tool) => tool.name)
       }
-      expect(registeredTools({ id: on, assistantMode: { enabled: true } })).toEqual(
-        expect.arrayContaining(ITEM_TOOL_NAMES)
-      )
-      const plain = registeredTools({ id: off })
-      for (const name of ITEM_TOOL_NAMES) expect(plain).not.toContain(name)
+      expect(registeredTools({ id: on, assistantMode: { enabled: true } })).toContain('followUp')
+      expect(registeredTools({ id: on, assistantMode: { enabled: true } })).not.toContain('recordCheck')
+      expect(registeredTools({ id: off })).not.toContain('followUp')
+      // A follow-up's check records and proposes, and takes no follow-up of its own.
+      const inCheck = registeredTools({ id: on, assistantMode: { enabled: true } }, 'subsession:patrol-1')
+      expect(inCheck).toEqual(expect.arrayContaining(['recordCheck', 'propose']))
+      expect(inCheck).not.toContain('followUp')
 
       const items = seam.mcp.deps.assistantItems!
       expect(items.ledgerFor(on)).toBe(seam.store.assistantItems)

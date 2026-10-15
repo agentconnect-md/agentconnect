@@ -4,7 +4,6 @@ import { deriveTitle } from '../session/derive-title.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
   isDelegationCoordinate,
-  isPatrolCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
   subsessionCoordinate
@@ -231,21 +230,12 @@ function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
       : (end.reason ?? 'interrupted')
 }
 
-/** The one short report a patrol or approved proposal that ended without its own gets in its owning session. */
-export function subsessionEndReport(
-  key: string,
-  end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
-  thread: string | null | undefined
-): string {
-  const [header, name, tail] = isPatrolCoordinate(thread)
-    ? ['[patrol ended]', 'Patrol', 'It sent no result.']
-    : [
-        '[approved proposal ended]',
-        'Approved proposal',
-        'It sent no result; delegate a task if the work is still needed.'
-      ]
-  if (end.outcome === 'completed') return `${header} ${name} ${key} ended without reporting back. ${tail}`
-  return `${header} ${name} ${key} stopped before finishing (${endReason(end)}). ${tail}`
+/** The one short report an approved proposal that ended without its own gets in its owning session; a follow-up's check settles on its own path. */
+export function subsessionEndReport(key: string, end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
+  const tail = 'It sent no result; delegate a task if the work is still needed.'
+  if (end.outcome === 'completed')
+    return `[approved proposal ended] Approved proposal ${key} ended without reporting back. ${tail}`
+  return `[approved proposal ended] Approved proposal ${key} stopped before finishing (${endReason(end)}). ${tail}`
 }
 
 /** Records one delivery verdict as an evaluation event and hands it back. */
@@ -315,6 +305,8 @@ export interface CollabCoreHost {
   activeGateEntries(): ReadonlyMap<string, QueueEntry>
   /** A sub-session was opened from the parent session's live turn, whose people it then reads for (assistant-mode.md §5.5). */
   noteSubsessionOpened?(childKey: string, parentKey: string): void
+  /** assistant-mode.md §5.12: a message to a follow-up from its place's current long session; anything else names nothing. */
+  messageFollowUp?(req: ContinueSubsessionReq, taskKey: string, callerKey: string): Promise<MessageAgentResult>
   /** Background SDK tasks a child may still legitimately be waiting on. */
   sdkLease(): ReadonlyMap<string, { tasks: ReadonlyMap<string, unknown>; armedWakes: number }>
   /** Resolves once no interrupt is still unwinding the agent's turns, so a fresh delivery is admitted again. */
@@ -649,7 +641,7 @@ export class CollabCoordinator {
         }
         // The claim: whoever moves the row out of `open` is the one report, kept on the row until it is admitted.
         const report: SubsessionEndReport = {
-          text: subsessionEndReport(key, end, sessionThreadOf(end.msg)),
+          text: subsessionEndReport(key, end),
           hopCount: end.hopCount ?? 0,
           caller: {
             platform: end.msg.platform,
@@ -868,7 +860,7 @@ export class CollabCoordinator {
         const ended = { outcome: 'interrupted' as const, reason: 'no longer running' }
         const round = current.round ?? 1
         if (!isDelegationCoordinate(caller.thread)) {
-          const text = subsessionEndReport(key, ended, caller.thread)
+          const text = subsessionEndReport(key, ended)
           return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
         }
         const report: SubsessionEndReport = {
@@ -2167,12 +2159,7 @@ export class CollabCoordinator {
     callerKey: string
   ): Promise<{ row: AssistantSubsession; caller: DaemonReportCaller } | undefined> {
     const store = this.host.store()
-    const index = store.assistantSubsessions
-    const row =
-      (await index.get(agentId, id)) ??
-      (await store
-        .getSessionByOutwardIdOnly(id, agentId)
-        .then((child) => (child ? index.get(agentId, child.key) : undefined)))
+    const row = await this.indexedSubsession(agentId, id)
     if (!row || row.kind === 'patrol' || row.parentSessionKey !== callerKey) return undefined
     // The recorded parent, by outward id too: a rotated or recreated caller session is not the one that opened it.
     if (!(await store.getSession(callerKey))) return undefined
@@ -2195,10 +2182,12 @@ export class CollabCoordinator {
     })
     const notFound = () => refuse(TASK_NOT_FOUND, TASK_NOT_FOUND_MESSAGE)
     if (isSubsessionCoordinate(req.callerThread)) return notFound()
-    const owned = await this.ownedSubsession(agentId, req.sessionId, callerKey)
-    if (!owned) return notFound()
-    const { caller } = owned
-    const key = owned.row.childSessionKey
+    // A follow-up is owned by its place, which the host judges (assistant-mode.md §5.12).
+    const indexed = await this.indexedSubsession(agentId, req.sessionId)
+    const followUp = indexed?.kind === 'patrol' && this.host.messageFollowUp ? indexed : undefined
+    const owned = followUp ? undefined : await this.ownedSubsession(agentId, req.sessionId, callerKey)
+    if (!followUp && !owned) return notFound()
+    const key = followUp?.childSessionKey ?? owned!.row.childSessionKey
     const index = this.host.store().assistantSubsessions
     const submissionId = req.submissionId ?? randomUUID()
     // Scoped to the calling session, so a submission id names nothing outside it.
@@ -2227,20 +2216,34 @@ export class CollabCoordinator {
     }
     this.subsessionSubmissions.add(id)
     try {
-      const result = await this.admitSubsessionInput(req, {
-        key,
-        caller,
-        callerKey,
-        deliveryId,
-        receiptId,
-        messageId,
-        refuse
-      })
+      const result = followUp
+        ? { round: 0, receipt: await this.host.messageFollowUp!(req, key, callerKey) }
+        : await this.admitSubsessionInput(req, {
+            key,
+            caller: owned!.caller,
+            callerKey,
+            deliveryId,
+            receiptId,
+            messageId,
+            refuse
+          })
       await index.settleInput(agentId, id, result.round, JSON.stringify(result.receipt))
       return result.receipt
     } finally {
       this.subsessionSubmissions.delete(id)
     }
+  }
+
+  /** One of the agent's indexed sub-sessions, by its key or its session's outward id. */
+  private async indexedSubsession(agentId: string, id: string): Promise<AssistantSubsession | undefined> {
+    const store = this.host.store()
+    const index = store.assistantSubsessions
+    return (
+      (await index.get(agentId, id)) ??
+      (await store
+        .getSessionByOutwardIdOnly(id, agentId)
+        .then((child) => (child ? index.get(agentId, child.key) : undefined)))
+    )
   }
 
   /** Decide the round under the report lock, then await the child's admission outside it with the round held open. */

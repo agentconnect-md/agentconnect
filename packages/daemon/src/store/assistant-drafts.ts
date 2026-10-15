@@ -556,12 +556,13 @@ export class AssistantDraftLedger {
     return await this.select(agentIds, "action = 'task' AND status = 'executing'", [])
   }
 
-  /** Whether the patrol run in this session already proposed: a run proposes at most once. */
-  async proposedFrom(agentId: string, sourceSessionKey: string): Promise<boolean> {
+  /** Whether the follow-up's check running in this session since `since` already proposed: a check proposes at most once. */
+  async proposedFrom(agentId: string, sourceSessionKey: string, since: number): Promise<boolean> {
     const rows = (
       await this.db.query(
-        `SELECT 1 AS hit FROM assistant_draft WHERE agentId = ? AND action = 'task' AND sourceSessionKey = ? LIMIT 1`,
-        [agentId, sourceSessionKey]
+        `SELECT 1 AS hit FROM assistant_draft
+          WHERE agentId = ? AND action = 'task' AND sourceSessionKey = ? AND createdAt >= ? LIMIT 1`,
+        [agentId, sourceSessionKey, since]
       )
     ).rows
     return rows.length > 0

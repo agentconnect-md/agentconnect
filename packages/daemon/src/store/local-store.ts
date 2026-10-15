@@ -17,7 +17,8 @@ import {
   isAppendCoordinate,
   nextAppendCoordinate
 } from '../session/append-coordinate.js'
-import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { isSubsessionCoordinate, patrolCoordinate } from '../session/subsession-coordinate.js'
+import { monotonicTs } from './monotonic-ts.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -1303,7 +1304,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 52
+export const SCHEMA_VERSION = 53
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1926,8 +1927,157 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       await db.exec('ALTER TABLE assistant_subsession ADD COLUMN round INTEGER NOT NULL DEFAULT 1')
   },
   // v52 addresses replies to session messages: each session's origin becomes one received call (send-message-guide.md §9.6).
-  async (db, store) => await migrateOriginsToSessionMessages(db, store.postgres)
+  async (db, store) => await migrateOriginsToSessionMessages(db, store.postgres),
+  // v53 makes each open item a follow-up of its place (assistant-mode.md §5.12); closed items and followers go.
+  async (db, store) => await migrateItemsToFollowUps(db, store.postgres)
 ]
+
+/** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
+async function addColumn(db: StoreTx, postgres: boolean, table: string, column: string, type: string): Promise<void> {
+  if (postgres) {
+    await db.exec(`ALTER TABLE IF EXISTS ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`)
+    return
+  }
+  const columns = (await db.query(`PRAGMA table_info(${table})`, [])).rows as { name: string }[]
+  if (columns.length > 0 && !columns.some((c) => c.name === column))
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+}
+
+/** Each active or waiting item becomes a follow-up with its own session; an in-flight patrol becomes that follow-up's check. */
+async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<void> {
+  if (!(await tableExists(db, postgres, 'assistant_item'))) return
+  await addColumn(db, postgres, 'assistant_item', 'taskKey', "TEXT NOT NULL DEFAULT ''")
+  await addColumn(db, postgres, 'assistant_item', 'asker', 'TEXT')
+  await addColumn(db, postgres, 'assistant_item', 'shared', 'INTEGER NOT NULL DEFAULT 0')
+  for (const [column, type] of [
+    ['runningCheck', 'INTEGER'],
+    ['runningSince', 'INTEGER'],
+    ['runningInput', 'TEXT'],
+    ['pendingMessages', 'TEXT']
+  ] as const)
+    await addColumn(db, postgres, 'assistant_patrol', column, type)
+  await db.exec(ASSISTANT_PATROL_SCHEMA)
+  await db.exec(ASSISTANT_SUBSESSION_SCHEMA)
+  // Done and dropped items are not carried.
+  const closed = "SELECT id FROM assistant_item WHERE status NOT IN ('active', 'waiting')"
+  for (const table of ['assistant_item_observation', 'assistant_item_link', 'assistant_patrol'])
+    await db.exec(`DELETE FROM ${table} WHERE itemId IN (${closed})`)
+  await db.exec("DELETE FROM assistant_item WHERE status NOT IN ('active', 'waiting')")
+  const followers = await tableExists(db, postgres, 'assistant_item_follower')
+  const items = (
+    await db.query(
+      `SELECT id, agentId, originPlatform, originChannel, originTransportScope, createdAt FROM assistant_item
+        WHERE taskKey = ''`,
+      []
+    )
+  ).rows as {
+    id: string
+    agentId: string
+    originPlatform: string
+    originChannel: string
+    originTransportScope: string
+    createdAt: number
+  }[]
+  for (const item of items) {
+    const { id, agentId } = item
+    const scope = item.originTransportScope
+    // The first follower is the person who asked; the others are dropped without being told.
+    const first = followers
+      ? ((
+          await db.query(
+            'SELECT identity FROM assistant_item_follower WHERE agentId = ? AND itemId = ? ORDER BY addedAt, identity LIMIT 1',
+            [agentId, id]
+          )
+        ).rows[0] as { identity: string } | undefined)
+      : undefined
+    // Only the latest observation is carried, as the handover a check reads.
+    const latest = (
+      await db.query(
+        'SELECT MAX(observationVersion) AS v FROM assistant_item_observation WHERE agentId = ? AND itemId = ?',
+        [agentId, id]
+      )
+    ).rows[0] as { v: number | null } | undefined
+    if (latest?.v != null)
+      await db.query(
+        'DELETE FROM assistant_item_observation WHERE agentId = ? AND itemId = ? AND observationVersion < ?',
+        [agentId, id, Number(latest.v)]
+      )
+    const patrol = (
+      await db.query('SELECT runningKey, updatedAt FROM assistant_patrol WHERE agentId = ? AND itemId = ?', [
+        agentId,
+        id
+      ])
+    ).rows[0] as { runningKey: string | null; updatedAt: number } | undefined
+    const running = patrol?.runningKey ?? undefined
+    const taskKey =
+      running ??
+      sessionKey(item.originPlatform, item.originChannel, patrolCoordinate(monotonicTs()), agentId, scope || null)
+    await db.query('UPDATE assistant_item SET taskKey = ?, asker = ? WHERE agentId = ? AND id = ?', [
+      taskKey,
+      first?.identity ?? null,
+      agentId,
+      id
+    ])
+    if (running !== undefined) {
+      // A patrol in flight settles as this follow-up's first check.
+      const since = Number(patrol!.updatedAt)
+      await db.query(
+        'UPDATE assistant_patrol SET runningCheck = 1, runningSince = ? WHERE agentId = ? AND itemId = ?',
+        [since, agentId, id]
+      )
+      await db.query(
+        'INSERT OR IGNORE INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)',
+        [agentId, id, since]
+      )
+      continue
+    }
+    const owner = await placeSessionInMigration(db, agentId, item.originPlatform, item.originChannel, scope)
+    if (owner)
+      await db.query(
+        `INSERT OR IGNORE INTO assistant_subsession
+           (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, kind)
+         VALUES (?, ?, ?, ?, 'done', ?, 'patrol')`,
+        [agentId, taskKey, owner.sessionId, owner.key, Number(item.createdAt)]
+      )
+  }
+  // A finished patrol's own row names no follow-up any more.
+  await db.exec(
+    `DELETE FROM assistant_subsession WHERE kind = 'patrol'
+       AND childSessionKey NOT IN (SELECT taskKey FROM assistant_item WHERE assistant_item.agentId = assistant_subsession.agentId)`
+  )
+  await db.exec('DROP TABLE IF EXISTS assistant_item_follower')
+}
+
+/** A place's long session as the store resolves it, read inside a migration: the append session, else the only other one. */
+async function placeSessionInMigration(
+  db: StoreTx,
+  agentId: string,
+  platform: string,
+  channel: string,
+  scope: string
+): Promise<{ key: string; sessionId: string } | undefined> {
+  const reserved = (
+    await db.query(
+      'SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?',
+      [agentId, channel, scope]
+    )
+  ).rows[0] as { coordinate: string } | undefined
+  const rows = reserved
+    ? ((
+        await db.query('SELECT key, sessionId FROM sessions WHERE key = ?', [
+          sessionKey(platform, channel, reserved.coordinate, agentId, scope || null)
+        ])
+      ).rows as { key: string; sessionId: string | null }[])
+    : ((
+        await db.query(
+          `SELECT key, sessionId FROM sessions WHERE agentId = ? AND platform = ? AND channel = ?
+             AND COALESCE(transportScope, '') = ? AND thread NOT LIKE 'subsession:%' LIMIT 2`,
+          [agentId, platform, channel, scope]
+        )
+      ).rows as { key: string; sessionId: string | null }[])
+  const [row] = rows
+  return rows.length === 1 && row?.sessionId ? { key: row.key, sessionId: row.sessionId } : undefined
+}
 
 /** Give every session created by another one a synthesized `call` from its origin, carrying an outstanding request. */
 async function migrateOriginsToSessionMessages(db: StoreTx, postgres: boolean): Promise<void> {
@@ -2239,7 +2389,10 @@ export class LocalStore {
       query: (sql, params) => this.db.query(sql, params),
       transaction: (fn) => this.transaction(fn)
     })
-    this.assistantPatrols = new AssistantPatrolLedger({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantPatrols = new AssistantPatrolLedger({
+      query: (sql, params) => this.db.query(sql, params),
+      transaction: (fn) => this.transaction(fn)
+    })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })

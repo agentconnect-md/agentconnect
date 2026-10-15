@@ -17,7 +17,10 @@ import {
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   AssistantDraftStatus,
   AssistantSubsessionCursor,
+  AssistantActivityFollowUpStatus,
+  AssistantActivityTaskKind,
   AgentPermissionOption,
+  FOLLOW_UP_TASKS_V1_FEATURE,
   isSubsessionCoordinate,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
@@ -77,10 +80,22 @@ const DraftsPageDto = z.object({
   /** Background work's permission requests waiting on an answer, oldest first; empty from an agent version that does not list them. */
   permissionRequests: z.array(PermissionRequestDto)
 })
+/** A follow-up's own fields; `doneWhen` and `recentChecks` only where the row is `visible`. */
+const FollowUpDto = z.object({
+  /** `paused` stopped after five failed checks in a row, until it is messaged. */
+  status: AssistantActivityFollowUpStatus,
+  /** The next scheduled check; null when it waits until it is messaged, or has ended. */
+  nextCheck: z.string().nullable(),
+  doneWhen: z.string().nullable(),
+  /** Its newest finished checks, newest first: when, what it saw, and whether its report reached the conversation. */
+  recentChecks: z.array(z.object({ at: z.string(), observation: z.string(), reported: z.boolean() }))
+})
 const SubsessionDto = z.object({
   /** The background work's session id, present only when the caller may open it. */
   sessionId: z.string().nullable(),
+  /** Its title; a follow-up's label. */
   title: z.string().nullable(),
+  /** `open` until it ends; a follow-up is `open` while waiting, checking or paused and `done` once done or stopped. */
   state: AssistantActivitySubsessionState,
   startedAt: z.string(),
   /** The caller may see this background work's conversation; otherwise only its state and start are shown. */
@@ -88,13 +103,19 @@ const SubsessionDto = z.object({
   /** The caller may stop its current turn: it is running and they may continue its session. */
   canStop: z.boolean(),
   /** The conversation that opened it, when the caller may see it. */
-  parent: ConversationDto.nullable()
+  parent: ConversationDto.nullable(),
+  /** Which kind of task it is; absent from an agent version that does not say. */
+  kind: AssistantActivityTaskKind.optional(),
+  /** Present on a follow-up (`kind: 'follow-up'`). */
+  followUp: FollowUpDto.optional()
 })
 const SubsessionsPageDto = z.object({
   subsessions: z.array(SubsessionDto),
   truncated: z.boolean(),
   /** Passed back as `cursor` for the next page of one conversation's background work; null on the last page and without `parentSessionId`. */
-  nextCursor: z.string().nullable()
+  nextCursor: z.string().nullable(),
+  /** The agent keeps follow-ups, listed here, in place of items. */
+  followUps: z.boolean().optional()
 })
 const SubsessionsQuery = z.object({
   /** Only the background work this conversation started, newest first. */
@@ -125,7 +146,7 @@ const ConversationParam = IdParam.extend({ sessionId: z.string().min(1).max(512)
 const ConversationProposalParam = ConversationParam.extend({ draftId: z.string().min(1).max(512) })
 const ProposalDecisionBody = z.object({ decision: z.enum(['approve', 'deny']) })
 const PROPOSAL_CHOICE = { approve: 'approve', deny: 'discard' } as const
-/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the work it asks to do and its item. */
+/** A proposal waiting in one webchat conversation: the sentence its card would lead with, why, the work it asks to do and its follow-up. */
 const ConversationProposalDto = z.object({
   /** Decided with `decideAssistantConversationProposal`. */
   id: z.string(),
@@ -134,7 +155,7 @@ const ConversationProposalDto = z.object({
   /** What the background session would carry out. */
   task: z.string(),
   itemId: z.string(),
-  /** The item's title as the agent last saw it; null once the item is gone. */
+  /** The follow-up's title as the agent last saw it; null once it is gone. */
   itemTitle: z.string().nullable(),
   createdAt: z.string(),
   expiresAt: z.string()
@@ -162,6 +183,13 @@ const MODE_OFF: Failure = {
   error: 'Conflict',
   message: 'the agent is not in assistant mode',
   code: 'ASSISTANT_MODE_OFF'
+}
+/** A daemon with `follow-up-tasks-v1` keeps follow-ups, listed with its tasks, in place of items (assistant-mode.md §5.12). */
+const ITEMS_REPLACED: Failure = {
+  status: 409,
+  error: 'Conflict',
+  message: 'this agent keeps follow-ups in place of items; they are listed with its tasks',
+  code: 'FOLLOW_UP_TASKS'
 }
 
 /** A daemon refusal or an unreachable daemon as a status the console can act on; null ⇒ rethrow. */
@@ -297,7 +325,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       editorOnly: boolean,
       need: { feature: string; refusal: string } = ACTIVITY,
       everyAgent = false
-    ): Promise<{ agent: AgentRecord; daemonId: DaemonId; assistant: boolean } | null> => {
+    ): Promise<{ agent: AgentRecord; daemonId: DaemonId; assistant: boolean; followUps: boolean } | null> => {
       const agent = await deps.repos.agent.get(orgOf(req), AgentId((req.params as { id: string }).id))
       if (!agent || !canView(agent, ctxOf(req))) {
         await send(reply, notFound('agent not found'))
@@ -340,7 +368,20 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         })
         return null
       }
-      return { agent, daemonId, assistant }
+      return {
+        agent,
+        daemonId,
+        assistant,
+        followUps: daemon.capabilities.features.includes(FOLLOW_UP_TASKS_V1_FEATURE)
+      }
+    }
+
+    // The item routes, for a daemon that still keeps items; one with follow-ups is refused before any daemon I/O.
+    const admitItems = async (req: FastifyRequest, reply: FastifyReply, editorOnly: boolean) => {
+      const admitted = await admit(req, reply, editorOnly)
+      if (!admitted?.followUps) return admitted
+      await send(reply, ITEMS_REPLACED)
+      return null
     }
 
     const readSection = async <O extends AssistantActivityReadReq['operation']>(
@@ -386,7 +427,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an assistant-mode agent’s items',
-          description: `Reads the items in the agent’s ledger from its daemon: \`section=open\` (the default) lists active and waiting items, \`closed\` lists done and dropped ones, most recently updated first, at most ${ASSISTANT_ACTIVITY_ITEMS_MAX}. Each item carries its title, status, what counts as done, when the agent noted it should check next, where it was asked and the places its followers follow it from — never who follows it or what was said. Anyone who can view the agent may read it; nothing is stored by this call.`,
+          description: `Reads the items in the agent’s ledger from its daemon: \`section=open\` (the default) lists active and waiting items, \`closed\` lists done and dropped ones, most recently updated first, at most ${ASSISTANT_ACTIVITY_ITEMS_MAX}. Each item carries its title, status, what counts as done, when the agent noted it should check next, where it was asked and the places its followers follow it from — never who follows it or what was said. Anyone who can view the agent may read it; nothing is stored by this call. An agent whose daemon keeps follow-ups in place of items is refused with 409 \`FOLLOW_UP_TASKS\`; its follow-ups are listed with its tasks.`,
           operationId: 'listAssistantItems',
           params: IdParam,
           querystring: z.object({
@@ -402,7 +443,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, false)
+        const admitted = await admitItems(req, reply, false)
         if (!admitted) return reply
         const page = await readSection(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
@@ -421,14 +462,14 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Get an assistant-mode agent’s item',
           description:
-            'Reads one ledger item with its team-visible summary and its newest observations, newest first. Anyone who can view the agent may read it.',
+            'Reads one ledger item with its team-visible summary and its newest observations, newest first. Anyone who can view the agent may read it. An agent whose daemon keeps follow-ups in place of items is refused with 409 `FOLLOW_UP_TASKS`.',
           operationId: 'getAssistantItem',
           params: ItemParam,
           response: { 200: AssistantActivityItemDetail, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, false)
+        const admitted = await admitItems(req, reply, false)
         if (!admitted) return reply
         const answer = await readSection(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
@@ -447,14 +488,14 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Delete an assistant-mode agent’s item',
           description:
-            'Removes one item from the agent’s ledger; the agent stops following it and its followers are no longer reported to. Only callers who can edit the agent may delete an item.',
+            'Removes one item from the agent’s ledger; the agent stops following it and its followers are no longer reported to. Only callers who can edit the agent may delete an item. An agent whose daemon keeps follow-ups in place of items is refused with 409 `FOLLOW_UP_TASKS`; a follow-up is ended with `stopAssistantSubsession` instead.',
           operationId: 'deleteAssistantItem',
           params: ItemParam,
           response: { 200: OkDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        const admitted = await admit(req, reply, true)
+        const admitted = await admitItems(req, reply, true)
         if (!admitted) return reply
         const answer = await writeEdit(reply, admitted.daemonId, {
           agentId: admitted.agent.id,
@@ -472,7 +513,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s tasks',
-          description: `Lists the tasks the agent started (its delegated tasks, patrols and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. Nothing is stored by this call.`,
+          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done and its newest checks. A follow-up is listed under its place’s current long session. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
@@ -530,9 +571,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             const parent = viewable.get(s.parentSessionId)
             // Background work takes its owning session's audience; until its own row exists the owner decides.
             const visible = s.sessionId && rows.some((row) => String(row.id) === s.sessionId) ? !!child : !!parent
+            const followUp = s.followUp
             return {
               sessionId: child ? String(child.id) : null,
-              title: child?.title ?? null,
+              // A follow-up's label, like a session's title, only where its conversation may be seen.
+              title: followUp ? (visible ? followUp.title : null) : (child?.title ?? null),
               state: s.state,
               startedAt: s.createdAt,
               visible,
@@ -541,11 +584,23 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
                 s.state === 'open' &&
                 !!child &&
                 canContinueSession(child, ctxOf(req), audience.identitySet, audience.externalAccess),
-              parent: conversationOf(parent)
+              parent: conversationOf(parent),
+              ...(s.kind ? { kind: s.kind } : {}),
+              ...(followUp
+                ? {
+                    followUp: {
+                      status: followUp.status,
+                      nextCheck: followUp.nextCheck,
+                      doneWhen: visible ? followUp.doneWhen : null,
+                      recentChecks: visible ? followUp.recentChecks : []
+                    }
+                  }
+                : {})
             }
           }),
           truncated: page.truncated,
-          nextCursor: parentRow ? (page.nextCursor ?? null) : null
+          nextCursor: parentRow ? (page.nextCursor ?? null) : null,
+          ...(admitted.followUps ? { followUps: true } : {})
         }
       }
     )
@@ -557,7 +612,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Stop an agent’s task',
           description:
-            'Interrupts the current turn of one task the agent started (a delegated task, a patrol or an approved proposal), exactly as a stop from the conversation composer would: nothing is muted, it reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Only callers who may continue that task’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop tasks, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s.',
+            'Interrupts the current turn of one task the agent started (a delegated task or an approved proposal), exactly as a stop from the conversation composer would: nothing is muted, it reports back that it ended, and nothing it already did is undone; a process its runtime started in the background may keep running. The answer is `stopped`, or `not_running` when it had no turn to interrupt. Stopping a follow-up ends it, not just its check: no further checks run, and it answers `not_running` once it had already ended. Only callers who may continue that task’s session may stop it, and they are named in its transcript. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot stop tasks, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s.',
           operationId: 'stopAssistantSubsession',
           params: SubsessionParam,
           response: { 200: SubsessionStopDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -599,7 +654,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a scheduled check of an assistant-mode agent asks to do: its sentence, its reason and its item, with the work it asks to do as its text; once approved it runs in the conversation its item was taken in. \`permissionRequests\` lists the runtime permission requests tasks are waiting on, oldest first: what each asks to run, when it is denied and its task stops unless someone answers, and its options; the task and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a check of an assistant-mode agent’s follow-up asks to do: its sentence, its reason and its follow-up (\`itemId\`, \`itemTitle\`), with the work it asks to do as its text; once approved it runs in the conversation its follow-up belongs to. \`permissionRequests\` lists the runtime permission requests tasks are waiting on, oldest first: what each asks to run, when it is denied and its task stops unless someone answers, and its options; the task and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -698,7 +753,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List a webchat conversation’s pending proposals',
-          description: `Lists what the agent’s scheduled checks propose to do for items taken in one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out, its item and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
+          description: `Lists what the agent’s scheduled checks propose to do for follow-ups of one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out, its follow-up and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
           operationId: 'listAssistantConversationProposals',
           params: ConversationParam,
           response: { 200: ConversationProposalsDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }

@@ -89,6 +89,7 @@ import {
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
+  FOLLOW_UP_TASKS_V1_FEATURE,
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   AUTO_MERGE_FEATURE,
@@ -325,7 +326,7 @@ import {
   type LiveApp
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
-import { askerIdentity, assistantItemToolsFor, assistantModeOn } from './mcp/ops/assistant-items.js'
+import { askerIdentity, assistantModeOn, followUpToolsFor, placeOfSession } from './mcp/ops/assistant-items.js'
 import {
   AssistantDrafts,
   postAsAgent,
@@ -338,6 +339,7 @@ import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import {
+  askerKey,
   askerOf,
   askerOfFollower,
   PlaceMembers,
@@ -365,7 +367,12 @@ import type {
   AssistantDraftSource,
   AssistantDraftTarget
 } from './store/assistant-drafts.js'
-import { settlePost, type PostOrigin } from './mcp/ops/messaging.js'
+import {
+  settlePost,
+  type ContinueSubsessionReq,
+  type MessageAgentResult,
+  type PostOrigin
+} from './mcp/ops/messaging.js'
 import { slackDraftCardPort } from './platforms/slack/draft-card.js'
 import {
   MEMORY_NO_PERSON_LAYER,
@@ -822,7 +829,7 @@ import {
   subsessionLabel,
   type SubsessionApprovalRoute
 } from './permissions/subsession-approval.js'
-import { CollabCoordinator, type CollabHost } from './collab/coordinator.js'
+import { CollabCoordinator, TASK_NOT_FOUND, TASK_NOT_FOUND_MESSAGE, type CollabHost } from './collab/coordinator.js'
 import { legacySessionMessageId } from './collab/session-message.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
@@ -4244,6 +4251,17 @@ export class Daemon {
       assistantItems: {
         ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
         askerFor: (ctx) => this.assistantAskerFor(ctx),
+        // A follow-up of the session's place, owned by its long session, else by the session taking it (§5.12).
+        take: async (ctx, input) => {
+          const key = this.sessionKeyOf(ctx)
+          const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
+          return await this.patrols.take({
+            agentId: ctx.agentId,
+            origin: placeOfSession(ctx),
+            caller: { sessionId, key },
+            ...input
+          })
+        },
         patrol: {
           itemFor: (ctx) =>
             this.patrols.itemFor(
@@ -4285,7 +4303,15 @@ export class Daemon {
             .getSessionByOutwardIdOnly(id, agentId)
             .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
         stopSession: (key, actor) => this.stopSessionByKey(key, actor),
-        listForOwner: (agentId, parent, limit) => this.store.assistantSubsessions.listForOwner(agentId, parent, limit),
+        listForOwner: (agentId, parent, limit, opts) =>
+          this.store.assistantSubsessions.listForOwner(agentId, parent, limit, opts),
+        // A follow-up belongs to its place's current long session (assistant-mode.md §5.12).
+        followUps: {
+          own: async (ctx) =>
+            (await this.followUpOwner(ctx.agentId, this.sessionKeyOf(ctx), placeOfSession(ctx))) !== undefined,
+          get: (agentId, key) => this.store.assistantItems.byTaskKey(agentId, key),
+          stop: (ctx, item) => this.patrols.stop(ctx.agentId, item, this.taskStopper(ctx))
+        },
         sessionOf: async (key) => {
           const rec = await this.store.getSession(key)
           return rec ? { title: rec.title ?? null, updatedAt: rec.updatedAt } : undefined
@@ -4626,8 +4652,8 @@ export class Daemon {
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
-        // Assistant mode's item ledger (assistant-mode.md §5.4); each call re-checks the mode, since this list is fixed per session.
-        tools = [...tools, ...assistantItemToolsFor(agent)]
+        // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
+        tools = [...tools, ...followUpToolsFor(agent)]
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
         // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
@@ -4641,7 +4667,7 @@ export class Daemon {
         if (this.evaluationProfile.memory === 'configured') {
           tools.push(...this.memory.toolsForAgent(agent.id))
         }
-        // assistant-mode.md §5.9: a patrol gets the reads and its own updateItem, nothing that writes or posts.
+        // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const patrol = isPatrolCoordinate(thread)
         if (patrol) tools = patrolTools(tools)
         // Collaboration Arena §6: game-owned structured action tools, appended
@@ -7778,6 +7804,8 @@ export class Daemon {
       CONVERSATION_PERMISSION_REQUESTS_FEATURE,
       // Serves Activity's permission requests, sub-sessions and drafts for an agent outside assistant mode too; static.
       ACTIVITY_EVERY_AGENT_V1_FEATURE,
+      // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
+      FOLLOW_UP_TASKS_V1_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
@@ -8381,7 +8409,7 @@ export class Daemon {
     return this.assistantTaskService
   }
 
-  /** A patrol's proposal (assistant-mode.md §5.10): run in the item's place once approved, carded there or decided on a webchat conversation's page. */
+  /** A check's proposal (assistant-mode.md §5.10): run in its follow-up's place once approved, carded there or decided on a webchat conversation's page. */
   private async proposeFromPatrol(
     run: { agentId: string; key: string; item: AssistantItem },
     input: ProposeInput
@@ -8443,9 +8471,9 @@ export class Daemon {
       approver,
       note: approver
         ? `Waiting for ${approver} to approve; nothing runs until then, and it expires at ${expiresAt}. Do not ` +
-          'report it as well. Record what you saw with updateItem, then end your turn.'
+          'report it as well. Record what you saw with recordCheck, then end your turn.'
         : 'No approver could be reached, so it waits for an editor in the console until it expires at ' +
-          `${expiresAt}; nothing runs until then. Record what you saw with updateItem, then end your turn.`
+          `${expiresAt}; nothing runs until then. Record what you saw with recordCheck, then end your turn.`
     }
   }
 
@@ -8460,20 +8488,22 @@ export class Daemon {
     return (await this.collab.deliverDaemonReport({ agentId, caller, parentSessionId, text, reportId })).admitted
   }
 
-  /** Assistant-mode patrols (assistant-mode.md §5.9), built on first use over the live store. */
+  /** Assistant-mode follow-ups (assistant-mode.md §5.12), built on first use over the live store. */
   private assistantPatrolService?: AssistantPatrols
   private get patrols(): AssistantPatrols {
     this.assistantPatrolService ??= new AssistantPatrols({
       now: () => this.clock.now(),
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m), debug: (m) => this.log.debug(m) },
       agents: () => this.agents.values(),
-      // Only the duty holder patrols, never for a paused or draining agent; a missed check is not replayed.
+      // Only the duty holder checks, never for a paused or draining agent; a missed check is not replayed.
       mayPatrol: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
       draining: () => this.draining,
       items: this.store.assistantItems,
       patrols: this.store.assistantPatrols,
       subsessions: this.store.assistantSubsessions,
       parentFor: (agentId, place) => this.patrolParent(agentId, place),
+      sharedPlace: async (agentId, place) =>
+        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
       reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
@@ -8482,7 +8512,8 @@ export class Daemon {
         if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
           return undefined
         const rec = await this.store.getSession(key)
-        if (rec?.agentId !== agentId) return undefined
+        if (!rec) return 'missing'
+        if (rec.agentId !== agentId) return undefined
         return {
           platform: rec.platform,
           channel: rec.channel,
@@ -8490,15 +8521,71 @@ export class Daemon {
           ...(rec.transportScope ? { transportScope: rec.transportScope } : {})
         }
       },
+      stopSession: (key, actor) => this.stopSessionByKey(key, actor),
       proposals: {
-        proposedFrom: (agentId, key) => this.store.assistantDrafts.proposedFrom(agentId, key),
+        proposedFrom: (agentId, key, since) => this.store.assistantDrafts.proposedFrom(agentId, key, since),
         propose: (run, input) => this.proposeFromPatrol(run, input)
       }
     })
     return this.assistantPatrolService
   }
 
-  /** The long session of an item's place, which a patrol of the item takes as its parent and reports into. */
+  /** The calling session when it is its place's current long session, which owns the place's follow-ups (§5.12); their rows then name it. */
+  private async followUpOwner(
+    agentId: string,
+    callerKey: string,
+    place: AssistantPlace
+  ): Promise<{ sessionId: string; key: string } | undefined> {
+    const rec = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
+    if (rec?.key !== callerKey) return undefined
+    const sessionId = await this.store.ensureOutwardSessionId(rec.key, agentId, this.clock.now())
+    const owner = { sessionId, key: rec.key }
+    await this.store.assistantSubsessions.adoptFollowUps(agentId, place, owner)
+    return owner
+  }
+
+  /** `messageTask` to a follow-up (§5.12): only from its place's current long session; any other caller is told it names nothing. */
+  private async messageFollowUp(
+    req: ContinueSubsessionReq,
+    taskKey: string,
+    callerKey: string
+  ): Promise<MessageAgentResult> {
+    const agentId = req.callerAgentId
+    const place: AssistantPlace = {
+      platform: req.platform,
+      channel: req.callerChannel,
+      transportScope: req.callerTransportScope ?? null
+    }
+    const item = await this.store.assistantItems.byTaskKey(agentId, taskKey)
+    const ofPlace =
+      item !== undefined &&
+      item.origin.platform === place.platform &&
+      item.origin.channel === place.channel &&
+      (item.origin.transportScope ?? null) === place.transportScope
+    if (
+      !item ||
+      !ofPlace ||
+      !assistantModeOn(this.agents.get(agentId)) ||
+      !(await this.followUpOwner(agentId, callerKey, place))
+    )
+      return { delivered: false, targetSession: req.sessionId, reason: TASK_NOT_FOUND, message: TASK_NOT_FOUND_MESSAGE }
+    // Every sender behind the owning turn counts on the check, as on any turn (§5.5).
+    const askers = this.askersOfKey(callerKey, undefined)
+    const result = await this.patrols.message(agentId, item, {
+      text: req.text,
+      askers: { people: [...askers.people], nobody: askers.nobody }
+    })
+    if (result.kind === 'refused')
+      return { delivered: false, targetSession: taskKey, reason: result.reason, message: result.message }
+    return {
+      delivered: true,
+      targetSession: taskKey,
+      subsession: true,
+      followUp: result.kind === 'started' ? 'checking' : 'queued'
+    }
+  }
+
+  /** The long session of a follow-up's place, which owns it and takes its reports. */
   private async patrolParent(agentId: string, place: AssistantPlace): Promise<PatrolParent | undefined> {
     const rec = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
     if (!rec?.thread) return undefined
@@ -8959,26 +9046,35 @@ export class Daemon {
     return this.askersOfKey(key, ctx.integrationId, await this.openerOf(ctx.agentId, ctx.thread, key))
   }
 
-  /** Whom a sub-session's messages no person sent speak for: a patrol's or a task's item asker, else whoever opened it. */
+  /** Whom a sub-session's messages no person sent speak for: a follow-up's asker and its check's senders, a task's follow-up asker, else whoever opened it. */
   private async openerOf(agentId: string, thread: string, key: string): Promise<TurnAskers | undefined> {
     // A join's result continues the request of the person who answered Join, so its turn reads as them.
     const wake = this.joinWakeOpeners.get(this.activeGateEntries.get(key)?.msg.msgId ?? '')
     if (wake) return wake
-    if (isPatrolCoordinate(thread)) return await this.itemAskers(agentId, await this.patrols.itemFor(agentId, key))
+    if (isPatrolCoordinate(thread)) {
+      const { item, extra } = await this.patrols
+        .askersFor(agentId, key)
+        .catch(() => ({ item: undefined, extra: NOBODY }))
+      const asker = await this.itemAskers(agentId, item)
+      if (extra.people.length === 0 && !extra.nobody) return asker
+      // A check a message started also reads as every sender behind that message (assistant-mode.md §5.12).
+      const people = new Map([...asker.people, ...extra.people].map((p) => [askerKey(p), p]))
+      return { people: [...people.values()], nobody: asker.nobody || extra.nobody }
+    }
     if (isTaskCoordinate(thread)) {
       const task = await this.store.assistantDrafts.taskBySubsession(agentId, key).catch(() => undefined)
-      return await this.itemAskers(agentId, task?.proposal?.itemId)
+      const itemId = task?.proposal?.itemId
+      const item = itemId ? await this.store.assistantItems.get(agentId, itemId).catch(() => undefined) : undefined
+      return await this.itemAskers(agentId, item)
     }
     return isSubsessionCoordinate(thread) ? (this.subsessionOpeners.get(key) ?? NOBODY) : undefined
   }
 
-  /** The person recorded as having asked for an item: its first follower, on the bot the item came through. */
-  private async itemAskers(agentId: string, itemId: string | undefined): Promise<TurnAskers> {
-    const item = itemId ? await this.store.assistantItems.get(agentId, itemId).catch(() => undefined) : undefined
-    const first = item?.followers[0]
-    if (!first) return NOBODY
-    const bot = this.integrationIdForTransportScope(agentId, first.place.platform, first.place.transportScope)
-    const asker = askerOfFollower(first.identity, first.place.platform, bot)
+  /** The person who confirmed a follow-up, on the bot its place is reached through. */
+  private async itemAskers(agentId: string, item: AssistantItem | undefined): Promise<TurnAskers> {
+    if (!item?.asker) return NOBODY
+    const bot = this.integrationIdForTransportScope(agentId, item.origin.platform, item.origin.transportScope)
+    const asker = askerOfFollower(item.asker, item.origin.platform, bot)
     return asker ? { people: [asker], nobody: false } : NOBODY
   }
 
@@ -14115,6 +14211,7 @@ export class Daemon {
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
       noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
+      messageFollowUp: (req, taskKey, callerKey) => this.messageFollowUp(req, taskKey, callerKey),
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
       callerAskers: async (agentId, key, thread, integrationId) =>
@@ -25454,6 +25551,7 @@ export class Daemon {
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
       pendingSubsessionApprovals: (agentId) => this.permissions.pendingSubsessionApprovals(agentId),
+      stopAssistantFollowUp: (agentId, item, actor) => this.patrols.stop(agentId, item, actor),
       cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,

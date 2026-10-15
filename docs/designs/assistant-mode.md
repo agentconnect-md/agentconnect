@@ -6,7 +6,7 @@ Prerequisites: #2812, #2813. Work breakdown: #2810.
 
 **In one sentence:** switch an agent into assistant mode and it behaves like one person on the
 team — it keeps a continuous conversation with you in every place, what it hears in one place it
-knows in the others, it only says what the people present may hear, it keeps a ledger of what
+knows in the others, it only says what the people present may hear, it follows up on what
 everyone asked of it, checks on progress by itself, speaks up only when there is something to say,
 and asks before it acts.
 
@@ -51,17 +51,18 @@ does not pretend to defend against effects it cannot defend against.
 - **Shared with another organization.** In a place the platform reports as external (a Slack
   Connect channel) it answers as it does anywhere else, and what it shares there is the asking
   person's call. Approvals there go to an internal member, the place keeps its own memory, and its
-  list of open items is not brought there.
+  list of open follow-ups is not brought there.
 
 ### 1.2 Asking it to do things
 
-- Ask as you would a colleague. It restates its understanding — what to do, what counts as done,
-  when to check next — and on your confirmation the item enters its ledger.
-- The ledger is visible to the team. An item born in a DM or a private channel records who asked
-  for what, never that conversation's wording or details; it says so when it takes the item.
-- **It reports to whoever asked, in the place they asked.**
-- When two people ask for the same thing in different places, it asks "attach this to X's item?"
-  when restating, and both receive the report after you confirm.
+- Ask as you would a colleague. It restates its understanding — what to watch, what counts as
+  done, when to check next — and on your confirmation it takes a follow-up of that conversation.
+- A follow-up belongs to the place it was taken in: only that conversation is told of it, unless
+  it is a public channel, whose follow-ups every internal place of the agent is reminded of.
+- **It reports in the place you asked.** Tell it there to change what or when it checks, or to
+  stop following it up.
+- When an open follow-up of the conversation already covers a request, it offers to send that one
+  the change instead of taking a second.
 - When the asker can no longer be reached (DM closed, left the channel), reports go to the agent's
   responsible user (§5.1), and otherwise wait in its Activity view.
 
@@ -69,9 +70,9 @@ does not pretend to defend against effects it cannot defend against.
 
 - A delegated task is **work the conversation hands off on demand**, in a context of its own — "fix
   this bug and open a PR". Ordinary conversation stays in the main conversation.
-- Every agent has them, in assistant mode or not (§5.6). Patrols and approved proposals are tasks
-  of the conversation they report to as well, but no conversation delegates them, and they stay
-  assistant mode's.
+- Every agent has them, in assistant mode or not (§5.6). Follow-ups and approved proposals are
+  tasks of the conversation they report to as well, but no conversation delegates them, and they
+  stay assistant mode's.
 - In an IM: the main conversation says "started", then reports the result with a console link.
   Nothing extra appears on the platform.
 - Stopping and steering go through the conversation that delegated the task: "stop the PR one",
@@ -95,26 +96,26 @@ does not pretend to defend against effects it cannot defend against.
   current turn; a background process the runtime started itself (a build, a dev server) may keep
   running, and the answer says so.
 - To stop everything, **pause the agent** in the console (today's pause): main conversations
-  and tasks stop until resumed. Patrols missed meanwhile are not replayed; items
-  whose check is overdue are each checked once on the next patrol.
+  and tasks stop until resumed. Checks missed meanwhile are not replayed; follow-ups
+  whose check is overdue are each checked once after it resumes.
 - Stopping never undoes what is already done.
 
 ### 1.5 While you are away
 
-- At the agreed times it looks at the items in its ledger, **read-only**: it checks status, reads
+- At the agreed times it checks each follow-up, **read-only**: it checks status, reads
   logs, looks at PRs — no edits, no messages, no clicks. What always holds: it does nothing under
   its own identity and writes nothing through AgentConnect. "Does not touch your workspace" holds
   when the runtime has a read-only mode or runs in a sandbox; without either, the settings page
-  shows the patrol as _degraded_ (§5.9 says what that means).
+  shows its checks as _degraded_ (§5.9 says what that means).
 - Three outcomes: something you should know → one message; something it wants to do → a card
   "I want to do X because Y, OK?"; nothing → silence.
-- One message per item per state; non-urgent items go to the inbox; after repeated failures it
-  stops itself and tells you once. A turn interrupted by a rolling deploy is re-run without
+- One message per change; after repeated failures it stops checking that follow-up and tells you
+  once, until you message it. A turn interrupted by a rolling deploy is re-run without
   bothering you.
 
 ### 1.6 Approval
 
-- A proposal's card lands in the item's place of origin; for an external place, in the approver's
+- A proposal's card lands in its follow-up's place; for an external place, in the approver's
   DM instead (§5.5). Whoever could ask the agent there may approve it: in a DM, that person; in a
   channel, anyone whose own message would start a turn of the agent there; in webchat, whoever may
   continue the conversation, from its pending requests. Approving runs the approved proposal with the
@@ -128,10 +129,9 @@ does not pretend to defend against effects it cannot defend against.
 
 ### 1.7 Progress
 
-- "What's on your plate?" lists the items it follows, what it last saw for each, when it checks
-  next, what awaits approval, which tasks are running.
-- The console has the same Activity view plus recent patrols. The ledger is editable; delete an
-  item and it drops it.
+- "What's on your plate?" lists the follow-ups of the place, what it last saw for each, when it
+  checks next, what awaits approval, which tasks are running.
+- The console lists follow-ups among the tasks, with their recent checks; Stop ends one.
 
 ### 1.8 Enabling
 
@@ -193,7 +193,7 @@ does not pretend to defend against effects it cannot defend against.
 | Reports                         | `replyToSession`: injected into the parent session, never posted, through the parent's serial gate. Gaps: link state in memory (`childSessionLinks`, cleared at 2000); random delivery id; a full parent queue (10) drops the report; `!stop` deletes the queued messages and their inbox rows; a failing turn rejects everything queued; no report on failure; reports count as agent calls, and the hop cap is today's only loop bound                                                                                                                                     |
 | Stopping                        | `!stop` interrupts the session's current turn, does not cascade, does not mute under `append`; senders are any non-bot member of an enabled place. Agent pause (#288) interrupts every session and **drops queued messages**; nothing is replayed on resume. ACP cancels whole turns only; runtime-started background processes cannot be stopped                                                                                                                                                                                                                            |
 | Concurrency                     | Sessions sharing a workspace are **not serialized** (`admitActiveDispatch` waits on workspace mutations only); turns from several channels already run in parallel in one directory                                                                                                                                                                                                                                                                                                                                                                                          |
-| Deadline wake                   | Removed with the orchestration tools (#2979); an item's `nextCheck` falls due on the patrol's minute sweep                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Deadline wake                   | Removed with the orchestration tools (#2979); a follow-up's `nextCheck` falls due on the check sweep, once a minute                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Read-only modes                 | Matched by **name** (`read-only`, else `plan`). Claude Code has `plan`; **OpenCode's `read-only` is a daemon-authored agent injected only on the credential-less dream host**, a normal host has native `plan` with bash allowed; **Codex's `read-only` profile opens the network when the managed credential channel is enabled**, so a "read-only" session can run write calls through that channel with no permission request — both are credential problems, not filesystem ones. Dreams use a credential-less host; **per-turn distillation uses the agent's own host** |
 | Runtime versions                | Managed Codex follows a floating release channel (`version: ''`); only probed versions are known                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Workspace isolation             | `isolation: session` applies to git mode only; **scratch is always `shared`, on the pool too**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -254,7 +254,7 @@ A per-agent built-in policy beside `BuiltInMemoryBinding.dreaming`:
 export const AssistantModePolicy = z
   .object({
     enabled: z.boolean(),
-    /** Patrol cadence; absent ⇒ events and each item's own nextCheck only */
+    /** Follow-up check cadence (not read yet); absent ⇒ each follow-up's own next check only */
     patrolSchedule: z.string().min(1).max(128).optional(),
     timezone: z.string().min(1).max(64).optional(),
     instructions: z.string().max(4096).optional(),
@@ -279,7 +279,7 @@ admission list. Workspace isolation is untouched.
 
 **The responsible user is derived, never stored.** It is the member asked when no person is behind
 a draft, a proposal or a task's permission request (the asker, a schedule's creator or
-editor, an item's asker and a delegated task's opener always come first): the agent's creator while they are a
+editor, a follow-up's asker and a delegated task's opener always come first): the agent's creator while they are a
 member who may edit the agent, otherwise the editor who joined the organization first (membership
 time, then user id), otherwise nobody. The Control Plane derives it when it is asked (the approval
 route's `responsible` form, behind `assistant-responsible-route-v1`, so a daemon on an older Control
@@ -316,7 +316,7 @@ conversation. Each place has exactly one long session:
 
 Long sessions are kept per §4.2. Context relies on the runtime's own compaction; the standing
 summary rides the existing reminder path (§5.4). The trigger for an automatic rollover (reopening
-the context with the ledger and summary as a handover note) is an open question (§9).
+the context with the standing list and summary as a handover note) is an open question (§9).
 
 ### 5.3 Trust level
 
@@ -364,7 +364,7 @@ unlisted place on one session from its first message (§5.2).
 - **Output no event triggered asks first.** A place learns of a share from its next event, so
   before a post no event from that place triggered — a scheduled or hook run and its anchor
   message, a report round, a post from another place, a
-  a task's permission card, a patrol's proposal card — the daemon asks the platform whether
+  a task's permission card, a check's proposal card — the daemon asks the platform whether
   the place is shared now: on Slack the share flags of
   `conversations.info`, read through the channel lookup a platform module declares
   (`sharedConversations`). The answer is cached per place for a minute, the bound the membership
@@ -379,7 +379,7 @@ unlisted place on one session from its first message (§5.2).
   agent. What already applies to every agent then follows: an approval in the place goes to an
   internal member, the place's memory goes to its own place layer (never the shared one), and a
   post into it from another place is drafted or refused (§5.5). Assistant mode adds one thing of
-  its own: the standing summary of items is not injected there (§5.4 ②). Its replies, its other
+  its own: the standing list of follow-ups is not injected there (§5.4 ②). Its replies, its other
   writes there and its turns are what any agent's are.
 - Telegram groups, Discord channels, Feishu groups: no detection; such a place is internal.
 - DM: never external; what it is told is judged by its one person (§5.5). Webchat is internal by
@@ -398,35 +398,32 @@ unlisted place on one session from its first message (§5.2).
 
 ### 5.4 The shared mind
 
-§5.12 proposes replacing ① and ② with follow-ups, a kind of task.
+① and ② are follow-ups, a kind of task (§5.12), which replaced the item ledger and its standing
+summary.
 
-**① The item ledger** (daemon store, partitioned by agent, moving with duty):
+**① Follow-ups** (daemon store, the item ledger's tables, partitioned by agent, moving with duty):
 
 ```
-{ id, title, doneWhen, nextCheck, status: active | waiting | done | dropped,
-  followers: [{ identity: '<platform>:<scope>:<uid>' | 'user:<id>', place }],
-  origin: place, summary, observations: [...], subsessions: [...], proposals: [...], version }
+{ id, taskKey, title, doneWhen, nextCheck, status: active | waiting | done | dropped,
+  origin: place, asker, shared, summary, observations: [...], version }
 ```
 
-- Item summaries are visible to organization members; the wording, and any detail from a DM or a
-  private place, stays in the source session. This is an instruction to the model, not a filter.
-  Observations written by patrols are bound by standing instructions: team-visible, no quotes,
-  source content framed as untrusted data.
-- The ledger does not pass through the shared-memory exclusion gate — it is its own store, not
+- `taskKey` is the follow-up's own session key, its `taskId`; `asker` is the person who confirmed
+  it; `shared` says its place is a public channel, judged when it is taken and at every check.
+- Observations are what checks saw, the latest handed to every check; they are bound by standing
+  instructions: no quotes, source content framed as untrusted data.
+- Follow-ups do not pass through the shared-memory exclusion gate — they are their own store, not
   agent memory.
-- Concurrency: field-level merge (append observations), CAS only on state transitions.
-- Followers are keyed by platform identity plus place, with no cross-platform merge (P1).
-  "Someone left" is handled by **delivery failure**: an undeliverable report goes to the
-  responsible user (§5.1), otherwise it waits in Activity.
-- Duplicates are never merged automatically; the model asks when restating and calls
-  `attachFollower` on confirmation. Conflicts between followers are not detected in P0; the model
-  says so in the current place and writes it into the summary.
+- Concurrency: field-level merge (append observations); a check's schedule and a stop write
+  without a version handshake, and an ended follow-up is never reopened.
 
-**② The standing summary**: `id`, title, status and followers' places of active and waiting
-items; capped at 30; injected through the existing reminder path (`shouldRemind`, which already
-handles first turn, restart and compaction); every internal place receives the same summary. Incremental injection (`lastInjectedVersion`) is not in P0.
-An external place (§5.3) receives none, tasks delegated there included: the ledger is internal,
-and nobody there asked for it. The item tools still answer there when someone asks (#2979, B4).
+**② The standing list**: label, the place it belongs to, and its next check (or that it waits) of
+the open follow-ups a place may see: its own, each with its `taskId`, and every public channel's;
+a private channel's, a group DM's and a DM's only there (§5.12). Capped at 30 and injected through
+the existing reminder path (`shouldRemind`, which already handles first turn, restart and
+compaction). Incremental injection (`lastInjectedVersion`) is not in P0. An external place (§5.3)
+receives none, tasks delegated there included: follow-ups are internal, and nobody there asked for
+them. `followUp` still answers there when someone asks (#2979, B4).
 Every session that can delegate tasks, in assistant mode or not, is also told which of its
 delegated tasks are running now, each by its `taskId` and label, at most 10 and then a count. The block is
 omitted when none runs. It rides the same points and is re-injected on the next turn after one starts or
@@ -443,7 +440,7 @@ webchat conversations (§5.5 "Reads", the listing).
 
 **④ The people's local time** is no longer assistant mode's own: every agent's turns carry it,
 by the order in [product conventions](../product-conventions.md#local-time). In assistant mode it
-still rides every turn — main conversations, delegated tasks, patrols, approved proposals and report rounds — as
+still rides every turn — main conversations, delegated tasks, follow-up checks, approved proposals and report rounds — as
 one line in the turn prelude, current at that turn: `Now: 2026-10-12 Mon 04:20 (Asia/Shanghai,
 UTC+08:00).` The runtime host's clock is never presented as the people's time. The line is
 context, not an instruction; no tool's parameters change, and instants the agent writes
@@ -457,7 +454,7 @@ context, not an instruction; no tool's parameters change, and instants the agent
 > **Write**: judged by who is asking, for every agent (§5.5 "Writes"): a platform write tool
 > (`sendMessage`, `scheduleMessage`, reactions, bookmarks, canvases, lists, `createConversation`…)
 > acts on the current place and wherever every person asking could post themselves; a post into an
-> external place from elsewhere is a draft an internal member approves (below). Item and report
+> external place from elsewhere is a draft an internal member approves (below). Follow-up and report
 > traffic across places goes through §5.7 as structured fields. The agent-to-agent forms of
 > `sendMessage` are unchanged.
 > **External**: an external place reads and posts like an internal one, for every agent (§5.5
@@ -473,7 +470,7 @@ context, not an instruction; no tool's parameters change, and instants the agent
 
 ¹ The shared memory layer never holds content from DMs, webchat, private places or places with
 outsiders (memory layers, below), so opening it everywhere does not reopen what the read rule closes.
-² The standing summary of items is not injected there (§5.4 ②), and its approvals go to an internal
+² The standing list of follow-ups is not injected there (§5.4 ②), and its approvals go to an internal
 member (below).
 
 **Replies in an external place (issue #2979, item B4):**
@@ -493,7 +490,7 @@ member (below).
 - **What stays external**, for every agent: an approval there goes to an internal member (below);
   the place keeps its own memory layer; a post into it from another place is drafted or refused
   (below); a newly found one starts Off (#2980). Assistant mode also does not inject its standing
-  summary there (§5.4 ②), since the item ledger is internal.
+  summary there (§5.4 ②), since follow-ups are internal.
 - A reply drafted before the change stays approvable and posts unchanged in its original thread.
 
 **Drafts:**
@@ -569,8 +566,8 @@ member (below).
   conversation where the agent is enabled, since the write rule already decides where the people
   asking may post. It is a separate change so that it can be reverted alone.
 - **The 1:1 write bar is removed.** A DM or webchat conversation that read a private place under the
-  person's access no longer refuses posts elsewhere, item changes or agent-to-agent sends until
-  `!new`: posts follow the rule above, the item ledger keeps recording only who asked for what, and
+  person's access no longer refuses posts elsewhere, follow-ups or agent-to-agent sends until
+  `!new`: posts follow the rule above, a follow-up stays in its own place, and
   an agent-to-agent child session keeps the DM's visibility. The mark's table is no longer created
   or read.
 - **Unchanged**: replies inside an external place (B4), memory, and the agent-to-agent forms of
@@ -623,8 +620,9 @@ member (below).
   that is unreachable, or lacks the feature, refuses the read.
 - **Who is asking** on a turn: the senders of its message and of every message coalesced or steered
   into it, recorded before the runtime sees them; the console user in webchat and a console
-  continuation; a delegated task's opener (kept in memory, so a restart reads it as no one); a patrol's
-  or approved proposal's item asker (the item's first follower); a schedule's last human editor, else its
+  continuation; a delegated task's opener (kept in memory, so a restart reads it as no one); a follow-up's
+  check's or an approved proposal's asker (the person who confirmed the follow-up, and for a check a
+  message started also everyone behind that message); a schedule's last human editor, else its
   creator (`CronUpsert.askerUserId`). Hook runs, report rounds, schedules that record no person and
   agent-to-agent messages are no one: the agent-to-agent frame carries no originating person and was
   not given one.
@@ -637,7 +635,7 @@ member (below).
   person's own DM or webchat conversation it also lists that person's other DMs, on any platform and
   bot of the agent, and their webchat conversations:
   - _Only there._ Exactly one person asks, the current conversation is a DM or webchat conversation,
-    and it is theirs by the rule a read of it from elsewhere passes, so a patrol or approved proposal run in
+    and it is theirs by the rule a read of it from elsewhere passes, so a follow-up's check or approved proposal run in
     someone's DM for another person lists none. In a channel or group DM, or on a turn nobody or
     several people are behind, none is listed, since everyone present would read the titles. Group
     DMs and private channels are never listed.
@@ -685,11 +683,12 @@ instead. The session that delegated a task is its **owning session**. The coordi
 reports, failure report, permission routing, wait cap, stop and running block are described here
 and in §5.7–§5.8. An agent with an assistant mode policy takes its `limits`; any other agent takes
 the defaults (`maxConcurrentSubsessions` 3, `permissionWaitHours` 12), and there is no new
-setting. Patrols (§5.9) and approved proposals (§5.10) are tasks too, of the conversation they
-report to, but no session delegates them as a step: they run once, are not continued with
-`messageTask` or stopped with `stopTask`, and stay assistant mode's. Delegated tasks, patrols and
-approved proposals together are a session's **tasks**, the name the console and the limits that
-count all of them use.
+setting. Follow-ups (§5.12) and approved proposals (§5.10) are tasks too, of the conversation they
+report to, but no session delegates them as a step. A follow-up is owned by its place and is
+messaged and ended by `taskId` (§5.12); an approved proposal runs once, is not continued with
+`messageTask` or stopped with `stopTask`, and stays assistant mode's. Delegated tasks, follow-ups
+and approved proposals together are a session's **tasks**, the name the console and the limits
+that count all of them use.
 
 **P0b shipped the minimal form**: self-delegation as below, a failure report the daemon sends
 when a task ends without reporting (§5.7), and a concurrency cap that refuses beyond
@@ -715,15 +714,15 @@ with `listTasks`.
   stops it, on any of its turns; a delegated task cannot delegate, message or stop tasks. Ownership is the **persistent
   parent–child index** (`childSessionLinks` was in memory). A task outlives one round of work, and
   a later `messageTask` gives it new work in its retained context. Listing is the running block of
-  the standing summary (§5.4) and `listTasks`, which also lists the patrols and approved proposals
-  that report to the session.
+  the standing summary (§5.4) and `listTasks`, which also lists the place's follow-ups, to its
+  current long session, and the approved proposals that report to the session.
 - **Runtime permission requests** (far more common than `propose`):
   1. Standing prompt: finish the work in the workspace; the outward step (push, open the PR) goes
      through `propose`.
   2. When one fires it is delivered to the place of origin (an external place's to the approver's
      DM, §5.5) as a card through the existing two approval paths and listed in Activity; the card
-     offers "always allow this tool". **Shipped**, for delegated tasks and approved proposals (a patrol still
-     refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
+     offers "always allow this tool". **Shipped**, for delegated tasks and approved proposals (a follow-up's
+     check still refuses, §5.9), as the one pending request every surface settles (slack-approval-dm.md
      §11): a Slack, Telegram, Discord, Feishu/Lark or Google Chat place gets the in-chat card where `chatActions` (`approve` or above) lets people
      there answer (only editors where permissions are synced), otherwise a neutral notice plus the editor DM, the notice rewritten in place to how
      the request settled; the card names the task (its title, else the work it was
@@ -755,7 +754,7 @@ with `listTasks`.
      Nothing else changes the permission mode: an agent outside assistant mode keeps its own, so
      its tasks ask as often as that mode does.
 - **Webchat**: the Delegated group of the session-detail dock's Tasks tab (#2885) lists a
-  conversation's tasks (patrols and approved proposals included) and stops a running one; who may
+  conversation's tasks (follow-ups and approved proposals included) and stops a running one; who may
   stop is whoever may continue that session today. The tab's This turn group shows, read-only,
   what the runtime reports for the current turn. A task's own page is read-only (#2893), with a
   header naming the session it belongs to and a link back: talking to one directly is deferred.
@@ -773,8 +772,9 @@ with `listTasks`.
 
 The daemon reports the end of each round of a delegated task itself: `[task finished]` with the round's
 last output, or `[task ended]` after an error, `!stop`, pause or the stall watchdog, never two.
-Patrols and approved proposals keep their own one report; when one ends without it, the daemon
-sends one short failure report, headed `[patrol ended]` or `[approved proposal ended]`, instead. An
+A follow-up's check reports only what it found (§5.12), and its failures are counted on the
+follow-up (§5.9). An approved proposal keeps its own one report; when it ends without it, the
+daemon sends one short failure report, headed `[approved proposal ended]`, instead. An
 interruption that will be replayed sends none. When that replay never runs
 the turn — a same-process replay finds its message already carried by the prompt that was cut, or a
 purge drops the kept delivery — no turn end reports it, and its `open` row would hold a slot under
@@ -818,7 +818,7 @@ on `agentsGained`):
      an `executing` record marks the record `outcome_unknown` and its inbox row is excluded from
      replay. Moving the proposal to `executing`, recording the approved proposal's session id and
      writing the marked inbox row happen **in one transaction**.
-  2. **Patrols** re-enter silently.
+  2. **Follow-up checks** re-enter silently.
   3. **Delegated tasks** follow today's handover replay; the re-entry prompt says "re-run
      after an interruption, verify the current state first", and the item gets an observation.
   4. **Report rounds** are re-delivered.
@@ -827,68 +827,72 @@ on `agentsGained`):
 
 ### 5.8 Stopping
 
-| Action                                        | Effect                                                                                                          | Who                                                                                                                |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                | today's `!stop` rules                                                                                              |
-| Stop one piece of work (named, or in webchat) | Interrupts that work's current turn                                                                             | a named delegated task: its owning session, on any of its turns / whoever may continue that session in the console |
-| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends patrol wakes and the outbox | existing pause permission                                                                                          |
+| Action                                        | Effect                                                                                                              | Who                                                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| "Stop" in the main conversation               | Interrupts that conversation's current turn only                                                                    | today's `!stop` rules                                                                                              |
+| Stop one piece of work (named, or in webchat) | Interrupts that work's current turn                                                                                 | a named delegated task: its owning session, on any of its turns / whoever may continue that session in the console |
+| **Pause the agent** (existing #288)           | Interrupts every session and blocks new turns (today); assistant mode also suspends follow-up checks and the outbox | existing pause permission                                                                                          |
 
 **Stopping a named delegated task** is the `stopTask` tool, given the task's `taskId`
 ([send-message-guide.md](send-message-guide.md) §8.7). Every session that can delegate a task is
 offered it, in assistant mode or not, hook runs, scheduled runs and peer sessions included: never
-a delegated task, a patrol or an approved proposal. It stops only a delegated task whose owning
+a delegated task, a follow-up's check or an approved proposal. It stops only a delegated task whose owning
 session in the persistent index is the calling session, on any of that session's turns: one a
 person started, a delegated task's report, another agent's reply, a reminder or a scheduled run. Deciding that a step is no longer
 needed is the owning session's planning, so the `!stop` sender rule does not gate it; a person
-who wants a task stopped asks that session. Any other id (the task itself, a sibling, the session
-after `!new`, another agent's, a patrol or an approved proposal, an unknown or purged one) is refused
+who wants a task stopped asks that session. It also ends a follow-up of the calling session's place when that session is the place's current
+long session (§5.12). Any other id (the task itself, a sibling, the session
+after `!new`, another agent's, an approved proposal, an unknown or purged one) is refused
 with the same words, so nothing about another conversation is revealed. The stop itself is the
 console's Stop: the same daemon core, logged with the person whose message started the live turn,
 else the agent. So it answers the same way: stopped, or not running, adding that a background
 process the runtime started may keep running. A later `messageTask` can give a stopped task new
 work. Stopping one's own task moves no content, so a session marked by a private read (§5.5) may
 still do it. The tool's description tells the agent to ask which task the person means only when
-that is not clear; a clear request is carried out at once. Patrols and approved proposals are stopped
-from the console, in the session's Tasks tab.
+that is not clear; a clear request is carried out at once. Approved proposals are stopped from the
+console, in the session's Tasks tab.
 
 No new "stop everything". The sender rules for `!stop`, `!new` and pause are **unchanged and not
 narrowed** — effects at this level cannot be defended against, and the design does not pretend
-to. Resume: no catch-up; items whose `nextCheck` passed are each checked once on the next patrol;
+to. Resume: no catch-up; follow-ups whose `nextCheck` passed are each checked once;
 stopped tasks do not restart. Stopping never undoes completed effects.
 
 ### 5.9 Patrol (P1)
 
-§5.12 proposes making an item's patrols the checks of a follow-up; wake, limits and recovery stay
-as below. A check reports only to the follow-up's place, so where the target below says "patrol"
-read a check, and "each follower's place" becomes that place.
+An item's patrols became the checks of a follow-up (§5.12); wake, limits and recovery are as
+below. A check reports only to the follow-up's place, so where the target below says "patrol" read
+a check, and "each follower's place" becomes that place.
 
-**P1 ships a minimal patrol first**, ahead of the target below:
+**P1 ships a minimal check first**, ahead of the target below:
 
-- **Wake**: only an item's `nextCheck` wakes a patrol — a duty-gated sweep on the daemon, once per
-  `nextCheck` value; pause suspends it and an overdue item is checked once. `patrolSchedule`, hook
-  events and triage come later.
+- **Wake**: a follow-up's `nextCheck` wakes a check — a duty-gated sweep on the daemon, once per
+  `nextCheck` value; pause suspends it and an overdue follow-up is checked once. Its place's
+  `messageTask` starts one at once (§5.12). `patrolSchedule`, hook events and triage come later.
 - **Where it runs**: a read-only task on the **agent's own host**, with the agent's
-  credentials, until the credential-less patrol host exists. Read-only rests on layers (a) and (c)
-  below: AgentConnect tools filtered to reads plus the item tools it needs to record what it saw,
-  and the runtime's read-only mode with a daemon policy that refuses anything needing approval.
-  Layer (b) is missing, so the residual is that of a degraded runtime plus the agent's own
-  credentials on the host.
-- **Outcomes**: a report, a `propose` (§5.10), or silence; the item gets an observation either
-  way, and a run that records nothing counts as a failure. The report goes to the item's **origin
-  place** through the existing parent-report path into that place's long session, which speaks;
-  other followers are not told in this version.
-- **Limits**: one patrol at a time per agent, outside the user's `maxConcurrentSubsessions`;
-  `dailyPatrolBudget`; after a failure the next attempt backs off by `min(60, 2ⁿ)` minutes and five
-  consecutive failures stop that item's patrols with one report until someone sets a new next
-  check. A patrol's own next check must be at least five minutes ahead; `dailyPatrolBudget`
-  defaults to 50.
-- **Recovery**: a patrol replayed after a restart or handover settles from state stored with the
-  running patrol (its observation baseline and any held report), so an empty replay still counts
-  as a failure. A run's reports are admitted before it settles, each under a stable id the inbox
-  deduplicates, so a run whose turn ended before it settled is settled on the next replay without
-  a second report. Stopping a patrol from the dock's Tasks tab ends it silently with its check done.
+  credentials, until the credential-less host exists, in the follow-up's one retained session.
+  Read-only rests on layers (a) and (c) below: AgentConnect tools filtered to reads plus
+  `recordCheck` and `propose`, and the runtime's read-only mode with a daemon policy that refuses
+  anything needing approval. Layer (b) is missing, so the residual is that of a degraded runtime
+  plus the agent's own credentials on the host.
+- **Outcomes**: a report, a `propose` (§5.10), or silence; the check records an observation
+  either way, and a check that records nothing counts as a failure. The report goes to the
+  follow-up's **place** through the existing parent-report path into that place's long session,
+  which speaks.
+- **Limits**: one scheduled check at a time per agent, outside the user's
+  `maxConcurrentSubsessions`; a messaged check starts at once. `dailyPatrolBudget` counts every
+  check, messaged ones included; after a failure the next attempt backs off by `min(60, 2ⁿ)`
+  minutes and five consecutive failures stop that follow-up's checks with one report until it is
+  messaged. A check's next check must be at least five minutes ahead; `dailyPatrolBudget` defaults
+  to 50.
+- **Recovery**: a check replayed after a restart or handover settles from state stored with the
+  running check (its observation baseline and any held report), so an empty replay still counts
+  as a failure. A check's reports are admitted before it settles, each under a stable id the inbox
+  deduplicates, so a check whose turn ended before it settled is settled on the next replay without
+  a second report. Stopping a follow-up from the dock's Tasks tab or with `stopTask` ends it; a
+  running check ends silently with its check done.
 
-Shipped in #2887; `propose` from patrols in #2895. The rest of this section is the target.
+Shipped in #2887 as patrols, `propose` from them in #2895, and as follow-up checks with §5.12. The
+rest of this section is the target.
 
 ```
 patrolSchedule fires / hook event (P2) / an item's nextCheck is due
@@ -1019,8 +1023,8 @@ places:
 A cut execution settles from the approved proposal's durable end: reported ⇒ `succeeded`, failure report
 already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" report.
 
-With follow-ups (§5.12, proposed), a proposal comes from a check and points at its follow-up
-instead of an item; nothing else here changes.
+With follow-ups (§5.12), a proposal comes from a check and points at its follow-up instead of an
+item, at most once per check; nothing else here changes.
 
 ### 5.11 Activity
 
@@ -1033,28 +1037,29 @@ The first version (#2876) shows what exists today, for assistant-mode agents onl
 changed through the daemon without anything persisted on the Control Plane. A daemon that
 advertises `activity-every-agent-v1` answers the same read for an agent outside assistant mode:
 its tasks' pending permission requests, its tasks and its drafts, with no
-items and with patrols and proposals left out. It also stops such an agent's tasks and
+follow-ups and no proposals. It also stops such an agent's tasks and
 decides its
 drafts from the console, and refuses an item delete or a proposal decision (`assistant-mode-off`);
 an older daemon refuses every request for such an agent:
 
-| Section                             | Who sees it                                                                                                                                                          | Who may change it                                                                                                            |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Items (open, then done and dropped) | anyone who can view the agent; the places an item is followed from, never who follows it or what was said; the next check, which wakes a patrol (§5.9)               | editors delete an item                                                                                                       |
-| Tasks                               | anyone who can view the agent sees state and start time; the title, the session link and the conversation that opened it only where the viewer may open that session | —                                                                                                                            |
-| Pending drafts                      | editors                                                                                                                                                              | editors approve or discard (#2880) — the same decision path as the card, so a card click and a console decision execute once |
+| Section        | Who sees it                                                                                                                                                                                                                                              | Who may change it                                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Tasks          | anyone who can view the agent sees state and start time, and a follow-up's status and next check; the title, the session link, the conversation that opened it and a follow-up's done-when and recent checks only where the viewer may open that session | whoever may continue a task's session stops it; Stop ends a follow-up                                                        |
+| Pending drafts | editors                                                                                                                                                                                                                                                  | editors approve or discard (#2880) — the same decision path as the card, so a card click and a console decision execute once |
 
-Deleting an item drops it from the standing summary at the next reminder; its followers are not
-told. §5.12 proposes replacing the Items section with follow-ups in the Tasks tab. A console
+A daemon that advertises `follow-up-tasks-v1` keeps follow-ups instead of items: its task list
+carries each follow-up's kind, status (waiting, checking, paused, done or stopped), next check and
+recent checks, and its item routes are refused (§5.12). A daemon without it still has the Items
+section, whose editors delete an item. A console
 decision that cannot be confirmed keeps its row and tells the editor to check the destination
 (#2881). Tasks' runtime permission requests are listed under pending drafts
 for editors (§5.6): the task and conversation where the viewer may open them, the tool, the
 wait's deadline and the request's own options, answered through the approval queue's decision so
-the first answer from any surface wins. Patrol history and the unread badge are not in it yet.
+the first answer from any surface wins. The unread badge is not in it yet.
 
 Every agent has tasks, drafts and its tasks' permission requests, so every
 agent has those sections, and the Delegated group of the session dock's Tasks tab, once its serving daemon advertises
-`activity-every-agent-v1`. Items and proposals stay assistant mode's: the Control Plane refuses
+`activity-every-agent-v1`. Follow-ups, items and proposals stay assistant mode's: the Control Plane refuses
 those routes with `ASSISTANT_MODE_OFF` for any other agent and asks its daemon for drafts without
 proposals. Who sees, stops and decides what is unchanged. Toward a daemon without the feature an
 agent outside assistant mode is refused as before, before any daemon I/O, and the console shows
@@ -1062,8 +1067,9 @@ it no Delegated group.
 
 ### 5.12 Follow-ups: the ledger and patrols become one kind of task
 
-**Status:** Proposed (2026-10-15), not implemented. Until it ships, §5.4 ①②, §5.9 and the Items
-section of §5.11 describe what runs.
+**Status:** Shipped (2026-10-16) in the daemon, the protocol and the Control Plane, with the
+console's follow-up rows in the Tasks tab and Activity (#3055). §5.4 ①②, §5.9 and §5.11 describe
+follow-ups now. How it shipped is under "As shipped" at the end of this section.
 
 **Why.** An item and its patrol are already a task in all but name: a patrol is a read-only run
 on the `subsession:` coordinate that reports to the conversation the item was taken in (§5.6). Yet
@@ -1196,6 +1202,36 @@ else, and nobody but its own conversation is told of it.
 
 `remind`'s pointer for assistant-mode agents says follow-up instead of item.
 
+**As shipped.** Choices the text above leaves open:
+
+- **Storage.** Follow-ups live in the item ledger's tables; a follow-up's id is its item id, so a
+  pending proposal's `itemId` still names it. Its session key, `subsession:patrol-<id>` in its
+  place, is minted when it is taken and is its `taskId`. Each check is a numbered row in a check
+  log (`assistant_check`): start, end, what it saw or why it failed, and whether its report got
+  through; the newest 50 are kept, and the daily budget counts its starts.
+- **Ownership.** The follow-up's index row names its place's current long session, re-pointed
+  whenever that session lists, messages or stops it, when the console lists that conversation's
+  tasks, and when a check starts. Only that session addresses it; a thread session of the same
+  place does not.
+- **Messages.** `messageTask` starts a check at once, outside the one-scheduled-check slot. While a
+  check of that follow-up runs, the message waits (at most 10), with the people behind it, and
+  the next check, which starts as soon as the running one ends, takes every waiting message; a check
+  released by a pause or failed short of the fifth failure puts its messages back. A message to an
+  ended follow-up is refused; a new one is taken with `followUp`. A message past the budget is
+  refused with the time its oldest check in the window turns 24 hours old.
+- **Prompt.** Every check is handed the follow-up, its five latest observations and the messages
+  it takes, so a reopened context loses nothing it needs; `recordCheck` is told to carry over any
+  instruction a message gave.
+- **Schedule.** `recordCheck` with `nextCheck` makes the follow-up active, with `done` done, with
+  neither waiting; a follow-up taken without a next check starts waiting. A scheduled next check
+  that a messaged check passes over stays due.
+- **Standing list.** A place is judged public as its memory layer is: shared only for a channel its
+  platform confirms public and internal. A migrated follow-up is listed only in its own place until
+  its first check judges it.
+- **Console.** Activity's task rows carry `kind`, and a follow-up's row its `followUp` fields; a
+  console Stop ends the follow-up. A follow-up whose first check has not run has no session yet,
+  so the console cannot stop it until then; its place can.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -1221,14 +1257,14 @@ else, and nobody but its own conversation is told of it.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                               |
-| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                       |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8). Next: follow-ups in place of the ledger and patrols (§5.12); the target patrol (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
-| P2 — cost and events              | Hook events routed to follow-up checks (§5.12); Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                  |
+| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                          |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
+| P2 — cost and events              | Hook events routed to follow-up checks (§5.12); Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ---
 
@@ -1719,3 +1755,15 @@ and is read-only by construction, and `sendMessage` stays unchanged. The organiz
 ledger is dropped: the standing list is keyed by place, stricter than §5.5 for DMs. Wake, limits
 and recovery are the minimal patrol's. §5.4, §5.9–§5.11, §7 and §9 point to §5.12; nothing else
 changes until it ships.
+
+**Forty-fourth revision (2026-10-16)**: §5.12 ships in the daemon, the protocol and the Control
+Plane, beside the console's follow-up rows (#3055). `followUp` and `recordCheck` replace
+`takeItem`, the item tools and a patrol's `updateItem`, with no aliases. A follow-up keeps one
+session for all its checks, its `taskId`; a numbered check log records each check for the daily
+budget and the console. The place's current long session lists, messages and ends it, and its
+index row is re-pointed to that session when it does. `messageTask` starts a check at once, and a message that
+arrives while one runs waits for the next. The standing list is keyed by place. The daemon
+advertises `follow-up-tasks-v1`: Activity carries follow-ups among the tasks and answers no items,
+and the Control Plane refuses the item routes toward it. Store version 53 turns each open item into
+a follow-up of its place and drops followers and closed items. §1, §5.4, §5.6–§5.11 and §7 now
+describe follow-ups; §5.12 records how it shipped.

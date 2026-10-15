@@ -156,13 +156,15 @@ describe('a proposal on the approval record', () => {
     expect(await s.assistantDrafts.executingTasks([])).toEqual([])
   })
 
-  it('knows whether a patrol run already proposed', async () => {
+  it('knows whether the check running in a follow-up’s session since a time already proposed', async () => {
     const s = await open()
     const a = agent()
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a))).toBe(false)
+    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 0)).toBe(false)
     await propose(s, a)
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a))).toBe(true)
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a, '2'))).toBe(false)
+    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 1_000)).toBe(true)
+    // A later check of the same follow-up has not proposed yet.
+    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 1_001)).toBe(false)
+    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a, '2'), 0)).toBe(false)
   })
 })
 
@@ -335,7 +337,7 @@ const post = (s: LocalStore, agentId: string) =>
 
 describe.skipIf(usingPostgresStore())('the v39 → v40 approval record on SQLite', () => {
   it('widens the record to tasks and keeps every draft', async () => {
-    expect(SCHEMA_VERSION).toBe(52)
+    expect(SCHEMA_VERSION).toBe(53)
     const path = tempStorePath('ac-assistant-v39-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

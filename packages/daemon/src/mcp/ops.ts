@@ -396,9 +396,9 @@ export async function executeTool(
   deps: OpsDeps
 ): Promise<unknown> {
   if (deps.canRun && !(await deps.canRun(ctx))) throw new Error('this agent turn has been stopped')
-  // assistant-mode.md §5.9: a patrol runs only the read tools it was offered, whatever name the runtime sends.
+  // assistant-mode.md §5.12: a follow-up's check runs only the read tools it was offered, whatever name the runtime sends.
   if (isPatrolCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
-    throw new Error(`${name} is not available in a read-only patrol`)
+    throw new Error(`${name} is not available in a follow-up’s read-only check`)
   // Collaboration Arena evaluation tools (collaboration-arena.md §6): game-owned
   // structured actions merged into the session tool set at composition time.
   // Name collisions with product tools are rejected at daemon startup, so this

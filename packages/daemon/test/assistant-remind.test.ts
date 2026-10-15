@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AssistantReminders, type AssistantRemindersHost } from '../src/assistant/reminders.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
-import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
+import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
 import {
   ASSISTANT_REMINDER_TOOLS,
   assistantReminderToolsFor,
@@ -115,12 +115,12 @@ describe('the reminder tools are offered to every agent, in a conversation of th
     }
   })
 
-  it('points only an agent in assistant mode at items, and otherwise offers the same tools', () => {
-    const items = '; for something to be checked on at a time, take an item with a next check instead'
+  it('points only an agent in assistant mode at follow-ups, and otherwise offers the same tools', () => {
+    const items = '; for something to be checked on at a time, take a follow-up with a next check instead'
     const remindIn = (set: ToolDescriptor[]): string => set.find((t) => t.name === 'remind')!.description
     const [assistant, plain] = [remindIn(ASSISTANT_REMINDER_TOOLS), remindIn(REMINDER_TOOLS)]
     expect(assistant).toContain(items)
-    expect(plain).not.toContain('item')
+    expect(plain).not.toContain('follow-up')
     expect(assistant.replace(items, '')).toBe(plain)
     const rest = ({ description: _d, ...tool }: ToolDescriptor) => tool
     expect(REMINDER_TOOLS.map(rest)).toEqual(ASSISTANT_REMINDER_TOOLS.map(rest))
@@ -176,15 +176,15 @@ describe('remind', () => {
     expect(await s.assistantReminders.listOpen(AGENT, placeOf(ALICE_DM))).toEqual([])
   })
 
-  it('is refused in a sub-session, a patrol, webchat and a turn that posts nothing', async () => {
+  it('is refused in a sub-session, a follow-up’s check, webchat and a turn that posts nothing', async () => {
     const { call, store: s, share } = await tools()
     const args = { at: at(T0 + HOUR), message: 'x' }
     await expect(call(session({ thread: 'subsession:d-1' }), 'remind', args)).rejects.toThrow(
       'background session with no conversation of its own'
     )
     await expect(
-      call(session({ thread: 'subsession:patrol-d-2', tools: ASSISTANT_ITEM_TOOLS }), 'remind', args)
-    ).rejects.toThrow('remind is not available in a read-only patrol')
+      call(session({ thread: 'subsession:patrol-d-2', tools: [FOLLOW_UP_TOOL] }), 'remind', args)
+    ).rejects.toThrow('remind is not available in a follow-up’s read-only check')
     const { integrationId: _none, ...webchat } = session({ platform: 'webchat', channel: 'w-1', thread: 'webchat:w-1' })
     await expect(call(webchat, 'remind', args)).rejects.toThrow('webchat is not supported yet')
     share.mockReturnValueOnce({ ok: false, reason: 'headless' })
