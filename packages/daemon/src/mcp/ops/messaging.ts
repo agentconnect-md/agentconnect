@@ -98,6 +98,8 @@ export const SEND_MESSAGE_BRANCHES = {
   toAgent: targetBranch('action `callAgent`', 'callAgent', {
     toAgent: AGENT_TARGET,
     channel: channelField,
+    platform: platformField,
+    integrationId: integrationIdField,
     message: messageField
   }),
   toUser: targetBranch('action `postMessage` with `toUser`', 'postMessage', {
@@ -153,6 +155,43 @@ export function parseAgentTarget(value: unknown): { toAgent?: string; needsReply
   }
 }
 
+const MENTION = /<@!?([^>|\s]+)(?:\|[^>]*)?>/g
+
+/** Refuse a post that names an agent's bot — in `toUser` or as a mention — since a post never wakes it and nothing replies. */
+function refuseAgentBotTargets(
+  ctx: SessionContext,
+  deps: MessagingDeps,
+  platform: string,
+  userIds: readonly string[],
+  where: { channel?: string; platform?: string }
+): void {
+  if (!deps.agentsForPlatformUser) return
+  for (const raw of userIds) {
+    const userId = /^<@!?([^>|]+)/.exec(raw)?.[1] ?? raw
+    const agents = deps.agentsForPlatformUser({ callerAgentId: ctx.agentId, platform, userId })
+    if (agents.length === 0) continue
+    if (agents.every((id) => id === ctx.agentId)) {
+      throw new Error(
+        `sendMessage: ${userId} is your own bot, not a person. Nothing was sent. Answer this conversation with your ` +
+          'ordinary reply, or post without naming yourself.'
+      )
+    }
+    const peers = agents.filter((id) => id !== ctx.agentId)
+    const call = JSON.stringify({
+      action: 'callAgent',
+      toAgent: { agentId: peers.length === 1 ? peers[0] : '<one of those agent ids>', needsReply: true },
+      ...(where.channel !== undefined ? { channel: where.channel } : {}),
+      ...(where.platform !== undefined ? { platform: where.platform } : {}),
+      message: '<the same message>'
+    })
+    throw new Error(
+      `sendMessage: ${userId} is the bot of AgentConnect agent ${peers.join(', ')}, not a person. A post never wakes ` +
+        'an agent and nothing replies to it, so nothing was sent. To have that agent work and answer you, call ' +
+        `sendMessage ${call}`
+    )
+  }
+}
+
 /** Normalize `toUser` to the id list both delivery forms work from. */
 function parseUserTargets(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined
@@ -181,6 +220,8 @@ export interface MessageAgentReq {
   text: string
   /** Target channel; defaults (in the handler) to the caller's current channel. */
   channel: string
+  /** Platform of `channel` when it differs from the caller's; only a `callAgent` with `channel` sets it, after posting there. */
+  targetPlatform?: string
   /** Target thread; undefined ⇒ channel root / target's default thread. */
   thread?: string
   /** When this wake was preceded by a visible channel post (`toAgent`+`channel`), the post's
@@ -294,6 +335,8 @@ export interface MessagingDeps extends GatewayDeps {
    * same token back to. Undefined on a daemon with no collaboration snapshot.
    */
   mentionAddressFor?: (req: { agentId: string; platform: string; channel: string }) => string | undefined
+  /** The AgentConnect agents a platform user id is the bot of, so a post never addresses an agent as a person. */
+  agentsForPlatformUser?: (req: { callerAgentId: string; platform: string; userId: string }) => string[]
   /**
    * TRUSTED depth of the caller's CURRENT turn — 0 for a human/root turn
    * (send-message-routing-rework.md §4.1).
@@ -532,6 +575,7 @@ export async function deliverSendMessage(
   const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
   const toUsers = parseUserTargets(args.toUser)
   const channel = parseArgs(channelField, args.channel)
+  const namedPlatform = parseArgs(platformField, args.platform)
   const attachmentName = parseArgs(attachmentField, args.attachment)
   if (toAgent === undefined && toUsers === undefined && channel === undefined) {
     throw new Error(
@@ -576,6 +620,10 @@ export async function deliverSendMessage(
           toAgentId: toAgent,
           text: message,
           channel: channel ?? ctx.channel,
+          // The wake lands on the platform its visible post did, which may be another of the agent's platforms.
+          ...(channel !== undefined && namedPlatform !== undefined && namedPlatform !== ctx.platform
+            ? { targetPlatform: namedPlatform }
+            : {}),
           ...(needsReply ? { needsReply: true } : {}),
           // §3.1: no `channel` ⇒ the postless form, whose child is headless.
           ...(channel === undefined ? { postless: true } : {}),
@@ -628,8 +676,14 @@ export async function deliverSendMessage(
     // The default is therefore the DM-capable platform (Layer-1 `openDirectMessage`),
     // preferring this session's when it qualifies — the generalization of the literal
     // `'slack'` that used to sit here.
-    const wantPlatform =
-      parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
+    const wantPlatform = namedPlatform ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
+    if (toAgent === undefined) {
+      const named = [...(toUsers ?? []), ...[...message.matchAll(MENTION)].map((match) => match[1]!)]
+      refuseAgentBotTargets(ctx, deps, wantPlatform, named, {
+        ...(channel !== undefined ? { channel } : {}),
+        ...(namedPlatform !== undefined ? { platform: namedPlatform } : {})
+      })
+    }
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
     // A platform post passes the write rule before anything reads the target; the agent-to-agent channel form keeps the reach rule.

@@ -47,9 +47,11 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
   return {
     callAgent: {
       action: 'callAgent',
-      purpose: 'Ask another AgentConnect agent to work, or work visibly as yourself in another channel.',
+      purpose:
+        'Ask another AgentConnect agent to work or to answer you — the only action that does — or work visibly as ' +
+        'yourself in another channel.',
       required: ['action', 'toAgent', 'message'],
-      optional: ['channel', 'sessionId'],
+      optional: ['channel', 'platform', 'integrationId', 'sessionId'],
       rules: [
         '`toAgent` is an AgentConnect agent id from listAgents or an [agent-id] sender envelope, never a platform ' +
           'member id such as a Slack `U…` id. Pass the bare id, or {"agentId":"<id>","needsReply":true}.',
@@ -64,6 +66,10 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           `anchors the target to that post. Your own id (${ctx.agentId}) with \`channel\` opens and activates a ` +
           'visible conversation of your own there, where people can follow and respond. That session belongs to the ' +
           'conversation, not to you: it is not a task, so messageTask and stopTask do not reach it.',
+        '`platform` and `integrationId` go only with `channel` and choose where it is, as for postMessage: ' +
+          '`platform` defaults to the current conversation’s platform, so name it for a channel on another of your ' +
+          'platforms (for example a Slack channel while you answer in webchat); `integrationId` picks a bot when ' +
+          'several apply. The target is woken on that platform.',
         'The target may continue in context it already has; a call does not promise a fresh session.',
         '`sessionId` names an existing session of that agent — the `childSessionId` an earlier callAgent returned, ' +
           'yours or one someone shared with you — and delivers into exactly that session: nothing is posted, and it keeps ' +
@@ -73,7 +79,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'falls back to another session: an unknown id, another agent’s id, a background task, or a ' +
           'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
           '"session_not_found"`.',
-        'Not accepted: `platform`, `integrationId`, `thread`, `attachment`, `toUser`.',
+        'Not accepted: `thread`, `attachment`, `toUser`.',
         'The result is {ok, wake: {delivered, targetSession, reason?}, post?, childSessionId?, reply?, nextAction?}. ' +
           '`ok` alone is not delivery: read `wake.delivered` and `wake.reason`. When the result says ' +
           '`nextAction: finish-turn-and-wait`, end your turn; the reply arrives in a later turn. `viewSessionStatus` ' +
@@ -119,6 +125,16 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
             toAgent: { agentId: '<agent-id>', needsReply: true },
             channel: '<channel-id>',
             message: 'Please triage the alert posted here and tell me what you find.'
+          }
+        },
+        {
+          use: 'Visible call to a peer in a channel on another of your platforms',
+          arguments: {
+            action: 'callAgent',
+            toAgent: { agentId: '<agent-id>', needsReply: true },
+            channel: '<slack-channel-id>',
+            platform: 'slack',
+            message: 'Please compute this here and tell me the result.'
           }
         }
       ]
@@ -173,7 +189,8 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
     postMessage: {
       action: 'postMessage',
       purpose:
-        'Post to a person, a channel, or another existing thread. It starts no work there: to work in a channel ' +
+        'Post to a person, a channel, or another existing thread. It starts no work and nothing replies to you: to ' +
+        'have another agent work or answer, use callAgent (with needsReply for its result); to work in a channel ' +
         'yourself, use callAgent with your own id and `channel`.',
       required: ['action', 'message', 'toUser or channel'],
       optional: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachment'],
@@ -181,7 +198,9 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'Direct message: one human member id in `toUser`, without `channel`.',
         'Mention people in a channel: `toUser` (one id or an array of unique ids) plus `channel` posts one message at ' +
           'the channel root that @-mentions all of them. An array is never a group DM and requires `channel`.',
-        '`toUser` names HUMAN platform members only — never an AgentConnect agent or your own bot identity.',
+        '`toUser` names HUMAN platform members only — never an AgentConnect agent or your own bot identity. An ' +
+          'agent’s bot, in `toUser` or as a mention in `message`, is refused because a post never wakes an agent: ' +
+          'call that agent with callAgent instead.',
         'Bare `channel`: a root post that wakes and mentions nobody. It may seed your own idle context there but ' +
           'starts no model turn.',
         'Update an existing thread: `channel` plus `thread` (the thread root id, e.g. `threadTs` from ' +
@@ -194,8 +213,8 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         'A post reaches only where the people asking you could post themselves; on Slack the person asking confirms ' +
           'before the bot joins a channel it is not in. A post into a conversation shared with another ' +
           'organization comes back as a draft awaiting an internal member’s approval: say so and do not send it again.',
-        'Not accepted: `toAgent`, `sessionId`, `messageId`, `needsReply`. If a result says a send MAY have been delivered, do ' +
-          'not retry it.'
+        'Not accepted: `toAgent`, `sessionId`, `messageId`, `needsReply`. A post has no reply, so anything that needs ' +
+          'an answer is a callAgent with needsReply. If a result says a send MAY have been delivered, do not retry it.'
       ],
       examples: [
         {
@@ -264,6 +283,11 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
     notes.postMessage =
       `Platforms: ${platforms.map(platformLabel).join(', ')}. Direct messages: ${dm.join(', ') || 'none'}. ` +
       `Thread updates: ${threads.join(', ') || 'none'}.`
+    notes.callAgent =
+      `Channel platforms: ${platforms.map(platformLabel).join(', ')}.` +
+      (platforms.includes(ctx.platform)
+        ? ''
+        : ' This conversation’s platform has none of your bots, so a call with `channel` must name `platform`.')
   }
   return notes
 }
@@ -281,6 +305,8 @@ export function sendMessageGuide(ctx: SessionContext, action?: SendMessageAction
     rules: [
       'Every call names one `action` and a `message` (Markdown). Calls without `action` fail without sending anything.',
       'For the conversation you are in now, write your ordinary reply instead; sendMessage reaches other places.',
+      'To have another agent work or answer you, use callAgent, with needsReply when you want its result. ' +
+        'postMessage starts no work and nothing replies to it, even when it mentions an agent’s bot.',
       'The daemon supplies your identity; you cannot send as anyone else.'
     ],
     actions: SEND_MESSAGE_ACTIONS.map((name) => ({

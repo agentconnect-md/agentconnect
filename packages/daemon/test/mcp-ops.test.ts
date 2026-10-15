@@ -2402,6 +2402,62 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls[0]!.transcriptTs).toBeUndefined()
   })
 
+  it('posts a webchat caller’s channel call on the named platform and wakes the peer there', async () => {
+    const webchat: SessionContext = {
+      ...ctx,
+      platform: 'webchat',
+      integrationId: undefined,
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      deliveryThread: 'webchat:conv-1'
+    }
+    const { deps: d, calls, gw } = wakeDeps()
+    const res = (await executeTool(
+      webchat,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', platform: 'slack', message: 'over to you' },
+      d
+    )) as { post?: { platform: string; channel: string } }
+    expect(gw.postMessage).toHaveBeenCalledTimes(1)
+    expect(res.post).toMatchObject({ platform: 'slack', integrationId: 'int-1', channel: 'C_X' })
+    // The caller stays on its webchat session; only the wake's coordinate moves to Slack.
+    expect(calls[0]).toMatchObject({
+      platform: 'webchat',
+      targetPlatform: 'slack',
+      callerChannel: 'conv-1',
+      callerThread: 'webchat:conv-1',
+      channel: 'C_X',
+      thread: 'ts-123',
+      transcriptTs: 'ts-123'
+    })
+  })
+
+  it('names the agent’s platforms when a channel call defaults to one it has no bot on', async () => {
+    const webchat: SessionContext = { ...ctx, platform: 'webchat', integrationId: undefined, channel: 'conv-1' }
+    const { deps: d, calls, gw } = wakeDeps()
+    await expect(
+      executeTool(
+        webchat,
+        'sendMessage',
+        { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', message: 'over to you' },
+        d
+      )
+    ).rejects.toThrow('this agent has no webchat integration; its platforms are Slack — pass `platform`')
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('leaves a same-platform channel call without a target platform', async () => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: 'peer-1', channel: 'C_X', platform: 'slack', message: 'over to you' },
+      d
+    )
+    expect(calls[0]).not.toHaveProperty('targetPlatform')
+  })
+
   it('rejects attacker-supplied identity fields instead of honoring them', async () => {
     const { deps: d, calls } = wakeDeps()
     await expect(
@@ -2418,7 +2474,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
         },
         d
       )
-    ).rejects.toThrow(/action `callAgent` does not accept `callerAgentId`, `platform`/)
+    ).rejects.toThrow(/action `callAgent` does not accept `callerAgentId`/)
     expect(calls).toHaveLength(0)
   })
 
@@ -2521,7 +2577,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
   it.each([
     { args: { action: 'replyToSession', messageId: 'msg-1', channel: 'C1' }, label: 'reply + channel' },
     { args: { action: 'postMessage', toUser: 'U1', correlationId: 'o1.0' }, label: 'user + correlation' },
-    { args: { action: 'callAgent', toAgent: 'peer-1', platform: 'telegram' }, label: 'agent + platform' },
+    { args: { action: 'callAgent', toAgent: 'peer-1', channel: 'C1', thread: '1.1' }, label: 'agent + thread' },
     { args: { action: 'postMessage', channel: 'C1', correlationId: 'o1.0' }, label: 'channel + correlation' }
   ])('rejects mixed fields on a $label instead of silently ignoring them', async ({ args }) => {
     const { deps: d } = wakeDeps()

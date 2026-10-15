@@ -1068,7 +1068,9 @@ export class CollabCoordinator {
     // passing the raw value cannot re-open the platform-relabelling dodge.
     const callerOrg = this.host.cpCollab().orgForAgent(req.callerAgentId)
     if (callerOrg === undefined) return { rejection: 'not_allowed' }
-    const coords = this.host.cpCollab().coordsDecision(callerOrg, req.platform, req.channel, req.callerAgentId)
+    const coords = this.host
+      .cpCollab()
+      .coordsDecision(callerOrg, req.targetPlatform ?? req.platform, req.channel, req.callerAgentId)
     if (coords.verdict === 'reject') return { rejection: 'not_allowed' }
 
     const target = this.host.agents().get(req.toAgentId)
@@ -1083,7 +1085,7 @@ export class CollabCoordinator {
 
   wakeRejectionReason(req: MessageAgentReq): string | null {
     const platform = req.platform
-    if (isPlatformMemberId(platform, req.toAgentId)) {
+    if (isPlatformMemberId(req.targetPlatform ?? platform, req.toAgentId)) {
       return 'invalid_target'
     }
     // A channel-root self wake preflights before its post exists; messageAgent checks the post and its pairing id.
@@ -1122,9 +1124,11 @@ export class CollabCoordinator {
   }
 
   private async deliverToAgent(req: MessageAgentReq): Promise<MessageAgentResult> {
-    const platform = req.platform
+    // The caller's session and origin stay on its own platform; everything the wake opens is on the target's.
+    const callerPlatform = req.platform
+    const platform = req.targetPlatform ?? callerPlatform
     const callerKey = sessionKey(
-      platform,
+      callerPlatform,
       req.callerChannel,
       req.callerThread,
       req.callerAgentId,
@@ -1209,9 +1213,8 @@ export class CollabCoordinator {
       ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
     const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, callerKey)
-    const originCoordPlatform = platform
     const originCoords: CallMeta['originCoords'] = {
-      platform: originCoordPlatform,
+      platform: callerPlatform,
       channel: req.callerChannel,
       ...(req.callerThread ? { thread: req.callerThread } : {})
     }

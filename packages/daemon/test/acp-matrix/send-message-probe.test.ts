@@ -73,6 +73,60 @@ describe('runtime matrix sendMessage probe', () => {
     ).toMatch(/sendMessage: invalid arguments — action `callAgent` does not accept `thread`/)
   })
 
+  it('refuses a post that addresses a peer by its bot, and a reply asked of a post, with the daemon’s error', async () => {
+    const tools = probeTools()
+    const byBot = await validateSendMessage(
+      { action: 'postMessage', channel: IDS.workChannel, toUser: IDS.peerBot, message: 'compute 5 * 6' },
+      tools
+    )
+    expect(byBot).toContain(`${IDS.peerBot} is the bot of AgentConnect agent ${IDS.peer}, not a person`)
+    expect(byBot).toContain(`"toAgent":{"agentId":"${IDS.peer}","needsReply":true},"channel":"${IDS.workChannel}"`)
+    expect(
+      await validateSendMessage(
+        { action: 'postMessage', channel: IDS.workChannel, message: `<@${IDS.peerBot}> compute 5 * 6` },
+        tools
+      )
+    ).toContain('is the bot of AgentConnect agent')
+    expect(
+      await validateSendMessage({ action: 'postMessage', toUser: IDS.human, needsReply: true, message: 'm' }, tools)
+    ).toContain('gets no reply and starts no work')
+    expect(
+      await validateSendMessage(
+        { action: 'postMessage', channel: IDS.workChannel, toUser: IDS.human, message: 'm' },
+        tools
+      )
+    ).toBeUndefined()
+  })
+
+  it('validates a webchat session’s channel call against the platforms it names', async () => {
+    const tools = probeTools('webchat')
+    const call = {
+      action: 'callAgent',
+      toAgent: { agentId: IDS.peer, needsReply: true },
+      channel: IDS.workChannel,
+      message: 'm'
+    }
+    expect(await validateSendMessage(call, tools, { platform: 'webchat' })).toContain(
+      'this agent has no webchat integration; its platforms are Slack, Telegram'
+    )
+    expect(await validateSendMessage({ ...call, platform: 'slack' }, tools, { platform: 'webchat' })).toBeUndefined()
+    expect(op({ ...call, platform: 'slack' })).toBe(
+      `agent-call(${IDS.peer},needsReply,channel=${IDS.workChannel},platform=slack)`
+    )
+    expect(
+      scenario('peer-in-slack-from-webchat').expect!(classifySendMessage({ ...call, platform: 'slack' }, IDS.self))
+    ).toBe(true)
+    expect(scenario('peer-in-slack-from-webchat').expect!(classifySendMessage(call, IDS.self))).toBe(false)
+    expect(
+      scenario('peer-by-bot-mention').expect!(
+        classifySendMessage(
+          { action: 'postMessage', channel: IDS.workChannel, toUser: IDS.peerBot, message: 'm' },
+          IDS.self
+        )
+      )
+    ).toBe(false)
+  })
+
   it('rejects an action-less or self-postless call with the daemon’s own error', async () => {
     const tools = probeTools()
     expect(toolShape(tools)).toBe('action')

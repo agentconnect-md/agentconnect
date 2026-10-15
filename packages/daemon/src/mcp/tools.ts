@@ -24,17 +24,17 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   return {
     name: 'sendMessage',
     description:
-      'Send outside your current conversation. Required action: callAgent asks a peer to work (sessionId ' +
-      'continues an existing peer session); calling yourself needs channel and starts visible work in that channel. ' +
-      'startTask starts a background task of this session for long work you do yourself: for "fix this bug and ' +
-      'open a PR", call it before exploring, say it started, and end your turn. messageTask sends a task you ' +
-      'started more (taskId). A task reports each round’s outcome automatically, and stopTask stops it. ' +
-      'replyToSession answers a message another session sent you, by its messageId, as often as needed; replies ' +
-      'are not broadcast. postMessage ' +
-      'reaches a person, channel, or another existing thread and starts no work. For your current conversation, ' +
-      'write your ordinary reply. To get a peer’s result, use toAgent: {agentId: "...", needsReply: true}. Call ' +
-      'getToolGuide {"tool":"sendMessage"} for arguments and examples. Calls without action fail without sending ' +
-      'anything.',
+      'Send outside your current conversation. Required action: callAgent asks another agent to work or answer ' +
+      'you (sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
+      'there. startTask starts a background task of this session for long work you do yourself: for "fix this ' +
+      'bug and open a PR", call it before exploring, say it started, and end your turn. messageTask sends a task ' +
+      'you started more (taskId); a task reports each round’s outcome, and stopTask stops it. replyToSession ' +
+      'answers a message another session sent you, by its messageId, as often as needed; replies are not ' +
+      'broadcast. postMessage ' +
+      'reaches a person, channel, or another thread; it starts no work and gets no reply, even mentioning an ' +
+      'agent’s bot. For your current conversation, write your ordinary reply. To get a peer’s result, use ' +
+      'toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
+      'examples. Calls without action fail without sending anything.',
     inputSchema: obj(
       {
         action: { type: 'string', enum: [...SEND_MESSAGE_ACTIONS] },
@@ -82,7 +82,8 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
         platform: {
           type: 'string',
           ...(platforms.length > 0 ? { enum: platforms } : {}),
-          description: 'Target platform.'
+          description:
+            "postMessage, or callAgent with channel: the destination's platform; defaults to this conversation's."
         },
         integrationId: { type: 'string', minLength: 1, description: 'Bot to use when several integrations apply.' }
       },

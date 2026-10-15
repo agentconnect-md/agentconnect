@@ -30,6 +30,10 @@ export const IDS = {
   human: 'U0EXAMPLE1',
   sender: 'U0EXAMPLE2',
   slackBot: 'U0EXAMPLEBOT',
+  /** The peer agent's own Slack bot user, which a person may @-mention to mean that agent. */
+  peerBot: 'U0EXAMPLEPEER',
+  /** The console conversation a webchat scenario runs in. */
+  webchat: '5f0c2a9e-0000-4000-8000-00000000a005',
   channel: 'C0EXAMPLE1',
   thread: '1700000000.000100',
   session: '5f0c2a9e-0000-4000-8000-00000000a000',
@@ -49,14 +53,17 @@ export const IDS = {
 const SLACK_INTEGRATION = 'int-slack-example'
 const TELEGRAM_INTEGRATION = 'int-telegram-example'
 
-/** The real tool list for an agent with Slack and Telegram integrations in a Slack session. */
-export function probeTools(): ToolDescriptor[] {
+/** The session platform a scenario runs on: a Slack thread, or a console webchat with no bot of its own. */
+export type ProbePlatform = 'slack' | 'webchat'
+
+/** The real tool list for an agent with Slack and Telegram integrations, in a session on `platform`. */
+export function probeTools(platform: ProbePlatform = 'slack'): ToolDescriptor[] {
   return toolsForIntegrations(
     [
       IntegrationSchema.parse({ id: SLACK_INTEGRATION, platform: 'slack' }),
       IntegrationSchema.parse({ id: TELEGRAM_INTEGRATION, platform: 'telegram' })
     ],
-    { currentPlatform: 'slack' }
+    { currentPlatform: platform }
   )
 }
 
@@ -69,7 +76,7 @@ export function toolShape(tools: ToolDescriptor[]): 'action' | 'legacy' {
 
 /** What a `sendMessage` call means, whichever argument shape spelled it. */
 export type SemanticOp =
-  | { kind: 'agent-call'; agent: string; needsReply: boolean; channel?: string; sessionId?: string }
+  | { kind: 'agent-call'; agent: string; needsReply: boolean; channel?: string; platform?: string; sessionId?: string }
   | { kind: 'task-start' }
   | { kind: 'task-message'; taskId: string }
   | { kind: 'origin-reply'; messageId?: string; sessionId?: string }
@@ -119,11 +126,13 @@ export function classifySendMessage(args: Record<string, unknown>, selfId: strin
         const { agent, needsReply } = agentTarget(args.toAgent)
         if (agent === undefined) return { kind: 'unknown', reason: 'callAgent without toAgent' }
         const channel = str(args.channel)
+        const platform = str(args.platform)
         return {
           kind: 'agent-call',
           agent,
           needsReply,
           ...(channel ? { channel } : {}),
+          ...(platform ? { platform } : {}),
           ...(sessionId ? { sessionId } : {})
         }
       }
@@ -160,7 +169,7 @@ export function classifySendMessage(args: Record<string, unknown>, selfId: strin
 export function describeOp(op: SemanticOp): string {
   switch (op.kind) {
     case 'agent-call':
-      return `agent-call(${op.agent}${op.needsReply ? ',needsReply' : ''}${op.channel ? `,channel=${op.channel}` : ''}${op.sessionId ? `,session=${op.sessionId}` : ''})`
+      return `agent-call(${op.agent}${op.needsReply ? ',needsReply' : ''}${op.channel ? `,channel=${op.channel}` : ''}${op.platform ? `,platform=${op.platform}` : ''}${op.sessionId ? `,session=${op.sessionId}` : ''})`
     case 'task-start':
       return 'task-start'
     case 'task-message':
@@ -180,6 +189,8 @@ export function describeOp(op: SemanticOp): string {
 
 /** What a scenario's caller may address by id: the message it may answer, the task it already started, and a peer's session it may join. */
 export interface ProbeScope {
+  /** The session's platform; absent ⇒ Slack. */
+  platform?: ProbePlatform
   message?: string
   task?: string
   peerSession?: string
@@ -188,14 +199,22 @@ export interface ProbeScope {
 /** Thrown by every fixture dependency: the call passed every check the daemon makes before an effect. */
 class ReachedEffect extends Error {}
 
-/** Deps whose first use ends the call; hooks that run before validation stay absent so they cannot pre-empt it. */
-const EFFECT_BOUNDARY = new Proxy({} as OpsDeps, {
-  get: (_target, key) =>
-    key === 'canRun' || key === 'evaluationTool' || key === 'appTool' || key === 'log' || key === 'then'
-      ? undefined
-      : () => {
-          throw new ReachedEffect(String(key))
-        }
+/** The daemon's side-effect-free pre-checks, answered as an org whose peer is reachable and whose peer bot is `IDS.peerBot`. */
+const PRE_CHECKS: Partial<OpsDeps> = {
+  preflightWake: () => null,
+  agentsForPlatformUser: ({ platform, userId }) => (platform === 'slack' && userId === IDS.peerBot ? [IDS.peer] : [])
+}
+
+/** Deps whose first use ends the call, except the pre-checks, which are own keys so `writeDeps`'s spread keeps them. */
+const EFFECT_BOUNDARY = new Proxy({ ...PRE_CHECKS } as OpsDeps, {
+  get: (target, key) =>
+    key in target
+      ? target[key as keyof OpsDeps]
+      : key === 'canRun' || key === 'evaluationTool' || key === 'appTool' || key === 'log' || key === 'then'
+        ? undefined
+        : () => {
+            throw new ReachedEffect(String(key))
+          }
 })
 
 // A handler reached a dependency that `writeDeps`'s spread dropped from the proxy: also the effect boundary.
@@ -205,9 +224,13 @@ const reachedEffect = (error: unknown): boolean =>
   (error instanceof Error && /^sendMessage: messaging a task is not available/.test(error.message))
 
 /** The real `executeTool` pipeline up to its first dependency: the rejection text a model reads, or none. */
-async function daemonRejection(args: Record<string, unknown>, tools: ToolDescriptor[]): Promise<string | undefined> {
+async function daemonRejection(
+  args: Record<string, unknown>,
+  tools: ToolDescriptor[],
+  platform: ProbePlatform
+): Promise<string | undefined> {
   try {
-    await executeTool(probeContext(tools), 'sendMessage', args, EFFECT_BOUNDARY)
+    await executeTool(probeContext(tools, platform), 'sendMessage', args, EFFECT_BOUNDARY)
     return undefined
   } catch (error) {
     if (reachedEffect(error)) return undefined
@@ -227,9 +250,9 @@ async function daemonRejection(args: Record<string, unknown>, tools: ToolDescrip
 export async function validateSendMessage(
   args: Record<string, unknown>,
   tools: ToolDescriptor[],
-  _scope: ProbeScope = {}
+  scope: ProbeScope = {}
 ): Promise<string | undefined> {
-  return await daemonRejection(args, tools)
+  return await daemonRejection(args, tools, scope.platform ?? 'slack')
 }
 
 /** A plausible delivery receipt for a validated call; nothing is posted, woken, or injected. */
@@ -302,7 +325,15 @@ function receipt(op: SemanticOp, scope: ProbeScope): unknown {
         ok: true,
         wake: { delivered: true, targetSession: childSessionId },
         ...(op.channel
-          ? { post: { platform: 'slack', integrationId: SLACK_INTEGRATION, channel: op.channel, thread: null, ts } }
+          ? {
+              post: {
+                platform: op.platform ?? 'slack',
+                integrationId: op.platform === 'telegram' ? TELEGRAM_INTEGRATION : SLACK_INTEGRATION,
+                channel: op.channel,
+                thread: null,
+                ts
+              }
+            }
           : {}),
         childSessionId,
         ...(op.needsReply
@@ -334,16 +365,18 @@ function receipt(op: SemanticOp, scope: ProbeScope): unknown {
   }
 }
 
-/** The trusted Slack session the fixture executes read-only guide calls as. */
-function probeContext(tools: ToolDescriptor[]): SessionContext {
+/** The trusted session the fixture validates calls and serves guides as: a Slack thread, or a console webchat. */
+function probeContext(tools: ToolDescriptor[], platform: ProbePlatform = 'slack'): SessionContext {
+  const where =
+    platform === 'webchat'
+      ? { channel: IDS.webchat, thread: `webchat:${IDS.webchat}` }
+      : { integrationId: SLACK_INTEGRATION, channel: IDS.channel, thread: IDS.thread }
   return {
     agentId: IDS.self,
-    platform: 'slack',
-    integrationId: SLACK_INTEGRATION,
+    platform,
     isDm: false,
-    channel: IDS.channel,
-    thread: IDS.thread,
-    deliveryThread: IDS.thread,
+    ...where,
+    deliveryThread: where.thread,
     tools,
     integrations: [
       { id: SLACK_INTEGRATION, platform: 'slack' },
@@ -395,7 +428,9 @@ async function callTool(
     try {
       return {
         result: text(
-          await executeTool(probeContext(tools), name, args, { gatewayFor: () => undefined } as unknown as OpsDeps)
+          await executeTool(probeContext(tools, scope.platform), name, args, {
+            gatewayFor: () => undefined
+          } as unknown as OpsDeps)
         )
       }
     } catch (error) {
@@ -407,6 +442,9 @@ async function callTool(
 
 /** The matrix's HTTP MCP fixture serving the real AgentConnect tools, one recorded call log per path. */
 export function sendMessageFixture(tools: ToolDescriptor[]): Promise<SendMessageFixture> {
+  // A webchat session is served the tools the daemon gives one; every other scenario gets `tools`.
+  const webchatTools = probeTools('webchat')
+  const toolsFor = (scope: ProbeScope) => (scope.platform === 'webchat' ? webchatTools : tools)
   const log = new Map<string, RecordedCall[]>()
   const scopes = new Map<string, ProbeScope>()
   const server = createServer((req, res) => {
@@ -440,12 +478,13 @@ export function sendMessageFixture(tools: ToolDescriptor[]): Promise<SendMessage
           serverInfo: { name: 'agentconnect', version: '1' }
         })
       } else if (rpc.method === 'tools/list') {
-        reply({ tools })
+        reply({ tools: toolsFor(scopes.get(key) ?? {}) })
       } else if (rpc.method === 'tools/call') {
         const name = String(rpc.params?.name ?? '')
         const raw = rpc.params?.arguments
         const args = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-        void callTool(tools, name, args, scopes.get(key) ?? {}).then(({ result, error }) => {
+        const scope = scopes.get(key) ?? {}
+        void callTool(toolsFor(scope), name, args, scope).then(({ result, error }) => {
           const calls = log.get(key) ?? []
           calls.push({ tool: name, args, ...(error !== undefined ? { error } : {}) })
           log.set(key, calls)
@@ -487,6 +526,8 @@ export type ScenarioId =
   | 'negative-current-thread'
   | 'tool-visibility'
   | 'message-task'
+  | 'peer-by-bot-mention'
+  | 'peer-in-slack-from-webchat'
 
 export interface SendMessageScenario {
   id: ScenarioId
@@ -498,6 +539,8 @@ export interface SendMessageScenario {
   origin?: boolean
   /** Already owns the background task `IDS.task`. */
   task?: boolean
+  /** The session's platform; absent ⇒ a Slack thread. */
+  platform?: ProbePlatform
   /** Recorded only; never fails the cell. */
   informational?: boolean
   /** Only meaningful against the `action` tool shape; excluded from old/new comparisons. */
@@ -509,6 +552,7 @@ const isChannel = (value: string | undefined, id: string, name?: string): boolea
 
 const humanMessage = (body: string) =>
   `[Slack message from <@${IDS.sender}> in channel ${IDS.channel}, thread ${IDS.thread}]\n${body}`
+const webchatMessage = (body: string) => `[Webchat message from a console user in conversation ${IDS.webchat}]\n${body}`
 
 export const SCENARIOS: SendMessageScenario[] = [
   {
@@ -600,18 +644,50 @@ export const SCENARIOS: SendMessageScenario[] = [
     ),
     expect: (op) => op.kind === 'task-message' && op.taskId === IDS.task,
     expected: `task-message(${IDS.task})`
+  },
+  {
+    // A person names the peer by its Slack bot; posting that mention starts nothing, so only a call gets the answer.
+    id: 'peer-by-bot-mention',
+    prompt: humanMessage(
+      `Post a message in channel ${IDS.workChannel} that @-mentions <@${IDS.peerBot}>, says hello, and asks it to ` +
+        'compute 5 * 6. Wait for its result and tell me here.'
+    ),
+    expect: (op) =>
+      op.kind === 'agent-call' &&
+      op.agent === IDS.peer &&
+      op.needsReply &&
+      isChannel(op.channel, IDS.workChannel, IDS.workChannelName),
+    expected: `agent-call(${IDS.peer},needsReply,channel=${IDS.workChannel})`
+  },
+  {
+    // A webchat session has no bot of its own, so a Slack channel call must name its platform.
+    id: 'peer-in-slack-from-webchat',
+    newOnly: true,
+    platform: 'webchat',
+    prompt: webchatMessage(
+      `In the Slack channel ${IDS.workChannel} (#${IDS.workChannelName}), ask the ${IDS.peer} agent to compute ` +
+        '5 * 6 where the team can see it, and tell me its answer once it replies.'
+    ),
+    expect: (op) =>
+      op.kind === 'agent-call' &&
+      op.agent === IDS.peer &&
+      op.needsReply &&
+      op.platform === 'slack' &&
+      isChannel(op.channel, IDS.workChannel, IDS.workChannelName),
+    expected: `agent-call(${IDS.peer},needsReply,channel=${IDS.workChannel},platform=slack)`
   }
 ]
 
 /** The standing context the daemon would give this scenario's session, from its real builder. */
 export function standingContext(scenario: SendMessageScenario, usesMeta: boolean): string {
+  const webchat = scenario.platform === 'webchat'
   return buildStandingContext({
     agentName: IDS.self,
     agentId: IDS.self,
-    platform: 'slack',
-    channel: IDS.channel,
-    slackSelfId: IDS.slackBot,
-    thread: IDS.thread,
+    platform: webchat ? 'webchat' : 'slack',
+    channel: webchat ? IDS.webchat : IDS.channel,
+    ...(webchat ? {} : { slackSelfId: IDS.slackBot }),
+    thread: webchat ? `webchat:${IDS.webchat}` : IDS.thread,
     sessionId: IDS.session,
     originSessionId: scenario.origin ? IDS.origin : null,
     envSecretNames: [],
@@ -619,7 +695,7 @@ export function standingContext(scenario: SendMessageScenario, usesMeta: boolean
     memoryIndex: '',
     usesMeta,
     platformStanding:
-      `# Known identities\n- Peer agent: ${IDS.peer}\n- Human team member: <@${IDS.human}>\n` +
+      `# Known identities\n- Peer agent: ${IDS.peer} (its Slack bot is <@${IDS.peerBot}>)\n- Human team member: <@${IDS.human}>\n` +
       `- Channel #${IDS.workChannelName}: ${IDS.workChannel}\n- Channel ${IDS.updateChannel} has an existing thread rooted at ${IDS.updateThread}`
   }).sessionContext
 }
@@ -718,6 +794,7 @@ export async function runSendMessageScenarios(input: {
       }
       const key = `${runtime}/${scenario.id}/${rep}`
       const scope: ProbeScope = {
+        ...(scenario.platform ? { platform: scenario.platform } : {}),
         ...(scenario.origin ? { message: IDS.message } : {}),
         ...(scenario.task ? { task: IDS.task } : {})
       }
