@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
@@ -179,7 +179,51 @@ export function SharedImageCard({
   )
 }
 
-/** Full-resolution viewer: loads the original on open, fits it to the screen, and zooms on request. */
+type Size = { w: number; h: number }
+type Offset = { x: number; y: number }
+
+const STAGE_PADDING = 16
+
+/** Keeps a panned image from leaving the stage: an axis that fits stays centered. */
+function clampOffset(o: Offset, image: Size | null, stage: Size, scale: number): Offset {
+  if (!image) return { x: 0, y: 0 }
+  const maxX = Math.max(0, (image.w * scale - stage.w) / 2 + STAGE_PADDING)
+  const maxY = Math.max(0, (image.h * scale - stage.h) / 2 + STAGE_PADDING)
+  return { x: Math.min(maxX, Math.max(-maxX, o.x)), y: Math.min(maxY, Math.max(-maxY, o.y)) }
+}
+
+type View = { fit: boolean; zoom: number; offset: Offset }
+
+const FIT_VIEW: View = { fit: true, zoom: 1, offset: { x: 0, y: 0 } }
+
+/** The scale that fits the whole image inside the padded stage, never above actual size. */
+function fitScaleOf(image: Size | null, stage: Size): number {
+  if (!image) return 1
+  return Math.min(
+    1,
+    Math.max(0, stage.w - STAGE_PADDING * 2) / image.w,
+    Math.max(0, stage.h - STAGE_PADDING * 2) / image.h
+  )
+}
+
+/** Zooms by a factor about a stage point (relative to its center), keeping that point under the cursor. */
+function zoomAt(view: View, factor: number, at: Offset, image: Size | null, stage: Size): View {
+  const scale = view.fit ? fitScaleOf(image, stage) : view.zoom
+  const from = clampOffset(view.offset, image, stage, scale)
+  const next = Math.min(8, Math.max(0.1, scale * factor))
+  const r = next / scale
+  const offset = { x: at.x - (at.x - from.x) * r, y: at.y - (at.y - from.y) * r }
+  return { fit: false, zoom: next, offset: clampOffset(offset, image, stage, next) }
+}
+
+/** Moves the image by a delta, clamped to the stage. */
+function panBy(view: View, dx: number, dy: number, image: Size | null, stage: Size): View {
+  const scale = view.fit ? fitScaleOf(image, stage) : view.zoom
+  const from = clampOffset(view.offset, image, stage, scale)
+  return { ...view, offset: clampOffset({ x: from.x + dx, y: from.y + dy }, image, stage, scale) }
+}
+
+/** Full-resolution viewer: loads the original on open, fits it to the screen, zooms by button or pinch, and pans by drag or scroll. */
 function OriginalViewer({
   source,
   name,
@@ -194,8 +238,12 @@ function OriginalViewer({
   const t = useTranslations('Sessions.detail')
   const [blob, setBlob] = useState<Blob | null>(null)
   const [refusal, setRefusal] = useState<OriginalRefusal | null>(null)
-  const [fit, setFit] = useState(true)
-  const [zoom, setZoom] = useState(1)
+  const [view, setView] = useState<View>(FIT_VIEW)
+  const [natural, setNatural] = useState<Size | null>(null)
+  const [stage, setStage] = useState<Size>({ w: 0, h: 0 })
+  const [dragging, setDragging] = useState(false)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const drag = useRef<{ x: number; y: number } | null>(null)
   const url = useObjectUrl(blob)
   const stateKey = `${source.state.revision}:${source.state.original.kind}`
 
@@ -211,10 +259,84 @@ function OriginalViewer({
     // Reload only when the original itself changes, not on every parent render.
   }, [stateKey])
 
-  const zoomBy = (factor: number): void => {
-    setFit(false)
-    setZoom((z) => Math.min(8, Math.max(0.1, z * factor)))
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const measure = (): void => setStage({ w: el.clientWidth, h: el.clientHeight })
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  // Trackpad pinch arrives as ctrl+wheel (Chromium, Firefox) or gesture events (Safari); two-finger scroll pans.
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el || !natural) return
+    const pointOf = (clientX: number, clientY: number): Offset => {
+      const r = el.getBoundingClientRect()
+      return { x: clientX - r.left - r.width / 2, y: clientY - r.top - r.height / 2 }
+    }
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1
+      if (e.ctrlKey) {
+        const at = pointOf(e.clientX, e.clientY)
+        setView((v) => zoomAt(v, Math.exp(-e.deltaY * unit * 0.01), at, natural, stage))
+      } else {
+        setView((v) => panBy(v, -e.deltaX * unit, -e.deltaY * unit, natural, stage))
+      }
+    }
+    let gestureScale = 1
+    const onGestureStart = (e: Event): void => {
+      e.preventDefault()
+      gestureScale = 1
+    }
+    const onGestureChange = (e: Event): void => {
+      e.preventDefault()
+      const g = e as Event & { scale: number; clientX: number; clientY: number }
+      const factor = g.scale / gestureScale
+      gestureScale = g.scale
+      const at = pointOf(g.clientX, g.clientY)
+      setView((v) => zoomAt(v, factor, at, natural, stage))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    el.addEventListener('gesturestart', onGestureStart)
+    el.addEventListener('gesturechange', onGestureChange)
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('gesturestart', onGestureStart)
+      el.removeEventListener('gesturechange', onGestureChange)
+    }
+  }, [natural, stage])
+
+  const fit = view.fit
+  const scale = fit ? fitScaleOf(natural, stage) : view.zoom
+  const shown = clampOffset(view.offset, natural, stage, scale)
+  const pannable = !!natural && (natural.w * scale > stage.w || natural.h * scale > stage.h)
+
+  const zoomBy = (factor: number): void => setView((v) => zoomAt(v, factor, { x: 0, y: 0 }, natural, stage))
+
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>): void => {
+    if (!pannable || e.button !== 0) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    drag.current = { x: e.clientX, y: e.clientY }
+    setDragging(true)
   }
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>): void => {
+    const d = drag.current
+    if (!d) return
+    const dx = e.clientX - d.x
+    const dy = e.clientY - d.y
+    drag.current = { x: e.clientX, y: e.clientY }
+    setView((v) => panBy(v, dx, dy, natural, stage))
+  }
+  const endDrag = (): void => {
+    drag.current = null
+    setDragging(false)
+  }
+
   const button =
     'iconbtn inline-flex h-8 w-8 items-center justify-center rounded-md border border-(--border-default) bg-(--surface-card)'
 
@@ -251,10 +373,7 @@ function OriginalViewer({
           <button
             type="button"
             className={button}
-            onClick={() => {
-              setFit((f) => !f)
-              setZoom(1)
-            }}
+            onClick={() => setView(fit ? { ...FIT_VIEW, fit: false } : FIT_VIEW)}
             title={fit ? t('actualSize') : t('fitToScreen')}
             aria-label={fit ? t('actualSize') : t('fitToScreen')}
           >
@@ -280,14 +399,27 @@ function OriginalViewer({
             <Icon name="x" size={15} />
           </button>
         </div>
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-(--surface-sunken) p-4">
+        <div
+          ref={stageRef}
+          className={`relative flex min-h-0 flex-1 touch-none select-none items-center justify-center overflow-hidden bg-(--surface-sunken) ${pannable ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
           {url ? (
             <img
               src={url}
               alt={alt}
-              className={fit ? 'max-h-full max-w-full object-contain' : 'max-w-none'}
-              // Zoom is data-driven, so it rides an inline style (STYLE.md rule 8).
-              style={fit ? undefined : { transform: `scale(${zoom})`, transformOrigin: 'top left' }}
+              draggable={false}
+              onLoad={(e) =>
+                setNatural({ w: e.currentTarget.naturalWidth || 300, h: e.currentTarget.naturalHeight || 150 })
+              }
+              className={`absolute top-1/2 left-1/2 max-w-none ${natural ? '' : 'invisible'}`}
+              // Zoom and pan are data-driven, so they ride an inline style (STYLE.md rule 8).
+              style={{
+                transform: `translate(-50%, -50%) translate(${shown.x}px, ${shown.y}px) scale(${scale})`
+              }}
             />
           ) : refusal ? (
             <div className="font-sans text-[13px] font-medium leading-normal text-(--red-600)">
