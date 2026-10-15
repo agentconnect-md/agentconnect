@@ -4,7 +4,7 @@ import { z } from 'zod'
 export const AssistantModePolicy = z
   .object({
     enabled: z.boolean(),
-    /** Patrol cadence; absent ⇒ events and each item's own nextCheck only */
+    /** Follow-up check cadence (not read yet); absent ⇒ each follow-up's own next check only */
     patrolSchedule: z.string().min(1).max(128).optional(),
     timezone: z.string().min(1).max(64).optional(),
     instructions: z.string().max(4096).optional(),

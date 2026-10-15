@@ -12,7 +12,7 @@ import {
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
-import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from './ops/assistant-items.js'
+import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
@@ -1110,7 +1110,8 @@ export const ALL_TOOL_NAMES = [
       ...GITHUB_REVIEW_TOOLS,
       ...CODE_HOST_EFFECT_TOOLS,
       RECALL_TOOL,
-      ...ASSISTANT_ITEM_TOOLS,
+      FOLLOW_UP_TOOL,
+      RECORD_CHECK_TOOL,
       PROPOSE_TOOL,
       ...ASSISTANT_REMINDER_TOOLS,
       LIST_TASKS_TOOL,

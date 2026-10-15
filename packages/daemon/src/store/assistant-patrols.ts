@@ -1,38 +1,58 @@
-// Per-item patrol state (assistant-mode.md §5.9): which next check was patrolled, the failure streak and its backoff, and the run in flight.
-import type { StoreQueryResult } from './store-database.js'
+// A follow-up's check state and check log (assistant-mode.md §5.12): which next check was taken, the failure streak and its backoff, the check in flight, and messages waiting for it.
+import type { StoreQueryResult, StoreTx } from './store-database.js'
 
-/** After this many failed patrols in a row an item is patrolled no more until its next check changes. */
+/** After this many failed checks in a row a follow-up is checked no more until it is messaged. */
 export const PATROL_MAX_FAILURES = 5
 
 /** The wait after the `failures`-th failure in a row: min(60, 2ⁿ) minutes. */
 export const patrolBackoffMs = (failures: number): number => Math.min(60, 2 ** failures) * 60_000
 
+/** Checks kept per follow-up in its log. */
+export const ASSISTANT_CHECKS_KEPT = 50
+
 export interface AssistantPatrolState {
   agentId: string
   itemId: string
-  /** The `nextCheck` the last finished patrol was for; that value is never patrolled again. */
+  /** The `nextCheck` the last finished scheduled check was for; that value is never checked again. */
   patrolledNextCheck: number | null
-  /** Failed patrols in a row; a finished patrol resets it. */
+  /** Failed checks in a row; a finished check resets it. */
   failures: number
-  /** No patrol before this, after a failure. */
+  /** No scheduled check before this, after a failure. */
   retryAt: number | null
-  /** Patrols stopped after {@link PATROL_MAX_FAILURES} failures, until the item's next check moves off `stoppedNextCheck`. */
+  /** Checks stopped after {@link PATROL_MAX_FAILURES} failures, until the follow-up is messaged. */
   stopped: boolean
   stoppedNextCheck: number | null
-  /** The patrol sub-session in flight, and the `nextCheck` it was started for. */
+  /** The follow-up's session while a check runs in it, and the scheduled `nextCheck` it was started for, if any. */
   runningKey: string | null
   runningNextCheck: number | null
-  /** The item's observation version when that run started, so any daemon settling it can tell whether it recorded anything. */
+  /** The observation version when that check started, so any daemon settling it can tell whether it recorded anything. */
   runningObservationVersion: number | null
-  /** The report that run kept for its end, so a replay on another daemon still delivers it. */
+  /** The report that check kept for its end, so a replay on another daemon still delivers it. */
   runningReport: string | null
+  /** The running check's number in the log, which also names its reports. */
+  runningCheck: number | null
+  runningSince: number | null
+  /** JSON of the messages the running check took and the people they speak for. */
+  runningInput: string | null
+  /** JSON of messages from the owning session waiting for the running check to end. */
+  pendingMessages: string | null
   updatedAt: number
 }
 
-/** An item whose next check is due and not yet patrolled. */
+/** A follow-up whose scheduled check is due and not yet taken. */
 export interface AssistantPatrolDue {
   itemId: string
   nextCheck: number
+}
+
+/** One check of a follow-up, as its log keeps it. */
+export interface AssistantCheck {
+  itemId: string
+  checkNo: number
+  startedAt: number
+  endedAt: number | null
+  observation: string | null
+  reported: boolean
 }
 
 export const ASSISTANT_PATROL_SCHEMA = `
@@ -48,14 +68,30 @@ export const ASSISTANT_PATROL_SCHEMA = `
         runningNextCheck INTEGER,
         runningObservationVersion INTEGER,
         runningReport TEXT,
+        runningCheck INTEGER,
+        runningSince INTEGER,
+        runningInput TEXT,
+        pendingMessages TEXT,
         updatedAt INTEGER NOT NULL,
         PRIMARY KEY (agentId, itemId)
       );
+      CREATE TABLE IF NOT EXISTS assistant_check (
+        agentId TEXT NOT NULL,
+        itemId TEXT NOT NULL,
+        checkNo INTEGER NOT NULL,
+        startedAt INTEGER NOT NULL,
+        endedAt INTEGER,
+        observation TEXT,
+        reported INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (agentId, itemId, checkNo)
+      );
+      CREATE INDEX IF NOT EXISTS assistant_check_by_agent ON assistant_check (agentId, startedAt);
 `
 
-/** What the patrol state needs from the store. */
+/** What the check state needs from the store; a check's start takes its state and its log row in one transaction. */
 export interface AssistantPatrolDatabase {
   query(sql: string, params: unknown[]): Promise<StoreQueryResult>
+  transaction<T>(fn: (tx: StoreTx) => Promise<T>): Promise<T>
 }
 
 type Row = Record<string, unknown>
@@ -76,15 +112,24 @@ function stateOf(row: Row): AssistantPatrolState {
     runningNextCheck: num(row.runningNextCheck),
     runningObservationVersion: num(row.runningObservationVersion),
     runningReport: str(row.runningReport),
+    runningCheck: num(row.runningCheck),
+    runningSince: num(row.runningSince),
+    runningInput: str(row.runningInput),
+    pendingMessages: str(row.pendingMessages),
     updatedAt: Number(row.updatedAt)
   }
 }
 
+// Every running field, cleared when a check ends.
+const CLEAR_RUNNING =
+  'runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, ' +
+  'runningCheck = NULL, runningSince = NULL, runningInput = NULL'
+
 export class AssistantPatrolLedger {
   constructor(private readonly db: AssistantPatrolDatabase) {}
 
-  /** Open items whose next check is due, never patrolled for that value, past any backoff and not stopped; earliest first. */
-  async due(agentId: string, now: number, limit: number): Promise<AssistantPatrolDue[]> {
+  /** Open follow-ups whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; earliest first. */
+  async due(agentId: string, now: number, limit: number, staleBefore = 0): Promise<AssistantPatrolDue[]> {
     const rows = (
       await this.db.query(
         `SELECT i.id AS itemId, i.nextCheck FROM assistant_item i
@@ -93,12 +138,27 @@ export class AssistantPatrolLedger {
             AND (p.itemId IS NULL OR (
               (p.patrolledNextCheck IS NULL OR p.patrolledNextCheck <> i.nextCheck)
               AND (p.retryAt IS NULL OR p.retryAt <= ?)
-              AND (p.stopped = 0 OR p.stoppedNextCheck IS NULL OR p.stoppedNextCheck <> i.nextCheck)))
+              AND p.stopped = 0 AND (p.runningKey IS NULL OR p.runningSince < ?)))
           ORDER BY i.nextCheck, i.id LIMIT ?`,
-        [agentId, now, now, limit]
+        [agentId, now, now, staleBefore, limit]
       )
     ).rows as Row[]
     return rows.map((row) => ({ itemId: String(row.itemId), nextCheck: Number(row.nextCheck) }))
+  }
+
+  /** Open follow-ups with messages waiting, no check running and past any backoff, oldest first. */
+  async withPendingMessages(agentId: string, now: number, limit: number): Promise<string[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT p.itemId FROM assistant_patrol p
+           JOIN assistant_item i ON i.agentId = p.agentId AND i.id = p.itemId
+          WHERE p.agentId = ? AND p.pendingMessages IS NOT NULL AND p.runningKey IS NULL
+            AND (p.retryAt IS NULL OR p.retryAt <= ?) AND p.stopped = 0 AND i.status IN ('active', 'waiting')
+          ORDER BY p.updatedAt, p.itemId LIMIT ?`,
+        [agentId, now, limit]
+      )
+    ).rows as Row[]
+    return rows.map((row) => String(row.itemId))
   }
 
   async get(agentId: string, itemId: string): Promise<AssistantPatrolState | undefined> {
@@ -108,7 +168,7 @@ export class AssistantPatrolLedger {
     return row ? stateOf(row) : undefined
   }
 
-  /** The item a patrol sub-session is checking, while it runs. */
+  /** The follow-up a check is running in this session for, while it runs. */
   async byRunningKey(agentId: string, runningKey: string): Promise<AssistantPatrolState | undefined> {
     const row = (
       await this.db.query('SELECT * FROM assistant_patrol WHERE agentId = ? AND runningKey = ?', [agentId, runningKey])
@@ -116,7 +176,7 @@ export class AssistantPatrolLedger {
     return row ? stateOf(row) : undefined
   }
 
-  /** The agent's patrol runs not yet settled, oldest first. */
+  /** The agent's checks not yet settled, oldest first. */
   async running(agentId: string): Promise<AssistantPatrolState[]> {
     const rows = (
       await this.db.query(
@@ -127,23 +187,88 @@ export class AssistantPatrolLedger {
     return rows.map(stateOf)
   }
 
-  /** A patrol starts; a stopped item that is due again had its next check moved, so its streak starts over. */
+  /** A check starts and takes any waiting messages; none while one runs, and with `exclusive` none while another of the agent's runs. */
   async begin(
     agentId: string,
     itemId: string,
-    run: { key: string; nextCheck: number; observationVersion: number; now: number }
-  ): Promise<void> {
-    await this.ensure(agentId, itemId, run.now)
+    run: {
+      key: string
+      nextCheck: number | null
+      observationVersion: number
+      input: string | null
+      now: number
+      /** A check started before this no longer counts as running. */
+      staleBefore: number
+      exclusive: boolean
+    }
+  ): Promise<{ checkNo: number; messages: string | null } | undefined> {
+    return await this.db.transaction(async (tx) => {
+      await ensure(tx, agentId, itemId, run.now)
+      const prior = stateOf(
+        (await tx.query('SELECT * FROM assistant_patrol WHERE agentId = ? AND itemId = ?', [agentId, itemId]))
+          .rows[0] as Row
+      )
+      const next = (
+        await tx.query(
+          'SELECT COALESCE(MAX(checkNo), 0) + 1 AS n FROM assistant_check WHERE agentId = ? AND itemId = ?',
+          [agentId, itemId]
+        )
+      ).rows[0] as Row
+      const checkNo = Number(next.n)
+      const exclusive = run.exclusive
+        ? ` AND NOT EXISTS (SELECT 1 FROM assistant_patrol o WHERE o.agentId = ? AND o.itemId <> ?
+              AND o.runningKey IS NOT NULL AND o.runningSince >= ?)`
+        : ''
+      const { changes } = await tx.query(
+        `UPDATE assistant_patrol SET runningKey = ?, runningNextCheck = ?, runningObservationVersion = ?,
+           runningReport = NULL, runningCheck = ?, runningSince = ?, runningInput = ?, pendingMessages = NULL,
+           updatedAt = ?, failures = CASE WHEN stopped = 1 THEN 0 ELSE failures END, stopped = 0,
+           stoppedNextCheck = NULL
+         WHERE agentId = ? AND itemId = ? AND (runningKey IS NULL OR runningSince IS NULL OR runningSince < ?)${exclusive}`,
+        [
+          run.key,
+          run.nextCheck,
+          run.observationVersion,
+          checkNo,
+          run.now,
+          run.input,
+          run.now,
+          agentId,
+          itemId,
+          run.staleBefore,
+          ...(run.exclusive ? [agentId, itemId, run.staleBefore] : [])
+        ]
+      )
+      if (changes === 0) return undefined
+      // A stale check this one replaces ends in the log without having recorded anything.
+      if (prior.runningCheck !== null)
+        await tx.query(
+          'UPDATE assistant_check SET endedAt = ? WHERE agentId = ? AND itemId = ? AND checkNo = ? AND endedAt IS NULL',
+          [run.now, agentId, itemId, prior.runningCheck]
+        )
+      await tx.query(
+        'INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, ?, ?, 0)',
+        [agentId, itemId, checkNo, run.now]
+      )
+      await tx.query('DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo <= ?', [
+        agentId,
+        itemId,
+        checkNo - ASSISTANT_CHECKS_KEPT
+      ])
+      return { checkNo, messages: prior.pendingMessages }
+    })
+  }
+
+  /** Replace the messages waiting for the next check. */
+  async setPendingMessages(agentId: string, itemId: string, messages: string | null, now: number): Promise<void> {
+    await ensure(this.db, agentId, itemId, now)
     await this.db.query(
-      `UPDATE assistant_patrol SET runningKey = ?, runningNextCheck = ?, runningObservationVersion = ?,
-         runningReport = NULL, updatedAt = ?,
-         failures = CASE WHEN stopped = 1 THEN 0 ELSE failures END, stopped = 0, stoppedNextCheck = NULL
-       WHERE agentId = ? AND itemId = ?`,
-      [run.key, run.nextCheck, run.observationVersion, run.now, agentId, itemId]
+      'UPDATE assistant_patrol SET pendingMessages = ?, updatedAt = ? WHERE agentId = ? AND itemId = ?',
+      [messages, now, agentId, itemId]
     )
   }
 
-  /** Keep the running patrol's report for its end; false when that run is no longer the item's. */
+  /** Keep the running check's report for its end; false when that check is no longer the follow-up's. */
   async keepReport(agentId: string, itemId: string, key: string, text: string, now: number): Promise<boolean> {
     const { changes } = await this.db.query(
       'UPDATE assistant_patrol SET runningReport = ?, updatedAt = ? WHERE agentId = ? AND itemId = ? AND runningKey = ?',
@@ -152,18 +277,32 @@ export class AssistantPatrolLedger {
     return changes > 0
   }
 
-  /** The patrol finished: its next check is done with and the streak is over. False when another run took the item since. */
+  /** Close a check's log row with what it saw, or why it failed, and whether its report got through. */
+  async endCheck(
+    agentId: string,
+    itemId: string,
+    checkNo: number,
+    end: { observation: string | null; reported: boolean; now: number }
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE assistant_check SET endedAt = ?, observation = ?, reported = ?
+       WHERE agentId = ? AND itemId = ? AND checkNo = ?`,
+      [end.now, end.observation, end.reported ? 1 : 0, agentId, itemId, checkNo]
+    )
+  }
+
+  /** The check finished: a scheduled next check is done with and the streak is over. False when another check took the follow-up since. */
   async succeed(agentId: string, itemId: string, key: string, now: number): Promise<boolean> {
     const { changes } = await this.db.query(
-      `UPDATE assistant_patrol SET patrolledNextCheck = runningNextCheck, failures = 0, retryAt = NULL,
-         runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, updatedAt = ?
+      `UPDATE assistant_patrol SET patrolledNextCheck = COALESCE(runningNextCheck, patrolledNextCheck), failures = 0,
+         retryAt = NULL, ${CLEAR_RUNNING}, updatedAt = ?
        WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
       [now, agentId, itemId, key]
     )
     return changes > 0
   }
 
-  /** The patrol failed: back off, and stop at {@link PATROL_MAX_FAILURES}; undefined when another run took the item since. */
+  /** The check failed: back off, and stop at {@link PATROL_MAX_FAILURES}; undefined when another check took the follow-up since. */
   async fail(
     agentId: string,
     itemId: string,
@@ -176,8 +315,8 @@ export class AssistantPatrolLedger {
     const failures = state.failures + 1
     const stopped = failures >= PATROL_MAX_FAILURES
     const { changes } = await this.db.query(
-      `UPDATE assistant_patrol SET failures = ?, retryAt = ?, stopped = ?, stoppedNextCheck = ?,
-         runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, updatedAt = ?
+      `UPDATE assistant_patrol SET failures = ?, retryAt = ?, stopped = ?, stoppedNextCheck = ?, ${CLEAR_RUNNING},
+         updatedAt = ?
        WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
       [
         failures,
@@ -193,28 +332,70 @@ export class AssistantPatrolLedger {
     return changes > 0 ? { failures, stopped } : undefined
   }
 
-  /** The run ended without counting either way (a pause, a shutdown): the same next check stays due. */
+  /** The check ended without counting either way (a pause, a shutdown): it leaves the log, and the same next check stays due. */
   async release(agentId: string, itemId: string, key: string, now: number): Promise<void> {
-    await this.db.query(
-      `UPDATE assistant_patrol SET runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, updatedAt = ?
-       WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
+    const state = await this.get(agentId, itemId)
+    if (state?.runningKey !== key) return
+    const { changes } = await this.db.query(
+      `UPDATE assistant_patrol SET ${CLEAR_RUNNING}, updatedAt = ? WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
       [now, agentId, itemId, key]
     )
+    if (changes > 0 && state.runningCheck !== null)
+      await this.db.query('DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo = ?', [
+        agentId,
+        itemId,
+        state.runningCheck
+      ])
   }
 
-  /** This next check is passed over without a patrol, and is not tried again. */
+  /** This next check is passed over without a check, and is not tried again. */
   async skip(agentId: string, itemId: string, nextCheck: number, now: number): Promise<void> {
-    await this.ensure(agentId, itemId, now)
+    await ensure(this.db, agentId, itemId, now)
     await this.db.query(
       'UPDATE assistant_patrol SET patrolledNextCheck = ?, updatedAt = ? WHERE agentId = ? AND itemId = ?',
       [nextCheck, now, agentId, itemId]
     )
   }
 
-  private async ensure(agentId: string, itemId: string, now: number): Promise<void> {
-    await this.db.query(
-      'INSERT OR IGNORE INTO assistant_patrol (agentId, itemId, failures, stopped, updatedAt) VALUES (?, ?, 0, 0, ?)',
-      [agentId, itemId, now]
-    )
+  /** A follow-up's newest checks, newest first. */
+  async checks(agentId: string, itemId: string, limit: number): Promise<AssistantCheck[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT itemId, checkNo, startedAt, endedAt, observation, reported FROM assistant_check
+          WHERE agentId = ? AND itemId = ? ORDER BY checkNo DESC LIMIT ?`,
+        [agentId, itemId, limit]
+      )
+    ).rows as Row[]
+    return rows.map((row) => ({
+      itemId: String(row.itemId),
+      checkNo: Number(row.checkNo),
+      startedAt: Number(row.startedAt),
+      endedAt: num(row.endedAt),
+      observation: str(row.observation),
+      reported: Number(row.reported) === 1
+    }))
   }
+
+  /** How many checks the agent started since `since`, and when the oldest of them did, for its daily budget. */
+  async checksSince(agentId: string, since: number): Promise<{ count: number; oldest: number | null }> {
+    const row = (
+      await this.db.query(
+        'SELECT COUNT(*) AS n, MIN(startedAt) AS oldest FROM assistant_check WHERE agentId = ? AND startedAt >= ?',
+        [agentId, since]
+      )
+    ).rows[0] as Row | undefined
+    return { count: Number(row?.n ?? 0), oldest: num(row?.oldest) }
+  }
+}
+
+async function ensure(
+  db: Pick<AssistantPatrolDatabase, 'query'>,
+  agentId: string,
+  itemId: string,
+  now: number
+): Promise<void> {
+  await db.query(
+    'INSERT OR IGNORE INTO assistant_patrol (agentId, itemId, failures, stopped, updatedAt) VALUES (?, ?, 0, 0, ?)',
+    [agentId, itemId, now]
+  )
 }

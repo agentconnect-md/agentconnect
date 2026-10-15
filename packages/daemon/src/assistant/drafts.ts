@@ -174,7 +174,7 @@ type ApproverRung = 'asker' | 'responsible' | 'place'
 const APPROVER_LABEL: Record<ApproverRung, string> = {
   asker: 'the person who asked, in a direct message',
   responsible: "the agent's responsible user, in a direct message",
-  place: 'the people in the conversation the item was taken in'
+  place: 'the people in the conversation the follow-up belongs to'
 }
 
 type Routed = { approver: AssistantDraftApprover; rung: ApproverRung }
@@ -868,9 +868,9 @@ function outcomeOf(draft: AssistantDraft): string {
 function taskOutcomeOf(draft: AssistantDraft, by: string): string {
   switch (draft.status) {
     case 'executing':
-      return `▶️ Approved${by}. Running in the background; it reports back in the conversation the item was taken in.`
+      return `▶️ Approved${by}. Running in the background; it reports back in the conversation the follow-up belongs to.`
     case 'succeeded':
-      return `✅ Approved${by}. It ran and reported back in the conversation the item was taken in.`
+      return `✅ Approved${by}. It ran and reported back in the conversation the follow-up belongs to.`
     case 'denied':
       return `🚫 Denied${by}. Nothing was run.`
     case 'expired':
@@ -879,7 +879,7 @@ function taskOutcomeOf(draft: AssistantDraft, by: string): string {
       return `⚠️ Approved${by}, but not sure this went through: it was cut short before it reported. Please check. It will not be run again.`
     case 'failed':
       return draft.subsessionKey
-        ? `⚠️ Approved${by}. It ended without reporting back; check the conversation the item was taken in.`
+        ? `⚠️ Approved${by}. It ended without reporting back; check the conversation the follow-up belongs to.`
         : `⚠️ Could not run: ${draft.failure ?? 'unknown error'}. Nothing was run.`
     default:
       return ''

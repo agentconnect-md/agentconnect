@@ -125,8 +125,8 @@ Every level keeps these rules:
 
 Three things are outside this setting:
 
-- An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
-  whoever could ask there may approve it ("Assistant-mode proposals").
+- A proposal from an assistant-mode follow-up's check. Approving it is the same as asking the agent
+  there, so whoever could ask there may approve it ("Assistant-mode proposals").
 - Stopping a turn, which follows the `!stop` sender rule. Stopping a delegated task is the
   decision of the conversation that delegated it ("Tasks").
 - Letting the bot join a public channel, which only a person behind the turn answers ("Joining a
@@ -1007,7 +1007,7 @@ differ in an external conversation: an approval goes to an internal member (see 
 do in chat"), its memory is its own place layer (see "Memory layers"), a post into it from another
 conversation is drafted or refused (see "Writing to other conversations"), and one newly found
 starts Off (see "Per-conversation trigger"). An agent in assistant mode is also not reminded there
-of its open items, since its item ledger is internal.
+of its open follow-ups, since they are internal.
 
 ## Reading other conversations
 
@@ -1049,8 +1049,8 @@ shows them to every member.
   must have access;
 - in webchat or a console continuation, the console user;
 - in a delegated task, the person whose turn delegated it (a restart forgets them, and it then
-  reads as no one); in a patrol or an approved proposal, the person who asked for the item; in a
-  scheduled run, the console user who last edited the schedule, else the one who created it;
+  reads as no one); in a follow-up's check or an approved proposal, the person who confirmed the
+  follow-up, and in a check a message started also everyone behind that message; in a scheduled run, the console user who last edited the schedule, else the one who created it;
 - no one, for a scheduled run that records no person, a hook run, a task's report,
   and an agent's message to another agent. Such a turn reads only its own conversation and the
   public channels its own bot confirms. A hook or a schedule anchored to a conversation reads that
@@ -1074,7 +1074,7 @@ public ones. A private conversation is still read by name, and a webchat convers
 title when no other conversation of theirs has it.
 
 Reading a private conversation restricts nothing afterwards: the conversation that read it still
-writes as "Writing to other conversations" allows, changes items and sends to other agents.
+writes as "Writing to other conversations" allows, takes follow-ups and sends to other agents.
 
 ## Writing to other conversations
 
@@ -1123,7 +1123,7 @@ answer: it returns at once, saying whom it asked, and the answer arrives in the 
 
 - **Where it asks.** A card in the conversation the request came from, in the turn's thread, reads
   "Let <agent> join #channel to read it?" (or "to post there?") with **Join** and **Don't join**. A
-  run that reads as a person (a schedule's, an item's, a task's) asks in its own conversation
+  run that reads as a person (a schedule's, a follow-up's, a task's) asks in its own conversation
   or, when it has none, in that person's direct message, routed as a draft's approver is. A
   conversation shared with another organization gets no card naming the channel; the person's direct
   message does. A webchat conversation lists it among its pending requests, where its owner answers
@@ -1165,8 +1165,8 @@ conversation's history keeps only what people wrote. The zone is the first of th
    browser's, sent with every message; on Feishu/Lark the zone in their user record, when the
    platform returns one. Telegram, Discord and Google Chat report none.
 2. **A scheduled run**: the time zone its schedule is set in.
-3. **Any other turn no person sent**, such as a patrol, an approved proposal, a delegated task, a
-   report from a task, or another agent's message: the person who started it, as "Reading other
+3. **Any other turn no person sent**, such as a follow-up's check, an approved proposal, a delegated
+   task, a report from a task, or another agent's message: the person who started it, as "Reading other
    conversations" names them, and for a report or another agent's message the person behind the
    conversation it came from. Their zone comes from the same sources as in step 1: a chat
    member's profile, a console user's browser as last seen, else the profile of the chat account
@@ -1247,23 +1247,37 @@ into the turn as separate system context, so an opaque raw identifier such as Sl
 agent's AgentConnect name. Implicit thread, keyword, and auto routes never receive that
 assertion, and the original user text is not rewritten.
 
-## Assistant-mode item ledger
+## Assistant-mode follow-ups
 
-An agent in assistant mode keeps a ledger of what people asked of it. It takes an item only
-after restating what it will do, what counts as done and when it should be checked next, and
-the person confirming. At that time a patrol checks the item (see "Assistant-mode patrols"), so
-it promises a check then, never an action. When an open item already covers a request, it asks
-whether to attach the request to that item instead, and the asker follows the existing item on
-a yes. The ledger is visible to the whole organization: an item records who asked for what and
-where it stands, never the wording of a direct message, and the agent says so when it takes an
-item asked in a DM. Every conversation of the agent is reminded of the same list of open items,
-except one shared with another organization, since the ledger is internal; its item tools still
-answer there when asked. An agent outside assistant mode is offered no item tools.
+An agent in assistant mode follows things up for people with `followUp`. It takes a follow-up only
+after restating what it will watch, what counts as done and when it will look next, and the person
+confirming. At that time a check runs (see "Assistant-mode follow-up checks"), so it promises a
+check then, never an action. Before restating it lists its conversation's tasks, and when an open
+follow-up there already covers the request it offers to send that one the change instead of taking
+a second. The person who confirmed a follow-up is its asker.
+
+A follow-up belongs to the conversation it was taken in, not to one session: that conversation's
+current long session, after `!new` or a rollover the new one, lists it with `listTasks`, gives it
+new instructions with `messageTask` and ends it with `stopTask`, by its `taskId`. No other
+conversation, and no thread of that conversation outside its long session, can address it.
+
+Every internal conversation of the agent is reminded of the open follow-ups it may see, with its
+other standing context: its own, each with its `taskId`, and every follow-up taken in a public
+channel. One taken in a private channel, a group DM or a DM is listed only there. Each entry gives
+the follow-up's label, the conversation it belongs to, and its next check or that it waits to be
+messaged. A conversation shared with another organization is reminded of none. An agent outside
+assistant mode is offered no `followUp`.
+
+When an agent's daemon is upgraded from a version that kept an item ledger, each active or waiting
+item becomes a follow-up of the conversation it was taken in, keeping its title, what counts as
+done, its summary, its latest observation and its next check, with its first follower as its asker.
+Its other followers are dropped without being told, and done or dropped items are not carried. A
+patrol running at the upgrade finishes as that follow-up's check.
 
 ## Tasks
 
 A task is work that runs in the background in a context of its own and belongs to one
-conversation, which it reports to: a delegated task, a patrol (see "Assistant-mode patrols") or
+conversation, which it reports to: a delegated task, a follow-up (see "Assistant-mode follow-ups") or
 an approved proposal (see "Assistant-mode proposals"). What the agent's runtime itself reports
 for the current turn, a long command or one of the runtime's own subagents, is not a task of the
 conversation; the session page shows it as this turn's tasks.
@@ -1285,19 +1299,21 @@ agent is told about this form, and a self-call in any other form than this or th
 is refused; so is `startTask`, the action's name in the v2.5.0 release candidates, whose refusal
 gives the `delegateTask` call to make instead. The task can message the conversation that delegated it at any time, and a message does
 not end its work; the daemon reports the end of each round of work. A later `messageTask` with the
-`taskId` `delegateTask` returned gives the same task new work in its retained context. A patrol
-and an approved proposal are tasks too, but nobody delegates them: each runs once, is settled by
-its one report, and cannot be given more work.
+`taskId` `delegateTask` returned gives the same task new work in its retained context. A follow-up
+is taken with `followUp`, and each of its rounds is a check (see "Assistant-mode follow-up checks").
+An approved proposal is a task too, but nobody delegates it: it runs once, is settled by its one
+report, and cannot be given more work.
 
-The agent lists its conversation's tasks with `listTasks`: its delegated tasks, with the `taskId`
-each is messaged and stopped by, and the patrols and approved proposals that report to it, each
-with its kind, label or title, state, start, how long it has run or when it ended, and whether it
-has handed back a result for its latest round. The list changes nothing, needs no chat
-integration, and never shows another conversation's tasks.
+The agent lists its conversation's tasks with `listTasks`: its delegated tasks and, in the
+conversation's long session, its follow-ups, each with the `taskId` it is messaged and stopped by,
+and the approved proposals that report to it, each with its kind, label or title, state, start, how
+long it has run or when it ended, and whether it has handed back a result for its latest round; a
+follow-up also with its next check. The list changes nothing, needs no chat integration, and never
+shows another conversation's tasks.
 
 Reports follow the language of the people in the conversation they report to. The conversation
-tells a delegated task which language they use; a patrol or an approved proposal, which sees none
-of their messages, goes by its item's title and summary. The conversation then answers them in
+tells a delegated task which language they use; a follow-up's check or an approved proposal, which
+sees none of their messages, goes by the follow-up's title and summary. The conversation then answers them in
 their language whatever language a report arrived in. Fixed text on cards is not translated.
 
 The session page's side panel has one Tasks tab with two groups:
@@ -1305,8 +1321,8 @@ The session page's side panel has one Tasks tab with two groups:
 - **This turn (reported by the runtime)**: the current turn's long commands and the runtime's own
   subagents, each with its state and elapsed time. They are only shown: nothing here can be
   stopped or opened.
-- **Delegated (managed by AgentConnect)**: the conversation's tasks, its delegated tasks, patrols
-  and approved proposals, newest first and a page at a time, each with its state, elapsed time and
+- **Delegated (managed by AgentConnect)**: the conversation's tasks, its delegated tasks,
+  follow-ups and approved proposals, newest first and a page at a time, each with its state, elapsed time and
   whether it has handed back a result, a Stop, and a link to its own page.
 
 The tab shows running while anything in either group runs, and settled once both are. It appears
@@ -1322,7 +1338,7 @@ conversation that it ended, its transcript names who stopped it, and the row say
 was stopped or nothing was running. An agent whose daemon cannot list one conversation's tasks
 says to upgrade it.
 
-A task's own page, a patrol's included, opens with a line naming the session it belongs to,
+A task's own page, a follow-up's included, opens with a line naming the session it belongs to,
 "Belongs to <that session's title> · task", which links back to it. The page is read-only: it
 shows the transcript, its tool calls included, with no composer and no composer stop, since
 nothing sent from there would reach it.
@@ -1343,17 +1359,18 @@ names the person who asked, or the agent when no person is behind the turn. The 
 with `stopTask` and its `taskId`. Only the conversation that delegated it can stop it, on any of
 its turns: one a person started, a task's report, another agent's reply, a hook or a scheduled
 run, since deciding that a step is no longer needed is that conversation's planning; the `!stop`
-sender rule does not gate it. A task of another conversation, the task itself or a sibling, a
-patrol and an approved proposal are refused in the same words as one that does not exist; a
-patrol or an approved proposal is stopped from the Tasks tab. The agent is reminded which
+sender rule does not gate it. The same `stopTask` ends a follow-up of the conversation, from its
+long session. A task of another conversation, the task itself or a sibling, and an approved proposal
+are refused in the same words as one that does not exist; an approved proposal is stopped from the
+Tasks tab. The agent is reminded which
 delegated tasks its conversation has running, by id and label, and the reminder is refreshed on
 the next turn after one starts or ends.
 
 ## Task permission requests
 
 When a delegated task or an approved proposal needs permission to run a tool, the request goes to
-the conversation the task belongs to, and the task waits; its turn is not cancelled. A patrol never
-asks.
+the conversation the task belongs to, and the task waits; its turn is not cancelled. A follow-up's
+check never asks.
 
 - In a Slack, Telegram, Discord, Feishu/Lark or Google Chat conversation where "What people can
   do in chat" includes approving tool calls, an approval card is posted there, where its reports
@@ -1383,29 +1400,37 @@ included, expires and can no longer be answered. A main conversation's own reque
 behavior. Only assistant mode changes an agent's permission mode, so an agent outside it asks as
 often as its own mode does.
 
-## Assistant-mode patrols
+## Assistant-mode follow-up checks
 
-When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
-one patrol of it: a task of the conversation the item was taken in that looks at the item read-only, records what it saw
-as an observation, sets the next check or marks the item waiting or done, and ends. It has three
-outcomes. When something should be done, it asks for approval to do it (see "Assistant-mode
-proposals"). Otherwise, only when something changed since the latest observation does it report,
-and only into the conversation the item was taken in, whose long session then speaks for it; other
-followers are not told yet. Otherwise it stays silent. The item gets its observation either way.
-When that conversation has no long session the check is skipped, and the item records why. Only an
-item's own next check wakes a patrol: there is no cadence and no event trigger yet. A next check
-is patrolled once; one missed while the agent was paused is not replayed, and an overdue item is
-checked once. An agent runs one patrol at a time, patrols do not count toward its concurrent
-tasks, and it starts at most `dailyPatrolBudget` of them in any 24 hours (50 when unset).
-A failed patrol is recorded on the item and the next attempt waits min(60, 2ⁿ) minutes, n being
-its failures in a row; a patrol that records nothing counts as failed. After five in a row the
-item is patrolled no more until its next check is set to a new time, and its conversation is told
-once. A failed patrol never sends the "ended without reporting" notice a delegated task gets.
-A patrol is listed among its conversation's tasks; stopping it there ends it silently
-and counts its check as done.
+When an open follow-up's next check comes due, the daemon holding the agent's duty starts one check
+of it; a message from its conversation with `messageTask` starts one at once. Every check of a
+follow-up runs in the follow-up's own retained context, so it sees what its earlier checks did; the
+runtime's own compaction bounds that context, and the latest observations are handed to each check
+again in case it was reopened. A check looks read-only, records what it saw with `recordCheck`,
+and then sets the next check, at least five minutes ahead, ends the follow-up when its done-when
+holds, or leaves it waiting until it is messaged. It has three outcomes. When something should be
+done, it asks for approval to do it (see "Assistant-mode proposals"). Otherwise, only when something
+changed since the latest observation, or a message asked for an answer, does it report, and only
+into the conversation the follow-up belongs to, whose long session then speaks for it. Otherwise it
+stays silent. The check records what it saw either way, and one that records nothing counts as
+failed. When that conversation has no long session a scheduled check is skipped, and the follow-up
+records why. Only a follow-up's own next check and its messages wake it: there is no cadence and no
+event trigger yet. A next check runs once; one missed while the agent was paused is not replayed,
+and an overdue follow-up is checked once.
 
-A patrol is offered only read tools, an item update limited to its own item and `propose`: no
-platform write, no `sendMessage`, no new item and no draft, and any other tool it names is refused.
+An agent runs one scheduled check at a time. A message starts its check at once; one that arrives
+while a check of that follow-up runs waits, and the next check takes it as soon as the running one
+ends. Checks do not count toward the agent's concurrent tasks, and it starts at most
+`dailyPatrolBudget` of them in any 24 hours (50 when unset), messaged ones included; a message past
+that is refused with the time the budget resets. A failed check is recorded on the follow-up and
+the next attempt waits min(60, 2ⁿ) minutes, n being its failures in a row. After five in a row its
+checks stop until it is messaged, and its conversation is told once. A failed check never sends the
+"ended without reporting" notice a delegated task gets. A follow-up is listed among its
+conversation's tasks; stopping it there, or with `stopTask`, ends it: no further checks run, and a
+running check is interrupted silently and counts as done.
+
+A check is offered only read tools, `recordCheck` and `propose`: no platform write, no
+`sendMessage`, no `followUp` and no draft, and any other tool it names is refused.
 Its runtime runs in its own read-only mode (`read-only`, else `plan`) whatever the agent's permission
 mode, and anything that would ask for approval is refused, never asked. It still runs on the
 agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
@@ -1413,12 +1438,12 @@ keeps it from writing there, and reads over the network that need no approval st
 
 ## Assistant-mode proposals
 
-A patrol that finds something worth doing asks for approval with `propose`: one plain sentence
+A check that finds something worth doing asks for approval with `propose`: one plain sentence
 ("I want to do X because Y"), the reason, and the work it would carry out once approved, such
-as "rebase PR #12 onto main and push". A patrol proposes at most once and runs nothing itself; no
+as "rebase PR #12 onto main and push". A check proposes at most once and runs nothing itself; no
 other session and no agent outside assistant mode is offered `propose`.
 
-The proposal is carded in the Slack conversation the item was taken in, where that conversation's
+The proposal is carded in the Slack conversation the follow-up belongs to, where that conversation's
 replies land: its top level when it is one long conversation, else its thread. Whoever could ask
 the agent there may approve it: in a direct message, that person; in a channel, anyone whose own
 message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
@@ -1432,7 +1457,7 @@ included, there is no card: the proposal waits among the conversation's pending 
 composer, and is not sent to the responsible user. Whoever may continue that conversation may
 approve or deny it there after a confirmation, and so may the agent's editors, who also find it in
 the conversation's Requests popover. The row leads with the sentence, folds the reason and the work,
-and shows the item and when it expires; once decided it says what happened until dismissed. An
+and shows the follow-up and when it expires; once decided it says what happened until dismissed. An
 editor may decide any proposal from the Activity view, including one no one could be reached for,
 and the first answer decides it.
 
@@ -1442,16 +1467,16 @@ denied by whom, or expired with nothing run, and later how the approved proposal
 rewritten when its integration reconnects. A proposal expires after 24 hours and never runs
 afterwards, and a denied one never runs.
 
-Approval runs the proposal once, in the background, as a task of the conversation the item was
-taken in, under that conversation's long session, with the agent's own permissions rather than a patrol's
-read-only mode. It reports back once: its own report, or the daemon's "ended without reporting"
+Approval runs the proposal once, in the background, as a task of the conversation the follow-up
+belongs to, under that conversation's long session, with the agent's own permissions rather than a
+check's read-only mode. It reports back once: its own report, or the daemon's "ended without reporting"
 when it ends without one. It counts toward the agent's concurrent tasks; while that is
-full the approval is refused with the reason, nothing runs and the proposal keeps waiting. A proposal whose record changed after it was written, whose item was
-closed or deleted, whose conversation has no long session, or whose agent left assistant mode is
+full the approval is refused with the reason, nothing runs and the proposal keeps waiting. A proposal whose record changed after it was written, whose follow-up
+ended, whose conversation has no long session, or whose agent left assistant mode is
 refused and never runs. When a restart or handover cuts the approved proposal short before it reports, it is
 never run again: the conversation is told once that it is not sure this went through and should
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
-without reporting, uncertain) is recorded on the item.
+without reporting, uncertain) is recorded on the follow-up.
 
 ## Reminders
 
@@ -1462,33 +1487,32 @@ about a minute. No model turn runs for it: the agent does not look again, rephra
 up. A reminder posts only there, never in another conversation or someone's DM. It can be set up to
 366 days ahead, and an agent holds at most 100 that have not posted yet. The agent lists and
 cancels only the reminders of the conversation it is in. An agent in assistant mode keeps something
-it should check on at a time as an item instead (see "Assistant-mode item ledger").
+it should check on at a time as a follow-up instead (see "Assistant-mode follow-ups").
 
 While the agent is paused nothing posts; after it resumes, a reminder less than 24 hours late
 still posts and an older one is dropped. One that the platform refuses three times is dropped.
 Turning assistant mode on or off changes no reminder: one already set still posts at its time. A
 conversation shared with another organization sets and receives reminders like any other (see
-"Assistant-mode places"). Tasks, patrols included, and webchat cannot set reminders.
+"Assistant-mode places"). Tasks, follow-up checks included, and webchat cannot set reminders.
 
 ## Assistant-mode Activity
 
 The page of an agent in assistant mode has an Activity tab. Every other agent's page has one too
 once its daemon serves it, with only what such an agent has: its tasks and what waits
-for approval, that is its drafts and its tasks' permission requests. Items and proposals stay
+for approval, that is its drafts and its tasks' permission requests. Follow-ups and proposals stay
 assistant mode's. An agent whose daemon predates this shows no tab outside assistant mode, and a
 link to it opens Integrations instead. It is read from the agent's daemon when it is shown and kept
 nowhere else; each list shows the most recent entries, up to a limit, and says when more exist.
 
-- **Items** are visible to everyone who can view the agent: the active and waiting ones, most
-  recently updated first, each with what counts as done, its next check (when a patrol looks at it
-  next), the places its followers follow it from and when it last changed. Expanding an item shows
-  its summary and newest observations. Done and dropped items sit in a collapsed section that is read
-  only when opened. An item never shows who follows it or the wording of a conversation. An editor
-  may delete an item after a confirmation; the agent stops following it.
 - **Tasks** are listed for everyone who can view the agent, running ones first, each
-  with its state and start; delegated tasks, patrols and approved proposals are listed together. Its title, a
+  with its state and start; delegated tasks, follow-ups and approved proposals are listed together. Its title, a
   link to its session and the conversation that started it appear only to someone who may view
-  that conversation.
+  that conversation. A follow-up is listed under its conversation's current long session, with its
+  status (waiting, checking, paused after five failed checks until it is messaged, done or stopped)
+  and next check; what counts as done and its newest checks (when, what it saw, and whether it was
+  reported) appear only where its title does. Stopping a follow-up here ends it. An agent whose daemon
+  keeps follow-ups has no items; on a daemon that still keeps an item ledger, its items are listed as
+  before.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
   who is asked to approve it and when it expires. An editor may approve or discard it here after a
   confirmation. The decision is the card's own: one post at most, whichever comes first, the
@@ -1496,7 +1520,7 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   ended: posted, discarded, failed, not sure it went through, expired, or already decided. A
   decision that got no answer keeps its row with a warning; once the draft is no longer waiting,
   it says to check the destination, since it may have been posted. Proposals are listed here too,
-  labelled as proposals: the sentence, the reason, the work, the conversation it runs in, its item,
+  labelled as proposals: the sentence, the reason, the work, the conversation it runs in, its follow-up,
   who is asked and when it expires, with Approve and Deny. An approved one says it runs in the
   background and reports back in that conversation; one refused at the task limit
   keeps its choices and says why. A task waiting for permission is listed here as well:
@@ -1684,7 +1708,7 @@ keyed by their platform identity. When someone links an account, a layer kept un
 platform identity moves to the console-keyed one once, if that one does not exist yet; if
 both exist, the console-keyed one is kept and the other is no longer read, never merged.
 
-A run with no person behind it (a schedule, a hook, a patrol, a report round, a message
+A run with no person behind it (a schedule, a hook, a follow-up's check, a report round, a message
 from another agent) and a turn that folds several people's messages use the layer of the
 conversation they are in: output landing in someone's DM uses that person's layer, output
 in a channel uses the channel's. A code-host review or any other session that is not a

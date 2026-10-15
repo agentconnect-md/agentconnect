@@ -1,4 +1,4 @@
-// Approved proposals (assistant-mode.md §5.10): each runs once in a normal-permission sub-session of its item's place, and a cut one is never re-run (§5.7 step 1).
+// Approved proposals (assistant-mode.md §5.10): each runs once in a normal-permission sub-session of its follow-up's place, and a cut one is never re-run (§5.7 step 1).
 import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
@@ -72,26 +72,26 @@ export interface AssistantTasksHost {
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** The approved proposal's first message: what was approved, by whom, and the item it serves. */
+/** The approved proposal's first message: what was approved, by whom, and the follow-up it serves. */
 export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { name: string | null }): string {
   const proposal = draft.proposal!
   return [
-    `[approved proposal] Your patrol of item ${item.id} proposed this, and ${by.name ?? 'an approver'} approved it. ` +
-      'Carry it out now in this background session, with your normal tools and permissions. Nothing you write here ' +
-      'is posted anywhere.',
+    `[approved proposal] A check of your follow-up ${item.taskKey} proposed this, and ${by.name ?? 'an approver'} ` +
+      'approved it. Carry it out now in this background session, with your normal tools and permissions. Nothing ' +
+      'you write here is posted anywhere.',
     '',
     `Work: ${draft.text.trim()}`,
     `Why: ${proposal.why.trim() === '' ? 'not given' : proposal.why.trim()}`,
     `Proposed as: ${oneLine(proposal.sentence)}`,
     '',
-    `Item ${item.id} (${item.status}): ${oneLine(item.title)}`,
+    `Follow-up (${item.status === 'active' || item.status === 'waiting' ? 'open' : 'ended'}): ${oneLine(item.title)}`,
     `Done when: ${item.doneWhen === null ? 'not set' : oneLine(item.doneWhen)}`,
     `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,
     '',
-    `The item was at version ${proposal.itemVersion} when this was proposed and is at version ${item.version} now. ` +
-      'Check the current state first, and do not act if the work no longer applies; say so in your report instead. ' +
-      'Do exactly this work, nothing more. Write your report in the language the people in the item’s conversation ' +
-      'use; without a message of theirs to go by, use the language of the item’s title and summary.'
+    `The follow-up was at version ${proposal.itemVersion} when this was proposed and is at version ${item.version} ` +
+      'now. Check the current state first, and do not act if the work no longer applies; say so in your report ' +
+      'instead. Do exactly this work, nothing more. Write your report in the language the people in the ' +
+      'follow-up’s conversation use; without a message of theirs to go by, use the language of its title and summary.'
   ].join('\n')
 }
 
@@ -109,15 +109,15 @@ export class AssistantTasks {
     const proposal = draft.proposal
     const fail = async (reason: string): Promise<TaskStart> =>
       (await ledger.failTask(draft.id, by, reason, now)) ? { kind: 'failed', reason } : { kind: 'lost' }
-    if (!proposal) return await fail('the proposal has no item')
+    if (!proposal) return await fail('the proposal has no follow-up')
     // Left waiting: the duty holder runs it, and a click that reached another daemon is tried again there.
     if (!this.host.servesAgent(draft.agentId) || this.host.draining())
       return { kind: 'busy', reason: 'the agent is not running here right now; approve again in a moment' }
     const item = await this.host.items.get(draft.agentId, proposal.itemId)
-    if (!item) return await fail('its item was deleted')
-    if (item.status !== 'active' && item.status !== 'waiting') return await fail(`its item is ${item.status}`)
+    if (!item) return await fail('its follow-up is gone')
+    if (item.status !== 'active' && item.status !== 'waiting') return await fail('its follow-up has ended')
     const parent = await this.host.parentFor(draft.agentId, item.origin)
-    if (!parent) return await fail('the conversation its item was taken in has no ongoing session to report to')
+    if (!parent) return await fail('the conversation its follow-up belongs to has no ongoing session to report to')
     const deliveryId = monotonicTs()
     const thread = taskCoordinate(deliveryId)
     const key = sessionKey(parent.platform, parent.channel, thread, draft.agentId, parent.transportScope)
@@ -294,7 +294,7 @@ export class AssistantTasks {
         at,
         parentSessionId,
         `[approved proposal cut short] Not sure this went through, please check: the approved proposal "${oneLine(proposal.sentence)}"` +
-          (item ? ` for item ${item.id} ("${oneLine(item.title)}")` : '') +
+          (item ? ` for follow-up "${oneLine(item.title)}"` : '') +
           ' was cut short by a restart or handover before it reported back. It may have partly run, and it will ' +
           'not be run again. Tell the people here to check.',
         `task:${draft.id}`
@@ -323,7 +323,7 @@ function endReason(end: SubsessionTurnEnd): string {
   return `it was stopped (${end.reason ?? 'interrupted'})`
 }
 
-/** The task sub-session's coordinates, from its key and the place it shares with the patrol that proposed it. */
+/** The task sub-session's coordinates, from its key and the place it shares with the follow-up that proposed it. */
 function callerOf(draft: AssistantDraft, key: string): TaskCaller | undefined {
   const source = draft.source
   if (!source) return undefined

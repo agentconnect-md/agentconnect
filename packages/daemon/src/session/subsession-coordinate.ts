@@ -11,15 +11,15 @@ export function subsessionCoordinate(deliveryId: string): string {
   return `${SUBSESSION_COORDINATE_PREFIX}${deliveryId}`
 }
 
-// A patrol (assistant-mode.md §5.9) is a sub-session too, so everything a sub-session coordinate gets applies to it.
+// A follow-up (assistant-mode.md §5.12) runs its checks in one sub-session of its own, read-only, under the old `patrol-` segment.
 const PATROL_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}patrol-`
 
-/** The coordinate of the read-only sub-session a patrol runs in. */
+/** The coordinate of the sub-session a follow-up keeps for its checks, minted when it is taken. */
 export function patrolCoordinate(deliveryId: string): string {
   return `${PATROL_COORDINATE_PREFIX}${deliveryId}`
 }
 
-/** Whether a session's thread segment is a patrol's: the daemon started it, read-only. */
+/** Whether a session's thread segment is a follow-up's: the daemon runs its read-only checks there. */
 export function isPatrolCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(PATROL_COORDINATE_PREFIX)
 }

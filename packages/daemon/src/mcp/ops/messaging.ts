@@ -280,6 +280,8 @@ export interface MessageAgentResult {
   message?: string
   /** send-message-guide.md §8.5: the wake started or messaged a background task, which always reports back. */
   subsession?: true
+  /** assistant-mode.md §5.12: a follow-up took the message, for a check now or the one after the check that runs. */
+  followUp?: 'checking' | 'queued'
 }
 
 /** A reply to one message the caller received (send-message-guide.md §9.4): only `messageId` and `text` come from the model. */

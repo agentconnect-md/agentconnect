@@ -9,7 +9,7 @@ import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
-import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
+import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { LIST_TASKS_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
@@ -385,7 +385,7 @@ describe('stopTask in a Slack DM conversation', () => {
     }
   })
 
-  it('refuses the session after `!new`, another agent, a patrol and an approved proposal, in the unknown-id words', async () => {
+  it('refuses the session after `!new`, another agent, a follow-up with no record and an approved proposal, in the unknown-id words', async () => {
     const h = await boot()
     try {
       const dm = await conversation(h, DM)
@@ -407,13 +407,14 @@ describe('stopTask in a Slack DM conversation', () => {
       expect(await executeTool({ ...dm.ctx, agentId: 'bot-b' }, 'stopTask', { taskId: child }, h.deps)).toEqual(
         NOT_OWNED
       )
-      // A patrol and an approved proposal this session started keep their own stop paths.
+      // A follow-up row with no follow-up behind it, and an approved proposal this session started, are not its to stop.
       for (const thread of ['subsession:patrol-p-1', 'subsession:task-t-1']) {
         const key = sessionKey('slack', DM, thread, AGENT, h.scope)
         const row = { agentId: AGENT, childSessionKey: key, parentSessionId: owner, parentSessionKey: dm.key }
-        if (thread.includes('patrol'))
-          await h.d.store.assistantSubsessions.openPatrol(row, { startedSince: 0, staleBefore: 0 })
-        else await h.d.store.assistantSubsessions.open(row)
+        if (thread.includes('patrol')) {
+          await h.d.store.assistantSubsessions.openFollowUp(row)
+          await h.d.store.assistantSubsessions.checking(AGENT, key)
+        } else await h.d.store.assistantSubsessions.open(row)
         expect(await stop(h, dm, key)).toEqual(NOT_OWNED)
         expect(await stateOf(h, key)).toBe('open')
       }
@@ -464,10 +465,10 @@ describe('stopTask in a Slack DM conversation', () => {
       expect(
         await executeTool({ ...dm.ctx, thread: 'subsession:task-d-1' }, 'stopTask', { taskId: child }, h.deps)
       ).toEqual(NOT_OWNED)
-      // A patrol runs only the tools it was offered, and it is offered none of this.
+      // A follow-up's check runs only the tools it was offered, and it is offered none of this.
       await expect(
         executeTool({ ...dm.ctx, thread: 'subsession:patrol-d-1' }, 'stopTask', { taskId: child }, h.deps)
-      ).rejects.toThrow('stopTask is not available in a read-only patrol')
+      ).rejects.toThrow('stopTask is not available in a follow-up’s read-only check')
       expect(await stateOf(h, child)).toBe('open')
     } finally {
       await h.close()
@@ -476,7 +477,7 @@ describe('stopTask in a Slack DM conversation', () => {
 })
 
 describe('who is offered stopTask', () => {
-  it('is every session that can start a task, of every agent, and never a task, patrol or approved proposal', async () => {
+  it('is every session that can start a task, of every agent, and never a task, a follow-up’s check or an approved proposal', async () => {
     const h = await boot()
     try {
       const tool = (agent: Record<string, unknown>, session: Record<string, unknown>) => {
@@ -505,17 +506,18 @@ describe('who is offered stopTask', () => {
       expect(tool(on, {})).toEqual({
         name: 'stopTask',
         description:
-          'Stop a task this session delegated with sendMessage delegateTask, when it is no longer needed: the plan ' +
-          'changed, a task it depended on failed, or its result is not wanted any more. What it already did is not ' +
-          'undone, and a process its runtime started in the background (a build, a dev server) may keep running; the ' +
-          'result says so. When it is not clear which task a person means, ask them before stopping one.',
+          'Stop a task this session delegated with sendMessage delegateTask, or end a follow-up of this conversation, ' +
+          'when it is no longer needed: the plan changed, a task it depended on failed, or its result is not wanted any ' +
+          'more. Stopping a follow-up ends it: no further checks run. What it already did is not undone, and a process ' +
+          'its runtime started in the background (a build, a dev server) may keep running; the result says so. When it ' +
+          'is not clear which task a person means, ask them before stopping one.',
         inputSchema: {
           type: 'object',
           properties: {
             taskId: {
               type: 'string',
               minLength: 1,
-              description: 'The `taskId` delegateTask returned, or one listTasks or your reminders show.'
+              description: 'The `taskId` delegateTask or followUp returned, or one listTasks or your reminders show.'
             }
           },
           required: ['taskId'],
@@ -526,7 +528,7 @@ describe('who is offered stopTask', () => {
       expect(offered(on, { platform: 'webchat', channel: 'conv-1', thread: 'conv-1', integrationId: undefined })).toBe(
         true
       )
-      // Never a task, a patrol or an approved proposal; a hook run or a scheduled run may own tasks too.
+      // Never a task, a follow-up's check or an approved proposal; a hook run or a scheduled run may own tasks too.
       for (const thread of ['subsession:d-1', 'subsession:patrol-d-1', 'subsession:task-d-1'])
         expect(offered(on, { thread })).toBe(false)
       expect(offered(on, { platform: 'hook', channel: 'hook:h-1', thread: 'd-1', integrationId: undefined })).toBe(true)
@@ -540,7 +542,7 @@ describe('who is offered stopTask', () => {
     }
   })
 
-  it('offers the same tools in or out of assistant mode, but for the item tools and one sentence of remind', async () => {
+  it('offers the same tools in or out of assistant mode, but for followUp and one sentence of remind', async () => {
     const h = await boot()
     try {
       const toolsOf = (agent: Record<string, unknown>, thread: string) => {
@@ -557,22 +559,22 @@ describe('who is offered stopTask', () => {
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
         return h.d.mcp.sessions.get(token)!.tools as { name: string; description: string }[]
       }
-      const items = new Set(ASSISTANT_ITEM_TOOLS.map((t) => t.name))
+      const items = new Set([FOLLOW_UP_TOOL.name])
       for (const thread of ['append:1', 'subsession:d-1']) {
         const on = toolsOf({ assistantMode: ON }, thread)
         const off = toolsOf({}, thread)
         expect(toolsOf({ assistantMode: { enabled: false } }, thread)).toEqual(off)
-        expect(on.filter((t) => items.has(t.name)).map((t) => t.name)).toEqual(ASSISTANT_ITEM_TOOLS.map((t) => t.name))
+        expect(on.filter((t) => items.has(t.name)).map((t) => t.name)).toEqual([FOLLOW_UP_TOOL.name])
         expect(off.filter((t) => items.has(t.name))).toEqual([])
         const shared = on.filter((t) => !items.has(t.name))
         expect(shared.map((t) => t.name)).toEqual(off.map((t) => t.name))
         const differing = shared.filter((t, i) => JSON.stringify(t) !== JSON.stringify(off[i]))
-        // A sub-session has no reminders, so nothing but the item tools sets it apart.
+        // A sub-session has no reminders, so nothing but followUp sets it apart.
         expect(differing.map((t) => t.name)).toEqual(thread === 'append:1' ? ['remind'] : [])
         for (const remind of differing)
-          expect(remind.description.replace(/; for something to be checked on at a time, take an item[^.]*/, '')).toBe(
-            off.find((t) => t.name === 'remind')!.description
-          )
+          expect(
+            remind.description.replace(/; for something to be checked on at a time, take a follow-up[^.]*/, '')
+          ).toBe(off.find((t) => t.name === 'remind')!.description)
       }
       expect(toolsOf({}, 'append:1').map((t) => t.name)).toContain('stopTask')
     } finally {
@@ -666,7 +668,7 @@ describe('the stop note and authority, from the index row alone', () => {
     return (await executeTool(ctx, 'stopTask', { taskId: childSessionKey }, deps as never)) as any
   }
 
-  it('names messageTask for a task, and refuses an approved proposal or a patrol as an unknown id', async () => {
+  it('names messageTask for a task, and refuses an approved proposal or a follow-up it does not own as an unknown id', async () => {
     expect((await resultFor('subsession:d-1')).note).toContain('message it with messageTask')
     expect(await resultFor('subsession:task-d-1')).toEqual(NOT_OWNED)
     expect(await resultFor('subsession:patrol-d-1', 'patrol')).toEqual(NOT_OWNED)
@@ -695,7 +697,7 @@ describe('listTasks (send-message-guide.md §8.7)', () => {
         expect(Date.parse(task.startedAt)).not.toBeNaN()
         expect(task).not.toHaveProperty('endedAt')
       }
-      expect(mine.note).toContain('Only a delegated task has a taskId')
+      expect(mine.note).toContain('A delegated task or a follow-up has a taskId')
       expect(JSON.stringify(mine)).not.toContain(theirs)
       expect((await list(h, other)).tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([theirs])
 
@@ -759,7 +761,6 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
     row('subsession:d-done', 'done', NOW - 3 * 3_600_000),
     row('subsession:d-failed', 'failed', NOW - 4 * 3_600_000),
     row('subsession:d-reporting', 'reporting', NOW - 5 * 3_600_000),
-    row('subsession:patrol-p-1', 'done', NOW - 6 * 3_600_000, 'patrol'),
     row('subsession:task-t-1', 'failed', NOW - 7 * 3_600_000)
   ]
   const deps = (owner: string | undefined, listed = rows, unlisted = 2) => {
@@ -787,10 +788,10 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
     }
   }
 
-  it('names each kind and state, gives only a delegated task its handle, and flags a handed-back result', async () => {
+  it('names each kind and state, gives an approved proposal no handle, and flags a handed-back result', async () => {
     const { deps: d, listForOwner } = deps('sid-owner')
     const res = (await executeTool(ctx, 'listTasks', {}, d as never)) as any
-    expect(listForOwner).toHaveBeenCalledWith(AGENT, { sessionId: 'sid-owner', key: parent }, 20)
+    expect(listForOwner).toHaveBeenCalledWith(AGENT, { sessionId: 'sid-owner', key: parent }, 20, { followUps: false })
     const ended = new Date(NOW - 60_000).toISOString()
     expect(res.tasks).toEqual([
       {
@@ -811,14 +812,6 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
       expect.objectContaining({ taskId: child('subsession:d-failed'), state: 'ended', handedBackResult: false }),
       expect.objectContaining({ taskId: child('subsession:d-reporting'), state: 'reporting', handedBackResult: false }),
       {
-        kind: 'patrol',
-        label: 'Title of patrol-p-1',
-        state: 'finished',
-        startedAt: expect.any(String),
-        endedAt: ended,
-        handedBackResult: true
-      },
-      {
         kind: 'approved proposal',
         label: 'Title of task-t-1',
         state: 'ended',
@@ -830,14 +823,14 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
     expect(res.more).toBe(2)
   })
 
-  it('lists nothing for a session with no outward id, or inside a task, patrol or approved proposal', async () => {
+  it('lists nothing for a session with no outward id, or inside a task, a follow-up’s check or an approved proposal', async () => {
     const empty = { tasks: [], note: 'This session has no tasks.' }
     const none = deps(undefined)
     expect(await executeTool(ctx, 'listTasks', {}, none.deps as never)).toEqual(empty)
     expect(none.listForOwner).not.toHaveBeenCalled()
     for (const thread of ['subsession:d-1', 'subsession:patrol-d-1', 'subsession:task-d-1']) {
       const owned = deps('sid-owner')
-      // A patrol runs only the tools it was offered, so the handler is asked as if it had been.
+      // A follow-up's check runs only the tools it was offered, so the handler is asked as if it had been.
       const inside = { ...ctx, thread, tools: [LIST_TASKS_TOOL] }
       expect(await executeTool(inside, 'listTasks', {}, owned.deps as never)).toEqual(empty)
       expect(owned.listForOwner).not.toHaveBeenCalled()

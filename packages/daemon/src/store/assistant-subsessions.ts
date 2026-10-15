@@ -16,7 +16,7 @@ export interface AssistantSubsession {
   parentSessionKey: string
   state: AssistantSubsessionState
   createdAt: number
-  /** A patrol the daemon started (assistant-mode.md §5.9); a delegation reads back without it. */
+  /** A follow-up (assistant-mode.md §5.12), `open` while one of its checks runs; a delegation reads back without it. */
   kind?: 'patrol'
   /** The failure report the daemon owes the parent (assistant-mode.md §5.7), once it claimed one. */
   endReport?: string
@@ -75,7 +75,7 @@ class ClaimRefused extends Error {}
 
 type Row = Record<string, unknown>
 
-// A listing's filter that leaves patrols out (assistant-mode.md §5.9).
+// A listing's filter that leaves follow-ups out (assistant-mode.md §5.12).
 const DELEGATIONS = " AND kind = 'delegation'"
 
 type OpenInput = Omit<
@@ -197,40 +197,48 @@ export class AssistantSubsessionIndex {
     })
   }
 
-  /** Record a patrol only while none of the agent's is running; a patrol older than `staleBefore` no longer counts. */
-  async openPatrol(input: OpenInput, cap: { startedSince: number; staleBefore: number }): Promise<boolean> {
-    return await this.opening.run(async () => {
-      const { changes } = await this.db.query(
-        `INSERT OR IGNORE INTO assistant_subsession
-           (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, kind)
-         SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER), 'patrol'
-          WHERE NOT EXISTS (SELECT 1 FROM assistant_subsession a
-                  WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'patrol' AND a.createdAt >= ?
-                    AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey)))`,
-        [
-          input.agentId,
-          input.childSessionKey,
-          input.parentSessionId,
-          input.parentSessionKey,
-          input.now ?? Date.now(),
-          input.agentId,
-          cap.staleBefore,
-          cap.startedSince
-        ]
-      )
-      return changes > 0
-    })
+  /** Index a follow-up under the session that owns it, idle until its first check; false when it was already indexed. */
+  async openFollowUp(input: OpenInput): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `INSERT OR IGNORE INTO assistant_subsession
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, kind)
+       VALUES (?, ?, ?, ?, 'done', ?, 'patrol')`,
+      [input.agentId, input.childSessionKey, input.parentSessionId, input.parentSessionKey, input.now ?? Date.now()]
+    )
+    return changes > 0
   }
 
-  /** How many patrols the agent started since `since`, for its daily budget. */
-  async countPatrolsSince(agentId: string, since: number): Promise<number> {
-    const row = (
-      await this.db.query(
-        `SELECT COUNT(*) AS n FROM assistant_subsession WHERE agentId = ? AND kind = 'patrol' AND createdAt >= ?`,
-        [agentId, since]
-      )
-    ).rows[0] as Row | undefined
-    return Number(row?.n ?? 0)
+  /** A follow-up's check runs: its row is `open` until the check settles. */
+  async checking(agentId: string, childSessionKey: string): Promise<void> {
+    await this.db.query(
+      `UPDATE assistant_subsession SET state = 'open' WHERE agentId = ? AND childSessionKey = ? AND kind = 'patrol'`,
+      [agentId, childSessionKey]
+    )
+  }
+
+  /** A place's follow-ups belong to its current long session (assistant-mode.md §5.12): their rows name it as their owner. */
+  async adoptFollowUps(
+    agentId: string,
+    place: { platform: string; channel: string; transportScope?: string | null },
+    owner: { sessionId: string; key: string }
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE assistant_subsession SET parentSessionId = ?, parentSessionKey = ?
+        WHERE agentId = ? AND kind = 'patrol' AND (parentSessionId <> ? OR parentSessionKey <> ?)
+          AND childSessionKey IN (SELECT i.taskKey FROM assistant_item i WHERE i.agentId = ? AND i.originPlatform = ?
+            AND i.originChannel = ? AND i.originTransportScope = ?)`,
+      [
+        owner.sessionId,
+        owner.key,
+        agentId,
+        owner.sessionId,
+        owner.key,
+        agentId,
+        place.platform,
+        place.channel,
+        place.transportScope ?? ''
+      ]
+    )
   }
 
   /** Settle an `open` row `failed` (`cut`) or read how it already ended, and run `claim` with that in one transaction; a refused claim changes nothing. */
@@ -382,7 +390,7 @@ export class AssistantSubsessionIndex {
     return row ? subsessionOf(row) : undefined
   }
 
-  /** The agent's sub-sessions: open ones first, then the newest; `delegationsOnly` leaves patrols out. */
+  /** The agent's sub-sessions: open ones first, then the newest; `delegationsOnly` leaves follow-ups out. */
   async list(agentId: string, limit: number, opts: { delegationsOnly?: boolean } = {}): Promise<AssistantSubsession[]> {
     const rows = (
       await this.db.query(
@@ -394,7 +402,7 @@ export class AssistantSubsessionIndex {
     return rows.map(subsessionOf)
   }
 
-  /** The sub-sessions one conversation opened, newest first, from just past `after` when it names a row; `delegationsOnly` leaves patrols out. */
+  /** The sub-sessions one conversation opened, newest first, from just past `after` when it names a row; `delegationsOnly` leaves follow-ups out. */
   async listForParent(
     agentId: string,
     parentSessionId: string,
@@ -417,7 +425,7 @@ export class AssistantSubsessionIndex {
     return rows.map(subsessionOf)
   }
 
-  /** One owning session's still `open` tasks, never its patrols or approved proposals, newest first, at most `limit`, with how many there are in all. */
+  /** One owning session's still `open` tasks, never its follow-ups or approved proposals, newest first, at most `limit`, with how many there are in all. */
   async listOpenForParent(
     agentId: string,
     parent: { sessionId: string; key: string },
@@ -440,13 +448,16 @@ export class AssistantSubsessionIndex {
     return { rows: rows.map(subsessionOf), total }
   }
 
-  /** Every row one owning session's reports go to — its tasks, patrols and approved proposals — running first, then newest, at most `limit`, with the total. */
+  /** Every row one owning session's reports go to — its tasks, follow-ups and approved proposals — running first, then newest, at most `limit`, with the total. */
   async listForOwner(
     agentId: string,
     parent: { sessionId: string; key: string },
-    limit: number
+    limit: number,
+    opts: { followUps?: boolean } = {}
   ): Promise<{ rows: AssistantSubsession[]; total: number }> {
-    const where = 'WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ?'
+    const where =
+      'WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ?' +
+      (opts.followUps === false ? DELEGATIONS : '')
     const params = [agentId, parent.sessionId, parent.key]
     const count = (await this.db.query(`SELECT COUNT(*) AS n FROM assistant_subsession ${where}`, params)).rows[0] as
       Row | undefined

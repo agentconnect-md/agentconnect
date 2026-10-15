@@ -413,8 +413,8 @@ describe('getToolGuide', () => {
     )
     expect(JSON.stringify(sendMessageGuide(ctx, 'messageTask'))).toContain('stopTask {\\"taskId\\":\\"<taskId>\\"}')
     expect(JSON.stringify(sendMessageGuide(ctx, 'replyToSession'))).toContain('a reply does not end its work')
-    // An approved proposal or a patrol is settled by its one reply, so its guide says so.
-    for (const thread of ['subsession:task-d-1', 'subsession:patrol-d-1'])
+    // An approved proposal is settled by its one reply, so its guide says so.
+    for (const thread of ['subsession:task-d-1'])
       expect(sendMessageGuide({ ...ctx, thread }, 'replyToSession')).toMatchObject({
         availability: expect.stringContaining('answer the message that started it once, at the end')
       })

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { SEND_MESSAGE_ACTION_SCHEMAS, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
 import { CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
-import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
+import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
@@ -74,7 +74,8 @@ const advertised: ToolDescriptor[] = [
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS,
-  ...ASSISTANT_ITEM_TOOLS,
+  FOLLOW_UP_TOOL,
+  RECORD_CHECK_TOOL,
   PROPOSE_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,
   LIST_TASKS_TOOL,

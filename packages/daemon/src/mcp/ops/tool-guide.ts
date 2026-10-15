@@ -1,6 +1,6 @@
 // `getToolGuide`: on-demand usage rules and runnable examples, so `sendMessage` keeps a short description (send-message-guide.md §3.4).
 import { z } from 'zod'
-import { isPatrolCoordinate, isSubsessionCoordinate, isTaskCoordinate } from '../../session/subsession-coordinate.js'
+import { isSubsessionCoordinate, isTaskCoordinate } from '../../session/subsession-coordinate.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { offersThreadUpdates } from '../../platforms/thread-keys.js'
 import { offersDirectMessages, platformLabel } from '../../platforms/read-ports.js'
@@ -160,7 +160,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'a separate conversation.',
         'A task delegated with delegateTask answers the messages of the session that started it any time — progress, a ' +
           'question, or its result — and a reply does not end its work; the daemon reports the end of each round of ' +
-          'work itself. An approved proposal or a patrol replies once, at the end, and that reply settles it.',
+          'work itself. An approved proposal replies once, at the end, and that reply settles it.',
         'Only `action`, `messageId`, and `message` are accepted; `sessionId`, `taskId` and `childSessionId` are not ' +
           'message ids.',
         'The result is {delivered, targetSession?, inReplyTo, reason?} with no `ok` wrapper. An id that names no ' +
@@ -263,14 +263,14 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
   const notes: Partial<Record<SendMessageAction, string>> = {}
   if (isSubsessionCoordinate(ctx.thread)) {
     const unavailable =
-      'Unavailable here: this session is itself a task, a patrol or an approved proposal and cannot delegate or ' +
+      'Unavailable here: this session is itself a task, a follow-up’s check or an approved proposal and cannot delegate or ' +
       'message tasks. Do the work here, or report back with replyToSession and let the session that started it decide.'
     notes.delegateTask = unavailable
     notes.messageTask = unavailable
   }
-  if (isTaskCoordinate(ctx.thread) || isPatrolCoordinate(ctx.thread)) {
+  if (isTaskCoordinate(ctx.thread)) {
     notes.replyToSession =
-      'This session runs an approved proposal or a patrol: answer the message that started it once, at the end; ' +
+      'This session runs an approved proposal: answer the message that started it once, at the end; ' +
       'that reply settles this work.'
   }
   if (platforms.length === 0) {
