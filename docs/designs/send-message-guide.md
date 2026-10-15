@@ -1630,8 +1630,8 @@ revision:
    sender gates, and refuse every caller other than the owning session (§8.7). Update the stop
    note and the running-tasks reminder.
 5. **Message ids.** Assign an id to every session message on the sending daemon from its
-   submission identity, carry it on local and remote deliveries (a relay frame field, behind a
-   new capability so an older peer fails closed), and record it on both sides (§9.3). Replace
+   submission identity, carry it on local and remote deliveries (relay frame fields sent only to a
+   daemon advertising `session-message-v1`, stripped for an older one, §9.8), and record it on both sides (§9.3). Replace
    `session_reply_source` and `session_reply_obligation` with the message record and its
    per-message obligation; migrate each existing durable origin into one record (§9.6).
 6. **Replies.** `replyToSession` takes `messageId`, not `sessionId`, and is decided by §9.4
