@@ -185,6 +185,30 @@
       "goHome": "返回首页",
       "search": "搜索",
       "shortcut": "⌘K"
+    },
+    "followUp": {
+      "kind": "跟进",
+      "status": {
+        "waiting": "等待中",
+        "waitingNext": "等待中 · 下次检查 {time}",
+        "checking": "检查中",
+        "paused": "已暂停",
+        "done": "已完成",
+        "stopped": "已停止"
+      },
+      "nextCheck": "下次检查：{time}",
+      "showChecks": "显示检查记录",
+      "hideChecks": "隐藏检查记录",
+      "doneWhen": "完成标准：{text}",
+      "noChecks": "还没有检查记录。",
+      "reported": "已回报",
+      "notReported": "未回报",
+      "end": "结束跟进",
+      "endConfirm": "结束这个跟进？Agent 将不再检查。",
+      "keep": "保留",
+      "ended": "跟进已结束。",
+      "alreadyEnded": "它已经结束了。",
+      "endFailed": "结束失败，请重试。"
     }
   },
   "Profile": {
@@ -833,7 +857,9 @@
         "groupHint": "（AgentConnect 管）",
         "census": {
           "running": "{count} 个运行中",
+          "waiting": "{count} 个等待中",
           "reported": "{count} 个已回报",
+          "ended": "{count} 个已结束",
           "failed": "{count} 个失败"
         },
         "state": {

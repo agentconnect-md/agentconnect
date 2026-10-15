@@ -23,6 +23,10 @@ const mocks = vi.hoisted(() => ({
   closed: [] as unknown[],
   detail: null as unknown,
   subsessions: [] as unknown[],
+  /** Unset: a daemon without `follow-up-tasks-v1`. */
+  followUps: undefined as boolean | undefined,
+  subsessionsFailure: null as Error | null,
+  stopAnswer: { result: 'stopped' } as unknown,
   drafts: [] as unknown[],
   /** Unset: a Control Plane that does not list tasks' permission requests. */
   permissions: undefined as unknown[] | undefined,
@@ -39,7 +43,15 @@ const api = vi.hoisted(() => ({
   }),
   fetchAssistantItem: vi.fn(async () => mocks.detail),
   deleteAssistantItem: vi.fn(async () => undefined),
-  fetchAssistantSubsessions: vi.fn(async () => ({ subsessions: mocks.subsessions, truncated: false })),
+  fetchAssistantSubsessions: vi.fn(async () => {
+    if (mocks.subsessionsFailure) throw mocks.subsessionsFailure
+    return {
+      subsessions: mocks.subsessions,
+      truncated: false,
+      ...(mocks.followUps === undefined ? {} : { followUps: mocks.followUps })
+    }
+  }),
+  stopAssistantSubsession: vi.fn(async (_agentId: string, _sessionId: string) => mocks.stopAnswer),
   fetchAssistantDrafts: vi.fn(async () => ({
     drafts: mocks.drafts,
     truncated: false,
@@ -140,6 +152,48 @@ const SUBSESSIONS: AssistantSubsessionDto[] = [
     parent: null
   }
 ]
+/** A daemon with `follow-up-tasks-v1`: a follow-up the viewer may see and end, a hidden one, an ended one, and a delegated task. */
+const FOLLOW_UPS: AssistantSubsessionDto[] = [
+  {
+    sessionId: 'sid-follow',
+    title: 'Watch the release',
+    state: 'open',
+    startedAt: '2026-10-09T09:00:00.000Z',
+    visible: true,
+    canStop: true,
+    parent: { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' },
+    kind: 'follow-up',
+    followUp: {
+      status: 'waiting',
+      nextCheck: '2026-10-16T09:00:00.000Z',
+      doneWhen: 'The release is published',
+      recentChecks: [{ at: '2026-10-15T09:00:00.000Z', observation: 'Still a draft.', reported: true }]
+    }
+  },
+  {
+    sessionId: null,
+    title: null,
+    state: 'open',
+    startedAt: '2026-10-08T09:00:00.000Z',
+    visible: false,
+    canStop: false,
+    parent: null,
+    kind: 'follow-up',
+    followUp: { status: 'paused', nextCheck: null, doneWhen: null, recentChecks: [] }
+  },
+  {
+    sessionId: 'sid-ended',
+    title: 'Rotate the key',
+    state: 'done',
+    startedAt: '2026-10-07T09:00:00.000Z',
+    visible: true,
+    canStop: false,
+    parent: null,
+    kind: 'follow-up',
+    followUp: { status: 'stopped', nextCheck: null, doneWhen: 'The key is rotated', recentChecks: [] }
+  },
+  { ...SUBSESSIONS[0]!, kind: 'delegated' }
+]
 const DRAFT: AssistantDraftDto = {
   id: 'draft-1',
   kind: 'elsewhere',
@@ -235,6 +289,9 @@ beforeEach(() => {
   mocks.closed = [DONE]
   mocks.detail = DETAIL
   mocks.subsessions = SUBSESSIONS
+  mocks.followUps = undefined
+  mocks.subsessionsFailure = null
+  mocks.stopAnswer = { result: 'stopped' }
   mocks.drafts = [DRAFT]
   mocks.permissions = undefined
   mocks.failure = null
@@ -701,6 +758,100 @@ describe('the Activity view of an agent outside assistant mode', () => {
     expect(section(host, 'subsessions')?.textContent).toContain('运行中')
     expect(section(host, 'drafts')?.firstElementChild?.textContent).toContain('等待批准')
     expect(host.querySelector('[data-assistant-permission="request-1"] .badge')?.textContent).toBe('权限')
+  })
+})
+
+describe('the Activity view toward a daemon that serves follow-ups', () => {
+  const sections = (host: HTMLElement) =>
+    [...host.querySelectorAll('[data-activity-section]')].map((s) => s.getAttribute('data-activity-section'))
+  const row = (host: HTMLElement, id: string) =>
+    section(host, 'subsessions')!.querySelector<HTMLElement>(`[data-assistant-subsession="${id}"]`)!
+
+  beforeEach(() => {
+    mocks.followUps = true
+    mocks.subsessions = FOLLOW_UPS
+  })
+
+  it('shows no Items section and reads no items', async () => {
+    const host = await mount(true)
+    expect(sections(host)).toEqual(['subsessions', 'drafts'])
+    expect(api.fetchAssistantItems).not.toHaveBeenCalled()
+    expect(button(host, 'Done and dropped')).toBeUndefined()
+  })
+
+  it('lists follow-ups with their state, kind and next check, and their checks only where visible', async () => {
+    const host = await mount(false)
+    const waiting = row(host, 'sid-follow')
+    expect(waiting.dataset.followUp).toBe('waiting')
+    expect(waiting.querySelector('.badge')?.textContent).toBe('Waiting')
+    expect(waiting.textContent).toContain('Follow-up')
+    expect(waiting.textContent).toContain('Next check Oct 16, 2026, 9:00 AM')
+    expect(waiting.textContent).toContain('From #support')
+    expect(waiting.textContent).not.toContain('Started')
+    const hidden = row(host, 'hidden')
+    expect(hidden.querySelector('.badge')?.textContent).toBe('Paused')
+    expect(hidden.textContent).toContain('Not visible to you')
+    expect(button(hidden, 'Show checks')).toBeUndefined()
+    expect(row(host, 'sid-ended').querySelector('.badge')?.textContent).toBe('Stopped')
+    expect(row(host, 'sid-child').textContent).toContain('Running')
+    expect(row(host, 'sid-child').textContent).toContain('Started')
+
+    // The viewer may end only the follow-up whose stop rule allows it.
+    expect([...host.querySelectorAll('button')].filter((b) => b.textContent === 'End follow-up')).toHaveLength(1)
+    expect(button(waiting, 'End follow-up')).toBeTruthy()
+
+    expect(host.querySelector('[data-follow-up-checks]')).toBeNull()
+    await click(button(waiting, 'Show checks'))
+    const checks = waiting.querySelector('[data-follow-up-checks]')!
+    expect(checks.textContent).toContain('Done when: The release is published')
+    expect(checks.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('Still a draft.')
+    expect(checks.textContent).toContain('Oct 15, 2026, 9:00 AM')
+  })
+
+  it('ends a follow-up after a confirmation, and reads the tasks again', async () => {
+    const host = await mount(false)
+    const waiting = row(host, 'sid-follow')
+    await click(button(waiting, 'End follow-up'))
+    expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
+    expect(waiting.querySelector('[role="group"]')?.textContent).toContain(
+      'End this follow-up? The agent stops checking.'
+    )
+    const reads = api.fetchAssistantSubsessions.mock.calls.length
+    await click(button(waiting.querySelector('[role="group"]')!, 'End follow-up'))
+    expect(api.stopAssistantSubsession).toHaveBeenCalledWith(AGENT, 'sid-follow')
+    expect(waiting.querySelector('[data-follow-up-end]')?.textContent).toBe('Follow-up ended.')
+    expect(waiting.querySelector('[role="group"]')).toBeNull()
+    expect(api.fetchAssistantSubsessions.mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('keeps the Items section toward a daemon without them, or when the task list cannot say', async () => {
+    for (const setup of [
+      () => (mocks.followUps = false),
+      () => (mocks.subsessionsFailure = new ApiError('offline', 503, 'DAEMON_OFFLINE'))
+    ]) {
+      api.fetchAssistantItems.mockClear()
+      setup()
+      const host = await mount(false)
+      expect(sections(host)).toEqual(['items', 'subsessions'])
+      expect(api.fetchAssistantItems.mock.calls.map((call) => call[1])).toEqual(['open'])
+      await act(async () => root?.unmount())
+      root = undefined
+      container?.remove()
+    }
+  })
+
+  it('reads in Chinese with the zh-CN messages', async () => {
+    const host = await mount(false, true, (node) => (
+      <NextIntlClientProvider locale="zh-CN" messages={chinese} timeZone="UTC">
+        {node}
+      </NextIntlClientProvider>
+    ))
+    const waiting = row(host, 'sid-follow')
+    expect(waiting.querySelector('.badge')?.textContent).toBe('等待中')
+    expect(waiting.textContent).toContain('跟进')
+    expect(waiting.textContent).toContain('下次检查：')
+    expect(button(waiting, '结束跟进')).toBeTruthy()
+    expect(button(waiting, '显示检查记录')).toBeTruthy()
   })
 })
 

@@ -3977,16 +3977,35 @@ export interface AssistantItemDetailDto extends AssistantItemDto {
   observations: { text: string; at: string }[]
 }
 
+/** A follow-up's state (assistant-mode.md §5.12); `paused` stopped after five failed checks until it is messaged. */
+export type AssistantFollowUpStatus = 'waiting' | 'checking' | 'paused' | 'done' | 'stopped'
+
+export interface AssistantFollowUpDto {
+  status: AssistantFollowUpStatus
+  /** When it checks next; null when none is scheduled or it has ended. */
+  nextCheck: string | null
+  /** Null where the row is not visible. */
+  doneWhen: string | null
+  /** Newest first, at most five; empty where the row is not visible. */
+  recentChecks: { at: string; observation: string; reported: boolean }[]
+}
+
 export interface AssistantSubsessionDto {
   /** Present only when the viewer may open it. */
   sessionId: string | null
+  /** A follow-up's label. */
   title: string | null
+  /** A follow-up is `open` until it is done or stopped. */
   state: 'open' | 'done' | 'failed'
   startedAt: string
   visible: boolean
-  /** The viewer may stop its current turn. */
+  /** The viewer may stop its current turn, or end a follow-up. */
   canStop: boolean
   parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
+  /** Absent from a daemon without `follow-up-tasks-v1`. */
+  kind?: 'delegated' | 'follow-up' | 'approved-proposal'
+  /** Present on a follow-up. */
+  followUp?: AssistantFollowUpDto
 }
 
 export interface AssistantSubsessionsPageDto {
@@ -3994,6 +4013,8 @@ export interface AssistantSubsessionsPageDto {
   truncated: boolean
   /** The next page of one conversation's background work; null on its last page and for the agent-wide list. */
   nextCursor: string | null
+  /** True from a daemon that serves follow-ups, which then lists no items. */
+  followUps?: boolean
 }
 
 /** What a scheduled check proposes to do: the sentence its card leads with, why, and the item it serves. */
@@ -4072,7 +4093,7 @@ export async function fetchAssistantSubsessions(
   return apiGet(`${assistantBase(agentId)}/subsessions${query ? `?${query}` : ''}`)
 }
 
-/** Interrupt background work's current turn; `not_running` when it had none. */
+/** Interrupt background work's current turn, or end a follow-up; `not_running` when there was nothing to stop. */
 export async function stopAssistantSubsession(
   agentId: string,
   sessionId: string
