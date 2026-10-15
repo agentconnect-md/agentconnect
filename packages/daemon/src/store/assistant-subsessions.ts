@@ -1,4 +1,5 @@
 // The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
+import { SUBSESSION_COORDINATE_PREFIX } from '../session/subsession-coordinate.js'
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 
@@ -7,7 +8,7 @@ export type AssistantSubsessionState = 'open' | 'reporting' | 'done' | 'failed'
 
 export interface AssistantSubsession {
   agentId: string
-  /** The child's logical session key, the `childSessionId` the delegation handed back. */
+  /** The child's logical session key, the `taskId` `startTask` handed back. */
   childSessionKey: string
   /** The parent session's outward id, the lineage id the child's own row carries. */
   parentSessionId: string
@@ -416,14 +417,16 @@ export class AssistantSubsessionIndex {
     return rows.map(subsessionOf)
   }
 
-  /** One parent session's still `open` sub-sessions, newest first, at most `limit`, with how many there are in all. */
+  /** One owning session's still `open` tasks, never its patrols or approved proposals, newest first, at most `limit`, with how many there are in all. */
   async listOpenForParent(
     agentId: string,
     parent: { sessionId: string; key: string },
     limit: number
   ): Promise<{ rows: AssistantSubsession[]; total: number }> {
-    const where = `WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ? AND state = 'open'`
-    const params = [agentId, parent.sessionId, parent.key]
+    const where =
+      `WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ? AND state = 'open'` +
+      `${DELEGATIONS} AND childSessionKey NOT LIKE ?`
+    const params = [agentId, parent.sessionId, parent.key, `%:${SUBSESSION_COORDINATE_PREFIX}task-%`]
     const count = (await this.db.query(`SELECT COUNT(*) AS n FROM assistant_subsession ${where}`, params)).rows[0] as
       Row | undefined
     const total = Number(count?.n ?? 0)

@@ -456,7 +456,7 @@ describe('one patrol at a time, beside the delegations', () => {
     // The running patrol takes none of the user's one place …
     expect(await d.collab.messageAgent(delegation(1))).toMatchObject({ delivered: true, subsession: true })
     // … which the delegation now holds.
-    expect(await d.collab.messageAgent(delegation(2))).toMatchObject({ delivered: false, reason: 'subsession_limit' })
+    expect(await d.collab.messageAgent(delegation(2))).toMatchObject({ delivered: false, reason: 'task_limit' })
     await d.interruptAgentTurns('bot-a', 'stop')
     await settled()
     await daemon.stop()

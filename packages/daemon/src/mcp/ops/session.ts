@@ -2,8 +2,13 @@ import { z } from 'zod'
 import type { SessionContext } from './context.js'
 import { parseArgs, requiredString } from './args.js'
 
-/** `viewSessionStatus` arguments: the child session id is the only model input. */
-export const VIEW_SESSION_STATUS_ARGS = z.object({ sessionId: requiredString('sessionId') })
+/** `viewSessionStatus` arguments: one handle, a task's `taskId` or a called session's `sessionId`, is the only model input. */
+export const VIEW_SESSION_STATUS_ARGS = z
+  .object({ taskId: requiredString('taskId').optional(), sessionId: requiredString('sessionId').optional() })
+  .refine((given) => (given.taskId === undefined) !== (given.sessionId === undefined), {
+    message:
+      'pass exactly one of `taskId` (a task this session started) or `sessionId` (a session a callAgent returned)'
+  })
 
 /**
  * A trusted request to read the status of a session the caller STARTED. Everything except
@@ -66,7 +71,8 @@ export async function viewSessionStatus(
   args: Record<string, unknown>,
   deps: SessionOpsDeps
 ): Promise<unknown> {
-  const { sessionId } = parseArgs(VIEW_SESSION_STATUS_ARGS, args)
+  const parsed = parseArgs(VIEW_SESSION_STATUS_ARGS, args)
+  const sessionId = (parsed.taskId ?? parsed.sessionId)!
   if (!deps.viewSessionStatus) throw new Error('session status is unavailable on this daemon')
   const status = await deps.viewSessionStatus({
     callerAgentId: ctx.agentId,
@@ -80,8 +86,8 @@ export async function viewSessionStatus(
   // caller probe for sessions it is not allowed to read.
   if (!status) {
     throw new Error(
-      `viewSessionStatus: ${sessionId} is not a session started by this session. You can only check sessions you ` +
-        'opened yourself — use the `childSessionId` returned by the `sendMessage` call that started it.'
+      `viewSessionStatus: ${sessionId} is not a task or session started by this session. You can only check what ` +
+        'you started yourself — use the `taskId` a startTask call returned, or the `childSessionId` a callAgent returned.'
     )
   }
   return status

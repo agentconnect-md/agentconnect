@@ -2768,18 +2768,37 @@ describe('executeTool: viewSessionStatus', () => {
 
   it('surfaces an unauthorized/unknown session as one error that does not confirm existence', async () => {
     const d = makeDeps({ viewSessionStatus: async () => null })
-    await expect(executeTool(ctx, 'viewSessionStatus', { sessionId: 'someone-elses' }, d)).rejects.toThrow(
-      /not a session started by this session/
-    )
+    for (const args of [{ sessionId: 'someone-elses' }, { taskId: 'someone-elses' }])
+      await expect(executeTool(ctx, 'viewSessionStatus', args, d)).rejects.toThrow(
+        /not a task or session started by this session/
+      )
   })
 
-  it('requires a sessionId', async () => {
+  it('reads a task by its taskId as it reads a called session by its sessionId', async () => {
+    const seen: string[] = []
+    const d = makeDeps({
+      viewSessionStatus: async (req: { sessionId: string }) => {
+        seen.push(req.sessionId)
+        return null
+      }
+    } as never)
+    await expect(executeTool(ctx, 'viewSessionStatus', { taskId: 'task-1' }, d)).rejects.toThrow()
+    expect(seen).toEqual(['task-1'])
+  })
+
+  it('requires exactly one of taskId or sessionId', async () => {
     const d = makeDeps({
       viewSessionStatus: async () => {
-        throw new Error('must not be called without a sessionId')
+        throw new Error('must not be called without exactly one handle')
       }
     })
-    await expect(executeTool(ctx, 'viewSessionStatus', {}, d)).rejects.toThrow(/missing required string argument/)
+    for (const args of [{}, { taskId: 't-1', sessionId: 's-1' }])
+      await expect(executeTool(ctx, 'viewSessionStatus', args, d)).rejects.toThrow(
+        /pass exactly one of `taskId` \(a task this session started\) or `sessionId`/
+      )
+    await expect(executeTool(ctx, 'viewSessionStatus', { taskId: '' }, d)).rejects.toThrow(
+      /missing required string argument: taskId/
+    )
   })
 
   it('reports unavailability when the daemon does not supply the callback (chat CLI)', async () => {

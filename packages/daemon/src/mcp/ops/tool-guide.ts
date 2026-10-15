@@ -7,6 +7,9 @@ import { offersDirectMessages, platformLabel } from '../../platforms/read-ports.
 import { optionalEnum, parseArgs, requiredEnum } from './args.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { SEND_MESSAGE_ACTIONS, type SendMessageAction } from './send-message-actions.js'
+import { MESSAGE_TASK_GUIDE, START_TASK_GUIDE, type GuideExample } from './task-guide.js'
+
+export type { GuideExample }
 
 /** The tools a guide documents; the entry point is shared so other tools can join later. */
 export const GUIDED_TOOLS = ['sendMessage'] as const
@@ -28,12 +31,6 @@ export const GET_TOOL_GUIDE_TOOL: ToolDescriptor = {
     },
     ['tool']
   )
-}
-
-/** One runnable call: `arguments` is exactly what to pass to `sendMessage`. */
-export interface GuideExample {
-  use: string
-  arguments: Record<string, unknown>
 }
 
 interface ActionGuide {
@@ -61,17 +58,18 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'conversation, so without needsReply nothing comes back, not even a failure. A bare id asks for no report ' +
           'on this call; it does not forbid one or clear an earlier request.',
         'Without `channel` the call is postless: nothing is posted anywhere. It reaches a peer only; your own id ' +
-          'without `channel` is refused — use messageSubsession for background work of your own.',
+          'without `channel` is refused — work of your own that needs no conversation is a background task: use ' +
+          'startTask.',
         'With `channel` it also posts one visible message at that channel’s root, @-mentions the target, and ' +
           `anchors the target to that post. Your own id (${ctx.agentId}) with \`channel\` opens and activates a ` +
-          'visible conversation of your own there, where people can follow and respond; it is not a background ' +
-          'sub-session.',
+          'visible conversation of your own there, where people can follow and respond. That session belongs to the ' +
+          'conversation, not to you: it is not a task, so messageTask and stopTask do not reach it.',
         'The target may continue in context it already has; a call does not promise a fresh session.',
         '`sessionId` names an existing session of that agent — the `childSessionId` an earlier callAgent returned, ' +
           'yours or one someone shared with you — and delivers into exactly that session: nothing is posted, it keeps ' +
           'its context and its other callers, and you become one more session it can reply to. It cannot be combined ' +
-          'with `channel`, never names your own sessions (use messageSubsession for your sub-session), and never ' +
-          'falls back to another session: an unknown id, another agent’s id, a background sub-session, or a ' +
+          'with `channel`, never names your own sessions (use messageTask for your task), and never ' +
+          'falls back to another session: an unknown id, another agent’s id, a background task, or a ' +
           'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
           '"session_not_found"`.',
         'Not accepted: `platform`, `integrationId`, `thread`, `attachment`, `toUser`.',
@@ -96,7 +94,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           arguments: { action: 'callAgent', toAgent: '<agent-id>', message: 'FYI: the deploy window moved to 3pm.' }
         },
         {
-          use: 'Visible work by yourself in another channel (not a background sub-session)',
+          use: 'Visible work by yourself in another channel (a session of that conversation, not a task)',
           arguments: {
             action: 'callAgent',
             toAgent: ctx.agentId,
@@ -124,53 +122,8 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
         }
       ]
     },
-    messageSubsession: {
-      action: 'messageSubsession',
-      purpose: 'Start a background sub-session of your own for long work, or send more work to one you started.',
-      required: ['action', 'message'],
-      optional: ['sessionId'],
-      rules: [
-        'Without `sessionId` it starts a new, separate sub-session. With `sessionId` — the `childSessionId` a ' +
-          'messageSubsession call in this conversation returned — it sends the message into that existing sub-session, ' +
-          'which keeps its context, whether it is still running or already reported. A null or empty `sessionId` is ' +
-          'refused; it never starts a new one.',
-        'The daemon derives you from trusted context. Not accepted: `toAgent`, `channel`, `thread`, `platform`, ' +
-          '`integrationId`, `attachment`, `needsReply`.',
-        'Use it for long work ("fix this bug and open a PR"). A sub-session inherits this conversation’s context, ' +
-          'posts nothing, and reports back into this conversation each time a round of its work finishes or fails — ' +
-          'no needsReply needed. It can also send you progress or a question meanwhile; answer with messageSubsession ' +
-          'and its id. Start it before exploring the request yourself, say it has started, end your turn, and do not ' +
-          'do the work here too.',
-        'A message to a sub-session that is still working waits for its next turn; it does not interrupt it. One ' +
-          'that already finished starts a new round of work in the same context.',
-        'Say in its task which language the people here use, so it reports in that language.',
-        'Keep ordinary conversation here: questions, lookups and short answers never need a sub-session.',
-        'Only the conversation that started a sub-session can message it. A sub-session cannot open sub-sessions of ' +
-          'its own. Refusals arrive as `wake.delivered: false` with a `wake.reason` and `wake.message`: ' +
-          '`subsession_not_found` (no sub-session of this conversation has that id), `subsession_nesting`, and ' +
-          '`subsession_limit` (too many running at once; a finished one holds no slot).',
-        'The result carries `childSessionId`, the handle for messageSubsession, viewSessionStatus and stopSubsession. ' +
-          'It is not a session id for replyToSession.',
-        'To work visibly as yourself in another channel instead, use callAgent with your own id and `channel`.'
-      ],
-      examples: [
-        {
-          use: 'Start background work',
-          arguments: {
-            action: 'messageSubsession',
-            message: 'Investigate the flaky test in the background and report your findings.'
-          }
-        },
-        {
-          use: 'More work for a sub-session you started, running or finished',
-          arguments: {
-            action: 'messageSubsession',
-            sessionId: '<childSessionId returned by messageSubsession>',
-            message: 'Continue with the Windows failure and keep your earlier findings.'
-          }
-        }
-      ]
-    },
+    startTask: START_TASK_GUIDE,
+    messageTask: MESSAGE_TASK_GUIDE,
     replyToSession: {
       action: 'replyToSession',
       purpose: 'Reply directly into one session that called you (an origin).',
@@ -179,16 +132,17 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
       rules: [
         '`sessionId` is one origin’s session id: the `Parent session` line of your # Agent block, the session your ' +
           'instructions tell you to report to, or one listed under "Sessions you can reply to". A background ' +
-          'sub-session’s origin is the conversation that opened it. Never pass a `childSessionId` handle here.',
+          'task’s origin is the session that started it. Never pass a `taskId` or `childSessionId` handle here.',
         'Several sessions can call one conversation, and each stays one you can answer, whichever called last. A ' +
           'reply reaches only the session it names — it is never broadcast and never redirected — so answer each ' +
           'session that needs it with its own call.',
         'The message is injected into that session; nothing is posted on a platform, and that session’s own ' +
           'reply keeps its visible route. Never post the answer at the origin conversation’s channel root instead: ' +
           'that starts a separate conversation.',
-        'A sub-session started with messageSubsession can reply to its parent any time — progress, a question, or ' +
-          'its result — and a reply does not end its work; the daemon reports the end of each round of work itself. ' +
-          'An approved task or a patrol replies once, at the end, and that reply settles it.',
+        'A task started with startTask can reply to the session that started it any time — progress, a question, ' +
+          'or its result — and a reply does not end its work; the daemon reports the end of each round of work ' +
+          'itself. ' +
+          'An approved proposal’s work or a patrol replies once, at the end, and that reply settles it.',
         'Only `action`, `sessionId`, and `message` are accepted.',
         'The result is {delivered, targetSession?, reason?} with no `ok` wrapper. A session that never called you ' +
           'returns {delivered: false, reason: "not_authorized"}; other reasons report admission or routing ' +
@@ -204,7 +158,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           }
         },
         {
-          use: 'A sub-session’s question to its parent',
+          use: 'A task’s question to the session that started it',
           arguments: {
             action: 'replyToSession',
             sessionId: '<Parent session id from your # Agent block>',
@@ -286,13 +240,16 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
   const platforms = [...new Set((ctx.integrations ?? []).map((integration) => integration.platform))]
   const notes: Partial<Record<SendMessageAction, string>> = {}
   if (isSubsessionCoordinate(ctx.thread)) {
-    notes.messageSubsession =
-      'Unavailable here: this session is itself a background sub-session. Do the work here, or report back with ' +
-      'replyToSession and let your parent delegate.'
+    const unavailable =
+      'Unavailable here: this session is itself background work and cannot start or message tasks. Do the work ' +
+      'here, or report back with replyToSession and let the session that started it decide.'
+    notes.startTask = unavailable
+    notes.messageTask = unavailable
   }
   if (isTaskCoordinate(ctx.thread) || isPatrolCoordinate(ctx.thread)) {
     notes.replyToSession =
-      'This session is an approved task or a patrol: send your parent one reply, at the end; it settles this work.'
+      'This session runs an approved proposal or a patrol: send the session that started it one reply, at the end; ' +
+      'it settles this work.'
   }
   if (platforms.length === 0) {
     notes.postMessage = 'Unavailable here: this agent has no platform integration to post with.'

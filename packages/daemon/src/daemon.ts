@@ -335,7 +335,7 @@ import {
 } from './assistant/drafts.js'
 import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
-import { assistantSubsessionToolsFor, type SubsessionStopper } from './mcp/ops/assistant-subsessions.js'
+import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import {
   askerOf,
@@ -4270,9 +4270,10 @@ export class Daemon {
         },
         now: () => this.clock.now()
       },
-      // A main conversation's stop of its own sub-session (assistant-mode.md §5.8), through the console's Stop core.
+      // An owning session's stop of its own task (send-message-guide.md §8.7), through the console's Stop core.
       assistantSubsessions: {
-        stopper: async (ctx) => this.subsessionStopper(ctx),
+        actor: (ctx) => this.taskStopper(ctx),
+        sessionIdOf: async (key) => (await this.store.getSession(key))?.sessionId ?? undefined,
         find: async (agentId, id) =>
           (await this.store.assistantSubsessions.get(agentId, id)) ??
           (await this.store
@@ -4618,8 +4619,8 @@ export class Daemon {
         tools = [...tools, ...assistantItemToolsFor(agent)]
         // Its reminders (§5.9), in a platform conversation of the session's own only.
         tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-        // Stopping a sub-session it opened (§5.8), for every agent, in a place's main conversation only.
-        tools = [...tools, ...assistantSubsessionToolsFor({ platform, channel, thread, integrationId })]
+        // Stopping a task it started (send-message-guide.md §8.7), in every session that can start one.
+        tools = [...tools, ...stopTaskToolsFor({ thread })]
         // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
         const managedRepo = this.managedWorkspaceRepo(agent.id)
         if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -8901,7 +8902,7 @@ export class Daemon {
       const now = this.clock.now()
       // A session is never its own source.
       if ((await this.store.getSession(key))?.sessionId === source) return
-      // A report from the agent's own sub-session grants no standing reply path into it; continuing it is messageSubsession's.
+      // A report from the agent's own sub-session grants no standing reply path into it; messaging it is messageTask's.
       const origin = await this.store.getSessionByOutwardId(source)
       if (origin && origin.agentId === agentId && isSubsessionCoordinate(origin.thread)) return
       const coords = callMeta.originCoords
@@ -9065,23 +9066,19 @@ export class Daemon {
     }
   }
 
-  /** The console's Stop and the main conversation's `stopSubsession` alike: the `!cancel` core, logged with who asked. */
+  /** The console's Stop and an owning session's `stopTask` alike: the `!cancel` core, logged with who asked. */
   private async stopSessionByKey(key: string, actor?: InteractionActor): Promise<boolean> {
     const applied = await this.commands.cancelSessionByKey(key, actor)
     if (applied) this.commands.logSessionAction('cancel', key, actor)
     return applied
   }
 
-  /** The person whose own message started the live turn, held to today's `!stop` sender rule (assistant-mode.md §5.8). */
-  private subsessionStopper(ctx: SessionContext): SubsessionStopper {
+  /** Who a `stopTask` is logged as: the person whose message started the live turn, else the agent itself (send-message-guide.md §8.7). */
+  private taskStopper(ctx: SessionContext): { userId: string; name?: string; isBot?: boolean } {
     const msg = this.liveTurn(ctx)?.msg
-    if (!msg || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return { ok: false, reason: 'no-person' }
-    const actor = { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
-    // Webchat has no `!stop`; the Control Plane admitted this message only from someone who may continue the conversation.
-    if (ctx.platform === 'webchat') return { ok: true, actor }
-    if (!ctx.integrationId || !this.commands.commandSenderAllowed(ctx.agentId, ctx.integrationId, msg))
-      return { ok: false, reason: 'sender' }
-    return { ok: true, actor }
+    if (msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id)
+      return { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
+    return { userId: ctx.agentId, isBot: true }
   }
 
   /** The zone a person's profile on that bot names, from the name lookups' per-person cache; none where the platform keeps none. */

@@ -51,7 +51,6 @@ import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.
 import { runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
-import { assistantMainConversation } from '../mcp/ops/assistant-subsessions.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
@@ -1058,8 +1057,8 @@ export class SessionManager {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
       if (summary) promptPrelude.push({ type: 'text', text: summary })
     }
-    // Every agent's main conversation: its running sub-sessions ride the same points, and any turn after that list changed (§5.6).
-    if (rec.sessionId && assistantMainConversation(place)) {
+    // Every session that can own tasks: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
+    if (rec.sessionId && !isSubsessionCoordinate(thread)) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,

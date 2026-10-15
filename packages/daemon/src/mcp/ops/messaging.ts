@@ -206,14 +206,19 @@ export interface MessageAgentReq {
   targetSessionId?: string
 }
 
-/** A parent's message into its own existing sub-session (send-message-guide.md §8.1): only `sessionId` and `text` come from the model. */
+/** The guidance a started task's receipt hands back (send-message-guide.md §8.6). */
+export const TASK_STARTED =
+  'Task started in the background. Tell the people here it has started and end this turn; it reports back into ' +
+  'this session when it finishes or fails. Do not do the work here as well.'
+
+/** An owning session's message into its own task (send-message-guide.md §8.1): only the handle and `text` come from the model. */
 export interface ContinueSubsessionReq {
   callerAgentId: string
   platform: string
   callerTransportScope?: string
   callerChannel: string
   callerThread: string
-  /** The child's handle: the `childSessionId` its creation returned, or its outward id. */
+  /** The task's handle: the `taskId` `startTask` returned, or its outward id. */
   sessionId: string
   text: string
   /** A stable id of this submission, so a replay of it is admitted once; minted by the daemon when absent. */
@@ -230,7 +235,7 @@ export interface MessageAgentResult {
   reason?: string
   /** A refusal the agent must read in words, beside its `reason`. */
   message?: string
-  /** assistant-mode.md §5.6: the wake opened a background sub-session, which always reports back. */
+  /** send-message-guide.md §8.5: the wake started or messaged a background task, which always reports back. */
   subsession?: true
 }
 
@@ -268,8 +273,8 @@ export interface ReplyToSessionResult {
     | 'not_allowed'
     | 'unsupported'
     | 'not_ready'
-    // assistant-mode.md §5.7: the daemon already reported this sub-session's end to its parent.
-    | 'subsession_ended'
+    // send-message-guide.md §8.5: the daemon already reported this round's end to the owning session.
+    | 'task_ended'
 }
 
 /** The deps of the unified outbound send: peer wake, session reply, the visible post, and
@@ -307,7 +312,7 @@ export interface MessagingDeps extends GatewayDeps {
   preflightWake?: (req: MessageAgentReq) => string | null
   /** Backs `replyToSession`: a fail-closed reply into one of the caller's recorded origins (send-message-guide.md §9.3). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
-  /** Backs `messageSubsession` with `sessionId` (send-message-guide.md §8): the caller's own direct child only; absent ⇒ unavailable. */
+  /** Backs `messageTask` (send-message-guide.md §8): the caller's own task only; absent ⇒ unavailable. */
   continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
   /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */
   callId?: string
@@ -919,19 +924,19 @@ export async function deliverSendMessage(
   // (`viewSessionStatus`) without having to reconstruct the key. Only for an ADMITTED wake: a
   // rejected one opened nothing, and `wake.reason` explains why.
   const childSessionId = wake?.delivered === true ? wake.targetSession : undefined
-  // assistant-mode.md §5.6: a sub-session reports back whether or not `needsReply` was set.
+  // send-message-guide.md §8.6: a task reports back whether or not `needsReply` was set, and its handle is `taskId`.
   const subsession = wake?.subsession === true
   return {
     ok: true,
     ...(wake !== undefined ? { wake } : {}),
     ...(post !== undefined ? { post } : {}),
-    ...(childSessionId !== undefined ? { childSessionId } : {}),
+    ...(childSessionId !== undefined ? (subsession ? { taskId: childSessionId } : { childSessionId }) : {}),
     ...(childSessionId !== undefined && (needsReply || subsession)
       ? {
           reply: { requested: true, state: 'awaiting' as const },
           nextAction: 'finish-turn-and-wait' as const,
           message: subsession
-            ? 'Sub-session started in the background. Tell the people here it has started and end this turn; it reports back into this conversation when it finishes or fails. Do not do the work here as well.'
+            ? TASK_STARTED
             : 'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
         }
       : {}),

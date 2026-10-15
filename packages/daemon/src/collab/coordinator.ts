@@ -6,7 +6,8 @@ import {
   isDelegationCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
-  subsessionCoordinate
+  subsessionCoordinate,
+  TASK_START_WRAPPER
 } from '../session/subsession-coordinate.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -60,32 +61,34 @@ import type {
   SessionStatusResult
 } from '../mcp/ops.js'
 
-/** assistant-mode.md §5.6: the reason a sub-session's own delegation is refused, and the sentence the agent reads. */
-export const SUBSESSION_NESTING = 'subsession_nesting'
-const SUBSESSION_NESTING_MESSAGE =
-  'A sub-session cannot open another sub-session. Do this work here, or report back to the main conversation and let it delegate.'
-/** assistant-mode.md §5.6: the refusal once `maxConcurrentSubsessions` sub-sessions are running; nothing is queued yet. */
-export const SUBSESSION_LIMIT = 'subsession_limit'
+/** send-message-guide.md §2.1: the reason a task's own `startTask` is refused, and the sentence the agent reads. */
+export const TASK_NESTING = 'task_nesting'
+const TASK_NESTING_MESSAGE =
+  'A task cannot start another task. Do this work here, or report back to the session that started you and let it decide.'
+/** assistant-mode.md §5.6: the refusal once `maxConcurrentSubsessions` tasks are running; nothing is queued yet. */
+export const TASK_LIMIT = 'task_limit'
 export const DEFAULT_MAX_CONCURRENT_SUBSESSIONS = 3
 /** How long an `open` row whose session never appeared still counts toward the cap: past it, the wake was lost. */
 export const SUBSESSION_START_GRACE_MS = 10 * 60_000
 /** How long an `open` sub-session may have nothing running for it before the sweep reports it ended (assistant-mode.md §5.7). */
 export const SUBSESSION_IDLE_END_MS = 10 * 60_000
-/** send-message-guide.md §8.6: one refusal for an unknown sub-session and another conversation's, so it names nothing. */
-export const SUBSESSION_NOT_FOUND = 'subsession_not_found'
-export const SUBSESSION_NOT_FOUND_MESSAGE =
-  'This conversation has no sub-session with that id. Nothing was sent. Pass the `childSessionId` a messageSubsession ' +
-  'call here returned, or omit `sessionId` to start a new sub-session.'
-/** The previous round's end report is still on its way to this conversation, so no new round opens yet. */
-export const SUBSESSION_REPORTING = 'subsession_reporting'
-/** The same submission of a parent message is still being admitted; it is not sent twice. */
-export const SUBSESSION_INPUT_IN_FLIGHT = 'submission_in_flight'
+/** send-message-guide.md §8.6: one refusal for an unknown task and another session's, so it names nothing. */
+export const TASK_NOT_FOUND = 'task_not_found'
+export const TASK_NOT_FOUND_MESSAGE =
+  'This session started no task with that id. Nothing was sent. Pass the `taskId` a startTask call in this session ' +
+  'returned, or use startTask to start a new task.'
+/** The previous round's end report is still on its way to the owning session, so no new round opens yet. */
+export const TASK_REPORTING = 'task_reporting'
+/** send-message-guide.md §8.5: a settled round's late reply is refused, never a second report. */
+export const TASK_ENDED = 'task_ended'
+/** The same submission of an owner message is still being admitted; it is not sent twice. */
+export const SUBMISSION_IN_FLIGHT = 'submission_in_flight'
 /** send-message-guide.md §9.2: one refusal for an unknown, foreign, private or closed session, so it names nothing. */
 export const PEER_SESSION_NOT_FOUND = 'session_not_found'
 export const PEER_SESSION_NOT_FOUND_MESSAGE =
   'That agent has no session with that id that this conversation may join. Nothing was sent and no new session was ' +
-  'started. Pass the `childSessionId` an earlier callAgent returned, or omit `sessionId`; a background sub-session ' +
-  'takes messages only from its own parent, through messageSubsession.'
+  'started. Pass the `childSessionId` an earlier callAgent returned, or omit `sessionId`; a background task takes ' +
+  'messages only from the session that started it, through messageTask.'
 
 /** How a sub-session's turn, or its refused start, ended (assistant-mode.md §5.7). */
 export interface SubsessionTurnEnd {
@@ -162,20 +165,21 @@ function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | 
 export const REPORT_ANSWER_LANGUAGE =
   'Speak to the people here in the language they use, even when this report is in another.'
 
-/** How the parent continues a sub-session, closing every round-end report. */
+/** How the owning session messages a task, closing every round-end report. */
 const continueHint = (key: string): string =>
-  `To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.`
+  `To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${key}","message":"..."}.`
 
-/** What replaces the hint where the report lands in a later session of the place, which cannot continue the child. */
+/** What replaces the hint where the report lands in a later session of the place, which cannot message the task. */
 const ELSEWHERE_HINT =
-  'It belongs to an earlier session of this conversation, so it cannot be given more work from here; start a new sub-session if more is needed.'
+  'It belongs to an earlier session of this conversation, so it cannot be given more work from here; start a new task if more is needed.'
+// A report kept from before the task rename still carries the old hint, so both forms are replaced.
 const withoutContinueHint = (text: string): string =>
   text.replace(
-    /To give it more work in the same context, call sendMessage with \{"action":"messageSubsession"[^\n]*?\}\./,
+    /To give it more work in the same context, call sendMessage with \{"action":"(?:messageTask|messageSubsession)"[^\n]*?\}\./,
     ELSEWHERE_HINT
   )
 
-/** The one report a delegated sub-session's work round ends with (send-message-guide.md §8.5). */
+/** The one report a task's work round ends with (send-message-guide.md §8.5). */
 function subsessionRoundReport(
   key: string,
   end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
@@ -183,10 +187,10 @@ function subsessionRoundReport(
 ): string {
   if (end.outcome === 'completed') {
     return output
-      ? `[sub-session finished] Sub-session ${key} finished this round of work. Its final output, delivered on its behalf:\n\n${output}\n\n${continueHint(key)}`
-      : `[sub-session finished] Sub-session ${key} finished this round of work without a final output; any reply it sent before this is its result. ${continueHint(key)}`
+      ? `[task finished] Task ${key} finished this round of work. Its final output, delivered on its behalf:\n\n${output}\n\n${continueHint(key)}`
+      : `[task finished] Task ${key} finished this round of work without a final output; any reply it sent before this is its result. ${continueHint(key)}`
   }
-  return `[sub-session ended] Sub-session ${key} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported. ${continueHint(key)}`
+  return `[task ended] Task ${key} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported. ${continueHint(key)}`
 }
 
 /** Why a round stopped, as its report names it. */
@@ -478,7 +482,7 @@ export class CollabCoordinator {
       const ended = rounds && row?.kind !== 'patrol' ? row !== undefined && row.state !== 'open' : undefined
       if (ended ?? (row?.state === 'failed' || row?.state === 'reporting')) {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
-        return { delivered: false, reason: 'subsession_ended' }
+        return { delivered: false, reason: TASK_ENDED }
       }
       const result = await this.deliverReply(req)
       if (result.delivered && ended === undefined) await this.markSubsessionReported(req.callerAgentId, key)
@@ -982,7 +986,7 @@ export class CollabCoordinator {
       return 'invalid_target'
     }
     // A channel-root self wake preflights before its post exists; messageAgent checks the post and its pairing id.
-    if (this.selfDelegation(req) && isSubsessionCoordinate(req.callerThread)) return SUBSESSION_NESTING
+    if (this.selfDelegation(req) && isSubsessionCoordinate(req.callerThread)) return TASK_NESTING
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -1062,8 +1066,8 @@ export class CollabCoordinator {
       return observe('collaboration.delivery.rejected', {
         delivered: false,
         targetSession: sessionKey(platform, req.channel, fallbackThread, req.toAgentId),
-        reason: SUBSESSION_NESTING,
-        message: SUBSESSION_NESTING_MESSAGE
+        reason: TASK_NESTING,
+        message: TASK_NESTING_MESSAGE
       })
     }
     // send-message-guide.md §9.2: `callAgent` with `sessionId` joins that exact existing session, or nothing.
@@ -1135,7 +1139,7 @@ export class CollabCoordinator {
       ? {
           ...prepared,
           thread: subsessionCoordinate(prepared.deliveryId),
-          text: `From your own main conversation, as a background sub-session: ${req.text}`
+          text: `${TASK_START_WRAPPER} ${req.text}`
         }
       : prepared
     const subsessionTitle = selfDelegation ? deriveTitle(req.text) : undefined
@@ -1283,8 +1287,8 @@ export class CollabCoordinator {
         return record({
           delivered: false,
           targetSession,
-          reason: SUBSESSION_LIMIT,
-          message: `You already have ${limit} sub-sessions running, the limit. Finish this here or wait for one to report.`
+          reason: TASK_LIMIT,
+          message: `You already have ${limit} tasks running, the limit. Finish this here or wait for one to report.`
         })
       }
       this.host.noteSubsessionOpened?.(targetSession, callerKey)
@@ -1532,7 +1536,7 @@ export class CollabCoordinator {
         : await store.getSessionByOutwardIdOnly(call.targetSessionId, call.toAgentId)
     const notFound = { accepted: false as const, reason: 'not_found' }
     if (!target || target.agentId !== call.toAgentId) return notFound
-    // A background sub-session is its parent's alone, reached through messageSubsession.
+    // A background task is its owning session's alone, reached through messageTask.
     if (isSubsessionCoordinate(target.thread)) return notFound
     if (target.sessionId != null && target.sessionId === call.callMeta.originSessionId) return notFound
     const participates = await this.host
@@ -1873,7 +1877,7 @@ export class CollabCoordinator {
     return await this.deliverReply(req)
   }
 
-  /** The reciprocal reply from a parent into its own sub-session: origin-authorized as before, then admitted like `messageSubsession`. */
+  /** The reciprocal reply from an owning session into its own task: origin-authorized as before, then admitted like `messageTask`. */
   private async replyIntoSubsession(req: ReplyToSessionReq, childKey: string): Promise<ReplyToSessionResult> {
     const callerKey = sessionKey(
       req.platform,
@@ -1889,7 +1893,7 @@ export class CollabCoordinator {
     const result = await this.continueSubsession({ ...req, sessionId: childKey })
     if (result.delivered) return { delivered: true, targetSession: childKey }
     const reason: ReplyToSessionResult['reason'] =
-      result.reason === SUBSESSION_NOT_FOUND
+      result.reason === TASK_NOT_FOUND
         ? 'not_authorized'
         : result.reason === 'hop_limit' || result.reason === 'queue_full'
           ? result.reason
@@ -1930,7 +1934,7 @@ export class CollabCoordinator {
       reason,
       message
     })
-    const notFound = () => refuse(SUBSESSION_NOT_FOUND, SUBSESSION_NOT_FOUND_MESSAGE)
+    const notFound = () => refuse(TASK_NOT_FOUND, TASK_NOT_FOUND_MESSAGE)
     if (isSubsessionCoordinate(req.callerThread)) return notFound()
     const owned = await this.ownedSubsession(agentId, req.sessionId, callerKey)
     if (!owned) return notFound()
@@ -1949,8 +1953,8 @@ export class CollabCoordinator {
       if (!prior) return undefined
       if (this.subsessionSubmissions.has(id) || !(await this.host.store().hasInbox(receiptId)))
         return refuse(
-          SUBSESSION_INPUT_IN_FLIGHT,
-          'This same message is already being delivered to the sub-session; do not send it again.',
+          SUBMISSION_IN_FLIGHT,
+          'This same message is already being delivered to the task; do not send it again.',
           key
         )
       return { delivered: true, targetSession: key, subsession: true }
@@ -1958,9 +1962,7 @@ export class CollabCoordinator {
     const prior = await replayed()
     if (prior) return prior
     if (!(await index.claimInput(agentId, id, key, this.host.clock().now()))) {
-      return (
-        (await replayed()) ?? refuse(SUBSESSION_INPUT_IN_FLIGHT, 'This same message is already being delivered.', key)
-      )
+      return (await replayed()) ?? refuse(SUBMISSION_IN_FLIGHT, 'This same message is already being delivered.', key)
     }
     this.subsessionSubmissions.add(id)
     try {
@@ -1996,7 +1998,7 @@ export class CollabCoordinator {
         round: 0,
         receipt: refuse(
           'paused',
-          'This agent is paused or draining, so the sub-session cannot take work now. Nothing was sent.',
+          'This agent is paused or draining, so the task cannot take work now. Nothing was sent.',
           key
         )
       }
@@ -2009,13 +2011,13 @@ export class CollabCoordinator {
         await this.subsessionReportSends.get(key)
         row = await index.get(agentId, key)
       }
-      if (!row) return { refusal: refuse(SUBSESSION_NOT_FOUND, SUBSESSION_NOT_FOUND_MESSAGE) }
+      if (!row) return { refusal: refuse(TASK_NOT_FOUND, TASK_NOT_FOUND_MESSAGE) }
       const round = row.round ?? 1
       if (row.state === 'reporting') {
         return {
           refusal: refuse(
-            SUBSESSION_REPORTING,
-            'Its previous round’s report has not reached this conversation yet, so it cannot take new work now. ' +
+            TASK_REPORTING,
+            'Its previous round’s report has not reached this session yet, so it cannot take new work now. ' +
               'Nothing was sent; end this turn and message it again after the report arrives.',
             key
           )
@@ -2036,11 +2038,11 @@ export class CollabCoordinator {
           refusal:
             opened === 'limit'
               ? refuse(
-                  SUBSESSION_LIMIT,
-                  `You already have ${limit} sub-sessions running, the limit. Nothing was sent; message it again once one reports.`,
+                  TASK_LIMIT,
+                  `You already have ${limit} tasks running, the limit. Nothing was sent; message it again once one reports.`,
                   key
                 )
-              : refuse('busy', 'The sub-session changed while this message was admitted. Nothing was sent.', key)
+              : refuse('busy', 'The task changed while this message was admitted. Nothing was sent.', key)
         }
       }
       this.subsessionAdmitting.set(key, (this.subsessionAdmitting.get(key) ?? 0) + 1)
@@ -2059,7 +2061,7 @@ export class CollabCoordinator {
     if (accepted.accepted) {
       if (!reopenedFrom) this.subsessionJoinedRound.set(key, round)
       this.host.noteSubsessionOpened?.(key, callerKey)
-      this.host.log().info(`messageSubsession: ${agentId} → ${key} round=${round} delivery=${at.deliveryId}`)
+      this.host.log().info(`messageTask: ${agentId} → ${key} round=${round} delivery=${at.deliveryId}`)
       return { round, receipt: { delivered: true, targetSession: key, subsession: true } }
     }
     // A round this message opened and nothing else joined never started, so it goes back to how it was.
@@ -2073,7 +2075,7 @@ export class CollabCoordinator {
       round,
       receipt: refuse(
         reason,
-        `The sub-session did not take the message (${reason}). Nothing was sent; do not retry automatically.`,
+        `The task did not take the message (${reason}). Nothing was sent; do not retry automatically.`,
         key
       )
     }
@@ -2130,7 +2132,7 @@ export class CollabCoordinator {
       ...(caller.transportScope !== undefined ? { transportScope: caller.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      text: `From your own main conversation (session ${parentSessionId}), a new message for this background sub-session: ${req.text}`,
+      text: `From the session that started this task (session ${parentSessionId}), a new message for this background task: ${req.text}`,
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       headless: true
@@ -2156,9 +2158,9 @@ export class CollabCoordinator {
         settleAdmission({ accepted: false, reason: 'error' })
         // A queued input a stop or fail-stop dropped: the turn that ended the round settles it.
         if (err instanceof FailStopError) return
-        this.host.log().error(`messageSubsession dispatch failed for "${key}": ${formatErr(err)}`)
+        this.host.log().error(`messageTask dispatch failed for "${key}": ${formatErr(err)}`)
         await this.failAgentDispatch(key, msg, callMeta, err, true).catch((reportErr) =>
-          this.host.log().error(`messageSubsession failure report failed for "${key}": ${formatErr(reportErr)}`)
+          this.host.log().error(`messageTask failure report failed for "${key}": ${formatErr(reportErr)}`)
         )
       })
     return await admitted

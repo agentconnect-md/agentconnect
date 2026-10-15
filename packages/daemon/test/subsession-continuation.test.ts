@@ -1,4 +1,4 @@
-// Persistent sub-session messaging (send-message-guide.md §8): continuation, work rounds, slots, origins and receipts.
+// Persistent task messaging (send-message-guide.md §8): messageTask, work rounds, slots, origins and receipts.
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -62,7 +62,7 @@ function scaffold(agents: { id: string; assistantMode?: Record<string, unknown> 
 /** What a runtime does with one prompt: answer, throw, or wait until it is cancelled. */
 type PromptBehavior = 'answer' | 'throw' | 'hang' | ((sessionId: string) => Promise<unknown>)
 
-/** A runtime per agent whose sub-session prompts follow `sub`, and every other prompt (the parent's) answers. */
+/** A runtime per agent whose task prompts follow `sub`, and every other prompt (the owning session's) answers. */
 function runtimes() {
   const behavior: {
     sub: PromptBehavior
@@ -85,9 +85,9 @@ function runtimes() {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-        // A sub-session's own input names it; the parent's standing summary of its sub-sessions does not count.
+        // A task's own input names it; the owning session's list of its running tasks does not count.
         const text = JSON.stringify(blocks)
-        const sub = /as a background sub-session|for this background sub-session/.test(text)
+        const sub = /as a background task|for this background task/.test(text)
         if (sub) subPrompts.push(sessionId)
         const matched = behavior.byText.find(([pattern]) => pattern.test(text))?.[1]
         const act = matched ?? (sub ? (behavior.subQueue.shift() ?? behavior.sub) : behavior.plain)
@@ -135,7 +135,7 @@ async function boot(root: string, opts: { spy?: boolean; clock?: FakeClock } = {
   })
   const dispatched: { agentId: string; msg: NormalizedMessage; callMeta?: any; turn: Promise<unknown> }[] = []
   if (opts.spy === true) {
-    // The wake is admitted and never runs, so its sub-session stays open.
+    // The wake is admitted and never runs, so its task stays open.
     d.dispatch = vi.fn(async (agentId: string, msg: any, _i?: string, _w?: any, callMeta?: any, o?: any) => {
       dispatched.push({ agentId, msg, callMeta, turn: Promise.resolve() })
       o?.onAdmission?.({ accepted: true })
@@ -261,31 +261,31 @@ const childReply = (d: any, caller: { scope: string }, thread: string, text: str
 const rowOf = async (d: any, key: string) => await d.store.assistantSubsessions.get('bot-a', key)
 const subInputs = <T extends { msg: NormalizedMessage }>(dispatched: T[]): T[] =>
   dispatched.filter((c) => isSubsessionCoordinate(c.msg.thread) && c.msg.parentReport !== true)
-const finished = (key: string) => `[sub-session finished] Sub-session ${key} finished this round of work`
+const finished = (key: string) => `[task finished] Task ${key} finished this round of work`
 
-/** Start one sub-session through the tool and let its first round finish. */
+/** Start one task through the tool and let its first round finish. */
 async function startAndFinish(h: Awaited<ReturnType<typeof boot>>, caller: { scope: string; coordinate: string }) {
-  const created = await send(h.d, caller, { action: 'messageSubsession', message: 'investigate the flaky test' })
+  const created = await send(h.d, caller, { action: 'startTask', message: 'investigate the flaky test' })
   expect(created.wake).toMatchObject({ delivered: true, subsession: true })
-  const child: string = created.childSessionId
+  const child: string = created.taskId
   await vi.waitFor(async () => expect((await rowOf(h.d, child))?.state).toBe('done'), WAIT)
   await h.settled()
   return child
 }
 
-describe('messageSubsession continues an existing direct child', () => {
-  it('sends into the same child by its childSessionId and opens a new round after the first finished', async () => {
+describe('messageTask continues an existing task of this session', () => {
+  it('sends into the same task by its taskId and opens a new round after the first finished', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
     expect(h.reports().map((c) => c.msg.text)).toEqual([expect.stringContaining(finished(child))])
     const firstSession = (await h.d.store.getSession(child))?.acpSessionId
 
-    const res = await send(h.d, caller, { action: 'messageSubsession', sessionId: child, message: 'also Windows' })
+    const res = await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'also Windows' })
     expect(res).toMatchObject({
       ok: true,
       wake: { delivered: true, targetSession: child, subsession: true },
-      childSessionId: child,
+      taskId: child,
       reply: { requested: true, state: 'awaiting' },
       nextAction: 'finish-turn-and-wait'
     })
@@ -297,7 +297,7 @@ describe('messageSubsession continues an existing direct child', () => {
     expect(inputs).toHaveLength(2)
     expect(sessionKey('slack', 'C1', inputs[1]!.msg.thread!, 'bot-a', inputs[1]!.msg.transportScope)).toBe(child)
     expect(inputs[1]!.msg.text).toBe(
-      'From your own main conversation (session sid-parent-1), a new message for this background sub-session: also Windows'
+      'From the session that started this task (session sid-parent-1), a new message for this background task: also Windows'
     )
     expect(inputs[1]!.callMeta).toMatchObject({ originSessionId: 'sid-parent-1', needsReply: true, subsessionRound: 2 })
     expect((await h.d.store.getSession(child))?.acpSessionId).toBe(firstSession)
@@ -316,9 +316,9 @@ describe('messageSubsession continues an existing direct child', () => {
     const child = await startAndFinish(h, caller)
     const outward = await h.d.store.ensureOutwardSessionId(child, 'bot-a', Date.now())
 
-    const res = await send(h.d, caller, { action: 'messageSubsession', sessionId: outward, message: 'one more' })
+    const res = await send(h.d, caller, { action: 'messageTask', taskId: outward, message: 'one more' })
     expect(res.wake).toMatchObject({ delivered: true, targetSession: child })
-    expect(res.childSessionId).toBe(child)
+    expect(res.taskId).toBe(child)
     await h.settled()
     await h.daemon.stop()
   })
@@ -330,39 +330,39 @@ describe('messageSubsession continues an existing direct child', () => {
     const before = subInputs(h.dispatched).length
     const refusal = {
       delivered: false,
-      reason: 'subsession_not_found',
+      reason: 'task_not_found',
       message:
-        'This conversation has no sub-session with that id. Nothing was sent. Pass the `childSessionId` a messageSubsession ' +
-        'call here returned, or omit `sessionId` to start a new sub-session.'
+        'This session started no task with that id. Nothing was sent. Pass the `taskId` a startTask call in this session ' +
+        'returned, or use startTask to start a new task.'
     }
     const unknown = 'slack:C1:subsession:404:bot-a'
-    expect(await send(h.d, caller, { action: 'messageSubsession', sessionId: unknown, message: 'm' })).toEqual({
+    expect(await send(h.d, caller, { action: 'messageTask', taskId: unknown, message: 'm' })).toEqual({
       ok: true,
       wake: { ...refusal, targetSession: unknown }
     })
     // The child itself, a sibling-to-be, or the parent's own session are not a direct child of the caller.
-    expect((await h.d.collab.continueSubsession(continuation(caller, caller.key))).reason).toBe('subsession_not_found')
+    expect((await h.d.collab.continueSubsession(continuation(caller, caller.key))).reason).toBe('task_not_found')
     const thread = subInputs(h.dispatched)[0]!.msg.thread!
     expect((await h.d.collab.continueSubsession({ ...continuation(caller, child), callerThread: thread })).reason).toBe(
-      'subsession_not_found'
+      'task_not_found'
     )
     // Another conversation of the same agent, and the same conversation after `!new`.
     const other = await seedCaller(h.d, 'bot-a', 'C2')
     expect((await h.d.collab.continueSubsession({ ...continuation(other, child), callerChannel: 'C2' })).reason).toBe(
-      'subsession_not_found'
+      'task_not_found'
     )
     const next = await rotate(h.d, caller)
     expect((await h.d.collab.continueSubsession({ ...continuation(caller, child), callerThread: next })).reason).toBe(
-      'subsession_not_found'
+      'task_not_found'
     )
     // Another agent naming this agent's child.
     const peer = await seedCaller(h.d, 'bot-b')
     expect((await h.d.collab.continueSubsession({ ...continuation(peer, child), callerAgentId: 'bot-b' })).reason).toBe(
-      'subsession_not_found'
+      'task_not_found'
     )
     // A purged child is not recreated.
     expect(await h.d.store.deleteSession(child)).toBe(true)
-    expect((await h.d.collab.continueSubsession(continuation(caller, child))).reason).toBe('subsession_not_found')
+    expect((await h.d.collab.continueSubsession(continuation(caller, child))).reason).toBe('task_not_found')
     expect(subInputs(h.dispatched)).toHaveLength(before)
     expect(await h.d.store.assistantSubsessions.list('bot-a', 10)).toHaveLength(0)
     await h.daemon.stop()
@@ -396,14 +396,14 @@ describe('a work round, its slot and its outcome', () => {
       await new Promise<void>((resolve) => (finish = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'messageSubsession', message: 'repair the parser' })
-    const child: string = created.childSessionId
+    const created = await send(h.d, caller, { action: 'startTask', message: 'repair the parser' })
+    const child: string = created.taskId
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'open' })
-    // Its slot is still held: a second sub-session is refused.
-    expect((await send(h.d, caller, { action: 'messageSubsession', message: 'another' })).wake).toMatchObject({
+    // Its slot is still held: a second task is refused.
+    expect((await send(h.d, caller, { action: 'startTask', message: 'another' })).wake).toMatchObject({
       delivered: false,
-      reason: 'subsession_limit'
+      reason: 'task_limit'
     })
     finish()
     await vi.waitFor(() => expect(h.reports()).toHaveLength(3), WAIT)
@@ -426,11 +426,11 @@ describe('a work round, its slot and its outcome', () => {
       await new Promise<void>((resolve) => (finish = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'messageSubsession', message: 'repair the parser' })
-    const child: string = created.childSessionId
+    const created = await send(h.d, caller, { action: 'startTask', message: 'repair the parser' })
+    const child: string = created.taskId
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(1), WAIT)
 
-    const res = await send(h.d, caller, { action: 'messageSubsession', sessionId: child, message: 'keep the format' })
+    const res = await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'keep the format' })
     expect(res.wake).toMatchObject({ delivered: true, targetSession: child })
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'open' })
     expect(await rowOf(h.d, child)).not.toHaveProperty('round')
@@ -501,24 +501,23 @@ describe('a work round, its slot and its outcome', () => {
     const first = await startAndFinish(h, caller)
     // The finished child holds no slot, so a new one starts; while that one runs, the first cannot reopen.
     h.rt.behavior.subQueue.push('hang')
-    const second = await send(h.d, caller, { action: 'messageSubsession', message: 'second task' })
+    const second = await send(h.d, caller, { action: 'startTask', message: 'second task' })
     expect(second.wake).toMatchObject({ delivered: true })
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(2), WAIT)
-    const refused = await send(h.d, caller, { action: 'messageSubsession', sessionId: first, message: 'more' })
+    const refused = await send(h.d, caller, { action: 'messageTask', taskId: first, message: 'more' })
     expect(refused).toEqual({
       ok: true,
       wake: {
         delivered: false,
         targetSession: first,
-        reason: 'subsession_limit',
-        message:
-          'You already have 1 sub-sessions running, the limit. Nothing was sent; message it again once one reports.'
+        reason: 'task_limit',
+        message: 'You already have 1 tasks running, the limit. Nothing was sent; message it again once one reports.'
       }
     })
     expect(await rowOf(h.d, first)).toMatchObject({ state: 'done' })
     expect(await rowOf(h.d, first)).not.toHaveProperty('round')
-    await h.d.interruptTurn('bot-a', second.childSessionId, 'stop')
-    await vi.waitFor(async () => expect((await rowOf(h.d, second.childSessionId))?.state).toBe('failed'), WAIT)
+    await h.d.interruptTurn('bot-a', second.taskId, 'stop')
+    await vi.waitFor(async () => expect((await rowOf(h.d, second.taskId))?.state).toBe('failed'), WAIT)
     expect((await h.d.collab.continueSubsession(continuation(caller, first))).delivered).toBe(true)
     await h.settled()
     await h.daemon.stop()
@@ -580,8 +579,8 @@ describe('a work round, its slot and its outcome', () => {
       expect(call.wake).toMatchObject({ delivered: true })
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'messageSubsession', message: 'ask bot-b about the schema' })
-    const child: string = created.childSessionId
+    const created = await send(h.d, caller, { action: 'startTask', message: 'ask bot-b about the schema' })
+    const child: string = created.taskId
     await vi.waitFor(() => expect(told(h.rt.hosts, 'PEER-TASK')).toBeGreaterThanOrEqual(1), WAIT)
     // The child's turn ended while the peer still works: its round stays open and nothing is reported.
     await subInputs(h.dispatched)[0]!.turn
@@ -601,8 +600,8 @@ describe('a work round, its slot and its outcome', () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     h.rt.behavior.subQueue.push('hang')
-    const created = await send(h.d, caller, { action: 'messageSubsession', message: 'long task' })
-    const child: string = created.childSessionId
+    const created = await send(h.d, caller, { action: 'startTask', message: 'long task' })
+    const child: string = created.taskId
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(1), WAIT)
     expect((await h.d.collab.continueSubsession(continuation(caller, child, 'queued'))).delivered).toBe(true)
     await h.d.interruptTurn('bot-a', child, 'stop')
@@ -610,13 +609,13 @@ describe('a work round, its slot and its outcome', () => {
     await h.settled()
     expect(h.rt.subPrompts).toHaveLength(1)
     expect(h.reports()[0]!.msg.text).toBe(
-      `[sub-session ended] Sub-session ${child} stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
+      `[task ended] Task ${child} stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'failed' }), WAIT)
     // The child refuses replies of the stopped round, and runs again only when asked.
     expect(await childReply(h.d, caller, subInputs(h.dispatched)[0]!.msg.thread!, 'late')).toEqual({
       delivered: false,
-      reason: 'subsession_ended'
+      reason: 'task_ended'
     })
     expect((await h.d.collab.continueSubsession(continuation(caller, child, 'try again'))).delivered).toBe(true)
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
@@ -632,7 +631,7 @@ describe('one submission, one input', () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
-    const args = { action: 'messageSubsession', sessionId: child, message: 'same text' }
+    const args = { action: 'messageTask', taskId: child, message: 'same text' }
     const first = await send(h.d, caller, args, 'call-7')
     const again = await send(h.d, caller, args, 'call-7')
     expect(again).toEqual(first)
@@ -653,7 +652,7 @@ describe('admission that cannot be decided yet', () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
-    const args = { action: 'messageSubsession', sessionId: child, message: 'same call' }
+    const args = { action: 'messageTask', taskId: child, message: 'same call' }
     const results = await Promise.all([send(h.d, caller, args, 'call-9'), send(h.d, caller, args, 'call-9')])
     // The second either reads the first receipt or is told the same message is still on its way; never a resend.
     expect(results.filter((r) => r.wake.delivered)).not.toHaveLength(0)
@@ -668,11 +667,11 @@ describe('admission that cannot be decided yet', () => {
   it('opens no round while the previous round’s report still waits for admission', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: true })
     const caller = await seedCaller(h.d)
-    const created = await send(h.d, caller, { action: 'messageSubsession', message: 'task' })
-    const child: string = created.childSessionId
+    const created = await send(h.d, caller, { action: 'startTask', message: 'task' })
+    const child: string = created.taskId
     expect(await h.d.store.assistantSubsessions.claimReport('bot-a', child, '{"text":"held"}')).toBe(true)
     const res = await h.d.collab.continueSubsession(continuation(caller, child))
-    expect(res).toMatchObject({ delivered: false, targetSession: child, reason: 'subsession_reporting' })
+    expect(res).toMatchObject({ delivered: false, targetSession: child, reason: 'task_reporting' })
     expect(res.message).toContain('Nothing was sent; end this turn and message it again after the report arrives.')
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'reporting' })
     expect(h.dispatched).toHaveLength(1)
@@ -714,7 +713,7 @@ describe('the parent stays the child’s origin', () => {
     await h.daemon.stop()
   })
 
-  it('records no standing reply path from the parent into a sub-session that reported to it', async () => {
+  it('records no standing reply path from the owning session into a task that reported to it', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
@@ -724,7 +723,7 @@ describe('the parent stays the child’s origin', () => {
     await h.daemon.stop()
   })
 
-  it('tells a sub-session that its parent is its origin and that a reply does not end its work', () => {
+  it('tells a task that its owning session is its origin and that a reply does not end its work', () => {
     const standing = buildStandingContext({
       agentName: 'bot-a',
       agentId: 'bot-a',
@@ -743,7 +742,8 @@ describe('the parent stays the child’s origin', () => {
     expect(standing.parentReplyAppend).toContain(
       '`{"action":"replyToSession","sessionId":"sid-parent-1","message":"..."}`; a reply does not end your work.'
     )
-    expect(standing.parentReplyAppend).toContain('the daemon tells your parent automatically')
+    expect(standing.parentReplyAppend).toContain('You are a background task of your own session sid-parent-1')
+    expect(standing.parentReplyAppend).toContain('the daemon tells that session automatically')
     expect(standing.parentReplyAppend).not.toContain('Send it exactly once')
   })
 })

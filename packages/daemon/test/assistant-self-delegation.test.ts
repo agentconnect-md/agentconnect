@@ -191,7 +191,7 @@ describe('self-delegation: every agent opens a sub-session', () => {
         transportScope: caller.scope,
         headless: true,
         sender: { id: 'bot-a', isBot: true },
-        text: 'From your own main conversation, as a background sub-session: fix the flaky test and open a PR',
+        text: 'From your own session, as a background task: fix the flaky test and open a PR',
         // Born titled by its task, as its cards name it, never by the wrapper it reads.
         initialSessionTitle: 'fix the flaky test and open a PR'
       })
@@ -307,10 +307,10 @@ describe('self-delegation: what stays refused', () => {
         updatedAt: Date.now()
       })
 
-      expect(d.collab.wakeRejectionReason(nested)).toBe('subsession_nesting')
+      expect(d.collab.wakeRejectionReason(nested)).toBe('task_nesting')
       const res = await call(nested)
-      expect(res).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
-      expect(res.message).toMatch(/cannot open another sub-session/)
+      expect(res).toMatchObject({ delivered: false, reason: 'task_nesting' })
+      expect(res.message).toMatch(/cannot start another task/)
       expect(calls).toHaveLength(1)
       expect(opened.subsession).toBe(true)
       await daemon.stop()
@@ -387,7 +387,7 @@ describe('self-delegation: through the sendMessage tool', () => {
       const started = (await executeTool(
         ctx(caller),
         'sendMessage',
-        { action: 'messageSubsession', message: 'fix it' },
+        { action: 'startTask', message: 'fix it' },
         deps
       )) as any
       expect(started).toMatchObject({
@@ -396,19 +396,19 @@ describe('self-delegation: through the sendMessage tool', () => {
         reply: { requested: true, state: 'awaiting' },
         nextAction: 'finish-turn-and-wait'
       })
-      expect(started.childSessionId).toBe(started.wake.targetSession)
-      expect(started.message).toMatch(/Sub-session started in the background/)
+      expect(started.taskId).toBe(started.wake.targetSession)
+      expect(started.message).toMatch(/Task started in the background/)
       expect(started.post).toBeUndefined()
 
       const inside = ctx(caller, subsessionCoordinate('1'))
       const nested = (await executeTool(
         inside,
         'sendMessage',
-        { action: 'messageSubsession', message: 'and this' },
+        { action: 'startTask', message: 'and this' },
         deps
       )) as any
-      expect(nested.wake).toMatchObject({ delivered: false, reason: 'subsession_nesting' })
-      expect(nested.childSessionId).toBeUndefined()
+      expect(nested.wake).toMatchObject({ delivered: false, reason: 'task_nesting' })
+      expect(nested.taskId).toBeUndefined()
       expect(postMessage).not.toHaveBeenCalled()
       expect(calls).toHaveLength(1)
       await daemon.stop()
@@ -466,7 +466,7 @@ describe('self-delegation: through the turn engine', () => {
 })
 
 describe('self-delegation: what the runtime is told', () => {
-  it('gives every agent’s session the sub-session guidance, in assistant mode or not', async () => {
+  it('gives every agent’s session the task guidance, in assistant mode or not', async () => {
     const root = scaffold([{ id: 'bot-a', assistantMode: ON }, { id: 'bot-b' }])
     const { daemon, d, hosts } = await boot(root, { spy: false })
     const caller = await seedCaller(d)
@@ -484,8 +484,8 @@ describe('self-delegation: what the runtime is told', () => {
           .flatMap(({ host }) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
       )
     for (const agentId of ['bot-a', 'bot-b']) {
-      expect(told(agentId)).toContain('messageSubsession')
-      expect(told(agentId)).toContain('opens a background SUB-SESSION')
+      expect(told(agentId)).toContain('startTask')
+      expect(told(agentId)).toContain('starts a background TASK of this session')
       expect(told(agentId)).not.toContain('may not target yourself')
     }
     await daemon.stop()

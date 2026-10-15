@@ -3,9 +3,9 @@
 **Status:** Revised: background sub-sessions are replaced by tasks (§2.1), started with
 `startTask`, messaged with `messageTask`, and stopped by their owning session with `stopTask`
 (§8.7); a self `callAgent` needs a channel and opens a session there; and replies are
-addressed to a message, not to a session (§9.3–§9.6). The branch implements the earlier
-sub-session and multi-origin revision of §3–§9; §12 lists what must change. Not yet
-implemented in these terms.
+addressed to a message, not to a session (§9.3–§9.6). The task half is implemented (§12
+items 1–4 and the task parts of 8–9, recorded in §7.8 and §8.9); message-addressed replies
+(§9.3–§9.6) are not, and the branch still implements the earlier multi-origin model (§9.8).
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
@@ -741,7 +741,7 @@ pnpm --filter @agentconnect.md/daemon exec vitest run \
   test/daemon-message-agent.test.ts \
   test/inferred-parent-reply.test.ts \
   test/assistant-subsession-safeguards.test.ts \
-  test/assistant-stop-subsession.test.ts
+  test/assistant-stop-task.test.ts
 ```
 
 When implementing, port the existing behavior cases through the new action
@@ -775,53 +775,76 @@ or described as existing behavior.
 
 ### 7.8 Adapter implementation record
 
-Records the earlier sub-session implementation on this branch, in its own names
-(`messageSubsession`, `sessionId`, `childSessionId`); §12 lists how they change. Decisions the
-sections above left open:
+Records the implementation on this branch. The task half is in this revision's names
+(`startTask`, `messageTask`, `taskId`, `stopTask`); replies are still addressed by `sessionId`
+until §12 items 5–7 land. Decisions the sections above left open:
 
 - **Descriptor.** At the adapter stage the §3.2 draft shipped without its continuation and
   peer-session clauses, because §3.2 publishes each capability only once its runtime exists:
   784 characters of description, a 1668-character flat schema, and `sessionId` described for
-  `replyToSession` only. With §8 and §9 in place, measured for a Slack + Telegram agent, the
-  description is 983 characters, the flat schema 1811, and `getToolGuide` description plus
-  schema 480; `sessionId` is described for `callAgent`, `replyToSession` and
-  `messageSubsession`.
-- **Not-yet-available targets.** The adapter stage refused `callAgent.sessionId` and
-  `messageSubsession` with any `sessionId`; §8 and §9 lifted those for a nonempty string, and a
-  null, empty or mistyped id still fails as an argument error (§8.9, §9.8).
+  `replyToSession` only. The task revision ships the §3.2 draft with two changes: its
+  `replyToSession` clause still says "answers a session that called you, by its sessionId",
+  because message ids do not exist yet and §3.2 forbids advertising them early; and the
+  `startTask` clause keeps the matrix-earned steering "for "fix this bug and open a PR", call it
+  before exploring, say it started, and end your turn". Measured for a Slack + Telegram agent,
+  the description is 942 characters, the flat schema 1874, and `getToolGuide` description plus
+  schema 486; `sessionId` is described for `callAgent` and `replyToSession`, `taskId` for
+  `messageTask`.
+- **Not-yet-available targets.** The adapter stage refused `callAgent.sessionId`; §9 lifted it
+  for a nonempty string. A null, empty or mistyped `callAgent.sessionId` or `messageTask.taskId`
+  fails as an argument error (§8.9, §9.8).
+- **Task argument errors.** A `messageTask` whose `taskId` is missing, null, empty or not a
+  string, and a self `callAgent` without `channel`, return §3.5's text: the exact
+  `sendMessage {"action":"startTask","message":"<the same message>"}` call, then the
+  `startTask` guide rendered as plain text (purpose, one line per rule, the example). Both
+  guides live in `mcp/ops/task-guide.ts`, so the error and `getToolGuide` cannot drift. A
+  `messageTask` carrying the old `sessionId` gets the same error, which also names `sessionId`
+  as not accepted; a `startTask` carrying `taskId` is told to use `messageTask`. A self
+  `callAgent` with `sessionId` points to the `messageTask` guide.
 - **Validation placement.** `executeTool` validates `sendMessage` before `resolveChannelArg`,
   and the handler validates again before delegating, so a direct handler call cannot skip
   it. Validation covers the key check, the per-action zod validator, the existing strict
   branch for `postMessage` (so `thread` and `toUser` array rules fail before any lookup),
   and the postless self-target check. The adapter then removes `action` (or, for
-  `messageSubsession`, builds `{toAgent: <trusted caller>, message}`) for the unchanged
-  delivery path.
+  `startTask`, builds `{toAgent: <trusted caller>, message}`) for the unchanged delivery path;
+  `messageTask` goes to the task admission of §8.9 instead.
 - **Error text.** Every rejection is a `ToolArgumentError` through the #2084 path, so §3.5's
   sentences appear after `sendMessage: invalid arguments — ` and are followed by the
   accepted-arguments and received-keys lines. That path drops an issue's own leading tool name
-  and a doubled final period. Every recognized action's argument error names its action guide.
+  and a doubled final period. Every recognized action's argument error names its action guide,
+  except the two task errors above, which carry the `startTask` guide itself.
   An unknown action is named by argument, not by its supplied value.
 - **Classification.** `isPlatformPost` is true only for `action: "postMessage"` (still
-  excluding `toAgent` and `sessionId`), so `callAgent` with `channel` and both sub-session
-  and origin-reply actions keep their non-post write and join handling.
+  excluding `toAgent` and `sessionId`), so `callAgent` with `channel`, both task actions and
+  `replyToSession` keep their non-post write and join handling.
 - **Guide shape.** `getToolGuide` returns JSON. The overview has `rules`, one `actions`
   entry per action (`purpose`, `required`, `optional`, one `example`, optional
   `availability`), and a `next` pointer; an action guide has the same fields plus `rules`
   and `examples` of `{use, arguments}`. Availability notes come from the session's
-  integrations (platforms, direct-message and thread-update support) and from a
-  sub-session coordinate. The visible self-call example uses the session's own agent id.
-  With §8 in place, the guide also shows continuation and a sub-session's progress question.
+  integrations (platforms, direct-message and thread-update support) and from the session's
+  coordinate: inside a task, patrol or approved proposal both task actions are marked
+  unavailable. The visible self-call example uses the session's own agent id. The guide shows
+  a task's progress question, and its replyToSession text calls an approved proposal's work
+  that, not a task (§11 question 11).
+- **Receipts and status.** The `startTask` and `messageTask` receipts carry `taskId` where the
+  self-delegation receipt carried `childSessionId`; a peer `callAgent`, with or without
+  `channel` or `sessionId`, keeps `childSessionId`, because what it reaches is a session.
+  `viewSessionStatus` takes exactly one of `taskId` and `sessionId` (the `childSessionId` of a
+  call) and checks both the same way. The protocol frames' `childSessionId` fields are wire
+  names and unchanged.
 - **Live probe.** The runtime-matrix probe reads the daemon's own action errors; its
-  fabricated action checks are removed. With §8 its continuation receipts are the daemon's
-  own: an id other than the scenario's child gets the daemon's `subsession_not_found`
-  receipt, recorded as an error. With §9 the fabricated peer-session check is gone too: a
-  peer-session call gets the daemon's own receipt, or its `session_not_found` refusal for an id
-  outside the scenario's scope.
+  fabricated action checks are removed. Its task receipts are the daemon's own (`TASK_STARTED`,
+  `TASK_MESSAGED`): a `messageTask` id other than the scenario's task gets the daemon's
+  `task_not_found` receipt, recorded as an error. With §9 the fabricated peer-session check is
+  gone too: a peer-session call gets the daemon's own receipt, or its `session_not_found`
+  refusal for an id outside the scenario's scope. The outcome kinds are `task-start` and
+  `task-message`, and the new-only scenario is `message-task`, whose request says "background
+  task"; the comparable scenarios' requests, classifier and verdicts are unchanged.
 
 ## 8. Persistent task messaging — explicit capability extension
 
-**Status:** Implemented as sub-session messaging (§8.9); the task names, `startTask`, the
-`taskId` handle, message-addressed task replies, and owner stop (§8.7) are not yet.
+**Status:** Implemented (§8.9), except message-addressed task replies, which wait for §9.3–§9.6:
+a task still answers its owning session with `replyToSession` on that session's id.
 
 The original [assistant-mode design §5.6](assistant-mode.md#56-sub-sessions)
 identifies steering as re-delegating into the same background work and explicitly defers it.
@@ -1063,10 +1086,9 @@ does not provide this contract.
 
 ### 8.9 Implementation record
 
-Records the earlier sub-session implementation on this branch, in its own names; §12 lists
-how they change.
+Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coordinate).
 
-- **Scope.** Rounds apply to delegated sub-sessions, the children `messageSubsession` creates.
+- **Scope.** Rounds apply to tasks, the sessions `startTask` creates.
   An approved task (assistant-mode §5.10) and a patrol (§5.9) run once and are never continued,
   so they keep the one-report lifecycle in which their own report settles them.
 - **Round state.** The sub-session index row carries `round` (store schema v51). `open` is a
@@ -1077,23 +1099,26 @@ how they change.
 - **Admission.** Ownership is the index row's recorded parent: its session key and its outward
   id must both be the trusted caller session's. A sibling, the child itself, another session of
   the agent (including the replacement after `!new`), another agent, a patrol, a task, a purged
-  child and an unknown id all get the same `subsession_not_found` receipt. Under the
+  child and an unknown id all get the same `task_not_found` receipt. Under the
   per-sub-session report lock, an `open` round is joined with no slot; a settled row reopens as
   round + 1 only below the per-agent cap, so concurrent messages to one idle child open one
   round. Pause, drain and a member that no longer serves the agent refuse before any slot is
   taken. A reopened round whose input the child then refuses goes back to its previous state.
 - **Report race.** While the previous round's report is in `reporting`, a continuation waits
   for a send in flight and then, if the report is still unadmitted, refuses with
-  `subsession_reporting` instead of opening a round, because that pending report lives on the
-  row.
+  `task_reporting` instead of opening a round, because that pending report lives on the
+  row. Every task refusal reason is renamed the same way: `task_nesting` and `task_limit` as
+  well as §12's three; `submission_in_flight` is unchanged.
 - **Outcomes.** A child's `replyToSession` is only delivered: it no longer marks the row done,
-  and a settled round refuses a late one with `subsession_ended`. The round's one report is the
+  and a settled round refuses a late one with `task_ended`. The round's one report is the
   daemon's, through the existing durable `reporting` outbox, once no queued input, input being
-  admitted, or background wake remains. A clean end is `[sub-session finished]` with the
-  round's last final output, which replaces the separate `[inferred reply]` for delegations; a
-  failure or stop is `[sub-session ended]`. Both name the `messageSubsession` call that
-  continues the child, unless the report lands in a later session of the place (after `!new`),
-  which cannot continue it and is told so instead. Each round's report has its own delivery
+  admitted, or background wake remains. A clean end is `[task finished]` with the round's last
+  final output, which replaces the separate `[inferred reply]` for tasks; a failure or stop is
+  `[task ended]`. Both name the `messageTask` call that continues the task, unless the report
+  lands in a later session of the place (after `!new`), which cannot continue it and is told so
+  instead; a report persisted before the rename, naming `messageSubsession`, is rewritten the
+  same way. A patrol's or approved proposal's one report keeps its `[sub-session ended]` text
+  until §11 questions 10–11 rename those. Each round's report has its own delivery
   identity. A joined input whose admission fails after the round's last turn ended leaves the
   round to the existing idle sweep. A clean turn end does not settle the round while the child
   still waits for a reply it asked another agent for; that reply's turn continues the round,
@@ -1102,26 +1127,39 @@ how they change.
 - **Reciprocal path.** A parent's `replyToSession` into its own delegated child keeps the
   origin authorization and is then admitted exactly like `messageSubsession`. It maps refusals
   to the existing reply reasons (`not_authorized`, `busy`, `hop_limit`, `queue_full`), so the
-  reply receipt keeps its values.
+  reply receipt keeps its values. It is replaced by §9.4's routing when message ids land.
 - **Submission identity.** The MCP bridge sends a `callId` (a per-process nonce plus the MCP
   request id). The daemon scopes it to the calling session and agent, claims it once in
   `assistant_subsession_input`, and keeps the receipt. A replay gets the first receipt; a
   concurrent replay is told `submission_in_flight`. A call without `callId` gets a fresh
   identity, and its delivery and inbox receipt ids derive from it either way. The bridge does
   not retry today; the identity is there so a retry cannot double an input.
-- **Guidance.** Continuation input reads `From your own main conversation (session <parent
-id>), a new message for this background sub-session: …` and always carries the recorded
-  parent as its origin. A delegated sub-session's standing reporting block says it may reply
-  any time, that a reply does not end its work, and that the daemon reports each round's end.
-  The descriptor (925 characters for a Slack + Telegram agent), the guide, the standing
-  collaboration text and the stop note advertise continuation.
-- **Stop.** The interrupt `stopSubsession` already uses drains the child's queued inputs, so
-  they cannot restart it. The round settles stopped, and only a later explicit message opens
-  another. The stop note names `messageSubsession` only for a delegated sub-session.
-- **Tasks and patrols.** The guide and descriptor say that only a sub-session started with
-  `messageSubsession` may reply any time; a task's or patrol's guide notes that its one reply,
-  at the end, settles it. A report from an agent's own sub-session records no reply source in
-  the session it reaches, so it opens no standing path back into that sub-session.
+- **Guidance.** A task's first input reads `From your own session, as a background task: …`
+  and every later one `From the session that started this task (session <owner id>), a new
+message for this background task: …`; both carry the recorded owner as origin. Approval
+  cards strip both that wrapper and the pre-rename one from a task's label. A task's standing
+  reporting block, headed `# Reporting back to the session that started this task`, says it
+  may reply any time, that a reply does not end its work, and that the daemon reports each
+  round's end. The standing collaboration text teaches `startTask`, ordering independent and
+  dependent tasks, `messageTask` and `stopTask`.
+- **Stop.** `stopTask {taskId}` goes through the cancel core the console's Stop uses, whose
+  interrupt drains the task's queued inputs. Authority is the index row alone: a delegation
+  row (never a patrol's, and never an approved proposal's `subsession:task-` coordinate) whose
+  recorded owner key and outward id are both the calling session's. Anything else — the task
+  itself, a sibling, the session after `!new`, a recreated session on the same key, another
+  agent, an unknown or purged id — gets `This session started no task with that id. Nothing was
+stopped.` No turn or sender gate remains; the stop is logged as the person whose message
+  started the live turn, else as the agent itself (`isBot`). The tool is offered in every
+  session that can start a task, so in every session except a task, patrol or approved
+  proposal, which now includes hook runs, scheduled runs and peer sessions. There is no alias
+  for `stopSubsession` (§4). The stop note always names `messageTask`.
+- **Running tasks.** The reminder is built for every session that can own tasks and lists only
+  its tasks, newest first, by `taskId` and label, saying it may stop one with `stopTask` once it
+  is no longer needed; patrols and approved proposals are not listed.
+- **Patrols and approved proposals.** The guide and descriptor say that only a task may reply
+  any time; a patrol's or approved proposal's guide notes that its one reply, at the end,
+  settles it. A report from an agent's own task records no reply source in the session it
+  reaches, so it opens no standing path back into that task.
 
 ## 9. Peer sessions and message-addressed replies — explicit capability extension
 
@@ -1376,14 +1414,14 @@ lists how it changes.
 - **Refusals.** Every resolution or participation failure — an unknown id, an ACP id, another
   agent's session, a sub-session, a session the calling people may not read, a turn no person
   is behind — returns one receipt, `wake: {delivered: false, reason: "session_not_found"}` with
-  a message pointing to `childSessionId` and to `messageSubsession` for a sub-session, so a
+  a message pointing to `childSessionId` and to `messageTask` for a task, so a
   refusal never says that a session exists. A remote one is the ack's `not_found`. Policy, hop
   and execution refusals keep their existing reasons (`not_allowed`, `hop_limit`, `busy`,
   `queue_full`, `offline`, `unsupported`). Nothing is posted, no replacement session is opened,
   and no relation is recorded.
 - **Arguments.** `callAgent.sessionId` is validated before any lookup: a null, empty or mistyped
   id, `sessionId` beside `channel`, and your own agent id in `toAgent` are argument errors; the
-  last points to the `messageSubsession` guide. The call is postless and its receipt is the
+  last points to the `messageTask` guide. The call is postless and its receipt is the
   agent-call one (`{ok, wake, childSessionId, reply?, nextAction?, message?}`).
 - **Delivery.** The input lands on the target session's own coordinates and its ordinary reply
   route, the way a reply into an origin does: no `headless` stamp, no root post, no new
@@ -1392,7 +1430,7 @@ lists how it changes.
   (`dispatch`), so local and remote wakes, session calls, paired channel calls and origin
   replies all add one: the table `session_reply_source` keeps the replying session's key and
   agent, the source's outward id and agent, its landing coordinates and its code-host reply
-  snapshot. A sub-session records none (§8.2), no session records its own agent's sub-session, a
+  snapshot. A task records none (§8.2), no session records its own agent's task, a
   duplicate admission adds nothing, and a session is never its own source. Purging a session or
   removing an agent drops its relations.
 - **Reply authority.** `replyToSession` is authorized for this turn's origin, the session's
@@ -1412,8 +1450,8 @@ lists how it changes.
   call asking for a reply from another source gets a turn block naming that source. A turn of a
   session with several sources, or whose input came from another source, carries a "Sessions
   you can reply to" block: the input's source, and up to eight sources (newest first, with
-  their open requests), the rest counted and still valid. The descriptor (983 characters for a
-  Slack + Telegram agent, §7.8), the guide and the collaboration text advertise the form.
+  their open requests), the rest counted and still valid. The descriptor (§7.8), the guide and
+  the collaboration text advertise the form.
 - **Participation.** A session call is judged as a read of the target's conversation from the
   caller's place. The synthetic `a2a:<agent>` coordinate is shared by every peer one agent woke
   without a channel, so it never counts as the caller's own conversation: such a call is judged
@@ -1421,7 +1459,7 @@ lists how it changes.
 - **Failures and inference.** An admitted session call whose turn then fails is reported to its
   own source and settles its request, as an ordinary local wake's failure is; a remote source
   gets no report, as for a remote wake. Inference is suppressed after a failed explicit reply to
-  the same source, so the child is never reported as having made no reply.
+  the same source, so the callee is never reported as having made no reply.
 - **Probe.** The fabricated peer-session rejection is removed. A peer-session call now passes the
   daemon's validation and gets its own receipt, or its `session_not_found` refusal for an id
   outside the scenario's scope.
@@ -1509,7 +1547,8 @@ written, and 10–11 are follow-ups outside this change.
 
 ## 12. Changes from the sub-session revision
 
-The branch implements §3–§9 in sub-session and multi-origin terms. To reach this revision:
+The branch implemented §3–§9 in sub-session and multi-origin terms. Items 1–4 and the task
+parts of 8–9 are done (§7.8, §8.9); the rest remain. To reach this revision:
 
 1. **Task actions and field.** Split `messageSubsession` into `startTask {message}` and
    `messageTask {taskId, message}`, with `taskId` required on `messageTask`, in the schema,

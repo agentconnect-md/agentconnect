@@ -287,20 +287,22 @@ const COLLAB_BEFORE_SELF =
   `session only, posts nothing, and never starts another. Add a \`channel\` ` +
   `(\`{"action":"callAgent","toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`) ` +
   `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
-  `That channel form may target YOURSELF to open and activate one new conversation there: use your own ` +
-  `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. `
-// assistant-mode.md §5.6: every agent's background self-work is `messageSubsession`.
+  `That channel form may target YOURSELF to open and activate one new conversation there — a session of that ` +
+  `conversation, not a task: use your own ID from the # Agent block (also included by \`listAgents\`), never ` +
+  `your platform bot identity. `
+// send-message-guide.md §2.1: every agent's background work of its own is a task of the session that starts it.
 const COLLAB_SELF_DELEGATION =
-  `For long work of your own ("fix this bug and open a PR"), \`{"action":"messageSubsession","message":"..."}\` ` +
-  `opens a background SUB-SESSION: it works on its own, posts nothing, and reports back into this conversation ` +
-  `when it finishes or fails. Start it before you explore or begin the work yourself — it inherits this ` +
-  `conversation's context and finds what it needs — then say it has started and end your turn. To give one more ` +
-  `work later, even after it ` +
-  `reported, send \`{"action":"messageSubsession","sessionId":"<its childSessionId>","message":"..."}\`: it keeps ` +
-  `its context and reports again. Say in its task which language the people ` +
-  `here use, so it reports in that language, and answer them in it whatever language a report comes back in. ` +
-  `Keep ordinary conversation here — questions, lookups and short answers never need one. A sub-session cannot ` +
-  `open sub-sessions of its own. `
+  `For long work of your own ("fix this bug and open a PR"), \`{"action":"startTask","message":"..."}\` starts a ` +
+  `background TASK of this session: it works in a context of its own, posts nothing, and reports back into this ` +
+  `session each time a round of its work finishes or fails. Start it before you explore or begin the work ` +
+  `yourself — it starts from this session's context and finds what it needs — then say it has started and end ` +
+  `your turn. Start independent tasks together; start a task that needs another's result once that result has ` +
+  `arrived. To give one more work later, even after it reported, send ` +
+  `\`{"action":"messageTask","taskId":"<its taskId>","message":"..."}\`: it keeps its context and reports again. ` +
+  `When a task is no longer needed — the plan changed, or a task it depended on failed — stop it with ` +
+  `\`stopTask\` and its taskId. Say in its message which language the people here use, so it reports in that ` +
+  `language, and answer them in it whatever language a report comes back in. Keep ordinary conversation here — ` +
+  `questions, lookups and short answers never need a task. A task cannot start tasks of its own. `
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
@@ -354,17 +356,16 @@ export function buildParentReplyAppend(
   )
 }
 
-// send-message-guide.md §8.3: a delegated sub-session messages its parent any time, and the daemon reports each round's end.
+// send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
 function buildSubsessionParentAppend(parentSessionId: string | null | undefined): string {
   return (
-    `# Reporting back to your parent session\n` +
-    `You are a sub-session of your own main conversation, working in the background; its session is ` +
-    `${parentSessionId}. It may ` +
+    `# Reporting back to the session that started this task\n` +
+    `You are a background task of your own session ${parentSessionId}, working in a context of your own. It may ` +
     `send you more messages later; they arrive here, in this same context. To send it progress worth knowing, a ` +
     `question you need answered, or your result, call \`sendMessage\` ` +
     `\`{"action":"replyToSession","sessionId":"${parentSessionId}","message":"..."}\`; a reply does not end your ` +
     `work. Send your result that way before you finish, saying whether you succeeded and what the result was (on ` +
-    `failure, what went wrong). When this round of work ends, the daemon tells your parent automatically and ` +
+    `failure, what went wrong). When this round of work ends, the daemon tells that session automatically and ` +
     `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
     `question, end your turn; the answer arrives as a new message.`
   )

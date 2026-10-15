@@ -1,4 +1,4 @@
-// A main conversation stops a sub-session it opened (assistant-mode.md §1.4, §5.8), through the console's own Stop.
+// An owning session stops its own task on any of its turns (send-message-guide.md §8.7), through the console's own Stop.
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,6 +10,7 @@ import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
 import { ASSISTANT_ITEM_TOOLS } from '../src/mcp/ops/assistant-items.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { TASK_START_WRAPPER } from '../src/session/subsession-coordinate.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -20,8 +21,8 @@ const INT = 'int-bot-a'
 const DM = 'D0ALICE'
 const OTHER_DM = 'D0BOB'
 const ON = { enabled: true }
-// Only a sub-session's prompt carries this; the parent's never does.
-const DELEGATED = 'From your own main conversation, as a background sub-session'
+// Only a task's prompt carries this; its owning session's never does.
+const DELEGATED = TASK_START_WRAPPER
 
 function scaffold(assistantMode: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-stopsub-'))
@@ -64,7 +65,7 @@ function scaffold(assistantMode: boolean): string {
   return root
 }
 
-/** A runtime whose prompts follow `sub` for a sub-session and `plain` for everything else; a hung prompt ends on its own cancel. */
+/** A runtime whose prompts follow `sub` for a task and `plain` for everything else; a hung prompt ends on its own cancel. */
 function runtimes() {
   const behavior: { sub: 'answer' | 'hang'; plain: 'answer' | 'hang' } = { sub: 'hang', plain: 'hang' }
   const subPrompts: string[] = []
@@ -183,7 +184,7 @@ async function liveTurn(h: Harness, c: Conversation, over: Partial<NormalizedMes
   await vi.waitFor(async () => expect((await h.d.store.getSession(c.key))?.sessionId).toBeTruthy(), WAIT)
 }
 
-/** Open a sub-session from the conversation, as `sendMessage` to the agent itself does, and wait until its turn runs. */
+/** Start a task from the conversation, as `sendMessage` `startTask` does, and wait until its turn runs. */
 async function delegate(h: Harness, c: Conversation, text = 'write the release notes'): Promise<string> {
   const before = h.rt.subPrompts.length
   const req: MessageAgentReq = {
@@ -204,13 +205,17 @@ async function delegate(h: Harness, c: Conversation, text = 'write the release n
   return res.targetSession
 }
 
-const stop = (h: Harness, c: Conversation, sessionId: string) =>
-  executeTool(c.ctx, 'stopSubsession', { sessionId }, h.deps) as Promise<any>
+const stop = (h: Harness, c: Conversation, taskId: string) =>
+  executeTool(c.ctx, 'stopTask', { taskId }, h.deps) as Promise<any>
+
+const NOT_OWNED = { result: 'refused', reason: 'This session started no task with that id. Nothing was stopped.' }
+const ended = (key: string) =>
+  `[task ended] Task ${key} stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${key}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
 
 const stateOf = async (h: Harness, key: string) => (await h.d.store.assistantSubsessions.get(AGENT, key))?.state
 
-describe('stopSubsession in a Slack DM main conversation', () => {
-  it('interrupts the turn of a sub-session this conversation opened exactly as the console Stop does', async () => {
+describe('stopTask in a Slack DM conversation', () => {
+  it('interrupts the turn of a task this session started exactly as the console Stop does', async () => {
     const h = await boot()
     try {
       const dm = await conversation(h, DM)
@@ -223,11 +228,11 @@ describe('stopSubsession in a Slack DM main conversation', () => {
       const result = await stop(h, dm, byTool)
       expect(result).toEqual({
         result: 'stopped',
-        sessionId: byTool,
+        taskId: byTool,
         note:
           'Its current turn was interrupted, messages still waiting for it were dropped, and it reports back here that ' +
           'it ended. Nothing it already did is undone, and a process its runtime started in the background (a build, a ' +
-          'dev server) may keep running. To give it new work later, message it with messageSubsession and this sessionId.'
+          'dev server) may keep running. To give it new work later, message it with messageTask and this taskId.'
       })
 
       // The console's Stop, through the same seam the control plane's frame reaches.
@@ -251,7 +256,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
         })
       ).toEqual({ operation: 'stop-subsession', result: 'stopped' })
 
-      // One cancel core for both, each naming who stopped it, and each sub-session reports it ended the same way.
+      // One cancel core for both, each naming who stopped it, and each task reports it ended the same way.
       expect(cancel.mock.calls).toEqual([
         [byTool, { userId: 'U0ALICE', name: 'Alice' }],
         [byConsole, { userId: 'usr-1', name: 'Grace' }]
@@ -264,13 +269,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
       ]
       for (const [key, who] of stoppedBy) {
         await vi.waitFor(async () => expect(await stateOf(h, key)).toBe('failed'), WAIT)
-        await vi.waitFor(
-          () =>
-            expect(h.reports()).toContain(
-              `[sub-session ended] Sub-session ${key} stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${key}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
-            ),
-          WAIT
-        )
+        await vi.waitFor(() => expect(h.reports()).toContain(ended(key)), WAIT)
         const { thread } = await h.d.store.getSession(key)
         const rows = await h.d.store.threadTranscript(transcriptChannelKey(DM, h.scope), thread)
         expect(rows.map((row: { text: string }) => row.text)).toContain(`🛑 Turn cancelled by ${who}.`)
@@ -278,7 +277,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
       // Already ended: nothing to stop.
       expect(await stop(h, dm, byTool)).toEqual({
         result: 'not_running',
-        sessionId: byTool,
+        taskId: byTool,
         note: 'It has already ended. Nothing was stopped.'
       })
     } finally {
@@ -286,7 +285,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
     }
   })
 
-  it('refuses a sub-session another conversation opened, and an unknown id, in the same words', async () => {
+  it('refuses a task another session started, and an unknown id, in the same words', async () => {
     const h = await boot()
     try {
       const support = await conversation(h, OTHER_DM)
@@ -296,53 +295,118 @@ describe('stopSubsession in a Slack DM main conversation', () => {
       await liveTurn(h, dm)
       const cancel = vi.spyOn(h.d.commands, 'cancelSessionByKey')
 
-      const refusal = {
-        result: 'refused',
-        reason: 'This conversation opened no sub-session with that id. Nothing was stopped.'
-      }
+      const refusal = NOT_OWNED
       expect(await stop(h, dm, theirs)).toEqual(refusal)
       expect(await stop(h, dm, (await h.d.store.getSession(theirs)).sessionId)).toEqual(refusal)
       expect(await stop(h, dm, 'slack:D0ALICE:subsession:unknown:bot-a')).toEqual(refusal)
       expect(JSON.stringify(refusal)).not.toContain(OTHER_DM)
       expect(cancel).not.toHaveBeenCalled()
       expect(await stateOf(h, theirs)).toBe('open')
-      // Its own conversation may.
+      // Its owning session may.
       expect(await stop(h, support, theirs)).toMatchObject({ result: 'stopped' })
     } finally {
       await h.close()
     }
   })
 
-  it('refuses on a turn no person started, and for a sender the `!stop` rule turns away', async () => {
+  it('stops on any turn of its owning session, whoever started it, logged as who asked', async () => {
+    const h = await boot()
+    try {
+      const dm = await conversation(h, DM)
+      await liveTurn(h, dm)
+      const muted = await delegate(h, dm)
+      const onReport = await delegate(h, dm, 'update the changelog')
+      const scheduled = await delegate(h, dm, 'sort the backlog')
+      const cancel = vi.spyOn(h.d.commands, 'cancelSessionByKey')
+      const idle = async () =>
+        await vi.waitFor(
+          () => expect(h.d.activeGateEntries.has(dm.key) || (h.d.serialQueue.get(dm.key)?.length ?? 0) > 0).toBe(false),
+          WAIT
+        )
+
+      // A sender `!stop` would turn away no longer gates it: the owning session decides.
+      h.d.agents.get(AGENT).integrations[0].core.mutedChannels.push(DM)
+      expect(await stop(h, dm, muted)).toMatchObject({ result: 'stopped', taskId: muted })
+      h.d.agents.get(AGENT).integrations[0].core.mutedChannels.length = 0
+
+      // The stopped task's report is a turn no person started; it may stop another task, logged as the agent.
+      await h.d.interruptTurn(AGENT, dm.key, 'cancel')
+      await vi.waitFor(() => expect(h.d.activeGateEntries.get(dm.key)?.msg.parentReport).toBe(true), WAIT)
+      expect(await stop(h, dm, onReport)).toMatchObject({ result: 'stopped', taskId: onReport })
+
+      // With no live turn at all; a slot freed above takes this task.
+      await vi.waitFor(async () => expect(await stateOf(h, muted)).toBe('failed'), WAIT)
+      const noTurn = await delegate(h, dm, 'tidy the docs')
+      h.rt.behavior.plain = 'answer'
+      for (const [sessionId, release] of h.rt.hung) if (!h.rt.subPrompts.includes(sessionId)) release('end_turn')
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(onReport)), WAIT)
+      await idle()
+      expect(await stop(h, dm, noTurn)).toMatchObject({ result: 'stopped', taskId: noTurn })
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(noTurn)), WAIT)
+      await idle()
+
+      // On a turn another agent's reply started.
+      const onPeer = await delegate(h, dm, 'check the release')
+      h.rt.behavior.plain = 'hang'
+      await liveTurn(h, dm, { source: 'agent', sender: { id: 'peer-agent', isBot: true }, text: 'the peer’s answer' })
+      expect(await stop(h, dm, onPeer)).toMatchObject({ result: 'stopped', taskId: onPeer })
+      h.rt.behavior.plain = 'answer'
+      for (const [sessionId, release] of h.rt.hung) if (!h.rt.subPrompts.includes(sessionId)) release('end_turn')
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(onPeer)), WAIT)
+      await idle()
+
+      // On a scheduled run in this conversation.
+      h.rt.behavior.plain = 'hang'
+      await liveTurn(h, dm, { source: 'cron', sender: { id: 'cron:c-1', isBot: false }, trigger: 'cron' })
+      expect(await stop(h, dm, scheduled)).toMatchObject({ result: 'stopped', taskId: scheduled })
+
+      const agent = { userId: AGENT, isBot: true }
+      expect(cancel.mock.calls.filter(([key]) => key !== dm.key)).toEqual([
+        [muted, { userId: 'U0ALICE', name: 'Alice' }],
+        [onReport, agent],
+        [noTurn, agent],
+        [onPeer, agent],
+        [scheduled, agent]
+      ])
+      for (const key of [muted, onReport, noTurn, onPeer, scheduled])
+        await vi.waitFor(async () => expect(await stateOf(h, key)).toBe('failed'), WAIT)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('refuses the session after `!new`, another agent, a patrol and an approved proposal, in the unknown-id words', async () => {
     const h = await boot()
     try {
       const dm = await conversation(h, DM)
       await liveTurn(h, dm)
       const child = await delegate(h, dm)
       const cancel = vi.spyOn(h.d.commands, 'cancelSessionByKey')
-
-      // The conversation switched off since its person's turn began: `!stop` would be refused there now.
-      h.d.agents.get(AGENT).integrations[0].core.mutedChannels.push(DM)
-      expect(await stop(h, dm, child)).toEqual({
-        result: 'refused',
-        reason:
-          'The person whose message started this turn may not stop work in this conversation. Nothing was stopped.'
+      // The same conversation after `!new`: a new session on a new coordinate.
+      const next: string = await h.d.store.advanceAppendCoordinate(AGENT, DM, dm.coordinate, h.scope)
+      expect(await executeTool({ ...dm.ctx, thread: next }, 'stopTask', { taskId: child }, h.deps)).toEqual(NOT_OWNED)
+      // A recreated session on the same key is not the one that started it either.
+      const owner = (await h.d.store.getSession(dm.key)).sessionId
+      vi.spyOn(h.d.store, 'getSession').mockImplementation(async (...args: unknown[]) => {
+        const rec = await (h.d.store.constructor.prototype.getSession as any).apply(h.d.store, args)
+        return args[0] === dm.key && rec ? { ...rec, sessionId: `${owner}-replaced` } : rec
       })
-      h.d.agents.get(AGENT).integrations[0].core.mutedChannels.length = 0
-
-      // No live turn, or one no person started, such as a scheduled run in this conversation.
-      await h.d.interruptTurn(AGENT, dm.key, 'cancel')
-      await vi.waitFor(() => expect(h.d.activeGateEntries.has(dm.key)).toBe(false), WAIT)
-      const notPerson = {
-        result: 'refused',
-        reason:
-          "This turn was not started by a person's message, and only a person here can ask to stop a sub-session. " +
-          'Nothing was stopped.'
+      expect(await stop(h, dm, child)).toEqual(NOT_OWNED)
+      vi.mocked(h.d.store.getSession).mockRestore()
+      // Another agent naming this agent's task.
+      expect(await executeTool({ ...dm.ctx, agentId: 'bot-b' }, 'stopTask', { taskId: child }, h.deps)).toEqual(
+        NOT_OWNED
+      )
+      // A patrol and an approved proposal this session started keep their own stop paths.
+      for (const thread of ['subsession:patrol-p-1', 'subsession:task-t-1']) {
+        const key = sessionKey('slack', DM, thread, AGENT, h.scope)
+        const row = { agentId: AGENT, childSessionKey: key, parentSessionId: owner, parentSessionKey: dm.key }
+        if (thread.includes('patrol'))
+          await h.d.store.assistantSubsessions.openPatrol(row, { startedSince: 0, staleBefore: 0 })
+        else await h.d.store.assistantSubsessions.open(row)
+        expect(await stop(h, dm, key)).toEqual(NOT_OWNED)
+        expect(await stateOf(h, key)).toBe('open')
       }
-      expect(await stop(h, dm, child)).toEqual(notPerson)
-      await liveTurn(h, dm, { source: 'cron', sender: { id: 'cron:c-1', isBot: false }, trigger: 'cron' })
-      expect(await stop(h, dm, child)).toEqual(notPerson)
-
       expect(cancel).not.toHaveBeenCalled()
       expect(await stateOf(h, child)).toBe('open')
     } finally {
@@ -350,7 +414,7 @@ describe('stopSubsession in a Slack DM main conversation', () => {
     }
   })
 
-  it('says a sub-session with no turn to interrupt is not running, and that its background work may go on', async () => {
+  it('says a task with no turn to interrupt is not running, and that its background work may go on', async () => {
     const h = await boot()
     try {
       const dm = await conversation(h, DM)
@@ -365,10 +429,10 @@ describe('stopSubsession in a Slack DM main conversation', () => {
       })
       expect(await stop(h, dm, idle)).toEqual({
         result: 'not_running',
-        sessionId: idle,
+        taskId: idle,
         note:
           'No turn of it is running. A background process it started may still be running; that cannot be stopped ' +
-          'from here, and the sub-session reports back here when it ends.'
+          'from here, and the task reports back here when it ends.'
       })
       expect(await stateOf(h, idle)).toBe('open')
     } finally {
@@ -376,25 +440,24 @@ describe('stopSubsession in a Slack DM main conversation', () => {
     }
   })
 
-  it('is refused in a sub-session, which may stop nothing', async () => {
+  it('is refused in the task itself and in a sibling task, in the unknown-id words', async () => {
     const h = await boot()
     try {
       const dm = await conversation(h, DM)
       await liveTurn(h, dm)
       const child = await delegate(h, dm)
-      const row = await h.d.store.getSession(child)
-      const refusal = {
-        result: 'refused',
-        reason: 'Only the conversation that opened a sub-session can stop it, and this is not one. Nothing was stopped.'
+      const sibling = await delegate(h, dm, 'update the changelog')
+      for (const key of [child, sibling]) {
+        const { thread } = await h.d.store.getSession(key)
+        expect(await executeTool({ ...dm.ctx, thread }, 'stopTask', { taskId: child }, h.deps)).toEqual(NOT_OWNED)
       }
-      for (const thread of [row.thread, 'subsession:task-d-1'])
-        expect(await executeTool({ ...dm.ctx, thread }, 'stopSubsession', { sessionId: child }, h.deps)).toEqual(
-          refusal
-        )
+      expect(
+        await executeTool({ ...dm.ctx, thread: 'subsession:task-d-1' }, 'stopTask', { taskId: child }, h.deps)
+      ).toEqual(NOT_OWNED)
       // A patrol runs only the tools it was offered, and it is offered none of this.
       await expect(
-        executeTool({ ...dm.ctx, thread: 'subsession:patrol-d-1' }, 'stopSubsession', { sessionId: child }, h.deps)
-      ).rejects.toThrow('stopSubsession is not available in a read-only patrol')
+        executeTool({ ...dm.ctx, thread: 'subsession:patrol-d-1' }, 'stopTask', { taskId: child }, h.deps)
+      ).rejects.toThrow('stopTask is not available in a read-only patrol')
       expect(await stateOf(h, child)).toBe('open')
     } finally {
       await h.close()
@@ -402,8 +465,8 @@ describe('stopSubsession in a Slack DM main conversation', () => {
   })
 })
 
-describe('who is offered stopSubsession', () => {
-  it('is a place’s main conversation of every agent, on any platform, and nothing else', async () => {
+describe('who is offered stopTask', () => {
+  it('is every session that can start a task, of every agent, and never a task, patrol or approved proposal', async () => {
     const h = await boot()
     try {
       const tool = (agent: Record<string, unknown>, session: Record<string, unknown>) => {
@@ -419,29 +482,28 @@ describe('who is offered stopSubsession', () => {
           ...session
         })
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
-        return h.d.mcp.sessions.get(token)!.tools.find((t: { name: string }) => t.name === 'stopSubsession')
+        return h.d.mcp.sessions.get(token)!.tools.find((t: { name: string }) => t.name === 'stopTask')
       }
       const offered = (agent: Record<string, unknown>, session: Record<string, unknown>): boolean =>
         tool(agent, session) !== undefined
       const on = { assistantMode: ON }
       expect(tool(on, {})).toEqual({
-        name: 'stopSubsession',
+        name: 'stopTask',
         description:
-          'Stop the current turn of a background sub-session that this conversation opened. What it already did is ' +
+          'Stop a background task this session started with sendMessage startTask, when it is no longer needed: the ' +
+          'plan changed, a task it depended on failed, or its result is not wanted any more. What it already did is ' +
           'not undone, and a process its runtime started in the background (a build, a dev server) may keep running; ' +
-          'the result says so. When it is not clear which sub-session the person means, ask them before stopping one.',
+          'the result says so. When it is not clear which task a person means, ask them before stopping one.',
         inputSchema: {
           type: 'object',
           properties: {
-            sessionId: {
+            taskId: {
               type: 'string',
               minLength: 1,
-              description:
-                "The sub-session's id: the `childSessionId` `sendMessage` `messageSubsession` returned, or one listed as " +
-                'running in your standing summary.'
+              description: 'The `taskId` startTask returned, or one listed as running in your reminders.'
             }
           },
-          required: ['sessionId'],
+          required: ['taskId'],
           additionalProperties: false
         }
       })
@@ -449,13 +511,11 @@ describe('who is offered stopSubsession', () => {
       expect(offered(on, { platform: 'webchat', channel: 'conv-1', thread: 'conv-1', integrationId: undefined })).toBe(
         true
       )
-      // Never a sub-session, a patrol or an approved task, a hook run, or a run with no conversation of its own.
+      // Never a task, a patrol or an approved proposal; a hook run or a scheduled run may own tasks too.
       for (const thread of ['subsession:d-1', 'subsession:patrol-d-1', 'subsession:task-d-1'])
         expect(offered(on, { thread })).toBe(false)
-      expect(offered(on, { platform: 'hook', channel: 'hook:h-1', thread: 'd-1', integrationId: undefined })).toBe(
-        false
-      )
-      expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(false)
+      expect(offered(on, { platform: 'hook', channel: 'hook:h-1', thread: 'd-1', integrationId: undefined })).toBe(true)
+      expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(true)
       // An agent outside assistant mode is offered the same tool.
       expect(tool({}, {})).toEqual(tool(on, {}))
       expect(tool({ assistantMode: { enabled: false } }, {})).toEqual(tool(on, {}))
@@ -499,44 +559,35 @@ describe('who is offered stopSubsession', () => {
             off.find((t) => t.name === 'remind')!.description
           )
       }
-      expect(toolsOf({}, 'append:1').map((t) => t.name)).toContain('stopSubsession')
+      expect(toolsOf({}, 'append:1').map((t) => t.name)).toContain('stopTask')
     } finally {
       await h.close()
     }
   })
 
-  it('stops a sub-session of an agent outside assistant mode the same way', async () => {
+  it('stops a task of an agent outside assistant mode the same way', async () => {
     const h = await boot({ assistantMode: false })
     try {
       const dm = await conversation(h, DM)
       await liveTurn(h, dm)
       const child = await delegate(h, dm)
-      expect(await stop(h, dm, child)).toMatchObject({ result: 'stopped', sessionId: child })
+      expect(await stop(h, dm, child)).toMatchObject({ result: 'stopped', taskId: child })
       await vi.waitFor(async () => expect(await stateOf(h, child)).toBe('failed'), WAIT)
-      await vi.waitFor(
-        () =>
-          expect(h.reports()).toContain(
-            `[sub-session ended] Sub-session ${child} stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
-          ),
-        WAIT
-      )
-      expect(await stop(h, dm, 'slack:D0ALICE:subsession:x:bot-a')).toEqual({
-        result: 'refused',
-        reason: 'This conversation opened no sub-session with that id. Nothing was stopped.'
-      })
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(child)), WAIT)
+      expect(await stop(h, dm, 'slack:D0ALICE:subsession:x:bot-a')).toEqual(NOT_OWNED)
     } finally {
       await h.close()
     }
   })
 
-  it('reads a webchat conversation’s person as its owner, and no turn without a person', async () => {
+  it('logs a stop as the person behind the live turn, else as the agent itself', async () => {
     const h = await boot()
     try {
       const stopper = (ctx: SessionContext, msg?: Partial<NormalizedMessage>) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, AGENT, ctx.transportScope)
         if (msg) h.d.activeGateEntries.set(key, { msg })
         try {
-          return h.d.subsessionStopper(ctx)
+          return h.d.taskStopper(ctx)
         } finally {
           h.d.activeGateEntries.delete(key)
         }
@@ -550,26 +601,25 @@ describe('who is offered stopSubsession', () => {
         deliveryThread: 'conv-1',
         tools: []
       }
-      // The Control Plane admits a webchat message only from someone who may continue the conversation.
       expect(stopper(webchat, { source: 'user', platform: 'webchat', sender: { id: 'usr-1', isBot: false } })).toEqual({
-        ok: true,
-        actor: { userId: 'usr-1' }
+        userId: 'usr-1'
       })
-      expect(stopper(webchat)).toEqual({ ok: false, reason: 'no-person' })
+      const agent = { userId: AGENT, isBot: true }
+      expect(stopper(webchat)).toEqual(agent)
       const dm = (await conversation(h, DM)).ctx
       expect(
         stopper(dm, { source: 'cron', platform: 'slack', channel: DM, sender: { id: 'cron:c', isBot: false } })
-      ).toEqual({ ok: false, reason: 'no-person' })
+      ).toEqual(agent)
       expect(
         stopper(dm, { source: 'user', platform: 'slack', channel: DM, sender: { id: 'B0BOT', isBot: true } })
-      ).toEqual({ ok: false, reason: 'no-person' })
+      ).toEqual(agent)
     } finally {
       await h.close()
     }
   })
 })
 
-describe('the stop note offers continuation only where it exists', () => {
+describe('the stop note and authority, from the index row alone', () => {
   const ctx = {
     agentId: AGENT,
     platform: 'slack',
@@ -580,22 +630,30 @@ describe('the stop note offers continuation only where it exists', () => {
     tools: []
   } as unknown as SessionContext
   const parent = sessionKey('slack', DM, '100.1', AGENT)
-  const noteFor = async (thread: string, kind?: 'patrol') => {
+  const resultFor = async (thread: string, kind?: 'patrol') => {
     const childSessionKey = sessionKey('slack', DM, thread, AGENT)
-    const row = { agentId: AGENT, childSessionKey, parentSessionKey: parent, state: 'open', ...(kind ? { kind } : {}) }
+    const row = {
+      agentId: AGENT,
+      childSessionKey,
+      parentSessionKey: parent,
+      parentSessionId: 'sid-owner',
+      state: 'open',
+      ...(kind ? { kind } : {})
+    }
     const deps = {
       assistantSubsessions: {
-        stopper: async () => ({ ok: true as const, actor: { userId: 'u-1' } }),
+        actor: () => ({ userId: 'u-1' }),
+        sessionIdOf: async () => 'sid-owner',
         find: async () => row as never,
         stopSession: async () => true
       }
     }
-    return ((await executeTool(ctx, 'stopSubsession', { sessionId: childSessionKey }, deps as never)) as any).note
+    return (await executeTool(ctx, 'stopTask', { taskId: childSessionKey }, deps as never)) as any
   }
 
-  it('names messageSubsession for a delegated sub-session, never for an approved task or a patrol', async () => {
-    expect(await noteFor('subsession:d-1')).toContain('message it with messageSubsession')
-    expect(await noteFor('subsession:task-d-1')).not.toContain('messageSubsession')
-    expect(await noteFor('subsession:patrol-d-1', 'patrol')).not.toContain('messageSubsession')
+  it('names messageTask for a task, and refuses an approved proposal or a patrol as an unknown id', async () => {
+    expect((await resultFor('subsession:d-1')).note).toContain('message it with messageTask')
+    expect(await resultFor('subsession:task-d-1')).toEqual(NOT_OWNED)
+    expect(await resultFor('subsession:patrol-d-1', 'patrol')).toEqual(NOT_OWNED)
   })
 })

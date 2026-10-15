@@ -362,6 +362,71 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
+  it('lets the channel session a self callAgent opened answer its caller, and keeps it out of task control', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const d = daemon as any
+    const callerKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    await d.store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      sessionId: 'sid-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const res = await call(
+      baseReq({ toAgentId: 'bot-a', thread: '200.2', transcriptTs: '200.2', agentCallDeliveryId: 'paired-self-2' })
+    )
+    expect(res).toMatchObject({ delivered: true, targetSession: 'slack:C1:200.2:bot-a' })
+    expect(res).not.toHaveProperty('subsession')
+    // The channel session's turn carries the call, whose metadata names the calling session.
+    const channelSession = res.targetSession as string
+    await d.store.upsertSession({
+      key: channelSession,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '200.2',
+      acpSessionId: 'acp-channel-1',
+      sessionId: 'sid-channel-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    d.activeTurnCallMeta.set(channelSession, calls[0]!.callMeta)
+    const reply = await d.collab.replyToSession({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: '200.2',
+      sessionId: 'sid-parent-1',
+      text: 'found the cause'
+    })
+    expect(reply).toMatchObject({ delivered: true, targetSession: callerKey })
+    expect(calls[1]).toMatchObject({ agentId: 'bot-a', msg: { channel: 'C1', thread: '100.1' } })
+    // It belongs to its conversation, so the caller can neither message nor stop it as a task.
+    const caller = { agentId: 'bot-a', platform: 'slack', isDm: false, channel: 'C1', thread: '100.1', tools: [] }
+    const deps = { ...d.mcp.deps, canRun: () => true }
+    expect(
+      await executeTool(
+        caller as never,
+        'sendMessage',
+        { action: 'messageTask', taskId: channelSession, message: 'm' },
+        deps
+      )
+    ).toMatchObject({ ok: true, wake: { delivered: false, reason: 'task_not_found' } })
+    expect(await executeTool(caller as never, 'stopTask', { taskId: channelSession }, deps)).toEqual({
+      result: 'refused',
+      reason: 'This session started no task with that id. Nothing was stopped.'
+    })
+    await daemon.stop()
+  })
+
   it('rejects an unpaired self wake that only omits the postless marker', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)

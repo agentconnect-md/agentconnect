@@ -77,7 +77,7 @@ async function boot() {
     prompt: vi.fn(async (sid: string, blocks: unknown[]) => {
       const prompt = JSON.stringify(blocks)
       prompts.push(prompt)
-      const text = prompt.includes('background sub-session') ? 'the build is green' : `answer ${prompts.length}`
+      const text = prompt.includes('as a background task') ? 'the build is green' : `answer ${prompts.length}`
       onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
       return { stopReason: 'end_turn' }
     }),

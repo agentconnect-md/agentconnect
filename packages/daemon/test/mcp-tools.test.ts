@@ -336,11 +336,18 @@ describe('toolsForIntegrations', () => {
       'channel',
       'thread',
       'sessionId',
+      'taskId',
       'attachment',
       'platform',
       'integrationId'
     ])
-    expect(schema.properties.action!.enum).toEqual(['callAgent', 'messageSubsession', 'replyToSession', 'postMessage'])
+    expect(schema.properties.action!.enum).toEqual([
+      'callAgent',
+      'startTask',
+      'messageTask',
+      'replyToSession',
+      'postMessage'
+    ])
     expect(schema.properties.toUser!.oneOf).toMatchObject([
       { type: 'string', minLength: 1 },
       { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', minLength: 1 } }
@@ -355,9 +362,10 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('Call getToolGuide {"tool":"sendMessage"} for arguments and examples.')
     expect(tool.description).toContain('Calls without action fail without sending anything.')
     expect(tool.description).toContain('toAgent: {agentId: "...", needsReply: true}')
-    // Continuation and explicit peer sessions are advertised now that the daemon implements both (§8, §9).
-    expect(tool.description).toContain('sessionId continues its existing session from a childSessionId')
-    expect(tool.description).toContain('sends more work to one you started')
+    // Tasks and explicit peer sessions are advertised now that the daemon implements both (§8, §9).
+    expect(tool.description).toContain('sessionId continues an existing peer session')
+    expect(tool.description).toContain('startTask starts a background task of this session')
+    expect(tool.description).toContain('messageTask sends a task you started more (taskId)')
   })
 
   it('states what a channel-root post costs, and points a relayed answer at the origin session', () => {
@@ -447,7 +455,8 @@ describe('toolsForIntegrations', () => {
       const schema = send.inputSchema as unknown as ObjectSchema
       expect(schema.properties.action!.enum).toEqual([
         'callAgent',
-        'messageSubsession',
+        'startTask',
+        'messageTask',
         'replyToSession',
         'postMessage'
       ])

@@ -2,7 +2,11 @@
 import type { ApprovalRouteTarget } from '@agentconnect.md/protocol'
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
-import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import {
+  isSubsessionCoordinate,
+  LEGACY_TASK_START_WRAPPER,
+  TASK_START_WRAPPER
+} from '../session/subsession-coordinate.js'
 
 /** How long a sub-session's request waits when the policy sets no `permissionWaitHours`. */
 export const DEFAULT_PERMISSION_WAIT_HOURS = 12
@@ -28,11 +32,14 @@ export interface SubsessionApprover {
   channel: string
 }
 
-// How a self-delegation's message opens (collab/coordinator.ts): no name for the sub-session it opens.
-const DELEGATION_WRAPPER = 'From your own main conversation, as a background sub-session:'
+// How a task's message opens (collab/coordinator.ts): no name for the task it starts.
+const DELEGATION_WRAPPERS = [TASK_START_WRAPPER, LEGACY_TASK_START_WRAPPER]
 
-const unwrapped = (text: string | null | undefined): string | undefined =>
-  text?.trimStart().startsWith(DELEGATION_WRAPPER) ? text.trimStart().slice(DELEGATION_WRAPPER.length) : undefined
+const unwrapped = (text: string | null | undefined): string | undefined => {
+  const trimmed = text?.trimStart()
+  const wrapper = DELEGATION_WRAPPERS.find((prefix) => trimmed?.startsWith(prefix))
+  return wrapper !== undefined ? trimmed!.slice(wrapper.length) : undefined
+}
 
 /** A sub-session's name on its cards: its title, else its task without the delegation wrapper, truncated; null when neither says anything. */
 export function subsessionLabel(title: string | null | undefined, task: string | undefined): string | null {

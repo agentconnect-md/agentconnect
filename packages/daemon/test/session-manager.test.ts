@@ -2624,7 +2624,7 @@ describe('SessionManager — collaboration preamble', () => {
     // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
     expect(first).toContain('`sendMessage`')
     expect(first).toContain('{"action":"callAgent","toAgent":"<agent id>","message":"..."}')
-    expect(first).toContain('{"action":"messageSubsession","message":"..."}')
+    expect(first).toContain('{"action":"startTask","message":"..."}')
     expect(first).toContain('getToolGuide')
     expect(first).toContain('channel form may target YOURSELF')
     expect(first).toContain('use your own ID from the # Agent block')

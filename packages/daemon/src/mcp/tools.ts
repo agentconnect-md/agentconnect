@@ -14,7 +14,7 @@ import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { ASSISTANT_ITEM_TOOLS, PROPOSE_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
-import { STOP_SUBSESSION_TOOL } from './ops/assistant-subsessions.js'
+import { STOP_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
 import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
 
@@ -24,16 +24,16 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   return {
     name: 'sendMessage',
     description:
-      'Send outside your current conversation. Required action: callAgent asks an agent to work (sessionId ' +
-      'continues its existing session from a childSessionId; channel starts visible work there; your own id with ' +
-      'channel opens your own visible conversation there); messageSubsession starts a background sub-session of ' +
-      'your own for long work (omit sessionId): for "fix this bug and open a PR" or background work, call it ' +
-      'instead of doing the work here, say it started, and end your turn; it also sends more work to one you ' +
-      'started (sessionId: its childSessionId), even after it finished; replyToSession answers one session that ' +
-      'called you, by sessionId (replies are never broadcast); postMessage reaches a person, a channel, or another ' +
-      'existing thread but starts no work there. For your current conversation, write your ordinary reply. To get ' +
-      'a peer’s result, use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} ' +
-      'for arguments and examples. Calls without action fail without sending anything.',
+      'Send outside your current conversation. Required action: callAgent asks a peer to work (sessionId ' +
+      'continues an existing peer session); calling yourself needs channel and starts visible work in that channel. ' +
+      'startTask starts a background task of this session for long work you do yourself: for "fix this bug and ' +
+      'open a PR", call it before exploring, say it started, and end your turn. messageTask sends a task you ' +
+      'started more (taskId). A task reports each round’s outcome automatically, and stopTask stops it. ' +
+      'replyToSession answers a session that called you, by its sessionId; replies are not broadcast. postMessage ' +
+      'reaches a person, channel, or another existing thread and starts no work. For your current conversation, ' +
+      'write your ordinary reply. To get a peer’s result, use toAgent: {agentId: "...", needsReply: true}. Call ' +
+      'getToolGuide {"tool":"sendMessage"} for arguments and examples. Calls without action fail without sending ' +
+      'anything.',
     inputSchema: obj(
       {
         action: { type: 'string', enum: [...SEND_MESSAGE_ACTIONS] },
@@ -71,8 +71,9 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
           minLength: 1,
           description:
             'callAgent: that agent’s existing session (a childSessionId), instead of channel. replyToSession: the ' +
-            'session id of one session that called you. messageSubsession: a childSessionId to continue.'
+            'session id of one session that called you.'
         },
+        taskId: { type: 'string', minLength: 1, description: 'messageTask only: the taskId startTask returned.' },
         attachment: { type: 'string', minLength: 1, description: 'Received image name from an [attached: …] marker.' },
         platform: {
           type: 'string',
@@ -809,7 +810,7 @@ const LIST_AGENTS_DESCRIPTION =
   '@mentioning member ids in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents ' +
   'present in that channel. Only agents you are allowed to reach are returned. Your own entry is included so you ' +
   'can use its agent id in `callAgent` with `channel` to open and activate a new channel-root conversation with ' +
-  'yourself; for background work of your own, use `messageSubsession` instead (see `getToolGuide`).'
+  'yourself; for background work of your own, use `startTask` instead (see `getToolGuide`).'
 
 export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
@@ -827,18 +828,17 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
     name: 'viewSessionStatus',
     description:
-      'Read execution and reply-delivery state for a child session YOU started. Pass the `childSessionId` returned ' +
-      'by `sendMessage`, then follow the returned `nextAction`. This is diagnostic only; it never returns the reply body.',
-    inputSchema: obj(
-      {
-        sessionId: {
-          type: 'string',
-          minLength: 1,
-          description: 'The `childSessionId` returned by the `sendMessage` call that started the session.'
-        }
-      },
-      ['sessionId']
-    )
+      'Read execution and reply-delivery state for a task or session YOU started. Pass the `taskId` a startTask ' +
+      'returned, or the `childSessionId` a callAgent returned as `sessionId`, then follow the returned `nextAction`. ' +
+      'This is diagnostic only; it never returns the reply body.',
+    inputSchema: obj({
+      taskId: { type: 'string', minLength: 1, description: 'The `taskId` a `sendMessage` startTask returned.' },
+      sessionId: {
+        type: 'string',
+        minLength: 1,
+        description: 'The `childSessionId` a `sendMessage` callAgent returned.'
+      }
+    })
   }
 ]
 
@@ -1109,7 +1109,7 @@ export const ALL_TOOL_NAMES = [
       ...ASSISTANT_ITEM_TOOLS,
       PROPOSE_TOOL,
       ...ASSISTANT_REMINDER_TOOLS,
-      STOP_SUBSESSION_TOOL
+      STOP_TASK_TOOL
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.
@@ -1151,7 +1151,7 @@ export function toolsForIntegrations(
   add(COLLABORATION_TOOLS)
   // Every agent's cross-place recall, under the read rule (assistant-mode.md §5.4 ③, §5.5).
   add([RECALL_TOOL])
-  // `sendMessage` and its guide are ALWAYS present: postless calls, sub-sessions and origin replies need no platform (send-message-guide.md §3.2).
+  // `sendMessage` and its guide are ALWAYS present: postless calls, tasks and origin replies need no platform (send-message-guide.md §3.2).
   const platforms = [...new Set(integrations.map((i) => i.platform))]
   add([buildSendMessageTool(platforms), GET_TOOL_GUIDE_TOOL])
   // Platform read helpers only make sense once the agent has at least one integration.

@@ -130,7 +130,7 @@ async function world(
     hostKey: OWNER,
     outwardSessionId: 'sid-sub',
     builtinSystemToolCallIds: new Set<string>(),
-    entry: { msg: { text: 'From your own main conversation, as a background sub-session: fix it' } }
+    entry: { msg: { text: 'From your own session, as a background task: fix it' } }
   } as unknown as Pending
   pending.set(pendingTurnKey(OWNER, ACP), p)
   const subsessionApprovalRoute = vi.fn(async () => ('route' in over ? over.route : routeTo(slackPlace())))
@@ -622,10 +622,7 @@ describe('a sub-session’s permission request in the conversation it belongs to
       lastDeliveredTs: null,
       updatedAt: Date.now()
     })
-    await w.store.setSessionTitle(
-      w.p.plan.sessionKey,
-      'From your own main conversation, as a background sub-session: fix it'
-    )
+    await w.store.setSessionTitle(w.p.plan.sessionKey, 'From your own session, as a background task: fix it')
     void w.coordinator.onAcpPermission(OWNER, ACP, params())
     const id = await w.requestId()
     await vi.waitFor(() => expect(w.place.postBlocks).toHaveBeenCalledTimes(2))
@@ -762,9 +759,10 @@ describe('the approval queue names the conversation a sub-session asks from', ()
 })
 
 describe('the name a sub-session’s cards give it', () => {
-  const wrapped = 'From your own main conversation, as a background sub-session: '
-
-  it('uses the title, else the task without the delegation wrapper, truncated, else none', () => {
+  it.each([
+    ['From your own session, as a background task: '],
+    ['From your own main conversation, as a background sub-session: ']
+  ])('uses the title, else the task without the wrapper %j, truncated, else none', (wrapped) => {
     expect(subsessionLabel('Fix the flaky test', `${wrapped}anything`)).toBe('Fix the flaky test')
     // The first-message title a sub-session is born with is the wrapper, so its task is read from the message.
     expect(subsessionLabel(`${wrapped}fix the f…`, `${wrapped}fix the flaky test and open a PR`)).toBe(
@@ -879,7 +877,7 @@ async function delegateAndAsk(agentId: string, opts: { external?: boolean } = {}
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-        if (!JSON.stringify(blocks).includes('background sub-session')) return 'end_turn'
+        if (!JSON.stringify(blocks).includes('as a background task')) return 'end_turn'
         const d = live.d
         const owner = [...d.pending.values()].find((p: Pending) => p.acpSessionId === sessionId)!.hostKey
         answers.push(await d.permissions.onAcpPermission(owner, sessionId, params(sessionId)))
@@ -989,7 +987,7 @@ describe('through the daemon', () => {
       await vi.waitFor(() => expect(reports).toHaveLength(1), WAIT)
       expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }])
       expect(reports[0]!.text).toBe(
-        `[sub-session ended] Sub-session ${res.targetSession} stopped before finishing (approval wait expired). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageSubsession","sessionId":"${res.targetSession}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
+        `[task ended] Task ${res.targetSession} stopped before finishing (approval wait expired). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${res.targetSession}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
       )
       expect((await d.store.listPermissionRequests(agentId))[0]).toMatchObject({
         status: 'denied',

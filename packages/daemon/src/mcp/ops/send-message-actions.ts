@@ -17,9 +17,10 @@ import {
   USER_TARGETS,
   type MessagingDeps
 } from './messaging.js'
+import { START_TASK_GUIDE_TEXT } from './task-guide.js'
 
 /** The operations `sendMessage` performs, one required `action` each (send-message-guide.md §3.1). */
-export const SEND_MESSAGE_ACTIONS = ['callAgent', 'messageSubsession', 'replyToSession', 'postMessage'] as const
+export const SEND_MESSAGE_ACTIONS = ['callAgent', 'startTask', 'messageTask', 'replyToSession', 'postMessage'] as const
 export type SendMessageAction = (typeof SEND_MESSAGE_ACTIONS)[number]
 
 const isAction = (value: unknown): value is SendMessageAction =>
@@ -28,7 +29,8 @@ const isAction = (value: unknown): value is SendMessageAction =>
 /** Each action's target requirement and accepted keys, besides `action` and `message`. */
 const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; accepts: readonly string[] }> = {
   callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'sessionId'] },
-  messageSubsession: { requires: [], accepts: ['sessionId'] },
+  startTask: { requires: [], accepts: [] },
+  messageTask: { requires: ['taskId'], accepts: ['taskId'] },
   replyToSession: { requires: ['sessionId'], accepts: ['sessionId'] },
   postMessage: {
     requires: ['toUser|channel'],
@@ -47,9 +49,10 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     sessionId: requiredString('sessionId').optional(),
     message: messageField
   }),
-  messageSubsession: z.strictObject({
-    action: action('messageSubsession'),
-    sessionId: requiredString('sessionId').optional(),
+  startTask: z.strictObject({ action: action('startTask'), message: messageField }),
+  messageTask: z.strictObject({
+    action: action('messageTask'),
+    taskId: requiredString('taskId'),
     message: messageField
   }),
   replyToSession: z.strictObject({
@@ -72,8 +75,8 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
 const OVERVIEW = '{"tool":"sendMessage"}'
 const MISSING_ACTION =
   'missing required argument `action`. Nothing was sent and no agent was woken. Use an action listed by ' +
-  'getToolGuide for this daemon. The complete tool supports callAgent, messageSubsession, replyToSession, and ' +
-  `postMessage. Call getToolGuide ${OVERVIEW} to get the arguments and examples, then retry sendMessage with the ` +
+  'getToolGuide for this daemon. The complete tool supports callAgent, startTask, messageTask, replyToSession, ' +
+  `and postMessage. Call getToolGuide ${OVERVIEW} to get the arguments and examples, then retry sendMessage with the ` +
   'appropriate action'
 const UNKNOWN_ACTION =
   `\`action\` must be one of ${SEND_MESSAGE_ACTIONS.join(', ')}. Nothing was sent and no agent was woken. Call ` +
@@ -85,12 +88,15 @@ const strip = (pointer: string) => pointer.replace(/\.$/, '')
 const guided = (text: string, action: SendMessageAction) =>
   `${text}. Call getToolGuide {"tool":"sendMessage","action":"${action}"} for the required arguments, then retry`
 
-const BAD_CHILD_ID = guided(
-  'action `messageSubsession` takes `sessionId` only as the nonempty `childSessionId` string of a sub-session this ' +
-    'conversation started. Nothing was sent. Omit `sessionId` to start a new sub-session; a null or empty id never ' +
-    'starts one',
-  'messageSubsession'
-)
+/** The `startTask` call to make instead, with the `startTask` guide inline, never echoing the message (send-message-guide.md §3.5). */
+const START_TASK_INSTEAD =
+  'Retry as:\n  sendMessage {"action":"startTask","message":"<the same message>"}\nstartTask guide:\n' +
+  START_TASK_GUIDE_TEXT
+const TASK_ID_NEEDED = (unexpected: readonly string[]) =>
+  'action `messageTask` requires `taskId`, the nonempty `taskId` a startTask call in this session returned' +
+  (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
+  '. Nothing was sent, and a missing, null or empty `taskId` never starts a task. To start a new background task, ' +
+  START_TASK_INSTEAD
 const BAD_PEER_SESSION = guided(
   'action `callAgent` takes `sessionId` only as the nonempty id of an existing session of the agent in `toAgent`, ' +
     'such as the `childSessionId` an earlier callAgent returned. Nothing was sent and no agent was woken. Omit ' +
@@ -104,19 +110,19 @@ const PEER_SESSION_WITH_CHANNEL = guided(
 )
 const SELF_SESSION =
   'action `callAgent` with `sessionId` reaches another agent’s session, never one of yours. Nothing was sent and no ' +
-  'agent was woken. To message your own background sub-session, call getToolGuide ' +
-  '{"tool":"sendMessage","action":"messageSubsession"} and retry with action `messageSubsession` and its `sessionId`'
+  'agent was woken. To message a background task of yours, call getToolGuide ' +
+  '{"tool":"sendMessage","action":"messageTask"} and retry with action `messageTask` and its `taskId`'
 const SELF_CALL =
-  'action `callAgent` without `channel` cannot target yourself. Nothing was sent and no agent was woken. For ' +
-  'background work of your own, call getToolGuide {"tool":"sendMessage","action":"messageSubsession"} and retry ' +
-  'with action `messageSubsession` and `message` only'
+  'action `callAgent` with your own agent id needs `channel`. Work of your own that needs no conversation is a ' +
+  `background task. Nothing was sent and no agent was woken. ${START_TASK_INSTEAD}\nTo work visibly in a channel ` +
+  'instead, keep callAgent and add `channel`'
 
 /** The validated action and the target-shaped arguments its existing delivery path takes. */
 export interface ValidatedSendMessage {
   action: SendMessageAction
   delivery: Record<string, unknown>
-  /** `messageSubsession` into an existing child: its handle (send-message-guide.md §8.1). */
-  childSessionId?: string
+  /** `messageTask`: the task's handle (send-message-guide.md §8.1). */
+  taskId?: string
   /** `callAgent` into an existing session of the target agent: its handle (send-message-guide.md §9.2). */
   peerSessionId?: string
 }
@@ -128,14 +134,16 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   if (!isAction(named)) throw new ToolArgumentError([UNKNOWN_ACTION])
   const spec = ACTION_KEYS[named]
   const keys = Object.keys(args).filter((key) => key !== 'action' && key !== 'message')
-  // §8.1 and §9.2: a supplied session id is nonempty, never a null or empty stand-in for creation.
-  if ((named === 'messageSubsession' || named === 'callAgent') && keys.includes('sessionId')) {
-    const id = args.sessionId
-    if (typeof id !== 'string' || id.trim() === '')
-      throw new ToolArgumentError([named === 'callAgent' ? BAD_PEER_SESSION : BAD_CHILD_ID])
-    if (named === 'callAgent' && present(args.channel)) throw new ToolArgumentError([PEER_SESSION_WITH_CHANNEL])
-  }
   const unexpected = keys.filter((key) => !spec.accepts.includes(key))
+  // §8.1: a missing, null or empty task id is an argument error that names startTask, never a start.
+  if (named === 'messageTask' && (typeof args.taskId !== 'string' || args.taskId.trim() === ''))
+    throw new ToolArgumentError([TASK_ID_NEEDED(unexpected)])
+  // §9.2: a supplied peer-session id is nonempty, never a null or empty stand-in for creation.
+  if (named === 'callAgent' && keys.includes('sessionId')) {
+    const id = args.sessionId
+    if (typeof id !== 'string' || id.trim() === '') throw new ToolArgumentError([BAD_PEER_SESSION])
+    if (present(args.channel)) throw new ToolArgumentError([PEER_SESSION_WITH_CHANNEL])
+  }
   const missing = spec.requires.filter((key) => key.split('|').every((alt) => !present(args[alt])))
   if (unexpected.length > 0 || missing.length > 0) {
     const clauses = [
@@ -146,6 +154,9 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
       // The one stray key with a known home: §3.2 keeps `needsReply` nested, with no top-level alias.
       ...(named === 'callAgent' && unexpected.includes('needsReply')
         ? ['takes `needsReply` inside `toAgent` as {"agentId":"…","needsReply":true}']
+        : []),
+      ...(named === 'startTask' && unexpected.includes('taskId')
+        ? ['sends more to an existing task only as action `messageTask` with its `taskId`']
         : [])
     ]
     throw new ToolArgumentError([
@@ -161,13 +172,8 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
     if (Array.isArray(args.toUser) && !present(args.channel))
       throw new ToolArgumentError([`${USER_ARRAY_NEEDS_CHANNEL}. ${strip(sendMessageGuidePointer('postMessage'))}`])
   }
-  if (named === 'messageSubsession') {
-    return {
-      action: named,
-      delivery: { toAgent: ctx.agentId, message: args.message },
-      ...(typeof args.sessionId === 'string' ? { childSessionId: args.sessionId } : {})
-    }
-  }
+  if (named === 'startTask') return { action: named, delivery: { toAgent: ctx.agentId, message: args.message } }
+  if (named === 'messageTask') return { action: named, delivery: {}, taskId: args.taskId as string }
   if (target?.toAgent === ctx.agentId && typeof args.sessionId === 'string') throw new ToolArgumentError([SELF_SESSION])
   if (target?.toAgent === ctx.agentId && !present(args.channel)) {
     throw new ToolArgumentError([SELF_CALL])
@@ -186,7 +192,7 @@ export async function sendMessage(
   deps: MessagingDeps
 ): Promise<unknown> {
   const validated = validateSendMessageAction(ctx, args)
-  if (validated.childSessionId !== undefined) return await continueSubsession(ctx, validated.childSessionId, args, deps)
+  if (validated.taskId !== undefined) return await messageTask(ctx, validated.taskId, args, deps)
   if (validated.peerSessionId !== undefined) return await callPeerSession(ctx, validated.peerSessionId, args, deps)
   return await deliverSendMessage(ctx, validated.delivery, deps)
 }
@@ -232,27 +238,27 @@ async function callPeerSession(
   }
 }
 
-/** The guidance a delivered continuation hands back. */
-export const SUBSESSION_CONTINUED =
-  'Message delivered to the existing sub-session, which keeps its earlier context; it runs once any work it has ' +
-  'in hand is done. It reports back into this conversation when this round of its work ends. End this turn and ' +
-  'wait; do not send the same message again.'
+/** The guidance a delivered task message hands back. */
+export const TASK_MESSAGED =
+  'Message delivered to the existing task, which keeps its earlier context; it runs once any work it has in hand ' +
+  'is done. It reports back into this session when this round of its work ends. End this turn and wait; do not ' +
+  'send the same message again.'
 
-/** The continuation receipt, in the creation receipt's family (send-message-guide.md §8.6). */
-async function continueSubsession(
+/** The `messageTask` receipt, in the `startTask` receipt's family (send-message-guide.md §8.6). */
+async function messageTask(
   ctx: SessionContext,
-  childSessionId: string,
+  taskId: string,
   args: Record<string, unknown>,
   deps: MessagingDeps
 ): Promise<unknown> {
-  if (!deps.continueSubsession) throw new Error('sendMessage: continuing a sub-session is not available on this daemon')
+  if (!deps.continueSubsession) throw new Error('sendMessage: messaging a task is not available on this daemon')
   const wake = await deps.continueSubsession({
     callerAgentId: ctx.agentId,
     platform: ctx.platform,
     ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
     callerChannel: ctx.channel,
     callerThread: ctx.thread,
-    sessionId: childSessionId,
+    sessionId: taskId,
     text: parseArgs(messageField, args.message),
     ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
   })
@@ -260,9 +266,9 @@ async function continueSubsession(
   return {
     ok: true,
     wake,
-    childSessionId: wake.targetSession,
+    taskId: wake.targetSession,
     reply: { requested: true, state: 'awaiting' as const },
     nextAction: 'finish-turn-and-wait' as const,
-    message: SUBSESSION_CONTINUED
+    message: TASK_MESSAGED
   }
 }

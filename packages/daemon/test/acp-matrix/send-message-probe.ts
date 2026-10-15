@@ -8,14 +8,15 @@ import type { AcpHost } from '../../src/acp/acp-host.js'
 import {
   PEER_SESSION_NOT_FOUND,
   PEER_SESSION_NOT_FOUND_MESSAGE,
-  SUBSESSION_NOT_FOUND,
-  SUBSESSION_NOT_FOUND_MESSAGE
+  TASK_NOT_FOUND,
+  TASK_NOT_FOUND_MESSAGE
 } from '../../src/collab/coordinator.js'
 import { executeTool, type OpsDeps } from '../../src/mcp/ops.js'
 import { ToolArgumentError } from '../../src/mcp/ops/args.js'
 import { describeToolArgumentFailure } from '../../src/mcp/ops/argument-error.js'
 import type { SessionContext } from '../../src/mcp/ops/context.js'
-import { PEER_SESSION_CALLED, SUBSESSION_CONTINUED } from '../../src/mcp/ops/send-message-actions.js'
+import { TASK_STARTED } from '../../src/mcp/ops/messaging.js'
+import { PEER_SESSION_CALLED, TASK_MESSAGED } from '../../src/mcp/ops/send-message-actions.js'
 import { toolsForIntegrations } from '../../src/mcp/tools.js'
 import { buildStandingContext } from '../../src/session/turn/standing-context.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
@@ -35,7 +36,8 @@ export const IDS = {
   updateChannel: 'C0EXAMPLE3',
   updateThread: '1700000000.000200',
   origin: '5f0c2a9e-0000-4000-8000-00000000a001',
-  child: '5f0c2a9e-0000-4000-8000-00000000a002'
+  child: '5f0c2a9e-0000-4000-8000-00000000a002',
+  task: 'slack:C0EXAMPLE1:subsession:5f0c2a9e-0000-4000-8000-00000000a003:matrix-agent'
 } as const
 
 const SLACK_INTEGRATION = 'int-slack-example'
@@ -62,8 +64,8 @@ export function toolShape(tools: ToolDescriptor[]): 'action' | 'legacy' {
 /** What a `sendMessage` call means, whichever argument shape spelled it. */
 export type SemanticOp =
   | { kind: 'agent-call'; agent: string; needsReply: boolean; channel?: string; sessionId?: string }
-  | { kind: 'subsession-create' }
-  | { kind: 'subsession-continue'; sessionId: string }
+  | { kind: 'task-start' }
+  | { kind: 'task-message'; taskId: string }
   | { kind: 'origin-reply'; sessionId: string }
   | { kind: 'post-dm'; user: string }
   | { kind: 'post-channel'; channel: string; users?: string[] }
@@ -119,8 +121,12 @@ export function classifySendMessage(args: Record<string, unknown>, selfId: strin
           ...(sessionId ? { sessionId } : {})
         }
       }
-      case 'messageSubsession':
-        return sessionId ? { kind: 'subsession-continue', sessionId } : { kind: 'subsession-create' }
+      case 'startTask':
+        return { kind: 'task-start' }
+      case 'messageTask': {
+        const taskId = str(args.taskId)
+        return taskId ? { kind: 'task-message', taskId } : { kind: 'unknown', reason: 'messageTask without taskId' }
+      }
       case 'replyToSession':
         return sessionId ? { kind: 'origin-reply', sessionId } : { kind: 'unknown', reason: 'reply without sessionId' }
       case 'postMessage':
@@ -134,7 +140,7 @@ export function classifySendMessage(args: Record<string, unknown>, selfId: strin
     const { agent, needsReply } = agentTarget(args.toAgent)
     if (agent === undefined) return { kind: 'unknown', reason: 'malformed toAgent' }
     const channel = str(args.channel)
-    if (agent === selfId && channel === undefined) return { kind: 'subsession-create' }
+    if (agent === selfId && channel === undefined) return { kind: 'task-start' }
     return { kind: 'agent-call', agent, needsReply, ...(channel ? { channel } : {}) }
   }
   return postOp(args)
@@ -145,10 +151,10 @@ export function describeOp(op: SemanticOp): string {
   switch (op.kind) {
     case 'agent-call':
       return `agent-call(${op.agent}${op.needsReply ? ',needsReply' : ''}${op.channel ? `,channel=${op.channel}` : ''}${op.sessionId ? `,session=${op.sessionId}` : ''})`
-    case 'subsession-create':
-      return 'subsession-create'
-    case 'subsession-continue':
-      return `subsession-continue(${op.sessionId})`
+    case 'task-start':
+      return 'task-start'
+    case 'task-message':
+      return `task-message(${op.taskId})`
     case 'origin-reply':
       return `origin-reply(${op.sessionId})`
     case 'post-dm':
@@ -162,10 +168,10 @@ export function describeOp(op: SemanticOp): string {
   }
 }
 
-/** The sessions a scenario's caller may address by id: its origin, the direct child it already started, and a peer's session it may join. */
+/** What a scenario's caller may address by id: its origin, the task it already started, and a peer's session it may join. */
 export interface ProbeScope {
   origin?: string
-  child?: string
+  task?: string
   peerSession?: string
 }
 
@@ -186,7 +192,7 @@ const EFFECT_BOUNDARY = new Proxy({} as OpsDeps, {
 const reachedEffect = (error: unknown): boolean =>
   error instanceof ReachedEffect ||
   (error instanceof TypeError && /is not a function|Cannot read properties of undefined/.test(error.message)) ||
-  (error instanceof Error && /^sendMessage: continuing a sub-session is not available/.test(error.message))
+  (error instanceof Error && /^sendMessage: messaging a task is not available/.test(error.message))
 
 /** The real `executeTool` pipeline up to its first dependency: the rejection text a model reads, or none. */
 async function daemonRejection(args: Record<string, unknown>, tools: ToolDescriptor[]): Promise<string | undefined> {
@@ -220,40 +226,40 @@ export async function validateSendMessage(
 function receipt(op: SemanticOp, scope: ProbeScope): unknown {
   const ts = '1700000001.000300'
   const childSessionId = IDS.child
+  const taskId = IDS.task
   switch (op.kind) {
     case 'origin-reply':
       // The real origin reply refuses an id that is not the caller's origin with a result, not an error.
       return op.sessionId === scope.origin
         ? { delivered: true, targetSession: op.sessionId }
         : { delivered: false, reason: 'not_authorized' }
-    case 'subsession-create':
+    case 'task-start':
       return {
         ok: true,
-        wake: { delivered: true, targetSession: childSessionId, subsession: true },
-        childSessionId,
+        wake: { delivered: true, targetSession: taskId, subsession: true },
+        taskId,
         reply: { requested: true, state: 'awaiting' },
         nextAction: 'finish-turn-and-wait',
-        message:
-          'Sub-session started in the background. Tell the people here it has started and end this turn; it reports back into this conversation when it finishes or fails. Do not do the work here as well.'
+        message: TASK_STARTED
       }
-    case 'subsession-continue':
-      // The daemon's own continuation receipt, or its refusal of an id that is not this session's child.
-      return op.sessionId === scope.child
+    case 'task-message':
+      // The daemon's own `messageTask` receipt, or its refusal of an id that is not a task of this session.
+      return op.taskId === scope.task
         ? {
             ok: true,
-            wake: { delivered: true, targetSession: op.sessionId, subsession: true },
-            childSessionId: op.sessionId,
+            wake: { delivered: true, targetSession: op.taskId, subsession: true },
+            taskId: op.taskId,
             reply: { requested: true, state: 'awaiting' },
             nextAction: 'finish-turn-and-wait',
-            message: SUBSESSION_CONTINUED
+            message: TASK_MESSAGED
           }
         : {
             ok: true,
             wake: {
               delivered: false,
-              targetSession: op.sessionId,
-              reason: SUBSESSION_NOT_FOUND,
-              message: SUBSESSION_NOT_FOUND_MESSAGE
+              targetSession: op.taskId,
+              reason: TASK_NOT_FOUND,
+              message: TASK_NOT_FOUND_MESSAGE
             }
           }
     case 'agent-call':
@@ -370,8 +376,7 @@ async function callTool(
     const result = receipt(op, scope)
     if (op.kind === 'origin-reply' && op.sessionId !== scope.origin)
       return { result: text(result), error: 'origin reply not authorized' }
-    if (op.kind === 'subsession-continue' && op.sessionId !== scope.child)
-      return { result: text(result), error: 'sub-session not found' }
+    if (op.kind === 'task-message' && op.taskId !== scope.task) return { result: text(result), error: 'task not found' }
     if (op.kind === 'agent-call' && op.sessionId !== undefined && op.sessionId !== scope.peerSession)
       return { result: text(result), error: 'peer session not found' }
     return { result: text(result) }
@@ -471,7 +476,7 @@ export type ScenarioId =
   | 'origin-reply'
   | 'negative-current-thread'
   | 'tool-visibility'
-  | 'continue-subsession'
+  | 'message-task'
 
 export interface SendMessageScenario {
   id: ScenarioId
@@ -481,8 +486,8 @@ export interface SendMessageScenario {
   expected: string
   /** Woken by a parent session that waits on the result. */
   origin?: boolean
-  /** Already owns the background sub-session `IDS.child`. */
-  child?: boolean
+  /** Already owns the background task `IDS.task`. */
+  task?: boolean
   /** Recorded only; never fails the cell. */
   informational?: boolean
   /** Only meaningful against the `action` tool shape; excluded from old/new comparisons. */
@@ -509,8 +514,8 @@ export const SCENARIOS: SendMessageScenario[] = [
     prompt: humanMessage(
       'Please migrate every integration test in this repository to the new fixtures and open a PR. It will take a while, so run it in the background and let me know here when it is done.'
     ),
-    expect: (op) => op.kind === 'subsession-create',
-    expected: 'subsession-create'
+    expect: (op) => op.kind === 'task-start',
+    expected: 'task-start'
   },
   {
     id: 'visible-work-in-channel',
@@ -564,14 +569,14 @@ export const SCENARIOS: SendMessageScenario[] = [
     expected: 'sendMessage visible with an untruncated description'
   },
   {
-    id: 'continue-subsession',
+    id: 'message-task',
     newOnly: true,
-    child: true,
+    task: true,
     prompt: humanMessage(
-      `Your background sub-session ${IDS.child}, which you started earlier for the flaky-test investigation, should also cover the Windows failures. Send it that extra instruction.`
+      `Your background task ${IDS.task}, which you started earlier for the flaky-test investigation, should also cover the Windows failures. Send it that extra instruction.`
     ),
-    expect: (op) => op.kind === 'subsession-continue' && op.sessionId === IDS.child,
-    expected: `subsession-continue(${IDS.child})`
+    expect: (op) => op.kind === 'task-message' && op.taskId === IDS.task,
+    expected: `task-message(${IDS.task})`
   }
 ]
 
@@ -692,7 +697,7 @@ export async function runSendMessageScenarios(input: {
       const key = `${runtime}/${scenario.id}/${rep}`
       const scope: ProbeScope = {
         ...(scenario.origin ? { origin: IDS.origin } : {}),
-        ...(scenario.child ? { child: IDS.child } : {})
+        ...(scenario.task ? { task: IDS.task } : {})
       }
       const standing = standingContext(scenario, usesMeta)
       const started = Date.now()
