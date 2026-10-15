@@ -8,7 +8,11 @@
 
 import { useState, type ComponentType } from 'react'
 import { useTranslations } from 'next-intl'
-import type { CodehostTurnFacts as CodehostFacts, UserTurnBody } from '@agentconnect.md/protocol'
+import type {
+  CodehostTurnFacts as CodehostFacts,
+  SessionMessageTurnFacts as MessageFacts,
+  UserTurnBody
+} from '@agentconnect.md/protocol'
 import { shortSha } from '@/lib/user-turn-body'
 import { MarkdownText } from './MessageText'
 import { platformTurnFacts } from './platforms/registry'
@@ -63,8 +67,56 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
   )
 }
 
-/** The formatter for this body, if any: the platform module's own, else the host's code-host one. */
+/** The one line above a delivered session message's body: who sent it, and as what. */
+export function SessionMessageCaption({ facts }: { facts: MessageFacts }) {
+  const t = useTranslations('Sessions.userTurnDetails')
+  const agent = facts.source.label ?? facts.source.agentId
+  return (
+    <p className="mb-1 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
+      {t(`messageCaption.${facts.kind}`, { agent })}
+    </p>
+  )
+}
+
+/** A session message's header facts and the guidance the agent received around its body, verbatim. */
+export function SessionMessageTurnFacts({ facts }: { facts: MessageFacts }) {
+  const t = useTranslations('Sessions.userTurnDetails')
+  const mono = (value: string | undefined) => (value ? <span className="font-mono text-[11.5px]">{value}</span> : '')
+  return (
+    <>
+      <FactRows>
+        <FactRow label={t('from')}>
+          {facts.source.label ? `${facts.source.label} · ${facts.source.agentId}` : facts.source.agentId}
+        </FactRow>
+        <FactRow label={t('session')}>{mono(facts.source.sessionId)}</FactRow>
+        <FactRow label={t('message')}>{mono(facts.messageId)}</FactRow>
+        <FactRow label={t('inReplyTo')}>{mono(facts.inReplyTo)}</FactRow>
+        <FactRow label={t('awaitsReply')}>{facts.replyRequested === true ? t('yes') : ''}</FactRow>
+      </FactRows>
+      {facts.notes?.length ? (
+        <div className="mt-2">
+          <p className="font-sans text-[11.5px] leading-normal text-(--text-tertiary)">{t('notes')}</p>
+          {facts.notes.map((note, i) => (
+            <p
+              key={i}
+              className="mt-1 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-normal text-(--text-secondary)"
+            >
+              {note}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+function SessionMessageFold({ body }: { body: UserTurnBody }) {
+  return body.sessionMessage ? <SessionMessageTurnFacts facts={body.sessionMessage} /> : null
+}
+
+/** The formatter for this body, if any: a session message's own, the platform module's, else the host's code-host one. */
 function factsRenderer(body: UserTurnBody, platform?: string): ComponentType<{ body: UserTurnBody }> | undefined {
+  if (body.sessionMessage) return SessionMessageFold
   const own = platformTurnFacts(platform)
   if (own) return own
   if (body.codehost) return CodehostFold

@@ -433,7 +433,18 @@
       },
       "bodyTruncated": "Body truncated by the relay.",
       "less": "less",
-      "more": "more"
+      "more": "more",
+      "session": "Session",
+      "message": "Message",
+      "inReplyTo": "In reply to",
+      "awaitsReply": "Awaits reply",
+      "notes": "Guidance the agent received",
+      "messageCaption": {
+        "call": "Message from {agent}",
+        "reply": "Reply from {agent}",
+        "report": "Report from a background task",
+        "taskInput": "Instruction for this background task"
+      }
     },
     "panel": {
       "pinSession": "Pin session",

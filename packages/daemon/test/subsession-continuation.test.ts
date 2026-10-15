@@ -15,6 +15,9 @@ import { buildStandingContext } from '../src/session/turn/standing-context.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
+/** What the model received for a delivered message: its prompt when the console shows less (§9.5), else its text. */
+const modelText = (msg: { text: string; turnBody?: { prompt?: string } }): string => msg.turnBody?.prompt ?? msg.text
+
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true }
 
@@ -299,7 +302,7 @@ describe('messageTask continues an existing task of this session', () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
-    expect(h.reports().map((c) => c.msg.text)).toEqual([expect.stringContaining(finished(child))])
+    expect(h.reports().map((c) => modelText(c.msg))).toEqual([expect.stringContaining(finished(child))])
     const firstSession = (await h.d.store.getSession(child))?.acpSessionId
 
     const res = await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'also Windows' })
@@ -319,7 +322,7 @@ describe('messageTask continues an existing task of this session', () => {
     expect(sessionKey('slack', 'C1', inputs[1]!.msg.thread!, 'bot-a', inputs[1]!.msg.transportScope)).toBe(child)
     // §9.5: the input shows its message id, its source, and the reply call.
     const messageId = inputs[1]!.callMeta.messageId as string
-    expect(inputs[1]!.msg.text).toBe(
+    expect(modelText(inputs[1]!.msg)).toBe(
       `[Message ${messageId}] From the session that started this task (session sid-parent-1), a new message for this ` +
         `background task:\nalso Windows\n\n[Send progress, a question, or your result for it with sendMessage ` +
         `{"action":"replyToSession","messageId":"${messageId}","message":"..."}; a reply does not end your work.]`
@@ -330,13 +333,33 @@ describe('messageTask continues an existing task of this session', () => {
       subsessionRound: 2,
       messageKind: 'taskInput'
     })
-    expect(inputs[0]!.msg.text).toContain(`From your own session (session sid-parent-1), as a background task:`)
+    // The console shows the body alone; the header's facts and the reply call fold beneath it.
+    expect(inputs[1]!.msg.text).toBe('also Windows')
+    expect(inputs[1]!.msg.turnBody?.sessionMessage).toMatchObject({
+      messageId,
+      kind: 'taskInput',
+      source: { agentId: 'bot-a', sessionId: 'sid-parent-1' },
+      replyRequested: true,
+      notes: [expect.stringContaining('"action":"replyToSession"')]
+    })
+    expect(modelText(inputs[0]!.msg)).toContain(`From your own session (session sid-parent-1), as a background task:`)
     expect((await h.d.store.getSession(child))?.acpSessionId).toBe(firstSession)
     expect(await h.d.store.assistantSubsessions.list('bot-a', 10)).toHaveLength(1)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
     // Each round reports once, under a delivery id of its own.
     const [first, second] = h.reports()
-    expect(second!.msg.text).toContain(finished(child))
+    expect(modelText(second!.msg)).toContain(finished(child))
+    // A report with no output shows its status alone; the continue call and language note fold beneath it.
+    expect(second!.msg.text).toBe(
+      `${finished(child)} without a final output; any reply it sent before this is its result.`
+    )
+    expect(second!.msg.turnBody?.sessionMessage).toMatchObject({
+      kind: 'report',
+      notes: [
+        expect.stringContaining('"action":"messageTask"'),
+        'Speak to the people here in the language they use, even when this report is in another.'
+      ]
+    })
     expect(second!.callMeta.deliveryId).not.toBe(first!.callMeta.deliveryId)
     await h.daemon.stop()
   })
@@ -445,7 +468,7 @@ describe('a work round, its slot and its outcome', () => {
     await vi.waitFor(() => expect(h.reports()).toHaveLength(3), WAIT)
     await h.settled()
     // §9.5: each reply reaches the owning session under its own header, answering the owner's message.
-    expect(h.reports().map((c) => c.msg.text)).toEqual([
+    expect(h.reports().map((c) => modelText(c.msg))).toEqual([
       expect.stringMatching(
         /^\[Message msg-[^\]]+\] Reply from bot-a .* to your message msg-[^:]+:\nHalfway: the failure is isolated\.$/
       ),
@@ -629,8 +652,8 @@ describe('a work round, its slot and its outcome', () => {
     expect(h.reports()).toHaveLength(0)
     releasePeer()
     await vi.waitFor(() => expect(reportedFromWake).toMatchObject({ delivered: true }), WAIT)
-    await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.endsWith('\nPEER-RESULT'))).toBe(true), WAIT)
-    await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.includes(finished(child)))).toBe(true), WAIT)
+    await vi.waitFor(() => expect(h.reports().some((c) => modelText(c.msg).endsWith('\nPEER-RESULT'))).toBe(true), WAIT)
+    await vi.waitFor(() => expect(h.reports().some((c) => modelText(c.msg).includes(finished(child)))).toBe(true), WAIT)
     await h.settled()
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
     await h.daemon.stop()
@@ -688,7 +711,7 @@ describe('a work round, its slot and its outcome', () => {
       })
     ).toMatchObject({ delivered: true, childSessionId: child })
     await vi.waitFor(() => expect(told(h.rt.hosts, 'REMOTE-RESULT')).toBe(1), WAIT)
-    await vi.waitFor(() => expect(h.reports().some((c) => c.msg.text.includes(finished(child)))).toBe(true), WAIT)
+    await vi.waitFor(() => expect(h.reports().some((c) => modelText(c.msg).includes(finished(child)))).toBe(true), WAIT)
     await h.settled()
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
     await h.daemon.stop()
@@ -706,8 +729,8 @@ describe('a work round, its slot and its outcome', () => {
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()
     expect(h.rt.subPrompts).toHaveLength(1)
-    expect(h.reports()[0]!.msg.text).toMatch(/^\[Message msg-[^\]]+\] Report from your task \(session [^)]+\):\n/)
-    expect(h.reports()[0]!.msg.text).toContain(
+    expect(modelText(h.reports()[0]!.msg)).toMatch(/^\[Message msg-[^\]]+\] Report from your task \(session [^)]+\):\n/)
+    expect(modelText(h.reports()[0]!.msg)).toContain(
       `\n[task ended] Task ${child} stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'failed' }), WAIT)
@@ -807,7 +830,7 @@ describe('the owning session and its task answer each other’s messages', () =>
     const child = await startAndFinish(h, caller)
     // §9.3: the round's report reached its owning session as a message from the task.
     const report = await lastReceived(h.d, caller.key, 'report')
-    expect(h.reports()[0]!.msg.text).toContain(`[Message ${report.messageId}] Report from your task`)
+    expect(modelText(h.reports()[0]!.msg)).toContain(`[Message ${report.messageId}] Report from your task`)
     const reply = (from: { scope: string; coordinate: string }, channel = 'C1') =>
       h.d.collab.replyToSession({
         callerAgentId: 'bot-a',

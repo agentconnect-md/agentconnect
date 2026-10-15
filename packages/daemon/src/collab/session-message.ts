@@ -1,5 +1,6 @@
 // How a session message reaches the model (send-message-guide.md §9.5): its id, its source, and the reply call when one is owed.
 import { createHash } from 'node:crypto'
+import type { SessionMessageTurnFacts, UserTurnBody } from '@agentconnect.md/protocol'
 import type { SessionMessageKind } from '../store/session-messages.js'
 
 /** The trusted facts the receiving daemon shows about one session message. */
@@ -59,6 +60,49 @@ function trailer(view: SessionMessageView): string {
 /** One session message as its input text: a header naming its id and source, the body, then the reply call when owed. */
 export function renderSessionMessage(view: SessionMessageView, body: string): string {
   return `[Message ${view.messageId}] ${headline(view)}\n${body}${trailer(view)}`
+}
+
+/** What a delivery shows the console in place of its model input: the readable part, and the guidance folded under it. */
+export interface ShownInput {
+  text: string
+  notes?: string[]
+}
+
+/** One delivered message as the model's prompt and the console's view of it: the body shown, the header and guidance folded beneath. */
+export function sessionMessageInput(
+  facts: Omit<SessionMessageTurnFacts, 'notes'>,
+  prompt: string,
+  shown: ShownInput
+): { text: string; turnBody: UserTurnBody } {
+  const notes = shown.notes?.filter((note) => note.trim() !== '') ?? []
+  return {
+    text: shown.text,
+    turnBody: { prompt, sessionMessage: { ...facts, ...(notes.length > 0 ? { notes } : {}) } }
+  }
+}
+
+/** {@link renderSessionMessage}'s prompt with the body shown on its own, its reply call among the folded notes. */
+export function renderedSessionMessageInput(
+  view: SessionMessageView,
+  body: string,
+  shown: ShownInput = { text: body }
+): { text: string; turnBody: UserTurnBody } {
+  return sessionMessageInput(
+    {
+      messageId: view.messageId,
+      kind: view.kind,
+      source: {
+        agentId: view.sourceAgentId,
+        ...(view.sourceLabel !== undefined ? { label: view.sourceLabel } : {}),
+        sessionId: view.sourceSessionId
+      },
+      ...(view.inReplyTo !== undefined ? { inReplyTo: view.inReplyTo } : {}),
+      ...(view.replyRequested ? { replyRequested: true } : {}),
+      ...(view.startsTask ? { startsTask: true } : {})
+    },
+    renderSessionMessage(view, body),
+    { text: shown.text, notes: [...(shown.notes ?? []), trailer(view).trim()] }
+  )
 }
 
 /** A session message's id minted from its submission, so a replay of that submission keeps it. */

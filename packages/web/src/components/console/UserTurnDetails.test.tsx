@@ -7,7 +7,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { UserTurnBody } from '@agentconnect.md/protocol'
-import { UserTurnDetails } from './UserTurnDetails'
+import { SessionMessageCaption, UserTurnDetails } from './UserTurnDetails'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -74,6 +74,32 @@ describe('UserTurnDetails', () => {
     expect(el.querySelector('a.lnk')?.getAttribute('href')).toBe('https://github.com/acme/infra/pull/42')
     await click(toggle)
     expect(el.textContent).not.toContain('zfy')
+  })
+
+  it('captions a session message by its sender and folds its facts and the agent’s guidance', async () => {
+    const sessionMessage: NonNullable<UserTurnBody['sessionMessage']> = {
+      messageId: 'msg-1',
+      kind: 'reply',
+      source: { agentId: 'agent-b', label: 'reviewer', sessionId: 'sid-b' },
+      inReplyTo: 'msg-0',
+      notes: ['To give it more work, call messageTask.']
+    }
+    const caption = await render(<SessionMessageCaption facts={sessionMessage} />)
+    expect(caption.textContent).toBe('Reply from reviewer')
+    await act(async () => root?.unmount())
+    host?.remove()
+
+    const el = await render(<UserTurnDetails body={{ sessionMessage, prompt: 'THE PROMPT' }} platform="webchat" />)
+    const toggle = el.querySelector('button')!
+    expect(el.textContent).not.toContain('messageTask')
+    await click(toggle)
+    const text = el.textContent ?? ''
+    expect(text).toContain('reviewer · agent-b')
+    expect(text).toContain('sid-b')
+    expect(text).toContain('msg-0')
+    expect(text).toContain('Guidance the agent received')
+    expect(text).toContain('To give it more work, call messageTask.')
+    expect(text).not.toContain('THE PROMPT')
   })
 
   it('renders the Linear module’s formatter for a Linear row', async () => {

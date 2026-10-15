@@ -25,6 +25,9 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 import { z } from 'zod'
 
+/** What the model received for a delivered message: its prompt when the console shows less (§9.5), else its text. */
+const modelText = (msg: { text: string; turnBody?: { prompt?: string } }): string => msg.turnBody?.prompt ?? msg.text
+
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true }
 const MINUTE = 60_000
@@ -245,8 +248,8 @@ describe('a due next check wakes one patrol', () => {
     const [patrol] = patrols()
     expect(patrol!.msg).toMatchObject({ channel: 'C1', source: 'agent', headless: true })
     expect(isSubsessionCoordinate(patrol!.msg.thread)).toBe(true)
-    expect(patrol!.msg.text).toContain(`Item ${item.id}`)
-    expect(patrol!.msg.text).toContain('Watch the release build')
+    expect(modelText(patrol!.msg)).toContain(`Item ${item.id}`)
+    expect(modelText(patrol!.msg)).toContain('Watch the release build')
     // It inherits the place's long session, and owes no report back.
     expect(patrol!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, originSessionId: 'sid-parent-bot-a' })
     expect(patrol!.callMeta.needsReply).toBeUndefined()
@@ -305,11 +308,11 @@ describe('a due next check wakes one patrol', () => {
 
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate, source: 'agent' })
-    expect(report!.msg.text).toContain(
+    expect(modelText(report!.msg)).toContain(
       `The scheduled check of item ${item.id} ("Watch the release build") found a change`
     )
-    expect(report!.msg.text).toContain('The release is out.')
-    expect(report!.msg.text.endsWith(`The release is out.\n\n${ANSWER_LANGUAGE}`)).toBe(true)
+    expect(modelText(report!.msg)).toContain('The release is out.')
+    expect(modelText(report!.msg).endsWith(`The release is out.\n\n${ANSWER_LANGUAGE}`)).toBe(true)
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
     // The patrol is asked for its people's language, and the conversation's runtime is told to answer in it.
     const prompts = hosts.flatMap((h) => h.prompt.mock.calls.map((c: any) => JSON.stringify(c[1])))
@@ -419,14 +422,14 @@ describe('one patrol at a time, beside the delegations', () => {
     await vi.waitFor(() => expect(patrols()).toHaveLength(1), WAIT)
     await d.patrols.sweep()
     expect(patrols()).toHaveLength(1)
-    expect(patrols()[0]!.msg.text).toContain('Title: First')
+    expect(modelText(patrols()[0]!.msg)).toContain('Title: First')
 
     behavior.patrol = quiet(deps)
     await d.interruptTurn('bot-a', sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', scopeOf(d)), 'stop')
     await settled()
     await d.patrols.sweep()
     await vi.waitFor(() => expect(patrols()).toHaveLength(2), WAIT)
-    expect(patrols()[1]!.msg.text).toContain('Title: Second')
+    expect(modelText(patrols()[1]!.msg)).toContain('Title: Second')
     await settled()
     await daemon.stop()
   })
@@ -600,10 +603,10 @@ describe('failures back off and stop', () => {
     }
     expect(await patrolState(d, item.id)).toMatchObject({ failures: PATROL_MAX_FAILURES, stopped: true })
     expect(reports()).toHaveLength(1)
-    expect(reports()[0]!.msg.text).toContain(
+    expect(modelText(reports()[0]!.msg)).toContain(
       `Scheduled checks of item ${item.id} ("Watch the release build") stopped after 5`
     )
-    expect(reports()[0]!.msg.text).toContain(`Tell the people here.\n\n${ANSWER_LANGUAGE}`)
+    expect(modelText(reports()[0]!.msg)).toContain(`Tell the people here.\n\n${ANSWER_LANGUAGE}`)
 
     await d.store.assistantPatrols.db.query(
       'UPDATE assistant_patrol SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
@@ -748,7 +751,7 @@ describe('a patrol replayed after a handover', () => {
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
-    expect(reports()[0]!.msg.text).toContain('The release is out.')
+    expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
     expect(await patrolState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
     // The replay ran the same patrol; no second one started.
     expect(new Set(patrols().map((c) => c.msg.thread)).size).toBe(1)
@@ -886,7 +889,7 @@ describe('a patrol passes on what it found before it settles', () => {
     await settled()
 
     expect(reports()).toHaveLength(1)
-    expect(reports()[0]!.msg.text).toContain('The release is out.')
+    expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
     expect(await patrolState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
     expect(patrols()).toHaveLength(1)
     await daemon.stop()
@@ -950,7 +953,7 @@ describe('a patrol report after `!new`', () => {
 
     expect(next).not.toBe(place.coordinate)
     expect(reports()[0]!.msg).toMatchObject({ channel: 'C1', sessionThread: next })
-    expect(reports()[0]!.msg.text).toContain('The release is out.')
+    expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
     // The patrol still belongs to the session it started under.
     const key = sessionKey('slack', 'C1', patrols()[0]!.msg.thread!, 'bot-a', place.scope)
     expect(await d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({

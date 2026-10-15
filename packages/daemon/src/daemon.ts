@@ -12477,7 +12477,7 @@ export class Daemon {
         // Ordered as NEW content in the origin session (see replyToSession's local branch).
         transcriptTs: monotonicTs(),
         sender: { id: msg.trustedFromAgentId, isBot: true },
-        text: this.collab.renderInput(callMeta, msg.text),
+        ...this.collab.sessionInput(callMeta, msg.text),
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
         isDm: false,
@@ -12598,7 +12598,7 @@ export class Daemon {
       ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
       // §9.5: the body under this daemon's message header, from the trusted lineage; a pre-id peer's text arrives already framed.
-      text: this.collab.renderInput(callMeta, msg.text),
+      ...this.collab.sessionInput(callMeta, msg.text, { visiblePost: msg.transcriptTs !== undefined }),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       // A `toAgent`+`channel` wake was preceded by a visible post the SOURCE daemon made; carry

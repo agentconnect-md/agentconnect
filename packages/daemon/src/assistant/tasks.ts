@@ -1,5 +1,5 @@
 // Approved proposals (assistant-mode.md §5.10): each runs once in a normal-permission sub-session of its item's place, and a cut one is never re-run (§5.7 step 1).
-import { renderSessionMessage } from '../collab/session-message.js'
+import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
 import {
@@ -162,7 +162,7 @@ export class AssistantTasks {
       thread,
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       sender: { id: draft.agentId, isBot: true },
-      text: renderSessionMessage(
+      ...renderedSessionMessageInput(
         {
           messageId,
           kind: 'call',

@@ -14,6 +14,21 @@ describe('parseUserTurnBody', () => {
     })
   })
 
+  it('keeps a session message’s facts and notes, and drops a malformed one', () => {
+    const sessionMessage = {
+      messageId: 'msg-1',
+      kind: 'reply',
+      source: { agentId: 'agent-b', label: 'reviewer', sessionId: 'sid-b' },
+      inReplyTo: 'msg-0',
+      notes: ['[This message waits on your reply.]']
+    }
+    expect(parseUserTurnBody(JSON.stringify({ prompt: '[Message msg-1] …', sessionMessage }))).toEqual({
+      sessionMessage
+    })
+    expect(parseUserTurnBody(JSON.stringify({ sessionMessage: { kind: 'reply' } }))).toBeUndefined()
+    expect(parseUserTurnBody(JSON.stringify({ sessionMessage: { ...sessionMessage, kind: 'gossip' } }))).toBeUndefined()
+  })
+
   it('fails closed on anything that is not a turn body', () => {
     expect(parseUserTurnBody(undefined)).toBeUndefined()
     expect(parseUserTurnBody('')).toBeUndefined()

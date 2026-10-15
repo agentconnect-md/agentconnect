@@ -433,7 +433,18 @@
       },
       "bodyTruncated": "正文已被 Relay 截断。",
       "less": "收起",
-      "more": "更多"
+      "more": "更多",
+      "session": "会话",
+      "message": "消息",
+      "inReplyTo": "回复的消息",
+      "awaitsReply": "等待回复",
+      "notes": "Agent 收到的提示",
+      "messageCaption": {
+        "call": "来自 {agent} 的消息",
+        "reply": "{agent} 的回复",
+        "report": "后台任务的报告",
+        "taskInput": "给这个后台任务的指示"
+      }
     },
     "panel": {
       "pinSession": "固定会话",

@@ -58,6 +58,20 @@ export const CodehostTurnFacts = z.object({
 })
 export type CodehostTurnFacts = z.infer<typeof CodehostTurnFacts>
 
+/** The trusted facts behind one session message (an agent call, a reply, a task's input or report), shown folded under its body. */
+export const SessionMessageTurnFacts = z.object({
+  /** Absent on a daemon report that lands where it is no session message. */
+  messageId: z.string().optional(),
+  kind: z.enum(['call', 'reply', 'report', 'taskInput']),
+  source: z.object({ agentId: z.string(), label: z.string().optional(), sessionId: z.string().optional() }),
+  inReplyTo: z.string().optional(),
+  replyRequested: z.boolean().optional(),
+  startsTask: z.boolean().optional(),
+  /** The guidance the model received around the body, verbatim, in order. */
+  notes: z.array(z.string()).optional()
+})
+export type SessionMessageTurnFacts = z.infer<typeof SessionMessageTurnFacts>
+
 /**
  * What lies behind one user-turn `text` row, transported as a JSON STRING in `SessionMessage.body`.
  * `prompt` is the text the model actually received when it differs from the row's `text` (replay
@@ -67,6 +81,7 @@ export type CodehostTurnFacts = z.infer<typeof CodehostTurnFacts>
 export const UserTurnBody = z.object({
   prompt: z.string().optional(),
   linear: LinearTurnFacts.optional(),
-  codehost: CodehostTurnFacts.optional()
+  codehost: CodehostTurnFacts.optional(),
+  sessionMessage: SessionMessageTurnFacts.optional()
 })
 export type UserTurnBody = z.infer<typeof UserTurnBody>

@@ -1,5 +1,5 @@
 // Assistant-mode patrols, the minimal form (assistant-mode.md §5.9): a due next check wakes one read-only sub-session that records what it saw, and proposes an action or reports only a change.
-import { renderSessionMessage } from '../collab/session-message.js'
+import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { CallMeta } from '../daemon/turn-types.js'
@@ -305,7 +305,7 @@ export class AssistantPatrols {
       thread,
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       sender: { id: agentId, isBot: true },
-      text: renderSessionMessage(
+      ...renderedSessionMessageInput(
         {
           messageId,
           kind: 'call',
