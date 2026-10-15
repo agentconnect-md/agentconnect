@@ -521,7 +521,9 @@ describe('an approved proposal runs once', () => {
     expect(modelText(h.reports()[0]!.msg)).toMatch(
       /^\[approved proposal ended\] Approved proposal .* stopped before finishing \(error\)/
     )
-    expect(modelText(h.reports()[0]!.msg)).toContain(`delegate a task if the work is still needed.\n\n${ANSWER_LANGUAGE}`)
+    expect(modelText(h.reports()[0]!.msg)).toContain(
+      `delegate a task if the work is still needed.\n\n${ANSWER_LANGUAGE}`
+    )
     expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status: 'failed', failure: 'it failed' })
     expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain('ended without reporting back')
     await h.daemon.stop()
