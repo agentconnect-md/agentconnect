@@ -35,18 +35,42 @@ _Avoid_: Image generation, image publication
 
 ### Session collaboration
 
-**Sub-session parent**:
-The session that created and owns a background sub-session. This relationship
-persists across messages and successive rounds of work.
-_Avoid_: Most recent caller, origin (when referring specifically to ownership)
+**Conversation**:
+An exchange shared by its participants, such as a channel thread, a direct message,
+or an exchange between agents. It belongs to its participants, not to any one agent.
+_Avoid_: Session (when meaning the shared exchange)
+
+**Session**:
+One agent's private context, either in one conversation or in work the agent started
+on its own schedule. A conversation with two agents has two sessions.
+_Avoid_: Conversation, thread (when meaning the agent's private context)
+
+**Task**:
+A step of one session that runs in the background in its own context. It has no
+conversation of its own and does not control other tasks.
+_Avoid_: Sub-session, subagent, child session
+
+**Owning session**:
+The session that started a task. Only it can message the task or stop it, and the task's
+results return to it. The relationship lasts across rounds of work.
+_Avoid_: Parent, sub-session parent, most recent caller
+
+**Session message**:
+One input that one session sends another: a call, a task instruction, a reply, or a task's
+report. It has its own id and records which session and agent sent it.
+_Avoid_: Platform message, post (a person's message or a post is not a session message)
+
+**Reply**:
+An answer to one session message, addressed by that message's id and delivered only to the
+session that sent it. A message may be answered more than once.
+_Avoid_: Reply to a session, broadcast
 
 **Origin session**:
-A source session from which another session has accepted a call or reply, and to
-which that receiving session may reply. A shared session can have multiple origins;
-being an origin does not make it the parent of a background sub-session.
-_Avoid_: Sole caller, fixed parent (for a shared peer session)
+The session from which another session was created, if any. It records creation only; it
+neither authorizes nor addresses replies.
+_Avoid_: Parent session, reply address, sole caller
 
 **Reply obligation**:
-The expectation that a particular accepted call will receive an outcome in its
-source session. Replying to one source does not satisfy another source's request.
+The expectation that a particular session message will receive an outcome in the session
+that sent it. Answering one message does not satisfy another, even from the same sender.
 _Avoid_: Session ownership, broadcast subscription
