@@ -807,6 +807,46 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
+  it('wakes a webchat caller’s Slack channel call on Slack, keeping the caller’s origin on webchat', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const conv = '11111111-1111-4111-8111-111111111111'
+    await (daemon as any).store.upsertSession({
+      key: sessionKey('webchat', conv, `webchat:${conv}`, 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'webchat',
+      channel: conv,
+      thread: `webchat:${conv}`,
+      acpSessionId: 'acp-parent-1',
+      sessionId: 'sid-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const req = baseReq({
+      platform: 'webchat',
+      targetPlatform: 'slack',
+      callerChannel: conv,
+      callerThread: `webchat:${conv}`,
+      needsReply: true
+    })
+    expect((daemon as any).collab.wakeRejectionReason(req)).toBeNull()
+    expect(await call(req)).toMatchObject({ delivered: true, targetSession: 'slack:C1:100.1:bot-b' })
+    expect(calls[0]!.msg).toMatchObject({ platform: 'slack', channel: 'C1', thread: '100.1' })
+    expect(calls[0]!.webchat).toBeUndefined()
+    expect(calls[0]!.callMeta).toMatchObject({
+      originSessionId: 'sid-parent-1',
+      originCoords: { platform: 'webchat', channel: conv, thread: `webchat:${conv}` },
+      needsReply: true
+    })
+    // The Slack coordinate keeps its integrity check: a channel the caller is not placed in is refused.
+    expect(await call(baseReq({ ...req, channel: 'C_UNKNOWN' }))).toMatchObject({
+      delivered: false,
+      reason: 'not_allowed'
+    })
+    await daemon.stop()
+  })
+
   // A `dream` turn is genuinely channel-free: the coordinate decision reads the RAW session
   // platform and admits it as branch 3, and — since the `narrowPlatform` fold was deleted
   // (S1a §6.3) — the woken session key now carries `dream` itself instead of a folded
@@ -1357,6 +1397,27 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     await call(baseReq({ toAgentId: 'bot-b', needsReply: true }))
     expect(sent[0].needsReply).toBeUndefined()
     expect(sent[0].originSessionId).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('asserts the target platform on the wire and the caller’s own as the origin', async () => {
+    const root = scaffold([{ id: 'bot-a' }]) // bot-b is remote
+    const { daemon, call } = await bootWithDispatchSpy(root)
+    const sent: any[] = []
+    ;(daemon as any).relays = {
+      stop: vi.fn(async () => {}),
+      sendAgentMsg: vi.fn(async (payload: any) => {
+        sent.push(payload)
+        return { deliveryId: payload.deliveryId, delivered: true }
+      })
+    }
+    const conv = '11111111-1111-4111-8111-111111111111'
+    const res = await call(
+      baseReq({ platform: 'webchat', targetPlatform: 'slack', callerChannel: conv, callerThread: `webchat:${conv}` })
+    )
+    expect(res).toMatchObject({ delivered: true, targetSession: 'slack:C1:100.1:bot-b' })
+    expect(sent[0].coords).toEqual({ platform: 'slack', channel: 'C1', thread: '100.1' })
+    expect(sent[0].originCoords).toEqual({ platform: 'webchat', channel: conv, thread: `webchat:${conv}` })
     await daemon.stop()
   })
 

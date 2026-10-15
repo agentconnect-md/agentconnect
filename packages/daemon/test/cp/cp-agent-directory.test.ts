@@ -318,6 +318,19 @@ describe('CpCollabRoutes: conversation-scoped mention identities', () => {
     expect(r.mentionAddress(ORG, 'slack', 'C1', 'a')).toBe('<@U09SHARED> reviewer')
     expect(r.mentionAddress(ORG, 'slack', 'C1', 'b')).toBe('<@U09SHARED> planner')
   })
+
+  it('names the agents a bot user speaks for across the org’s channels, on its platform only', () => {
+    const r = routes(
+      [agent('a'), agent('b')],
+      [
+        { orgId: ORG, platform: 'slack', channelId: 'C1', agents: [agent('a', { botUserId: 'U01A' })] },
+        { orgId: ORG, platform: 'slack', channelId: 'C2', agents: [agent('b', { botUserId: 'U01A' })] }
+      ]
+    )
+    expect(r.agentsForBotUser(ORG, 'slack', 'U01A').sort()).toEqual(['a', 'b'])
+    expect(r.agentsForBotUser(ORG, 'telegram', 'U01A')).toEqual([])
+    expect(r.agentsForBotUser(ORG, 'slack', 'U0PERSON')).toEqual([])
+  })
 })
 
 /** Minimal daemon root — enough to boot and read the MCP deps bundle. */

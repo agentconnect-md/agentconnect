@@ -160,13 +160,13 @@ are not stopped with `stopTask`. Tasks, patrols and approved work together are t
 
 ### 3.1 Actions
 
-| `action`         | Purpose                                                                    | Required target       | Optional arguments                                                                    |
-| ---------------- | -------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------- |
-| `callAgent`      | Call a peer, optionally in an existing session, or yourself into a channel | `toAgent`             | `channel` or `sessionId` (mutually exclusive); a self target requires `channel`       |
-| `startTask`      | Start a background task of your current session                            | None                  | None                                                                                  |
-| `messageTask`    | Send more work or an answer to a task your current session started         | `taskId`              | None                                                                                  |
-| `replyToSession` | Answer a message another session sent you                                  | `messageId`           | None                                                                                  |
-| `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachment`, `platform`, `integrationId`, subject to existing branch rules |
+| `action`         | Purpose                                                                    | Required target       | Optional arguments                                                                                                             |
+| ---------------- | -------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `callAgent`      | Call a peer, optionally in an existing session, or yourself into a channel | `toAgent`             | `channel` or `sessionId` (mutually exclusive), `platform` and `integrationId` with `channel`; a self target requires `channel` |
+| `startTask`      | Start a background task of your current session                            | None                  | None                                                                                                                           |
+| `messageTask`    | Send more work or an answer to a task your current session started         | `taskId`              | None                                                                                                                           |
+| `replyToSession` | Answer a message another session sent you                                  | `messageId`           | None                                                                                                                           |
+| `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachment`, `platform`, `integrationId`, subject to existing branch rules                                          |
 
 Every action also requires `message`. `callAgent` does not promise a fresh session:
 existing routing may reuse the target's conversational context. Without `channel`,
@@ -228,9 +228,21 @@ recovery must keep that metadata consistent. A message must not move the task to
 session. The owning session's authority over the task belongs to `messageTask` and `stopTask`
 and is checked against the persistent ownership record (§8).
 
-`callAgent` accepts no `platform` or `integrationId`: its platform and caller
-identity come from trusted context. `postMessage` supports those selectors. Its
-handler does not call the explicit agent-wake path, but existing platform ingress
+`callAgent` accepts `platform` and `integrationId` only beside `channel`, where they
+choose the channel's platform and posting bot exactly as they do for `postMessage`; the
+platform defaults to the current conversation's. The wake then lands on that platform
+(`MessageAgentReq.targetPlatform`), while the caller's session, origin coordinates and
+identity stay on its own trusted context, so a webchat session can call a peer into a
+Slack channel. Without `channel` they are refused, because a postless call has no
+destination to choose.
+
+Asking another agent to work or to answer is always `callAgent`. A post has no reply and
+wakes no agent, even one whose bot it mentions, so `postMessage` refuses a `toUser`, or a
+mention in `message`, that names an AgentConnect agent's bot (the org's collaboration
+snapshot maps bot users to agents), and its refusal spells out the `callAgent` call to make
+instead; a `needsReply` or `toAgent` on `postMessage` is refused with the same pointer.
+
+`postMessage`'s handler does not call the explicit agent-wake path, but existing platform ingress
 routing remains intact; an existing-thread update can reach agents already in that
 thread. Posts can seed or reuse the author's idle context, including for updates,
 and do not invariably create a fresh conversation.
@@ -648,7 +660,7 @@ in §7.7, the same target, authority, delivery, bookkeeping, and receipt must re
 | `toAgent: self`, no channel                  | Fresh `subsession:<deliveryId>` coordinate, inherited parent context, no visible post                                | `startTask` constructs the same trusted self-delegation                                              | C       |
 | `toAgent: peer` plus `channel`               | Attempts one channel-root post before wake, rendering a native mention when available                                | `callAgent` plus `channel`; retain target preflight and actual gateway behavior                      | M, C    |
 | `toAgent: self` plus `channel`               | Visible self-activation; requires a real provider post id and paired delivery evidence                               | Same `callAgent` form; a session of that conversation created by the caller, not a task              | M, C    |
-| Agent call plus `platform` / `integrationId` | Rejected by the strict agent branch                                                                                  | Still rejected; these are not supported agent-call selectors                                         | M, T    |
+| Agent call plus `platform` / `integrationId` | Rejected by the strict agent branch                                                                                  | Accepted only with `channel`, choosing the post's platform and bot; the wake lands on that platform  | M, T    |
 | `toUser: string`, no channel                 | Opens one DM; body is not prefixed with a mention                                                                    | `postMessage` with same `toUser`                                                                     | M, G    |
 | `toUser: string` or array plus `channel`     | One root post with all human mentions; not multiple sends or a group DM                                              | Same under `postMessage`                                                                             | M       |
 | Bare `channel`                               | Posts at the root, records outbound content, seeds/reuses author context when a real anchor is available             | Same under `postMessage`; no explicit `messageAgent` call                                            | M, G    |
@@ -771,7 +783,8 @@ and policy wrappers cannot evade the no-effect migration error.
    `stopTask`; their stop authority changes in §8.7.
 
 This adapter does not introduce arbitrary session targeting, peer feedback-default
-changes, or cross-platform agent selectors. The requested persistent task messaging, owner
+changes. Cross-platform channel calls (`platform` / `integrationId` beside `channel`) were added after
+it, in §3.1. The requested persistent task messaging, owner
 stop, peer-session calls, and message-addressed replies are specified in §8–§9 rather than hidden inside the adapter
 or described as existing behavior.
 
@@ -1260,8 +1273,8 @@ receives the call as a message from the calling session, so it can report back w
 Keep `toAgent` required. `sessionId` is optional; when present it is a nonempty
 existing target-session handle, must resolve to the agent named by `toAgent`, and
 is mutually exclusive with `channel`. Preserve `toAgent.needsReply` and its existing
-accepted representations. Still reject `platform`, `integrationId`, `thread`, and
-`attachment` on this action.
+accepted representations. Still reject `thread` and `attachment` on this action, and
+`platform` and `integrationId` without `channel`.
 
 Without `sessionId`, preserve existing peer routing; this need not create a new
 session. With `sessionId`, resolve the session key the earlier call returned

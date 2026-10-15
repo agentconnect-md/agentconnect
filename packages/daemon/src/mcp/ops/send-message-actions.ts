@@ -28,7 +28,7 @@ const isAction = (value: unknown): value is SendMessageAction =>
 
 /** Each action's target requirement and accepted keys, besides `action` and `message`. */
 const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; accepts: readonly string[] }> = {
-  callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'sessionId'] },
+  callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'platform', 'integrationId', 'sessionId'] },
   startTask: { requires: [], accepts: [] },
   messageTask: { requires: ['taskId'], accepts: ['taskId'] },
   replyToSession: { requires: ['messageId'], accepts: ['messageId'] },
@@ -46,6 +46,8 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     action: action('callAgent'),
     toAgent: AGENT_TARGET,
     channel: channelField,
+    platform: platformField,
+    integrationId: integrationIdField,
     sessionId: requiredString('sessionId').optional(),
     message: messageField
   }),
@@ -115,6 +117,11 @@ const PEER_SESSION_WITH_CHANNEL = guided(
     'and posts nothing. Nothing was sent and no agent was woken',
   'callAgent'
 )
+const POST_SELECTOR_WITHOUT_CHANNEL = guided(
+  'action `callAgent` takes `platform` and `integrationId` only with `channel`: they choose where its visible post ' +
+    'lands, and a call without `channel` posts nothing. Nothing was sent and no agent was woken',
+  'callAgent'
+)
 const SELF_SESSION =
   'action `callAgent` with `sessionId` reaches another agent’s session, never one of yours. Nothing was sent and no ' +
   'agent was woken. To message a background task of yours, call getToolGuide ' +
@@ -157,6 +164,8 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
     if (typeof id !== 'string' || id.trim() === '') throw new ToolArgumentError([BAD_PEER_SESSION])
     if (present(args.channel)) throw new ToolArgumentError([PEER_SESSION_WITH_CHANNEL])
   }
+  if (named === 'callAgent' && !present(args.channel) && (present(args.platform) || present(args.integrationId)))
+    throw new ToolArgumentError([POST_SELECTOR_WITHOUT_CHANNEL])
   const missing = spec.requires.filter((key) => key.split('|').every((alt) => !present(args[alt])))
   if (unexpected.length > 0 || missing.length > 0) {
     const clauses = [
@@ -167,6 +176,12 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
       // The one stray key with a known home: §3.2 keeps `needsReply` nested, with no top-level alias.
       ...(named === 'callAgent' && unexpected.includes('needsReply')
         ? ['takes `needsReply` inside `toAgent` as {"agentId":"…","needsReply":true}']
+        : []),
+      ...(named === 'postMessage' && (unexpected.includes('needsReply') || unexpected.includes('toAgent'))
+        ? [
+            'gets no reply and starts no work: to have an agent work or answer you, use action `callAgent` with ' +
+              '`toAgent` as {"agentId":"…","needsReply":true}'
+          ]
         : []),
       ...(named === 'startTask' && unexpected.includes('taskId')
         ? ['sends more to an existing task only as action `messageTask` with its `taskId`']

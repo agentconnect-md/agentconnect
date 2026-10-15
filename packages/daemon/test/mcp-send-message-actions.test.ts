@@ -111,7 +111,7 @@ describe('sendMessage requires an explicit action', () => {
     expect(await rejection({ action: 'callAgent', channel: 'C1', message: 'm' })).toContain(
       'action `callAgent` requires `toAgent`'
     )
-    for (const extra of ['platform', 'integrationId', 'thread', 'attachment', 'needsReply']) {
+    for (const extra of ['thread', 'attachment', 'needsReply']) {
       expect(await rejection({ action: 'callAgent', toAgent: 'peer-1', [extra]: 'x', message: 'm' })).toContain(
         `does not accept \`${extra}\``
       )
@@ -133,6 +133,27 @@ describe('sendMessage requires an explicit action', () => {
     const own = await rejection({ action: 'callAgent', toAgent: 'agent-self', sessionId: 's-1', message: 'm' })
     expect(own).toContain('never one of yours')
     expect(own).toContain('getToolGuide {"tool":"sendMessage","action":"messageTask"}')
+  })
+
+  it('takes `platform` and `integrationId` on a call only beside `channel`', async () => {
+    for (const extra of ['platform', 'integrationId']) {
+      expect(await rejection({ action: 'callAgent', toAgent: 'peer-1', [extra]: 'x', message: 'm' })).toContain(
+        'action `callAgent` takes `platform` and `integrationId` only with `channel`'
+      )
+      expect(
+        await rejection({ action: 'callAgent', toAgent: 'peer-1', sessionId: 's-1', [extra]: 'x', message: 'm' })
+      ).toContain('only with `channel`')
+    }
+    expect(
+      validateSendMessageAction(ctx, {
+        action: 'callAgent',
+        toAgent: 'peer-1',
+        channel: 'C1',
+        platform: 'slack',
+        integrationId: 'int-1',
+        message: 'm'
+      }).delivery
+    ).toMatchObject({ channel: 'C1', platform: 'slack', integrationId: 'int-1' })
   })
 
   it('keeps the existing combination rules inside an action', async () => {
@@ -405,6 +426,11 @@ describe('getToolGuide', () => {
     const bare = { ...ctx, integrations: [] }
     expect(sendMessageGuide(bare, 'postMessage').availability).toMatch(/^Unavailable here: .*no platform integration/)
     expect(sendMessageGuide(bare, 'callAgent').availability).toMatch(/^Postless calls only/)
+    expect(sendMessageGuide(ctx, 'callAgent').availability).toBe('Channel platforms: Slack.')
+    expect(sendMessageGuide({ ...ctx, platform: 'webchat' }, 'callAgent').availability).toBe(
+      'Channel platforms: Slack. This conversation’s platform has none of your bots, so a call with `channel` must ' +
+        'name `platform`.'
+    )
     const inside = { ...ctx, thread: subsessionCoordinate('1') }
     for (const action of ['startTask', 'messageTask'] as const) {
       expect(sendMessageGuide(inside, action).availability).toMatch(

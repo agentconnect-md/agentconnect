@@ -4177,6 +4177,10 @@ export class Daemon {
         // space than the rows hold and silently return no address.
         return orgId ? this.cpCollab.mentionAddress(orgId, platform, channel, agentId) : undefined
       },
+      agentsForPlatformUser: ({ callerAgentId, platform, userId }) => {
+        const orgId = this.cpCollab.orgForAgent(callerAgentId)
+        return orgId ? this.cpCollab.agentsForBotUser(orgId, platform, userId) : []
+      },
       decisions: {
         list: async (req) => {
           if (!this.cpClient) throw new Error('control plane is not connected')

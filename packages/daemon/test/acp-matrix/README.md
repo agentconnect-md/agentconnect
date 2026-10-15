@@ -60,8 +60,15 @@ the real guide. Nothing is posted, woken, or injected.
 
 Each scenario runs in a fresh session: ask a peer for a result, background self-work,
 visible work in another channel, a DM, an update in an existing thread, a reply to the
-origin session, a negative case answered in the current thread, and an informational
-check that the model sees `sendMessage` and can quote its description's edges. Calls
+origin session, a negative case answered in the current thread, a request that names the peer
+only by its Slack bot mention (only `callAgent` with `needsReply` gets the answer; posting
+the mention wakes nobody), a webchat session asking a peer to work in a Slack channel (the
+call must name `platform`), and an informational check that the model sees `sendMessage`
+and can quote its description's edges. Scenarios run as a Slack thread unless they say
+otherwise; a webchat one is served the tools and context a webchat session gets. The
+daemon's side-effect-free pre-checks run for real (a wake preflight that admits the call,
+and the org's agent bot lookup, where the peer's bot is `U0EXAMPLEPEER`), so a post that
+addresses an agent's bot reads the daemon's refusal. Calls
 are classified to a semantic operation, so the old target-inferred shape and the
 `action` shape are judged alike; `message-task`, which gives an existing background
 task more work, is new-only, skipped against the old shape, and kept out of the matrix

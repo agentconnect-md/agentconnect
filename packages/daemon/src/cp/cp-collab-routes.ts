@@ -70,6 +70,8 @@ export class CpCollabRoutes {
   // The daemon snapshot is org-scoped, so platform + channel safely scopes the
   // managed bot-app identities used for platform-message suppression.
   private readonly botAppsByChannel = new Map<string, Set<string>>()
+  // (orgId,platform,botUserId) → the agents that bot user speaks for, so a send can tell an agent's bot from a person.
+  private readonly agentsByBotUser = new Map<string, Set<string>>()
   // Flat agentId → directory name across ALL channels. Agent names are global, so a single
   // map lets the daemon label a REMOTE peer (caller or target of an agent-call) by name in a
   // visible post without knowing the org/channel or having listed it (see agentDisplayLabel).
@@ -109,6 +111,7 @@ export class CpCollabRoutes {
     this.channels.clear()
     this.byOrgChannel.clear()
     this.botAppsByChannel.clear()
+    this.agentsByBotUser.clear()
     this.names.clear()
     this.byAgent.clear()
     this.platformKinds.clear()
@@ -119,6 +122,11 @@ export class CpCollabRoutes {
       for (const a of ch.agents) {
         byAgent.set(a.agentId, { ...a, orgId: ch.orgId })
         if (a.botAppId) botApps.add(a.botAppId)
+        if (a.botUserId) {
+          const bk = this.key(ch.orgId, ch.platform, a.botUserId)
+          const agents = this.agentsByBotUser.get(bk) ?? new Set<string>()
+          this.agentsByBotUser.set(bk, agents.add(a.agentId))
+        }
         if (a.name !== undefined || a.displayName !== undefined)
           this.names.set(a.agentId, { name: a.name, displayName: a.displayName })
       }
@@ -327,6 +335,11 @@ export class CpCollabRoutes {
   mentionAddress(orgId: string, platform: string, channelId: string, agentId: string): string | undefined {
     const identity = this.mentionDirectory(orgId, platform, channelId).find((agent) => agent.agentId === agentId)
     return identity ? slackMentionAddress(identity) : undefined
+  }
+
+  /** The agents whose bot is this platform user anywhere in the org; empty for a person or an unplaced bot. */
+  agentsForBotUser(orgId: string, platform: string, botUserId: string): string[] {
+    return [...(this.agentsByBotUser.get(this.key(orgId, platform, botUserId)) ?? [])]
   }
 
   /** True when an inbound app backs another AgentConnect agent in this channel.

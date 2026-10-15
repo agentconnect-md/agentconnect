@@ -95,6 +95,16 @@ export function askOnlyWithChannel(channel: string | undefined, purpose: string)
   return { ask: channel !== undefined, purpose }
 }
 
+/** The refusal for a platform the agent has no bot on, naming the platforms it has so a defaulted call can pass `platform`. */
+function noIntegrationError(ctx: SessionContext, platform: string): string {
+  const platforms = [...new Set(knownIntegrations(ctx).map((i) => i.platform))]
+  if (platforms.length === 0) return `this agent has no ${platform} integration`
+  return (
+    `this agent has no ${platform} integration; its platforms are ${platforms.map(platformLabel).join(', ')} — ` +
+    'pass `platform` to choose one'
+  )
+}
+
 /** Resolve the live gateway for one of the agent's OWN platforms, for every platform-neutral tool (send + reads); the candidate set is the trusted session snapshot, never tool input. */
 // `wantIntegrationId` picks a specific bot, else this session's integration on that platform keeps a same-conversation call put.
 // No tiebreak means `candidates[0]`, silently — so a call site that has a human worth asking opts in with `ask: true` (#1965 Gap A), and keeps that pick only when the ask cannot be made or is refused. `sameConvo` reports whether the target is this session's own integration.
@@ -106,7 +116,7 @@ export function resolveGatewayForPlatform(
   opts?: GatewayAskOpts
 ): { gw: MessageGateway; integrationId: string; sameConvo: boolean } {
   const candidates = knownIntegrations(ctx).filter((i) => i.platform === platform)
-  if (candidates.length === 0) throw new Error(`this agent has no ${platform} integration`)
+  if (candidates.length === 0) throw new Error(noIntegrationError(ctx, platform))
   // The ask sits here, not at the ~16 call sites: `AskRequired` is a typed sentinel `McpControlServer` already catches centrally, so a synchronous helper stays synchronous.
   const ambiguous = wantIntegrationId === undefined && opts?.ask === true ? ambiguousIntegrations(ctx, platform) : []
   // THE OFFER IS THE TRUSTED SNAPSHOT, never the bots live right now: `gatewayFor` may rotate between the asking round and the answering one, so a liveness-filtered offer would refuse the id the human picked and act as another bot — the exact silent wrong answer this ask exists to remove. A chosen bot that cannot act by the time the answer lands surfaces below as the usual `no live connection`, naming the id the human chose.
