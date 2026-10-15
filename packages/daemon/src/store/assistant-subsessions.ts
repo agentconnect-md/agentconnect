@@ -138,7 +138,7 @@ export class AssistantSubsessionIndex {
     claim: (tx: StoreTx) => Promise<boolean>
   ): Promise<'opened' | 'limit' | 'refused'> {
     const db = this.db
-    if (!db.transaction) throw new Error('the sub-session index has no transaction to claim in')
+    if (!db.transaction) throw new Error('the background work index has no transaction to claim in')
     return await this.opening.run(async () => {
       try {
         return await db.transaction!<'opened' | 'limit'>(async (tx) => {
@@ -240,7 +240,7 @@ export class AssistantSubsessionIndex {
     claim: (tx: StoreTx, ended: 'cut' | 'done' | 'failed' | 'missing') => Promise<boolean>
   ): Promise<'cut' | 'done' | 'failed' | 'missing' | undefined> {
     const db = this.db
-    if (!db.transaction) throw new Error('the sub-session index has no transaction to claim in')
+    if (!db.transaction) throw new Error('the background work index has no transaction to claim in')
     try {
       return await db.transaction!<'cut' | 'done' | 'failed' | 'missing'>(async (tx) => {
         const { changes } = await tx.query(

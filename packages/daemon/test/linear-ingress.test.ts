@@ -582,7 +582,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     ;(daemon as any).inflight.add(key)
     await im(daemon, delivery())
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
-    expect(acks(posted)[0]!.activity.body).toBe('**Review Bot** · queued behind the current task')
+    expect(acks(posted)[0]!.activity.body).toBe('**Review Bot** · queued behind the current turn')
     await daemon.stop()
   })
 

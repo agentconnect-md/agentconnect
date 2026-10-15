@@ -1,6 +1,6 @@
 'use client'
 
-// The dock's Tasks tab (§3.5): the open session's background tasks, live ones first and then the daemon's bounded settled history, each with its state, its description, how long it has been running or how long ago it ended, and the outcome the runtime reported when it named one.
+// The dock's Runtime jobs tab (§3.5): the open session's runtime jobs (the runtime's own background tasks and subagents), live ones first and then the daemon's bounded settled history, each with its state, its description, how long it has been running or how long ago it ended, and the outcome the runtime reported when it named one.
 // A READ-ONLY surface, by measurement rather than by omission: no agent-protocol primitive can address ONE background task, so a per-row control could only cancel unrelated work or report a stop it did not perform. There is no cancel frame or route to wire, and the escape hatch is the composer's own turn-scoped stop.
 // The lease lives only in the owning daemon's memory and is proxied through the CP without being stored (body-locality, §2), so an offline daemon, a daemon too old for the frame, a runtime that reports no task lifecycle, and a session that simply has no tasks are all expected answers drawn as data.
 // What the design asked for and the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line, and no "Logs" link (§3.5 records the measurement behind each).
@@ -72,11 +72,11 @@ const PENDING: TasksRead = { loading: true, err: null, errStatus: null, errCode:
 // Why the list is missing. 409 `DAEMON_FEATURE_MISSING` is the version answer the CP added for the task frame; 404 is an agent or session this reader cannot see, or one whose content was purged. Everything else (503 for both an offline daemon and an unplaced agent, plus network failures) is the offline story.
 function noticeText(status: number | null, code: string | null): string {
   if (status === 409 && code === 'DAEMON_FEATURE_MISSING') {
-    return 'This agent runs a daemon version that cannot report background tasks. Update the agent to watch them here.'
+    return 'This agent runs a daemon version that cannot report runtime jobs. Update the agent to watch them here.'
   }
-  if (status === 409) return 'This agent runs a daemon version that cannot report background tasks.'
-  if (status === 404) return 'This session’s tasks are not available to read.'
-  return 'Background tasks are unavailable — the owning daemon may be offline.'
+  if (status === 409) return 'This agent runs a daemon version that cannot report runtime jobs.'
+  if (status === 404) return 'This session’s runtime jobs are not available to read.'
+  return 'Runtime jobs are unavailable — the owning daemon may be offline.'
 }
 
 /** One scoped read, re-issued whenever `revision` moves. The answer is held PER SCOPE and the pending state DERIVED from it rather than reset by an effect: a new scope reads as pending on the very render that changes it, so the previous session's rows are never on screen and its census can never reach the tab's badge, while a re-read of the SAME scope replaces the rows in place instead of strobing the list back to a spinner on every poll. */

@@ -30,11 +30,11 @@ export interface SessionViewable {
   /** The session's thread coordinate; null when it has none. Omitted means unread, which
    *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
   thread?: string | null
-  /** What recognises an agent's own sub-session; unread on a sub-session coordinate counts as one. */
+  /** What recognises an agent's own background work; unread on a `subsession:` coordinate counts as it. */
   subsession?: SubsessionFacts
 }
 
-/** The lineage of a session on a sub-session coordinate (assistant-mode.md §5.6). */
+/** The lineage of a session on a `subsession:` coordinate (assistant-mode.md §5.6). */
 export interface SubsessionFacts {
   parentSessionId: string | null
   /** The parent session's agent; null when there is no parent row. */
@@ -78,7 +78,7 @@ function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
   return principal.role !== 'viewer' && resourceIsVisible(resource, principal)
 }
 
-/** An agent's own sub-session, in assistant mode or not, takes its parent's audience, so none of its viewers may change it. */
+/** An agent's own background work, in assistant mode or not, takes its owning session's audience, so none of its viewers may change it. */
 function isOwnSubsession(resource: SessionViewable): boolean {
   if (!isSubsessionCoordinate(resource.thread)) return false
   const facts = resource.subsession
@@ -144,7 +144,7 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // An `append` session is the whole conversation's long-lived session: its
     // recorded owner is only the first poster, so its audience is no one's to
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
-    // The same holds for an agent's own sub-session (assistant-mode.md §5.6).
+    // The same holds for an agent's own background work (assistant-mode.md §5.6).
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&

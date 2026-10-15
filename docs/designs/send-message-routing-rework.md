@@ -514,24 +514,25 @@ postless form still rejects self-targets because it has no new conversation boun
 Agent-authored text cannot issue in-conversation control commands such as
 `!stop`, `!resume`, or configuration actions.
 
-## 7. Parent-session replies
+## 7. Session replies
 
-> **Update:** [`send-message-guide.md`](send-message-guide.md) replaces this contract. Every call
-> takes an `action`, and `replyToSession` answers a received message by its `messageId`,
-> authorized and routed by that message's record alone (§9.4); the origin no longer authorizes
-> replies (§9.6). Background self-work is `startTask` (§8). This section records the earlier rule.
-
-`sendMessage({"sessionId":"<parent>","message":"..."})` remains authorized
-only against the caller session's active or persisted origin.
+`sendMessage({"action":"replyToSession","messageId":"<id>","message":"..."})` answers one
+session message the calling session received. It is authorized and routed by that message's
+record alone ([`send-message-guide.md`](send-message-guide.md) §9.4): the reply goes only to the
+session that sent the message, and a message may be answered more than once. A session's origin
+records who created it and authorizes no reply (§9.6). A session's own background work is a task
+(`startTask`), and its replies and round reports reach its owning session the same way (§8).
+Historical note: this section first authorized `sendMessage({"sessionId":"<parent>"})` against
+the caller's active or persisted origin; the delivery behavior below is unchanged.
 
 The injected message is:
 
 ```text
-{ type: system, from: <child-agent> }: <message>
+{ type: system, from: <replying agent> }: <message>
 ```
 
-What must stay invisible is the REPORT, not the parent's turn. The child's body
-is injected into the parent session — recorded in its transcript, never
+What must stay invisible is the REPORT, not the receiving session's turn. The reply's body
+is injected into the session that sent the answered message (here called the parent) — recorded in its transcript, never
 published to a platform by any component, on either the local or the
 cross-daemon path. That is structural, not a flag: nothing in the daemon
 publishes inbound delivery content.
@@ -571,10 +572,10 @@ Cross-daemon wakes and reports carry the snapshots over `rd/agentmsg` and
 null) returns `unsupported` before a legacy peer can silently discard it.
 Ordinary calls without these fields retain their existing compatibility.
 
-On both local and cross-daemon paths, origin-authorized replies require no reverse
+On both local and cross-daemon paths, message-addressed replies require no reverse
 peer-visibility grant. The relay still binds the caller to its authenticated
-daemon and organization, and the receiving daemon resolves only an existing
-session owned by the target agent. Success is acknowledged after durable turn
+daemon and organization, and the receiving daemon resolves only the existing
+session its own sent record names for the answered message. Success is acknowledged after durable turn
 admission, not merely after finding the session.
 
 An earlier revision resumed the parent with `headless: true` to prevent a second
@@ -590,7 +591,7 @@ Postless `toAgent` deliveries keep their own headless stamp (§3.1) — a postle
 child has no visible conversation of its own by construction.
 
 Cross-daemon session replies behave identically: the target dispatches them into
-the named parent session and resumes it as an ordinary turn. The relay still
+the session that sent the answered message and resumes it as an ordinary turn. The relay still
 refuses to forward the kind to a daemon that has not advertised
 `headless-agent-delivery-v1`, because such a daemon predates the delivery kind
 entirely and would key the reply by coordinates instead of session id; that

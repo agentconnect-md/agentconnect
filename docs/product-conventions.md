@@ -90,7 +90,7 @@ Who counts as "people" depends on whether the product can tell who someone is:
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
-  answers the conversation's approvals, its background sub-sessions' included, among its pending
+  answers the conversation's approvals, its background work's included, among its pending
   requests above the composer. Anyone else who tries to change a setting there is told, on their
   own screen only, who may. A conversation started through the agent's chat API belongs to the
   API key's owner.
@@ -127,8 +127,8 @@ Three things are outside this setting:
 
 - An assistant-mode patrol's proposal. Approving it is the same as asking the agent there, so
   whoever could ask there may approve it ("Assistant-mode proposals").
-- Stopping a turn, which follows the `!stop` sender rule. Stopping a sub-session is the
-  decision of the conversation that started it ("Sub-sessions").
+- Stopping a turn, which follows the `!stop` sender rule. Stopping a background task is the
+  decision of the conversation that started it ("Background tasks").
 - Letting the bot join a public channel, which only a person behind the turn answers ("Joining a
   public channel").
 
@@ -403,8 +403,8 @@ and the answer it is already streaming continues in place. There is no second tu
 no second answer, and the message is never re-asked once the turn ends.
 
 The visible acknowledgement follows the delivery, not the queue. A surface that
-would have said "queued behind the current task" says the message was added to the
-running task instead. In the console, a message typed while a steerable turn
+would have said "queued behind the current turn" says the message was added to the
+running turn instead. In the console, a message typed while a steerable turn
 streams leaves the composer at once and appears in the conversation. Until the runtime
 confirms it took the message, the reply keeps streaming in the block above it; once the
 message is marked as steered into the running reply, the reply that follows it continues
@@ -698,8 +698,8 @@ When the post instead carries `toAgent`, it is an explicit activation even when 
 target is the posting agent itself. The visible root and internal wake remain one paired
 delivery, so the new child runs exactly once; the platform's echo is only the second
 observation of that delivery. A self-call without a channel is refused with the
-`startTask` call to make instead; `startTask` opens a background sub-session, one level deep and
-under a cap (see "Sub-sessions").
+`startTask` call to make instead; `startTask` starts a background task, one level deep and
+under a cap (see "Background tasks").
 
 ## A parent-session reply is injected, and the parent answers normally
 
@@ -963,7 +963,7 @@ limits and the agent's responsible user (see "Assistant-mode drafts") are in the
 panel on the agent's Configuration tab; the panel names that person and offers no choice of them.
 The console's `assistant-mode` flag decides only whether the mode can be switched on: an agent
 already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
-Sub-sessions tab and proposals in the console whatever the flag says.
+Background work tab and proposals in the console whatever the flag says.
 
 Turning the mode on also sets the agent's permission mode, so background work nobody is watching
 does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
@@ -1048,12 +1048,12 @@ shows them to every member.
   their own platform and bot. When a turn takes in messages from several people, every one of them
   must have access;
 - in webchat or a console continuation, the console user;
-- in a sub-session, the person whose turn opened it (a restart forgets them, and it then reads as
-  no one); in a patrol, or a task approved from a proposal, the person who asked for the item; in a
+- in a background task, the person whose turn started it (a restart forgets them, and it then
+  reads as no one); in a patrol, or approved work, the person who asked for the item; in a
   scheduled run, the console user who last edited the schedule, else the one who created it;
-- no one, for a scheduled run that records no person, a hook run, a sub-session's report, and an
-  agent's message to another agent. Such a turn reads only its own conversation and the public
-  channels its own bot confirms. A hook or a schedule anchored to a conversation reads that
+- no one, for a scheduled run that records no person, a hook run, a background task's report,
+  and an agent's message to another agent. Such a turn reads only its own conversation and the
+  public channels its own bot confirms. A hook or a schedule anchored to a conversation reads that
   conversation as its own.
 
 **What each platform can tell:** Slack all of the above; Feishu/Lark membership (by union_id) and
@@ -1123,7 +1123,7 @@ answer: it returns at once, saying whom it asked, and the answer arrives in the 
 
 - **Where it asks.** A card in the conversation the request came from, in the turn's thread, reads
   "Let <agent> join #channel to read it?" (or "to post there?") with **Join** and **Don't join**. A
-  run that reads as a person (a schedule's, an item's, a sub-session's) asks in its own conversation
+  run that reads as a person (a schedule's, an item's, a task's) asks in its own conversation
   or, when it has none, in that person's direct message, routed as a draft's approver is. A
   conversation shared with another organization gets no card naming the channel; the person's direct
   message does. A webchat conversation lists it among its pending requests, where its owner answers
@@ -1165,8 +1165,8 @@ conversation's history keeps only what people wrote. The zone is the first of th
    browser's, sent with every message; on Feishu/Lark the zone in their user record, when the
    platform returns one. Telegram, Discord and Google Chat report none.
 2. **A scheduled run**: the time zone its schedule is set in.
-3. **Any other turn no person sent**, such as a patrol, a task, a sub-session, a report from
-   background work, or another agent's message: the person who started it, as "Reading other
+3. **Any other turn no person sent**, such as a patrol, approved work, a background task, a
+   report from background work, or another agent's message: the person who started it, as "Reading other
    conversations" names them, and for a report or another agent's message the person behind the
    conversation it came from. Their zone comes from the same sources as in step 1: a chat
    member's profile, a console user's browser as last seen, else the profile of the chat account
@@ -1260,96 +1260,98 @@ item asked in a DM. Every conversation of the agent is reminded of the same list
 except one shared with another organization, since the ledger is internal; its item tools still
 answer there when asked. An agent outside assistant mode is offered no item tools.
 
-## Sub-sessions
+## Background tasks
 
 Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
-background sub-session of its own: `sendMessage` with action `startTask` and only a `message`.
-Ordinary conversation stays in the main conversation. The main conversation says the work
-has started; the sub-session runs in a session of its own, never the conversation's long
-session; none of its replies is posted anywhere, and it reports back into the conversation
-that opened it when it finishes or fails, which then speaks for it. One that stops without
-reporting is reported as ended, at the latest about ten minutes after nothing is left running for
-it, and then no longer counts toward the agent's concurrent sub-sessions. It takes that
-conversation's visibility and owner, and its visibility cannot be changed on its own;
-making the main conversation private still makes it private. A sub-session cannot open
-sub-sessions of its own. At most three run at once, or the limit set in the assistant mode panel for
-an agent in assistant mode; one more is refused, and the agent is told so. Every agent is told
-about this form, and a self-call in any other form than this or the channel-root one is refused.
-The sub-session can message the conversation that opened it at any time, and a message does not end its
-work; the daemon reports the end of each round of work. A later `messageTask` with the `taskId`
-`startTask` returned gives the same sub-session new work in its retained context. An approved
-task or a patrol runs once and is settled by its one report.
+background task of its own: `sendMessage` with action `startTask` and only a `message`.
+Ordinary conversation stays in the main conversation. The conversation says the work has
+started; the task runs in a context of its own, never the conversation's long session; none of
+its replies is posted anywhere, and it reports back into the conversation that started it,
+which then speaks for it. One that stops without reporting is reported as ended, at the latest
+about ten minutes after nothing is left running for it, and then no longer counts toward the
+agent's concurrent background work. It takes that conversation's visibility and owner, and its
+visibility cannot be changed on its own; making the conversation private still makes it
+private. A task cannot start tasks of its own. At most three run at once, or the limit set in the
+assistant mode panel for an agent in assistant mode; one more is refused, and the agent is told
+so. Every agent is told about this form, and a self-call in any other form than this or the
+channel-root one is refused. The task can message the conversation that started it at any time,
+and a message does not end its work; the daemon reports the end of each round of work. A later
+`messageTask` with the `taskId` `startTask` returned gives the same task new work in its retained
+context. Approved work and a patrol are background work too, but not tasks: each runs once and is
+settled by its one report.
 
 Reports follow the language of the people in the conversation they report to. The conversation
-tells a sub-session which language they use; a patrol or an approved task, which sees none of
-their messages, goes by its item's title and summary. The conversation then answers them in their
+tells a task which language they use; a patrol or approved work, which sees none of their
+messages, goes by its item's title and summary. The conversation then answers them in their
 language whatever language a report arrived in. Fixed text on cards is not translated.
 
-The session page of a conversation that opened sub-sessions has a Sub-sessions tab in its side
-panel, for an agent in assistant mode or any agent whose daemon serves Activity outside it; no
-other conversation shows it.
-It lists the sub-sessions that conversation opened, newest first and a page at a time, each
-with its state and start. A title and a link to its own session appear only to someone who may
-view that session, as in the Activity view. A delegated sub-session is titled by its task, as its
-cards name it, until its runtime gives it a title. Whoever may continue a running sub-session's
-session may stop it there: Stop interrupts its current turn as the composer's stop does,
-mutes nothing and undoes nothing it already did, and a process its runtime started in the
-background may keep running. The sub-session then reports to the conversation that it ended,
-its transcript names who stopped it, and the row says whether a turn was stopped or nothing
-was running. A sub-session's own session page, a patrol's included, is read-only: it shows the
-transcript with no composer and no composer stop, since nothing sent from there would reach the
-sub-session. An agent whose daemon cannot list one conversation's sub-sessions says to upgrade
-it.
+The session page of a conversation that started background work has a Background work tab in
+its side panel, for an agent in assistant mode or any agent whose daemon serves Activity outside
+it; no other conversation shows it.
+It lists the background work that conversation started, its tasks, patrols and approved work,
+newest first and a page at a time, each with its state and start. A title and a link to its own
+session appear only to someone who may view that session, as in the Activity view. A task is
+titled by the work it was given, as its cards name it, until its runtime gives it a title.
+Whoever may continue a running piece of background work's session may stop it there: Stop
+interrupts its current turn as the composer's stop does, mutes nothing and undoes nothing it
+already did, and a process its runtime started in the background may keep running. The work then
+reports to the conversation that it ended, its transcript names who stopped it, and the row says
+whether a turn was stopped or nothing was running. The session page of background work, a
+patrol's included, is read-only: it shows the transcript with no composer and no composer stop,
+since nothing sent from there would reach it. An agent whose daemon cannot list one
+conversation's background work says to upgrade it.
 
-A person can also ask the conversation that opened a sub-session to stop it, on any platform:
+A person can also ask the conversation that started a task to stop it, on any platform:
 "stop the one writing the release notes". The agent asks which one is meant only when that is not
 clear, then stops it the way the console's Stop does, with the same answer: stopped, or nothing
 was running, and that a process it started in the background may keep running. Its transcript
 names the person who asked, or the agent when no person is behind the turn. The agent stops it
 with `stopTask` and its `taskId`. Only the conversation that started it can stop it, on any of
-its turns: one a person started, a sub-session's report, another agent's reply, a hook or a
-scheduled run, since deciding that a step is no longer needed is that conversation's planning;
-the `!stop` sender rule does not gate it. A sub-session of another conversation, the sub-session
-itself or a sibling, a patrol and an approved task are refused in the same words as one that
-does not exist. The agent is reminded which sub-sessions its conversation has running, by id and label, and the
-reminder is refreshed on the next turn after one starts or ends.
+its turns: one a person started, a task's report, another agent's reply, a hook or a scheduled
+run, since deciding that a step is no longer needed is that conversation's planning; the `!stop`
+sender rule does not gate it. A task of another conversation, the task itself or a sibling, a
+patrol and approved work are refused in the same words as one that does not exist. The agent is
+reminded which tasks its conversation has running, by id and label, and the reminder is
+refreshed on the next turn after one starts or ends.
 
-## Sub-session permission requests
+## Background work permission requests
 
-When a background sub-session needs permission to run a tool, whether delegated or an approved
-proposal's task, the request goes to the conversation the work belongs to, and the sub-session
-waits; its turn is not cancelled. A patrol never asks.
+When a background task or approved work needs permission to run a tool, the request goes to the
+conversation the work belongs to, and the work waits; its turn is not cancelled. A patrol never
+asks.
 
 - In a Slack, Telegram, Discord, Feishu/Lark or Google Chat conversation where "What people can
   do in chat" includes approving tool calls, an approval card is posted there, where its reports
   land: in the conversation's thread (on Telegram its topic or reply chain), or at its top level
   when it is one long conversation. Anyone there may answer it; where permissions are synced
   (Slack, Feishu/Lark), only an Agent editor, and an editor also gets it in a direct message
-  through the agent's Slack integration, when it has one. The card says a background sub-session is asking, names and links it, and offers the
-  runtime's own choices, "always allow" included where offered.
+  through the agent's Slack integration, when it has one. The card says background work is
+  asking, names and links it, and offers the runtime's own choices, "always allow" included where
+  offered.
 - Where it does not, or the conversation is closed (switched off, admitted per message by a
-  Decision, or routed), the conversation gets a notice that the sub-session is waiting, and an
-  Agent editor gets the request in a direct message, as for any other request.
+  Decision, or routed), the conversation gets a notice that the background work is waiting, and
+  an Agent editor gets the request in a direct message, as for any other request.
 - A QQ conversation, which has no approval card, gets neither: an Agent editor answers the
   request in the console or in a direct message.
 - In a webchat conversation, the request appears among the conversation's own pending requests,
-  marked as from a background sub-session.
+  marked as from background work.
 - A conversation shared with another organization gets no card. It goes to the agent's
   responsible user in a direct message, in assistant mode or not, otherwise to an Agent editor in
   a direct message, as for any other request.
-- Editors can also answer it on the sub-session's own page and in the Activity view.
+- Editors can also answer it on the background work's own session page and in the Activity view.
 
 The first answer from any of these places decides it, and the other cards show that decision. If
 nobody answers within the agent's "Hours to wait for approval" (12 unless set in assistant mode),
-the request is denied, the sub-session stops, and the conversation is told it ended; delegating the
-work again asks again. A request whose turn ends any other way, a restart included, expires and can no
-longer be answered. A main conversation's own requests keep today's behavior. Only assistant mode
-changes an agent's permission mode, so an agent outside it asks as often as its own mode does.
+the request is denied, the work stops, and the conversation is told it ended; giving a task the
+work again with `messageTask` asks again. A request whose turn ends any other way, a restart
+included, expires and can no longer be answered. A main conversation's own requests keep today's
+behavior. Only assistant mode changes an agent's permission mode, so an agent outside it asks as
+often as its own mode does.
 
 ## Assistant-mode patrols
 
 When an active or waiting item's next check comes due, the daemon holding the agent's duty starts
-one patrol of it: a background sub-session that looks at the item read-only, records what it saw
+one patrol of it: background work that looks at the item read-only, records what it saw
 as an observation, sets the next check or marks the item waiting or done, and ends. It has three
 outcomes. When something should be done, it asks for approval to do it (see "Assistant-mode
 proposals"). Otherwise, only when something changed since the latest observation does it report,
@@ -1359,13 +1361,13 @@ When that conversation has no long session the check is skipped, and the item re
 item's own next check wakes a patrol: there is no cadence and no event trigger yet. A next check
 is patrolled once; one missed while the agent was paused is not replayed, and an overdue item is
 checked once. An agent runs one patrol at a time, patrols do not count toward its concurrent
-sub-sessions, and it starts at most `dailyPatrolBudget` of them in any 24 hours (50 when unset).
+background work, and it starts at most `dailyPatrolBudget` of them in any 24 hours (50 when unset).
 A failed patrol is recorded on the item and the next attempt waits min(60, 2ⁿ) minutes, n being
 its failures in a row; a patrol that records nothing counts as failed. After five in a row the
 item is patrolled no more until its next check is set to a new time, and its conversation is told
-once. A failed patrol never sends the "ended without reporting" notice a delegated sub-session
-gets. A patrol is listed among its conversation's sub-sessions; stopping it there ends it
-silently and counts its check as done.
+once. A failed patrol never sends the "ended without reporting" notice a background task gets.
+A patrol is listed among its conversation's background work; stopping it there ends it silently
+and counts its check as done.
 
 A patrol is offered only read tools, an item update limited to its own item and `propose`: no
 platform write, no `sendMessage`, no new item and no draft, and any other tool it names is refused.
@@ -1377,7 +1379,7 @@ keeps it from writing there, and reads over the network that need no approval st
 ## Assistant-mode proposals
 
 A patrol that finds something worth doing asks for approval with `propose`: one plain sentence
-("I want to do X because Y"), the reason, and the task a background session would carry out, such
+("I want to do X because Y"), the reason, and the work it would carry out once approved, such
 as "rebase PR #12 onto main and push". A patrol proposes at most once and runs nothing itself; no
 other session and no agent outside assistant mode is offered `propose`.
 
@@ -1385,8 +1387,8 @@ The proposal is carded in the Slack conversation the item was taken in, where th
 replies land: its top level when it is one long conversation, else its thread. Whoever could ask
 the agent there may approve it: in a direct message, that person; in a channel, anyone whose own
 message would start a turn of the agent there; never a bot. A click from anyone else does nothing.
-Approving grants nothing that typing the request there would not: the task runs with the agent's
-own permissions, and its permission requests follow "Sub-session permission
+Approving grants nothing that typing the request there would not: the approved work runs with
+the agent's own permissions, and its permission requests follow "Background work permission
 requests". "What people can do in chat" makes no difference to proposals. A conversation shared
 with another organization, one gated By decision, one the card definitely could not be posted in,
 and conversations on other platforms get the card where drafts go instead: the agent's responsible
@@ -1395,25 +1397,24 @@ still land, so it is never sent a second time elsewhere. In a webchat conversati
 included, there is no card: the proposal waits among the conversation's pending requests above the
 composer, and is not sent to the responsible user. Whoever may continue that conversation may
 approve or deny it there after a confirmation, and so may the agent's editors, who also find it in
-the conversation's Requests popover. The row leads with the sentence, folds the reason and the task,
+the conversation's Requests popover. The row leads with the sentence, folds the reason and the work,
 and shows the item and when it expires; once decided it says what happened until dismissed. An
 editor may decide any proposal from the Activity view, including one no one could be reached for,
 and the first answer decides it.
 
-The card leads with the sentence, shows the reason and the task, and offers Approve and Deny; there
-is no "always allow". Once decided it is rewritten in place: approved by whom and running, denied by
-whom, or expired with nothing run, and later how the task ended. A card a restart left unedited is
+The card leads with the sentence, shows the reason and the work, and offers Approve and Deny;
+there is no "always allow". Once decided it is rewritten in place: approved by whom and running,
+denied by whom, or expired with nothing run, and later how the approved work ended. A card a restart left unedited is
 rewritten when its integration reconnects. A proposal expires after 24 hours and never runs
 afterwards, and a denied one never runs.
 
-Approval runs the task once, in a background sub-session of the conversation the item was taken in,
-under that conversation's long session, with the agent's own permissions rather than a patrol's
-read-only mode. It reports back like a delegated sub-session: its own report, or the daemon's
-"ended without reporting" when it ends without one. It counts toward the agent's concurrent
-sub-sessions; while they are full the approval is refused with the reason, nothing runs and the
-proposal keeps waiting. A proposal whose record changed after it was written, whose item was
+Approval runs the approved work once, in the background, for the conversation the item was taken
+in, under that conversation's long session, with the agent's own permissions rather than a patrol's
+read-only mode. It reports back once: its own report, or the daemon's "ended without reporting"
+when it ends without one. It counts toward the agent's concurrent background work; while that is
+full the approval is refused with the reason, nothing runs and the proposal keeps waiting. A proposal whose record changed after it was written, whose item was
 closed or deleted, whose conversation has no long session, or whose agent left assistant mode is
-refused and never runs. When a restart or handover cuts the task short before it reports, it is
+refused and never runs. When a restart or handover cuts the approved work short before it reports, it is
 never run again: the conversation is told once that it is not sure this went through and should
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
 without reporting, uncertain) is recorded on the item.
@@ -1438,8 +1439,8 @@ conversation shared with another organization sets and receives reminders like a
 ## Assistant-mode Activity
 
 The page of an agent in assistant mode has an Activity tab. Every other agent's page has one too
-once its daemon serves it, with only what such an agent has: its sub-sessions and what waits for
-approval, that is its drafts and its sub-sessions' permission requests. Items and proposals stay
+once its daemon serves it, with only what such an agent has: its background work and what waits
+for approval, that is its drafts and its background work's permission requests. Items and proposals stay
 assistant mode's. An agent whose daemon predates this shows no tab outside assistant mode, and a
 link to it opens Integrations instead. It is read from the agent's daemon when it is shown and kept
 nowhere else; each list shows the most recent entries, up to a limit, and says when more exist.
@@ -1450,9 +1451,10 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   its summary and newest observations. Done and dropped items sit in a collapsed section that is read
   only when opened. An item never shows who follows it or the wording of a conversation. An editor
   may delete an item after a confirmation; the agent stops following it.
-- **Sub-sessions** are listed for everyone who can view the agent, running ones first, each with
-  its state and start; patrols are listed among them. Its title, a link to its session and the
-  conversation that opened it appear only to someone who may view that conversation.
+- **Background work** is listed for everyone who can view the agent, running work first, each
+  with its state and start; tasks, patrols and approved work are listed together. Its title, a
+  link to its session and the conversation that started it appear only to someone who may view
+  that conversation.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,
   who is asked to approve it and when it expires. An editor may approve or discard it here after a
   confirmation. The decision is the card's own: one post at most, whichever comes first, the
@@ -1460,11 +1462,11 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   ended: posted, discarded, failed, not sure it went through, expired, or already decided. A
   decision that got no answer keeps its row with a warning; once the draft is no longer waiting,
   it says to check the destination, since it may have been posted. Proposals are listed here too,
-  labelled as proposals: the sentence, the reason, the task, the conversation it runs in, its item,
+  labelled as proposals: the sentence, the reason, the work, the conversation it runs in, its item,
   who is asked and when it expires, with Approve and Deny. An approved one says it runs in the
-  background and reports back in that conversation; one refused at the sub-session limit keeps its
-  choices and says why. Sub-sessions waiting for permission are listed here as well: which
-  sub-session and conversation (named only to someone who may view them), what it asks to run and
+  background and reports back in that conversation; one refused at the background work limit
+  keeps its choices and says why. Background work waiting for permission is listed here as well:
+  which work and conversation (named only to someone who may view them), what it asks to run and
   when it is denied unless answered, with the runtime's own choices. An answer here is the same
   decision as the card's, and one answered elsewhere first says it is no longer waiting.
 
@@ -1490,7 +1492,8 @@ with no IM integration at all (webchat, webhook, dreaming, memory-only). A chann
 **narrow** a directory listing as an optional filter; it can never widen one. A caller
 always sees **itself** in a listing, even under a `selected` outbound policy that does not
 name it. That self entry may target the explicit `toAgent` channel-root form described
-above; a postless self-wake opens a sub-session instead (see "Sub-sessions").
+above; a self-call without a channel is refused with the `startTask` call to make instead (see
+"Background tasks").
 
 The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,

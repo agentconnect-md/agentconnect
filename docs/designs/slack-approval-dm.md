@@ -379,7 +379,7 @@ chat members (`chatMemberTenant`, integration-plugin-architecture.md §9: Slack 
 "What people can do in chat" admits only the agent's editors (product-conventions.md). The CP
 projects `chatAuthority: 'editors'` onto each such integration spec while the sync is on, and
 re-pushes the platform's integrations when it is switched. A click on the in-conversation card,
-approval elicitations and sub-session cards included, is then honored only when the clicker is an
+approval elicitations and background work's cards included, is then honored only when the clicker is an
 editor's linked identity: on Slack the pair in the bot's workspace, on Feishu/Lark the union_id
 in the bot's region, which the daemon carries as `InteractionActor.memberId` and refuses a click
 without. It is asked with the anonymous verify of §4.2 and cached on the daemon (an editor two
@@ -398,7 +398,7 @@ integration nobody is DMed, and the request waits for an editor in the conversat
 console; a Feishu/Lark approval DM is not built yet. The first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
 here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
 (§11.4); editors answer it there or in the console. A conversation shared with another
-organization takes the editor path instead of the asker's DM. A sub-session's card keeps the
+organization takes the editor path instead of the asker's DM. Background work's card keeps the
 row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
 `besideChannel`, `besideTs`), and the reconnect sweep of §5.4 retires both. §4.4 holds: the check
 is a forward scan from the console side, never a reverse index.

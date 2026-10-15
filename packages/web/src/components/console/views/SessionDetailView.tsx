@@ -2451,18 +2451,18 @@ const DOCK_TABS: DockTab[] = [
   { key: 'pr', label: 'PR', icon: 'git-pull-request' },
   {
     key: 'tasks',
-    label: 'Tasks',
+    label: 'Runtime jobs',
     icon: 'list-checks',
     actionIcon: 'refresh-cw',
-    actionLabel: 'Refresh background tasks'
+    actionLabel: 'Refresh runtime jobs'
   },
-  // An assistant-mode conversation's background sub-sessions, offered only once it has opened one.
+  // A conversation's background work (tasks, patrols, approved work), offered only once it has started some.
   {
     key: 'subsessions',
-    label: 'Sub-sessions',
+    label: 'Background work',
     icon: 'split',
     actionIcon: 'refresh-cw',
-    actionLabel: 'Refresh sub-sessions'
+    actionLabel: 'Refresh background work'
   }
 ]
 
@@ -3199,7 +3199,7 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
-  // The conversation whose sub-sessions the dock lists: the focused participant's session, while that agent is in assistant mode or its daemon lists every agent's.
+  // The conversation whose background work the dock lists: the focused participant's session, while that agent is in assistant mode or its daemon lists every agent's.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
   const subsessionsListed =
     !!subsessionsAgent &&
@@ -3296,7 +3296,7 @@ export default function SessionDetailView() {
   // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
   const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
   const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
-  // The Sub-sessions tab's own refresh and verdict: whether the conversation opened any, and how many run.
+  // The Background work tab's own refresh and verdict: whether the conversation started any, and how many run.
   const [subsessionsRefreshTick, setSubsessionsRefreshTick] = useState(0)
   const [subsessionsVerdict, setSubsessionsVerdict] = useState<SubsessionsPanelVerdict>(SUBSESSIONS_UNSETTLED)
   // The PR tab's verdict, reported by its panel: whether this session HAS a linked run at all (`none` drops the tab), the unresolved-thread badge, and the URL its `external-link` action opens.
@@ -3891,7 +3891,7 @@ export default function SessionDetailView() {
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
-  // A sub-session's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its parent's Sub-sessions panel.
+  // Background work's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its owning session's Background work panel.
   const readOnlySubsession = session.subsession === true
   // Continuation is server-computed (webchat-cross-integration-continuation.md §6.5): a transient blocker disables the composer, unauthorized/unsupported stay read-only.
   const isContinuable = !readOnlySubsession && !isPg && !isWebchat && composerDetail?.canContinue === true
@@ -6507,7 +6507,7 @@ export default function SessionDetailView() {
             />
           ) : null}
         </DockPanel>
-        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once the conversation opens a sub-session. */}
+        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once the conversation starts background work. */}
         <DockPanel active={dockTabKey === 'subsessions'}>
           {filesAgentId && subsessionsSessionId ? (
             <SubsessionsPanel

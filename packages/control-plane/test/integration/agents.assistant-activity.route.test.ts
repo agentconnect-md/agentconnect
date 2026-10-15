@@ -647,7 +647,7 @@ describe('deciding a draft from the console', () => {
     expect(control.writes).toHaveLength(3)
   })
 
-  it('starts an approved proposal, and keeps one waiting while the agent’s sub-sessions are at their limit', async () => {
+  it('starts an approved proposal, and keeps one waiting while the agent’s background work is at its limit', async () => {
     await seedAssistant()
     const control = new ActivitySpy()
     const running = app(control)
@@ -656,7 +656,7 @@ describe('deciding a draft from the console', () => {
       status: 'executing',
       failure: null
     })
-    const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
+    const limit = 'bot already has 3 pieces of background work running, the most it runs at once.'
     control.decision = { result: 'busy', status: 'awaiting_review', failure: limit }
     const busy = await decide(running, 'approve', 'proposal-2')
     expect(busy.statusCode).toBe(409)
@@ -889,7 +889,7 @@ describe('a webchat conversation’s proposals', () => {
       code: 'DRAFT_EXPIRED',
       message: 'the proposal expired; nothing was run'
     })
-    const limit = 'bot already has 3 sub-sessions running, the most it runs at once.'
+    const limit = 'bot already has 3 pieces of background work running, the most it runs at once.'
     control.decision = { result: 'busy', status: 'awaiting_review', failure: limit }
     expect((await decideIn(running, mine, 'approve')).json()).toMatchObject({
       statusCode: 409,

@@ -109,19 +109,19 @@ export interface ApprovalCardFacet {
   nameOf?(handle: ApprovalCardHandle, userId: string): Promise<string | undefined>
 }
 
-/** "Agent’s background sub-session “title”", or "background task" without a title; plain text, each surface defuses its own markup. */
+/** "Agent’s background work “title”", or just "Agent’s background work" without a title; plain text, each surface defuses its own markup. */
 export function subsessionAskerText(
   agentName: string,
   title: string | null,
   clamp: (s: string, n: number) => string
 ): string {
-  const agent = `${clamp(agentName, 60)}’s background`
-  return title?.trim() ? `${agent} sub-session “${clamp(title.trim(), 80)}”` : `${agent} task`
+  const agent = `${clamp(agentName, 60)}’s background work`
+  return title?.trim() ? `${agent} “${clamp(title.trim(), 80)}”` : agent
 }
 
-/** How long a sub-session's request waits, as its card and notice say it. */
+/** How long a background work request waits, as its card and notice say it. */
 export function subsessionWaitText(hours: number): string {
-  return `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the sub-session stops.`
+  return `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the background work stops.`
 }
 
 /** How a settled sub-session notice reads, in plain text with literal marks. */

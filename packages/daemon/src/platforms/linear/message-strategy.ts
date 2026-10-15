@@ -325,8 +325,8 @@ export function linearAckBody(
 ): string {
   const subject = ext.issueIdentifier?.trim() ?? ext.agentSessionId
   const name = sanitizeTitle(agentName) || 'agent'
-  if (opts.steered) return `**${name}** · added to the running task`
-  return opts.queued ? `**${name}** · queued behind the current task` : `**${name}** · reading ${subject} …`
+  if (opts.steered) return `**${name}** · added to the running turn`
+  return opts.queued ? `**${name}** · queued behind the current turn` : `**${name}** · reading ${subject} …`
 }
 
 /** Linear's own comment on a delegation without one — nothing a person wrote, so nothing to show. */

@@ -514,7 +514,7 @@ describe('a sub-session never speaks on the platform', () => {
       thread,
       transportScope: scope,
       sender: { id: 'background-task:t1', isBot: true },
-      text: '[background task finished] build',
+      text: '[background job finished] build',
       mentionedBots: [],
       isDm: false
     })

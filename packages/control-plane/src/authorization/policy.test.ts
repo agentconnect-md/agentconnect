@@ -432,8 +432,8 @@ describe('visibilityWhere', () => {
   })
 })
 
-// assistant-mode.md §5.6: an agent's own sub-session takes its parent's audience, in assistant mode or not.
-describe('canChangeSessionVisibility on an agent’s own sub-sessions', () => {
+// assistant-mode.md §5.6: an agent's own background work takes its owning session's audience, in assistant mode or not.
+describe('canChangeSessionVisibility on an agent’s own background work', () => {
   const AGENT = 'agent-a'
   const facts = (over: Partial<NonNullable<SessionViewable['subsession']>> = {}) => ({
     parentSessionId: 'sid-parent-1',
@@ -450,13 +450,13 @@ describe('canChangeSessionVisibility on an agent’s own sub-sessions', () => {
   const allowed = (resource: SessionViewable, role: OrgMemberRole = 'collaborator') =>
     canChangeSessionVisibility(resource, ctx(CREATOR, role), identitySetOf(ctx(CREATOR, role)))
 
-  it('refuses an agent’s own sub-session even to its inherited owner, whatever the role', () => {
+  it('refuses an agent’s own background work even to its inherited owner, whatever the role', () => {
     for (const role of ['owner', 'collaborator', 'viewer'] as const) {
       expect(allowed(session('subsession:1700000000000', facts()), role)).toBe(false)
     }
   })
 
-  it('treats a sub-session coordinate whose lineage was not read as a sub-session — fail closed', () => {
+  it('treats a subsession coordinate whose lineage was not read as background work — fail closed', () => {
     expect(allowed(session('subsession:1700000000000'))).toBe(false)
   })
 

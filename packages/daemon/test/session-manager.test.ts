@@ -2724,11 +2724,11 @@ describe('SessionManager — collaboration preamble', () => {
         ts: '100.1',
         source: 'agent',
         sender: { id: 'background-task:task-1', isBot: true },
-        text: '[background task finished] task-1'
+        text: '[background job finished] task-1'
       })
     )
 
-    expect(withoutNow(blocks)).toEqual([{ type: 'text', text: '[background task finished] task-1' }])
+    expect(withoutNow(blocks)).toEqual([{ type: 'text', text: '[background job finished] task-1' }])
     await (await store).close()
   })
 

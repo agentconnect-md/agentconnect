@@ -73,11 +73,11 @@ export type AssistantActivityItemDetail = z.infer<typeof AssistantActivityItemDe
 export const AssistantActivitySubsessionState = z.enum(['open', 'done', 'failed'])
 export type AssistantActivitySubsessionState = z.infer<typeof AssistantActivitySubsessionState>
 
-/** Opaque to everyone but the daemon that minted it: where the next page of one conversation's sub-sessions starts. */
+/** Opaque to everyone but the daemon that minted it: where the next page of one conversation's background work starts. */
 export const AssistantSubsessionCursor = z.string().min(1).max(1_024)
 
 export const AssistantActivitySubsession = z.object({
-  /** The sub-session's outward id; null until its session exists. */
+  /** The background work's outward session id; null until its session exists. */
   sessionId: ref.nullable(),
   /** The conversation that opened it, by its session's outward id. */
   parentSessionId: ref,
@@ -143,17 +143,17 @@ export type AssistantActivityDraft = z.infer<typeof AssistantActivityDraft>
 export const AssistantActivityConversation = z.object({ sessionId: ref })
 export type AssistantActivityConversation = z.infer<typeof AssistantActivityConversation>
 
-/** A background sub-session's runtime permission request awaiting a human (assistant-mode.md §5.6): which sub-session, which tool, and when its wait runs out. */
+/** A runtime permission request from background work awaiting a human (assistant-mode.md §5.6): which background work, which tool, and when its wait runs out. */
 export const AssistantActivityPermission = z.object({
   requestId: z.string().uuid(),
-  /** The sub-session's outward id. */
+  /** The background work's outward session id. */
   sessionId: ref,
   /** The conversation it belongs to, by its session's outward id. */
   parentSessionId: ref,
   /** What it asks to run, secret-masked and bounded as the approval queue shows it. */
   tool: z.string().max(240),
   createdAt: time,
-  /** When it is denied and the sub-session stops, unless someone answers first. */
+  /** When it is denied and the background work stops, unless someone answers first. */
   expiresAt: time,
   /** The request's own options; absent when it takes a plain Allow or Deny. */
   options: z.array(AgentPermissionOption).max(AGENT_PERMISSION_MAX_OPTIONS).optional()
@@ -173,7 +173,7 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     agentId,
     operation: z.literal('subsessions'),
     limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX),
-    /** Only the sub-sessions this conversation opened, newest first and paged; absent lists the agent's, running first. */
+    /** Only the background work this conversation started, newest first and paged; absent lists the agent's, running first. */
     parent: z.object({ sessionId: ref, cursor: AssistantSubsessionCursor.optional() }).optional()
   }),
   z.object({
@@ -182,7 +182,7 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_DRAFTS_MAX),
     /** Also list proposals (`kind: 'task'`); an older daemon ignores it and has none. */
     proposals: z.boolean().optional(),
-    /** Also list sub-sessions' pending permission requests; an older daemon ignores it and lists none. */
+    /** Also list background work's pending permission requests; an older daemon ignores it and lists none. */
     permissions: z.boolean().optional(),
     /** Only this webchat conversation's proposals, no posts and no permission requests; an older daemon ignores it. */
     conversation: AssistantActivityConversation.optional()
@@ -230,7 +230,7 @@ export const AssistantDraftStatus = z.enum([
 ])
 export type AssistantDraftStatus = z.infer<typeof AssistantDraftStatus>
 
-/** C→D REQ: an editor deleting an item or deciding a draft, someone who may continue a webchat conversation deciding its proposal, or one who may continue a sub-session stopping it; the Control Plane has already checked the caller. */
+/** C→D REQ: an editor deleting an item or deciding a draft, someone who may continue a webchat conversation deciding its proposal, or one who may continue background work stopping it; the Control Plane has already checked the caller. */
 export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({ agentId, operation: z.literal('delete-item'), itemId: ref }),
   z.object({
@@ -246,7 +246,7 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({
     agentId,
     operation: z.literal('stop-subsession'),
-    /** The sub-session's outward id; the daemon interrupts it only if its index holds it for this agent. */
+    /** The background work's outward session id; the daemon interrupts it only if its index holds it for this agent. */
     sessionId: ref,
     /** The console user stopping it, stamped by the Control Plane and named in its transcript. */
     actor: z.object({ userId: ref, name })
@@ -254,11 +254,11 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
 ])
 export type AssistantActivityWriteReq = z.infer<typeof AssistantActivityWriteReq>
 
-/** `decided` when this call settled the draft; otherwise why it could not, and this call posted nothing; `busy` leaves a proposal waiting while the agent's sub-sessions are at their limit. */
+/** `decided` when this call settled the draft; otherwise why it could not, and this call posted nothing; `busy` leaves a proposal waiting while the agent's background work is at its limit. */
 export const AssistantDraftDecisionResult = z.enum(['decided', 'not-found', 'expired', 'already-decided', 'busy'])
 export type AssistantDraftDecisionResult = z.infer<typeof AssistantDraftDecisionResult>
 
-/** `stopped` interrupted its current turn; `not-running` found no turn to interrupt; `not-found` is no sub-session of this agent. */
+/** `stopped` interrupted its current turn; `not-running` found no turn to interrupt; `not-found` is no background work of this agent. */
 export const AssistantSubsessionStopResult = z.enum(['stopped', 'not-running', 'not-found'])
 export type AssistantSubsessionStopResult = z.infer<typeof AssistantSubsessionStopResult>
 

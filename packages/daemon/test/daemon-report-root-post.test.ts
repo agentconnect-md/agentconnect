@@ -209,8 +209,8 @@ describe('a report into a Slack parent that appends, in a DM and in a channel', 
 
   it.each([
     ['patrol', patrolCoordinate('p-1'), '[patrol] nothing needs you'],
-    ['task', taskCoordinate('t-1'), '[task] the proposal ran'],
-    ['failure', subsessionCoordinate('s-1'), '[sub-session ended] it stopped before finishing']
+    ['task', taskCoordinate('t-1'), '[approved work] the proposal ran'],
+    ['failure', subsessionCoordinate('s-1'), '[approved work ended] it stopped before finishing']
   ])('posts a daemon %s report at the root', async (kind, callerThread, text) => {
     const { daemon, d, calls, scope, answers, idle } = await boot()
     for (const channel of ['D1', 'C1']) {

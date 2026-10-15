@@ -581,7 +581,7 @@ export function buildApprovalDmIntro(info: {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${subsessionAsker(info.agentName, title)} is waiting on an approval. ${subsessionWaitNote(waitHours)}\n<${info.sessionUrl}|Open the sub-session>`
+          text: `${subsessionAsker(info.agentName, title)} is waiting on an approval. ${subsessionWaitNote(waitHours)}\n<${info.sessionUrl}|Open the background work>`
         }
       }
     ]
@@ -606,14 +606,14 @@ export function buildApprovalDmIntro(info: {
   ]
 }
 
-/** "Agent's background sub-session “label”", the subject of every sub-session approval card; "background task" without a label. */
+/** "Agent's background work “label”", the subject of every background work approval card; no quote without a label. */
 function subsessionAsker(agentName: string, title: string | null): string {
-  const agent = `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s background`
-  return title?.trim() ? `${agent} sub-session “${escapeMrkdwnLabel(clampTo(title.trim(), 80))}”` : `${agent} task`
+  const agent = `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s background work`
+  return title?.trim() ? `${agent} “${escapeMrkdwnLabel(clampTo(title.trim(), 80))}”` : agent
 }
 
 const subsessionWaitNote = (hours: number): string =>
-  `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the sub-session stops.`
+  `If nobody answers within ${hours} hour${hours === 1 ? '' : 's'}, it is denied and the background work stops.`
 
 /** The header of a sub-session's approval card in the conversation it belongs to (assistant-mode.md §5.6). Pure. */
 export function buildSubsessionApprovalIntro(info: {
@@ -627,7 +627,7 @@ export function buildSubsessionApprovalIntro(info: {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `${subsessionAsker(info.agentName, info.title)} is asking for permission. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the sub-session>`
+        text: `${subsessionAsker(info.agentName, info.title)} is asking for permission. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the background work>`
       }
     }
   ]
@@ -647,7 +647,7 @@ export function buildSubsessionApprovalNotice(info: {
         type: 'mrkdwn',
         text:
           `:lock: ${subsessionAsker(info.agentName, info.title)} is waiting for permission. Ask an Agent editor to ` +
-          `allow it from the Agent or Session page. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the sub-session>`
+          `allow it from the Agent or Session page. ${subsessionWaitNote(info.waitHours)}\n<${info.sessionUrl}|Open the background work>`
       }
     }
   ]
@@ -662,7 +662,7 @@ export function buildSubsessionApprovalSettledNotice(
   info: { agentName: string; title: string | null; sessionUrl?: string },
   outcome: SubsessionNoticeOutcome
 ): unknown[] {
-  const link = info.sessionUrl ? `\n<${info.sessionUrl}|Open the sub-session>` : ''
+  const link = info.sessionUrl ? `\n<${info.sessionUrl}|Open the background work>` : ''
   return [
     {
       type: 'section',
@@ -760,7 +760,7 @@ function draftSentence(view: AssistantDraftCardView): string {
   return `${agent} will post this to ${place}${external} once you approve.`
 }
 
-/** The exact text, quoted; a text longer than the card holds says how much is shown. A proposal shows its reason and its task. */
+/** The exact text, quoted; a text longer than the card holds says how much is shown. A proposal shows its reason and its work. */
 function draftBody(view: AssistantDraftCardView): unknown[] {
   if (view.kind === 'task') return proposalBody(view)
   const shown = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
@@ -779,7 +779,7 @@ function draftBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A proposal's reason and the task an approval runs, then where it runs and reports. */
+/** A proposal's reason and the work an approval runs, then where it runs and reports. */
 function proposalBody(view: AssistantDraftCardView): unknown[] {
   const quote = (text: string) =>
     text
@@ -790,7 +790,7 @@ function proposalBody(view: AssistantDraftCardView): unknown[] {
   const why = view.proposal?.why.trim() ?? ''
   const blocks: unknown[] = [
     ...(why ? [{ type: 'markdown', text: `**Why**\n${quote(clampTo(why, 2_000))}` }] : []),
-    { type: 'markdown', text: `**Task**\n${quote(task)}` }
+    { type: 'markdown', text: `**Work**\n${quote(task)}` }
   ]
   const notes = [
     `Runs with ${escapeMrkdwnLabel(clampTo(view.agentName, 60))}’s own permissions, then reports in ${draftPlace(view)}`

@@ -55,7 +55,7 @@ const styleOf = (kind: string): DiscordButton['style'] =>
   kind === 'allow_once' || kind === 'allow_always' ? 3 : kind === 'reject_once' || kind === 'reject_always' ? 4 : 2
 
 function intro(asker: SubsessionAsker): string {
-  return `${subsessionAskerText(asker.agentName, asker.title, md)} is asking for permission. ${subsessionWaitText(asker.waitHours)}\n[Open the sub-session](${asker.sessionUrl})\n\n`
+  return `${subsessionAskerText(asker.agentName, asker.title, md)} is asking for permission. ${subsessionWaitText(asker.waitHours)}\n[Open the background work](${asker.sessionUrl})\n\n`
 }
 
 const fit = (text: string): string => clampTo(text, DISCORD_MESSAGE_LIMIT)
@@ -94,14 +94,14 @@ export const discordApprovalCards: ApprovalCardFacet = {
     const who = subsessionAskerText(asker.agentName, asker.title, md)
     return {
       text: fit(
-        `🔒 ${who} is waiting for permission. Ask an Agent editor to allow it from the Agent or Session page. ${subsessionWaitText(asker.waitHours)}\n[Open the sub-session](${asker.sessionUrl})`
+        `🔒 ${who} is waiting for permission. Ask an Agent editor to allow it from the Agent or Session page. ${subsessionWaitText(asker.waitHours)}\n[Open the background work](${asker.sessionUrl})`
       )
     } satisfies DiscordApprovalDraft
   },
 
   noticeSettled(view: SubsessionNoticeView, outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
     const line = subsessionSettledText(subsessionAskerText(view.agentName, view.title, md), outcome, (s) => md(s, 60))
-    const link = view.sessionUrl ? `\n[Open the sub-session](${view.sessionUrl})` : ''
+    const link = view.sessionUrl ? `\n[Open the background work](${view.sessionUrl})` : ''
     return { text: fit(`${line}${link}`) } satisfies DiscordApprovalDraft
   },
 

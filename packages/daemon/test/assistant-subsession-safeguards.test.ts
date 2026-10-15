@@ -6,13 +6,18 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
-import { REPORT_ANSWER_LANGUAGE, SUBSESSION_IDLE_END_MS } from '../src/collab/coordinator.js'
+import { REPORT_ANSWER_LANGUAGE, SUBSESSION_IDLE_END_MS, subsessionEndReport } from '../src/collab/coordinator.js'
 import { PATROL_SWEEP_INTERVAL_MS } from '../src/assistant/patrol.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { SESSION_MESSAGE_HEADER } from '../src/collab/session-message.js'
-import { isSubsessionCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import {
+  isSubsessionCoordinate,
+  patrolCoordinate,
+  subsessionCoordinate,
+  taskCoordinate
+} from '../src/session/subsession-coordinate.js'
 import { sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -86,7 +91,7 @@ function runtimes() {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
-        const sub = /background sub-session|as a background task|for this background task/.test(JSON.stringify(blocks))
+        const sub = /background work “|as a background task|for this background task/.test(JSON.stringify(blocks))
         if (sub) subPrompts.push(sessionId)
         const act = sub ? behavior.sub : behavior.plain
         if (act === 'throw') throw new Error('the runtime exited')
@@ -211,6 +216,28 @@ const continueHint = (key: string) =>
 /** The report of a round that stopped before finishing. */
 const stoppedReport = (key: string, why: string) =>
   `[task ended] Task ${key} stopped before finishing (${why}). Anything it sent before this is all it reported. ${continueHint(key)}\n\n${REPORT_ANSWER_LANGUAGE}`
+
+describe('the end report the daemon sends for a patrol or approved work', () => {
+  it('names a patrol a patrol, never a task or a sub-session', () => {
+    const thread = patrolCoordinate('p-1')
+    expect(subsessionEndReport('k-1', { outcome: 'completed' }, thread)).toBe(
+      '[patrol ended] Patrol k-1 ended without reporting back. It sent no result.'
+    )
+    expect(subsessionEndReport('k-1', { outcome: 'failed' }, thread)).toBe(
+      '[patrol ended] Patrol k-1 stopped before finishing (error). It sent no result.'
+    )
+  })
+
+  it('names an approved proposal’s work approved work', () => {
+    const thread = taskCoordinate('t-1')
+    expect(subsessionEndReport('k-2', { outcome: 'completed' }, thread)).toBe(
+      '[approved work ended] Approved work k-2 ended without reporting back. It sent no result; start a task if the work is still needed.'
+    )
+    expect(subsessionEndReport('k-2', { outcome: 'interrupted', reason: 'stop' }, thread)).toBe(
+      '[approved work ended] Approved work k-2 stopped before finishing (stop). It sent no result; start a task if the work is still needed.'
+    )
+  })
+})
 
 const stateOf = async (d: any, key: string) => (await d.store.assistantSubsessions.get('bot-a', key))?.state
 const rowOf = async (d: any, key: string) => await d.store.assistantSubsessions.get('bot-a', key)
@@ -526,7 +553,7 @@ describe('a sub-session that ends without reporting is reported by the daemon', 
         thread: sub.thread,
         transportScope: sub.transportScope,
         sender: { id: 'background-task:t1', isBot: true },
-        text: '[background task finished] build',
+        text: '[background job finished] build',
         mentionedBots: [],
         isDm: false
       },
@@ -711,7 +738,8 @@ describe('the sub-session cap', () => {
       expect(refused).toMatchObject({
         delivered: false,
         reason: 'task_limit',
-        message: 'You already have 3 tasks running, the limit. Finish this here or wait for one to report.'
+        message:
+          'You already run as much background work as allowed at once (3). Finish this here, or wait until some of it reports.'
       })
       expect(await stateOf(d, refused.targetSession)).toBeUndefined()
       expect(d.collab.childSessionLinks.has(refused.targetSession)).toBe(false)
@@ -747,7 +775,8 @@ describe('the sub-session cap', () => {
     expect(second.wake).toMatchObject({
       delivered: false,
       reason: 'task_limit',
-      message: 'You already have 1 tasks running, the limit. Finish this here or wait for one to report.'
+      message:
+        'You already run as much background work as allowed at once (1). Finish this here, or wait until some of it reports.'
     })
     expect(second.taskId).toBeUndefined()
     expect(dispatched).toHaveLength(1)

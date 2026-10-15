@@ -131,7 +131,7 @@ describe('console approval requests', () => {
     expect(mocks.decide).toHaveBeenCalledWith('example-agent', 'request-1', 'deny', undefined)
   })
 
-  it('shows a conversation what its background sub-sessions ask, linked to the sub-session', async () => {
+  it('shows a conversation what its background work asks, linked to that work', async () => {
     mocks.rows = [
       request({ id: 'own', sessionId: 'sid-parent', command: 'Bash: ls' }),
       request({ id: 'child', sessionId: 'sid-sub', parentSessionId: 'sid-parent', command: 'Write src/app.ts' }),
@@ -142,10 +142,10 @@ describe('console approval requests', () => {
     expect(host!.textContent).toContain('Write src/app.ts')
     expect(host!.textContent).not.toContain('Bash: rm')
     const links = [...host!.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
-    expect(links).toEqual([['Background sub-session', '/example/sessions/sid-sub']])
+    expect(links).toEqual([['Background work', '/example/sessions/sid-sub']])
     expect(buttons()).toHaveLength(4)
 
-    // The sub-session's own page shows it as its own request, with no link back to itself.
+    // The background work's own page shows it as its own request, with no link back to itself.
     act(() => root?.unmount())
     host?.remove()
     await render('sid-sub')
@@ -215,7 +215,7 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     expect(shown.textContent).toContain('Expires Jan 2, 2026')
     expect(shown.textContent).not.toContain('The check found a merge conflict.')
     expect(shown.textContent).not.toContain('Rebase PR #12 onto main and push.')
-    await click('Reason and task')
+    await click('Reason and details')
     expect(shown.textContent).toContain('Why: The check found a merge conflict.')
     expect(shown.textContent).toContain('Rebase PR #12 onto main and push.')
     expect(host!.textContent).toContain('1 pending')
@@ -226,7 +226,7 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     await renderStrip(false)
     await click('Approve')
     expect(mocks.decideProposal).not.toHaveBeenCalled()
-    expect(host!.textContent).toContain('Run this task now? It reports back in this conversation.')
+    expect(host!.textContent).toContain('Run this now? It reports back in this conversation.')
     await click('Cancel')
     expect(mocks.decideProposal).not.toHaveBeenCalled()
 
@@ -259,9 +259,9 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     expect(row('proposal-2')!.textContent).toContain('Already decided.')
   })
 
-  it('keeps one waiting with its choices while the agent’s sub-sessions are at their limit', async () => {
+  it('keeps one waiting with its choices while the agent’s background work is at its limit', async () => {
     mocks.proposals = [proposal()]
-    const limit = 'The agent already has 3 sub-sessions running; approve again once one finishes.'
+    const limit = 'The agent already has 3 tasks and approved work running; approve again once one finishes.'
     mocks.decideProposal.mockRejectedValueOnce(new mocks.ApiError(limit, 409, 'SUBSESSION_LIMIT'))
     await renderStrip(false)
     await choose('proposal-1', 'Approve')

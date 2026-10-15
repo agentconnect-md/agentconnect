@@ -179,7 +179,7 @@ export function patrolPrompt(item: AssistantItem, due: AssistantPatrolDue): stri
       'and quoting no one. With the item’s version, set `nextCheck` to when it should be checked again, or `status` ' +
       'to `waiting` or `done` when that is what you found.',
     '3. Then one of three outcomes. When something should be done, not only known, call `propose` once: one plain ' +
-      'sentence for the approver ("I want to do X because Y"), why, and the exact task a background session with ' +
+      'sentence for the approver ("I want to do X because Y"), why, and the exact work a background session with ' +
       'your normal permissions carries out once a person approves it. You do not do it yourself, and you do not also ' +
       'report it. Otherwise, only when something changed since the latest observation that the people following the ' +
       'item should know, add `report` with one short message; the conversation the item was taken in passes it on. ' +

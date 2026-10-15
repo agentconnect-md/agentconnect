@@ -1,9 +1,9 @@
 // Which of an agent's Activity the console offers (assistant-mode.md §5.11): all of it in assistant mode, else what every agent has where its daemon serves it.
 
-/** The daemon serves Activity's sub-sessions, drafts and permission requests outside assistant mode (protocol `ACTIVITY_EVERY_AGENT_V1_FEATURE`). */
+/** The daemon serves Activity's background work, drafts and permission requests outside assistant mode (protocol `ACTIVITY_EVERY_AGENT_V1_FEATURE`). */
 export const ACTIVITY_EVERY_AGENT_FEATURE = 'activity-every-agent-v1'
 
-/** `assistant` has every section, `every-agent` only sub-sessions and what waits for approval, null no Activity at all. */
+/** `assistant` has every section, `every-agent` only background work and what waits for approval, null no Activity at all. */
 export type ActivityScope = 'assistant' | 'every-agent' | null
 
 export function activityScope(assistantMode: boolean, features: readonly string[] | undefined): ActivityScope {

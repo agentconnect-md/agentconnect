@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The dock's Sub-sessions panel: it lists only the sub-sessions this conversation opened, links only those the reader may open, stops one through the console's stop route, pages on, and reports the verdict that puts its tab in the strip.
+// The dock's Background work panel: it lists only the background work this conversation started, links only those the reader may open, stops one through the console's stop route, pages on, and reports the verdict that puts its tab in the strip.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -161,7 +161,7 @@ afterEach(async () => {
 })
 
 describe('SubsessionsPanel', () => {
-  it('reads only this conversation’s sub-sessions and draws each one’s state and start', async () => {
+  it('reads only this conversation’s background work and draws each one’s state and start', async () => {
     wire.pages = [
       page([
         row(),
@@ -179,12 +179,12 @@ describe('SubsessionsPanel', () => {
       'Reported',
       'Failed'
     ])
-    expect(text()).toContain('Untitled sub-session')
+    expect(text()).toContain('Untitled background work')
     expect(rows()[0]?.querySelector('time')?.getAttribute('dateTime')).toBe('2026-10-09T09:00:00.000Z')
     expect(last()).toEqual({ settled: true, count: 3, running: 1, failed: false })
   })
 
-  it('links a sub-session only where the reader may open it', async () => {
+  it('links background work only where the reader may open it', async () => {
     wire.pages = [
       page([
         row(),
@@ -200,7 +200,7 @@ describe('SubsessionsPanel', () => {
     expect(rows()[2]?.querySelector('a')).toBeNull()
   })
 
-  it('offers Stop only on a running sub-session the reader may stop, and shows what the stop did', async () => {
+  it('offers Stop only on running background work the reader may stop, and shows what the stop did', async () => {
     wire.pages = [
       page([
         row(),
@@ -221,7 +221,7 @@ describe('SubsessionsPanel', () => {
     wire.stopAnswer = { result: 'not_running' }
     await click(buttons('Stop')[0])
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe(
-      'No turn is running. A background task it started may still be running; it can’t be stopped from here, and the sub-session reports when that task ends.'
+      'No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.'
     )
     expect(rows()[0]?.querySelector('[data-subsession-state]')?.textContent).toBe('Running')
 
@@ -230,7 +230,7 @@ describe('SubsessionsPanel', () => {
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Couldn’t stop it. Try again.')
   })
 
-  it('says nothing was running when the sub-session reported before the stop reached it', async () => {
+  it('says nothing was running when the background work reported before the stop reached it', async () => {
     wire.pages = [page([row()]), page([row({ state: 'done' })])]
     wire.stopAnswer = { result: 'not_running' }
     await render()
@@ -252,7 +252,7 @@ describe('SubsessionsPanel', () => {
     expect(rows()).toHaveLength(SUBSESSIONS_PAGE + 1)
     expect(buttons('Show more')).toHaveLength(0)
 
-    // A new sub-session lands on top: the refresh reads as far as the reader had loaded, so the oldest stays.
+    // New background work lands on top: the refresh reads as far as the reader had loaded, so the oldest stays.
     wire.server = [older(99), ...wire.server]
     await rerender({ refreshTick: 1 })
     const links = Array.from(container?.querySelectorAll('a') ?? []).map((a) => a.getAttribute('href'))
@@ -311,7 +311,7 @@ describe('SubsessionsPanel', () => {
   it('says a daemon too old for the list should be upgraded, and keeps its tab to say so', async () => {
     wire.failure = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
     await render()
-    expect(text()).toContain('Upgrade this agent’s daemon to see its sub-sessions here.')
+    expect(text()).toContain('Upgrade this agent’s daemon to see its background work here.')
     expect(last()).toEqual({ settled: true, count: 0, running: 0, failed: true })
     expect(subsessionsTabShown(last()!)).toBe(true)
   })
@@ -322,7 +322,7 @@ describe('SubsessionsPanel', () => {
     wire.failure = { status: 503, code: 'DAEMON_OFFLINE' }
     await rerender({ refreshTick: 1 })
     expect(rows()).toHaveLength(1)
-    expect(text()).toContain('Sub-sessions are unavailable right now.')
+    expect(text()).toContain('Background work is unavailable right now.')
     expect(last()).toEqual({ settled: true, count: 1, running: 1, failed: false })
   })
 

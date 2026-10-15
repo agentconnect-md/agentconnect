@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// A sub-session's own page is read-only: its channel is synthetic and its thread no platform thread, so a composer there could reach neither it nor its turn.
+// Background work's own page is read-only: its channel is synthetic and its thread no platform thread, so a composer there could reach neither it nor its turn.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -186,7 +186,7 @@ const listRow = (origin: Origin): Session =>
     daemonId: 'daemon-1'
   } as unknown as SessionDto)
 
-// The Control Plane's own verdict: a Slack-origin sub-session still reads as continuable there.
+// The Control Plane's own verdict: a Slack-origin task still reads as continuable there.
 const detailOf = (origin: Origin): SessionDetailDto => {
   const canContinue = origin.platform !== 'webchat'
   return {
@@ -293,16 +293,16 @@ afterEach(() => {
 })
 
 const SUBSESSIONS = [
-  ['a webchat-origin delegated sub-session', WEBCHAT_SUBSESSION],
+  ['a webchat-origin task', WEBCHAT_SUBSESSION],
   ['a webchat-origin patrol', WEBCHAT_PATROL],
-  ['a Slack-origin delegated sub-session', SLACK_SUBSESSION],
+  ['a Slack-origin task', SLACK_SUBSESSION],
   ['a Slack-origin patrol', SLACK_PATROL]
 ] as const
 
 describe.each([
   ['on a desktop', false],
   ['on a phone', true]
-])('a sub-session’s own page %s', (_viewport, mobile) => {
+])('background work’s own page %s', (_viewport, mobile) => {
   beforeEach(() => setViewport(mobile))
 
   it.each(SUBSESSIONS)('keeps %s readable but offers no composer', async (_name, origin) => {
