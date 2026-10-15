@@ -10,7 +10,7 @@ import { isAttachmentReadTool } from '../platforms/read-ports.js'
 import { patrolCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantItem, AssistantItemLedger, AssistantPlace } from '../store/assistant-items.js'
 import type { AssistantPatrolDue, AssistantPatrolLedger, AssistantPatrolState } from '../store/assistant-patrols.js'
-import { PATROL_MAX_FAILURES, patrolBackoffMs } from '../store/assistant-patrols.js'
+import { PATROL_BUDGET_WINDOW_MS, PATROL_MAX_FAILURES, patrolBackoffMs } from '../store/assistant-patrols.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
@@ -21,7 +21,6 @@ import { callerOfMessage, type TaskCaller } from './tasks.js'
 /** Checks an agent may start in any 24 hours when its policy sets no `dailyPatrolBudget`. */
 export const DEFAULT_DAILY_PATROL_BUDGET = 50
 export const PATROL_SWEEP_INTERVAL_MS = 60_000
-export const PATROL_BUDGET_WINDOW_MS = 24 * 60 * 60_000
 /** A check still running after this no longer holds its follow-up or the agent's one scheduled-check slot. */
 export const PATROL_STALE_MS = 60 * 60_000
 /** A check whose session never appeared is released after this. */

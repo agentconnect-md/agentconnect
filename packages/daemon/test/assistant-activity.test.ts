@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  ASSISTANT_ACTIVITY_RESULT_BYTES,
   AssistantActivityReadResult,
   AssistantActivityWriteResult,
   type AssistantActivityPermission,
@@ -17,6 +18,7 @@ import {
 } from '../src/cp/assistant-activity.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { ASSISTANT_DRAFT_TTL_MS } from '../src/store/assistant-drafts.js'
+import { ASSISTANT_ITEM_LIMITS } from '../src/store/assistant-items.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { openTestStore } from './store-support.js'
 
@@ -170,6 +172,44 @@ describe('the Activity view: follow-ups in place of items', () => {
         }
       }
     ])
+  })
+
+  it('keeps a page of follow-ups inside the wire budget, paging on from the last row it carries', async () => {
+    const { s, a, activity } = await setup()
+    const long = 'x'.repeat(ASSISTANT_ITEM_LIMITS.observation)
+    for (let f = 0; f < 30; f++) {
+      const item = await createFollowUp(s, a, { now: 1_000 + f })
+      for (let i = 1; i <= 5; i++) {
+        const at = (f * 10 + i) * 1_000
+        const begun = await begin(s, a, item, at)
+        await s.assistantPatrols.endCheck(a, item.id, begun!.checkNo, {
+          observation: long,
+          reported: false,
+          now: at + 1
+        })
+        await s.assistantPatrols.succeed(a, item.id, item.taskKey, at + 1)
+      }
+    }
+    const bytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result), 'utf8')
+    const all = await read(activity, { agentId: a, operation: 'subsessions', limit: 30 })
+    expect(bytes(all)).toBeLessThanOrEqual(ASSISTANT_ACTIVITY_RESULT_BYTES)
+    expect(all.subsessions.length).toBeLessThan(30)
+    expect(all.truncated).toBe(true)
+    // One conversation's pages carry every row once, each inside the budget.
+    const seen: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await read(activity, {
+        agentId: a,
+        operation: 'subsessions',
+        limit: 30,
+        parent: { sessionId: 'sid-parent', ...(cursor ? { cursor } : {}) }
+      })
+      expect(bytes(page)).toBeLessThanOrEqual(ASSISTANT_ACTIVITY_RESULT_BYTES)
+      seen.push(...page.subsessions.map((row) => row.createdAt))
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    expect(new Set(seen).size).toBe(30)
   })
 
   it('names a running check, checks paused after failures, and how a follow-up ended', async () => {

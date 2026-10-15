@@ -166,8 +166,14 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const delegationsOnly = !assistant
           if (!req.parent) {
             const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1, { delegationsOnly })
-            const subsessions = await Promise.all(rows.slice(0, req.limit).map(subsessionOf))
-            return { operation: 'subsessions', subsessions, truncated: rows.length > req.limit, followUps: true }
+            // A follow-up row carries its checks, so the wire budget, not the row limit, bounds the answer.
+            const { kept, trimmed } = withinBudget(await Promise.all(rows.slice(0, req.limit).map(subsessionOf)))
+            return {
+              operation: 'subsessions',
+              subsessions: kept,
+              truncated: rows.length > req.limit || trimmed,
+              followUps: true
+            }
           }
           if (assistant && req.parent.cursor === undefined) await adoptInto(store, req.agentId, req.parent.sessionId)
           const after = req.parent.cursor === undefined ? undefined : cursorPosition(req.parent.cursor)
@@ -177,12 +183,13 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
             delegationsOnly
           })
           const page = rows.slice(0, req.limit)
-          const subsessions = await Promise.all(page.map(subsessionOf))
-          const last = page.at(-1)
-          const more = rows.length > req.limit && last !== undefined
+          const { kept, trimmed } = withinBudget(await Promise.all(page.map(subsessionOf)))
+          // The next page starts after the last row this answer actually carries.
+          const last = page[kept.length - 1]
+          const more = (rows.length > req.limit || trimmed) && last !== undefined
           return {
             operation: 'subsessions',
-            subsessions,
+            subsessions: kept,
             truncated: more,
             nextCursor: more ? cursorOf(last) : null,
             followUps: true

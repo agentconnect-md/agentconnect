@@ -24,6 +24,7 @@ async function open(): Promise<LocalStore> {
 const agent = (): string => `agent-${randomUUID()}`
 const ORIGIN = { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXAMPLE' }
 const MINUTE = 60_000
+const HOUR = 60 * MINUTE
 
 const key = (agentId: string, id: string, thread = patrolCoordinate(id)): string =>
   sessionKey('slack', 'C0GENERAL', thread, agentId, 'T0EXAMPLE')
@@ -191,34 +192,52 @@ describe('the check state', () => {
     const s = await open()
     const [a, b] = [agent(), agent()]
     const it1 = await item(s, a, 1_000)
+    // An hour apart, so the oldest checks fall out of the budget window and can be pruned.
     for (let n = 1; n <= ASSISTANT_CHECKS_KEPT + 2; n++) {
-      const begun = await begin(s, a, it1, n * 1_000)
+      const begun = await begin(s, a, it1, n * HOUR)
       await s.assistantPatrols.endCheck(a, it1.id, begun!.checkNo, {
         observation: `seen ${n}`,
         reported: n % 2 === 0,
-        now: n * 1_000 + 1
+        now: n * HOUR + 1
       })
-      await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, n * 1_000 + 1)
+      await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, n * HOUR + 1)
     }
     const checks = await s.assistantPatrols.checks(a, it1.id, 100)
     expect(checks).toHaveLength(ASSISTANT_CHECKS_KEPT)
     expect(checks[0]).toEqual({
       itemId: it1.id,
       checkNo: ASSISTANT_CHECKS_KEPT + 2,
-      startedAt: (ASSISTANT_CHECKS_KEPT + 2) * 1_000,
-      endedAt: (ASSISTANT_CHECKS_KEPT + 2) * 1_000 + 1,
+      startedAt: (ASSISTANT_CHECKS_KEPT + 2) * HOUR,
+      endedAt: (ASSISTANT_CHECKS_KEPT + 2) * HOUR + 1,
       observation: `seen ${ASSISTANT_CHECKS_KEPT + 2}`,
       reported: true
     })
     expect(checks.at(-1)?.checkNo).toBe(3)
-    await begin(s, b, await item(s, b, 1_000), 50_000)
-    expect(await s.assistantPatrols.checksSince(a, 50_000)).toEqual({ count: 3, oldest: 50_000 })
-    expect(await s.assistantPatrols.checksSince(a, 999_999)).toEqual({ count: 0, oldest: null })
+    await begin(s, b, await item(s, b, 1_000), 50 * HOUR)
+    expect(await s.assistantPatrols.checksSince(a, 50 * HOUR)).toEqual({ count: 3, oldest: 50 * HOUR })
+    expect(await s.assistantPatrols.checksSince(a, 999 * HOUR)).toEqual({ count: 0, oldest: null })
     // A released check says nothing, and leaves the log and the budget.
-    const begun = await begin(s, a, it1, 60_000)
-    await s.assistantPatrols.release(a, it1.id, it1.taskKey, 60_001)
+    const begun = await begin(s, a, it1, 60 * HOUR)
+    await s.assistantPatrols.release(a, it1.id, it1.taskKey, 60 * HOUR + 1)
     expect((await s.assistantPatrols.checks(a, it1.id, 1))[0]?.checkNo).not.toBe(begun!.checkNo)
-    expect((await s.assistantPatrols.checksSince(a, 50_000)).count).toBe(3)
+    expect((await s.assistantPatrols.checksSince(a, 50 * HOUR)).count).toBe(3)
+  })
+
+  it('keeps every check the budget window counts, past the newest kept', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, 1_000)
+    // A minute apart: all inside one window, so a budget above the kept count still sees them all.
+    for (let n = 1; n <= ASSISTANT_CHECKS_KEPT + 10; n++) {
+      const begun = await begin(s, a, it1, n * MINUTE)
+      await s.assistantPatrols.endCheck(a, it1.id, begun!.checkNo, {
+        observation: `seen ${n}`,
+        reported: false,
+        now: n * MINUTE + 1
+      })
+      await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, n * MINUTE + 1)
+    }
+    expect((await s.assistantPatrols.checksSince(a, 0)).count).toBe(ASSISTANT_CHECKS_KEPT + 10)
   })
 
   it('keeps messages for the next check, which takes them all', async () => {

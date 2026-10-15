@@ -7,8 +7,11 @@ export const PATROL_MAX_FAILURES = 5
 /** The wait after the `failures`-th failure in a row: min(60, 2ⁿ) minutes. */
 export const patrolBackoffMs = (failures: number): number => Math.min(60, 2 ** failures) * 60_000
 
-/** Checks kept per follow-up in its log. */
+/** Checks kept per follow-up in its log, besides every check the budget window still counts. */
 export const ASSISTANT_CHECKS_KEPT = 50
+
+/** The rolling window `dailyPatrolBudget` counts check starts in. */
+export const PATROL_BUDGET_WINDOW_MS = 24 * 60 * 60_000
 
 export interface AssistantPatrolState {
   agentId: string
@@ -250,11 +253,11 @@ export class AssistantPatrolLedger {
         'INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, ?, ?, 0)',
         [agentId, itemId, checkNo, run.now]
       )
-      await tx.query('DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo <= ?', [
-        agentId,
-        itemId,
-        checkNo - ASSISTANT_CHECKS_KEPT
-      ])
+      // Pruning stops at the budget window, so the daily budget still sees every check it must count.
+      await tx.query(
+        'DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo <= ? AND startedAt < ?',
+        [agentId, itemId, checkNo - ASSISTANT_CHECKS_KEPT, run.now - PATROL_BUDGET_WINDOW_MS]
+      )
       return { checkNo, messages: prior.pendingMessages }
     })
   }
