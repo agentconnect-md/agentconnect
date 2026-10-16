@@ -160,6 +160,7 @@ describe('the Activity view: follow-ups in place of items', () => {
         createdAt: '1970-01-01T00:00:01.000Z',
         kind: 'follow-up',
         followUp: {
+          id: item.id,
           title: 'Ship the release notes',
           doneWhen: 'The notes are published',
           status: 'waiting',
@@ -302,6 +303,80 @@ describe('the Activity view: follow-ups in place of items', () => {
     expect(stopSession).not.toHaveBeenCalled()
     // A daemon that cannot end a follow-up from the console stops nothing.
     expect(await stop(activity)).toEqual({ operation: 'stop-subsession', result: 'not-found' })
+  })
+
+  it('ends a follow-up by its id before its first check, only under the conversation its row names', async () => {
+    const { s, a, b, activity, stopSession } = await setup()
+    const stopFollowUp = vi.fn(async (): Promise<'stopped' | 'ended'> => 'stopped')
+    const withStop = createAssistantActivity({
+      store: () => s,
+      agent: () => ({ assistantMode: { enabled: true } }),
+      now: () => NOW,
+      decideDraft: async () => ({ result: 'not-found', status: null, failure: null }),
+      stopSession,
+      stopFollowUp
+    })
+    const item = await createFollowUp(s, a)
+    // No check has run, so the row has no session to stop it by; its own id does.
+    const [row] = (await read(withStop, { agentId: a, operation: 'subsessions', limit: 10 })).subsessions
+    expect(row).toMatchObject({ sessionId: null, followUp: { id: item.id } })
+    const actor = { userId: 'usr-1', name: null }
+    const stop = (on: AssistantActivity, agentId: string, followUpId: string, parentSessionId = 'sid-parent') =>
+      on.write({ agentId, operation: 'stop-follow-up', followUpId, parentSessionId, actor })
+    const result = await stop(withStop, a, item.id)
+    expect(AssistantActivityWriteResult.parse(result)).toEqual({ operation: 'stop-follow-up', result: 'stopped' })
+    expect(stopFollowUp).toHaveBeenCalledWith(a, expect.objectContaining({ id: item.id }), { userId: 'usr-1' })
+    stopFollowUp.mockResolvedValueOnce('ended')
+    expect(await stop(withStop, a, item.id)).toEqual({ operation: 'stop-follow-up', result: 'not-running' })
+
+    stopFollowUp.mockClear()
+    const theirs = await createFollowUp(s, b)
+    // Another conversation, another agent's follow-up, an unknown id, and a daemon that cannot end one end nothing.
+    for (const [on, agentId, id, parent] of [
+      [withStop, a, item.id, 'sid-elsewhere'],
+      [withStop, a, theirs.id, 'sid-parent'],
+      [withStop, a, randomUUID(), 'sid-parent'],
+      [activity, a, item.id, 'sid-parent']
+    ] as const) {
+      expect(await stop(on, agentId, id, parent)).toEqual({ operation: 'stop-follow-up', result: 'not-found' })
+    }
+    expect(stopFollowUp).not.toHaveBeenCalled()
+    expect(stopSession).not.toHaveBeenCalled()
+  })
+
+  it('reads one task by its own session, the same row the list carries', async () => {
+    const { s, a, b, off, activity } = await setup()
+    const item = await createFollowUp(s, a)
+    const session = (agentId: string, key: string, sessionId: string, thread = key.split(':')[2]!) =>
+      s.upsertSession({
+        key,
+        agentId,
+        platform: 'slack',
+        channel: 'C0SUPPORT',
+        thread,
+        transportScope: 'T0EXAMPLE',
+        acpSessionId: `acp-${sessionId}`,
+        sessionId,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1_000
+      })
+    await session(a, item.taskKey, 'sid-follow-up')
+    const one = async (agentId: string, sessionId: string) =>
+      (await read(activity, { agentId, operation: 'task', sessionId })).task
+    const [listed] = (await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })).subsessions
+    expect(await one(a, 'sid-follow-up')).toEqual(listed)
+    expect(listed).toMatchObject({ sessionId: 'sid-follow-up', kind: 'follow-up', followUp: { id: item.id } })
+
+    // Another agent's task, a session that is no task, and an unknown one read as none.
+    expect(await one(b, 'sid-follow-up')).toBeNull()
+    await session(a, sessionKey('slack', 'C0SUPPORT', 'append:1', a, 'T0EXAMPLE'), 'sid-parent', 'append:1')
+    expect(await one(a, 'sid-parent')).toBeNull()
+    expect(await one(a, 'sid-unknown')).toBeNull()
+    // Outside assistant mode a follow-up is not shown, as the list leaves it out.
+    const offItem = await createFollowUp(s, off)
+    await session(off, offItem.taskKey, 'sid-off')
+    expect(await one(off, 'sid-off')).toBeNull()
   })
 })
 

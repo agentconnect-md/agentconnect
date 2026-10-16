@@ -13,6 +13,7 @@ const wire = vi.hoisted(() => ({
   failure: null as null | { status: number; code?: string },
   calls: [] as Array<{ agentId: string; opts: { parentSessionId?: string; cursor?: string; limit?: number } }>,
   stops: [] as Array<{ agentId: string; sessionId: string }>,
+  followUpStops: [] as Array<{ agentId: string; followUpId: string; parentSessionId: string }>,
   stopAnswer: { result: 'stopped' } as unknown,
   stopFailure: null as null | { status: number; code?: string }
 }))
@@ -49,6 +50,10 @@ vi.mock('@/lib/api', () => {
     stopAssistantSubsession: vi.fn((agentId: string, sessionId: string) => {
       wire.stops.push({ agentId, sessionId })
       if (wire.stopFailure) return Promise.reject(new ApiError('nope', wire.stopFailure.status, wire.stopFailure.code))
+      return Promise.resolve(wire.stopAnswer)
+    }),
+    stopAssistantFollowUp: vi.fn((agentId: string, followUpId: string, parentSessionId: string) => {
+      wire.followUpStops.push({ agentId, followUpId, parentSessionId })
       return Promise.resolve(wire.stopAnswer)
     })
   }
@@ -174,6 +179,7 @@ beforeEach(() => {
   wire.failure = null
   wire.calls = []
   wire.stops = []
+  wire.followUpStops = []
   wire.stopAnswer = { result: 'stopped' }
   wire.stopFailure = null
   verdicts = []
@@ -463,6 +469,21 @@ describe('SubsessionsPanel', () => {
     await click(buttons('End follow-up')[0])
     await click(container?.querySelector('[role="group"]')?.querySelector('button'))
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe(notice)
+  })
+
+  it('ends a follow-up whose first check has not run by its own id, under this conversation', async () => {
+    const unchecked = (status: AssistantFollowUpStatus, id?: string) =>
+      followUp(status, { sessionId: null, canStop: status === 'waiting' }, id ? { id } : {})
+    wire.pages = [page([unchecked('waiting', 'item-1'), unchecked('waiting')]), page([unchecked('stopped', 'item-1')])]
+    await render()
+    // Without an id from its daemon, a follow-up with no session has nothing to end it by.
+    expect(buttons('End follow-up')).toHaveLength(1)
+    await click(buttons('End follow-up')[0])
+    await click(container?.querySelector('[role="group"]')?.querySelector('button'))
+    expect(wire.followUpStops).toEqual([{ agentId: 'agent-a', followUpId: 'item-1', parentSessionId: 'session-1' }])
+    expect(wire.stops).toEqual([])
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Follow-up ended.')
+    expect(rows()[0]?.querySelector('[data-subsession-state]')?.textContent).toBe('Stopped')
   })
 
   it('starts over for another conversation, never showing the previous one’s rows', async () => {

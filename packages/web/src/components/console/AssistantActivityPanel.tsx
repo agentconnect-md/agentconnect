@@ -15,7 +15,6 @@ import {
   fetchAssistantItems,
   fetchAssistantSubsessions,
   memberDisplayName,
-  stopAssistantSubsession,
   type AgentPermissionOptionDto,
   type AssistantDraftDecision,
   type AssistantDraftDto,
@@ -32,7 +31,7 @@ import { chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
-import { FollowUpChecks, FollowUpChecksToggle, followUpOf } from '@/components/console/follow-up'
+import { FollowUpChecks, FollowUpChecksToggle, followUpOf, stopTask, taskStopKey } from '@/components/console/follow-up'
 
 const REFRESH_MS = 30_000
 
@@ -179,8 +178,8 @@ export function AssistantActivityPanel({
     await Promise.all([open.mutate(drop, { revalidate: false }), closed.mutate(drop, { revalidate: false })])
   }
 
-  const endFollowUp = async (sessionId: string) => {
-    const { result } = await stopAssistantSubsession(agentId, sessionId)
+  const endFollowUp = async (row: AssistantSubsessionDto) => {
+    const { result } = await stopTask(agentId, row)
     void subsessions.mutate()
     return result
   }
@@ -543,7 +542,7 @@ function SubsessionRow({
 }: {
   subsession: AssistantSubsessionDto
   first: boolean
-  onEnd: (sessionId: string) => Promise<'stopped' | 'not_running'>
+  onEnd: (row: AssistantSubsessionDto) => Promise<'stopped' | 'not_running'>
 }) {
   const t = useTranslations('Agents.detail.activity')
   const tf = useTranslations('Common.followUp')
@@ -553,9 +552,9 @@ function SubsessionRow({
   const [confirming, setConfirming] = useState(false)
   const [ending, setEnding] = useState<EndState | null>(null)
   const followUp = followUpOf(subsession)
-  // An item's editor delete becomes ending its follow-up, under the task's own stop rule.
+  // An item's editor delete becomes ending its follow-up, under the task's own stop rule, by its id before its first check.
   const endable =
-    followUp !== null && subsession.state === 'open' && subsession.canStop && subsession.sessionId !== null
+    followUp !== null && subsession.state === 'open' && subsession.canStop && taskStopKey(subsession) !== null
   const parent = subsession.parent
   const parentName = parent
     ? parent.channelName
@@ -566,7 +565,7 @@ function SubsessionRow({
   const end = async () => {
     setEnding('busy')
     try {
-      setEnding((await onEnd(subsession.sessionId!)) === 'stopped' ? 'ended' : 'alreadyEnded')
+      setEnding((await onEnd(subsession)) === 'stopped' ? 'ended' : 'alreadyEnded')
     } catch {
       setEnding('endFailed')
     }

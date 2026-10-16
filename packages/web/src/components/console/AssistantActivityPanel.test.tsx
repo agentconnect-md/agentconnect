@@ -52,6 +52,9 @@ const api = vi.hoisted(() => ({
     }
   }),
   stopAssistantSubsession: vi.fn(async (_agentId: string, _sessionId: string) => mocks.stopAnswer),
+  stopAssistantFollowUp: vi.fn(
+    async (_agentId: string, _followUpId: string, _parentSessionId: string) => mocks.stopAnswer
+  ),
   fetchAssistantDrafts: vi.fn(async () => ({
     drafts: mocks.drafts,
     truncated: false,
@@ -822,6 +825,22 @@ describe('the Activity view toward a daemon that serves follow-ups', () => {
     expect(waiting.querySelector('[data-follow-up-end]')?.textContent).toBe('Follow-up ended.')
     expect(waiting.querySelector('[role="group"]')).toBeNull()
     expect(api.fetchAssistantSubsessions.mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('ends a follow-up whose first check has not run by its own id, under the conversation it is listed in', async () => {
+    mocks.subsessions = [
+      { ...FOLLOW_UPS[0]!, sessionId: null, followUp: { ...FOLLOW_UPS[0]!.followUp!, id: 'item-9' } },
+      // Without an id from its daemon, a follow-up with no session has nothing to end it by.
+      { ...FOLLOW_UPS[0]!, sessionId: null, startedAt: '2026-10-09T08:00:00.000Z' }
+    ]
+    const host = await mount(false)
+    const [unchecked] = [...section(host, 'subsessions')!.querySelectorAll<HTMLElement>('[data-assistant-subsession]')]
+    expect([...host.querySelectorAll('button')].filter((b) => b.textContent === 'End follow-up')).toHaveLength(1)
+    await click(button(unchecked!, 'End follow-up'))
+    await click(button(unchecked!.querySelector('[role="group"]')!, 'End follow-up'))
+    expect(api.stopAssistantFollowUp).toHaveBeenCalledWith(AGENT, 'item-9', 'sid-parent')
+    expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
+    expect(unchecked!.querySelector('[data-follow-up-end]')?.textContent).toBe('Follow-up ended.')
   })
 
   it('keeps the Items section toward a daemon without them, or when the task list cannot say', async () => {

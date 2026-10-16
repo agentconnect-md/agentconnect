@@ -18,6 +18,9 @@ export const ASSISTANT_CONVERSATION_PROPOSALS_FEATURE = 'assistant-conversation-
 /** Daemon keeps follow-ups in place of items (assistant-mode.md §5.12): its `subsessions` read carries them, and it answers no items. */
 export const FOLLOW_UP_TASKS_V1_FEATURE = 'follow-up-tasks-v1'
 
+/** Daemon carries each follow-up's `id` and ends one by it with `stop-follow-up`, before its first check too, and reads one task by its session id with `task`. */
+export const ASSISTANT_TASK_HANDLE_FEATURE = 'assistant-task-handle-v1'
+
 /** JSON bytes one read result may take, leaving envelope headroom below the 256 KiB wire cap; a list stops short and says so. */
 export const ASSISTANT_ACTIVITY_RESULT_BYTES = 192 * 1024
 
@@ -99,6 +102,8 @@ export type AssistantActivityFollowUpStatus = z.infer<typeof AssistantActivityFo
 
 /** A follow-up's own fields (assistant-mode.md §5.12); its row's `state` is `open` until it is done or stopped. */
 export const AssistantActivityFollowUp = z.object({
+  /** Its own id from a daemon with `assistant-task-handle-v1`, which `stop-follow-up` ends it by. */
+  id: ref.optional(),
   /** Its label; shown only where the row's conversation may be viewed. */
   title: z.string().max(300),
   doneWhen: z.string().max(2_000).nullable(),
@@ -213,6 +218,8 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     /** Only the background work this conversation started, newest first and paged; absent lists the agent's, running first. */
     parent: z.object({ sessionId: ref, cursor: AssistantSubsessionCursor.optional() }).optional()
   }),
+  /** One task by its own session's outward id, from a daemon with `assistant-task-handle-v1`. */
+  z.object({ agentId, operation: z.literal('task'), sessionId: ref }),
   z.object({
     agentId,
     operation: z.literal('drafts'),
@@ -244,6 +251,8 @@ export const AssistantActivityReadResult = z.discriminatedUnion('operation', [
     /** True from a daemon with `follow-up-tasks-v1`: follow-ups are rows here, and it keeps no items. */
     followUps: z.boolean().optional()
   }),
+  /** Null when the agent's index holds no task by that session. */
+  z.object({ operation: z.literal('task'), task: AssistantActivitySubsession.nullable() }),
   z.object({
     operation: z.literal('drafts'),
     drafts: z.array(AssistantActivityDraft).max(ASSISTANT_ACTIVITY_DRAFTS_MAX),
@@ -289,6 +298,14 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
     sessionId: ref,
     /** The console user stopping it, stamped by the Control Plane and named in its transcript. */
     actor: z.object({ userId: ref, name })
+  }),
+  /** End a follow-up by its id, from a daemon with `assistant-task-handle-v1`; only while its row names `parentSessionId`, the conversation the Control Plane checked the caller against. */
+  z.object({
+    agentId,
+    operation: z.literal('stop-follow-up'),
+    followUpId: ref,
+    parentSessionId: ref,
+    actor: z.object({ userId: ref, name })
   })
 ])
 export type AssistantActivityWriteReq = z.infer<typeof AssistantActivityWriteReq>
@@ -310,7 +327,8 @@ export const AssistantActivityWriteResult = z.discriminatedUnion('operation', [
     status: AssistantDraftStatus.nullable(),
     failure: z.string().max(2_000).nullable()
   }),
-  z.object({ operation: z.literal('stop-subsession'), result: AssistantSubsessionStopResult })
+  z.object({ operation: z.literal('stop-subsession'), result: AssistantSubsessionStopResult }),
+  z.object({ operation: z.literal('stop-follow-up'), result: AssistantSubsessionStopResult })
 ])
 export type AssistantActivityWriteResult = z.infer<typeof AssistantActivityWriteResult>
 
