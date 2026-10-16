@@ -74,6 +74,11 @@ export function chatRoomSigil(platformId: string | undefined): string {
   return label ? label.sigil : '#'
 }
 
+/** A conversation's name as written: a DM's already carries its "@", a room's takes its platform's sigil. */
+export function chatPlaceName(platformId: string | undefined, name: string): string {
+  return name.startsWith('@') ? name : `${chatRoomSigil(platformId)}${name}`
+}
+
 /** The ids this table answers for — the module ids plus the `lark` alias.
  *  Exported for the registry-parity test, not for dispatch. */
 export const PLATFORM_LABEL_IDS: readonly string[] = [...LABELS.keys()]

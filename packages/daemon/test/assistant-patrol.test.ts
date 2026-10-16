@@ -193,7 +193,7 @@ async function seedPlace(d: any, agentId = 'bot-a') {
 /** Take a follow-up in C1, as `followUp` would for Alice. */
 async function takeFollowUp(
   d: any,
-  over: { agentId?: string; nextCheck?: number | null; title?: string } = {}
+  over: { agentId?: string; nextCheck?: number | null; title?: string; replyThread?: string } = {}
 ): Promise<AssistantItem> {
   const agentId = over.agentId ?? 'bot-a'
   const scope = scopeOf(d, agentId)
@@ -206,7 +206,8 @@ async function takeFollowUp(
     doneWhen: 'The release is published',
     ...(nextCheck !== null ? { nextCheck } : {}),
     summary: 'Alice asked to hear when the release is out.',
-    asker: 'slack:T0EXAMPLE:U0ALICE'
+    asker: 'slack:T0EXAMPLE:U0ALICE',
+    ...(over.replyThread !== undefined ? { replyThread: over.replyThread } : {})
   })
 }
 
@@ -687,7 +688,7 @@ describe('a follow-up owned by its place', () => {
         state: 'waiting',
         startedAt: expect.any(String),
         nextCheck: new Date(item.nextCheck!).toISOString(),
-        handedBackResult: true
+        handedBackResult: false
       }
     ])
 
@@ -722,6 +723,69 @@ describe('a follow-up owned by its place', () => {
     expect(await executeTool(here, 'stopTask', { taskId: item.taskKey }, deps)).toMatchObject({ result: 'not_running' })
     expect(await message(d, place, item.taskKey, 'More?')).toMatchObject({ delivered: false, reason: 'task_ended' })
     expect(((await executeTool(here, 'listTasks', {}, deps)) as any).tasks[0]).toMatchObject({ state: 'stopped' })
+    await daemon.stop()
+  })
+
+  it('says it handed back a result only while its latest check reported', async () => {
+    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const place = await seedPlace(d)
+    const item = await takeFollowUp(d)
+    const handedBack = async () =>
+      ((await executeTool(placeCtx(place), 'listTasks', {}, deps)) as any).tasks[0].handedBackResult
+    expect(await handedBack()).toBe(false)
+
+    const next = new Date(Date.now() + 60 * MINUTE).toISOString()
+    behavior.check = async (ctx) =>
+      await executeTool(
+        ctx,
+        'recordCheck',
+        { observation: 'The build passed.', report: 'It passed.', nextCheck: next },
+        deps
+      )
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
+    await settled()
+    expect(await handedBack()).toBe(true)
+
+    behavior.check = quiet(deps)
+    await message(d, place, item.taskKey, 'Look again.')
+    await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
+    await settled()
+    expect(await handedBack()).toBe(false)
+    await daemon.stop()
+  })
+
+  it('reports in the thread it was taken in, else where its place last replied', async () => {
+    const { daemon, d, behavior, reports, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const place = await seedPlace(d)
+    // `followUp` keeps the thread the taking turn replies in.
+    d.activeTurnShare.set(place.key, {
+      platform: 'slack',
+      channel: 'C1',
+      thread: '200.1',
+      headless: false,
+      synthetic: false
+    })
+    const taken = await deps.assistantItems.take(placeCtx(place), {
+      title: 'Watch the release build',
+      doneWhen: 'The release is published',
+      nextCheck: Date.now() - MINUTE,
+      asker: 'slack:T0EXAMPLE:U0ALICE'
+    })
+    d.activeTurnShare.delete(place.key)
+    expect(taken.replyThread).toBe('200.1')
+    behavior.check = reporting(deps)
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await settled()
+    expect(reports()[0]!.msg).toMatchObject({ thread: '200.1', sessionThread: place.coordinate })
+
+    await d.store.setSessionReplyThread(place.key, '300.1')
+    await takeFollowUp(d, { title: 'Watch the docs build' })
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(reports()).toHaveLength(2), WAIT)
+    await settled()
+    expect(reports()[1]!.msg).toMatchObject({ thread: '300.1', sessionThread: place.coordinate })
     await daemon.stop()
   })
 

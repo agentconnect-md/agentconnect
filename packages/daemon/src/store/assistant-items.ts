@@ -32,6 +32,8 @@ export interface AssistantItem {
   asker: string | null
   /** Its place is a public channel, so every internal place lists it (§5.12). */
   shared: boolean
+  /** The platform thread it was taken in, where its reports reply; null when taken outside one. */
+  replyThread: string | null
   summary: string
   /** The newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT} observations, oldest first. */
   observations: AssistantObservation[]
@@ -58,6 +60,7 @@ export interface AssistantItemCreate {
   taskKey: string
   asker?: string
   shared?: boolean
+  replyThread?: string
   summary?: string
   now?: number
 }
@@ -109,6 +112,7 @@ export const ASSISTANT_ITEM_SCHEMA = `
         taskKey TEXT NOT NULL DEFAULT '',
         asker TEXT,
         shared INTEGER NOT NULL DEFAULT 0,
+        replyThread TEXT,
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -157,6 +161,7 @@ interface ItemRow {
   taskKey: string
   asker: string | null
   shared: number
+  replyThread: string | null
   summary: string
   observationVersion: number
   version: number
@@ -190,6 +195,7 @@ const ITEM_COLUMNS = [
   'taskKey',
   'asker',
   'shared',
+  'replyThread',
   'summary',
   'observationVersion',
   'version',
@@ -208,6 +214,7 @@ export class AssistantItemLedger {
     checkText('doneWhen', input.doneWhen, ASSISTANT_ITEM_LIMITS.doneWhen)
     checkText('summary', input.summary, ASSISTANT_ITEM_LIMITS.summary)
     checkText('taskKey', input.taskKey, ASSISTANT_ITEM_LIMITS.taskKey, true)
+    checkText('replyThread', input.replyThread, ASSISTANT_ITEM_LIMITS.refId)
     if (input.asker !== undefined) checkAsker(input.asker)
     checkStatus(status)
     checkNextCheck(input.nextCheck)
@@ -215,8 +222,9 @@ export class AssistantItemLedger {
     const id = randomUUID()
     await this.db.query(
       `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
-         originTransportScope, taskKey, asker, shared, summary, observationVersion, version, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+         originTransportScope, taskKey, asker, shared, replyThread, summary, observationVersion, version, createdAt,
+         updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
       [
         id,
         input.agentId,
@@ -230,6 +238,7 @@ export class AssistantItemLedger {
         input.taskKey,
         input.asker ?? null,
         input.shared === true ? 1 : 0,
+        input.replyThread ?? null,
         input.summary ?? '',
         now,
         now
@@ -436,6 +445,7 @@ export class AssistantItemLedger {
       taskKey: row.taskKey,
       asker: row.asker ?? null,
       shared: Number(row.shared) === 1,
+      replyThread: row.replyThread ?? null,
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
       subsessions: links.filter((l) => l.itemId === row.id && l.kind === 'subsession').map((l) => l.refId),

@@ -421,7 +421,9 @@ summary.
 the open follow-ups a place may see: its own, each with its `taskId`, and every public channel's;
 a private channel's, a group DM's and a DM's only there (§5.12). Capped at 30 and injected through
 the existing reminder path (`shouldRemind`, which already handles first turn, restart and
-compaction). Incremental injection (`lastInjectedVersion`) is not in P0. An external place (§5.3)
+compaction). When a place may see none, a session that may still hold an earlier list is told so
+once at those points, after a restart too; a fresh context is not. Incremental injection
+(`lastInjectedVersion`) is not in P0. An external place (§5.3)
 receives none, tasks delegated there included: follow-ups are internal, and nobody there asked for
 them. `followUp` still answers there when someone asks (#2979, B4).
 Every session that can delegate tasks, in assistant mode or not, is also told which of its
@@ -1104,6 +1106,8 @@ proposals.
   - `messageTask` gives it new instructions and runs a check at once, counted against the daily
     budget. While a check runs, the message waits for the next input, as a delegated task's does;
     with the day's budget spent, it is refused with the time the budget resets.
+  - The `taskId` is for the agent's own calls alone. Every place that hands the agent a task's id
+    tells it never to show the id to people, who know a task by its title or label.
 - **Visible where its place is.** It inherits its conversation's visibility, as every task does.
   The organization-visible ledger goes away.
 - **Its asker.** A check's asker for §5.5 "Reads" is the person who confirmed `followUp` (a
@@ -1213,6 +1217,10 @@ else, and nobody but its own conversation is told of it.
   whenever that session lists, messages or stops it, when the console lists that conversation's
   tasks, and when a check starts. Only that session addresses it; a thread session of the same
   place does not.
+- **Reports.** A follow-up keeps the platform thread of the turn that took it (store version 54),
+  and its reports reply there, else where its place's latest turn replied (`replyThread`), as a
+  background task's wake does. `listTasks` says a follow-up handed back a result only when its
+  latest check's report got through.
 - **Messages.** `messageTask` starts a check at once, outside the one-scheduled-check slot. While a
   check of that follow-up runs, the message waits (at most 10), with the people behind it, and
   the next check, which starts as soon as the running one ends, takes every waiting message; a check

@@ -122,6 +122,15 @@ describe('the follow-up tools are offered only to assistant-mode agents', () => 
     expect(text).toContain('promise a check then, never an action')
     expect(text).toContain('by the `taskId` this returns')
   })
+
+  it('keeps the taskId to its own calls and has people know a follow-up by its title', async () => {
+    expect(FOLLOW_UP_TOOL.description).toContain(
+      'That id is for those calls alone: never show it to people, who know the follow-up by its title.'
+    )
+    const { call } = await setup()
+    const taken = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
+    expect(taken.note).toMatch(/ Never show the taskId to people; name the follow-up by its title\.$/)
+  })
 })
 
 describe('followUp', () => {
@@ -141,7 +150,7 @@ describe('followUp', () => {
         nextCheck: '2026-10-09T01:00:00.000Z',
         summary: 'Alice asked for the release notes.'
       },
-      note: expect.stringContaining('Its first check runs at nextCheck')
+      note: expect.stringMatching(/Its first check runs at nextCheck.* Never show the taskId to people/)
     })
     expect(await s.assistantItems.byTaskKey(AGENT, TASK_KEY)).toMatchObject({
       status: 'active',

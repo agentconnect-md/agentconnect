@@ -131,7 +131,8 @@ export const FOLLOW_UP_TOOL: ToolDescriptor = {
     'follow-up of this conversation already covers the request, offer to send the change to it with sendMessage ' +
     'action `messageTask` instead of taking a second one. The follow-up belongs to this conversation: here it is ' +
     'listed with listTasks, given new instructions with messageTask and ended with stopTask, by the `taskId` this ' +
-    'returns. Taken in a public channel, its title is also listed in your other internal conversations, so name it ' +
+    'returns. That id is for those calls alone: never show it to people, who know the follow-up by its title. ' +
+    'Taken in a public channel, its title is also listed in your other internal conversations, so name it ' +
     'plainly.',
   inputSchema: obj(
     {
@@ -269,9 +270,10 @@ export const followUp: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) 
       summary: item.summary
     },
     note:
-      item.nextCheck === null
+      (item.nextCheck === null
         ? 'Taken. It runs no check until you message it with messageTask and this taskId.'
-        : 'Taken. Its first check runs at nextCheck; listTasks shows it, messageTask changes it, stopTask ends it.'
+        : 'Taken. Its first check runs at nextCheck; listTasks shows it, messageTask changes it, stopTask ends it.') +
+      ' Never show the taskId to people; name the follow-up by its title.'
   }
 }
 

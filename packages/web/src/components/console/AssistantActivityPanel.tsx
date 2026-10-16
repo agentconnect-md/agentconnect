@@ -27,7 +27,7 @@ import {
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
+import { chatPlaceName, chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
@@ -558,7 +558,7 @@ function SubsessionRow({
   const parent = subsession.parent
   const parentName = parent
     ? parent.channelName
-      ? `${chatRoomSigil(parent.platform ?? undefined)}${parent.channelName}`
+      ? chatPlaceName(parent.platform ?? undefined, parent.channelName)
       : (parent.title ?? t('subsessions.conversation'))
     : null
 
@@ -688,7 +688,7 @@ function PermissionRequestRow({
   const { subsession, parent } = request
   const parentName = parent
     ? parent.channelName
-      ? `${chatRoomSigil(parent.platform ?? undefined)}${parent.channelName}`
+      ? chatPlaceName(parent.platform ?? undefined, parent.channelName)
       : (parent.title ?? t('subsessions.conversation'))
     : null
   const choices: { decision: 'allow' | 'deny'; label: string; optionId?: string }[] = request.options?.length

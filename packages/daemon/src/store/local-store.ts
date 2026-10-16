@@ -1304,7 +1304,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 53
+export const SCHEMA_VERSION = 54
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1929,7 +1929,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v52 addresses replies to session messages: each session's origin becomes one received call (send-message-guide.md §9.6).
   async (db, store) => await migrateOriginsToSessionMessages(db, store.postgres),
   // v53 makes each open item a follow-up of its place (assistant-mode.md §5.12); closed items and followers go.
-  async (db, store) => await migrateItemsToFollowUps(db, store.postgres)
+  async (db, store) => await migrateItemsToFollowUps(db, store.postgres),
+  // v54 keeps the thread a follow-up was taken in, where its reports reply (assistant-mode.md §5.12).
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'replyThread', 'TEXT')
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
