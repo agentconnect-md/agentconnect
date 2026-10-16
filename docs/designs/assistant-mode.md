@@ -201,7 +201,8 @@ Proposed (§5.15).
 - **It keeps what it learns in its own memory.** A file on the organization (a short summary
   first, then its products, how it works, and its repositories and systems), the index of its
   places, and who works on what (§1.11). Anyone who may see the agent reads them on its Memory
-  page, and an editor corrects them there. The organization's Knowledge is left as it is.
+  page, and an editor corrects the organization file and the index there. The organization's
+  Knowledge is left as it is.
 - **One conversation keeps it.** A conversation of its own, outside every place, keeps those
   files. Public channels send it what they learn, so two channels never overwrite each other.
   Everyone who may see the agent can read it on the agent's page; editors talk to it there
@@ -2292,8 +2293,11 @@ not, nor may a task, a follow-up's check, a first look or an approved proposal.
 **One writer of the organization files** (recommended). The daemon refuses a write to
 `organization.md`, `channels.md` or `members.md` from any session but the home,
 whatever tool or path names it. The one exception is a person's own directory entry, which that
-person may correct or clear (§5.17). An editor's edit on the Memory page is a person's, not a
-session's, and goes through as today. A dream reads the files and proposes nothing for them. Each
+person may correct or clear (§5.17). An editor's edit of `organization.md` or `channels.md` on the
+Memory page is a person's, not a session's, and goes through as today. `members.md` keeps its
+entry rules on that path too: a person changes only their own entry, an owner may clear one (with
+its marker and audit record), and any other editor asks the home (§5.17). A dream reads the files
+and proposes nothing for them. Each
 keeps the one index line #3074 gives it, and its body is read when a session needs it. Every other
 shared-layer file is written as today: a first look's topic file by its place, "remember this for
 everyone" by whoever is asked. A person who wants the organization file changed says so in a
@@ -2613,9 +2617,10 @@ every member reads it on the console's Knowledge page.
 
 - All three live in the agent's shared layer, and the home session is their single writer (§5.15).
 - No review queue is needed. People see the files on the agent's Memory page, as the shared layer
-  is shown to whoever may see the agent, and an editor corrects them there. Each change is in the
-  file's history. A person sees, corrects and clears their own directory entry without any
-  knowledge permission (§5.17).
+  is shown to whoever may see the agent, and an editor corrects `organization.md` and `channels.md`
+  there; `members.md` keeps the entry rules of §5.17. Each change is in the file's history. A
+  person sees, corrects and clears their own directory entry without any knowledge permission
+  (§5.17).
 - **The assumption.** Most organizations run one assistant-mode agent, so a copy per agent is
   rarely a problem. A second assistant-mode agent researches the organization for itself, and its
   files may differ from the first's.
@@ -2742,7 +2747,7 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
 - **Owners.** An organization owner sees every entry, as anyone who may see the shared layer does,
   and may clear one, as they clear a place layer today. The clear leaves the same marker and is
   recorded in the audit log without content. An editor who is not an owner corrects an entry only
-  by asking the home, and cannot clear one.
+  by asking the home, and cannot clear one, on the Memory page as anywhere else.
 
 **Identity** (recommended).
 
