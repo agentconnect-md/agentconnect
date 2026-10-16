@@ -334,8 +334,9 @@ current context; runtime authorization remains authoritative. Publish each new c
 
 Keep messaging and its guide available without IM integrations: postless agent
 calls, delegated tasks, `listTasks`, and replies to messages need no platform posting connection. A self
-`callAgent` needs a channel and so a posting connection. Retain existing runtime-specific and
-read-only patrol tool gates. Any later conditional injection needs proof that resumed
+`callAgent` needs a channel and so a posting connection. Retain existing runtime-specific tool
+gates and the read-only gate of a follow-up's check, which is offered no `sendMessage` at all.
+Any later conditional injection needs proof that resumed
 sessions and changing turn origins cannot lose a valid operation.
 
 ### 3.3 Validation and dispatch
@@ -350,8 +351,8 @@ wakes, session replies, approvals, joins, or session initialization:
 
 Place action/shape validation before `resolveChannelArg` in the tool execution
 pipeline; that helper can consult a gateway before the current handler runs. The
-missing-action recovery path must perform no target lookup or delivery. Keep
-existing stopped-turn and read-only patrol restrictions ahead of execution.
+missing-action recovery path must perform no target lookup or delivery. Keep the
+existing stopped-turn refusal and a follow-up check's read-only tool refusal ahead of execution.
 
 Never infer a missing action, silently choose another action based on the target,
 or discard conflicting target fields. The action is a checked contract, not an
@@ -886,10 +887,11 @@ the sections above left open:
   `availability`), and a `next` pointer; an action guide has the same fields plus `rules`
   and `examples` of `{use, arguments}`. Availability notes come from the session's
   integrations (platforms, direct-message and thread-update support) and from the session's
-  coordinate: inside any task (a delegated task, a patrol or an approved proposal) both task
-  actions are marked unavailable. The visible self-call example uses the session's own agent
-  id. The guide shows a delegated task's progress question, and its replyToSession text names a
-  patrol and an approved proposal as such (§11 question 11).
+  coordinate: inside any task (a delegated task, a follow-up's check or an approved proposal)
+  both task actions are marked unavailable. The visible self-call example uses the session's own
+  agent id. The guide shows a delegated task's progress question, and its replyToSession text
+  names an approved proposal as such (§11 question 11); a follow-up's check is offered no
+  `sendMessage`, so it never reads the guide.
 - **Receipts and status.** The `delegateTask` and `messageTask` receipts carry `taskId` where the
   self-delegation receipt carried `childSessionId`; a peer `callAgent`, with or without
   `channel` or `sessionId`, keeps `childSessionId`, because what it reaches is a session.
@@ -1206,12 +1208,15 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
 - **Replies into tasks.** Only the owning session's reply to its task's message goes through
   `messageTask` admission; another session's reply to a task's message (for example the
   channel session a task's own `callAgent` with `channel` opened) is delivered like a peer's.
-  A reply to a patrol's or approved proposal's message is refused `not_authorized`, since each
-  runs once.
+  A reply to a message whose sender is a follow-up's check or an approved proposal is refused
+  `not_authorized`: no reply wakes either. A follow-up takes new input only through `messageTask`,
+  and an approved proposal runs once.
 
 - **Scope.** Rounds apply to delegated tasks, the sessions `delegateTask` creates.
-  An approved proposal (assistant-mode §5.10) and a patrol (§5.9) run once and are never
-  continued, so they keep the one-report lifecycle in which their own report settles them.
+  A follow-up (assistant-mode §5.12) has no rounds: each check is one turn in its retained
+  session, started when its next check falls due or by `messageTask`, and settled when that turn
+  ends, by what it recorded with `recordCheck`. An approved proposal (§5.10) runs once and is
+  never continued, so it keeps the one-report lifecycle in which its own report settles it.
 - **Round state.** The task's index row carries `round` (store schema v51). `open` is a
   running round that holds a slot; the round's report waits in `reporting`; `done` and `failed`
   are retained idle states that hold none. Every parent input carries its round in
@@ -1219,8 +1224,9 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   its own round and a late outcome of an older round changes nothing.
 - **Admission.** Ownership is the index row's recorded parent: its session key and its outward
   id must both be the trusted caller session's. A sibling, the child itself, another session of
-  the agent (including the replacement after `!new`), another agent, a patrol, a task, a purged
-  child and an unknown id all get the same `task_not_found` receipt. Under the
+  the agent (including the replacement after `!new`), another agent, a follow-up's check, a task,
+  a purged child and an unknown id all get the same `task_not_found` receipt. A follow-up's
+  `taskId` is admitted from its place's current long session instead (§8.2). Under the
   per-task report lock, an `open` round is joined with no slot; a settled row reopens as
   round + 1 only below the per-agent cap, so concurrent messages to one idle child open one
   round. Pause, drain and a member that no longer serves the agent refuse before any slot is
@@ -1241,7 +1247,9 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   same way. A report that lands in its owning session is a `report` session message (§9.8) under
   an id minted when the report is claimed, so a re-send keeps it; its admission settles every
   open input of the task. One that lands in a later session of the place carries no id. A
-  patrol's one report is headed `[patrol ended]`, and an approved proposal's is headed
+  follow-up's check reports only when it handed back a `report`, headed `[follow-up]`, and
+  five failed checks in a row send one `[follow-up]` report that its checks stopped; neither
+  carries an id. An approved proposal that ended without its own report gets one headed
   `[approved proposal ended]`; a report persisted under an earlier header, `[sub-session ended]`
   or `[approved work ended]`, is still recognised. Each
   round's report has its own delivery
@@ -1273,25 +1281,31 @@ message for this background task:`, each followed by its text and the exact `rep
   runtime's own subagents instead, ordering independent and dependent tasks, `messageTask`,
   `stopTask` and `listTasks`.
 - **Stop.** `stopTask {taskId}` goes through the cancel core the console's Stop uses, whose
-  interrupt drains the task's queued inputs. Authority is the index row alone: a delegation
-  row (never a patrol's, and never an approved proposal's `subsession:task-` coordinate) whose
+  interrupt drains the task's queued inputs. For a delegated task, authority is the index row
+  alone: a delegation row (never an approved proposal's `subsession:task-` coordinate) whose
   recorded owner key and outward id are both the calling session's. Anything else — the task
   itself, a sibling, the session after `!new`, a recreated session on the same key, another
   agent, an unknown or purged id — gets `This session started no task with that id. Nothing was
-stopped.` No turn or sender gate remains; the stop is logged as the person whose message
+stopped.` A follow-up's `taskId` ends the follow-up instead, and only from its place's current
+  long session (§8.2), which may be the session after `!new`; every other session gets the same
+  words. No turn or sender gate remains; the stop is logged as the person whose message
   started the live turn, else as the agent itself (`isBot`). The tool is offered in every
-  session that can delegate a task, so in every session except a task (delegated, patrol or
-  approved proposal), which now includes hook runs, scheduled runs and peer sessions. There is no alias
-  for `stopSubsession` (§4). The stop note always names `messageTask`.
+  session that can delegate a task, so in every session except a task (a delegated task, a
+  follow-up's check or an approved proposal), which now includes hook runs, scheduled runs and
+  peer sessions. There is no alias for `stopSubsession` (§4). A delegated task's stop note
+  always names `messageTask`; a follow-up's says to take a new one with `followUp`.
 - **Running tasks.** The reminder is built for every session that can own tasks and lists only
   its delegated tasks, newest first, by `taskId` and label, saying it may stop one with
-  `stopTask` once it is no longer needed; patrols and approved proposals are not listed there,
-  but `listTasks` shows them (§8.7).
-- **Patrols and approved proposals.** The replyToSession guide says that only a delegated task
-  may reply any time; a patrol's or approved proposal's guide notes that its one reply to the
-  message that started it, at the end, settles it. Their starting input is a `call` session
-  message from the owning session (an approved proposal's asks for a reply), so they answer it
-  by id; their own daemon report carries no id.
+  `stopTask` once it is no longer needed. Follow-ups and approved proposals are not listed there:
+  a place's open follow-ups have their own standing list (assistant-mode §5.12), and `listTasks`
+  shows all three kinds (§8.7).
+- **Follow-ups and approved proposals.** The replyToSession guide says that a delegated task may
+  reply any time and that an approved proposal replies once, at the end, which settles it; an
+  approved proposal's availability note says the same. Each check's starting input is a `call`
+  session message from the owning session that asks for no reply, and the check hands back what
+  it found through `recordCheck`, never `sendMessage`. An approved proposal's starting input is a `call`
+  session message that asks for a reply, which it answers by id. Neither's daemon report carries
+  an id.
 
 ## 9. Peer sessions and message-addressed replies — explicit capability extension
 
@@ -1380,8 +1394,8 @@ target's established output behavior and trusted delivery rules.
    daemon's terminal verify apply them again, as for an ordinary wake.
 2. On the owning daemon, `sessionId` resolves to a session of the agent named by `toAgent`: by
    its session key (the handle a call returned) or by its outward id, never by an ACP
-   id. A delegated task, a patrol, and an approved proposal are refused, and so is the
-   caller's own session.
+   id. A delegated task, a follow-up's check and an approved proposal are refused, and so is
+   the caller's own session.
 3. The people on the calling turn may read the target session's conversation under the
    daemon's existing cross-conversation read rule — the one `getChannelHistory` and `recall`
    pass (assistant-mode.md §5.5, `judgePlaceRead`). The caller's current conversation is the
@@ -1567,7 +1581,7 @@ Records the implementation on this branch. Decisions the sections above left ope
   request id), so a transport replay keeps it and nobody can derive it; a call without `callId`
   gets `msg-` and a random UUID. A task input uses its own submission identity the same way. A
   round report's id is minted when the report is claimed and kept on the `reporting` row; a
-  patrol's or approved proposal's starting input mints one that rides its persisted call
+  check's or approved proposal's starting input mints one that rides its persisted call
   metadata. A delivery that arrives without an id — from a peer that predates ids, or an inbox
   row persisted before the upgrade — is recorded under `msg-` and a hash of its source agent and
   delivery id, the same on every replay, and marked legacy.
@@ -1729,11 +1743,14 @@ deferred with §8.7 as written, and 10–11 are resolved by renaming visible tex
     `subsession:` coordinate, protocol fields, capability names, API paths and log events keep
     their names. Text the daemon or Control Plane parses back, such as a persisted report header,
     is recognised in both its old and new wording.
-11. **Patrols and approved proposals.** Resolved: both are kinds of task, of the conversation
+11. **Follow-ups and approved proposals.** Resolved: both are kinds of task, of the conversation
     they report to, beside delegated tasks; neither is a delegated task, so neither is started
-    with `delegateTask` or messaged and stopped by `taskId`. A patrol is never a patrol
-    sub-session, and an approved proposal's run is "an approved proposal", never approved work
-    or an approved task. Their one report is headed `[patrol ended]` or `[approved proposal
+    with `delegateTask`. A follow-up, which replaced the patrol, is taken with `followUp`, and
+    its place's current long session messages it with `messageTask` and ends it with `stopTask`
+    by its `taskId`; an approved proposal has no `taskId`. A follow-up's rounds are checks,
+    never patrols or sub-sessions, and an approved proposal's run is "an approved proposal",
+    never approved work or an approved task. A check's report is headed `[follow-up]`, and an
+    approved proposal that ended without its own report gets one headed `[approved proposal
 ended]` instead of `[sub-session ended]`.
 
 ## 12. Changes from the sub-session revision
