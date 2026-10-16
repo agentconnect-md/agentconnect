@@ -49,7 +49,8 @@ import {
   memoryRefToTopic,
   parseMemoryFrontmatter,
   normalizeMemoryHeader,
-  stampMemoryHeader
+  stampMemoryHeader,
+  type MemoryHeader
 } from './frontmatter.js'
 
 export const MEMORY_DIRNAME = 'memory'
@@ -797,6 +798,12 @@ export interface MemoryIndexEntry {
   description: string
 }
 
+/** A topic's index line from its header; none for one whose header says `index: false`. */
+export function memoryIndexEntry(topic: string, header: MemoryHeader): MemoryIndexEntry | undefined {
+  if (header.index === false) return undefined
+  return { topic, name: header.name || memoryNameForTopic(topic), description: header.description ?? '' }
+}
+
 /**
  * Render `MEMORY.md` from the topic descriptions. Pure, so the live store and a
  * dream's STAGED store produce byte-identical indexes — a reviewer then sees exactly
@@ -845,17 +852,13 @@ export async function regenerateMemoryIndexHoldingLock(
   source: MemoryWriteSource,
   opts: { force?: boolean; history: MemoryHistorySink }
 ): Promise<void> {
-  const entries: { topic: string; name: string; description: string }[] = []
+  const entries: MemoryIndexEntry[] = []
   for (const file of await listMemory(fs)) {
     if (file.name === MEMORY_INDEX) continue
     const raw = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
     if (raw === null) continue
-    const { header } = parseMemoryFrontmatter(raw.content)
-    entries.push({
-      topic: file.name,
-      name: header.name || memoryNameForTopic(file.name),
-      description: header.description ?? ''
-    })
+    const entry = memoryIndexEntry(file.name, parseMemoryFrontmatter(raw.content).header)
+    if (entry) entries.push(entry)
   }
   const current = await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
   const next = deriveMemoryIndex(entries, current?.content, opts.force)

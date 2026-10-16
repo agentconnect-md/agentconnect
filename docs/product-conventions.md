@@ -1478,9 +1478,12 @@ remembers how the place works, introduces the agent once and offers at most thre
   refused.
 - **What happens with its report.** The report reaches the long session, at the conversation's top
   level, with what to do: write "How this place works" and "Recurring" to a topic file named after
-  the place, in the layer that conversation writes, plus one index line, and, in an internal public
-  channel only, merge what is new about the organization as a whole into the shared
-  `organization.md`, naming the conversation it came from; post one short
+  the place, in the layer that conversation writes, plus one index line. In an internal public
+  channel only, which writes the shared layer, that file stays out of the shared index. Instead,
+  the conversation gets one line in the shared `channels.md`, and what is new about the
+  organization as a whole is merged into the shared `organization.md`, naming the conversation it
+  came from. Several channels update those two files, so each save checks the revision it read.
+  Then post one short
   introduction (who it is, one line on what it saw, how to reach it: "@-mention me" or "I read
   every message") at the conversation's top level; offer each way it could help, and something in
   flight only if someone is visibly waiting on it; ask at most one question; then post nothing more

@@ -184,6 +184,35 @@ describe('generated memory index', () => {
     expect(index).toContain('more topics than fit the index')
   })
 
+  it('leaves a topic whose header says index: false out of MEMORY.md, while it stays readable', async () => {
+    const f = fs()
+    await ensureMemory(f, 'bot')
+    await writeWithSidecar(f, 'channels.md', '---\ndescription: every channel in a line\n---\nc\n', undefined, 'tool')
+    await writeWithSidecar(
+      f,
+      'release-train.md',
+      '---\ndescription: how #release-train works\nindex: false\n---\nReleases are planned here.\n',
+      undefined,
+      'tool'
+    )
+    const index = await readMemoryFile(f, 'MEMORY.md')
+    expect(index).toContain('- [channels](channels.md) — every channel in a line')
+    expect(index).not.toContain('release-train')
+    expect(await readMemoryFile(f, 'release-train.md')).toContain('index: false')
+    expect(parseMemoryFrontmatter('---\nindex: false\n---\nx').header.index).toBe(false)
+    expect(parseMemoryFrontmatter('---\nindex: true\n---\nx').header.index).toBeUndefined()
+
+    // Dropping the field lists it again.
+    await writeWithSidecar(
+      f,
+      'release-train.md',
+      '---\ndescription: how #release-train works\n---\nx\n',
+      undefined,
+      'tool'
+    )
+    expect(await readMemoryFile(f, 'MEMORY.md')).toContain('- [release-train](release-train.md)')
+  })
+
   it('readMemory accepts the [[link]] form the agent sees in a body', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')

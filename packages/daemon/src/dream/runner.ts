@@ -21,10 +21,11 @@ import {
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
 import { transcriptChannelKey, type TranscriptSessionScope } from '../store/local-store.js'
-import { memoryNameForTopic, parseMemoryFrontmatter } from '../memory/frontmatter.js'
+import { parseMemoryFrontmatter } from '../memory/frontmatter.js'
 import type { MemoryHomePorts } from '../memory/home.js'
 import {
   MEMORY_INDEX,
+  memoryIndexEntry,
   renderMemoryIndex,
   regenerateMemoryIndexHoldingLock,
   type MemoryIndexEntry,
@@ -995,12 +996,8 @@ export class DreamRunner {
       if (entry.kind !== 'file' || entry.name === MEMORY_INDEX || !stagedPathOk(entry.name)) continue
       const raw = await staging.readFile(join(out, entry.name))
       if (raw === null) continue
-      const { header } = parseMemoryFrontmatter(raw.content)
-      staged.push({
-        topic: entry.name,
-        name: header.name || memoryNameForTopic(entry.name),
-        description: header.description ?? ''
-      })
+      const indexed = memoryIndexEntry(entry.name, parseMemoryFrontmatter(raw.content).header)
+      if (indexed) staged.push(indexed)
     }
     await staging.writeFile(join(out, MEMORY_INDEX), renderMemoryIndex(staged))
     await this.stageSkills(staging, base, proposal)

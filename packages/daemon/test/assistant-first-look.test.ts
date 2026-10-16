@@ -182,16 +182,29 @@ describe('the prompts', () => {
     expect(section).toContain('"Nothing new" is a fine answer.')
   })
 
-  it('merges what is new about the organization into its shared file only where the place writes the shared layer', () => {
+  it('keeps a shared place’s own file out of the index, and lists it and the organization in two shared files', () => {
     const step1 = (handling: string) => handling.split('\n1. ')[1]!.split('\n2. ')[0]!
-    const shared = firstLookHandling('@-mention me', { external: false, cards: true, organization: true })
-    expect(step1(shared)).toContain(
-      'Unless "About the organization" has nothing new, merge it into organization.md: into its\n   existing sections, not as a new block'
+    const shared = step1(firstLookHandling('@-mention me', { external: false, cards: true, organization: true }))
+    expect(shared).toContain('with "index: false" in its header so MEMORY.md leaves it out;')
+    expect(shared).not.toContain('plus one index line')
+    expect(shared).toContain('- channels.md: one line for this place, "#name: what it is for", by its channel name.')
+    expect(shared).toContain(
+      '- organization.md: unless "About the organization" has nothing new, merge it into the\n     existing sections, not as a new block'
     )
-    expect(step1(shared)).toContain('the place\n   it came from named by its channel name')
+    expect(shared).toContain('place it came from named by its channel name')
+    // Places merge into the same two files, so each save carries the revision it read, and a conflict is merged again.
+    expect(shared).toContain(
+      'never rewrite them with writeMemory: find each\n   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with\n   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On\n   CONFLICT, read it again, merge, and save again.'
+    )
     // A private place's, a group chat's or an external place's content never reaches the shared layer.
-    expect(firstLookHandling('@-mention me', { external: false, cards: true })).not.toContain('organization.md')
-    expect(firstLookHandling('@-mention me', { external: true, organization: true })).not.toContain('organization.md')
+    for (const own of [
+      firstLookHandling('@-mention me', { external: false, cards: true }),
+      firstLookHandling('@-mention me', { external: true, organization: true })
+    ]) {
+      expect(step1(own)).toContain('plus one index line.')
+      for (const shared of ['organization.md', 'channels.md', 'index: false', 'updateMemoryEntry'])
+        expect(own).not.toContain(shared)
+    }
   })
 
   it('tells the long session what to do, step 3 as text, and only step 1 once the place turned external', () => {

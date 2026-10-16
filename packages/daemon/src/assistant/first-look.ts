@@ -25,6 +25,8 @@ export const FIRST_LOOK_JOIN_WAIT_MS = 10 * 60_000
 export const FIRST_LOOK_MAX_PROPOSALS = 3
 /** The one shared memory file every first look keeps current about the organization as a whole (§5.13). */
 export const ORGANIZATION_MEMORY_FILE = 'organization.md'
+/** The one shared memory file listing each internal public channel in a line, so the index holds one line for all (§5.13). */
+export const CHANNELS_MEMORY_FILE = 'channels.md'
 
 // The place's own reads (§5.13): history, thread replies, the conversation's details, members and profiles, reactions, bookmarks.
 const FIRST_LOOK_READ_TOOLS = new Set([
@@ -174,26 +176,38 @@ const FOLLOW_UP_SCHEDULE = `A follow-up runs only at its next check or when mess
    and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
    I'll look for releases announced since the last check and confirm their notes were posted").`
 
-// Only a place that writes the shared layer adds to it (§5.13): a private place's content must never reach it.
-const ORGANIZATION_STEP = `   Unless "About the organization" has nothing new, merge it into ${ORGANIZATION_MEMORY_FILE}: into its
-   existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the place
-   it came from named by its channel name. Keep that file short and its index line one line;
-   every conversation reads it.`
+const LEAVE_OUT = `Leave out "In flight", any request still open wherever it is listed,
+   and anything you would not say in every conversation that reads this layer.`
 
-/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form; step 1 adds to the organization's file only where the place writes the shared layer. */
+// A place that writes its own layer keeps one topic file there, listed in that layer's index.
+const PLACE_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   plus one index line. ${LEAVE_OUT}`
+
+// Only a place that writes the shared layer adds to it (§5.13); its own file stays out of the index every session reads.
+const SHARED_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   with "index: false" in its header so MEMORY.md leaves it out; this place's sessions open it
+   when they need it. ${LEAVE_OUT}
+   Then update two shared files, each listed in MEMORY.md by its own description header:
+   - ${CHANNELS_MEMORY_FILE}: one line for this place, "#name: what it is for", by its channel name.
+   - ${ORGANIZATION_MEMORY_FILE}: unless "About the organization" has nothing new, merge it into the
+     existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
+     place it came from named by its channel name. Keep it short.
+   Other places update these two files too, so never rewrite them with writeMemory: find each
+   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
+   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
+   CONFLICT, read it again, merge, and save again.`
+
+/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form; step 1 adds to the shared files only where the place writes the shared layer. */
 export function firstLookHandling(
   reach: string,
   opts: { external: boolean; cards?: boolean; organization?: boolean }
 ): string {
-  const step1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. Leave out "In flight", any request still open wherever it is listed,
-   and anything you would not say in every conversation that reads this layer.`
   if (opts.external)
     return `When a first look reports back:
-${step1}
+${PLACE_STEP1}
 This place is now shared with another organization, so post nothing about this first look in it.`
   return `When a first look reports back:
-${step1}${opts.organization ? `\n${ORGANIZATION_STEP}` : ''}
+${opts.organization ? SHARED_STEP1 : PLACE_STEP1}
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you (${reach}).
 ${

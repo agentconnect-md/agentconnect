@@ -9,8 +9,16 @@ import {
   type MemoryFsFile,
   type MemoryFsTransactionRequest
 } from './fs.js'
-import { deriveMemoryIndex, listMemory, MEMORY_DIRNAME, MEMORY_INDEX, type MemoryWriteSource } from './store.js'
-import { memoryNameForTopic, parseMemoryFrontmatter } from './frontmatter.js'
+import {
+  deriveMemoryIndex,
+  listMemory,
+  MEMORY_DIRNAME,
+  MEMORY_INDEX,
+  memoryIndexEntry,
+  type MemoryIndexEntry,
+  type MemoryWriteSource
+} from './store.js'
+import { parseMemoryFrontmatter } from './frontmatter.js'
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -70,7 +78,7 @@ export async function atomicMutateMemoryFileHoldingLock(
   if (content === null && !current) throw new MemoryConflictError('memory file is absent')
   const replacements = [{ path: topic, content, previous: current?.content ?? null }]
   if (topic !== MEMORY_INDEX) {
-    const entries = []
+    const entries: MemoryIndexEntry[] = []
     const inventory = await listMemory(fs)
     if (inventory.length > 2048 || inventory.reduce((sum, file) => sum + file.size, 0) > 16 * 1024 * 1024)
       throw new MemoryTooLargeError('memory tree exceeds the transaction preparation budget')
@@ -78,17 +86,11 @@ export async function atomicMutateMemoryFileHoldingLock(
       if (file.name === MEMORY_INDEX || file.name === topic) continue
       const value = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
       if (!value) throw new MemoryConflictError('memory tree changed while preparing its index')
-      const { header } = parseMemoryFrontmatter(value.content)
-      entries.push({
-        topic: file.name,
-        name: header.name || memoryNameForTopic(file.name),
-        description: header.description ?? ''
-      })
+      const entry = memoryIndexEntry(file.name, parseMemoryFrontmatter(value.content).header)
+      if (entry) entries.push(entry)
     }
-    if (content !== null) {
-      const { header } = parseMemoryFrontmatter(content)
-      entries.push({ topic, name: header.name || memoryNameForTopic(topic), description: header.description ?? '' })
-    }
+    const written = content === null ? undefined : memoryIndexEntry(topic, parseMemoryFrontmatter(content).header)
+    if (written) entries.push(written)
     const index = await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
     const next = deriveMemoryIndex(entries, index?.content)
     if (next !== undefined) replacements.push({ path: MEMORY_INDEX, content: next, previous: index?.content ?? null })

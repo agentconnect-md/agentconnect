@@ -310,9 +310,10 @@ describe('a first look’s report round on a platform with cards', () => {
     })
     await look()
     const report = dispatched.find((c) => c.msg.parentReport === true)!
-    expect(report.msg.turnBody?.prompt ?? report.msg.text ?? '').toContain(
-      'Unless "About the organization" has nothing new, merge it into organization.md'
-    )
+    const text = report.msg.turnBody?.prompt ?? report.msg.text ?? ''
+    expect(text).toContain('- channels.md: one line for this place')
+    expect(text).toContain('- organization.md: unless "About the organization" has nothing new')
+    expect(text).toContain('updateMemoryEntry and that revision')
     await daemon.stop()
   })
 

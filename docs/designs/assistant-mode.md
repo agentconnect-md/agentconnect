@@ -1348,9 +1348,12 @@ code-host reads are not offered, and §5.5's read gate refuses any source but it
    - The shared layer is read in every conversation, those with outside guests included, so the
      file holds only what is fine to say in every conversation that reads that layer. There is no
      new memory layer for public channels.
-   - In an internal public channel only, what is new about the organization as a whole is also
-     merged into the shared layer's one `organization.md` (below), each fact dated and named
-     after the place it came from.
+   - In an internal public channel only, the shared index stays short (_decided_ by the owner,
+     2026-10-17): the place's file says `index: false` and gets no `MEMORY.md` line. The place
+     gets one line in the shared `channels.md` instead. What is new about the organization as a
+     whole is merged into the shared `organization.md`, each fact dated and named after the
+     place it came from. Those two files each have their one index line, and both are updated
+     only with revision-checked entry writes, since other places update them too (below).
 2. **Report.** The whole report is the task's result: its check's report, on the task's own page,
    visible to whoever may see the place's conversation, as every task is (§5.6).
 3. **Introduction and suggestions.**
@@ -1427,10 +1430,6 @@ When a first look reports back:
 1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
    plus one index line. Leave out "In flight", any request still open wherever it is listed,
    and anything you would not say in every conversation that reads this layer.
-   Unless "About the organization" has nothing new, merge it into organization.md: into its
-   existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the place
-   it came from named by its channel name. Keep that file short and its index line one line;
-   every conversation reads it.
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you ({reach}).
 3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
@@ -1441,6 +1440,25 @@ When a first look reports back:
 4. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
 In everything people read, name a channel by its name or link, never by its raw id.
+```
+
+In an internal public channel, the one place whose conversation writes the shared layer, step 1
+reads instead:
+
+```text
+1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   with "index: false" in its header so MEMORY.md leaves it out; this place's sessions open it
+   when they need it. Leave out "In flight", any request still open wherever it is listed,
+   and anything you would not say in every conversation that reads this layer.
+   Then update two shared files, each listed in MEMORY.md by its own description header:
+   - channels.md: one line for this place, "#name: what it is for", by its channel name.
+   - organization.md: unless "About the organization" has nothing new, merge it into the
+     existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
+     place it came from named by its channel name. Keep it short.
+   Other places update these two files too, so never rewrite them with writeMemory: find each
+   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
+   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
+   CONFLICT, read it again, merge, and save again.
 ```
 
 Changed from the agreed drafts, each to fit a verified fact:
@@ -1483,6 +1501,18 @@ Changed from the agreed drafts, each to fit a verified fact:
   Its content must never reach the shared layer, and its writes go to its own layer unless a
   person asks to remember something for everyone. The name is fixed, so every first look updates
   the same file and its one index line.
+- In that channel, step 1 also keeps the shared index short (_decided_ by the owner,
+  2026-10-17). The shared `MEMORY.md` is injected into every session, and a line per public
+  channel would grow without bound. So the place's own file says `index: false`, the one header
+  field that keeps a topic out of the generated index ([unified-memory-interface.md](unified-memory-interface.md)),
+  and the place gets one line in `channels.md` instead. A place layer is unchanged: its file is
+  that layer's only topic.
+- Several places' report rounds can run at once, and a full rewrite of `channels.md` or
+  `organization.md` would drop another place's update. So step 1 saves them only through the
+  memory entry tools with the revision it read, and reads and merges again on a conflict. The
+  store's revision check is what makes that safe. `writeMemory` itself is not refused for these
+  two names: the generic memory tool would have to know two first-look file names, and its
+  targeted-edit mode is safe already. A whole-file `writeMemory` is left to the prompt.
 
 **Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
 marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
@@ -1625,8 +1655,9 @@ under the introduction works. For a first look, `propose` changes in four ways:
   on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
 - **Its report.** One report round at the place's top level carries the handling, then the report;
   step 3 is the `propose` wording where the place's integration has an approval card surface, else
-  the text form, and step 1 carries the `organization.md` merge only where the place's memory layer
-  is the shared one when the report arrives. Where the place has no long session yet, the report opens one on its append
+  the text form, and step 1 is the shared-channel form (`index: false`, `channels.md`,
+  `organization.md`) only where the place's memory layer is the shared one when the report
+  arrives. Where the place has no long session yet, the report opens one on its append
   coordinate as the place's own: a root session bound to the conversation's people as a person's
   first message there would bind it, and not kept out of memory capture. The first look stays its
   child; recorded as the opened session's creator, each named the other as its parent, and the
@@ -2759,7 +2790,10 @@ owner then decided (issue #2810; §1, §5.10, §5.13).
   filed under another heading.
 - **The organization's file.** The task prompt gains "About the organization": what is new about
   the organization as a whole against `organization.md` in shared memory. Where the place writes
-  the shared layer (an internal public channel), step 1 merges it into that one file.
+  the shared layer (an internal public channel), step 1 merges it into that one file. It also
+  keeps the place's own file out of the shared index with a new `index: false` header field and
+  lists the place in one line of `channels.md`. Both shared files are saved only through
+  revision-checked memory entry writes, re-read and merged on a conflict.
 - **The proposal card** now reads as the agent talking: its sentence in bold, its reason, and a 🔗
   to the exact work or, for a follow-up, its sentence of what it will do and 🕒 its first check.
   Labels, the title and the footer go. `propose`'s follow-up `doneWhen` asks for that sentence;

@@ -227,6 +227,46 @@ describe('common managed entry mutations', () => {
     })
     expect(f.commits).toHaveLength(0)
   })
+
+  it('keeps a topic whose header says index: false out of the index its transaction writes', async () => {
+    const f = await fixture()
+    const api = await f.service()
+    await api.create({ label: 'channels', text: '---\ndescription: every channel in a line\n---\n\n- #release-train' })
+    await api.create({
+      label: 'release-train',
+      text: '---\ndescription: how #release-train works\nindex: false\n---\n\nReleases are planned here.'
+    })
+    const index = (await f.fs.readFile('memory/MEMORY.md'))!.content
+    expect(index).toContain('- [channels](channels.md) — every channel in a line')
+    expect(index).not.toContain('release-train')
+    expect((await api.list()).entries.map((entry) => entry.label).sort()).toEqual(['channels', 'release-train'])
+  })
+
+  it('keeps both of two concurrent revision-checked updates: the one that conflicts reads again and merges', async () => {
+    const f = await fixture()
+    const [first, second] = [await f.service(), await f.service()]
+    const created = await first.create({
+      label: 'organization',
+      text: '---\ndescription: what the organization does\n---\n\n## Products\n'
+    })
+    const { ref, revision } = created.entry!
+    const read = (await first.get({ ref }))!.text
+    const add = (text: string, line: string) => text.replace('## Products\n', `## Products\n- ${line}\n`)
+    const lines = ['Widget (from #release-train)', 'Gadget (from #support)']
+    const results = await Promise.allSettled([
+      first.update({ ref, revision, text: add(read, lines[0]!) }),
+      second.update({ ref, revision, text: add(read, lines[1]!) })
+    ])
+    const lost = results.findIndex((result) => result.status === 'rejected')
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect((results[lost] as PromiseRejectedResult).reason).toMatchObject({ code: 'CONFLICT' })
+    const loser = [first, second][lost]!
+    const current = (await loser.get({ ref }))!
+    await loser.update({ ref, revision: current.entry.revision, text: add(current.text, lines[lost]!) })
+    const merged = (await first.get({ ref }))!.text
+    for (const line of lines) expect(merged).toContain(line)
+  })
+
   it('refuses ambiguous edits and UTF-8 overflow without publishing anything', async () => {
     const f = await fixture()
     const api = await f.service()
