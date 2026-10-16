@@ -1308,7 +1308,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 57
+export const SCHEMA_VERSION = 58
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1955,7 +1955,45 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       await addColumn(db, store.postgres, 'assistant_draft', column, type)
   },
   // v57 names patrols follow-up checks (assistant-mode.md §5.12): the check state's table and column, the rows' kind, the coordinates.
-  async (db, store) => await migratePatrolsToChecks(db, store.postgres)
+  async (db, store) => await migratePatrolsToChecks(db, store.postgres),
+  // v58 binds known Telegram/Discord conversations before their next turn resumes the existing runtime.
+  async (db, store) => {
+    if (!(await tableExists(db, store.postgres, 'sessions'))) return
+    const rows = (
+      await db.query(
+        `SELECT key, platform, channel, tenantScope FROM sessions
+      WHERE platform IN ('telegram', 'discord') AND externalProvider IS NULL
+        AND transportScope IS NOT NULL AND conversationKind IS NOT NULL
+        AND launchCorrelationId IS NULL AND (originSessionId IS NULL OR directDestination = 1)`,
+        []
+      )
+    ).rows
+    for (const row of rows as { key: string; platform: string; channel: string; tenantScope: string | null }[]) {
+      const realConversation =
+        row.platform === 'telegram' ? /^-?[1-9]\d*$/.test(row.channel) : /^[1-9]\d*$/.test(row.channel)
+      if (!realConversation) continue
+      const realm = row.tenantScope && /^bot[1-9]\d*$/.test(row.tenantScope) ? row.tenantScope : null
+      await db.query(
+        `UPDATE sessions SET externalProvider = platform, externalRealmKey = ?,
+        externalResourceKind = 'conversation', externalResourceKey = channel, sourceBindingKind = 'external'
+        WHERE key = ?`,
+        [realm, row.key]
+      )
+    }
+    await db.exec(`WITH RECURSIVE audience AS (
+      SELECT key, sessionId, externalProvider, externalRealmKey, externalResourceKey FROM sessions
+      WHERE externalProvider IN ('telegram', 'discord')
+      UNION
+      SELECT c.key, c.sessionId, p.externalProvider, p.externalRealmKey, p.externalResourceKey
+      FROM sessions c JOIN audience p ON c.originSessionId = p.sessionId
+      WHERE c.externalProvider IS NULL AND COALESCE(c.directDestination, 0) = 0
+    ) UPDATE sessions SET
+      externalProvider = (SELECT externalProvider FROM audience a WHERE a.key = sessions.key),
+      externalRealmKey = (SELECT externalRealmKey FROM audience a WHERE a.key = sessions.key),
+      externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
+      externalResourceKind = 'conversation', sourceBindingKind = 'external'
+      WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
+  }
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */

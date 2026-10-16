@@ -150,9 +150,10 @@ export function GlobalSearch({
   const slackAccess = useSWR(accessKey('slack'), accessFetcher)
   const githubAccess = useSWR(accessKey('github'), accessFetcher)
   const feishuAccess = useSWR(accessKey('feishu'), accessFetcher)
-  // Mirrors `hasNothingToOffer`: hidden only once all three are KNOWN dead —
-  // pending/failed reads keep the entry, as the card also renders then.
-  const sessionAccessRenders = [slackAccess, githubAccess, feishuAccess].some(
+  const telegramAccess = useSWR(accessKey('telegram'), accessFetcher)
+  const discordAccess = useSWR(accessKey('discord'), accessFetcher)
+  // Hide only when every provider is unavailable and disabled; pending or failed reads keep the entry.
+  const sessionAccessRenders = [slackAccess, githubAccess, feishuAccess, telegramAccess, discordAccess].some(
     ({ data }) => data === undefined || data.available || data.enabled
   )
 

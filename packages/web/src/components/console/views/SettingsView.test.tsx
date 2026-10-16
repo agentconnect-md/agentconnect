@@ -66,7 +66,7 @@ async function render() {
 }
 
 function rowNames(): string[] {
-  return ['Slack', 'GitHub', 'Feishu/Lark'].filter((name) =>
+  return ['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord'].filter((name) =>
     [...host.querySelectorAll('span')].some((span) => span.textContent === name)
   )
 }
@@ -78,6 +78,8 @@ beforeEach(() => {
   root = createRoot(host)
   setApiOrgId('org-test')
   answers.clear()
+  answers.set('telegram', nothingToOffer('telegram'))
+  answers.set('discord', nothingToOffer('discord'))
 })
 
 afterEach(async () => {
@@ -91,11 +93,13 @@ describe('session access card', () => {
     answers.set('slack', access('slack'))
     answers.set('github', access('github', { enabled: false, state: 'disabled' }))
     answers.set('feishu', access('feishu'))
+    answers.set('telegram', access('telegram'))
+    answers.set('discord', access('discord'))
 
     await render()
 
-    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu/Lark'])
-    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(3)
+    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord'])
+    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(5)
   })
 
   it('leaves out a provider this deployment cannot offer, rather than showing a dead switch', async () => {

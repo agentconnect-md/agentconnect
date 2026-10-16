@@ -4631,6 +4631,22 @@
           "unavailable": "Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu/Lark profile to check.",
           "unresolved": "{count, plural, one {# session hidden — no trusted chat scope.} other {# sessions hidden — no trusted chat scope.}}",
           "degraded": "Feishu/Lark scopes stopped resolving — new sessions are being hidden."
+        },
+        "telegram": {
+          "name": "Telegram",
+          "label": "Follow Telegram access",
+          "details": "Groups follow current membership; the chat bot must be an administrator. DMs are visible only to their participant.\nLink your account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
+          "unavailable": "Configure Telegram sign-in for this deployment before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
+          "degraded": "Telegram conversation sources stopped resolving — new sessions are being hidden."
+        },
+        "discord": {
+          "name": "Discord",
+          "label": "Follow Discord access",
+          "details": "Channels follow current server roles and channel permissions, including Read Message History. Private threads also require thread membership or Manage Threads. DMs follow their participants.\nLink your account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
+          "unavailable": "Configure Discord sign-in for this deployment before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
+          "degraded": "Discord conversation sources stopped resolving — new sessions are being hidden."
         }
       }
     },

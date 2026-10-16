@@ -2749,7 +2749,14 @@ export default function SessionDetailView() {
   const source = searchParams.get('source')
   const integration = searchParams.get('integration')
   const profileProviderHint = (value: string | null): SessionProfileProvider | undefined =>
-    value === 'slack' || value === 'github' || value === 'lark' || value === 'feishu' ? value : undefined
+    value === 'slack' ||
+    value === 'github' ||
+    value === 'lark' ||
+    value === 'feishu' ||
+    value === 'telegram' ||
+    value === 'discord'
+      ? value
+      : undefined
   const hintedProvider = profileProviderHint(source) ?? profileProviderHint(integration)
   const profileLinkProvider =
     hintedProvider && socialLoginProviders().some((provider) => provider.target === hintedProvider)

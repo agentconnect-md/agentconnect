@@ -39,6 +39,7 @@ the picture it draws.
 - [slack-integration-install.md](designs/slack-integration-install.md) — Slack installation and credential distribution.
 - [slack-install-smoothing.md](designs/slack-install-smoothing.md) — The streamlined Slack install flow.
 - [slack-identity.md](designs/slack-identity.md) — Slack accounts as a sign-in method, and the one rule for reading that identity.
+- [telegram-discord-permission-sync.md](designs/telegram-discord-permission-sync.md) — Shared login applications and conversation permission checks for Telegram and Discord.
 - [slack-approval-dm.md](designs/slack-approval-dm.md) — DM-ing a linked agent editor to decide a pending approval from Slack, the editor check on synced platforms' in-chat cards, and one settle path for every approval surface.
 - [slack-streaming-turn-output.md](designs/slack-streaming-turn-output.md) — Streaming a Slack turn's tool-call chrome over one native card stream.
 - **(draft)** [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels: what is buildable now on generally available primitives, and what waits on the partner-only API.

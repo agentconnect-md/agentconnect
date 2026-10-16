@@ -38,6 +38,24 @@ function fakeLogto(users: Record<string, unknown>) {
 const svcOf = (fetchImpl: FetchImpl, clock = new FakeClock(0)) =>
   new LogtoIdentityService(MGMT, clock, MUTATIONS, fetchImpl)
 
+it('uses Telegram profile id rather than OIDC sub, and Discord verified user id', async () => {
+  const { fetchImpl } = fakeLogto({
+    linked: {
+      identities: {
+        telegram: { userId: 'opaque-sub', details: { rawData: { id: 123, sub: 'opaque-sub' } } },
+        discord: { userId: '100000000000000002' }
+      }
+    },
+    missing: { identities: { telegram: { userId: '123', details: { rawData: { sub: '123' } } } } }
+  })
+  const svc = svcOf(fetchImpl)
+  expect(await svc.chatIdentitiesFor('linked')).toEqual([
+    { platform: 'telegram', tenant: 'global', memberId: '123' },
+    { platform: 'discord', tenant: 'global', memberId: '100000000000000002' }
+  ])
+  expect(await svc.chatIdentitiesFor('missing')).toEqual([])
+})
+
 /** A Logto user whose slack identity carries `rawData` — the connector stores the
  *  decoded OIDC payload whole. Synthetic ids: never a real workspace. */
 function slackUser(rawData: Record<string, unknown>, userId = 'U0EXAMPLE1') {

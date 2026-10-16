@@ -174,6 +174,19 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     ).toEqual(externalOrigin)
   })
 
+  it.each(['telegram', 'discord'] as const)('carries %s conversation proof', (provider) => {
+    const externalOrigin = {
+      provider,
+      realmKey: 'bot42',
+      resourceKind: 'conversation',
+      resourceKey: '123',
+      integrationId: ID
+    }
+    expect(
+      EventSession.parse({ ...legacyMilestone, platform: provider, channel: '123', externalOrigin }).externalOrigin
+    ).toEqual(externalOrigin)
+  })
+
   it('rejects an unknown conversationKind, an empty scope, and a non-uuid correlation id', () => {
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'thread' }).success).toBe(false)
     expect(EventSession.safeParse({ ...legacyMilestone, transportScope: '' }).success).toBe(false)

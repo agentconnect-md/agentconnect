@@ -340,6 +340,8 @@ import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
 import { GoogleChatSessionAccessService } from './http/googlechat-session-access.js'
+import { createTelegramSessionAccess } from './platforms/telegram/session-access.js'
+import { createDiscordSessionAccess } from './platforms/discord/session-access.js'
 import { SessionAccessWarmer } from './http/session-access-warmer.js'
 import type { AgentRecord, SessionMetaRecord, ExternalScopeRecord } from './persistence/ports.js'
 
@@ -1824,6 +1826,22 @@ export function buildContainer(
     users: repos.user,
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   })
+  const configuredSocialProviders =
+    opts.deploymentConfig?.values.auth.mode === 'oidc' ? opts.deploymentConfig.values.auth.socialProviders : []
+  const botSessionAccessDeps = {
+    bots: repos.bot,
+    botSecrets: repos.botSecret,
+    clock,
+    ...(logtoIdentity ? { identity: logtoIdentity } : {})
+  }
+  const telegramSessionAccess = createTelegramSessionAccess({
+    ...botSessionAccessDeps,
+    configured: configuredSocialProviders.includes('telegram')
+  })
+  const discordSessionAccess = createDiscordSessionAccess({
+    ...botSessionAccessDeps,
+    configured: configuredSocialProviders.includes('discord')
+  })
 
   // Built once and shared between the route deps (the live paths) and the
   // platform providers below — one closure per platform, not two.
@@ -2020,7 +2038,14 @@ export function buildContainer(
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
     ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
-    sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess, googleChatSessionAccess],
+    sessionAccessPlugins: [
+      slackSessionAccess,
+      githubSessionAccess,
+      feishuSessionAccess,
+      googleChatSessionAccess,
+      telegramSessionAccess,
+      discordSessionAccess
+    ],
     ...(iconStore ? { iconStore } : {}),
     ...(fileTransfer ? { fileTransfer } : {}),
     sharedImages,
@@ -2414,11 +2439,13 @@ export function buildContainer(
   composedPlatforms = buildCpPlatformRegistry([
     createQQCpProvider(undefined, [QQCredentialRoutes(httpDeps)]),
     createTelegramCpProvider({
+      botSecrets: repos.botSecret,
       verifyBot: verifyTelegramBot,
       syncBotIcon: syncTelegramBotIcon,
       funnelRoutes: { org: [telegramCheckRoutes(httpDeps, telegramSeams)], publicCallback: [] }
     }),
     createDiscordCpProvider({
+      botSecrets: repos.botSecret,
       verifyBot: verifyDiscordBot,
       ensureMessageContentIntent: ensureDiscordMessageContentIntent,
       syncBotProfile: syncDiscordBotProfile

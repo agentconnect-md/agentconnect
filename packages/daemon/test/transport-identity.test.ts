@@ -191,8 +191,20 @@ describe('conversation audience', () => {
   })
 
   it('binds nothing elsewhere — local classification rules alone', () => {
-    for (const p of ['telegram', 'discord', 'webchat', 'hook', 'some-future-platform']) {
+    for (const p of ['webchat', 'hook', 'some-future-platform']) {
       expect(conversationAudienceFor(p)).toBeUndefined()
     }
+  })
+
+  it.each(['telegram', 'discord'])('binds %s conversations to the bot realm', async (platform) => {
+    const audience = conversationAudienceFor(platform)!
+    expect(audience.applies({ isDm: true })).toBe(true)
+    expect(audience.applies({ isDm: false })).toBe(true)
+    expect(
+      await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => 'bot42' }, 'i1', {
+        id: 'i1',
+        platform
+      })
+    ).toBe('bot42')
   })
 })

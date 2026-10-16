@@ -1,20 +1,4 @@
-/**
- * The **conversation-audience strategy** (§7.4, stage S2; the daemon-side
- * counterpart of §9's per-platform session-audience resolvers).
- *
- * A session born in a real shared platform conversation is externally bound:
- * its visibility follows the CONVERSATION's audience, resolved by the CP
- * against the platform (who can see this channel?). Which platforms support
- * that binding, which of their conversations qualify, and what identifies the
- * REALM the conversation lives in (workspace, tenant) are platform facts:
- *
- *  - Slack binds channels but not DMs (a Slack DM's audience is the DM itself,
- *    already private); realm = the live connection's workspace id.
- *  - Feishu/Lark binds every conversation; realm = the durable tenant anchor
- *    (`region:appId`).
- *  - Telegram and Discord (and anything unregistered) bind nothing — their
- *    sessions classify by the local rules alone, exactly as before this seam.
- */
+// Platform strategies bind real conversations to a stable realm for platform permission checks.
 
 /** Core-owned inputs an audience strategy may consult. */
 export interface ConversationAudienceHost {
@@ -55,7 +39,15 @@ const AUDIENCES = new Map<string, ConversationAudience>([
       realmKey: async (host, _integrationId, integration) =>
         integration ? await host.tenantScope(integration) : undefined
     }
-  ]
+  ],
+  ...['telegram', 'discord'].map((platform): [string, ConversationAudience] => [
+    platform,
+    {
+      platform,
+      applies: () => true,
+      realmKey: async (host, _integrationId, integration) => (integration ? host.tenantScope(integration) : undefined)
+    }
+  ])
 ])
 
 /** The platform's conversation audience, or undefined — no registered audience

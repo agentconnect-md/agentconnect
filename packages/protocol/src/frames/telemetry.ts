@@ -33,21 +33,16 @@ export type Heartbeat = z.infer<typeof Heartbeat>
 const ExternalKey = z.string().min(1).max(200)
 const GithubId = z.string().regex(/^[1-9]\d*$/)
 
-/** Immutable audience identity inherited by A2A descendants. Credential proof
- * stays on the direct root only; children inherit this tuple from their parent. */
+export const ConversationSessionAudience = z.object({
+  provider: z.enum(['slack', 'feishu', 'telegram', 'discord']),
+  realmKey: ExternalKey.optional(),
+  resourceKind: z.literal('conversation'),
+  resourceKey: ExternalKey
+})
+
+// Children inherit the audience; only the direct root carries credential proof.
 export const ExternalSessionAudience = z.discriminatedUnion('provider', [
-  z.object({
-    provider: z.literal('slack'),
-    realmKey: ExternalKey.optional(),
-    resourceKind: z.literal('conversation'),
-    resourceKey: ExternalKey
-  }),
-  z.object({
-    provider: z.literal('feishu'),
-    realmKey: ExternalKey.optional(),
-    resourceKind: z.literal('conversation'),
-    resourceKey: ExternalKey
-  }),
+  ConversationSessionAudience,
   z.object({
     provider: z.literal('github'),
     realmKey: z.literal('github.com'),
@@ -65,9 +60,6 @@ export const ExternalSessionOrigin = z.discriminatedUnion('provider', [
     integrationId: z.string().uuid().optional()
   }),
   ExternalSessionAudience.options[1].extend({
-    integrationId: z.string().uuid().optional()
-  }),
-  ExternalSessionAudience.options[2].extend({
     hookId: z.string().uuid(),
     deliveryKey: ExternalKey,
     sourceInstallationId: GithubId,

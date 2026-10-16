@@ -24,7 +24,8 @@
 import { z } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationTelegramConfig } from '@agentconnect.md/protocol'
-import type { BotSecretMaterial } from '../../persistence/ports.js'
+import type { BotSecretMaterial, BotSecretStore } from '../../persistence/ports.js'
+import { telegramSessionRealm } from './session-access.js'
 import type { TelegramBotVerifier } from '../../http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../http/telegram-bot-profile.js'
 import type { CpConfigValidation, CpPlatformProvider } from '../provider.js'
@@ -56,6 +57,7 @@ export function telegramIntegrationConfig(secret: Pick<BotSecretMaterial, 'botTo
  *  the live route and the provider share one implementation and tests stay
  *  offline by faking exactly these. */
 export interface TelegramCpProviderDeps {
+  botSecrets?: Pick<BotSecretStore, 'get'>
   /** Live `getMe` check (`http/telegram-identity.ts`). */
   verifyBot: TelegramBotVerifier
   /** Cosmetic avatar push (`http/telegram-bot-profile.ts`). Absent ⇒ the
@@ -82,6 +84,12 @@ export function createTelegramCpProvider(deps: TelegramCpProviderDeps): CpPlatfo
   const { syncBotIcon, funnelRoutes } = deps
   return {
     platformId: 'telegram',
+    legacySessionAudience: (channel) => /^-?[1-9]\d*$/.test(channel),
+    chatMemberTenant: (bot) => (bot.revokedAt ? null : 'global'),
+    sessionAudienceRealm: async (bot) => {
+      const secret = await deps.botSecrets?.get(bot.orgId, bot.id)
+      return secret ? telegramSessionRealm(secret.botToken) : null
+    },
 
     // No install FUNNEL — the whole install is the create-DTO path, and there is
     // no public OAuth callback (contract §9 note). One org-scoped route all the

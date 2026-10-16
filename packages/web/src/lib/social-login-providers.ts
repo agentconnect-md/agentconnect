@@ -28,6 +28,8 @@ export const SOCIAL_LOGIN_CATALOG = [
   { target: 'github', name: 'GitHub' },
   { target: 'google', name: 'Google' },
   { target: 'slack', name: 'Slack' },
+  { target: 'telegram', name: 'Telegram' },
+  { target: 'discord', name: 'Discord' },
   { target: 'lark', name: 'Lark' },
   { target: 'feishu', name: 'Feishu' }
 ] as const

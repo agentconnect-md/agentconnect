@@ -681,7 +681,14 @@ export function sessionRoutes(deps: HttpDeps) {
       message: reason === 'unplaced' ? 'session has no recorded daemon' : 'owning daemon is offline'
     })
 
-    type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
+    const accessProviders = {
+      slack: 'Slack',
+      github: 'GitHub',
+      feishu: 'Feishu/Lark',
+      telegram: 'Telegram',
+      discord: 'Discord'
+    } as const
+    type ExternalAccessProvider = keyof typeof accessProviders
     const externalAccessAvailable = (provider: ExternalAccessProvider) =>
       deps.sessionAccessPlugins?.find((plugin) => plugin.provider === provider)?.available === true
 
@@ -702,7 +709,7 @@ export function sessionRoutes(deps: HttpDeps) {
     }
 
     const registerExternalAccessRoutes = (provider: ExternalAccessProvider) => {
-      const label = provider === 'slack' ? 'Slack' : provider === 'github' ? 'GitHub' : 'Feishu/Lark'
+      const label = accessProviders[provider]
       const operationLabel = provider === 'feishu' ? 'FeishuLark' : label
       r.get(
         `/session-access/${provider}`,
@@ -756,9 +763,8 @@ export function sessionRoutes(deps: HttpDeps) {
       )
     }
 
-    registerExternalAccessRoutes('slack')
-    registerExternalAccessRoutes('github')
-    registerExternalAccessRoutes('feishu')
+    for (const provider of Object.keys(accessProviders) as ExternalAccessProvider[])
+      registerExternalAccessRoutes(provider)
 
     r.get(
       '/sessions/facets',

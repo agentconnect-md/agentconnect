@@ -7,6 +7,7 @@
  */
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import {
+  ConversationSessionAudience,
   EventSession as EventSessionSchema,
   SESSION_METADATA_ACK_FEATURE,
   type EventSession,
@@ -153,14 +154,15 @@ export class SessionMetadataOutbox {
     // integration as if it belonged to the child agent.
     if (classification?.externalOrigin) event.externalOrigin = classification.externalOrigin
     else if (
-      (classification?.externalProvider === 'slack' || classification?.externalProvider === 'feishu') &&
+      ConversationSessionAudience.shape.provider.safeParse(classification?.externalProvider).success &&
+      classification &&
       classification.externalResourceKey &&
       classification.externalIntegrationId
     ) {
       // Rolling compatibility for a conversation row created before direct-origin
       // proof was persisted as one object.
       event.externalOrigin = {
-        provider: classification.externalProvider,
+        provider: ConversationSessionAudience.shape.provider.parse(classification.externalProvider),
         resourceKind: 'conversation',
         resourceKey: classification.externalResourceKey,
         ...(classification.externalRealmKey ? { realmKey: classification.externalRealmKey } : {}),
