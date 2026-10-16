@@ -54,8 +54,7 @@ export function assistantModeDefinitionRefusals(agent: {
   const refusals: AssistantModeRefusal[] = []
   if (!agent.runtime) refusals.push('runtime-unset')
   else if (!assistantModeRuntimeAdmitted(agent.runtime)) refusals.push('runtime-not-admitted')
-  // No binding means the managed default.
-  const provider = agent.memory?.provider ?? 'managed'
-  if (provider !== 'managed' && provider !== 'none') refusals.push('memory-provider')
+  // No binding means the managed default; turning the mode on homes it in the Control Plane.
+  if ((agent.memory?.provider ?? 'managed') !== 'managed') refusals.push('memory-provider')
   return refusals
 }

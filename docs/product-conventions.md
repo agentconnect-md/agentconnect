@@ -214,7 +214,8 @@ daemon-home tree stays in the source archive, and a move onto a group or the man
 pool is refused until the home is switched to the Control Plane (the only direction
 that carries memory; forcing it back starts the agent empty). An agent placed on a
 group or the pool always keeps managed memory in the Control Plane, because any member
-may serve it; an agent pinned to one daemon keeps the daemon default. An unplaced agent
+may serve it, and so does an agent in assistant mode (see "Assistant-mode places"); any
+other agent pinned to one daemon keeps the daemon default. An unplaced agent
 has no tree to lose, so placing it on a group or the pool switches its home to the
 Control Plane in the same write, without a migration. A source that later
 reconnects after a force reassign is told to detach the stale local copy during
@@ -976,6 +977,15 @@ another mode afterwards and it stays while the mode is on. With Manual chosen, t
 panel warns that tasks will often wait for approval; while the switch is being turned
 on, it warns only when the runtime keeps the mode. Turning the mode off leaves the permission mode
 as it is.
+
+The mode keeps the agent's memory managed and in the Control Plane, so a person's or a place's
+memory survives a move and is not left on one machine's disk. The console still reads and clears
+it through the agent's daemon. The switch stays locked while memory is off or another backend is
+chosen. Turning it on moves memory kept on the daemon to the Control Plane in the same save; the
+Memory tab shows it moving until the copy completes, as after a manual move. While the mode is on,
+the Memory tab offers only Managed and the Control Plane and says to turn the mode off to change
+them, and the API refuses any other choice the same way. Turning the mode off moves nothing back.
+While the Control Plane is unreachable, the agent's memory is unavailable.
 
 Each place keeps one long session while the mode is on: every room, and a 1:1 DM
 on a platform whose DMs otherwise open a session per message. A conversation gated By

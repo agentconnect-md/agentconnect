@@ -180,6 +180,62 @@ describe.each([
   })
 })
 
+// Assistant mode is the second reason the CP home is mandatory (assistant-mode.md §4.1); `assistantMode` is the mode after the edit.
+describe.each([
+  { placement: 'pinned', onSet: false },
+  { placement: 'group', onSet: true }
+])('the home rule under assistant mode for a $placement agent', ({ onSet }) => {
+  const resolve = (
+    current: Parameters<typeof resolveMemoryBindingOnUpdate>[0],
+    patch: Parameters<typeof resolveMemoryBindingOnUpdate>[1],
+    force = false
+  ) => resolveMemoryBindingOnUpdate(current, patch, onSet, force, true)
+
+  it('an edit with no binding, turning the mode on, moves a daemon home and flags the migration', () => {
+    expect(resolve(null, undefined)).toEqual({ kind: 'write', memory: pendingCp, dropHome: false })
+    expect(resolve({ ...daemon, autoDistill: false }, undefined)).toEqual({
+      kind: 'write',
+      memory: { ...pendingCp, autoDistill: false },
+      dropHome: false
+    })
+    expect(resolve(cp, undefined)).toEqual({ kind: 'unchanged' })
+    expect(resolve(pendingCp, undefined)).toEqual({ kind: 'unchanged' })
+    expect(resolve({ provider: 'none' }, undefined)).toEqual({ kind: 'unchanged' })
+    expect(resolveMemoryBindingOnUpdate(daemon, undefined, onSet, false)).toEqual({ kind: 'unchanged' })
+  })
+
+  it('a managed save that names no home lands in the Control Plane', () => {
+    expect(resolve(daemon, { provider: 'managed', autoDistill: true })).toEqual({
+      kind: 'write',
+      memory: { ...pendingCp, autoDistill: true },
+      dropHome: false
+    })
+    expect(resolve(daemon, null)).toEqual({ kind: 'write', memory: pendingCp, dropHome: false })
+    expect(resolve(pendingCp, { provider: 'managed' })).toEqual({ kind: 'write', memory: pendingCp, dropHome: false })
+    expect(resolve({ provider: 'none' }, { provider: 'managed' })).toEqual({
+      kind: 'write',
+      memory: cp,
+      dropHome: false
+    })
+    expect(resolve({ provider: 'none' }, null)).toEqual({ kind: 'write', memory: cp, dropHome: false })
+  })
+
+  it('refuses the daemon home and the forced return, naming the mode unless the placement already refuses it', () => {
+    const refused = onSet ? 'set-daemon-home' : 'assistant-mode'
+    for (const current of [cp, pendingCp, daemon, { provider: 'none' } as const]) {
+      for (const force of [false, true]) {
+        const result = resolve(current, daemon, force)
+        expect(result).toMatchObject({ kind: 'refused', refused })
+        if (!onSet && result.kind === 'refused') expect(result.message).toMatch(/turn assistant mode off first/)
+      }
+    }
+  })
+
+  it('passes another provider through to the admission check', () => {
+    expect(resolve(cp, { provider: 'none' })).toEqual({ kind: 'write', memory: { provider: 'none' }, dropHome: false })
+  })
+})
+
 describe('managedBindingHomedInControlPlane', () => {
   it('keeps the policy fields, sets the home, and drops the CP-owned flag; no binding is the managed default', () => {
     expect(managedBindingHomedInControlPlane(null)).toEqual(cp)

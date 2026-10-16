@@ -45,6 +45,11 @@ function withSpy(): { app: HttpApp; spy: SpyControl } {
   return { app, spy }
 }
 
+const storedMemory = async (agentId: string) =>
+  ((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).runtimeOverrides as { memory?: unknown } | null)
+    ?.memory ?? null
+const PENDING = { provider: 'managed', home: 'control-plane', homeMigration: 'pending' }
+
 const patch = (app: HttpApp, agentId: string, payload: Record<string, unknown>) =>
   app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload })
 const admission = (app: HttpApp, agentId: string) =>
@@ -175,10 +180,90 @@ describe('assistant mode', () => {
     expect(refused.json()).toMatchObject({ code: ASSISTANT_MODE_NOT_ADMITTED })
     expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantMode).toBeNull()
 
-    // Fixing both in the same edit admits it.
-    const fixed = await patch(app, agentId, { runtime: 'claude-acp', memory: { provider: 'none' }, assistantMode: ON })
+    // Fixing both in the same edit admits it; switching to managed has no tree to move, so nothing migrates.
+    const fixed = await patch(app, agentId, {
+      runtime: 'claude-acp',
+      memory: { provider: 'managed' },
+      assistantMode: ON
+    })
     expect(fixed.statusCode, fixed.body).toBe(200)
     expect(fixed.json()).toMatchObject({ assistantMode: ON })
+    expect(await storedMemory(agentId)).toEqual({ provider: 'managed', home: 'control-plane' })
+  })
+
+  it('refuses memory that is off', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { runtime: 'claude-acp', runtimeOverrides: { memory: { provider: 'none' } } })
+    const { app } = withSpy()
+    expect((await admission(app, agentId)).json()).toEqual({ admitted: false, refusals: ['memory-provider'] })
+    const refused = await patch(app, agentId, { assistantMode: ON })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({
+      code: ASSISTANT_MODE_NOT_ADMITTED,
+      message: 'assistant mode cannot be turned on: memory must be managed'
+    })
+    expect(await storedMemory(agentId)).toEqual({ provider: 'none' })
+  })
+
+  // assistant-mode.md §4.1: while the mode is on, managed memory lives in the Control Plane, and the switch is one way.
+  it('moves a daemon memory home to the Control Plane in the write that turns it on, and keeps it there while on', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      daemonId: DAEMON,
+      runtime: 'claude-acp',
+      runtimeOverrides: { memory: { provider: 'managed', home: 'daemon', autoDistill: false } }
+    })
+    const { app, spy } = withSpy()
+    const moved = { ...PENDING, autoDistill: false }
+
+    const on = await patch(app, agentId, { assistantMode: ON })
+    expect(on.statusCode, on.body).toBe(200)
+    expect(on.json()).toMatchObject({ assistantMode: ON, memory: moved })
+    expect(await storedMemory(agentId)).toEqual(moved)
+    expect(spy.upserts.at(-1)?.spec).toMatchObject({ assistantMode: ON, memory: moved })
+
+    // No daemon home, forced or not, and no other provider; each refusal says to turn the mode off first.
+    for (const payload of [
+      { memory: { provider: 'managed', home: 'daemon' } },
+      { memory: { provider: 'managed', home: 'daemon' }, force: true }
+    ]) {
+      const refused = await patch(app, agentId, payload)
+      expect(refused.statusCode).toBe(409)
+      expect(refused.json().message).toMatch(/turn assistant mode off first/)
+    }
+    for (const memory of [{ provider: 'none' }, { provider: 'native' }]) {
+      const refused = await patch(app, agentId, { memory })
+      expect(refused.statusCode).toBe(409)
+      expect(refused.json()).toMatchObject({
+        code: ASSISTANT_MODE_NOT_ADMITTED,
+        message: 'assistant mode is on, so this edit is refused: memory must be managed; turn assistant mode off first'
+      })
+    }
+    expect(await storedMemory(agentId)).toEqual(moved)
+
+    // A save that names no home keeps it, flag and all.
+    const saved = await patch(app, agentId, { memory: { provider: 'managed', autoDistill: true } })
+    expect(saved.statusCode, saved.body).toBe(200)
+    expect(await storedMemory(agentId)).toEqual({ ...PENDING, autoDistill: true })
+
+    // Turning it off moves nothing back; the forced return is then the ordinary one, which keeps nothing.
+    const off = await patch(app, agentId, { assistantMode: { enabled: false } })
+    expect(off.statusCode, off.body).toBe(200)
+    expect(await storedMemory(agentId)).toEqual({ ...PENDING, autoDistill: true })
+    const back = await patch(app, agentId, { memory: { provider: 'managed', home: 'daemon' }, force: true })
+    expect(back.statusCode, back.body).toBe(200)
+    expect(await storedMemory(agentId)).toEqual({ provider: 'managed', home: 'daemon' })
+  })
+
+  it('turns on with a Control Plane home already in place without flagging a migration', async () => {
+    const agentId = randomUUID()
+    const cp = { provider: 'managed', home: 'control-plane' }
+    await seedAgent(prisma, agentId, { runtime: 'claude-acp', runtimeOverrides: { memory: cp } })
+    const { app } = withSpy()
+    const on = await patch(app, agentId, { assistantMode: ON })
+    expect(on.statusCode, on.body).toBe(200)
+    expect(await storedMemory(agentId)).toEqual(cp)
   })
 
   // assistant-mode.md §1.8: background work nobody watches should not stop for approval, so turning on defaults the mode.
@@ -197,7 +282,7 @@ describe('assistant mode', () => {
     const on = await patch(app, agentId, { assistantMode: ON })
     expect(on.statusCode, on.body).toBe(200)
     expect(on.json()).toMatchObject({ assistantMode: ON, permissionMode: 'auto' })
-    expect(await overrides()).toEqual({ permissionMode: 'auto', chatActions: 'talk', model: 'sonnet' })
+    expect(await overrides()).toEqual({ permissionMode: 'auto', chatActions: 'talk', model: 'sonnet', memory: PENDING })
     expect(spy.upserts.at(-1)?.spec).toMatchObject({ permissionMode: 'auto', assistantMode: ON })
 
     // The editor's later choice sticks while the mode stays on.

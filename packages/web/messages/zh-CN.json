@@ -3050,6 +3050,9 @@
         "onDaemonHelp": "Daemon 会将记忆文件保存在运行 Agent 的机器上。",
         "inControlPlaneHelp": "Control Plane 会保存记忆文件，因此 Agent 可跟随到任意 Daemon，无需依赖某台机器在线。",
         "movingToControlPlane": "正在将记忆移动到 Control Plane…",
+        "homeSetReason": "放在组或托管 Daemon 池上的 Agent，记忆保存在 Control Plane 中。",
+        "homeAssistantModeReason": "助理模式下，Agent 使用托管记忆，保存在 Control Plane 中。如需更改，请先关闭助理模式。",
+        "homeControlPlaneFixed": "保存在 Control Plane 中的记忆会一直留在那里；移回 Daemon 需使用下方单独的强制操作。",
         "externalDescription": "由所有者审核的外部插件；请在下方准确配置可以召回和捕获的内容。",
         "nativeDescription": "Runtime 自带的记忆（Claude / Codex），保存在它自己的目录里。",
         "noneDescription": "不会加载或保存持久记忆。",
@@ -3155,7 +3158,7 @@
         "refusals": {
           "runtime-unset": "请先选择 Runtime。",
           "runtime-not-admitted": "暂不支持此 Runtime：它需要能关闭自身记忆，并能在重启后恢复会话。",
-          "memory-provider": "记忆必须为托管或关闭。",
+          "memory-provider": "记忆必须为托管。",
           "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。"
         },
         "blockers": {

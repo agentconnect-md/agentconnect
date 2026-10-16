@@ -43,19 +43,25 @@ const REFUSAL_MESSAGES: Record<AssistantModeRefusal, string> = {
   'runtime-unset': 'the agent has no runtime yet',
   'runtime-not-admitted':
     'the runtime is not on the assistant mode admission list (its native memory must be able to turn off and its sessions must resume by id after a restart)',
-  'memory-provider': 'memory must be managed or off',
+  'memory-provider': 'memory must be managed',
   'store-not-shared': 'every member of the agent’s daemon group must share one store'
 }
 
-/** One sentence naming every refusal, for the API message. */
-export function assistantModeRefusalMessage(refusals: readonly AssistantModeRefusal[]): string {
-  return `assistant mode cannot be turned on: ${refusals.map((r) => REFUSAL_MESSAGES[r]).join('; ')}`
+/** One sentence naming every refusal, for the API message; an edit to an agent already in the mode is told to turn it off first. */
+export function assistantModeRefusalMessage(refusals: readonly AssistantModeRefusal[], alreadyOn = false): string {
+  const reasons = refusals.map((r) => REFUSAL_MESSAGES[r]).join('; ')
+  return alreadyOn
+    ? `assistant mode is on, so this edit is refused: ${reasons}; turn assistant mode off first`
+    : `assistant mode cannot be turned on: ${reasons}`
 }
 
 /** Thrown inside the row-locked agent write when the committed definition fails admission. */
 export class AssistantModeAdmissionRefused extends Error {
-  constructor(readonly refusals: AssistantModeRefusal[]) {
-    super(assistantModeRefusalMessage(refusals))
+  constructor(
+    readonly refusals: AssistantModeRefusal[],
+    alreadyOn = false
+  ) {
+    super(assistantModeRefusalMessage(refusals, alreadyOn))
     this.name = 'AssistantModeAdmissionRefused'
   }
 }
@@ -81,12 +87,12 @@ export function assistantModePermissionModeForEdit(
 }
 
 /** The definition checks, as the row-locked write runs them. */
-export function assertAssistantModeDefinition(agent: {
-  runtime: string | null | undefined
-  memory: AgentMemoryBinding | null | undefined
-}): void {
+export function assertAssistantModeDefinition(
+  agent: { runtime: string | null | undefined; memory: AgentMemoryBinding | null | undefined },
+  alreadyOn = false
+): void {
   const refusals = assistantModeDefinitionRefusals(agent)
-  if (refusals.length > 0) throw new AssistantModeAdmissionRefused(refusals)
+  if (refusals.length > 0) throw new AssistantModeAdmissionRefused(refusals, alreadyOn)
 }
 
 /** The self-hosted group check (assistant-mode.md §4.1): every member reports the same shared store. */

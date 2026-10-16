@@ -238,6 +238,15 @@ and move (below) — so nothing downstream has to ask where a group agent's memo
 Bindings of any other provider are outside it, and no data-plane database is involved:
 the `control-plane` home is rows in the CP's own database.
 
+Assistant mode is the second reason the home is mandatory, whatever the placement
+([assistant-mode.md](assistant-mode.md) §4.1): its person and place layers must be readable
+and clearable in the console with no daemon online, and must survive a move. Unlike a member
+set it also requires the managed provider. Turning the mode on switches a `daemon` home in
+the same row-locked write and flags the migration below; while it is on, `daemon` and the
+forced return are refused, so a self-hosted daemon keeps its assistant's memory in the CP. The
+rule lives in the same module as the member set's (`agent-memory/home.ts`), and turning the
+mode off moves nothing back.
+
 **What the home does not carry: drafts and the change log.** `control-plane` moves the
 live store — `memory/`, `channels/`, `people/`, and `memory-backups/`, the one retained pre-adoption
 copy that is the undo path for the last dream. Two things beneath the same root stay off
@@ -405,7 +414,10 @@ same way. Native (runtime) memory follows the runtime's HOME on the pod and is
 unaffected.
 
 The same pass covers the organization's groups: every agent placed on any member set is
-flipped, and an agent pinned to a machine — a group's member included — is left alone.
+flipped, and an agent pinned to a machine — a group's member included — is left alone
+unless it is in assistant mode. Every assistant-mode agent with a `daemon` home is flipped
+too, wherever it is placed, and one whose memory is off gets the managed default in the CP,
+which has no tree to copy.
 For a group the source is the holding member's own disk: the member that holds the
 agent's duty when the flip reaches it copies the tree under its agent root and reports
 completion, the console showing the home as moving until then. Nothing is deleted — the
@@ -918,10 +930,11 @@ type MemoryConfig =
 - `home` (§3.2.1) defaults to `daemon` for an agent pinned to one daemon. The CP writes
   the resolved value on create so a later placement change never flips it implicitly;
   an agent placed on a member set — one of the organization's groups or the
-  install-wide pool — defaults to and must carry `control-plane`, and the console
-  fixes the selector there. `home` migrates one way only, `daemon` → `control-plane` (§3.2.1); the
-  reverse is accepted only as a forced change (`force: true` on the edit, 409 without
-  it) and keeps no memory. An edit that omits `home` keeps the current one, and
+  install-wide pool — defaults to and must carry `control-plane`, as must an agent
+  in assistant mode, and the console fixes the selector for both. `home` migrates one
+  way only, `daemon` → `control-plane` (§3.2.1); the reverse is accepted only as a
+  forced change (`force: true` on the edit, 409 without it), never on a member set or
+  in assistant mode, and keeps no memory. An edit that omits `home` keeps the current one, and
   `homeMigration` is CP-owned and read-only: set by the forward switch, cleared by the
   daemon's completion report, never accepted from a client.
 - `connectionId` must belong to the agent's organization, and the caller must

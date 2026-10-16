@@ -55,17 +55,13 @@ import { placeLayerLabel } from '@/components/console/memory-place-label'
 // The layer picker's value for the signed-in user's own memory; a place layer's key never contains a colon.
 const YOUR_LAYER = ':yours'
 
-const HOME_SET_REASON = 'Agents on a group or the managed pool keep their memory in the Control Plane.'
-const HOME_PENDING_STATUS = 'Moving memory to the Control Plane…'
-const HOME_CONTROL_PLANE_FIXED =
-  'Memory in the Control Plane stays there; moving it back is a separate, forced action below.'
-
 // The home is chosen one way (memory-evolution.md §3.2.1): `daemon` is offered only while it is the current value.
 function MemoryHomeField({
   home,
   persistedHome,
   canEdit,
   memberSetPlaced,
+  assistantMode,
   pending,
   onChange
 }: {
@@ -73,21 +69,25 @@ function MemoryHomeField({
   persistedHome: ManagedMemoryHome
   canEdit: boolean
   memberSetPlaced: boolean
+  assistantMode: boolean
   pending: boolean
   onChange: (next: ManagedMemoryHome) => void
 }) {
   const t = useTranslations('Agents.detail.memory')
+  const fixed = memberSetPlaced || assistantMode
   const options = MEMORY_HOME_OPTIONS.filter(
-    (option) => option.value !== 'daemon' || (persistedHome === 'daemon' && !memberSetPlaced)
+    (option) => option.value !== 'daemon' || (persistedHome === 'daemon' && !fixed)
   )
-  const editable = canEdit && !memberSetPlaced && !pending
+  const editable = canEdit && !fixed && !pending
   const reason = memberSetPlaced
-    ? HOME_SET_REASON
-    : pending
-      ? HOME_PENDING_STATUS
-      : persistedHome === 'control-plane'
-        ? HOME_CONTROL_PLANE_FIXED
-        : null
+    ? t('homeSetReason')
+    : assistantMode
+      ? t('homeAssistantModeReason')
+      : pending
+        ? t('movingToControlPlane')
+        : persistedHome === 'control-plane'
+          ? t('homeControlPlaneFixed')
+          : null
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -131,6 +131,7 @@ function settingsFromProps(input: {
   autoDistill: boolean
   memoryHome?: ManagedMemoryHome
   memberSetPlaced?: boolean
+  assistantMode?: boolean
   memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
@@ -139,8 +140,8 @@ function settingsFromProps(input: {
   return memorySettingsDraft({
     provider: input.memoryProvider,
     autoDistill: input.autoDistill,
-    // A member set refuses `daemon`, so a set-placed agent’s draft is pinned to the only home it may carry.
-    home: input.memberSetPlaced ? 'control-plane' : input.memoryHome,
+    // A member set and assistant mode refuse `daemon`, so such an agent’s draft is pinned to the only home it may carry.
+    home: input.memberSetPlaced || input.assistantMode ? 'control-plane' : input.memoryHome,
     dreaming: input.memoryDreaming,
     connectionId: input.memoryConnectionId,
     recall: input.memoryRecall,
@@ -162,7 +163,8 @@ export function MemoryPanel({
   memoryCaptureMode,
   sessionBasePath,
   sandboxed = false,
-  memberSetPlaced = false
+  memberSetPlaced = false,
+  assistantMode = false
 }: {
   agentId: string
   canEdit: boolean
@@ -183,6 +185,8 @@ export function MemoryPanel({
   sandboxed?: boolean
   /** Placed on a member set (a group or the pool), where the home is fixed to `control-plane` and there is no way back. */
   memberSetPlaced?: boolean
+  /** Assistant mode is on: memory is managed and in the Control Plane until the mode is turned off. */
+  assistantMode?: boolean
 }) {
   const t = useTranslations('Agents.detail.memory')
   const { updateAgent } = useConsoleData()
@@ -209,6 +213,7 @@ export function MemoryPanel({
     autoDistill,
     memoryHome,
     memberSetPlaced,
+    assistantMode,
     memoryDreaming,
     memoryConnectionId,
     memoryRecall,
@@ -245,6 +250,7 @@ export function MemoryPanel({
       autoDistill,
       memoryHome,
       memberSetPlaced,
+      assistantMode,
       memoryDreaming,
       memoryConnectionId,
       memoryRecall,
@@ -261,6 +267,7 @@ export function MemoryPanel({
     autoDistill,
     memoryHome,
     memberSetPlaced,
+    assistantMode,
     memoryDreaming?.enabled,
     memoryDreaming?.sessionWindow,
     memoryDreaming?.schedule,
@@ -497,7 +504,12 @@ export function MemoryPanel({
           <div className="flex flex-col gap-4 border-t border-(--border-subtle) px-4 py-4">
             <div className="flex flex-col gap-2">
               <span className="font-sans text-[13px] font-semibold leading-normal">{t('backend')}</span>
-              <MemoryProviderPicker value={provider} onChange={selectProvider} disabled={!canEdit || savingProvider} />
+              <MemoryProviderPicker
+                value={provider}
+                onChange={selectProvider}
+                disabled={!canEdit || savingProvider}
+                allowed={assistantMode ? ['managed'] : undefined}
+              />
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 {provider === 'external'
                   ? t('externalDescription')
@@ -515,6 +527,7 @@ export function MemoryPanel({
                 persistedHome={persistedSettings.home}
                 canEdit={canEdit && !savingProvider}
                 memberSetPlaced={memberSetPlaced}
+                assistantMode={assistantMode}
                 pending={homeMigrationPending}
                 onChange={(next) => {
                   setSettings((current) => ({ ...current, home: next }))
@@ -688,6 +701,7 @@ export function MemoryPanel({
             persistedProvider === 'managed' &&
             persistedSettings.home === 'control-plane' &&
             !memberSetPlaced &&
+            !assistantMode &&
             !homeMigrationPending ? (
               <div className="flex flex-col gap-2 rounded-md border border-(--status-error-soft) px-3 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
                 <div className="flex min-w-0 flex-col gap-[3px]">

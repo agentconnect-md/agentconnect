@@ -13,4 +13,16 @@ describe('MemoryProviderPicker', () => {
     expect(html.match(/class="pillbar"/g)).toHaveLength(2)
     expect(html).toContain('data-memory-provider="external" class="pill on')
   })
+
+  it('disables every choice outside the allowed ones', () => {
+    const html = renderToStaticMarkup(
+      <MemoryProviderPicker value="managed" onChange={() => undefined} allowed={['managed']} />
+    )
+    expect(html).toContain('<button type="button" data-memory-provider="managed"')
+    expect(html.match(/disabled="" data-memory-provider="(\w+)"/g)).toEqual([
+      'disabled="" data-memory-provider="native"',
+      'disabled="" data-memory-provider="external"',
+      'disabled="" data-memory-provider="none"'
+    ])
+  })
 })

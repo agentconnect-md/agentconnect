@@ -232,19 +232,25 @@ Proposed (§5.13); nothing here is implemented yet.
 
 ### 4.1 Admission (checked on enable; a failing check locks the switch)
 
-| Dimension         | Requirement                                                                                                                                                                                                                                                   | Why                                                                                                                                              |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the patrol guarantee is stated by layer in §5.9, and a runtime without one shows as degraded | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out |
-| Memory            | `managed` or `none`; per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies                                                                                                       | The person layer exists for managed memory only; distillation runs on the credentialed warm host                                                 |
-| Self-hosted group | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                      |
-| Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                      | Not possible today either                                                                                                                        |
-| One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                     |
+| Dimension         | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                   | Why                                                                                                                                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the patrol guarantee is stated by layer in §5.9, and a runtime without one shows as degraded                                                                                                                                                                                 | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out                                                                       |
+| Memory            | `managed`, kept in the Control Plane (`home: control-plane`). Turning the mode on moves a `daemon` home in the same write, and the owning daemon copies the tree, one way. While the mode is on, a `daemon` home, the forced return and any other provider are refused; turning it off moves nothing back. Per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies | The person layer exists for managed memory only; person and place memory must be readable and clearable in the console with no daemon online, and must survive a move. Distillation runs on the credentialed warm host |
+| Self-hosted group | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                                                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                                                                                            |
+| Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                                                                                                                                                                                                      | Not possible today either                                                                                                                                                                                              |
+| One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                                                                                           |
 
 The admission list holds Claude Code (`claude-acp`, and `claude`, its earlier id), Codex (`codex-acp`,
 and `codex`) and OpenCode (`opencode`). A runtime joins it once both facts hold for the version the
 product runs: its memory is off by a verified switch or it keeps none, and a new runtime process
 resumes a session from `session/load` with the earlier turns in the next model request, not merely
 an answered call (the thirty-ninth revision records the check for Codex and OpenCode).
+
+Keeping memory in the Control Plane has three accepted costs. A self-hosted daemon on a hosted
+Control Plane keeps its person and place layers there. While the Control Plane is unreachable,
+memory is unavailable: there is no local cache. And the move is one way. The Control Plane's boot
+pass moves every assistant-mode agent that still has a `daemon` home, as it does for agents on a
+member set ([memory-evolution.md](memory-evolution.md) §3.2.1).
 
 Not admission criteria: platform (all allowed; a place is internal unless detected external, §5.3), channel trigger mode
 (user configuration), workspace mode and isolation (§5.6), sandboxing, permission policy (switching
@@ -2071,17 +2077,31 @@ under the rule of the conversation its row names. A task's own page reads its ro
 session and shows a follow-up's status, what counts as done and its recent checks. The daemon
 advertises both as `assistant-task-handle-v1`.
 
-**Forty-sixth revision (2026-10-16)**: §5.13 proposes a first look (issue #2810; §1.9, §2, §7, §9).
-Added to a channel, an assistant-mode agent did nothing until someone @-mentioned it. The product
-owner decided what a first look is: a read-only task of the place reads its last 30 days or 500
-messages, whichever is less, and reports to the place's long session. That session writes how the
-place works to the layer that conversation writes (the shared layer for an internal public channel,
-else the place layer), introduces the agent once, and offers at most three suggestions as `propose`
-cards under the introduction, none being a fine outcome. The two prompts
-are recorded with the changes made to fit verified facts. Recommended for the owner to confirm: a
-first look is a follow-up the daemon takes and ends after one check, reusing the follow-up
-machinery, not a new task kind. It runs on a new join automatically and otherwise on request
-(`firstLook`), only where the platform declares channel history (Slack, Discord, Lark/Feishu; not
-Telegram), once per place, and never in an external place in v1. `propose` gains the report round,
-cards held until the introduction posts, and a follow-up form that turns an approval into a
-follow-up. It counts as one check, and an automatic one yields to due follow-up checks.
+**Forty-sixth revision (2026-10-16)**: assistant mode keeps managed memory in the Control Plane
+(§4.1), so person and place memory survives a move and can later be read and cleared in the console
+with no daemon online; the console's memory routes still go through the agent's daemon. Admission
+takes `managed` only; `none` is no longer admitted, and no binding is still the managed default.
+Turning the mode on switches a `daemon` home to `control-plane` in the same row-locked write and
+flags the one-way migration the owning daemon already runs for a manual switch. While the mode is
+on, an edit that sets a `daemon` home or another provider, and the forced return, are refused with a
+409 that says to turn the mode off first; turning it off moves nothing back. The Control Plane's
+boot pass also flips every assistant-mode agent with a `daemon` home, and gives one whose memory is
+off the managed default in the Control Plane, which has no tree to copy. The costs are accepted: a
+self-hosted daemon on a hosted Control Plane keeps person and place layers there, memory is
+unavailable while the Control Plane is unreachable, and the move is one way. The console fixes the
+Memory tab's backend and home while the mode is on.
+
+**Forty-seventh revision (2026-10-16)**: §5.13 proposes a first look (issue #2810; §1.9, §2, §7,
+§9). Added to a channel, an assistant-mode agent did nothing until someone @-mentioned it. The
+product owner decided what a first look is: a read-only task of the place reads its last 30 days or
+500 messages, whichever is less, and reports to the place's long session. That session writes how
+the place works to the layer that conversation writes (the shared layer for an internal public
+channel, else the place layer), introduces the agent once, and offers at most three suggestions as
+`propose` cards under the introduction, none being a fine outcome. The two prompts are recorded
+with the changes made to fit verified facts. Recommended for the owner to confirm: a first look is
+a follow-up the daemon takes and ends after one check, reusing the follow-up machinery, not a new
+task kind. It runs on a new join automatically and otherwise on request (`firstLook`), only where
+the platform declares channel history (Slack, Discord, Lark/Feishu; not Telegram), once per place,
+and never in an external place in v1. `propose` gains the report round, cards held until the
+introduction posts, and a follow-up form that turns an approval into a follow-up. It counts as one
+check, and an automatic one yields to due follow-up checks.
