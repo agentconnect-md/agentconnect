@@ -185,10 +185,11 @@ const PLACE_STEP1 = `1. Write "How this place works" and "Recurring" to a topic 
 
 // Only a place that writes the shared layer adds to it (§5.13); its own file stays out of the index every session reads.
 const SHARED_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   with "index: false" in its header so MEMORY.md leaves it out; this place's sessions open it
-   when they need it. ${LEAVE_OUT}
+   with "index: false" in its header so MEMORY.md leaves it out. ${LEAVE_OUT}
    Then update two shared files, each listed in MEMORY.md by its own description header:
-   - ${CHANNELS_MEMORY_FILE}: one line for this place, "#name: what it is for", by its channel name.
+   - ${CHANNELS_MEMORY_FILE}: one line for this place by its channel name, linking the file above:
+     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —
+     [[release-train]]". This place's later sessions find its own notes through that link.
    - ${ORGANIZATION_MEMORY_FILE}: unless "About the organization" has nothing new, merge it into the
      existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
      place it came from named by its channel name. Keep it short.

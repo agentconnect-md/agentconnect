@@ -1350,7 +1350,7 @@ code-host reads are not offered, and §5.5's read gate refuses any source but it
      new memory layer for public channels.
    - In an internal public channel only, the shared index stays short (_decided_ by the owner,
      2026-10-17): the place's file says `index: false` and gets no `MEMORY.md` line. The place
-     gets one line in the shared `channels.md` instead. What is new about the organization as a
+     gets one line in the shared `channels.md` instead, linking its file. What is new about the organization as a
      whole is merged into the shared `organization.md`, each fact dated and named after the
      place it came from. Those two files each have their one index line, and both are updated
      only with revision-checked entry writes, since other places update them too (below).
@@ -1447,11 +1447,13 @@ reads instead:
 
 ```text
 1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   with "index: false" in its header so MEMORY.md leaves it out; this place's sessions open it
-   when they need it. Leave out "In flight", any request still open wherever it is listed,
-   and anything you would not say in every conversation that reads this layer.
+   with "index: false" in its header so MEMORY.md leaves it out. Leave out "In flight", any
+   request still open wherever it is listed, and anything you would not say in every
+   conversation that reads this layer.
    Then update two shared files, each listed in MEMORY.md by its own description header:
-   - channels.md: one line for this place, "#name: what it is for", by its channel name.
+   - channels.md: one line for this place by its channel name, linking the file above:
+     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —
+     [[release-train]]". This place's later sessions find its own notes through that link.
    - organization.md: unless "About the organization" has nothing new, merge it into the
      existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
      place it came from named by its channel name. Keep it short.
@@ -1505,8 +1507,10 @@ Changed from the agreed drafts, each to fit a verified fact:
   2026-10-17). The shared `MEMORY.md` is injected into every session, and a line per public
   channel would grow without bound. So the place's own file says `index: false`, the one header
   field that keeps a topic out of the generated index ([unified-memory-interface.md](unified-memory-interface.md)),
-  and the place gets one line in `channels.md` instead. A place layer is unchanged: its file is
-  that layer's only topic.
+  and the place gets one line in `channels.md` instead. That line links the file with
+  `[[name]]`: nothing else points to it once it is out of the index. A later session of the place
+  (after `!new` or a rollover) sees only the shared index, which leads it to `channels.md` and
+  from there to its own notes. A place layer is unchanged: its file is that layer's only topic.
 - Several places' report rounds can run at once, and a full rewrite of `channels.md` or
   `organization.md` would drop another place's update. So step 1 saves them only through the
   memory entry tools with the revision it read, and reads and merges again on a conflict. The

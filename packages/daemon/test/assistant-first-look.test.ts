@@ -185,9 +185,12 @@ describe('the prompts', () => {
   it('keeps a shared place’s own file out of the index, and lists it and the organization in two shared files', () => {
     const step1 = (handling: string) => handling.split('\n1. ')[1]!.split('\n2. ')[0]!
     const shared = step1(firstLookHandling('@-mention me', { external: false, cards: true, organization: true }))
-    expect(shared).toContain('with "index: false" in its header so MEMORY.md leaves it out;')
+    expect(shared).toContain('with "index: false" in its header so MEMORY.md leaves it out.')
     expect(shared).not.toContain('plus one index line')
-    expect(shared).toContain('- channels.md: one line for this place, "#name: what it is for", by its channel name.')
+    // The place's file is out of the index, so its line in channels.md is how later sessions there find it.
+    expect(shared).toContain(
+      '- channels.md: one line for this place by its channel name, linking the file above:\n     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —\n     [[release-train]]". This place\'s later sessions find its own notes through that link.'
+    )
     expect(shared).toContain(
       '- organization.md: unless "About the organization" has nothing new, merge it into the\n     existing sections, not as a new block'
     )
