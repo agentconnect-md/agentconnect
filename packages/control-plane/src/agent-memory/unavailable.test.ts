@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { ProtocolError } from '../domain/errors.js'
-import { MemoryHomeUnavailableReason, memoryHomeUnavailable } from './unavailable.js'
+import { MemoryHomeUnavailableError, MemoryHomeUnavailableReason, memoryHomeUnavailable } from './unavailable.js'
 
 const refused = (reason?: string) =>
   new ProtocolError('BAD_PAYLOAD', 'memory/write failed: home unreachable', reason ? { details: { reason } } : {})
@@ -21,6 +21,13 @@ describe('memoryHomeUnavailable', () => {
       expect(failure?.status, reason).toBe(503)
       expect(failure?.code, reason).toBe(`MEMORY_HOME_${reason.toUpperCase().replaceAll('-', '_')}`)
     }
+  })
+
+  it('answers the CP’s own refusal exactly as the daemon’s', () => {
+    const message = 'memory/write failed: home unreachable'
+    expect(memoryHomeUnavailable(new MemoryHomeUnavailableError('migrating', message))).toEqual(
+      memoryHomeUnavailable(refused('migrating'))
+    )
   })
 
   it('is null for a refusal that names no home reason, so the route keeps its 400', () => {

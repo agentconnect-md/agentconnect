@@ -6986,6 +6986,8 @@ export interface AgentMemoryFileRepo {
   rmdir(agentId: AgentId, path: string): Promise<boolean>
   /** Remove the row at `path` and every row beneath it; absence is fine. */
   rm(agentId: AgentId, path: string): Promise<void>
+  /** Remove every row beneath `path` but the one at `keep`; whether any was removed. */
+  rmExcept(agentId: AgentId, path: string, keep: string): Promise<boolean>
   /** A file row is renamed; a directory prefix is rewritten on every row beneath it. */
   rename(agentId: AgentId, from: string, to: string): Promise<AgentMemoryRenameOutcome>
   utimes(agentId: AgentId, path: string, mtime: Date): Promise<void>

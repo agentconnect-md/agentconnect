@@ -7,6 +7,7 @@ import type { SharedImageService } from '../file-transfer/shared-image.js'
  * `buildHttpServer`.
  */
 import type {
+  AgentMemoryFileRepo,
   AgentMemoryHistoryRepo,
   AgentRepo,
   AssignmentRepo,
@@ -276,6 +277,8 @@ export interface HttpDeps {
     memoryConnectionWriter: MemoryConnectionWriter
     /** The change log of a `control-plane` memory home — `memory/history` is answered from it, never proxied. */
     agentMemoryHistory: Pick<AgentMemoryHistoryRepo, 'page' | 'deleteRoot'>
+    /** The files of a `control-plane` memory home — the console's reads and a place clear are answered from it, never proxied. */
+    agentMemoryFile: Pick<AgentMemoryFileRepo, 'listUnder' | 'read' | 'rmExcept'>
     /** Pending config-token auto-install sessions (§Tier B); holds secret material, never DTO'd. */
     slackInstall: SlackInstallStore
     /** Pending platform-app installs (preset-agents.md §5.3): OAuth state → tenancy, no secrets. */

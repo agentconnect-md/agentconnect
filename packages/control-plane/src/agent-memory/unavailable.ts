@@ -24,11 +24,27 @@ export interface MemoryHomeUnavailable {
   code: string
 }
 
+/** The same refusal raised here, where the CP answers a Control-Plane home's console reads itself. */
+export class MemoryHomeUnavailableError extends Error {
+  constructor(
+    readonly reason: MemoryHomeUnavailableReason,
+    message: string
+  ) {
+    super(message)
+    this.name = 'MemoryHomeUnavailableError'
+  }
+}
+
 /** The 503 a memory home refusal maps to, or null when `err` is not one; only the sandbox case carries the wake code. */
 export function memoryHomeUnavailable(err: unknown): MemoryHomeUnavailable | null {
-  if (!(err instanceof ProtocolError) || err.code !== 'BAD_PAYLOAD') return null
-  const reason = MemoryHomeUnavailableReason.safeParse(err.details?.reason)
-  if (!reason.success) return null
+  const named =
+    err instanceof MemoryHomeUnavailableError
+      ? err.reason
+      : err instanceof ProtocolError && err.code === 'BAD_PAYLOAD'
+        ? err.details?.reason
+        : undefined
+  const reason = MemoryHomeUnavailableReason.safeParse(named)
+  if (!reason.success || !(err instanceof Error)) return null
   const code =
     reason.data === 'sandbox-unavailable'
       ? SANDBOX_UNAVAILABLE_CODE

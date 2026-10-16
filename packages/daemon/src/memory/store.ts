@@ -18,12 +18,14 @@
  * writes through a random exclusive temp file. Flat by design (one level): a topic
  * is a file directly under `memory/`, no nested dirs.
  */
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { atomicWriteMemoryFileHoldingLock, MemoryAmbiguousWriteError } from './atomic-write.js'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import {
   MEMORY_INDEX,
   MemoryTransactionPath,
+  memoryChannelKey,
+  memoryPersonKey,
   MemoryFileHistoryEvent as MemoryFileHistoryEventSchema,
   type MemoryFileHistoryEvent
 } from '@agentconnect.md/protocol'
@@ -150,26 +152,8 @@ export const DAEMON_OWNED_AGENT_DIRNAMES: readonly string[] = [
   MEMORY_DREAMS_DIRNAME
 ]
 
-/** A deterministic, filesystem-safe folder name for one channel's memory. Keeps a
- *  readable prefix and appends a short digest so distinct (transportScope, channel)
- *  pairs never collide after sanitization. */
-export function memoryChannelKey(channel: string, transportScope?: string): string {
-  return memoryFolderKey(transportScope ? `${transportScope}::${channel}` : channel)
-}
-
-/** The folder name of one person's layer, from their identity (`user:<id>` or `<platform>:<scope>:<uid>`). */
-export function memoryPersonKey(identity: string): string {
-  return memoryFolderKey(identity)
-}
-
-function memoryFolderKey(raw: string): string {
-  const digest = createHash('sha256').update(raw).digest('hex').slice(0, 12)
-  const prefix = raw
-    .replace(/[^A-Za-z0-9._-]/g, '-')
-    .replace(/^[.-]+/, '')
-    .slice(0, 80)
-  return prefix ? `${prefix}-${digest}` : digest
-}
+// A Control-Plane home's console reads resolve the same folders, so the derivation is the wire contract's.
+export { memoryChannelKey, memoryPersonKey }
 
 const CHANNEL_KEY_RE = /^[A-Za-z0-9._-]{1,120}$/
 

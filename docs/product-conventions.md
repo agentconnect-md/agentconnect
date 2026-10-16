@@ -217,7 +217,11 @@ group or the pool always keeps managed memory in the Control Plane, because any 
 may serve it, and so does an agent in assistant mode (see "Assistant-mode places"); any
 other agent pinned to one daemon keeps the daemon default. An unplaced agent
 has no tree to lose, so placing it on a group or the pool switches its home to the
-Control Plane in the same write, without a migration. A source that later
+Control Plane in the same write, without a migration. With the Control Plane home the
+Memory tab reads the shared memory, a place's memory and the viewer's own, and an owner clears
+a place's, from the Control Plane itself, so it works while no daemon is online; editing a
+file still goes through the agent's daemon. Until a move to that home completes, the memory
+is unavailable in the console, as it is to the agent. A source that later
 reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 
@@ -979,8 +983,8 @@ on, it warns only when the runtime keeps the mode. Turning the mode off leaves t
 as it is.
 
 The mode keeps the agent's memory managed and in the Control Plane, so a person's or a place's
-memory survives a move and is not left on one machine's disk. The console still reads and clears
-it through the agent's daemon. The switch stays locked while memory is off or another backend is
+memory survives a move and is not left on one machine's disk, and the console reads it, and an
+owner clears a place's, with no daemon online. The switch stays locked while memory is off or another backend is
 chosen. Turning it on moves memory kept on the daemon to the Control Plane in the same save; the
 Memory tab shows it moving until the copy completes, as after a manual move. While the mode is on,
 the Memory tab offers only Managed and the Control Plane and says to turn the mode off to change
@@ -1843,8 +1847,10 @@ the caller's own layer, so nobody can open another person's, editors included.
 An organization owner also sees the place layers they may not read, listed as "#name ·
 Platform — not visible to you", with one action, **Clear this layer**. After a confirmation it
 deletes every file of that layer, its history included, shows none of it, and records the
-clear in the organization's audit log without content. A daemon too old to clear a layer
-offers no such action. Agent editors who are not owners get no action for layers they cannot
+clear in the organization's audit log without content. With the Control Plane home only the
+record of which conversation the layer belongs to stays, so memory the agent keeps there
+afterwards is still shown under that conversation. A daemon too old to clear a layer
+offers no such action; with the Control Plane home no daemon takes part. Agent editors who are not owners get no action for layers they cannot
 see, since those are not listed for them.
 
 An existing agent's memory settings are edited as one explicit draft. Selecting a
