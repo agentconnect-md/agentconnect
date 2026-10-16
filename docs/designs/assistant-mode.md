@@ -2271,6 +2271,14 @@ the task writes what it learned, and the long session only speaks:
   daemon launches it as it launches a dream host, without the agent's tool credentials and with a
   throwaway working directory. Nothing it reads needs them, since its code-host reads are bridge
   tools served with the daemon's own credentials, and it reads untrusted pages by design.
+- **Its tools.** Taking the agent's credentials off the runtime does not take the daemon's off the
+  bridge: an ordinary delegated task keeps `sendMessage` and the platform writes, served with the
+  daemon's credentials. So the daemon narrows the research task's tools at dispatch, as it narrows a
+  check's by its coordinate: the memory reads and writes bound as above, `findKnowledge` and
+  `listKnowledge`, `listChannels`, and the two code-host reads. No `sendMessage` in any form, no
+  `propose`, no platform write and no read of a conversation. Its four-part report is the round's
+  last output, which the daemon reports to the owning session as it does for every delegated task
+  (§5.6), so "you cannot post anywhere" holds at dispatch, not by the prompt alone.
 
 **What it reads** (recommended).
 
@@ -2373,8 +2381,10 @@ give that task another round with messageTask.
 every session reads, so an instruction planted in a page could reach every conversation. Four
 guards:
 
-1. **It cannot act for the agent.** Launched without the agent's tool credentials, it posts
-   nothing and pushes nothing; its code-host reads are bridge tools the daemon serves.
+1. **It cannot act for the agent.** Its tools are narrowed at dispatch to reads and the bound
+   memory writes (above), and it is launched without the agent's tool credentials, so it posts
+   nothing and pushes nothing through either the bridge or the runtime; its code-host reads are
+   bridge tools the daemon serves.
 2. **The prompt** frames pages as data and asks for sourced facts only.
 3. **The files' shapes**: every line carries its source and date, a line from the web is marked as
    such, and a write that does not fit is refused. A shape cannot tell an instruction phrased as a
@@ -2570,12 +2580,12 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
   merges into the person's entry with the revision-checked writes every organization file takes.
 - **A deeper pass, only for oneself.** A person may ask, in their own DM or in the console, for
   their own entry to be filled in. Their DM session delegates it as a task, as research is one,
-  and the daemon binds its memory writes to that person's entry in `members.md` alone. It reads
-  only that person's own messages in the internal public channels the agent's bots are in, newest
-  first, at most 90 days and 300 messages, where the platform can search them (Slack), plus their
-  code-host ownership. Its draft comes back as the task's report; the DM session shows it and
-  writes the entry only on their yes. Nobody can run it for someone else, editors and owners
-  included: reading one person's messages at length comes close to profiling them, and only that
+  but with reads only and no memory write, so the directory cannot change before they agree. It
+  reads only that person's own messages in the internal public channels the agent's bots are in,
+  newest first, at most 90 days and 300 messages, where the platform can search them (Slack), plus
+  their code-host ownership. Its draft entry is the round's report; the DM session shows it and,
+  on their yes, writes the entry on that turn, which the DM's own-entry rule above admits. Nobody
+  can run it for someone else, editors and owners included: reading one person's messages at length comes close to profiling them, and only that
   person can agree to it.
 - **Never outreach.** No proposal, DM, follow-up, mention or check is started from the directory.
   The reference agent's per-person investigation fed a quota-based outreach job its team stopped
