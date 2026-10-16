@@ -32,14 +32,12 @@ describe('AssistantModePolicy', () => {
         limits: {
           maxConcurrentSubsessions: 50,
           dailyCheckBudget: 500,
-          dailySubsessionsPerItem: 1,
           permissionWaitHours: 72
         }
       }).limits
     ).toEqual({
       maxConcurrentSubsessions: 50,
       dailyCheckBudget: 500,
-      dailySubsessionsPerItem: 1,
       permissionWaitHours: 72
     })
   })

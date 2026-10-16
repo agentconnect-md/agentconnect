@@ -289,7 +289,6 @@ export const AssistantModePolicy = z
       .object({
         maxConcurrentSubsessions: z.number().int().min(1).max(50).optional(),
         dailyCheckBudget: z.number().int().min(1).max(500).optional(),
-        dailySubsessionsPerItem: z.number().int().min(1).max(50).optional(),
         permissionWaitHours: z.number().int().min(1).max(72).optional()
       })
       .optional()
@@ -790,8 +789,7 @@ with `listTasks`.
 - **What stopping guarantees**: the current turn; a background process the runtime started may
   keep running; the adapter is never killed.
 - **Limits**: no delegated tasks of tasks; at most `maxConcurrentSubsessions` running (P0b
-  refuses beyond it; the target queues the rest persistently with the asker told);
-  `dailySubsessionsPerItem` per item per day (§5.7's loop bound, deferred).
+  refuses beyond it; the target queues the rest persistently with the asker told).
 
 ### 5.7 The report channel
 
@@ -837,7 +835,7 @@ on `agentsGained`):
 - **Failure is reported too**: a task that fails, is fenced or times out gets an outbox
   row written by the daemon.
 - **Report rounds are admitted as human messages**, hop reset; the loop bound moves to a chain
-  depth carried on the outbox row and the per-item daily task budget.
+  depth carried on the outbox row.
 - **Anti-nag**: the idempotency key `(agentId, itemId, status, observation version)` doubles as
   the delivery dedup key.
 - **Handover versus failure**: an interruption whose reason is `shutdown` or `superseded`
@@ -2248,3 +2246,7 @@ A one-agent HTTP bot's place now counts its people wherever the conversation is 
 session the report opened recorded the first look as its creator while being the first look's
 parent, so neither settled its visibility and the console hid both from the channel's own member.
 The report now opens it as the place's own root, bound to the channel's people.
+
+**Fifty-fifth revision (2026-10-16)**: §5.1 drops `dailySubsessionsPerItem`, which nothing read;
+follow-ups replaced the items it counted (§5.12), and the console no longer shows "Tasks per item
+per day". A stored policy that still carries it is read without it.
