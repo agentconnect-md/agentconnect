@@ -384,6 +384,7 @@ import {
   FIRST_LOOK_REFUSALS,
   FIRST_LOOK_WINDOW_MS,
   firstLookPlaceRefusal,
+  firstLookProposalRefusal,
   firstLookReach,
   firstLookTools,
   joinVerdict,
@@ -8558,6 +8559,8 @@ export class Daemon {
       throw new Error(
         'this conversation has no approval cards; list the suggestions in your reply. Nothing was proposed.'
       )
+    const refusal = firstLookProposalRefusal(input)
+    if (refusal) throw new Error(refusal)
     const item = await this.store.assistantItems.get(agentId, itemId)
     if (!item?.firstLook) throw new Error('this first look is gone; nothing was proposed')
     const round = meta.deliveryId
@@ -8900,7 +8903,11 @@ export class Daemon {
       tools,
       reach: firstLookReach(this.mergedRulesForSource([integrationId]), { agentId, integrationId, platform, channel }),
       external: refusal === 'external',
-      cards: this.hasCardSurface(integrationId)
+      cards: this.hasCardSurface(integrationId),
+      // Only a place that writes the shared layer adds to the organization's file; an unknown layer adds nothing.
+      shared:
+        refusal !== 'external' &&
+        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared'
     }
   }
 

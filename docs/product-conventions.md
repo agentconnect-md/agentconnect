@@ -1478,7 +1478,12 @@ remembers how the place works, introduces the agent once and offers at most thre
   refused.
 - **What happens with its report.** The report reaches the long session, at the conversation's top
   level, with what to do: write "How this place works" and "Recurring" to a topic file named after
-  the place, in the layer that conversation writes, plus one index line; post one short
+  the place, in the layer that conversation writes, plus one index line. In an internal public
+  channel only, which writes the shared layer, that file stays out of the shared index. Instead,
+  the conversation gets one line in the shared `channels.md` linking that file, and what is new about the
+  organization as a whole is merged into the shared `organization.md`, naming the conversation it
+  came from. Several channels update those two files, so each save checks the revision it read.
+  Then post one short
   introduction (who it is, one line on what it saw, how to reach it: "@-mention me" or "I read
   every message") at the conversation's top level; offer each way it could help, and something in
   flight only if someone is visibly waiting on it; ask at most one question; then post nothing more
@@ -1489,7 +1494,8 @@ remembers how the place works, introduces the agent once and offers at most thre
   three, posted in the thread under the introduction in the order offered once the introduction has
   posted; if no introduction posts, the cards go where the conversation's cards go otherwise. Only
   the round that brings the report may offer cards. Something in flight, or something that recurs
-  and is worth checking on a schedule, is offered as a follow-up to take. On a platform without
+  and is worth checking on a schedule, is offered as a follow-up to take, always with its first
+  check, since nothing else would wake it; one offered without is refused. On a platform without
   cards, the introduction lists each offer in one line instead, and the agent acts on one when
   someone there asks.
 - **Memory.** The first look's own session feeds no memory: no per-turn capture and no dream reads
@@ -1541,7 +1547,10 @@ and shows the follow-up and when it expires; once decided it says what happened 
 editor may decide any proposal from the Activity view, including one no one could be reached for,
 and the first answer decides it.
 
-The card leads with the sentence, shows the reason and the work, and offers Approve and Deny;
+The card reads as the agent talking: the sentence in bold, then the reason, with no labels or
+footer. Work to carry out is a 🔗 to the session that proposed it, where the exact work is shown
+(quoted on the card where there is no such link). A follow-up shows one sentence of when it looks,
+what it does and when it stops, then 🕒 and its first check. The card offers Approve and Deny;
 there is no "always allow". Once decided it is rewritten in place: approved by whom and running,
 denied by whom, or expired with nothing run, and later how the approved proposal ended. A card a restart left unedited is
 rewritten when its integration reconnects. A proposal expires after 24 hours and never runs
