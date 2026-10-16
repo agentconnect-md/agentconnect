@@ -174,7 +174,7 @@ export function compileEvaluationIntegration(eff: EffectiveIntegration): Integra
         platform: 'discord',
         core,
         config: {
-          botToken: `evaluation-${seed}`,
+          botToken: `${Buffer.from(numericSeed(seed).padEnd(18, '0')).toString('base64url')}.evaluation.${seed}`,
           ...(conn.botUserId !== undefined ? { botUserId: conn.botUserId } : {})
         }
       })
