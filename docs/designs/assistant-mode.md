@@ -1408,8 +1408,7 @@ Changed from the agreed drafts, each to fit a verified fact:
 - Step 4's "Then stay quiet unless mentioned" becomes "Then post nothing more on your own". In a
   place whose trigger is every message people reach it without a mention, and the decided rule
   defers to the trigger.
-- Two steps are rendered per place: step 1 is left out for an agent whose memory is `none`, and on
-  a platform with no card surface step 3 reads "In the same message, list each 'Where I could
+- On a platform with no card surface, step 3 reads "In the same message, list each 'Where I could
   help' item in one line, and an 'In flight' item only if someone is visibly waiting on it; act on
   one when someone here asks for it."
 
@@ -2076,8 +2075,9 @@ advertises both as `assistant-task-handle-v1`.
 Added to a channel, an assistant-mode agent did nothing until someone @-mentioned it. The product
 owner decided what a first look is: a read-only task of the place reads its last 30 days or 500
 messages, whichever is less, and reports to the place's long session. That session writes how the
-place works to the place's memory layer, introduces the agent once, and offers at most three
-suggestions as `propose` cards under the introduction, none being a fine outcome. The two prompts
+place works to the layer that conversation writes (the shared layer for an internal public channel,
+else the place layer), introduces the agent once, and offers at most three suggestions as `propose`
+cards under the introduction, none being a fine outcome. The two prompts
 are recorded with the changes made to fit verified facts. Recommended for the owner to confirm: a
 first look is a follow-up the daemon takes and ends after one check, reusing the follow-up
 machinery, not a new task kind. It runs on a new join automatically and otherwise on request
