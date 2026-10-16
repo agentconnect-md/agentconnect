@@ -165,7 +165,7 @@ async function ownDirect(
     const source = await describe(ctx, place, deps)
     return await askerMayRead(asker, source, integrationOf(ctx, place, deps), answer.judged).catch(() => false)
   }
-  // The current conversation must be the asker's own by the same rule, so a patrol for someone else lists nothing.
+  // The current conversation must be the asker's own by the same rule, so a check for someone else lists nothing.
   if (!(await mayRead(here))) return own
   for (const place of answer.owned) if (await mayRead(place)) own.add(place)
   return own

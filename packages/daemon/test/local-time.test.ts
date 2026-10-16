@@ -16,7 +16,7 @@ import { knownTimeZone, offsetTimeZone, profileTimeZone } from '../src/messages/
 import { buildSyntheticMessage } from '../src/scheduler/scheduler.js'
 import { renderLocalNow } from '../src/session/local-time.js'
 import { SessionManager } from '../src/session/session-manager.js'
-import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import { checkCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { SlackNameResolver } from '../src/slack/name-resolver.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
@@ -107,7 +107,7 @@ const dm = (channel: string, user: string, ts: string, over: Partial<NormalizedM
 const room = (user: string, ts: string): NormalizedMessage =>
   dm('C0TEAM', user, ts, { isDm: false, trigger: 'mention' })
 
-/** A turn the daemon started in a place on a background coordinate: a patrol, a task or a delegated sub-session. */
+/** A turn the daemon started in a place on a background coordinate: a check, a task or a delegated sub-session. */
 const background = (channel: string, thread: string, platform = 'slack'): NormalizedMessage => ({
   msgId: `${thread}:${channel}`,
   traceId: thread,
@@ -261,11 +261,9 @@ describe('the local-time line on every agent’s turns', () => {
     expect(localTimeOf((await sm.handle('bot-a', scheduledRun())).blocks)).toEqual([LOS_ANGELES])
     expect(startedByTimeZone).not.toHaveBeenCalled()
     // A schedule's zone is not a person's, so the place keeps the one its people reported.
-    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', patrolCoordinate('1')))).blocks)).toEqual([
-      BERLIN
-    ])
+    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', checkCoordinate('1')))).blocks)).toEqual([BERLIN])
     startedByTimeZone.mockResolvedValue(undefined)
-    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', patrolCoordinate('2')))).blocks)).toEqual([
+    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', checkCoordinate('2')))).blocks)).toEqual([
       SHANGHAI
     ])
     // A schedule on the host's clock names no zone of its own, and its run reads on down the order.
@@ -274,7 +272,7 @@ describe('the local-time line on every agent’s turns', () => {
     expect(localTimeOf((await sm.handle('bot-a', hostClock)).blocks)).toEqual([SHANGHAI])
   })
 
-  it('reads a patrol or a sub-session report in the zone of the person who started it', async () => {
+  it('reads a check or a sub-session report in the zone of the person who started it', async () => {
     const reportKey = sessionKey('slack', 'D0ALICE', 'append:1', 'bot-a', SCOPE)
     const { manager, startedByTimeZone } = await harness(undefined, {
       profiles: { U0ALICE: 'Asia/Shanghai' },
@@ -283,7 +281,7 @@ describe('the local-time line on every agent’s turns', () => {
     const sm = manager()
     await sm.handle('bot-a', dm('D0ALICE', 'U0ALICE', '100.1'))
     expect(startedByTimeZone).not.toHaveBeenCalled()
-    expect(localTimeOf((await sm.handle('bot-a', background('D0ALICE', patrolCoordinate('1')))).blocks)).toEqual([
+    expect(localTimeOf((await sm.handle('bot-a', background('D0ALICE', checkCoordinate('1')))).blocks)).toEqual([
       LOS_ANGELES
     ])
     expect(localTimeOf((await sm.handle('bot-a', report('D0ALICE'))).blocks)).toEqual([BERLIN])
@@ -313,11 +311,11 @@ describe('the local-time line on every agent’s turns', () => {
     const sm = manager()
     await sm.handle('bot-a', room('U0ALICE', '300.1'))
     expect(localTimeOf((await sm.handle('bot-a', room('U0BOB', '300.2'))).blocks)).toEqual([SHANGHAI])
-    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', patrolCoordinate('1')))).blocks)).toEqual([
+    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', checkCoordinate('1')))).blocks)).toEqual([
       SHANGHAI
     ])
     startedBy = () => new Promise(() => {})
-    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', patrolCoordinate('2')))).blocks)).toEqual([
+    expect(localTimeOf((await sm.handle('bot-a', background('C0TEAM', checkCoordinate('2')))).blocks)).toEqual([
       SHANGHAI
     ])
     vi.spyOn(s.placeTimeZones, 'get').mockRejectedValue(new Error('store unavailable'))
@@ -357,23 +355,21 @@ describe('the local-time line on an assistant-mode agent’s turns, unchanged', 
     expect(senderTimeZoneFor).not.toHaveBeenCalled()
   })
 
-  it('gives patrol, task, sub-session and report turns the zone last seen in their place, across a restart', async () => {
+  it('gives check, task, sub-session and report turns the zone last seen in their place, across a restart', async () => {
     const { manager } = await harness(ON, { profiles: { U0ALICE: 'Asia/Shanghai' } })
     await manager().handle('bot-a', dm('D0ALICE', 'U0ALICE', '100.1'))
     await manager().handle('bot-a', webchat('conv-1', 'America/Los_Angeles'))
 
     const sm = manager()
-    for (const thread of [patrolCoordinate('1'), taskCoordinate('2'), subsessionCoordinate('3')])
+    for (const thread of [checkCoordinate('1'), taskCoordinate('2'), subsessionCoordinate('3')])
       expect(localTimeOf((await sm.handle('bot-a', background('D0ALICE', thread))).blocks)).toEqual([SHANGHAI])
     expect(localTimeOf((await sm.handle('bot-a', report('D0ALICE'))).blocks)).toEqual([SHANGHAI])
     expect(
       localTimeOf((await sm.handle('bot-a', background('conv-1', subsessionCoordinate('4'), 'webchat'))).blocks)
     ).toEqual([LOS_ANGELES])
     // A place where no person reported a zone, and the same channel id under another workspace, read UTC.
-    expect(localTimeOf((await sm.handle('bot-a', background('C0GENERAL', patrolCoordinate('5')))).blocks)).toEqual([
-      UTC
-    ])
-    const elsewhere = { ...background('D0ALICE', patrolCoordinate('6')), transportScope: 'T0OTHER' }
+    expect(localTimeOf((await sm.handle('bot-a', background('C0GENERAL', checkCoordinate('5')))).blocks)).toEqual([UTC])
+    const elsewhere = { ...background('D0ALICE', checkCoordinate('6')), transportScope: 'T0OTHER' }
     expect(localTimeOf((await sm.handle('bot-a', elsewhere)).blocks)).toEqual([UTC])
   })
 
@@ -606,14 +602,14 @@ describe('a daemon’s turns', () => {
         agentId: AGENT,
         title: 'ship the release notes',
         origin,
-        taskKey: sessionKey('slack', 'D0ALICE', patrolCoordinate('r1'), AGENT, scope),
+        taskKey: sessionKey('slack', 'D0ALICE', checkCoordinate('r1'), AGENT, scope),
         asker: `slack:${tenant}:U0ALICE`
       })
-      const patrol = live(patrolCoordinate('r1'), {
-        msg: background('D0ALICE', patrolCoordinate('r1')),
+      const check = live(checkCoordinate('r1'), {
+        msg: background('D0ALICE', checkCoordinate('r1')),
         integrationId: INT
       })
-      expect(await d.startedByTimeZone(AGENT, patrol)).toBe('Asia/Shanghai')
+      expect(await d.startedByTimeZone(AGENT, check)).toBe('Asia/Shanghai')
 
       // A report reads as whoever opened the sub-session it came from: a console user, in their browser's last zone.
       const childKey = sessionKey('slack', 'D0ALICE', subsessionCoordinate('c1'), AGENT, scope)

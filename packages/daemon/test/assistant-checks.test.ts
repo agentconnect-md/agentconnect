@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
 import { afterEach, describe, expect, it } from 'vitest'
-import { firstLookCoordinate, patrolCoordinate, subsessionCoordinate } from '../src/session/subsession-coordinate.js'
-import { ASSISTANT_CHECKS_KEPT, PATROL_MAX_FAILURES, patrolBackoffMs } from '../src/store/assistant-patrols.js'
+import { firstLookCoordinate, checkCoordinate, subsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { ASSISTANT_CHECKS_KEPT, CHECK_MAX_FAILURES, checkBackoffMs } from '../src/store/assistant-checks.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import { openTestStore, tempStorePath, usingPostgresStore } from './store-support.js'
@@ -26,7 +26,7 @@ const ORIGIN = { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXA
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 
-const key = (agentId: string, id: string, thread = patrolCoordinate(id)): string =>
+const key = (agentId: string, id: string, thread = checkCoordinate(id)): string =>
   sessionKey('slack', 'C0GENERAL', thread, agentId, 'T0EXAMPLE')
 
 async function item(s: LocalStore, agentId: string, nextCheck: number | undefined, status?: 'waiting' | 'done') {
@@ -50,7 +50,7 @@ const begin = (
   now: number,
   over: { nextCheck?: number | null; observationVersion?: number; staleBefore?: number; exclusive?: boolean } = {}
 ) =>
-  s.assistantPatrols.begin(agentId, it1.id, {
+  s.assistantChecks.begin(agentId, it1.id, {
     key: it1.taskKey,
     nextCheck: over.nextCheck ?? null,
     observationVersion: over.observationVersion ?? 0,
@@ -81,14 +81,14 @@ describe('the check state', () => {
     const checking = await item(s, a, 600)
     await begin(s, a, checking, 1_000)
     await item(s, agent(), 100)
-    expect(await s.assistantPatrols.due(a, 5_000, 10)).toEqual([
+    expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([
       { itemId: first.id, nextCheck: 500 },
       { itemId: waiting.id, nextCheck: 700 },
       { itemId: later.id, nextCheck: 2_000 }
     ])
-    expect(await s.assistantPatrols.due(a, 5_000, 1)).toEqual([{ itemId: first.id, nextCheck: 500 }])
+    expect(await s.assistantChecks.due(a, 5_000, 1)).toEqual([{ itemId: first.id, nextCheck: 500 }])
     // A check running since before the stale bound no longer holds its follow-up back.
-    expect(await s.assistantPatrols.due(a, 5_000, 10, 1_001)).toContainEqual({ itemId: checking.id, nextCheck: 600 })
+    expect(await s.assistantChecks.due(a, 5_000, 10, 1_001)).toContainEqual({ itemId: checking.id, nextCheck: 600 })
   })
 
   it('checks one next check once, and the next value again, in the follow-up’s one session', async () => {
@@ -96,46 +96,46 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, 1_000)
     expect(await begin(s, a, it1, 2_000, { nextCheck: 1_000 })).toEqual({ checkNo: 1, messages: null })
-    expect(await s.assistantPatrols.byRunningKey(a, it1.taskKey)).toMatchObject({
+    expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
       itemId: it1.id,
       runningNextCheck: 1_000,
       runningCheck: 1,
       runningSince: 2_000
     })
-    expect(await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, 3_000)).toBe(true)
-    expect(await s.assistantPatrols.byRunningKey(a, it1.taskKey)).toBeUndefined()
-    expect(await s.assistantPatrols.due(a, 10_000, 10)).toEqual([])
+    expect(await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 3_000)).toBe(true)
+    expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toBeUndefined()
+    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([])
     // An overdue check is taken once however late it is.
-    expect(await s.assistantPatrols.due(a, 10_000_000, 10)).toEqual([])
+    expect(await s.assistantChecks.due(a, 10_000_000, 10)).toEqual([])
     await s.assistantItems.schedule(a, it1.id, { status: 'active', nextCheck: 4_000 })
-    expect(await s.assistantPatrols.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
+    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
     // A messaged check leaves the scheduled one due.
     expect(await begin(s, a, it1, 5_000)).toEqual({ checkNo: 2, messages: null })
-    await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, 5_500)
-    expect(await s.assistantPatrols.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
+    await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 5_500)
+    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
   })
 
   it('backs off min(60, 2ⁿ) minutes after each failure and stops at the fifth until it is messaged', async () => {
-    expect([1, 2, 3, 4, 5, 6, 7].map((n) => patrolBackoffMs(n) / MINUTE)).toEqual([2, 4, 8, 16, 32, 60, 60])
+    expect([1, 2, 3, 4, 5, 6, 7].map((n) => checkBackoffMs(n) / MINUTE)).toEqual([2, 4, 8, 16, 32, 60, 60])
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, 1_000)
     let now = 2_000
-    for (let n = 1; n <= PATROL_MAX_FAILURES; n++) {
-      expect(await s.assistantPatrols.due(a, now, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
+    for (let n = 1; n <= CHECK_MAX_FAILURES; n++) {
+      expect(await s.assistantChecks.due(a, now, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
       await begin(s, a, it1, now, { nextCheck: 1_000 })
-      const failed = await s.assistantPatrols.fail(a, it1.id, it1.taskKey, now, 1_000)
-      expect(failed).toEqual({ failures: n, stopped: n === PATROL_MAX_FAILURES })
-      expect(await s.assistantPatrols.due(a, now + patrolBackoffMs(n) - 1, 10)).toEqual([])
-      now += patrolBackoffMs(n)
+      const failed = await s.assistantChecks.fail(a, it1.id, it1.taskKey, now, 1_000)
+      expect(failed).toEqual({ failures: n, stopped: n === CHECK_MAX_FAILURES })
+      expect(await s.assistantChecks.due(a, now + checkBackoffMs(n) - 1, 10)).toEqual([])
+      now += checkBackoffMs(n)
     }
-    expect(await s.assistantPatrols.get(a, it1.id)).toMatchObject({ stopped: true })
-    expect(await s.assistantPatrols.due(a, now + 10 * 60 * MINUTE, 10)).toEqual([])
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ stopped: true })
+    expect(await s.assistantChecks.due(a, now + 10 * 60 * MINUTE, 10)).toEqual([])
     // A new next check does not resume it; a message's check does, with a fresh streak.
     await s.assistantItems.schedule(a, it1.id, { status: 'active', nextCheck: 3_000 })
-    expect(await s.assistantPatrols.due(a, now, 10)).toEqual([])
+    expect(await s.assistantChecks.due(a, now, 10)).toEqual([])
     await begin(s, a, it1, now)
-    expect(await s.assistantPatrols.get(a, it1.id)).toMatchObject({ stopped: false, failures: 0 })
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ stopped: false, failures: 0 })
   })
 
   it('keeps the check’s observation baseline and report in the store until it ends', async () => {
@@ -143,14 +143,14 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, 1_000)
     await begin(s, a, it1, 2_000, { nextCheck: 1_000, observationVersion: 3 })
-    expect(await s.assistantPatrols.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 2_500)).toBe(true)
-    expect(await s.assistantPatrols.keepReport(a, it1.id, key(a, 'other'), 'Not this check.', 2_500)).toBe(false)
-    expect(await s.assistantPatrols.byRunningKey(a, it1.taskKey)).toMatchObject({
+    expect(await s.assistantChecks.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 2_500)).toBe(true)
+    expect(await s.assistantChecks.keepReport(a, it1.id, key(a, 'other'), 'Not this check.', 2_500)).toBe(false)
+    expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
       runningObservationVersion: 3,
       runningReport: 'It shipped.'
     })
-    await s.assistantPatrols.fail(a, it1.id, it1.taskKey, 3_000, 1_000)
-    expect(await s.assistantPatrols.get(a, it1.id)).toMatchObject({
+    await s.assistantChecks.fail(a, it1.id, it1.taskKey, 3_000, 1_000)
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
       runningKey: null,
       runningObservationVersion: null,
       runningReport: null,
@@ -159,7 +159,7 @@ describe('the check state', () => {
     })
     // The next check starts with no report of the last one.
     await begin(s, a, it1, 4_000, { nextCheck: 1_000, observationVersion: 4 })
-    expect(await s.assistantPatrols.byRunningKey(a, it1.taskKey)).toMatchObject({
+    expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
       runningObservationVersion: 4,
       runningReport: null,
       runningCheck: 2
@@ -178,11 +178,11 @@ describe('the check state', () => {
     expect(await begin(s, a, it2, 2_200, { nextCheck: 1_000, exclusive: true })).toBeUndefined()
     expect(await begin(s, b, theirs, 2_200, { nextCheck: 1_000, exclusive: true })).toBeDefined()
     expect(await begin(s, a, it2, 2_300)).toBeDefined()
-    await s.assistantPatrols.release(a, it2.id, it2.taskKey, 2_400)
+    await s.assistantChecks.release(a, it2.id, it2.taskKey, 2_400)
     // A check older than the stale bound no longer holds anything, and ends in the log as it was.
     expect(await begin(s, a, it2, 3_000, { nextCheck: 1_000, exclusive: true, staleBefore: 2_001 })).toBeDefined()
     expect(await begin(s, a, it1, 3_100, { staleBefore: 2_001 })).toEqual({ checkNo: 2, messages: null })
-    expect((await s.assistantPatrols.checks(a, it1.id, 10)).map((c) => [c.checkNo, c.endedAt])).toEqual([
+    expect((await s.assistantChecks.checks(a, it1.id, 10)).map((c) => [c.checkNo, c.endedAt])).toEqual([
       [2, null],
       [1, 3_100]
     ])
@@ -195,14 +195,14 @@ describe('the check state', () => {
     // An hour apart, so the oldest checks fall out of the budget window and can be pruned.
     for (let n = 1; n <= ASSISTANT_CHECKS_KEPT + 2; n++) {
       const begun = await begin(s, a, it1, n * HOUR)
-      await s.assistantPatrols.endCheck(a, it1.id, begun!.checkNo, {
+      await s.assistantChecks.endCheck(a, it1.id, begun!.checkNo, {
         observation: `seen ${n}`,
         reported: n % 2 === 0,
         now: n * HOUR + 1
       })
-      await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, n * HOUR + 1)
+      await s.assistantChecks.succeed(a, it1.id, it1.taskKey, n * HOUR + 1)
     }
-    const checks = await s.assistantPatrols.checks(a, it1.id, 100)
+    const checks = await s.assistantChecks.checks(a, it1.id, 100)
     expect(checks).toHaveLength(ASSISTANT_CHECKS_KEPT)
     expect(checks[0]).toEqual({
       itemId: it1.id,
@@ -214,13 +214,13 @@ describe('the check state', () => {
     })
     expect(checks.at(-1)?.checkNo).toBe(3)
     await begin(s, b, await item(s, b, 1_000), 50 * HOUR)
-    expect(await s.assistantPatrols.checksSince(a, 50 * HOUR)).toEqual({ count: 3, oldest: 50 * HOUR })
-    expect(await s.assistantPatrols.checksSince(a, 999 * HOUR)).toEqual({ count: 0, oldest: null })
+    expect(await s.assistantChecks.checksSince(a, 50 * HOUR)).toEqual({ count: 3, oldest: 50 * HOUR })
+    expect(await s.assistantChecks.checksSince(a, 999 * HOUR)).toEqual({ count: 0, oldest: null })
     // A released check says nothing, and leaves the log and the budget.
     const begun = await begin(s, a, it1, 60 * HOUR)
-    await s.assistantPatrols.release(a, it1.id, it1.taskKey, 60 * HOUR + 1)
-    expect((await s.assistantPatrols.checks(a, it1.id, 1))[0]?.checkNo).not.toBe(begun!.checkNo)
-    expect((await s.assistantPatrols.checksSince(a, 50 * HOUR)).count).toBe(3)
+    await s.assistantChecks.release(a, it1.id, it1.taskKey, 60 * HOUR + 1)
+    expect((await s.assistantChecks.checks(a, it1.id, 1))[0]?.checkNo).not.toBe(begun!.checkNo)
+    expect((await s.assistantChecks.checksSince(a, 50 * HOUR)).count).toBe(3)
   })
 
   it('keeps every check the budget window counts, past the newest kept', async () => {
@@ -230,14 +230,14 @@ describe('the check state', () => {
     // A minute apart: all inside one window, so a budget above the kept count still sees them all.
     for (let n = 1; n <= ASSISTANT_CHECKS_KEPT + 10; n++) {
       const begun = await begin(s, a, it1, n * MINUTE)
-      await s.assistantPatrols.endCheck(a, it1.id, begun!.checkNo, {
+      await s.assistantChecks.endCheck(a, it1.id, begun!.checkNo, {
         observation: `seen ${n}`,
         reported: false,
         now: n * MINUTE + 1
       })
-      await s.assistantPatrols.succeed(a, it1.id, it1.taskKey, n * MINUTE + 1)
+      await s.assistantChecks.succeed(a, it1.id, it1.taskKey, n * MINUTE + 1)
     }
-    expect((await s.assistantPatrols.checksSince(a, 0)).count).toBe(ASSISTANT_CHECKS_KEPT + 10)
+    expect((await s.assistantChecks.checksSince(a, 0)).count).toBe(ASSISTANT_CHECKS_KEPT + 10)
   })
 
   it('keeps messages for the next check, which takes them all', async () => {
@@ -245,19 +245,19 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, undefined, 'waiting')
     const closed = await item(s, a, undefined, 'done')
-    await s.assistantPatrols.setPendingMessages(a, it1.id, '["one"]', 1_000)
-    await s.assistantPatrols.setPendingMessages(a, closed.id, '["gone"]', 1_000)
-    expect(await s.assistantPatrols.withPendingMessages(a, 2_000, 10)).toEqual([it1.id])
+    await s.assistantChecks.setPendingMessages(a, it1.id, '["one"]', 1_000)
+    await s.assistantChecks.setPendingMessages(a, closed.id, '["gone"]', 1_000)
+    expect(await s.assistantChecks.withPendingMessages(a, 2_000, 10)).toEqual([it1.id])
     await begin(s, a, it1, 2_000)
-    expect(await s.assistantPatrols.withPendingMessages(a, 2_000, 10)).toEqual([])
-    await s.assistantPatrols.setPendingMessages(a, it1.id, '["two"]', 2_100)
+    expect(await s.assistantChecks.withPendingMessages(a, 2_000, 10)).toEqual([])
+    await s.assistantChecks.setPendingMessages(a, it1.id, '["two"]', 2_100)
     // Waiting while a check runs, and while it backs off after a failure.
-    expect(await s.assistantPatrols.withPendingMessages(a, 2_200, 10)).toEqual([])
-    await s.assistantPatrols.fail(a, it1.id, it1.taskKey, 3_000, null)
-    expect(await s.assistantPatrols.withPendingMessages(a, 3_000, 10)).toEqual([])
-    expect(await s.assistantPatrols.withPendingMessages(a, 3_000 + patrolBackoffMs(1), 10)).toEqual([it1.id])
+    expect(await s.assistantChecks.withPendingMessages(a, 2_200, 10)).toEqual([])
+    await s.assistantChecks.fail(a, it1.id, it1.taskKey, 3_000, null)
+    expect(await s.assistantChecks.withPendingMessages(a, 3_000, 10)).toEqual([])
+    expect(await s.assistantChecks.withPendingMessages(a, 3_000 + checkBackoffMs(1), 10)).toEqual([it1.id])
     expect(await begin(s, a, it1, 9_000_000)).toEqual({ checkNo: 2, messages: '["two"]' })
-    expect((await s.assistantPatrols.get(a, it1.id))?.pendingMessages).toBeNull()
+    expect((await s.assistantChecks.get(a, it1.id))?.pendingMessages).toBeNull()
   })
 
   it('lets only the check in flight settle the follow-up, and a release leaves the check due', async () => {
@@ -265,13 +265,13 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, 1_000)
     await begin(s, a, it1, 2_000, { nextCheck: 1_000 })
-    expect(await s.assistantPatrols.succeed(a, it1.id, key(a, 'old'), 4_000)).toBe(false)
-    expect(await s.assistantPatrols.fail(a, it1.id, key(a, 'old'), 4_000, 1_000)).toBeUndefined()
-    await s.assistantPatrols.release(a, it1.id, it1.taskKey, 4_000)
-    expect(await s.assistantPatrols.get(a, it1.id)).toMatchObject({ runningKey: null, failures: 0 })
-    expect(await s.assistantPatrols.due(a, 5_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
-    await s.assistantPatrols.skip(a, it1.id, 1_000, 5_000)
-    expect(await s.assistantPatrols.due(a, 5_000, 10)).toEqual([])
+    expect(await s.assistantChecks.succeed(a, it1.id, key(a, 'old'), 4_000)).toBe(false)
+    expect(await s.assistantChecks.fail(a, it1.id, key(a, 'old'), 4_000, 1_000)).toBeUndefined()
+    await s.assistantChecks.release(a, it1.id, it1.taskKey, 4_000)
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ runningKey: null, failures: 0 })
+    expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
+    await s.assistantChecks.skip(a, it1.id, 1_000, 5_000)
+    expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([])
   })
 })
 
@@ -281,7 +281,7 @@ describe('a follow-up’s row of the sub-session index', () => {
     const a = agent()
     expect(await s.assistantSubsessions.openFollowUp(row(a, '1', 1_000))).toBe(true)
     expect(await s.assistantSubsessions.openFollowUp(row(a, '1', 2_000))).toBe(false)
-    expect(await s.assistantSubsessions.get(a, key(a, '1'))).toMatchObject({ state: 'done', kind: 'patrol' })
+    expect(await s.assistantSubsessions.get(a, key(a, '1'))).toMatchObject({ state: 'done', kind: 'follow-up' })
     await s.assistantSubsessions.checking(a, key(a, '1'))
     expect(await s.assistantSubsessions.get(a, key(a, '1'))).toMatchObject({ state: 'open', createdAt: 1_000 })
     // A running check takes none of the delegations' places.
@@ -306,7 +306,7 @@ describe('a follow-up’s row of the sub-session index', () => {
       agentId: a,
       title: 'Elsewhere',
       origin: { ...ORIGIN, channel: 'C0OTHER' },
-      taskKey: sessionKey('slack', 'C0OTHER', patrolCoordinate('x'), a, 'T0EXAMPLE')
+      taskKey: sessionKey('slack', 'C0OTHER', checkCoordinate('x'), a, 'T0EXAMPLE')
     })
     for (const followUp of [mine, elsewhere])
       await s.assistantSubsessions.openFollowUp({ ...row(a, 'x', 1_000), childSessionKey: followUp.taskKey })
@@ -343,7 +343,7 @@ describe('the place a follow-up belongs to', () => {
     expect((await s.placeSession(a, 'slack', 'C1', 'T0EXAMPLE'))?.thread).toBe(coordinate)
     // No append session: one session is the place's, several threads are not one conversation.
     await s.upsertSession(session('D1', 'webchat:D1'))
-    await s.upsertSession(session('D1', patrolCoordinate('1')))
+    await s.upsertSession(session('D1', checkCoordinate('1')))
     expect((await s.placeSession(a, 'slack', 'D1', 'T0EXAMPLE'))?.thread).toBe('webchat:D1')
     await s.upsertSession(session('C2', '100.1'))
     await s.upsertSession(session('C2', '100.2'))
@@ -388,8 +388,8 @@ describe('a first look in the follow-up tables', () => {
     const a = agent()
     const look = await firstLook(s, a, 100)
     const followUp = await item(s, a, 500)
-    expect((await s.assistantPatrols.due(a, 1_000, 10)).map((d) => d.itemId)).toEqual([followUp.id, look.id])
-    expect((await s.assistantPatrols.due(a, 300, 10)).map((d) => d.itemId)).toEqual([look.id])
+    expect((await s.assistantChecks.due(a, 1_000, 10)).map((d) => d.itemId)).toEqual([followUp.id, look.id])
+    expect((await s.assistantChecks.due(a, 300, 10)).map((d) => d.itemId)).toEqual([look.id])
   })
 
   it('grants a running check its history up to the cap, and none to a check that is not running', async () => {
@@ -397,10 +397,10 @@ describe('a first look in the follow-up tables', () => {
     const a = agent()
     const look = await firstLook(s, a, 100)
     const started = await begin(s, a, look, 1_000, { nextCheck: 100 })
-    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(300)
-    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(200)
-    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(0)
-    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo + 1, 10, 500)).toBe(0)
+    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(300)
+    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(200)
+    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(0)
+    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo + 1, 10, 500)).toBe(0)
   })
 
   it('is never a dream’s source', async () => {
@@ -426,12 +426,14 @@ describe('a first look in the follow-up tables', () => {
 
 describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite', () => {
   it('marks the existing sub-sessions as delegations and adds the patrol state', async () => {
-    expect(SCHEMA_VERSION).toBe(56)
+    expect(SCHEMA_VERSION).toBe(57)
     const path = tempStorePath('ac-assistant-v38-')
     await (await LocalStore.open(path)).close()
     const a = agent()
     const old = new DatabaseSync(path)
-    old.exec('ALTER TABLE assistant_subsession DROP COLUMN kind; DROP TABLE assistant_patrol; PRAGMA user_version = 38')
+    old.exec(
+      'ALTER TABLE assistant_subsession DROP COLUMN kind; DROP TABLE assistant_check_state; PRAGMA user_version = 38'
+    )
     old
       .prepare(
         `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
@@ -454,10 +456,10 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
       ).toBe(false)
       expect(await upgraded.assistantSubsessions.openFollowUp(row(a, 'p', 1_000))).toBe(true)
       const it1 = await item(upgraded, a, 500)
-      expect(await upgraded.assistantPatrols.due(a, 1_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 500 }])
+      expect(await upgraded.assistantChecks.due(a, 1_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 500 }])
       await begin(upgraded, a, it1, 1_000, { nextCheck: 500 })
-      expect(await upgraded.assistantPatrols.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
-      expect(await upgraded.assistantPatrols.byRunningKey(a, it1.taskKey)).toMatchObject({
+      expect(await upgraded.assistantChecks.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
+      expect(await upgraded.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
         runningObservationVersion: 0,
         runningReport: 'It shipped.'
       })
@@ -473,13 +475,13 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
     const path = tempStorePath('ac-assistant-v37p-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
-    old.exec('DROP TABLE assistant_subsession; DROP TABLE assistant_patrol; PRAGMA user_version = 37')
+    old.exec('DROP TABLE assistant_subsession; DROP TABLE assistant_check_state; PRAGMA user_version = 37')
     old.close()
     const upgraded = await LocalStore.open(path)
     const a = agent()
     try {
       expect(await upgraded.assistantSubsessions.openFollowUp(row(a, 'p', 1_000))).toBe(true)
-      expect(await upgraded.assistantSubsessions.get(a, key(a, 'p'))).toMatchObject({ kind: 'patrol' })
+      expect(await upgraded.assistantSubsessions.get(a, key(a, 'p'))).toMatchObject({ kind: 'follow-up' })
     } finally {
       await upgraded.close()
     }
@@ -503,7 +505,7 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
 
       await admin.query(`SET search_path TO ${schema}`)
       await admin.query('ALTER TABLE assistant_subsession DROP COLUMN kind')
-      await admin.query('DROP TABLE assistant_patrol')
+      await admin.query('DROP TABLE assistant_check_state')
       await admin.query(
         `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
          VALUES ($1, $2, 'sid-parent-1', 'parent', 'open', 1000)`,
@@ -527,8 +529,8 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
         expect(await upgraded.assistantSubsessions.openFollowUp(row(a, 'p', 1_000))).toBe(true)
         const it1 = await item(upgraded, a, 500)
         await begin(upgraded, a, it1, 1_000, { nextCheck: 500 })
-        expect(await upgraded.assistantPatrols.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
-        expect(await upgraded.assistantPatrols.byRunningKey(a, it1.taskKey)).toMatchObject({
+        expect(await upgraded.assistantChecks.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
+        expect(await upgraded.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
           itemId: it1.id,
           runningNextCheck: 500,
           runningObservationVersion: 0,
@@ -537,6 +539,192 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
       } finally {
         await upgraded.close()
       }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
+/** A follow-up and a first look as a v57 store holds them: items, a running check, the index row, sessions and outward ids. */
+async function seedChecks(s: LocalStore, a: string) {
+  const followUp = await s.assistantItems.create({
+    agentId: a,
+    title: 'Watch the release',
+    origin: ORIGIN,
+    taskKey: key(a, 'p1'),
+    now: 1
+  })
+  const look = await s.assistantItems.create({
+    agentId: a,
+    title: 'First look',
+    origin: ORIGIN,
+    taskKey: key(a, 'l1', firstLookCoordinate('l1')),
+    firstLook: 'joined',
+    now: 1
+  })
+  await begin(s, a, followUp, 1_000)
+  await s.assistantSubsessions.openFollowUp(row(a, 'p1', 1_000))
+  for (const [taskKey, thread] of [
+    [followUp.taskKey, checkCoordinate('p1')],
+    [look.taskKey, firstLookCoordinate('l1')]
+  ] as const) {
+    await s.upsertSession({
+      key: taskKey,
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread,
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: `acp-${randomUUID()}`,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await s.ensureOutwardSessionId(taskKey, a, 1)
+  }
+  return { followUp, look }
+}
+
+/** What v57 must leave: the new table, column, kind and coordinates on every row seeded above. */
+async function expectChecks(s: LocalStore, a: string, seeded: Awaited<ReturnType<typeof seedChecks>>) {
+  expect(await s.assistantItems.get(a, seeded.followUp.id)).toMatchObject({ taskKey: key(a, 'p1') })
+  expect(await s.assistantChecks.byRunningKey(a, key(a, 'p1'))).toMatchObject({
+    itemId: seeded.followUp.id,
+    checkedNextCheck: null,
+    runningCheck: 1
+  })
+  expect(await s.assistantSubsessions.get(a, key(a, 'p1'))).toMatchObject({ kind: 'follow-up' })
+  expect(await s.getSession(key(a, 'p1'))).toMatchObject({ thread: checkCoordinate('p1') })
+  expect(await s.getSession(key(a, 'l1', firstLookCoordinate('l1')))).toMatchObject({
+    thread: firstLookCoordinate('l1')
+  })
+}
+
+describe.skipIf(usingPostgresStore())('the v56 → v57 check names on SQLite', () => {
+  /** Each text column in a store, skipping SQLite's own and virtual tables. */
+  const textColumns = (db: DatabaseSync): [string, string][] =>
+    (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql NOT LIKE 'CREATE VIRTUAL%'"
+        )
+        .all() as { name: string }[]
+    ).flatMap(({ name }) =>
+      (db.prepare(`PRAGMA table_info(${name})`).all() as { name: string; type: string }[])
+        .filter((c) => c.type.toUpperCase() === 'TEXT')
+        .map((c): [string, string] => [name, c.name])
+    )
+
+  it('renames the check state and rewrites every stored check coordinate', async () => {
+    expect(SCHEMA_VERSION).toBe(57)
+    const path = tempStorePath('ac-assistant-v56-')
+    const a = agent()
+    const fresh = await LocalStore.open(path)
+    const seeded = await seedChecks(fresh, a)
+    await fresh.close()
+    // Back to what a v56 daemon wrote, with a queued check message and a transcript row of its session.
+    const old = new DatabaseSync(path)
+    old.exec(
+      'ALTER TABLE assistant_check_state RENAME TO assistant_patrol; ' +
+        'ALTER TABLE assistant_patrol RENAME COLUMN checkedNextCheck TO patrolledNextCheck; ' +
+        "UPDATE assistant_subsession SET kind = 'patrol' WHERE kind = 'follow-up'"
+    )
+    for (const [table, column] of textColumns(old))
+      old.exec(`UPDATE ${table} SET ${column} = replace(${column}, 'subsession:check-', 'subsession:patrol-')`)
+    const oldKey = key(a, 'p1', 'subsession:patrol-p1')
+    old
+      .prepare('INSERT INTO inbox (id, sessionKey, agentId, msg, enqueuedAt) VALUES (?, ?, ?, ?, ?)')
+      .run(
+        'inbox-1',
+        oldKey,
+        a,
+        JSON.stringify({ msgId: 'patrol:C0GENERAL:1:check-2', thread: 'subsession:patrol-p1' }),
+        '1'
+      )
+    old
+      .prepare(
+        "INSERT INTO transcript (channel, thread, sender, kind, text, sessionScope) VALUES (?, ?, ?, 'tool', '', ?)"
+      )
+      .run('C0GENERAL', 'subsession:patrol-p1', a, oldKey)
+    old.exec('PRAGMA user_version = 56')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      await expectChecks(upgraded, a, seeded)
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    try {
+      const left = textColumns(db).filter(
+        ([table, column]) =>
+          db.prepare(`SELECT 1 FROM ${table} WHERE ${column} LIKE '%subsession:patrol-%'`).all().length > 0
+      )
+      expect(left).toEqual([])
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'assistant_patrol'").all()).toEqual([])
+      const inbox = db.prepare("SELECT sessionKey, msg FROM inbox WHERE id = 'inbox-1'").get() as {
+        sessionKey: string
+        msg: string
+      }
+      expect(inbox.sessionKey).toBe(key(a, 'p1'))
+      expect(JSON.parse(inbox.msg)).toMatchObject({ thread: checkCoordinate('p1') })
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v56 → v57 check names on PostgreSQL', () => {
+  it('renames the check state and rewrites every stored check coordinate', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    const textColumns = async (): Promise<[string, string][]> =>
+      (
+        await admin.query(
+          `SELECT table_name, column_name FROM information_schema.columns
+            WHERE table_schema = $1 AND data_type IN ('text', 'character varying')`,
+          [schema]
+        )
+      ).rows.map((r: { table_name: string; column_name: string }): [string, string] => [r.table_name, r.column_name])
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      const first = await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })
+      const seeded = await seedChecks(first, a)
+      await first.close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('ALTER TABLE assistant_check_state RENAME TO assistant_patrol')
+      await admin.query('ALTER TABLE assistant_patrol RENAME COLUMN checkednextcheck TO patrollednextcheck')
+      await admin.query("UPDATE assistant_subsession SET kind = 'patrol' WHERE kind = 'follow-up'")
+      for (const [table, column] of await textColumns())
+        await admin.query(
+          `UPDATE ${table} SET ${column} = replace(${column}, 'subsession:check-', 'subsession:patrol-')`
+        )
+      await admin.query('UPDATE _local_store_schema_version SET version = 56 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        await expectChecks(upgraded, a, seeded)
+      } finally {
+        await upgraded.close()
+      }
+      const left: string[] = []
+      for (const [table, column] of await textColumns())
+        if ((await admin.query(`SELECT 1 FROM ${table} WHERE ${column} LIKE '%subsession:patrol-%'`)).rows.length > 0)
+          left.push(`${table}.${column}`)
+      expect(left).toEqual([])
       const version = await admin.query('SELECT version FROM _local_store_schema_version')
       expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
     } finally {
@@ -562,7 +750,7 @@ describe.skipIf(usingPostgresStore())('the v54 → v55 first-look schema on SQLi
       const look = await firstLook(upgraded, a, 100)
       expect((await upgraded.assistantItems.get(a, look.id))?.firstLook).toBe('joined')
       const started = await begin(upgraded, a, look, 1_000, { nextCheck: 100 })
-      expect(await upgraded.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
+      expect(await upgraded.assistantChecks.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
     } finally {
       await upgraded.close()
     }
@@ -596,7 +784,7 @@ describe.skipIf(!usingPostgresStore())('the v54 → v55 first-look schema on Pos
         const look = await firstLook(upgraded, a, 100)
         expect((await upgraded.assistantItems.get(a, look.id))?.firstLook).toBe('joined')
         const started = await begin(upgraded, a, look, 1_000, { nextCheck: 100 })
-        expect(await upgraded.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
+        expect(await upgraded.assistantChecks.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
       } finally {
         await upgraded.close()
       }

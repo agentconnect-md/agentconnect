@@ -51,7 +51,7 @@ export interface OpenRuntimeSessionInput {
   mcpServersFor: () => McpServer[]
   /** Trusted descriptors bound to an overridden host; dropped if the runtime rejects them. */
   additionalMcpServers?: McpServer[]
-  /** Runtime built-ins a new session must not offer (a patrol's, which nobody can approve). */
+  /** Runtime built-ins a new session must not offer (a check's, which nobody can approve). */
   extraDisallowedTools?: readonly string[]
   /** Current chat authority for runtime changes, re-read immediately before each request. */
   chatRuntimeChangesAllowed: () => boolean

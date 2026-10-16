@@ -689,7 +689,7 @@ function subsessionSettledLine(asker: string, outcome: SubsessionNoticeOutcome):
   }
 }
 
-/** What an assistant-mode draft card shows (assistant-mode.md §5.5); a `task` is a patrol's proposal (§5.10), whose text is the task. */
+/** What an assistant-mode draft card shows (assistant-mode.md §5.5); a `task` is a check's proposal (§5.10), whose text is the task. */
 export interface AssistantDraftCardView {
   agentName: string
   kind: 'reply' | 'elsewhere' | 'task'

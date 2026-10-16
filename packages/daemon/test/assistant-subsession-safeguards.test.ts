@@ -7,7 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
 import { REPORT_ANSWER_LANGUAGE, SUBSESSION_IDLE_END_MS, subsessionEndReport } from '../src/collab/coordinator.js'
-import { PATROL_SWEEP_INTERVAL_MS } from '../src/assistant/patrol.js'
+import { CHECK_SWEEP_INTERVAL_MS } from '../src/assistant/follow-up-checks.js'
 import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -818,8 +818,8 @@ describe('the sub-session cap', () => {
 describe('an open sub-session nothing runs for any more', () => {
   /** One run of the daemon's own minute sweep. */
   const tick = async (d: any, clock: FakeClock) => {
-    clock.advance(PATROL_SWEEP_INTERVAL_MS)
-    await vi.waitFor(() => expect(d.patrolSweepTimer).toBeDefined(), WAIT)
+    clock.advance(CHECK_SWEEP_INTERVAL_MS)
+    await vi.waitFor(() => expect(d.checkSweepTimer).toBeDefined(), WAIT)
   }
 
   it('is reported ended once nothing runs for it any more, and frees its slot', async () => {
@@ -845,7 +845,7 @@ describe('an open sub-session nothing runs for any more', () => {
     })
 
     // The first sweep finds nothing running for it; the one ten minutes on reports it ended.
-    const sweeps = SUBSESSION_IDLE_END_MS / PATROL_SWEEP_INTERVAL_MS
+    const sweeps = SUBSESSION_IDLE_END_MS / CHECK_SWEEP_INTERVAL_MS
     for (let i = 0; i < sweeps; i++) await tick(d, clock)
     expect(reports()).toHaveLength(0)
     await tick(d, clock)

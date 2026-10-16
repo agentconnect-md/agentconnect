@@ -30,7 +30,7 @@ export default defineConfig({
       'test/assistant-drafts.test.ts',
       'test/assistant-subsessions.test.ts',
       'test/session-messages-store.test.ts',
-      'test/assistant-patrols.test.ts',
+      'test/assistant-checks.test.ts',
       'test/assistant-proposals.test.ts',
       'test/assistant-activity.test.ts',
       'test/assistant-widened.test.ts',

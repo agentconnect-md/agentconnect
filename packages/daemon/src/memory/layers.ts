@@ -79,7 +79,7 @@ const usableId = (id: string | null | undefined): id is string => !!id && !/[\s:
 // Agent ids are UUIDs (the protocol's AgentId); a schedule's or hook's trigger id carries a colon.
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** Whether an initiator is a person: never an agent (a patrol's, a task's, another agent's message) or an automation trigger. */
+/** Whether an initiator is a person: never an agent (a check's, a task's, another agent's message) or an automation trigger. */
 export function personId(id: string | null | undefined): id is string {
   return usableId(id) && !AGENT_ID.test(id)
 }

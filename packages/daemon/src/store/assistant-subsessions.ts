@@ -17,7 +17,7 @@ export interface AssistantSubsession {
   state: AssistantSubsessionState
   createdAt: number
   /** A follow-up (assistant-mode.md §5.12), `open` while one of its checks runs; a delegation reads back without it. */
-  kind?: 'patrol'
+  kind?: 'follow-up'
   /** The failure report the daemon owes the parent (assistant-mode.md §5.7), once it claimed one. */
   endReport?: string
   /** How many times that report's admission was refused. */
@@ -93,7 +93,7 @@ function subsessionOf(row: Row): AssistantSubsession {
     parentSessionKey: String(row.parentSessionKey),
     state: String(row.state) as AssistantSubsessionState,
     createdAt: Number(row.createdAt),
-    ...(row.kind === 'patrol' ? { kind: 'patrol' as const } : {}),
+    ...(row.kind === 'follow-up' ? { kind: 'follow-up' as const } : {}),
     ...(row.endReport != null ? { endReport: String(row.endReport) } : {}),
     ...(Number(row.reportAttempts ?? 0) > 0 ? { reportAttempts: Number(row.reportAttempts) } : {}),
     ...(Number(row.round ?? 1) > 1 ? { round: Number(row.round) } : {})
@@ -202,7 +202,7 @@ export class AssistantSubsessionIndex {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, kind)
-       VALUES (?, ?, ?, ?, 'done', ?, 'patrol')`,
+       VALUES (?, ?, ?, ?, 'done', ?, 'follow-up')`,
       [input.agentId, input.childSessionKey, input.parentSessionId, input.parentSessionKey, input.now ?? Date.now()]
     )
     return changes > 0
@@ -211,7 +211,7 @@ export class AssistantSubsessionIndex {
   /** A follow-up's check runs: its row is `open` until the check settles. */
   async checking(agentId: string, childSessionKey: string): Promise<void> {
     await this.db.query(
-      `UPDATE assistant_subsession SET state = 'open' WHERE agentId = ? AND childSessionKey = ? AND kind = 'patrol'`,
+      `UPDATE assistant_subsession SET state = 'open' WHERE agentId = ? AND childSessionKey = ? AND kind = 'follow-up'`,
       [agentId, childSessionKey]
     )
   }
@@ -224,7 +224,7 @@ export class AssistantSubsessionIndex {
   ): Promise<void> {
     await this.db.query(
       `UPDATE assistant_subsession SET parentSessionId = ?, parentSessionKey = ?
-        WHERE agentId = ? AND kind = 'patrol' AND (parentSessionId <> ? OR parentSessionKey <> ?)
+        WHERE agentId = ? AND kind = 'follow-up' AND (parentSessionId <> ? OR parentSessionKey <> ?)
           AND childSessionKey IN (SELECT i.taskKey FROM assistant_item i WHERE i.agentId = ? AND i.originPlatform = ?
             AND i.originChannel = ? AND i.originTransportScope = ?)`,
       [

@@ -39,13 +39,13 @@ const HERE: AssistantDraftSource = {
   sessionId: 'outward-dm',
   place: true
 }
-/** A patrol of an item taken in C0GENERAL. */
-const PATROL: AssistantDraftSource = {
+/** A check of an item taken in C0GENERAL. */
+const CHECK: AssistantDraftSource = {
   ...HERE,
   channel: 'C0GENERAL',
-  thread: 'subsession:patrol-1',
-  sessionKey: 'key-patrol',
-  sessionId: 'outward-patrol',
+  thread: 'subsession:check-1',
+  sessionKey: 'key-check',
+  sessionId: 'outward-check',
   place: false
 }
 /** A cron run with no conversation of its own. */
@@ -176,7 +176,7 @@ async function world(
     startTask,
     describeDestination,
     afterPost,
-    // A patrol's proposal for an item taken in `place`'s conversation; `extra` holds it for a round or makes it a follow-up form.
+    // A check's proposal for an item taken in `place`'s conversation; `extra` holds it for a round or makes it a follow-up form.
     propose: (place?: ProposalPlace, extra: Partial<Parameters<AssistantDrafts['propose']>[0]> = {}) =>
       drafts.propose({
         agentId: AGENT,
@@ -187,7 +187,7 @@ async function world(
         why: 'The check found a merge conflict.',
         itemId: 'item-1',
         itemVersion: 1,
-        source: PATROL,
+        source: CHECK,
         ...(place ? { place } : {}),
         ...extra
       }),

@@ -595,7 +595,7 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
             title: input.title,
             doneWhen: input.doneWhen,
             origin: { platform: ctx.platform, channel: ctx.channel, transportScope: ctx.transportScope ?? null },
-            taskKey: 'slack:D_P:subsession:patrol-1:agent',
+            taskKey: 'slack:D_P:subsession:check-1:agent',
             asker: input.asker
           })
       }

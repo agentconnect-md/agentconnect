@@ -12,14 +12,14 @@ import { Icon, Button } from '@/components/ui'
 
 const LIMIT_KEYS = [
   'maxConcurrentSubsessions',
-  'dailyPatrolBudget',
+  'dailyCheckBudget',
   'dailySubsessionsPerItem',
   'permissionWaitHours'
 ] as const
 type LimitKey = (typeof LIMIT_KEYS)[number]
 const LIMIT_MAX: Record<LimitKey, number> = {
   maxConcurrentSubsessions: 50,
-  dailyPatrolBudget: 500,
+  dailyCheckBudget: 500,
   dailySubsessionsPerItem: 50,
   permissionWaitHours: 72
 }

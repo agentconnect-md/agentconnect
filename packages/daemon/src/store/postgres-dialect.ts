@@ -293,7 +293,7 @@ export const canonicalColumns = [
   'childSessionKey',
   'parentSessionId',
   'parentSessionKey',
-  'patrolledNextCheck',
+  'checkedNextCheck',
   'retryAt',
   'stoppedNextCheck',
   'runningKey',

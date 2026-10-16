@@ -23,7 +23,7 @@ import {
 } from '../session/subsession-coordinate.js'
 import type { AssistantDraft, AssistantDraftLedger } from '../store/assistant-drafts.js'
 import type { AssistantItem, AssistantItemLedger } from '../store/assistant-items.js'
-import type { AssistantPatrolLedger } from '../store/assistant-patrols.js'
+import type { AssistantCheckLedger } from '../store/assistant-checks.js'
 import type { AssistantSubsession, AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import type { SessionRecord } from '../store/local-store.js'
 
@@ -41,7 +41,7 @@ export class AssistantActivityViolationError extends Error {
 /** What the view reads and edits; every query is scoped by the agent the request names. */
 export interface AssistantActivityStore {
   assistantItems: Pick<AssistantItemLedger, 'get' | 'byTaskKey'>
-  assistantPatrols: Pick<AssistantPatrolLedger, 'get' | 'checks'>
+  assistantChecks: Pick<AssistantCheckLedger, 'get' | 'checks'>
   assistantDrafts: Pick<AssistantDraftLedger, 'listPending' | 'get'>
   assistantSubsessions: Pick<AssistantSubsessionIndex, 'list' | 'listForParent' | 'get' | 'adoptFollowUps'>
   getSession(key: string): Promise<SessionRecord | undefined>
@@ -176,7 +176,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const row =
             child?.agentId === req.agentId ? await store.assistantSubsessions.get(req.agentId, child.key) : undefined
           // A follow-up is shown only in assistant mode, as the list does.
-          if (!row || (row.kind === 'patrol' && !assistant)) return { operation: 'task', task: null }
+          if (!row || (row.kind === 'follow-up' && !assistant)) return { operation: 'task', task: null }
           return { operation: 'task', task: await taskOf(store, req.agentId, row) }
         }
         case 'drafts': {
@@ -242,7 +242,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const { userId, name } = req.actor
           const actor = { userId, ...(name ? { name } : {}) }
           // A follow-up's Stop ends it (assistant-mode.md §5.12), not just its check.
-          if (row.kind === 'patrol') {
+          if (row.kind === 'follow-up') {
             const item = await store.assistantItems.byTaskKey(req.agentId, row.childSessionKey)
             if (!item || !deps.stopFollowUp) return { operation: 'stop-subsession', result: 'not-found' }
             const ended = await deps.stopFollowUp(req.agentId, item, actor)
@@ -255,7 +255,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           // Only while its row names the conversation the Control Plane checked the caller against, so no other place's follow-up ends.
           const item = await store.assistantItems.get(req.agentId, req.followUpId)
           const row = item ? await store.assistantSubsessions.get(req.agentId, item.taskKey) : undefined
-          if (!item || row?.kind !== 'patrol' || row.parentSessionId !== req.parentSessionId || !deps.stopFollowUp)
+          if (!item || row?.kind !== 'follow-up' || row.parentSessionId !== req.parentSessionId || !deps.stopFollowUp)
             return { operation: 'stop-follow-up', result: 'not-found' }
           const { userId, name } = req.actor
           const ended = await deps.stopFollowUp(req.agentId, item, { userId, ...(name ? { name } : {}) })
@@ -288,7 +288,7 @@ async function taskOf(
     parentSessionId: row.parentSessionId,
     createdAt: iso(row.createdAt)
   }
-  if (row.kind === 'patrol') {
+  if (row.kind === 'follow-up') {
     const item = await store.assistantItems.byTaskKey(agentId, row.childSessionKey)
     const followUp = item ? await followUpOf(store, row, item) : undefined
     const ended = followUp?.status === 'done' || followUp?.status === 'stopped'
@@ -308,7 +308,7 @@ async function followUpOf(
   row: AssistantSubsession,
   item: AssistantItem
 ): Promise<AssistantActivityFollowUp> {
-  const state = await store.assistantPatrols.get(item.agentId, item.id)
+  const state = await store.assistantChecks.get(item.agentId, item.id)
   const open = item.status === 'active' || item.status === 'waiting'
   const status: AssistantActivityFollowUp['status'] = !open
     ? item.status === 'done'
@@ -319,7 +319,7 @@ async function followUpOf(
       : state?.stopped
         ? 'paused'
         : 'waiting'
-  const checks = await store.assistantPatrols.checks(item.agentId, item.id, ASSISTANT_ACTIVITY_CHECKS_MAX + 1)
+  const checks = await store.assistantChecks.checks(item.agentId, item.id, ASSISTANT_ACTIVITY_CHECKS_MAX + 1)
   return {
     id: item.id,
     title: item.title,

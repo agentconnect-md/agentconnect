@@ -1,4 +1,4 @@
-import { isPatrolCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { isCheckCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 import type { LocalStore } from '../store/local-store.js'
 
 /** Where a stored approval request was asked, by outward ids (session-concept.md §1.1). */
@@ -19,7 +19,7 @@ export async function requestConversation(
   const slot = await store.getSessionByAcpIdForAgent(agentId, acpSessionId)
   if (!slot) return { sessionId: acpSessionId }
   const parentSessionId =
-    isSubsessionCoordinate(slot.thread) && !isPatrolCoordinate(slot.thread)
+    isSubsessionCoordinate(slot.thread) && !isCheckCoordinate(slot.thread)
       ? (await store.assistantSubsessions.get(agentId, slot.key))?.parentSessionId
       : undefined
   return {

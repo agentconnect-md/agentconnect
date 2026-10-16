@@ -21,7 +21,7 @@ import { firstLookCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
-// What a patrol's or another agent's message carries as its sender: an agent's UUID.
+// What a check's or another agent's message carries as its sender: an agent's UUID.
 const AGENT_UUID = '0b0b0b0b-0000-4000-8000-000000000001'
 const THREAD = appendCoordinate(1)
 const TENANT = 'T-EXAMPLE'
@@ -317,9 +317,9 @@ describe('dreams mine only conversations of the shared layer, for every agent', 
 })
 
 describe('an automated turn never names the person a DM is with', () => {
-  const patrol = { source: 'agent', sender: { id: AGENT_UUID, isBot: false }, isDm: false }
+  const check = { source: 'agent', sender: { id: AGENT_UUID, isBot: false }, isDm: false }
 
-  it("gives patrol sessions in two people's DMs those two people's layers, not one key", async () => {
+  it("gives check sessions in two people's DMs those two people's layers, not one key", async () => {
     const one = world({
       channel: 'D1',
       conversationKind: 'dm',
@@ -332,8 +332,8 @@ describe('an automated turn never names the person a DM is with', () => {
       triggeredBy: AGENT_UUID,
       lookup: { isIm: true, user: 'U2' }
     })
-    expect(await one.captured(patrol)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
-    expect(await two.captured(patrol)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U2`) })
+    expect(await one.captured(check)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
+    expect(await two.captured(check)).toMatchObject({ personKey: memoryPersonKey(`slack:${TENANT}:U2`) })
     expect(await one.tool({ mode: 'write' })).toEqual({
       agentId: AGENT,
       personKey: memoryPersonKey(`slack:${TENANT}:U1`)
@@ -343,8 +343,8 @@ describe('an automated turn never names the person a DM is with', () => {
   it('keeps each DM to itself when nothing names its person', async () => {
     const one = world({ channel: 'D1', conversationKind: 'dm', triggeredBy: AGENT_UUID })
     const two = world({ channel: 'D2', conversationKind: 'dm', triggeredBy: AGENT_UUID })
-    const a = await one.captured(patrol)
-    const b = await two.captured(patrol)
+    const a = await one.captured(check)
+    const b = await two.captured(check)
     expect(a).toMatchObject({ channelKey: memoryChannelKey('D1') })
     expect(b).toMatchObject({ channelKey: memoryChannelKey('D2') })
     expect(a).not.toHaveProperty('personKey')
@@ -357,10 +357,10 @@ describe('an automated turn never names the person a DM is with', () => {
       triggeredBy: AGENT_UUID,
       lookup: { isIm: true, user: 'U1' }
     })
-    const atStart = await w.start(patrol)
+    const atStart = await w.start(check)
     expect(atStart).toEqual({ agentId: AGENT, personKey: memoryPersonKey(`slack:${TENANT}:U1`) })
     expect(await w.tool({ mode: 'write' })).toEqual(atStart)
-    expect(await w.captured(patrol)).toMatchObject(atStart)
+    expect(await w.captured(check)).toMatchObject(atStart)
   })
 
   it('names the person from the message they typed, whoever opened the session', async () => {

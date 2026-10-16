@@ -492,11 +492,11 @@ export class AssistantItemLedger {
   }
 }
 
-// The check state and log (assistant-patrols.ts) are keyed the same way and go with their follow-up.
+// The check state and log (assistant-checks.ts) are keyed the same way and go with their follow-up.
 const CHILD_TABLES = [
   'assistant_item_observation',
   'assistant_item_link',
-  'assistant_patrol',
+  'assistant_check_state',
   'assistant_check'
 ] as const
 
