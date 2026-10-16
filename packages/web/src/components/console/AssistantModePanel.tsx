@@ -10,17 +10,11 @@ import { fetchAgentAssistantModeAdmission, fetchAgentAssistantResponsibleUser, m
 import { useConsoleData } from '@/lib/data-context'
 import { Icon, Button } from '@/components/ui'
 
-const LIMIT_KEYS = [
-  'maxConcurrentSubsessions',
-  'dailyCheckBudget',
-  'dailySubsessionsPerItem',
-  'permissionWaitHours'
-] as const
+const LIMIT_KEYS = ['maxConcurrentSubsessions', 'dailyCheckBudget', 'permissionWaitHours'] as const
 type LimitKey = (typeof LIMIT_KEYS)[number]
 const LIMIT_MAX: Record<LimitKey, number> = {
   maxConcurrentSubsessions: 50,
   dailyCheckBudget: 500,
-  dailySubsessionsPerItem: 50,
   permissionWaitHours: 72
 }
 

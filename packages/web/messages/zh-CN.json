@@ -3156,7 +3156,6 @@
         "limit": {
           "maxConcurrentSubsessions": "并发的委派任务与批准后执行的提议数",
           "dailyCheckBudget": "每日跟进检查次数",
-          "dailySubsessionsPerItem": "每项每日任务数",
           "permissionWaitHours": "等待审批的小时数"
         },
         "defaultLimit": "默认",
