@@ -183,7 +183,7 @@ describe('remind', () => {
       'background session with no conversation of its own'
     )
     await expect(
-      call(session({ thread: 'subsession:patrol-d-2', tools: [FOLLOW_UP_TOOL] }), 'remind', args)
+      call(session({ thread: 'subsession:check-d-2', tools: [FOLLOW_UP_TOOL] }), 'remind', args)
     ).rejects.toThrow('remind is not available in a follow-up’s read-only check')
     const { integrationId: _none, ...webchat } = session({ platform: 'webchat', channel: 'w-1', thread: 'webchat:w-1' })
     await expect(call(webchat, 'remind', args)).rejects.toThrow('webchat is not supported yet')

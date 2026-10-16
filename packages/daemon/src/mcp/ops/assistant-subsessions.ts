@@ -117,7 +117,7 @@ export const stopTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, 
   if (isSubsessionCoordinate(ctx.thread)) return refused(NOT_OWNED)
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   const row = await port.find(ctx.agentId, taskId)
-  if (row?.kind === 'patrol') return await stopFollowUp(ctx, row, port)
+  if (row?.kind === 'follow-up') return await stopFollowUp(ctx, row, port)
   if (!row || !taskCoordinateOf(row.childSessionKey) || row.parentSessionKey !== here) return refused(NOT_OWNED)
   // The recorded owner by outward id too: a session recreated on the same key did not start it.
   const owner = await port.sessionIdOf(here)
@@ -209,7 +209,7 @@ function duration(ms: number): string {
 }
 
 function kindOf(row: AssistantSubsession): ListedTask['kind'] {
-  if (row.kind === 'patrol') return 'follow-up'
+  if (row.kind === 'follow-up') return 'follow-up'
   return isTaskCoordinate(coordinateOf(row.childSessionKey)) ? 'approved proposal' : 'delegated task'
 }
 

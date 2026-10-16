@@ -66,7 +66,7 @@ function hangingHost() {
   return { host, releaseAll: () => releases.splice(0).forEach((release) => release()) }
 }
 
-describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules', () => {
+describe('a Slack turn, the sub-sessions it opens, checks, tasks and schedules', () => {
   it("reads for the turn's sender, a sub-session's opener, an item's asker and a schedule's person", async () => {
     const root = scaffold(
       [
@@ -161,15 +161,15 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
         agentId: AGENT,
         title: 'ship the release notes',
         origin,
-        taskKey: sessionKey('slack', DM, 'subsession:patrol-r1', AGENT, scope),
+        taskKey: sessionKey('slack', DM, 'subsession:check-r1', AGENT, scope),
         asker: `slack:${tenant}:U0ALICE`
       })
       const agentMsg = { ...msg, source: 'agent', sender: { id: AGENT, isBot: true } }
-      for (const thread of ['subsession:patrol-r1', 'subsession:task-r1']) {
+      for (const thread of ['subsession:check-r1', 'subsession:task-r1']) {
         d.activeGateEntries.set(sessionKey('slack', DM, thread, AGENT, scope), { msg: agentMsg, integrationId: INT })
       }
       vi.spyOn(d.store.assistantDrafts, 'taskBySubsession').mockResolvedValue({ proposal: { itemId: item.id } })
-      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:patrol-r1' })).toEqual({
+      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:check-r1' })).toEqual({
         people: [ALICE],
         nobody: false
       })
@@ -179,13 +179,13 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
       })
       // A check a message started also reads as the people behind that message.
       const BOB = { kind: 'member', platform: 'slack', integrationId: INT, userId: 'U0BOB' }
-      vi.spyOn(d.patrols, 'askersFor').mockResolvedValue({ item, extra: { people: [BOB], nobody: false } })
-      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:patrol-r1' })).toEqual({
+      vi.spyOn(d.followUpChecks, 'askersFor').mockResolvedValue({ item, extra: { people: [BOB], nobody: false } })
+      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:check-r1' })).toEqual({
         people: [ALICE, BOB],
         nobody: false
       })
-      vi.spyOn(d.patrols, 'askersFor').mockResolvedValue({ extra: { people: [], nobody: false } })
-      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:patrol-r1' })).toEqual(NOBODY)
+      vi.spyOn(d.followUpChecks, 'askersFor').mockResolvedValue({ extra: { people: [], nobody: false } })
+      expect(await d.readAskersFor({ ...ctx, thread: 'subsession:check-r1' })).toEqual(NOBODY)
 
       // A schedule's run reads as the console user its row records, and as nobody without one.
       const cronId = randomUUID()
@@ -216,7 +216,7 @@ describe('a Slack turn, the sub-sessions it opens, patrols, tasks and schedules'
       d.cpCrons.upsert(upsert)
       expect(await d.readAskersFor(cronCtx)).toEqual(NOBODY)
       // The stand-in live entries are not turns, so shutdown must not try to cancel them.
-      for (const thread of ['subsession:patrol-r1', 'subsession:task-r1', 'cron-thread']) {
+      for (const thread of ['subsession:check-r1', 'subsession:task-r1', 'cron-thread']) {
         d.activeGateEntries.delete(sessionKey('slack', DM, thread, AGENT, scope))
       }
     } finally {

@@ -6,7 +6,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts.js'
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
-import { ASSISTANT_PATROL_SCHEMA, AssistantPatrolLedger } from './assistant-patrols.js'
+import { ASSISTANT_CHECK_SCHEMA, AssistantCheckLedger } from './assistant-checks.js'
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
@@ -20,7 +20,7 @@ import {
 import {
   FIRST_LOOK_COORDINATE_PREFIX,
   isSubsessionCoordinate,
-  patrolCoordinate
+  checkCoordinate
 } from '../session/subsession-coordinate.js'
 import { monotonicTs } from './monotonic-ts.js'
 import type { SQLInputValue } from 'node:sqlite'
@@ -1308,7 +1308,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 56
+export const SCHEMA_VERSION = 57
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1953,7 +1953,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       ['tookItemId', 'TEXT']
     ] as const)
       await addColumn(db, store.postgres, 'assistant_draft', column, type)
-  }
+  },
+  // v57 names patrols follow-up checks (assistant-mode.md §5.12): the check state's table and column, the rows' kind, the coordinates.
+  async (db, store) => await migratePatrolsToChecks(db, store.postgres)
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -1980,7 +1982,7 @@ async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<
     ['pendingMessages', 'TEXT']
   ] as const)
     await addColumn(db, postgres, 'assistant_patrol', column, type)
-  await db.exec(ASSISTANT_PATROL_SCHEMA)
+  await db.exec(ASSISTANT_PATROL_SCHEMA_V53)
   await db.exec(ASSISTANT_SUBSESSION_SCHEMA)
   // Done and dropped items are not carried.
   const closed = "SELECT id FROM assistant_item WHERE status NOT IN ('active', 'waiting')"
@@ -2035,7 +2037,7 @@ async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<
     const running = patrol?.runningKey ?? undefined
     const taskKey =
       running ??
-      sessionKey(item.originPlatform, item.originChannel, patrolCoordinate(monotonicTs()), agentId, scope || null)
+      sessionKey(item.originPlatform, item.originChannel, checkCoordinate(monotonicTs()), agentId, scope || null)
     await db.query('UPDATE assistant_item SET taskKey = ?, asker = ? WHERE agentId = ? AND id = ?', [
       taskKey,
       first?.identity ?? null,
@@ -2070,6 +2072,72 @@ async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<
        AND childSessionKey NOT IN (SELECT taskKey FROM assistant_item WHERE assistant_item.agentId = assistant_subsession.agentId)`
   )
   await db.exec('DROP TABLE IF EXISTS assistant_item_follower')
+}
+
+// v53 ran against the check state's names before v57 renamed them.
+const ASSISTANT_PATROL_SCHEMA_V53 = ASSISTANT_CHECK_SCHEMA.replace('assistant_check_state', 'assistant_patrol').replace(
+  'checkedNextCheck',
+  'patrolledNextCheck'
+)
+
+/** Every column holding a check's coordinate, alone or inside a session key or a stored message, as v57 rewrites it. */
+const CHECK_COORDINATE_COLUMNS = [
+  ['sessions', 'key'],
+  ['sessions', 'thread'],
+  ['session_mutes', 'key'],
+  ['session_gates', 'sessionKey'],
+  ['session_outward_ids', 'key'],
+  ['session_metadata_outbox', 'snapshot'],
+  ['thread_participation', 'thread'],
+  ['thread_participation', 'sessionKey'],
+  ['transcript', 'thread'],
+  ['transcript', 'sessionScope'],
+  ['transcript_recipient', 'sessionKey'],
+  ['inbox', 'sessionKey'],
+  ['inbox', 'msg'],
+  ['session_message', 'recipientKey'],
+  ['assistant_item', 'taskKey'],
+  ['assistant_check_state', 'runningKey'],
+  ['assistant_subsession', 'childSessionKey'],
+  ['assistant_subsession_input', 'childSessionKey'],
+  ['assistant_draft', 'sourceThread'],
+  ['assistant_draft', 'sourceSessionKey']
+] as const
+
+/** Patrols became follow-up checks: the check state, the follow-up rows and every stored check coordinate take the new names. */
+async function migratePatrolsToChecks(db: StoreTx, postgres: boolean): Promise<void> {
+  if (await tableExists(db, postgres, 'assistant_patrol')) {
+    // The old table holds the state; a new one can only be an empty leftover of a store rebuilt from a newer schema.
+    await db.exec('DROP TABLE IF EXISTS assistant_check_state')
+    await db.exec('ALTER TABLE assistant_patrol RENAME TO assistant_check_state')
+    await db.exec('ALTER TABLE assistant_check_state RENAME COLUMN patrolledNextCheck TO checkedNextCheck')
+  }
+  if (await tableExists(db, postgres, 'assistant_subsession'))
+    await db.exec("UPDATE assistant_subsession SET kind = 'follow-up' WHERE kind = 'patrol'")
+  if (await tableExists(db, postgres, 'assistant_item_observation'))
+    await db.exec("UPDATE assistant_item_observation SET author = 'check' WHERE author = 'patrol'")
+  for (const [table, column] of CHECK_COORDINATE_COLUMNS)
+    if (await columnExists(db, postgres, table, column))
+      await db.exec(
+        `UPDATE ${table} SET ${column} = replace(${column}, 'subsession:patrol-', 'subsession:check-')
+          WHERE ${column} LIKE '%subsession:patrol-%'`
+      )
+}
+
+/** Whether a table has a column, on either dialect. */
+async function columnExists(db: StoreTx, postgres: boolean, table: string, column: string): Promise<boolean> {
+  if (postgres)
+    return (
+      (
+        await db.query(
+          `SELECT 1 AS found FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
+          [table, column.toLowerCase()]
+        )
+      ).rows.length > 0
+    )
+  const columns = (await db.query(`PRAGMA table_info(${table})`, [])).rows as { name: string }[]
+  return columns.some((c) => c.name === column)
 }
 
 /** A place's long session as the store resolves it, read inside a migration: the append session, else the only other one. */
@@ -2373,8 +2441,8 @@ export class LocalStore {
   readonly assistantDrafts: AssistantDraftLedger
   /** The parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6). */
   readonly assistantSubsessions: AssistantSubsessionIndex
-  /** Per-item patrol state (assistant-mode.md §5.9). */
-  readonly assistantPatrols: AssistantPatrolLedger
+  /** Each follow-up's check state and check log (assistant-mode.md §5.12). */
+  readonly assistantChecks: AssistantCheckLedger
   /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
   readonly assistantReminders: AssistantReminderLedger
   /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
@@ -2413,7 +2481,7 @@ export class LocalStore {
       query: (sql, params) => this.db.query(sql, params),
       transaction: (fn) => this.transaction(fn)
     })
-    this.assistantPatrols = new AssistantPatrolLedger({
+    this.assistantChecks = new AssistantCheckLedger({
       query: (sql, params) => this.db.query(sql, params),
       transaction: (fn) => this.transaction(fn)
     })
@@ -2483,7 +2551,7 @@ export class LocalStore {
       ${ASSISTANT_ITEM_SCHEMA}
       ${ASSISTANT_DRAFT_SCHEMA}
       ${ASSISTANT_SUBSESSION_SCHEMA}
-      ${ASSISTANT_PATROL_SCHEMA}
+      ${ASSISTANT_CHECK_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}

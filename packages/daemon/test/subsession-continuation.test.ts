@@ -10,7 +10,7 @@ import { REPORT_ANSWER_LANGUAGE } from '../src/collab/coordinator.js'
 import { executeTool } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
-import { isSubsessionCoordinate, patrolCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import { isSubsessionCoordinate, checkCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { buildStandingContext } from '../src/session/turn/standing-context.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -898,10 +898,10 @@ describe('the owning session and its task answer each other’s messages', () =>
     await h.daemon.stop()
   })
 
-  it('never wakes an approved proposal or a patrol by answering its message', async () => {
+  it('never wakes an approved proposal or a check by answering its message', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
-    for (const thread of [taskCoordinate('x1'), patrolCoordinate('x2')]) {
+    for (const thread of [taskCoordinate('x1'), checkCoordinate('x2')]) {
       const key = sessionKey('slack', 'C1', thread, 'bot-a', caller.scope)
       await h.d.store.upsertSession({
         key,

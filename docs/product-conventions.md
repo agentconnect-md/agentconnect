@@ -1438,7 +1438,7 @@ and an overdue follow-up is checked once.
 An agent runs one scheduled check at a time. A message starts its check at once; one that arrives
 while a check of that follow-up runs waits, and the next check takes it as soon as the running one
 ends. Checks do not count toward the agent's concurrent tasks, and it starts at most
-`dailyPatrolBudget` of them in any 24 hours (50 when unset), messaged ones included; a message past
+`dailyCheckBudget` of them in any 24 hours (50 when unset), messaged ones included; a message past
 that is refused with the time the budget resets. A failed check is recorded on the follow-up and
 the next attempt waits min(60, 2ⁿ) minutes, n being its failures in a row. After five in a row its
 checks stop until it is messaged, and its conversation is told once. A failed check never sends the
@@ -1494,7 +1494,7 @@ remembers how the place works, introduces the agent once and offers at most thre
   someone there asks.
 - **Memory.** The first look's own session feeds no memory: no per-turn capture and no dream reads
   it. Memory gets only what the long session writes.
-- **Budget and failures.** It counts as one check against `dailyPatrolBudget`. An automatic one
+- **Budget and failures.** It counts as one check against `dailyCheckBudget`. An automatic one
   waits for the agent's one scheduled-check slot, runs only when no follow-up's check is due, and
   past the budget waits for it to reset. A requested one starts at once; past the budget `firstLook`
   is refused with the time the budget resets, and it is refused while another runs in that

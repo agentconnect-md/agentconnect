@@ -21,7 +21,7 @@ import {
   type SubsessionApprovalRoute,
   type SubsessionApprover
 } from '../src/permissions/subsession-approval.js'
-import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import { checkCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import type { SlackConnection } from '../src/slack/connection.js'
 import { buildSubsessionApprovalNotice } from '../src/slack/render.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
@@ -653,8 +653,8 @@ describe('a sub-session’s permission request in the conversation it belongs to
     await restarted.store.close()
   })
 
-  it('never asks from a patrol, which refuses instead', async () => {
-    const w = await world({ chatOn: true, thread: patrolCoordinate('600.6') })
+  it('never asks from a check, which refuses instead', async () => {
+    const w = await world({ chatOn: true, thread: checkCoordinate('600.6') })
     await expect(w.coordinator.onAcpPermission(OWNER, ACP, params())).resolves.toEqual({
       outcome: { outcome: 'selected', optionId: 'o-deny' }
     })

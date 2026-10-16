@@ -7,15 +7,15 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { assistantModeOn, PROPOSE_TOOL, RECORD_CHECK_TOOL, type ProposeInput } from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
-import { firstLookCoordinate, patrolCoordinate } from '../session/subsession-coordinate.js'
+import { firstLookCoordinate, checkCoordinate } from '../session/subsession-coordinate.js'
 import type {
   AssistantFirstLookTrigger,
   AssistantItem,
   AssistantItemLedger,
   AssistantPlace
 } from '../store/assistant-items.js'
-import type { AssistantPatrolDue, AssistantPatrolLedger, AssistantPatrolState } from '../store/assistant-patrols.js'
-import { PATROL_BUDGET_WINDOW_MS, PATROL_MAX_FAILURES, patrolBackoffMs } from '../store/assistant-patrols.js'
+import type { AssistantCheckDue, AssistantCheckLedger, AssistantCheckState } from '../store/assistant-checks.js'
+import { CHECK_BUDGET_WINDOW_MS, CHECK_MAX_FAILURES, checkBackoffMs } from '../store/assistant-checks.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
@@ -24,20 +24,20 @@ import { firstLookFailedText, firstLookHandling, firstLookPrompt, firstLookRepor
 import type { ReadAsker } from './place-access.js'
 import { callerOfMessage, type TaskCaller } from './tasks.js'
 
-/** Checks an agent may start in any 24 hours when its policy sets no `dailyPatrolBudget`. */
-export const DEFAULT_DAILY_PATROL_BUDGET = 50
-export const PATROL_SWEEP_INTERVAL_MS = 60_000
+/** Checks an agent may start in any 24 hours when its policy sets no `dailyCheckBudget`. */
+export const DEFAULT_DAILY_CHECK_BUDGET = 50
+export const CHECK_SWEEP_INTERVAL_MS = 60_000
 /** A check still running after this no longer holds its follow-up or the agent's one scheduled-check slot. */
-export const PATROL_STALE_MS = 60 * 60_000
+export const CHECK_STALE_MS = 60 * 60_000
 /** A check whose session never appeared is released after this. */
-export const PATROL_START_GRACE_MS = 10 * 60_000
+export const CHECK_START_GRACE_MS = 10 * 60_000
 /** How many observations a check's first message carries. */
-const PATROL_OBSERVATIONS_SHOWN = 5
+const CHECK_OBSERVATIONS_SHOWN = 5
 /** Messages that may wait for a running check. */
 export const FOLLOW_UP_PENDING_MAX = 10
 
 // The bridge tools a check may read with (§5.9 layer a); platform write tools, sendMessage and followUp never are.
-const PATROL_READ_TOOLS = new Set([
+const CHECK_READ_TOOLS = new Set([
   'recall',
   'getCurrentChannel',
   'listChannels',
@@ -59,10 +59,10 @@ const PATROL_READ_TOOLS = new Set([
 ])
 
 /** A check's tool set: the reads of what the session would get, `recordCheck`, and `propose`. */
-export function patrolTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
+export function checkTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
   const reads = tools.filter(
     (tool) =>
-      PATROL_READ_TOOLS.has(tool.name) ||
+      CHECK_READ_TOOLS.has(tool.name) ||
       MEMORY_TOOL_ACCESS_MODES[tool.name] === 'read' ||
       isAttachmentReadTool(tool.name)
   )
@@ -70,7 +70,7 @@ export function patrolTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] 
 }
 
 /** How a check's turn, or its refused start, ended. */
-export interface PatrolTurnEnd {
+export interface CheckTurnEnd {
   agentId: string
   key: string
   msg: NormalizedMessage
@@ -81,7 +81,7 @@ export interface PatrolTurnEnd {
 }
 
 /** The place's long session a follow-up belongs to and reports into. */
-export interface PatrolParent {
+export interface CheckParent {
   key: string
   sessionId: string
   platform: string
@@ -120,21 +120,21 @@ export type FirstLookRequestResult =
 
 type Admission = Promise<{ accepted: boolean; reason?: string }>
 
-export interface AssistantPatrolsHost {
+export interface FollowUpChecksHost {
   now(): number
   log: { info(message: string): void; warn(message: string): void; debug(message: string): void }
   agents(): Iterable<Pick<Agent, 'id' | 'assistantMode'>>
   /** This daemon holds the agent's duty, and the agent is neither paused nor draining. */
-  mayPatrol(agentId: string): boolean
+  mayCheck(agentId: string): boolean
   draining(): boolean
   items: Pick<
     AssistantItemLedger,
     'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestFirstLook'
   >
-  patrols: AssistantPatrolLedger
+  checks: AssistantCheckLedger
   subsessions: Pick<AssistantSubsessionIndex, 'openFollowUp' | 'checking' | 'adoptFollowUps' | 'finish' | 'get'>
   /** The place's one long session; with `open`, else the one its first message would key (a first look's, §5.13); undefined when it has none. */
-  parentFor(agentId: string, place: AssistantPlace, opts?: { open?: boolean }): Promise<PatrolParent | undefined>
+  parentFor(agentId: string, place: AssistantPlace, opts?: { open?: boolean }): Promise<CheckParent | undefined>
   /** What a first look of this follow-up names now, or why its place may no longer take one. */
   firstLookFacts?(agentId: string, item: AssistantItem): Promise<FirstLookFacts>
   /** Whether the place is a public channel, so every internal place lists its follow-ups. */
@@ -179,7 +179,7 @@ type Verdict = { kind: 'completed' } | { kind: 'failed'; why: string } | { kind:
 const RELEASED_REFUSALS = new Set(['paused', 'draining', 'dropped'])
 const FAILED_INTERRUPTS = new Set(['stalled', 'loop protection'])
 
-function verdictOf(end: PatrolTurnEnd): Verdict {
+function verdictOf(end: CheckTurnEnd): Verdict {
   switch (end.outcome) {
     case 'completed':
       return { kind: 'completed' }
@@ -203,12 +203,12 @@ export const followUpOpen = (item: Pick<AssistantItem, 'status'>): boolean =>
   item.status === 'active' || item.status === 'waiting'
 
 /** The check's first message: the follow-up, what woke it, and the standing rules of a check. */
-export function patrolPrompt(
+export function checkPrompt(
   item: AssistantItem,
-  due: AssistantPatrolDue | undefined,
+  due: AssistantCheckDue | undefined,
   messages: readonly CheckMessage[] = []
 ): string {
-  const observations = item.observations.slice(-PATROL_OBSERVATIONS_SHOWN)
+  const observations = item.observations.slice(-CHECK_OBSERVATIONS_SHOWN)
   return [
     `[follow-up check] A read-only check of one of your follow-ups. You run in the background: nothing you write ` +
       `here is posted anywhere.`,
@@ -291,7 +291,7 @@ function mergeAskers(sets: readonly CheckAskers[]): CheckAskers {
   return { people: [...people.values()], nobody }
 }
 
-/** The check a turn of a follow-up's session belongs to, from its message; undefined for a patrol started before follow-ups. */
+/** The check a turn of a follow-up's session belongs to, from its message; undefined for one whose message carries no check number. */
 function checkOf(msg: NormalizedMessage): number | undefined {
   const match = /:check-(\d+)$/.exec(msg.msgId)
   return match ? Number(match[1]) : undefined
@@ -309,7 +309,7 @@ function threadOf(item: Pick<AssistantItem, 'taskKey' | 'origin' | 'agentId'>): 
 }
 
 /** Takes, checks, messages and ends follow-ups; what a check's end needs lives in the store, so a replay on a fresh daemon settles it the same way. */
-export class AssistantPatrols {
+export class FollowUpChecks {
   private sweeping = false
   /** Checks whose proposal is being recorded, so two calls at once still make one. */
   private readonly proposing = new Set<string>()
@@ -318,7 +318,7 @@ export class AssistantPatrols {
   /** One start, message or settlement of a follow-up at a time. */
   private readonly locks = new Map<string, Promise<void>>()
 
-  constructor(private readonly host: AssistantPatrolsHost) {}
+  constructor(private readonly host: FollowUpChecksHost) {}
 
   private async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prior = this.locks.get(key) ?? Promise.resolve()
@@ -355,7 +355,7 @@ export class AssistantPatrols {
     const taskKey = sessionKey(
       origin.platform,
       origin.channel,
-      patrolCoordinate(monotonicTs()),
+      checkCoordinate(monotonicTs()),
       agentId,
       origin.transportScope
     )
@@ -438,7 +438,7 @@ export class AssistantPatrols {
     asker?: string
   }): Promise<FirstLookRequestResult> {
     const { agentId, place } = input
-    if (!this.host.mayPatrol(agentId) || this.host.draining())
+    if (!this.host.mayCheck(agentId) || this.host.draining())
       return {
         kind: 'refused',
         reason: 'paused',
@@ -494,9 +494,9 @@ export class AssistantPatrols {
     this.sweeping = true
     try {
       for (const agent of this.host.agents()) {
-        if (!assistantModeOn(agent) || !this.host.mayPatrol(agent.id)) continue
+        if (!assistantModeOn(agent) || !this.host.mayCheck(agent.id)) continue
         try {
-          await this.patrolAgent(agent)
+          await this.checkAgent(agent)
         } catch (err) {
           this.host.log.warn(`follow-up: agent ${agent.id} was not checked: ${(err as Error).message}`)
         }
@@ -508,25 +508,25 @@ export class AssistantPatrols {
 
   /** The follow-up a check is running in this session for, while it runs. */
   async itemFor(agentId: string, key: string): Promise<string | undefined> {
-    return (await this.host.patrols.byRunningKey(agentId, key))?.itemId
+    return (await this.host.checks.byRunningKey(agentId, key))?.itemId
   }
 
   /** Who a check in this session reads as: its follow-up, whose asker counts, and the senders of the messages it took. */
   async askersFor(agentId: string, key: string): Promise<{ item?: AssistantItem; extra: CheckAskers }> {
-    const state = await this.host.patrols.byRunningKey(agentId, key)
+    const state = await this.host.checks.byRunningKey(agentId, key)
     const item = await this.host.items.byTaskKey(agentId, key)
     return { ...(item ? { item } : {}), extra: state ? parseInput(state.runningInput).askers : NONE }
   }
 
   /** Keep a check's report for its end; a later one replaces an earlier one. False once the check is over. */
   async report(agentId: string, key: string, itemId: string, text: string): Promise<boolean> {
-    return await this.host.patrols.keepReport(agentId, itemId, key, text, this.host.now())
+    return await this.host.checks.keepReport(agentId, itemId, key, text, this.host.now())
   }
 
   /** A check asks for approval to act on its follow-up (assistant-mode.md §5.10): at most once per check, and it runs nothing. */
   async propose(agentId: string, key: string, input: ProposeInput): Promise<Record<string, unknown>> {
     const proposals = this.host.proposals
-    const state = await this.host.patrols.byRunningKey(agentId, key)
+    const state = await this.host.checks.byRunningKey(agentId, key)
     if (!proposals || !state) throw new Error('this check has ended; nothing was proposed')
     const once = 'this check already proposed, and a check proposes at most once; record what you saw with recordCheck'
     if (this.proposing.has(key)) throw new Error(once)
@@ -561,7 +561,7 @@ export class AssistantPatrols {
         reason: 'task_ended',
         message: 'This follow-up has ended, so it takes no messages. Nothing was sent; take a new one with followUp.'
       }
-    if (!this.host.mayPatrol(agentId) || this.host.draining())
+    if (!this.host.mayCheck(agentId) || this.host.draining())
       return {
         kind: 'refused',
         reason: 'paused',
@@ -570,9 +570,9 @@ export class AssistantPatrols {
     type Decided = FollowUpMessageResult | { kind: 'start'; admitted: Admission }
     const decided = await this.withLock(item.taskKey, async (): Promise<Decided> => {
       const now = this.host.now()
-      const state = await this.host.patrols.get(agentId, item.id)
+      const state = await this.host.checks.get(agentId, item.id)
       const pending = parseMessages(state?.pendingMessages ?? null)
-      const runs = !!state?.runningKey && state.runningSince !== null && state.runningSince >= now - PATROL_STALE_MS
+      const runs = !!state?.runningKey && state.runningSince !== null && state.runningSince >= now - CHECK_STALE_MS
       // Messages already waiting go with the next check, which is counted once.
       if (pending.length === 0) {
         const refusal = await this.overBudget(agentId, now)
@@ -585,11 +585,11 @@ export class AssistantPatrols {
           message: `${FOLLOW_UP_PENDING_MAX} messages already wait for this follow-up’s next check. Nothing was sent.`
         }
       const queued = [...pending, { text: input.text, at: now, askers: input.askers }]
-      await this.host.patrols.setPendingMessages(agentId, item.id, JSON.stringify(queued), now)
+      await this.host.checks.setPendingMessages(agentId, item.id, JSON.stringify(queued), now)
       if (runs) return { kind: 'queued' }
       const started = await this.begin(agentId, item.id, undefined, now)
       if (started === 'no-place') {
-        await this.host.patrols.setPendingMessages(
+        await this.host.checks.setPendingMessages(
           agentId,
           item.id,
           pending.length > 0 ? JSON.stringify(pending) : null,
@@ -623,11 +623,11 @@ export class AssistantPatrols {
     const now = this.host.now()
     const ended = await this.withLock(item.taskKey, async () => {
       if (!(await this.host.items.schedule(agentId, item.id, { status: 'dropped', nextCheck: null }, now))) return true
-      await this.host.patrols.setPendingMessages(agentId, item.id, null, now)
+      await this.host.checks.setPendingMessages(agentId, item.id, null, now)
       return false
     })
     if (ended) return 'ended'
-    const state = await this.host.patrols.get(agentId, item.id)
+    const state = await this.host.checks.get(agentId, item.id)
     if (state?.runningKey) await this.host.stopSession?.(item.taskKey, actor).catch(() => false)
     this.host.log.info(`follow-up ${item.taskKey}: ended`)
     return 'stopped'
@@ -640,10 +640,10 @@ export class AssistantPatrols {
     what: 'message' | 'first look' = 'message'
   ): Promise<FollowUpMessageResult | undefined> {
     const agent = [...this.host.agents()].find((a) => a.id === agentId)
-    const budget = agent?.assistantMode?.limits?.dailyPatrolBudget ?? DEFAULT_DAILY_PATROL_BUDGET
-    const { count, oldest } = await this.host.patrols.checksSince(agentId, now - PATROL_BUDGET_WINDOW_MS)
+    const budget = agent?.assistantMode?.limits?.dailyCheckBudget ?? DEFAULT_DAILY_CHECK_BUDGET
+    const { count, oldest } = await this.host.checks.checksSince(agentId, now - CHECK_BUDGET_WINDOW_MS)
     if (count < budget) return undefined
-    const resets = new Date((oldest ?? now) + PATROL_BUDGET_WINDOW_MS).toISOString()
+    const resets = new Date((oldest ?? now) + CHECK_BUDGET_WINDOW_MS).toISOString()
     return {
       kind: 'refused',
       reason: 'budget',
@@ -656,20 +656,20 @@ export class AssistantPatrols {
     }
   }
 
-  private async patrolAgent(agent: Pick<Agent, 'id' | 'assistantMode'>): Promise<void> {
+  private async checkAgent(agent: Pick<Agent, 'id' | 'assistantMode'>): Promise<void> {
     const now = this.host.now()
-    const budget = agent.assistantMode?.limits?.dailyPatrolBudget ?? DEFAULT_DAILY_PATROL_BUDGET
+    const budget = agent.assistantMode?.limits?.dailyCheckBudget ?? DEFAULT_DAILY_CHECK_BUDGET
     const spent = async (): Promise<boolean> => {
-      if ((await this.host.patrols.checksSince(agent.id, now - PATROL_BUDGET_WINDOW_MS)).count < budget) return false
+      if ((await this.host.checks.checksSince(agent.id, now - CHECK_BUDGET_WINDOW_MS)).count < budget) return false
       this.host.log.debug(`follow-up: agent ${agent.id} used its ${budget} checks of the last 24 hours`)
       return true
     }
-    for (const itemId of await this.host.patrols.withPendingMessages(agent.id, now, FOLLOW_UP_PENDING_MAX)) {
+    for (const itemId of await this.host.checks.withPendingMessages(agent.id, now, FOLLOW_UP_PENDING_MAX)) {
       if (await spent()) return
       const item = await this.host.items.get(agent.id, itemId)
       if (item) await this.withLock(item.taskKey, async () => await this.begin(agent.id, itemId, undefined, now))
     }
-    const [due] = await this.host.patrols.due(agent.id, now, 1, now - PATROL_STALE_MS)
+    const [due] = await this.host.checks.due(agent.id, now, 1, now - CHECK_STALE_MS)
     if (!due || (await spent())) return
     const item = await this.host.items.get(agent.id, due.itemId)
     if (item) await this.withLock(item.taskKey, async () => await this.begin(agent.id, due.itemId, due, now))
@@ -679,7 +679,7 @@ export class AssistantPatrols {
   private async begin(
     agentId: string,
     itemId: string,
-    due: AssistantPatrolDue | undefined,
+    due: AssistantCheckDue | undefined,
     now: number,
     exclusive = due !== undefined
   ): Promise<'no-place' | 'busy' | { admitted: Admission }> {
@@ -705,7 +705,7 @@ export class AssistantPatrols {
     if (!parent || !thread) {
       // No conversation to report to: a scheduled check is passed over, once.
       if (due) {
-        await this.host.patrols.skip(agentId, item.id, due.nextCheck, now)
+        await this.host.checks.skip(agentId, item.id, due.nextCheck, now)
         await this.observe(
           agentId,
           item.id,
@@ -724,16 +724,16 @@ export class AssistantPatrols {
       now
     })
     await this.host.subsessions.adoptFollowUps(agentId, item.origin, { sessionId: parent.sessionId, key: parent.key })
-    const state = await this.host.patrols.get(agentId, item.id)
+    const state = await this.host.checks.get(agentId, item.id)
     const pending = parseMessages(state?.pendingMessages ?? null)
     const input: CheckInput = { messages: pending, askers: mergeAskers(pending.map((m) => m.askers)) }
-    const begun = await this.host.patrols.begin(agentId, item.id, {
+    const begun = await this.host.checks.begin(agentId, item.id, {
       key,
       nextCheck: due?.nextCheck ?? null,
       observationVersion: item.observationVersion,
       input: pending.length > 0 ? JSON.stringify(input) : null,
       now,
-      staleBefore: now - PATROL_STALE_MS,
+      staleBefore: now - CHECK_STALE_MS,
       exclusive
     })
     // A check of it, or the agent's one scheduled check, is still running.
@@ -747,7 +747,7 @@ export class AssistantPatrols {
     // send-message-guide.md §9.3: its input is a session message from the session that owns it, answerable by id.
     const messageId = newSessionMessageId()
     const msg: NormalizedMessage = {
-      msgId: `patrol:${parent.channel}:${deliveryId}:check-${begun.checkNo}`,
+      msgId: `check:${parent.channel}:${deliveryId}:check-${begun.checkNo}`,
       traceId: deliveryId,
       transcriptTs: deliveryId,
       source: 'agent',
@@ -766,7 +766,7 @@ export class AssistantPatrols {
         },
         facts && !('refused' in facts)
           ? firstLookPrompt({ ...facts, requested: item.firstLook === 'requested' })
-          : patrolPrompt(item, due, messages)
+          : checkPrompt(item, due, messages)
       ),
       mentionedBots: [],
       isDm: false,
@@ -811,13 +811,13 @@ export class AssistantPatrols {
   }
 
   /** A check's turn ended: count it, back off or stop on failure, pass on what it found, then take any message that waited. */
-  async settle(end: PatrolTurnEnd): Promise<void> {
+  async settle(end: CheckTurnEnd): Promise<void> {
     const { agentId, key } = end
     let itemId: string | undefined
     try {
       if (end.replayed) return
       await this.withLock(key, async () => {
-        const state = await this.host.patrols.byRunningKey(agentId, key)
+        const state = await this.host.checks.byRunningKey(agentId, key)
         if (!state) {
           // Its follow-up is gone, or the check was already settled.
           await this.host.subsessions.finish(agentId, key, 'failed')
@@ -843,9 +843,9 @@ export class AssistantPatrols {
   /** Messages that waited for a check that just ended start the next one, budget permitting. */
   private async takeWaiting(agentId: string, itemId: string): Promise<void> {
     try {
-      if (this.host.draining() || !this.host.mayPatrol(agentId)) return
+      if (this.host.draining() || !this.host.mayCheck(agentId)) return
       const now = this.host.now()
-      const waiting = await this.host.patrols.withPendingMessages(agentId, now, FOLLOW_UP_PENDING_MAX)
+      const waiting = await this.host.checks.withPendingMessages(agentId, now, FOLLOW_UP_PENDING_MAX)
       if (!waiting.includes(itemId) || (await this.overBudget(agentId, now))) return
       const item = await this.host.items.get(agentId, itemId)
       if (item) await this.withLock(item.taskKey, async () => await this.begin(agentId, itemId, undefined, now))
@@ -859,20 +859,19 @@ export class AssistantPatrols {
     const ids = new Set(agentIds)
     for (const agent of this.host.agents()) {
       const agentId = agent.id
-      if (!ids.has(agentId) || !assistantModeOn(agent) || this.host.draining() || !this.host.mayPatrol(agentId))
-        continue
-      for (const state of await this.host.patrols.running(agentId)) {
+      if (!ids.has(agentId) || !assistantModeOn(agent) || this.host.draining() || !this.host.mayCheck(agentId)) continue
+      for (const state of await this.host.checks.running(agentId)) {
         const key = state.runningKey!
         if (this.running.has(key)) continue
         try {
           const caller = await this.host.endedSession(agentId, key)
           if (!caller) continue
           await this.withLock(key, async () => {
-            const current = await this.host.patrols.byRunningKey(agentId, key)
+            const current = await this.host.checks.byRunningKey(agentId, key)
             if (!current) return
             if (caller === 'missing') {
               // A check whose session never appeared said nothing; past the grace it stays due.
-              if ((current.runningSince ?? 0) > this.host.now() - PATROL_START_GRACE_MS) return
+              if ((current.runningSince ?? 0) > this.host.now() - CHECK_START_GRACE_MS) return
               return await this.conclude(agentId, key, undefined, current, { kind: 'released' })
             }
             // A check that recorded what it saw did its check; any other says nothing about it, so the check stays due.
@@ -890,7 +889,7 @@ export class AssistantPatrols {
   }
 
   /** Whether the check added an observation since it started, and a first look also kept its report. */
-  private async recorded(agentId: string, state: AssistantPatrolState): Promise<boolean> {
+  private async recorded(agentId: string, state: AssistantCheckState): Promise<boolean> {
     const baseline = state.runningObservationVersion
     if (baseline === null) return true
     const item = await this.host.items.get(agentId, state.itemId)
@@ -903,30 +902,30 @@ export class AssistantPatrols {
     agentId: string,
     key: string,
     caller: TaskCaller | undefined,
-    state: AssistantPatrolState,
+    state: AssistantCheckState,
     verdict: Verdict
   ): Promise<void> {
     const { itemId, runningReport: report } = state
     const check = state.runningCheck ?? 0
     const row = await this.host.subsessions.get(agentId, key)
     const item = await this.host.items.get(agentId, itemId)
-    const stops = verdict.kind === 'failed' && state.failures + 1 >= PATROL_MAX_FAILURES
+    const stops = verdict.kind === 'failed' && state.failures + 1 >= CHECK_MAX_FAILURES
     if (item?.firstLook) return await this.concludeFirstLook(agentId, key, caller, state, verdict, item, stops)
     const name = `follow-up ${key}${item ? ` ("${quote(item.title)}")` : ''}`
     // Its reports reply in the thread it was taken in (assistant-mode.md §5.12).
     const thread = item?.replyThread ?? null
     if (row && caller && stops && item) {
       const text =
-        `[follow-up] Checks of ${name} stopped after ${PATROL_MAX_FAILURES} failed attempts in a row. They resume ` +
+        `[follow-up] Checks of ${name} stopped after ${CHECK_MAX_FAILURES} failed attempts in a row. They resume ` +
         'once it is messaged with messageTask. Tell the people here.'
-      const reportId = `patrol:${key}:${check}:stopped`
+      const reportId = `check:${key}:${check}:stopped`
       if ((await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)) === 'draining')
         return
     }
     let reported = false
     if (report !== null && row && caller) {
       const text = `[follow-up] The check of ${name} found a change. Pass it on to the people here:\n\n${report}`
-      const reportId = `patrol:${key}:${check}:report`
+      const reportId = `check:${key}:${check}:report`
       const delivered = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
@@ -938,23 +937,23 @@ export class AssistantPatrols {
     const seen = latest && baseline !== null && latest.version > baseline ? latest.text : null
     if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
       if (state.runningCheck !== null)
-        await this.host.patrols.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
-      await this.host.patrols.succeed(agentId, itemId, key, now)
+        await this.host.checks.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
+      await this.host.checks.succeed(agentId, itemId, key, now)
       await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
     } else if (verdict.kind === 'released') {
-      await this.host.patrols.release(agentId, itemId, key, now)
+      await this.host.checks.release(agentId, itemId, key, now)
       await this.host.subsessions.finish(agentId, key, 'failed')
       await this.restore(agentId, itemId, input.messages, now)
     } else {
       await this.host.subsessions.finish(agentId, key, 'failed')
       const why = `Scheduled check failed (${verdict.why})`
-      const failed = await this.host.patrols.fail(agentId, itemId, key, now, item?.nextCheck ?? null)
+      const failed = await this.host.checks.fail(agentId, itemId, key, now, item?.nextCheck ?? null)
       if (failed) {
         const note = failed.stopped
-          ? `${why}, ${PATROL_MAX_FAILURES} times in a row; checks stop until the follow-up is messaged.`
-          : `${why}; the next attempt is in ${patrolBackoffMs(failed.failures) / 60_000} minutes.`
+          ? `${why}, ${CHECK_MAX_FAILURES} times in a row; checks stop until the follow-up is messaged.`
+          : `${why}; the next attempt is in ${checkBackoffMs(failed.failures) / 60_000} minutes.`
         if (state.runningCheck !== null)
-          await this.host.patrols.endCheck(agentId, itemId, state.runningCheck, { observation: note, reported, now })
+          await this.host.checks.endCheck(agentId, itemId, state.runningCheck, { observation: note, reported, now })
         await this.observe(agentId, itemId, note)
         // Messages of a failed check wait for its next attempt; once checks stop, the stop report speaks for them.
         if (!failed.stopped) await this.restore(agentId, itemId, input.messages, now)
@@ -967,7 +966,7 @@ export class AssistantPatrols {
     agentId: string,
     key: string,
     caller: TaskCaller | undefined,
-    state: AssistantPatrolState,
+    state: AssistantCheckState,
     verdict: Verdict,
     item: AssistantItem,
     stops: boolean
@@ -987,7 +986,7 @@ export class AssistantPatrols {
         cards: known?.cards ?? false
       })
       const text = firstLookReportText(place, handling, report)
-      const reportId = `patrol:${key}:${check}:report`
+      const reportId = `check:${key}:${check}:report`
       // Its round may propose, where the place has cards (§5.13).
       const delivered = await this.deliver(
         agentId,
@@ -1004,8 +1003,8 @@ export class AssistantPatrols {
       reported = delivered === 'delivered'
     }
     if (stops && item.firstLook === 'requested' && row && caller) {
-      const text = firstLookFailedText(place, PATROL_MAX_FAILURES)
-      const reportId = `patrol:${key}:${check}:stopped`
+      const text = firstLookFailedText(place, CHECK_MAX_FAILURES)
+      const reportId = `check:${key}:${check}:stopped`
       const sent = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, undefined, opens)
       if (sent === 'draining') return
     }
@@ -1015,24 +1014,24 @@ export class AssistantPatrols {
       const baseline = state.runningObservationVersion
       const seen = latest && baseline !== null && latest.version > baseline ? latest.text : null
       if (state.runningCheck !== null)
-        await this.host.patrols.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
-      await this.host.patrols.succeed(agentId, itemId, key, now)
+        await this.host.checks.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
+      await this.host.checks.succeed(agentId, itemId, key, now)
       // Its one check ends it: done once read, stopped when someone stopped the read.
       const status = verdict.kind === 'completed' ? 'done' : 'dropped'
       await this.host.items.schedule(agentId, itemId, { status, nextCheck: null }, now)
       await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
     } else if (verdict.kind === 'released') {
-      await this.host.patrols.release(agentId, itemId, key, now)
+      await this.host.checks.release(agentId, itemId, key, now)
       await this.host.subsessions.finish(agentId, key, 'failed')
     } else {
       await this.host.subsessions.finish(agentId, key, 'failed')
-      const failed = await this.host.patrols.fail(agentId, itemId, key, now, item.nextCheck)
+      const failed = await this.host.checks.fail(agentId, itemId, key, now, item.nextCheck)
       if (!failed) return
       const note = failed.stopped
-        ? `First look failed (${verdict.why}), ${PATROL_MAX_FAILURES} times in a row; it ended without reporting.`
-        : `First look failed (${verdict.why}); the next attempt is in ${patrolBackoffMs(failed.failures) / 60_000} minutes.`
+        ? `First look failed (${verdict.why}), ${CHECK_MAX_FAILURES} times in a row; it ended without reporting.`
+        : `First look failed (${verdict.why}); the next attempt is in ${checkBackoffMs(failed.failures) / 60_000} minutes.`
       if (state.runningCheck !== null)
-        await this.host.patrols.endCheck(agentId, itemId, state.runningCheck, {
+        await this.host.checks.endCheck(agentId, itemId, state.runningCheck, {
           observation: note,
           reported: false,
           now
@@ -1050,10 +1049,10 @@ export class AssistantPatrols {
     now: number
   ): Promise<void> {
     if (messages.length === 0) return
-    const state = await this.host.patrols.get(agentId, itemId)
+    const state = await this.host.checks.get(agentId, itemId)
     const waiting = parseMessages(state?.pendingMessages ?? null)
     const all = [...messages, ...waiting].slice(-FOLLOW_UP_PENDING_MAX)
-    await this.host.patrols.setPendingMessages(agentId, itemId, JSON.stringify(all), now)
+    await this.host.checks.setPendingMessages(agentId, itemId, JSON.stringify(all), now)
   }
 
   /** One report into the place, in the thread the follow-up was taken in; one refused is recorded on the follow-up instead. `draining` leaves the check to recovery. */

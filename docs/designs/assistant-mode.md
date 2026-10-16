@@ -288,7 +288,7 @@ export const AssistantModePolicy = z
     limits: z
       .object({
         maxConcurrentSubsessions: z.number().int().min(1).max(50).optional(),
-        dailyPatrolBudget: z.number().int().min(1).max(500).optional(),
+        dailyCheckBudget: z.number().int().min(1).max(500).optional(),
         dailySubsessionsPerItem: z.number().int().min(1).max(50).optional(),
         permissionWaitHours: z.number().int().min(1).max(72).optional()
       })
@@ -908,10 +908,10 @@ a check, and "each follower's place" becomes that place.
   follow-up's **place** through the existing parent-report path into that place's long session,
   which speaks.
 - **Limits**: one scheduled check at a time per agent, outside the user's
-  `maxConcurrentSubsessions`; a messaged check starts at once. `dailyPatrolBudget` counts every
+  `maxConcurrentSubsessions`; a messaged check starts at once. `dailyCheckBudget` counts every
   check, messaged ones included; after a failure the next attempt backs off by `min(60, 2ⁿ)`
   minutes and five consecutive failures stop that follow-up's checks with one report until it is
-  messaged. A check's next check must be at least five minutes ahead; `dailyPatrolBudget` defaults
+  messaged. A check's next check must be at least five minutes ahead; `dailyCheckBudget` defaults
   to 50.
 - **Recovery**: a check replayed after a restart or handover settles from state stored with the
   running check (its observation baseline and any held report), so an empty replay still counts
@@ -987,7 +987,7 @@ a schedule fires / hook event (P2) / an item's nextCheck is due
     pending reminder stays and posts at its time. An agent holds at most 100 pending reminders, a
     fixed limit with no setting. Settled rows stay, like the other assistant tables' settled rows,
     until the agent is removed.
-- **Budget and backoff**: `dailyPatrolBudget`; after a failure the next attempt backs off by
+- **Budget and backoff**: `dailyCheckBudget`; after a failure the next attempt backs off by
   `min(60, 2ⁿ)` minutes, and five consecutive failures pause that item's patrols.
 - **Start condition**: not before each runtime has been tested for exactly the residual stated
   above.
@@ -1181,8 +1181,8 @@ The word "patrol" leaves visible text; a round of a follow-up is a check.
 
 - a duty-gated minute sweep, once per next-check value; pause suspends it, and an overdue check
   runs once;
-- one check at a time per agent, outside `maxConcurrentSubsessions`; `dailyPatrolBudget`, which
-  keeps its key, defaults to 50;
+- one check at a time per agent, outside `maxConcurrentSubsessions`; `dailyCheckBudget` defaults
+  to 50;
 - backoff of `min(60, 2ⁿ)` minutes after a failure; five consecutive failures stop the follow-up's
   checks, with one report, until it is messaged;
 - recovery settles from the stored observation baseline and held report, as today.
@@ -1243,7 +1243,7 @@ else, and nobody but its own conversation is told of it.
 **As shipped.** Choices the text above leaves open:
 
 - **Storage.** Follow-ups live in the item ledger's tables; a follow-up's id is its item id, so a
-  pending proposal's `itemId` still names it. Its session key, `subsession:patrol-<id>` in its
+  pending proposal's `itemId` still names it. Its session key, `subsession:check-<id>` in its
   place, is minted when it is taken and is its `taskId`. Each check is a numbered row in a check
   log (`assistant_check`): start, end, what it saw or why it failed, and whether its report got
   through; the newest 50 are kept, and the daily budget counts its starts.
@@ -1429,7 +1429,7 @@ Changed from the agreed drafts, each to fit a verified fact:
 **Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
 marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
 It reuses the read-only check and its layers (§5.9), the one scheduled-check slot,
-`dailyPatrolBudget`, backoff, recovery, the report path into the place's long session, and the
+`dailyCheckBudget`, backoff, recovery, the report path into the place's long session, and the
 console's follow-up rows, labelled "First look", in the Tasks tab, Activity and its own page. A new
 task kind would repeat all of that for a run that differs only in what the marker decides:
 
@@ -1523,7 +1523,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
 4. **The first look has ended.** Its proposals point at the first look's follow-up, which ends after
    its check by design, so "its follow-up ended" refuses none of them; every other refusal stands.
 
-**Budget** (recommended). A first look counts as one check against `dailyPatrolBudget`.
+**Budget** (recommended). A first look counts as one check against `dailyCheckBudget`.
 
 - An automatic one waits for the agent's one scheduled-check slot, and takes it only when no
   follow-up's check is due, so an agent added to twenty channels at once delays no existing
@@ -1537,7 +1537,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
 **As shipped.** Choices the text above leaves open:
 
 - **The marker.** A first look is a follow-up row with `firstLook` set to `joined` or `requested`
-  (local store version 55). Its session is `subsession:patrol-look-<id>` in its place, a check's
+  (local store version 55). Its session is `subsession:check-look-<id>` in its place, a check's
   coordinate, so every rule of a check holds for it, and the coordinate alone narrows its tools,
   turns its reads to its own place and keeps its session out of memory capture and dreams. Its
   title is "First look at <name>".
@@ -2227,3 +2227,9 @@ conversation. §5.13 is marked shipped; pins and Lark/Feishu's join stay open in
 **Fifty-second revision (2026-10-16)**: §5.1 drops `patrolSchedule`, which nothing read; a stored
 policy that still carries it is read without it. The console labels `dailyPatrolBudget` "Follow-up
 checks per day", and the key keeps its name until the internal rename (issue #2810).
+
+**Fifty-third revision (2026-10-16)**: the internals follow the names (issue #2810). The budget is
+`dailyCheckBudget`, a check's session is `subsession:check-<id>` and a first look's
+`subsession:check-look-<id>`, and the daemon's check state is `assistant_check_state`. The local
+store's version 57 renames the table and rewrites every stored coordinate, and a Control Plane
+migration moves the budget key and the stored threads, with no older names read.

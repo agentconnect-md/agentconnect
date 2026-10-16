@@ -10,7 +10,7 @@ import { executeTool, type SessionContext } from '../src/mcp/ops.js'
 import { followUpToolsFor, PROPOSE_ARGS, PROPOSE_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
-import { isPatrolCoordinate, isTaskCoordinate, patrolCoordinate } from '../src/session/subsession-coordinate.js'
+import { isCheckCoordinate, isTaskCoordinate, checkCoordinate } from '../src/session/subsession-coordinate.js'
 import { assistantTaskHash, type AssistantDraft } from '../src/store/assistant-drafts.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { SlackConnection } from '../src/slack/connection.js'
@@ -25,7 +25,7 @@ const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const INT_A = '11111111-1111-4111-8111-1111111111a1'
 const INT_B = '11111111-1111-4111-8111-1111111111b1'
 const MINUTE = 60_000
-const PATROL_OPENING = '[follow-up check] A read-only check'
+const CHECK_OPENING = '[follow-up check] A read-only check'
 const TASK_OPENING = '[approved proposal]'
 const TASK_LANGUAGE =
   'Write your report in the language the people in the follow-up’s conversation use; without a message of theirs ' +
@@ -90,7 +90,7 @@ function scaffold(over: { limits?: Record<string, unknown>; chat?: boolean; exte
 type Behavior = ((ctx: SessionContext) => Promise<unknown>) | 'hang' | 'throw' | 'end'
 
 async function boot(root: string) {
-  const behavior: { patrol: Behavior; task: Behavior } = { patrol: 'end', task: 'end' }
+  const behavior: { check: Behavior; task: Behavior } = { check: 'end', task: 'end' }
   const hosts: any[] = []
   const registered: SessionContext[] = []
   const latest = (match: (thread: string) => boolean) => [...registered].reverse().find((c) => match(c.thread))!
@@ -118,8 +118,7 @@ async function boot(root: string) {
       }),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
         const text = JSON.stringify(blocks)
-        if (text.includes(PATROL_OPENING))
-          return await run(sessionId, behavior.patrol, () => latest(isPatrolCoordinate))
+        if (text.includes(CHECK_OPENING)) return await run(sessionId, behavior.check, () => latest(isCheckCoordinate))
         if (text.includes(TASK_OPENING)) return await run(sessionId, behavior.task, () => latest(isTaskCoordinate))
         return 'end_turn'
       }),
@@ -181,7 +180,7 @@ async function boot(root: string) {
   vi.spyOn(conn, 'getUserProfile').mockImplementation(
     async (user: string) => ({ id: user, name: user.toLowerCase(), isBot: user === 'U0BOT' }) as never
   )
-  const patrols = () => dispatched.filter((c) => isPatrolCoordinate(c.msg.thread))
+  const checks = () => dispatched.filter((c) => isCheckCoordinate(c.msg.thread))
   const tasks = () => dispatched.filter((c) => isTaskCoordinate(c.msg.thread))
   const reports = () => dispatched.filter((c) => c.msg.parentReport === true)
   const settled = async () => {
@@ -215,7 +214,7 @@ async function boot(root: string) {
     hosts,
     registered,
     dispatched,
-    patrols,
+    checks,
     tasks,
     reports,
     settled,
@@ -254,7 +253,7 @@ async function seedPlace(d: any, channel = 'C1') {
 async function takeItem(d: any, nextCheck = Date.now() - MINUTE, channel = 'C1') {
   return await d.store.assistantItems.create({
     agentId: 'bot-a',
-    taskKey: sessionKey('slack', channel, patrolCoordinate(randomUUID()), 'bot-a', scopeOf(d)),
+    taskKey: sessionKey('slack', channel, checkCoordinate(randomUUID()), 'bot-a', scopeOf(d)),
     asker: 'slack:T0EXAMPLE:U0ALICE',
     title: 'Land PR #12',
     doneWhen: 'PR #12 is merged',
@@ -282,14 +281,14 @@ const proposing =
     )
   }
 
-/** One proposal from a patrol of a fresh item, as the patrol makes it. */
+/** One proposal from a check of a fresh item, as the check makes it. */
 async function proposed(h: Awaited<ReturnType<typeof boot>>, channel = 'C1') {
   const place = await seedPlace(h.d, channel)
   const item = await takeItem(h.d, Date.now() - MINUTE, channel)
   const results: unknown[] = []
-  h.behavior.patrol = proposing(h.deps, results)
-  await h.d.patrols.sweep()
-  await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+  h.behavior.check = proposing(h.deps, results)
+  await h.d.followUpChecks.sweep()
+  await vi.waitFor(() => expect(h.checks()).toHaveLength(1), WAIT)
   await h.settled()
   const [record] = await h.records()
   return { place, item, results, record: record! }
@@ -314,7 +313,7 @@ describe('a follow-up’s check proposes', () => {
     const h = await boot(scaffold())
     const { place, item, results, record } = await proposed(h)
 
-    const patrolKey = sessionKey('slack', 'C1', h.patrols()[0]!.msg.thread!, 'bot-a', place.scope)
+    const checkKey = sessionKey('slack', 'C1', h.checks()[0]!.msg.thread!, 'bot-a', place.scope)
     expect(record).toMatchObject({
       agentId: 'bot-a',
       action: 'task',
@@ -324,7 +323,7 @@ describe('a follow-up’s check proposes', () => {
       target: { platform: 'slack', integrationId: INT_A, channel: 'C1', thread: null },
       destination: { name: 'general' },
       proposal: { sentence: SENTENCE, why: 'The check found a merge conflict.', itemId: item.id, itemVersion: 1 },
-      source: { sessionKey: patrolKey, place: false },
+      source: { sessionKey: checkKey, place: false },
       approver: { kind: 'place', integrationId: INT_A, channel: 'C1' },
       cardTs: 'card-1'
     })
@@ -351,7 +350,7 @@ describe('a follow-up’s check proposes', () => {
     expect(card).toContain('Approve')
     expect(card).toContain('Deny')
     expect(card).not.toContain('Always allow')
-    // Nothing ran, and the patrol still recorded what it saw.
+    // Nothing ran, and the check still recorded what it saw.
     expect(h.tasks()).toHaveLength(0)
     expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
       'PR #12 conflicts with main.'
@@ -390,22 +389,22 @@ describe('a follow-up’s check proposes', () => {
     await h.settled()
     const args = { sentence: SENTENCE, why: 'x', task: TASK }
 
-    const patrol = h.registered.find((c) => isPatrolCoordinate(c.thread))!
-    expect(patrol.tools.find((t) => t.name === 'propose')).toBe(PROPOSE_TOOL)
+    const check = h.registered.find((c) => isCheckCoordinate(c.thread))!
+    expect(check.tools.find((t) => t.name === 'propose')).toBe(PROPOSE_TOOL)
     // Another session of the same agent, the approved task itself, is not offered it and is refused it.
     const task = h.registered.find((c) => isTaskCoordinate(c.thread))!
     expect(task.tools.map((t) => t.name)).not.toContain('propose')
     await expect(executeTool(task, 'propose', args, h.deps)).rejects.toThrow(
       'propose is available only in a follow-up’s check'
     )
-    // An agent outside assistant mode has no item tools at all, and no patrol coordinate gives it one.
+    // An agent outside assistant mode has no item tools at all, and no check coordinate gives it one.
     const botB = h.d.agents.get('bot-b')
     const offered = [
       ...toolsForIntegrations(botB.integrations, { currentPlatform: 'slack' }),
       ...followUpToolsFor(botB)
     ].map((t) => t.name)
     expect(offered).not.toContain('propose')
-    await expect(executeTool({ ...patrol, agentId: 'bot-b' }, 'propose', args, h.deps)).rejects.toThrow(
+    await expect(executeTool({ ...check, agentId: 'bot-b' }, 'propose', args, h.deps)).rejects.toThrow(
       'only to an agent in assistant mode'
     )
     expect(await h.records()).toHaveLength(1)
@@ -454,12 +453,12 @@ describe('a check’s follow-up form (assistant-mode.md §5.13)', () => {
     await seedPlace(h.d)
     const item = await takeItem(h.d)
     const form = { title: 'The 2.6 release date', doneWhen: 'A date is posted here.' }
-    h.behavior.patrol = async (ctx) => {
+    h.behavior.check = async (ctx) => {
       await executeTool(ctx, 'propose', { sentence: SENTENCE, why: 'Ada is waiting on it.', followUp: form }, h.deps)
       await executeTool(ctx, 'recordCheck', { observation: 'No date yet.' }, h.deps)
     }
-    await h.d.patrols.sweep()
-    await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+    await h.d.followUpChecks.sweep()
+    await vi.waitFor(() => expect(h.checks()).toHaveLength(1), WAIT)
     await h.settled()
     const [record] = await h.records()
     expect(record).toMatchObject({ text: form.title, proposal: { followUp: { ...form, nextCheck: null } } })
@@ -518,7 +517,7 @@ describe('an approved proposal runs once', () => {
     })
     await h.settled()
 
-    // The agent's own permission mode, not a patrol's read-only one, and the runtime's tools unrestricted.
+    // The agent's own permission mode, not a check's read-only one, and the runtime's tools unrestricted.
     const host = h.hosts.find((x) => x.prompt.mock.calls.some((c: any) => JSON.stringify(c).includes(TASK_OPENING)))
     const taskPrompt = host.prompt.mock.calls.find((c: any) => JSON.stringify(c).includes(TASK_OPENING))
     const taskSession = taskPrompt[0]
@@ -785,20 +784,20 @@ describe('a proposal in the conversation its item belongs to', () => {
     }
   })
 
-  it('leaves an agent outside assistant mode alone: no patrol, so no card', async () => {
+  it('leaves an agent outside assistant mode alone: no check, so no card', async () => {
     const h = await boot(scaffold())
     await h.d.store.assistantItems.create({
       agentId: 'bot-b',
-      taskKey: 'slack:C1:subsession:patrol-b:bot-b',
+      taskKey: 'slack:C1:subsession:check-b:bot-b',
       title: 'Land PR #12',
       doneWhen: 'PR #12 is merged',
       nextCheck: Date.now() - MINUTE,
       origin: { platform: 'slack', channel: 'C1', transportScope: h.d.transportScopeForIntegrationIds([INT_B]) },
       summary: 'Bob asked.'
     })
-    await h.d.patrols.sweep()
+    await h.d.followUpChecks.sweep()
     await h.settled()
-    expect(h.patrols()).toHaveLength(0)
+    expect(h.checks()).toHaveLength(0)
     expect(await h.records()).toEqual([])
     expect(h.cards.post).not.toHaveBeenCalled()
     await h.daemon.stop()
@@ -825,12 +824,12 @@ describe('a proposal in a webchat conversation', () => {
     })
   }
 
-  /** One proposal from a patrol of an item taken in the webchat conversation `conv-1`. */
+  /** One proposal from a check of an item taken in the webchat conversation `conv-1`. */
   async function proposedInWebchat(h: Awaited<ReturnType<typeof boot>>) {
     await seedWebchat(h.d, 'conv-1', CONVERSATION)
     const item = await h.d.store.assistantItems.create({
       agentId: 'bot-a',
-      taskKey: sessionKey('webchat', 'conv-1', patrolCoordinate(randomUUID()), 'bot-a'),
+      taskKey: sessionKey('webchat', 'conv-1', checkCoordinate(randomUUID()), 'bot-a'),
       asker: 'user:usr-alice',
       title: 'Land PR #12',
       doneWhen: 'PR #12 is merged',
@@ -839,9 +838,9 @@ describe('a proposal in a webchat conversation', () => {
       summary: 'Alice asked in webchat to see PR #12 through.'
     })
     const results: unknown[] = []
-    h.behavior.patrol = proposing(h.deps, results)
-    await h.d.patrols.sweep()
-    await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+    h.behavior.check = proposing(h.deps, results)
+    await h.d.followUpChecks.sweep()
+    await vi.waitFor(() => expect(h.checks()).toHaveLength(1), WAIT)
     await h.settled()
     const [record] = await h.records()
     return { item, results, record: record! }
@@ -1228,15 +1227,15 @@ describe('a check’s standing rules', () => {
     const h = await boot(scaffold())
     await seedPlace(h.d)
     await takeItem(h.d)
-    h.behavior.patrol = 'end'
-    await h.d.patrols.sweep()
-    await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+    h.behavior.check = 'end'
+    await h.d.followUpChecks.sweep()
+    await vi.waitFor(() => expect(h.checks()).toHaveLength(1), WAIT)
     await h.settled()
-    const text = modelText(h.patrols()[0]!.msg)
+    const text = modelText(h.checks()[0]!.msg)
     expect(text).toContain('one of three outcomes')
     expect(text).toContain('call `propose` once')
     expect(text).toContain('The check records its observation either way.')
-    expect(patrolCoordinate('x')).not.toBe('subsession:task-x')
+    expect(checkCoordinate('x')).not.toBe('subsession:task-x')
     await h.daemon.stop()
   })
 })

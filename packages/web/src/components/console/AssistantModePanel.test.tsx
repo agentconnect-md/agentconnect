@@ -120,7 +120,7 @@ describe('assistant mode draft', () => {
     const draft = assistantModeDraft(undefined)
     expect(assistantModePolicyForDraft({ ...draft, enabled: true }, undefined)).toEqual({ enabled: true })
     expect(
-      assistantModePolicyForDraft({ ...draft, limits: { ...draft.limits, dailyPatrolBudget: '501' } }, undefined)
+      assistantModePolicyForDraft({ ...draft, limits: { ...draft.limits, dailyCheckBudget: '501' } }, undefined)
     ).toBe('invalidLimit')
     expect(assistantModePolicyForDraft(draft, undefined)).toEqual({ enabled: false })
   })

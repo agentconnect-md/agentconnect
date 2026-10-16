@@ -889,11 +889,11 @@ describe('turns no person is behind, and sub-sessions', () => {
     ['a headless turn', { ...fromP, headless: true }],
     ['no live turn', undefined],
     [
-      'a patrol',
+      'a check',
       { ...fromP, source: 'agent', sender: { id: AGENT, isBot: true } },
       {
         ...inOwnDm,
-        thread: 'subsession:patrol-d-2',
+        thread: 'subsession:check-d-2',
         tools: [{ name: 'recall' }, { name: 'getChannelHistory' }] as SessionContext['tools']
       }
     ]
@@ -952,11 +952,11 @@ describe('turns no person is behind, and sub-sessions', () => {
     expect(await executeTool(deploys, 'recall', { place: 'slack:C_PRIV' }, deps)).toEqual(opaque('slack:C_PRIV'))
   })
 
-  it("reads a patrol or a task as its item's asker, and refuses what that person is not in", async () => {
+  it("reads a check or a task as its item's asker, and refuses what that person is not in", async () => {
     const { deps, asks, live } = perAsker()
-    const patrol: SessionContext = {
+    const check: SessionContext = {
       ...inOwnDm,
-      thread: 'subsession:patrol-d-3',
+      thread: 'subsession:check-d-3',
       tools: [{ name: 'recall' }, { name: 'getChannelHistory' }] as SessionContext['tools']
     }
     asks({ ...fromP, source: 'agent', sender: { id: AGENT, isBot: true }, headless: true })
@@ -964,13 +964,13 @@ describe('turns no person is behind, and sub-sessions', () => {
       people: [{ kind: 'member', platform: 'slack', integrationId: 'int-slack', userId: P }],
       nobody: false
     }
-    expect(await excerptsOf(patrol, 'slack:C_PRIV', deps)).toEqual(['secret merger talk'])
+    expect(await excerptsOf(check, 'slack:C_PRIV', deps)).toEqual(['secret merger talk'])
     live.opener = {
       people: [{ kind: 'member', platform: 'slack', integrationId: 'int-slack', userId: 'U_Q' }],
       nobody: false
     }
-    expect(await executeTool(patrol, 'recall', { place: 'slack:C_PRIV' }, deps)).toEqual(opaque('slack:C_PRIV'))
-    await expect(executeTool(patrol, 'getChannelHistory', { channel: 'C_PRIV' }, deps)).rejects.toThrow(NOT_SHARED)
+    expect(await executeTool(check, 'recall', { place: 'slack:C_PRIV' }, deps)).toEqual(opaque('slack:C_PRIV'))
+    await expect(executeTool(check, 'getChannelHistory', { channel: 'C_PRIV' }, deps)).rejects.toThrow(NOT_SHARED)
   })
 
   it("reads a schedule's run as the console user its row records, and as nobody when it records none", async () => {
@@ -1254,7 +1254,7 @@ describe("recall — a person's own DMs and webchat conversations", () => {
     expect(readAccessOwned).not.toHaveBeenCalled()
   })
 
-  it('lists none when nobody, or more than one person, is asking, or a patrol runs for someone else', async () => {
+  it('lists none when nobody, or more than one person, is asking, or a check runs for someone else', async () => {
     const { deps, asks, live, readAccessOwned } = own()
     asks(undefined)
     expect(await listedPlaces(inDmOfS, deps)).toEqual(['slack:D_P', 'slack:C_DEPLOY'])
@@ -1264,18 +1264,18 @@ describe("recall — a person's own DMs and webchat conversations", () => {
     ]
     expect((await listedPlaces(inDmOfS, deps)).filter((place) => PRIVATE.includes(place))).toEqual(['slack:D_P'])
     expect(readAccessOwned).not.toHaveBeenCalled()
-    // Q's patrol in S's DM: Q owns a webchat conversation and a DM, but this DM is not Q's.
+    // Q's check in S's DM: Q owns a webchat conversation and a DM, but this DM is not Q's.
     asks({ ...fromP, source: 'agent', sender: { id: AGENT, isBot: true }, headless: true })
     live.opener = {
       people: [{ kind: 'member', platform: 'slack', integrationId: 'int-slack', userId: 'U_Q' }],
       nobody: false
     }
-    const patrol = {
+    const check = {
       ...inDmOfS,
-      thread: 'subsession:patrol-d-9',
+      thread: 'subsession:check-d-9',
       tools: [{ name: 'recall' }] as SessionContext['tools']
     }
-    const listed = await listedPlaces(patrol, deps)
+    const listed = await listedPlaces(check, deps)
     expect(listed.filter((place) => /webchat:|telegram:tg-dm|slack:D_/.test(place))).toEqual(['slack:D_P'])
     // Q was asked about, so it is the check of this DM that keeps Q's conversations out.
     expect(readAccessOwned).toHaveBeenCalledTimes(1)

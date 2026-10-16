@@ -370,12 +370,12 @@ import {
 } from './assistant/place-access.js'
 import { personCouldActivate } from './assistant/place-askers.js'
 import {
-  AssistantPatrols,
-  PATROL_SWEEP_INTERVAL_MS,
-  patrolTools,
+  FollowUpChecks,
+  CHECK_SWEEP_INTERVAL_MS,
+  checkTools,
   type FirstLookFacts,
-  type PatrolParent
-} from './assistant/patrol.js'
+  type CheckParent
+} from './assistant/follow-up-checks.js'
 import {
   FIRST_LOOK_MAX_MESSAGES,
   FIRST_LOOK_MAX_PROPOSALS,
@@ -907,7 +907,7 @@ import {
 import { appendCoordinate, isAppendCoordinate } from './session/append-coordinate.js'
 import {
   isFirstLookCoordinate,
-  isPatrolCoordinate,
+  isCheckCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate
 } from './session/subsession-coordinate.js'
@@ -2061,7 +2061,7 @@ export class Daemon {
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
   private idleSweepTimer?: TimerHandle
   private storeRetentionTimer?: TimerHandle
-  private patrolSweepTimer?: TimerHandle
+  private checkSweepTimer?: TimerHandle
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
@@ -4300,7 +4300,7 @@ export class Daemon {
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
           // The thread the taking turn replies in, where the follow-up's reports reply too.
           const replyThread = this.activeTurnShare.get(key)?.thread
-          return await this.patrols.take({
+          return await this.followUpChecks.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
             caller: { sessionId, key },
@@ -4308,21 +4308,21 @@ export class Daemon {
             ...input
           })
         },
-        patrol: {
+        check: {
           itemFor: (ctx) =>
-            this.patrols.itemFor(
+            this.followUpChecks.itemFor(
               ctx.agentId,
               sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
             ),
           report: (ctx, itemId, text) =>
-            this.patrols.report(
+            this.followUpChecks.report(
               ctx.agentId,
               sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
               itemId,
               text
             ),
           propose: (ctx, input) =>
-            this.patrols.propose(
+            this.followUpChecks.propose(
               ctx.agentId,
               sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
               input
@@ -4356,9 +4356,9 @@ export class Daemon {
           own: async (ctx) =>
             (await this.followUpOwner(ctx.agentId, this.sessionKeyOf(ctx), placeOfSession(ctx))) !== undefined,
           get: (agentId, key) => this.store.assistantItems.byTaskKey(agentId, key),
-          stop: (ctx, item) => this.patrols.stop(ctx.agentId, item, this.taskStopper(ctx)),
+          stop: (ctx, item) => this.followUpChecks.stop(ctx.agentId, item, this.taskStopper(ctx)),
           reported: async (item) =>
-            (await this.store.assistantPatrols.checks(item.agentId, item.id, 1))[0]?.reported ?? false
+            (await this.store.assistantChecks.checks(item.agentId, item.id, 1))[0]?.reported ?? false
         },
         sessionOf: async (key) => {
           const rec = await this.store.getSession(key)
@@ -4695,15 +4695,15 @@ export class Daemon {
         const servers: McpServer[] = []
         let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
-        const patrol = isPatrolCoordinate(thread)
+        const check = isCheckCoordinate(thread)
         // A first look (§5.13) gets only its own place's reads, memory reads and recordCheck.
         if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
-        else if (patrol) tools = patrolTools(tools)
+        else if (check) tools = checkTools(tools)
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
         // by per-agent visibility (e.g. only living players see `vote`).
         const evaluationTools = this.opts.evaluation?.environment?.tools
-        if (!patrol && evaluationTools?.length) {
+        if (!check && evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
         }
         // MCP Apps (webchat-mcp-apps.md §4): a `ui: true` server's tools reach the runtime through
@@ -4713,7 +4713,7 @@ export class Daemon {
         // server still dialing contributes to the next session rather than delaying this one.
         // The admin catalog is a CP-delegated webchat descriptor, never an Apps-host server.
         const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
-        if (!patrol) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
+        if (!check) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
@@ -5294,7 +5294,7 @@ export class Daemon {
     if (!this.k8s) startControlPlane(root)
     this.armIdleSweep()
     this.armStoreRetentionSweep()
-    this.armPatrolSweep()
+    this.armCheckSweep()
     if (this.sourceCacheSweeper && this.k8sPlane)
       this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
@@ -8117,7 +8117,7 @@ export class Daemon {
     rec?: Pick<SessionRecord, 'conversationKind' | 'triggeredBy'>,
     msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm' | 'headless'>
   ): MemoryPlace {
-    // Only a message a person typed names a person; a patrol, a task, another agent or a schedule never does.
+    // Only a message a person typed names a person; a check, a task, another agent or a schedule never does.
     const speaker = msg && msg.source === 'user' && !msg.sender.isBot && !msg.headless ? msg.sender.id : undefined
     const observed = msg?.isDm ? (msg.isGroupDm ? 'group_dm' : 'dm') : undefined
     return {
@@ -8431,14 +8431,14 @@ export class Daemon {
           : undefined
       },
       servesAgent: (agentId) => this.servesAgent(agentId),
-      parentFor: (agentId, place) => this.patrolParent(agentId, place),
+      parentFor: (agentId, place) => this.checkParent(agentId, place),
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
       settleSubsession: (end) => this.collab.settleSubsessionTurn(end),
       reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
         this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
-      takeFollowUp: (input) => this.patrols.take(input),
+      takeFollowUp: (input) => this.followUpChecks.take(input),
       draining: () => this.draining
     })
     return this.assistantTaskService
@@ -8487,7 +8487,7 @@ export class Daemon {
   }
 
   /** A check's proposal (assistant-mode.md §5.10): run in its follow-up's place once approved, carded there or decided on a webchat conversation's page. */
-  private async proposeFromPatrol(
+  private async proposeFromCheck(
     run: { agentId: string; key: string; item: AssistantItem },
     input: ProposeInput
   ): Promise<Record<string, unknown>> {
@@ -8644,7 +8644,7 @@ export class Daemon {
     return conn ? slackDraftCardPort(conn, integrationId) : undefined
   }
 
-  /** One daemon-authored report of a patrol or task into its place, through the coordinator's one path for them; true once admitted, at most once per `reportId`. */
+  /** One daemon-authored report of a check or task into its place, through the coordinator's one path for them; true once admitted, at most once per `reportId`. */
   private async reportIntoParent(
     agentId: string,
     caller: TaskCaller,
@@ -8669,19 +8669,19 @@ export class Daemon {
   }
 
   /** Assistant-mode follow-ups (assistant-mode.md §5.12), built on first use over the live store. */
-  private assistantPatrolService?: AssistantPatrols
-  private get patrols(): AssistantPatrols {
-    this.assistantPatrolService ??= new AssistantPatrols({
+  private followUpCheckService?: FollowUpChecks
+  private get followUpChecks(): FollowUpChecks {
+    this.followUpCheckService ??= new FollowUpChecks({
       now: () => this.clock.now(),
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m), debug: (m) => this.log.debug(m) },
       agents: () => this.agents.values(),
       // Only the duty holder checks, never for a paused or draining agent; a missed check is not replayed.
-      mayPatrol: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
+      mayCheck: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
       draining: () => this.draining,
       items: this.store.assistantItems,
-      patrols: this.store.assistantPatrols,
+      checks: this.store.assistantChecks,
       subsessions: this.store.assistantSubsessions,
-      parentFor: (agentId, place, opts) => this.patrolParent(agentId, place, opts),
+      parentFor: (agentId, place, opts) => this.checkParent(agentId, place, opts),
       sharedPlace: async (agentId, place) =>
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
@@ -8705,10 +8705,10 @@ export class Daemon {
       firstLookFacts: (agentId, item) => this.firstLookFacts(agentId, item),
       proposals: {
         proposedFrom: (agentId, key, since) => this.store.assistantDrafts.proposedFrom(agentId, key, since),
-        propose: (run, input) => this.proposeFromPatrol(run, input)
+        propose: (run, input) => this.proposeFromCheck(run, input)
       }
     })
-    return this.assistantPatrolService
+    return this.followUpCheckService
   }
 
   /** The calling session when it is its place's current long session, which owns the place's follow-ups (§5.12); their rows then name it. */
@@ -8752,7 +8752,7 @@ export class Daemon {
       return { delivered: false, targetSession: req.sessionId, reason: TASK_NOT_FOUND, message: TASK_NOT_FOUND_MESSAGE }
     // Every sender behind the owning turn counts on the check, as on any turn (§5.5).
     const askers = this.askersOfKey(callerKey, undefined)
-    const result = await this.patrols.message(agentId, item, {
+    const result = await this.followUpChecks.message(agentId, item, {
       text: req.text,
       askers: { people: [...askers.people], nobody: askers.nobody }
     })
@@ -8805,11 +8805,11 @@ export class Daemon {
   }
 
   /** The long session of a follow-up's place, which owns it and takes its reports; with `open`, a place nobody spoke in yet gets the one its first message would key (a first look's, §5.13). */
-  private async patrolParent(
+  private async checkParent(
     agentId: string,
     place: AssistantPlace,
     opts: { open?: boolean } = {}
-  ): Promise<PatrolParent | undefined> {
+  ): Promise<CheckParent | undefined> {
     const rec =
       (await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)) ??
       (opts.open ? await this.openingPlaceSession(agentId, place) : undefined)
@@ -8945,7 +8945,7 @@ export class Daemon {
       const asker = join.inviter
         ? memberAskerIdentity(int.platform, await this.tenantScopeForIntegration(int), join.inviter)
         : undefined
-      await this.patrols.takeFirstLook({
+      await this.followUpChecks.takeFirstLook({
         agentId: join.agentId,
         place,
         trigger: 'joined',
@@ -8982,7 +8982,7 @@ export class Daemon {
         message: 'Only this place’s ongoing conversation asks for a first look. Nothing was started.'
       }
     const asker = await this.assistantAskerFor(ctx)
-    const result = await this.patrols.requestFirstLook({
+    const result = await this.followUpChecks.requestFirstLook({
       agentId,
       place,
       title: await this.firstLookTitle(ctx.integrationId, ctx.channel),
@@ -8993,9 +8993,9 @@ export class Daemon {
 
   /** How many more history rows a first look's running check may read (assistant-mode.md §5.13). */
   private async grantFirstLookHistory(ctx: SessionContext, want: number): Promise<number> {
-    const state = await this.store.assistantPatrols.byRunningKey(ctx.agentId, this.sessionKeyOf(ctx))
+    const state = await this.store.assistantChecks.byRunningKey(ctx.agentId, this.sessionKeyOf(ctx))
     if (!state || state.runningCheck === null) return 0
-    return await this.store.assistantPatrols.takeHistory(
+    return await this.store.assistantChecks.takeHistory(
       ctx.agentId,
       state.itemId,
       state.runningCheck,
@@ -9004,15 +9004,15 @@ export class Daemon {
     )
   }
 
-  /** Once a minute, the duty holder's patrol and reminder sweeps (assistant-mode.md §5.9), failure-report retries and idle sub-sessions (§5.7). */
-  private armPatrolSweep(): void {
-    this.patrolSweepTimer = this.clock.setTimeout(async () => {
-      this.patrolSweepTimer = undefined
+  /** Once a minute, the duty holder's follow-up check and reminder sweeps (assistant-mode.md §5.9, §5.12), failure-report retries and idle sub-sessions (§5.7). */
+  private armCheckSweep(): void {
+    this.checkSweepTimer = this.clock.setTimeout(async () => {
+      this.checkSweepTimer = undefined
       await this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look sweep failed: ${formatErr(err)}`))
       await this.releaseStrandedRounds().catch((err) =>
         this.log.warn(`first look card sweep failed: ${formatErr(err)}`)
       )
-      await this.patrols.sweep().catch((err) => this.log.warn(`patrol sweep failed: ${formatErr(err)}`))
+      await this.followUpChecks.sweep().catch((err) => this.log.warn(`follow-up check sweep failed: ${formatErr(err)}`))
       await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
       // A sub-session failure report whose admission was refused is retried here (assistant-mode.md §5.7).
       await this.collab
@@ -9022,8 +9022,8 @@ export class Daemon {
       await this.collab
         .endIdleSubsessions([...this.agents.keys()])
         .catch((err) => this.log.warn(`idle sub-session sweep failed: ${formatErr(err)}`))
-      if (!this.draining) this.armPatrolSweep()
-    }, PATROL_SWEEP_INTERVAL_MS)
+      if (!this.draining) this.armCheckSweep()
+    }, CHECK_SWEEP_INTERVAL_MS)
   }
 
   /** Every agent's reminders (assistant-mode.md §5.9), built on first use over the live store. */
@@ -9451,8 +9451,8 @@ export class Daemon {
     // A join's result continues the request of the person who answered Join, so its turn reads as them.
     const wake = this.joinWakeOpeners.get(this.activeGateEntries.get(key)?.msg.msgId ?? '')
     if (wake) return wake
-    if (isPatrolCoordinate(thread)) {
-      const { item, extra } = await this.patrols
+    if (isCheckCoordinate(thread)) {
+      const { item, extra } = await this.followUpChecks
         .askersFor(agentId, key)
         .catch(() => ({ item: undefined, extra: NOBODY }))
       const asker = await this.itemAskers(agentId, item)
@@ -11780,8 +11780,8 @@ export class Daemon {
     for (const session of await this.store.listSessions(agent.id)) {
       const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
-      // A patrol keeps its read-only mode (assistant-mode.md §5.9).
-      if (isPatrolCoordinate(session.thread)) continue
+      // A check keeps its read-only mode (assistant-mode.md §5.12).
+      if (isCheckCoordinate(session.thread)) continue
       const sessionId = session.acpSessionId
       const target = pinnedDecisionTarget(session.decisionModel)
       void this.applyConfiguredRuntimeSettings(agentWithRuntime(agent, target), host, sessionId, target?.model)
@@ -14541,7 +14541,7 @@ export class Daemon {
     const { agentId, sessionKey: key } = p.plan
     const agent = this.agents.get(agentId)
     const row = await this.store.assistantSubsessions.get(agentId, key)
-    if (!row || row.kind === 'patrol') return undefined
+    if (!row || row.kind === 'follow-up') return undefined
     const parent = await this.store.getSessionByOutwardId(row.parentSessionId, agentId)
     const route = {
       parentSessionId: row.parentSessionId,
@@ -17813,12 +17813,12 @@ export class Daemon {
         .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
     }
     const permissionModeOverride = settingsInChat ? await this.store.getPermissionModeOverride(key) : undefined
-    // assistant-mode.md §5.9: a patrol runs in the runtime's own read-only mode, never the agent's.
-    const patrol = isPatrolCoordinate(p.plan.sessionThread)
-    const patrolMode = patrol ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
-    if (patrol && !patrolMode) this.log.warn(`patrol ${key}: the runtime offers no read-only mode; patrol degraded`)
-    const effectivePermissionMode = patrol
-      ? patrolMode
+    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's.
+    const check = isCheckCoordinate(p.plan.sessionThread)
+    const checkMode = check ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
+    if (check && !checkMode) this.log.warn(`check ${key}: the runtime offers no read-only mode; check degraded`)
+    const effectivePermissionMode = check
+      ? checkMode
       : (permissionModeOverride ??
         runtimeAgent?.permissionMode ??
         this.runtimeFacts.modelCatalog(runtimeAgent?.runtime ?? agent.runtime)?.defaultPermissionMode)
@@ -20970,9 +20970,9 @@ export class Daemon {
     key: string,
     outcome: 'completed' | 'interrupted' | 'failed'
   ): Promise<void> {
-    // A patrol (§5.9) owes no report and gets no failure report; its end is counted on its item instead.
-    if (isPatrolCoordinate(sessionThreadOf(entry.msg))) {
-      void this.patrols.settle({
+    // A check (§5.12) owes no report and gets no failure report; its end is counted on its follow-up instead.
+    if (isCheckCoordinate(sessionThreadOf(entry.msg))) {
+      void this.followUpChecks.settle({
         agentId: entry.agentId,
         key,
         msg: entry.msg,
@@ -25522,8 +25522,10 @@ export class Daemon {
     const agents = [...this.agents.keys()].filter((agentId) => !agentIds || agentIds.has(agentId))
     // After the rows, which drop a cut task's own: an executing task nothing here runs was cut before it reported (§5.7 step 1).
     await this.tasks.recover(agents).catch((err) => this.log.warn(`assistant task recovery failed: ${formatErr(err)}`))
-    // After the rows too, which replay a cut patrol: one whose turn ended before it settled settles now (§5.9).
-    await this.patrols.recover(agents).catch((err) => this.log.warn(`patrol recovery failed: ${formatErr(err)}`))
+    // After the rows too, which replay a cut check: one whose turn ended before it settled settles now (§5.9).
+    await this.followUpChecks
+      .recover(agents)
+      .catch((err) => this.log.warn(`follow-up check recovery failed: ${formatErr(err)}`))
     // A sub-session failure report a drain or restart left unadmitted is sent now; its receipt dedupes one already in (§5.7).
     await this.collab
       .resendSubsessionReports(agents)
@@ -25963,7 +25965,7 @@ export class Daemon {
       listBackgroundTasks: (req) => this.listBackgroundTasks(req),
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
       pendingSubsessionApprovals: (agentId) => this.permissions.pendingSubsessionApprovals(agentId),
-      stopAssistantFollowUp: (agentId, item, actor) => this.patrols.stop(agentId, item, actor),
+      stopAssistantFollowUp: (agentId, item, actor) => this.followUpChecks.stop(agentId, item, actor),
       cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,
@@ -26969,9 +26971,9 @@ export class Daemon {
       this.clock.clearTimeout(this.storeRetentionTimer)
       this.storeRetentionTimer = undefined
     }
-    if (this.patrolSweepTimer !== undefined) {
-      this.clock.clearTimeout(this.patrolSweepTimer)
-      this.patrolSweepTimer = undefined
+    if (this.checkSweepTimer !== undefined) {
+      this.clock.clearTimeout(this.checkSweepTimer)
+      this.checkSweepTimer = undefined
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()

@@ -408,10 +408,10 @@ describe('stopTask in a Slack DM conversation', () => {
         NOT_OWNED
       )
       // A follow-up row with no follow-up behind it, and an approved proposal this session started, are not its to stop.
-      for (const thread of ['subsession:patrol-p-1', 'subsession:task-t-1']) {
+      for (const thread of ['subsession:check-p-1', 'subsession:task-t-1']) {
         const key = sessionKey('slack', DM, thread, AGENT, h.scope)
         const row = { agentId: AGENT, childSessionKey: key, parentSessionId: owner, parentSessionKey: dm.key }
-        if (thread.includes('patrol')) {
+        if (thread.includes('check-')) {
           await h.d.store.assistantSubsessions.openFollowUp(row)
           await h.d.store.assistantSubsessions.checking(AGENT, key)
         } else await h.d.store.assistantSubsessions.open(row)
@@ -467,7 +467,7 @@ describe('stopTask in a Slack DM conversation', () => {
       ).toEqual(NOT_OWNED)
       // A follow-up's check runs only the tools it was offered, and it is offered none of this.
       await expect(
-        executeTool({ ...dm.ctx, thread: 'subsession:patrol-d-1' }, 'stopTask', { taskId: child }, h.deps)
+        executeTool({ ...dm.ctx, thread: 'subsession:check-d-1' }, 'stopTask', { taskId: child }, h.deps)
       ).rejects.toThrow('stopTask is not available in a follow-up’s read-only check')
       expect(await stateOf(h, child)).toBe('open')
     } finally {
@@ -530,7 +530,7 @@ describe('who is offered stopTask', () => {
         true
       )
       // Never a task, a follow-up's check or an approved proposal; a hook run or a scheduled run may own tasks too.
-      for (const thread of ['subsession:d-1', 'subsession:patrol-d-1', 'subsession:task-d-1'])
+      for (const thread of ['subsession:d-1', 'subsession:check-d-1', 'subsession:task-d-1'])
         expect(offered(on, { thread })).toBe(false)
       expect(offered(on, { platform: 'hook', channel: 'hook:h-1', thread: 'd-1', integrationId: undefined })).toBe(true)
       expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(true)
@@ -648,7 +648,7 @@ describe('the stop note and authority, from the index row alone', () => {
     tools: []
   } as unknown as SessionContext
   const parent = sessionKey('slack', DM, '100.1', AGENT)
-  const resultFor = async (thread: string, kind?: 'patrol') => {
+  const resultFor = async (thread: string, kind?: 'follow-up') => {
     const childSessionKey = sessionKey('slack', DM, thread, AGENT)
     const row = {
       agentId: AGENT,
@@ -672,7 +672,7 @@ describe('the stop note and authority, from the index row alone', () => {
   it('names messageTask for a task, and refuses an approved proposal or a follow-up it does not own as an unknown id', async () => {
     expect((await resultFor('subsession:d-1')).note).toContain('message it with messageTask')
     expect(await resultFor('subsession:task-d-1')).toEqual(NOT_OWNED)
-    expect(await resultFor('subsession:patrol-d-1', 'patrol')).toEqual(NOT_OWNED)
+    expect(await resultFor('subsession:check-d-1', 'follow-up')).toEqual(NOT_OWNED)
   })
 })
 
@@ -749,7 +749,7 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
   const parent = sessionKey('slack', DM, '100.1', AGENT)
   const child = (thread: string) => sessionKey('slack', DM, thread, AGENT)
   const NOW = Date.parse('2026-01-01T12:00:00Z')
-  const row = (thread: string, state: string, createdAt: number, kind?: 'patrol') => ({
+  const row = (thread: string, state: string, createdAt: number, kind?: 'follow-up') => ({
     agentId: AGENT,
     childSessionKey: child(thread),
     parentSessionKey: parent,
@@ -830,7 +830,7 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
     const none = deps(undefined)
     expect(await executeTool(ctx, 'listTasks', {}, none.deps as never)).toEqual(empty)
     expect(none.listForOwner).not.toHaveBeenCalled()
-    for (const thread of ['subsession:d-1', 'subsession:patrol-d-1', 'subsession:task-d-1']) {
+    for (const thread of ['subsession:d-1', 'subsession:check-d-1', 'subsession:task-d-1']) {
       const owned = deps('sid-owner')
       // A follow-up's check runs only the tools it was offered, so the handler is asked as if it had been.
       const inside = { ...ctx, thread, tools: [LIST_TASKS_TOOL] }

@@ -7,7 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import type { SlackAppFactory } from '../src/slack/connection.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { isAppendCoordinate } from '../src/session/append-coordinate.js'
-import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import { checkCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -200,7 +200,7 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
   })
 
   it.each([
-    ['patrol', patrolCoordinate('p-1'), '[patrol] two new issues need you'],
+    ['follow-up', checkCoordinate('p-1'), '[follow-up] two new issues need you'],
     ['task', taskCoordinate('t-1'), '[approved proposal] the approved change is merged'],
     ['failure', subsessionCoordinate('s-1'), '[approved proposal ended] it stopped before finishing']
   ])('from a daemon %s report, in D1 and C1', async (kind, callerThread, text) => {

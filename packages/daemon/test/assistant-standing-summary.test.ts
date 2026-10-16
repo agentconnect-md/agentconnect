@@ -66,7 +66,7 @@ const followUp = (s: LocalStore, over: Partial<AssistantItemCreate> & { origin: 
     taskKey: sessionKey(
       over.origin.platform,
       over.origin.channel,
-      `subsession:patrol-${++taken}`,
+      `subsession:check-${++taken}`,
       over.agentId ?? 'bot-a',
       over.origin.transportScope
     ),
@@ -337,12 +337,12 @@ describe('an owning session’s running tasks in the standing summary', () => {
     await delegate(DM_KEY, 'task-approved', 7_000, 'approved proposal')
     await s.assistantSubsessions.openFollowUp({
       agentId: 'bot-a',
-      childSessionKey: sessionKey('slack', 'D0ALICE', 'subsession:patrol-p-1', 'bot-a'),
+      childSessionKey: sessionKey('slack', 'D0ALICE', 'subsession:check-p-1', 'bot-a'),
       parentSessionId: await s.ensureOutwardSessionId(DM_KEY, 'bot-a'),
       parentSessionKey: DM_KEY,
       now: 8_000
     })
-    await s.assistantSubsessions.checking('bot-a', sessionKey('slack', 'D0ALICE', 'subsession:patrol-p-1', 'bot-a'))
+    await s.assistantSubsessions.checking('bot-a', sessionKey('slack', 'D0ALICE', 'subsession:check-p-1', 'bot-a'))
 
     const restarted = await manager().handle('bot-a', dm('200.2'), undefined, INT)
     expect(runningOf(restarted.blocks)).toBe(
@@ -380,7 +380,7 @@ describe('an owning session’s running tasks in the standing summary', () => {
     const cases: [typeof ON | undefined, NormalizedMessage, string | undefined, boolean][] = [
       [ON, dm('200.2', { sessionThread: 'subsession:d-1' }), INT, false],
       [undefined, dm('200.2', { sessionThread: 'subsession:d-1' }), INT, false],
-      [ON, dm('200.2', { sessionThread: 'subsession:patrol-d-1' }), INT, false],
+      [ON, dm('200.2', { sessionThread: 'subsession:check-d-1' }), INT, false],
       [ON, dm('200.2', { sessionThread: 'subsession:task-d-1' }), INT, false],
       [ON, dm('200.2', { channel: 'cron:c-1', sessionThread: 'cron:c-1:t-1', source: 'cron' }), undefined, true]
     ]

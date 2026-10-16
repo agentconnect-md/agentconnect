@@ -3155,7 +3155,7 @@
         "limits": "Limits",
         "limit": {
           "maxConcurrentSubsessions": "Concurrent delegated tasks and approved proposals",
-          "dailyPatrolBudget": "Follow-up checks per day",
+          "dailyCheckBudget": "Follow-up checks per day",
           "dailySubsessionsPerItem": "Tasks per item per day",
           "permissionWaitHours": "Hours to wait for approval"
         },

@@ -11,21 +11,21 @@ export function subsessionCoordinate(deliveryId: string): string {
   return `${SUBSESSION_COORDINATE_PREFIX}${deliveryId}`
 }
 
-// A follow-up (assistant-mode.md §5.12) runs its checks in one sub-session of its own, read-only, under the old `patrol-` segment.
-const PATROL_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}patrol-`
+// A follow-up (assistant-mode.md §5.12) runs its checks in one sub-session of its own, read-only, under the `check-` segment.
+const CHECK_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}check-`
 
 /** The coordinate of the sub-session a follow-up keeps for its checks, minted when it is taken. */
-export function patrolCoordinate(deliveryId: string): string {
-  return `${PATROL_COORDINATE_PREFIX}${deliveryId}`
+export function checkCoordinate(deliveryId: string): string {
+  return `${CHECK_COORDINATE_PREFIX}${deliveryId}`
 }
 
 /** Whether a session's thread segment is a follow-up's: the daemon runs its read-only checks there. */
-export function isPatrolCoordinate(thread: string | null | undefined): boolean {
-  return typeof thread === 'string' && thread.startsWith(PATROL_COORDINATE_PREFIX)
+export function isCheckCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(CHECK_COORDINATE_PREFIX)
 }
 
-// A first look (assistant-mode.md §5.13) is a follow-up's check with a narrower reach, so its segment is a patrol's too.
-export const FIRST_LOOK_COORDINATE_PREFIX = `${PATROL_COORDINATE_PREFIX}look-`
+// A first look (assistant-mode.md §5.13) is a follow-up's check with a narrower reach, so its segment is a check's too.
+export const FIRST_LOOK_COORDINATE_PREFIX = `${CHECK_COORDINATE_PREFIX}look-`
 
 /** The coordinate of the sub-session a first look reads its place in. */
 export function firstLookCoordinate(deliveryId: string): string {
@@ -52,5 +52,5 @@ export function isTaskCoordinate(thread: string | null | undefined): boolean {
 
 /** Whether a thread segment is a delegated sub-session's, the kind a parent can keep messaging across work rounds. */
 export function isDelegationCoordinate(thread: string | null | undefined): boolean {
-  return isSubsessionCoordinate(thread) && !isPatrolCoordinate(thread) && !isTaskCoordinate(thread)
+  return isSubsessionCoordinate(thread) && !isCheckCoordinate(thread) && !isTaskCoordinate(thread)
 }
