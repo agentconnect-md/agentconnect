@@ -582,11 +582,11 @@ describe('GET /agents/:id/memory/history — a Control-Plane home is answered fr
     expect(second.json()).toMatchObject({ nextCursor: null })
     expect(second.json().events.map((e: { after: string }) => e.after)).toEqual(['v1'])
 
-    // Naming a place layer asks a daemon whose conversation it is, so an unplaced agent cannot answer for one.
+    // Whose conversation a place layer is comes from the table too; one that holds no memory there is absent.
     const channel = await running!.app.inject({
       method: 'GET',
       url: `${ORG}/agents/${agentId}/memory/history?path=a.md&channelKey=c1`
     })
-    expect(channel.statusCode).toBe(503)
+    expect(channel.statusCode).toBe(404)
   })
 })

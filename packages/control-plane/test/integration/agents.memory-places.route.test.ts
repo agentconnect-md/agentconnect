@@ -18,7 +18,10 @@ import type { DaemonLiveness } from '../../src/ports.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
-import { PgAgentMemoryHistoryRepo } from '../../src/persistence/repositories/agent-memory.repo.js'
+import {
+  PgAgentMemoryFileRepo,
+  PgAgentMemoryHistoryRepo
+} from '../../src/persistence/repositories/agent-memory.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -396,6 +399,16 @@ describe('clearing a layer', () => {
 
   it('drops the change log a Control-Plane home keeps for the cleared layer, and only that one', async () => {
     const { inside, outside } = await world({ memory: { provider: 'managed', home: 'control-plane' } })
+    // A Control-Plane home names its layers from the table, not from the daemon.
+    const files = new PgAgentMemoryFileRepo(prisma)
+    for (const [path, content] of [
+      [`channels/${PRIVATE.channelKey}/channel.json`, JSON.stringify({ channel: PRIVATE.channel })],
+      [`channels/${PRIVATE.channelKey}/memory/notes.md`, 'room']
+    ] as const) {
+      const temp = `${path.slice(0, path.lastIndexOf('/'))}/.agentconnect-memory-${randomUUID()}.tmp`
+      await files.append(AgentId(AGENT), DEF_ORG, temp, Buffer.from(content), true, new Date())
+      await files.commit(AgentId(AGENT), path, temp, undefined, new Date())
+    }
     const history = new PgAgentMemoryHistoryRepo(prisma)
     const record = (after: string) => ({
       id: randomUUID(),

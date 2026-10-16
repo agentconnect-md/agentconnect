@@ -118,6 +118,21 @@ describe('agent_memory_file (real Postgres)', () => {
       ['memory/MEMORY.md', 11, false]
     ])
   })
+
+  it('rmExcept clears a folder but the one kept row, and touches nothing beside it', async () => {
+    const repo = new PgAgentMemoryFileRepo(prisma)
+    const agentId = await agent()
+    await publish(repo, agentId, 'channels/k1/channel.json', '{}', NOW)
+    await publish(repo, agentId, 'channels/k1/memory/a.md', 'a', NOW)
+    await repo.append(agentId, DEF_ORG, 'channels/k1/memory/.staged', Buffer.from('s'), true, NOW)
+    await publish(repo, agentId, 'channels/k10/memory/a.md', 'other place', NOW)
+    await publish(repo, agentId, 'memory/a.md', 'shared', NOW)
+    expect(await repo.rmExcept(agentId, 'channels/k1', 'channels/k1/channel.json')).toBe(true)
+    expect(
+      (await prisma.agentMemoryFile.findMany({ where: { agentId }, orderBy: { path: 'asc' } })).map((r) => r.path)
+    ).toEqual(['channels/k1/channel.json', 'channels/k10/memory/a.md', 'memory/a.md'])
+    expect(await repo.rmExcept(agentId, 'channels/k1', 'channels/k1/channel.json')).toBe(false)
+  })
 })
 
 describe('agent_memory_history (real Postgres)', () => {

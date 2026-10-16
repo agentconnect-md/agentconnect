@@ -173,6 +173,17 @@ export class PgAgentMemoryFileRepo implements AgentMemoryFileRepo {
     })
   }
 
+  rmExcept(agentId: AgentId, path: string, keep: string): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      await lockTree(tx, `agent-memory:${agentId}`)
+      const removed = await tx.$executeRaw(Prisma.sql`
+        DELETE FROM "agent_memory_file"
+        WHERE "agentId" = ${agentId}::uuid AND starts_with("path", ${childPrefix(path)}) AND "path" <> ${keep}
+      `)
+      return removed > 0
+    })
+  }
+
   rename(agentId: AgentId, from: string, to: string): Promise<AgentMemoryRenameOutcome> {
     return withAmbientTx(this.db, async (tx) => {
       await lockTree(tx, `agent-memory:${agentId}`)

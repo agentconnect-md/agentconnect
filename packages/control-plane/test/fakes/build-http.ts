@@ -87,7 +87,10 @@ import {
 } from '../../src/persistence/index.js'
 import { CodeHostTrustedActorService } from '../../src/codehost/trusted-actor.service.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
-import { PgAgentMemoryHistoryRepo } from '../../src/persistence/repositories/agent-memory.repo.js'
+import {
+  PgAgentMemoryFileRepo,
+  PgAgentMemoryHistoryRepo
+} from '../../src/persistence/repositories/agent-memory.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
@@ -578,6 +581,7 @@ export function buildHttpApp(
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
       memoryConnectionWriter: new PgMemoryConnectionWriter(prisma, cipher),
       agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
+      agentMemoryFile: new PgAgentMemoryFileRepo(prisma),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, cipher),
