@@ -188,6 +188,7 @@
     },
     "followUp": {
       "kind": "跟进",
+      "firstLook": "先看一眼",
       "status": {
         "waiting": "等待中",
         "waitingNext": "等待中 · 下次检查 {time}",

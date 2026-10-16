@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { WORKSPACE_UPLOADS_DIR } from '@agentconnect.md/protocol'
 import type { PlatformThreadMessage } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
+import { FIRST_LOOK_DAYS, FIRST_LOOK_MAX_MESSAGES, withinWindow } from '../../assistant/first-look.js'
+import { isFirstLookCoordinate } from '../../session/subsession-coordinate.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
   ambiguousIntegrations,
@@ -84,6 +86,11 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
     platform: string,
     integrationId?: string
   ) => Promise<{ id: string; name?: string }[]>
+  /** A first look's history bound (assistant-mode.md §5.13): the oldest time it may read, and how many more rows its check may take, at most `want`. */
+  firstLookHistory?: {
+    since(): number
+    grant(ctx: SessionContext, want: number): Promise<number>
+  }
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
   maxAttachmentBytes?: number
   /** Land a downloaded attachment in the session's workspace under `uploads/`
@@ -329,6 +336,24 @@ export async function getUserProfile(
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
 }
 
+/** A first look's rows (§5.13): none older than its window or past its message cap; `ended` once a page crossed either. */
+async function firstLookRows<T extends { ts: string }>(
+  ctx: SessionContext,
+  deps: PlatformReadDeps,
+  rows: readonly T[]
+): Promise<{ rows: T[]; ended: boolean; capped: boolean } | undefined> {
+  if (!isFirstLookCoordinate(ctx.thread)) return undefined
+  const bound = deps.firstLookHistory
+  if (!bound) throw new Error('history reads are unavailable to a first look on this daemon')
+  const { kept, ended } = withinWindow(rows, bound.since())
+  const granted = kept.length === 0 ? 0 : await bound.grant(ctx, kept.length)
+  const capped = granted < kept.length
+  return { rows: kept.slice(0, granted), ended: ended || capped, capped }
+}
+
+const FIRST_LOOK_CAPPED = `This first look has read its ${FIRST_LOOK_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
+const FIRST_LOOK_WINDOW_END = `Older messages are past this first look's ${FIRST_LOOK_DAYS} days.`
+
 /** Read one bounded page of a channel: this session's own by default, or another one the read rule lets the asker see. */
 export async function getChannelHistory(
   ctx: SessionContext,
@@ -353,6 +378,16 @@ export async function getChannelHistory(
     ...(parsed.oldest ? { oldest: parsed.oldest } : {}),
     ...(parsed.latest ? { latest: parsed.latest } : {})
   })
+  const bounded = await firstLookRows(ctx, deps, page.messages)
+  if (bounded)
+    return {
+      platform,
+      channel,
+      messages: bounded.rows,
+      hasMore: !bounded.ended && page.hasMore,
+      ...(!bounded.ended && page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      ...(bounded.ended ? { note: bounded.capped ? FIRST_LOOK_CAPPED : FIRST_LOOK_WINDOW_END } : {})
+    }
   return {
     platform,
     channel,
@@ -416,12 +451,15 @@ export async function getThreadHistory(
     throwOnError: true,
     readState
   })
+  const shown = messages.filter((m) => !m.chrome)
+  const bounded = await firstLookRows(ctx, deps, shown)
   return {
     platform,
     channel,
     thread: parsed.thread,
-    truncated: readState.truncated,
-    messages: messages.filter((m) => !m.chrome).map(projectThreadMessage)
+    truncated: readState.truncated || (bounded?.capped ?? false),
+    messages: (bounded?.rows ?? shown).map(projectThreadMessage),
+    ...(bounded?.capped ? { note: FIRST_LOOK_CAPPED } : {})
   }
 }
 

@@ -17,7 +17,11 @@ import {
   isAppendCoordinate,
   nextAppendCoordinate
 } from '../session/append-coordinate.js'
-import { isSubsessionCoordinate, patrolCoordinate } from '../session/subsession-coordinate.js'
+import {
+  FIRST_LOOK_COORDINATE_PREFIX,
+  isSubsessionCoordinate,
+  patrolCoordinate
+} from '../session/subsession-coordinate.js'
 import { monotonicTs } from './monotonic-ts.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
@@ -1304,7 +1308,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 54
+export const SCHEMA_VERSION = 55
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1931,7 +1935,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v53 makes each open item a follow-up of its place (assistant-mode.md §5.12); closed items and followers go.
   async (db, store) => await migrateItemsToFollowUps(db, store.postgres),
   // v54 keeps the thread a follow-up was taken in, where its reports reply (assistant-mode.md §5.12).
-  async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'replyThread', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'replyThread', 'TEXT'),
+  // v55 marks a place's first look and counts the history each of its checks read (assistant-mode.md §5.13).
+  async (db, store) => {
+    await addColumn(db, store.postgres, 'assistant_item', 'firstLook', 'TEXT')
+    await addColumn(db, store.postgres, 'assistant_check', 'historyRead', 'INTEGER NOT NULL DEFAULT 0')
+  }
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -5606,7 +5615,7 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
-  /** Newest-first addressable sessions to mine as dream transcript sources; `skipPrivate` leaves out capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
+  /** Newest-first addressable sessions to mine as dream transcript sources, never a first look's (assistant-mode.md §5.13); `skipPrivate` leaves out capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
   async dreamSessionSources(
     agentId: string,
     limit: number,
@@ -5636,12 +5645,12 @@ export class LocalStore {
         // Outward ids (§1.1) become the dream's durable provenance; a pre-v12 row answers with the ACP id it was reported under.
         `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, key, channel, thread, transportScope, updatedAt
          FROM sessions
-         WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
+         WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream' AND COALESCE(thread, '') NOT LIKE ?
          ${opts.skipPrivate ? `AND ${CAPTURE_OPEN_SQL} AND (conversationKind IS NULL OR conversationKind NOT IN ('dm', 'group_dm'))` : ''}
          ${placeFilter}
          ORDER BY updatedAt DESC LIMIT ?`
       )
-      .all(agentId, ...placePlatforms, ...open, limit)) as {
+      .all(agentId, `${FIRST_LOOK_COORDINATE_PREFIX}%`, ...placePlatforms, ...open, limit)) as {
       sessionId: string
       key: string
       channel: string

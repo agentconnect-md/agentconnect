@@ -92,7 +92,9 @@ const FollowUpDto = z.object({
   nextCheck: z.string().nullable(),
   doneWhen: z.string().nullable(),
   /** Its newest finished checks, newest first: when, what it saw, and whether its report reached the conversation. */
-  recentChecks: z.array(z.object({ at: z.string(), observation: z.string(), reported: z.boolean() }))
+  recentChecks: z.array(z.object({ at: z.string(), observation: z.string(), reported: z.boolean() })),
+  /** A first look of its conversation, which reads the place once and ends after one check. */
+  firstLook: z.boolean().optional()
 })
 const SubsessionDto = z.object({
   /** The background work's session id, present only when the caller may open it. */
@@ -431,7 +433,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
                 status: followUp.status,
                 nextCheck: followUp.nextCheck,
                 doneWhen: visible ? followUp.doneWhen : null,
-                recentChecks: visible ? followUp.recentChecks : []
+                recentChecks: visible ? followUp.recentChecks : [],
+                ...(followUp.firstLook ? { firstLook: true } : {})
               }
             }
           : {})

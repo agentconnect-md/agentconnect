@@ -74,6 +74,7 @@ describe('follow-ups: create and read', () => {
       asker: 'user:u-1',
       shared: false,
       replyThread: '100.1',
+      firstLook: null,
       summary: 'Alice asked for the notes.',
       observations: [],
       observationVersion: 0,

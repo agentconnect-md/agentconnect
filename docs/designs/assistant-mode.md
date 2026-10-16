@@ -165,7 +165,8 @@ does not pretend to defend against effects it cannot defend against.
 
 ### 1.9 When it joins a place
 
-Proposed (§5.13); nothing here is implemented yet.
+Partly shipped (§5.13 "As shipped"): the first look runs and reports, and its offers are lines in
+the introduction until the cards below come.
 
 - **It takes a first look.** Added to a channel or group chat, it reads that place once: the last
   30 days or 500 messages, whichever is less, and nothing else. It remembers how the place works:
@@ -1276,9 +1277,10 @@ else, and nobody but its own conversation is told of it.
 
 ### 5.13 First look
 
-**Status:** Proposed (2026-10-16). Implemented: the read ports' topic, description and message
-links (below). What is marked _decided_ is the product owner's (2026-10-16); the rest is
-recommended, each point with its reason, for the owner to confirm.
+**Status:** Partly shipped (2026-10-16). What is marked _decided_ is the product owner's
+(2026-10-16), who confirmed every recommendation below the same day. The first look itself and the
+read ports' topic, description and message links have shipped; the `propose` changes ("Cards") and
+pins have not. How the first look shipped is under "As shipped" at the end of this section.
 
 **Why.** Added to a channel, an assistant-mode agent does nothing until someone @-mentions it, and
 then knows nothing of how the place works. A first look reads the place once as the agent arrives,
@@ -1480,7 +1482,7 @@ The read ports this adds, each declared by the platform's own module:
   from its guild, channel and message ids. Lark/Feishu's carry none: its message list returns no
   position to form one from, and its only documented message link comes back from a forward.
 - A connection callback for the bot's own join. Slack's handler already sees the event; a
-  Lark/Feishu module would raise it from its bot-added event.
+  Lark/Feishu module would raise it from its bot-added event. Shipped for Slack as `onBotJoined`.
 
 **Repeats** (recommended). Once per place, automatically. The first look's follow-up row, kept like
 other settled rows until the agent is removed, records it per agent and place: a rejoin finds it and
@@ -1527,6 +1529,39 @@ under the introduction works. For a first look, `propose` changes in four ways:
 - Failures back off as a check's do. After five, an automatic first look ends without a word in the
   place, its page saying why; a requested one is reported once, as a check is.
 
+**As shipped.** Choices the text above leaves open:
+
+- **The marker.** A first look is a follow-up row with `firstLook` set to `joined` or `requested`
+  (local store version 55). Its session is `subsession:patrol-look-<id>` in its place, a check's
+  coordinate, so every rule of a check holds for it, and the coordinate alone narrows its tools,
+  turns its reads to its own place and keeps its session out of memory capture and dreams. Its
+  title is "First look at <name>".
+- **Its bounds.** A history row counts by its own time; a page that reaches past 30 days ends the
+  read there. The 500 messages count history and thread replies together, per check, so a retry
+  after a failure starts again. A first look's reads take no `platform`, `integrationId` or other
+  `channel`.
+- **Its prompt.** `{place}` is the conversation's name in quotes, `{kind}` is public channel,
+  private channel, group chat or channel, as the platform tells, and `{tools}` names the AgentConnect
+  tools the place's long session is offered, the agent's MCP servers and "your runtime's own tools".
+  `{reach}` is "I read every message" where a plain message starts a turn, else "@-mention me".
+- **A join.** The platform's own-join callback (`onBotJoined`) raises it: Slack's
+  `member_joined_channel` for the bot, over Socket Mode and, through the relay's `bot-joined` action,
+  in HTTP mode. "Listed" is the Control Plane listing the conversation in the integration's session
+  modes, as `append`; a join waits up to ten minutes for that, in memory, so a restart in between
+  takes none. The inviter Slack names is the asker. Lark/Feishu's bot-added event is not yet
+  subscribed.
+- **A request.** `firstLook` is offered on a place's appending long session only and checked again
+  on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
+- **Its report.** One report round at the place's top level carries the handling, then the report;
+  step 3 is the text form until `propose` takes the round. Where the place has no long session yet,
+  the report opens one on its append coordinate. A first look that ends without handing back a
+  report counts as a failed check, and one whose check is stopped ends as stopped.
+- **Messages.** `messageTask` to a first look is refused while it runs as well as after it ended,
+  since its one check takes none. `listTasks` lists it as a first look.
+- **Console.** Activity's follow-up row carries `firstLook: true` and no next check; the console
+  labels it "First look". Tool sizes: `firstLook` 433 characters with a 76-byte input schema, and a
+  first look's `recordCheck` 244 characters with a 391-byte schema.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -1558,7 +1593,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
 | **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                  |
 | **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                          |
 | P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
-| First look (proposed)             | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu); `firstLook`; `propose` in its report round, under the introduction and with a follow-up form; the read ports it needs (topic and description, pins, message links) and the bot-join callback. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                 |
+| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped. Still to come: `propose` in its report round, under the introduction and with a follow-up form; Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                      |
 | P2 — cost and events              | Hook events routed to follow-up checks (§5.12); Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
@@ -1620,6 +1655,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
     decided.
 12. **Slack pins** (§5.13): reading them needs `pins:read`, a scope every workspace must grant again.
     Whether to add it with the first look, or ship without pins and list them under "Not covered".
+    Decided 2026-10-16: v1 ships without pins.
 13. **The first look's window and threshold** (§5.13): whether 30 days or 500 messages, and
     "resting on two or more messages", give useful first looks. Measure one first look's cost and the
     share that offer nothing before widening either.
@@ -2120,3 +2156,12 @@ check, and an automatic one yields to due follow-up checks.
 description. Slack's history and thread messages and Discord's history messages carry a link;
 Lark/Feishu's carry none, since no stable one can be formed. `channelHistory` already declared
 exactly Slack, Discord and Lark/Feishu.
+
+**Fiftieth revision (2026-10-16)**: §5.13 partly ships (issue #2810; §1.9). The owner confirmed
+every recommendation. A first look is a follow-up marked as one, on a check's coordinate, that the
+daemon takes when Slack reports the bot's own join of a listed, not-Off, internal conversation, or
+that a place's long session asks for with `firstLook`. It reads only its place, at most 30 days and
+500 messages, reports with the handling into the long session, opening it where there was none,
+and ends after one check. It counts against `dailyPatrolBudget`, yields to due follow-up checks when
+automatic, and its own session feeds no memory. The suggestions are text until the `propose`
+changes; Lark/Feishu's join and pins come later.

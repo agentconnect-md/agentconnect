@@ -21,6 +21,11 @@ export function followUpOf(row: AssistantSubsessionDto): AssistantFollowUpDto | 
   return row.kind === 'follow-up' && row.followUp ? row.followUp : null
 }
 
+/** The label a follow-up row wears: a first look reads its place once (assistant-mode.md §5.13). */
+export function followUpKindKey(followUp: AssistantFollowUpDto): 'kind' | 'firstLook' {
+  return followUp.firstLook ? 'firstLook' : 'kind'
+}
+
 /** A follow-up runs only while it checks; any other task while it is open. */
 export function taskRunning(row: AssistantSubsessionDto): boolean {
   const followUp = followUpOf(row)
@@ -141,7 +146,7 @@ export function FollowUpTaskSummary({ agentId, sessionId }: { agentId: string; s
       <div className="flex min-w-0 items-center gap-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
         <Icon name="clock" size={13} color="var(--text-tertiary)" className="flex-none" />
         <span className="min-w-0 flex-1 break-words">
-          {tf('kind')}
+          {tf(followUpKindKey(followUp))}
           <span aria-hidden="true"> · </span>
           <span data-follow-up-status="">{statusText(followUp)}</span>
         </span>

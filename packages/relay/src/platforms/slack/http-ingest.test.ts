@@ -748,6 +748,34 @@ describe('SlackHttpIngest events', () => {
     expect(d.onMessage).not.toHaveBeenCalled()
   })
 
+  // assistant-mode.md §5.13: the bot's own join also goes to the owning daemon, which may take a first look.
+  it('forwards the bot joining, with who added it, besides re-listing its channels', async () => {
+    const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'deploys' }] }))
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }
+    const onBotJoined = vi.fn()
+    const onMemberJoined = vi.fn()
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotJoined, onMemberJoined })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent(
+      { type: 'member_joined_channel', user: 'UBOT', channel: 'C1', inviter: 'UALICE' },
+      1000,
+      'Ev1'
+    )
+    await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C2' }, 2000, 'Ev2')
+
+    expect(onBotJoined.mock.calls.map(([joined]) => joined)).toEqual([
+      { channelId: 'C1', inviter: 'UALICE', interactionId: 'Ev1' },
+      { channelId: 'C2', interactionId: 'Ev2' }
+    ])
+    expect(onMemberJoined).not.toHaveBeenCalled()
+    expect(conversations).toHaveBeenCalled()
+  })
+
   it('marks a message from a Slack Connect channel as externally shared', async () => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: 'BBOT' })) } }
     const d = deps(web)

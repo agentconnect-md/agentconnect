@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
 import { afterEach, describe, expect, it } from 'vitest'
-import { patrolCoordinate, subsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { firstLookCoordinate, patrolCoordinate, subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { ASSISTANT_CHECKS_KEPT, PATROL_MAX_FAILURES, patrolBackoffMs } from '../src/store/assistant-patrols.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
@@ -352,9 +352,81 @@ describe('the place a follow-up belongs to', () => {
   })
 })
 
+/** A first look of the place (assistant-mode.md §5.13), due at `nextCheck`. */
+async function firstLook(s: LocalStore, agentId: string, nextCheck: number, now = 1) {
+  return await s.assistantItems.create({
+    agentId,
+    title: 'First look at general',
+    nextCheck,
+    origin: ORIGIN,
+    taskKey: key(agentId, randomUUID(), firstLookCoordinate(randomUUID())),
+    firstLook: 'joined',
+    now
+  })
+}
+
+describe('a first look in the follow-up tables', () => {
+  it('is marked, left out of a follow-ups-only list, and found as its place’s newest', async () => {
+    const s = await open()
+    const a = agent()
+    const followUp = await item(s, a, 500)
+    expect(followUp.firstLook).toBeNull()
+    const older = await firstLook(s, a, 500, 1)
+    const newer = await firstLook(s, a, 500, 2)
+    expect(newer.firstLook).toBe('joined')
+    expect((await s.assistantItems.list(a, { followUpsOnly: true })).map((i) => i.id)).toEqual([followUp.id])
+    expect((await s.assistantItems.latestFirstLook(a, ORIGIN))?.id).toBe(newer.id)
+    expect(older.id).not.toBe(newer.id)
+    expect(await s.assistantItems.latestFirstLook(a, { ...ORIGIN, channel: 'C0OTHER' })).toBeUndefined()
+    await expect(
+      s.assistantItems.create({ agentId: a, title: 't', origin: ORIGIN, taskKey: 'k', firstLook: 'later' as never })
+    ).rejects.toThrow('firstLook')
+  })
+
+  it('is checked only once no follow-up’s check is due', async () => {
+    const s = await open()
+    const a = agent()
+    const look = await firstLook(s, a, 100)
+    const followUp = await item(s, a, 500)
+    expect((await s.assistantPatrols.due(a, 1_000, 10)).map((d) => d.itemId)).toEqual([followUp.id, look.id])
+    expect((await s.assistantPatrols.due(a, 300, 10)).map((d) => d.itemId)).toEqual([look.id])
+  })
+
+  it('grants a running check its history up to the cap, and none to a check that is not running', async () => {
+    const s = await open()
+    const a = agent()
+    const look = await firstLook(s, a, 100)
+    const started = await begin(s, a, look, 1_000, { nextCheck: 100 })
+    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(300)
+    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(200)
+    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(0)
+    expect(await s.assistantPatrols.takeHistory(a, look.id, started!.checkNo + 1, 10, 500)).toBe(0)
+  })
+
+  it('is never a dream’s source', async () => {
+    const s = await open()
+    const a = agent()
+    const row = (thread: string, acp: string) => ({
+      key: key(a, acp, thread),
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread,
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: acp,
+      state: 'idle' as const,
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await s.upsertSession(row('append:1', `acp-${randomUUID()}`))
+    await s.upsertSession(row(firstLookCoordinate('1'), `acp-${randomUUID()}`))
+    expect((await s.dreamSessionSources(a, 10)).map((source) => source.thread)).toEqual(['append:1'])
+  })
+})
+
 describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite', () => {
   it('marks the existing sub-sessions as delegations and adds the patrol state', async () => {
-    expect(SCHEMA_VERSION).toBe(54)
+    expect(SCHEMA_VERSION).toBe(55)
     const path = tempStorePath('ac-assistant-v38-')
     await (await LocalStore.open(path)).close()
     const a = agent()
@@ -462,6 +534,69 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
           runningObservationVersion: 0,
           runningReport: 'It shipped.'
         })
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v54 → v55 first-look schema on SQLite', () => {
+  it('adds the first-look marker and the history count to a v54 store', async () => {
+    const path = tempStorePath('ac-assistant-v54-')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec(
+      'ALTER TABLE assistant_item DROP COLUMN firstLook; ALTER TABLE assistant_check DROP COLUMN historyRead; ' +
+        'PRAGMA user_version = 54'
+    )
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    const a = agent()
+    try {
+      const look = await firstLook(upgraded, a, 100)
+      expect((await upgraded.assistantItems.get(a, look.id))?.firstLook).toBe('joined')
+      const started = await begin(upgraded, a, look, 1_000, { nextCheck: 100 })
+      expect(await upgraded.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v54 → v55 first-look schema on PostgreSQL', () => {
+  it('adds the first-look marker and the history count to a v54 store', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      await (await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })).close()
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('ALTER TABLE assistant_item DROP COLUMN firstlook')
+      await admin.query('ALTER TABLE assistant_check DROP COLUMN historyread')
+      await admin.query('UPDATE _local_store_schema_version SET version = 54 WHERE singleton = true')
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        const look = await firstLook(upgraded, a, 100)
+        expect((await upgraded.assistantItems.get(a, look.id))?.firstLook).toBe('joined')
+        const started = await begin(upgraded, a, look, 1_000, { nextCheck: 100 })
+        expect(await upgraded.assistantPatrols.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
       } finally {
         await upgraded.close()
       }

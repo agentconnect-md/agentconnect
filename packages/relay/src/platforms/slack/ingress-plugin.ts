@@ -28,6 +28,7 @@ import {
   type HttpSlackSessionStop,
   type HttpSlackAppHomeOpened,
   type HttpSlackAssistantThreadStarted,
+  type HttpSlackBotJoined,
   type HttpSlackMemberJoined,
   type SlackInteractiveBody,
   type SlackMessageEvent
@@ -297,6 +298,38 @@ export function forwardAssistantThreadStarted(
 }
 
 // Another member's join goes to the channel's owning daemon, which looks them up for every agent (assistant-mode.md §5.3).
+/** The bot's own join reaches the channel's owning daemon, which may take a first look (assistant-mode.md §5.13). */
+export function forwardBotJoined(host: RelayIngressHost, botId: string, joined: HttpSlackBotJoined): void {
+  const route = host.directory.resolveTarget(botId, { channelId: joined.channelId })
+  if (!route) return
+  const digest = createHash('sha256')
+    .update(JSON.stringify([botId, 'bot-joined', joined]))
+    .digest('hex')
+  const rd: RdMsgPlatformAction = {
+    source: 'platform_action',
+    platformId: 'slack',
+    agentId: route.agentId,
+    integrationId: route.integrationId,
+    sessionKey: sessionKeyOf({ channel: joined.channelId }),
+    msgId: `slack-action:${digest}`,
+    botId,
+    ...(joined.inviter ? { userId: joined.inviter } : {}),
+    payload: {
+      kind: 'bot-joined',
+      channelId: joined.channelId,
+      ...(joined.inviter ? { inviter: joined.inviter } : {})
+    }
+  }
+  // A daemon predating the action refuses it as unsupported, which costs only the first look.
+  void host
+    .forwardAction(rd, route)
+    .then((ack) => {
+      if (!ack.accepted)
+        host.log.debug(`relay-ingress(${botId}): daemon declined the bot's join (${ack.reason ?? 'unknown'})`)
+    })
+    .catch((err) => host.log.warn(`relay-ingress(${botId}): bot join forward failed: ${(err as Error).message}`))
+}
+
 export function forwardMemberJoined(host: RelayIngressHost, botId: string, joined: HttpSlackMemberJoined): void {
   const route = host.directory.resolveTarget(botId, { channelId: joined.channelId })
   if (!route) return
@@ -379,6 +412,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onAppHomeOpened: (opened) => forwardAppHomeOpened(host, botId, opened),
         onAssistantThreadStarted: (started) => forwardAssistantThreadStarted(host, botId, started),
         onMemberJoined: (joined) => forwardMemberJoined(host, botId, joined),
+        onBotJoined: (joined) => forwardBotJoined(host, botId, joined),
         appHomeContext: (channelId) => ({
           webAppUrl: host.webAppUrl(),
           orgSlug: a.orgSlug,

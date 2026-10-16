@@ -188,6 +188,7 @@
     },
     "followUp": {
       "kind": "Follow-up",
+      "firstLook": "First look",
       "status": {
         "waiting": "Waiting",
         "waitingNext": "Waiting · next check {time}",

@@ -852,6 +852,24 @@ describe('SlackConnection membership events', () => {
     expect(changed).toBe(3)
   })
 
+  // assistant-mode.md §5.13: the bot's own join is raised with who added it, so the daemon may take a first look.
+  it('raises the bot’s own join with its inviter, and nobody else’s', async () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    const joined: [string, string | undefined][] = []
+    const conn = new SlackConnection(
+      { ...deps(), onBotJoined: (channel: string, inviter?: string) => joined.push([channel, inviter]) } as any,
+      () => fakeAppWithEvents(handlers) as any
+    )
+    await conn.start()
+    await handlers.get('member_joined_channel')!({ event: { user: 'USOMEONE', channel: 'C1', inviter: 'UALICE' } })
+    await handlers.get('member_joined_channel')!({ event: { user: 'UBOT', channel: 'C1', inviter: 'UALICE' } })
+    await handlers.get('member_joined_channel')!({ event: { user: 'UBOT', channel: 'C2' } })
+    expect(joined).toEqual([
+      ['C1', 'UALICE'],
+      ['C2', undefined]
+    ])
+  })
+
   // assistant-mode.md §5.3: another member joining is looked up once, for every agent's integration.
   describe('a member joining', () => {
     const joinWorld = (users: Record<string, object>, watched: boolean, home: object = { team_id: 'T1' }) => {

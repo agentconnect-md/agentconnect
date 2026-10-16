@@ -24,6 +24,19 @@ export function isPatrolCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(PATROL_COORDINATE_PREFIX)
 }
 
+// A first look (assistant-mode.md §5.13) is a follow-up's check with a narrower reach, so its segment is a patrol's too.
+export const FIRST_LOOK_COORDINATE_PREFIX = `${PATROL_COORDINATE_PREFIX}look-`
+
+/** The coordinate of the sub-session a first look reads its place in. */
+export function firstLookCoordinate(deliveryId: string): string {
+  return `${FIRST_LOOK_COORDINATE_PREFIX}${deliveryId}`
+}
+
+/** Whether a session's thread segment is a first look's: only its own place's reads, bounded, and no memory capture. */
+export function isFirstLookCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(FIRST_LOOK_COORDINATE_PREFIX)
+}
+
 // An approved proposal (assistant-mode.md §5.10) runs in a sub-session of its own kind, never replayed after a cut (§5.7 step 1).
 const TASK_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}task-`
 

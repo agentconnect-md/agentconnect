@@ -17,6 +17,7 @@ import { MEMORY_PERSON_LAYER_REFUSED, MEMORY_SHARED_LAYER_ONLY } from '../src/me
 import { openTestStore } from './store-support.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { appendCoordinate } from '../src/session/append-coordinate.js'
+import { firstLookCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
@@ -135,6 +136,20 @@ function world(place: Place, agent: Agent = {}) {
 }
 
 const PUBLIC = { isPrivate: false, externalReason: null }
+
+// assistant-mode.md §5.13: memory gets only what the place's long session writes from a first look's report.
+describe('a first look’s own session', () => {
+  it('captures nothing, where the same place’s long session would', async () => {
+    const { daemon, captured } = world({ snapshot: PUBLIC }, { assistant: true })
+    expect(await captured()).toBeDefined()
+    const rowOf = daemon.store.getSession
+    daemon.store.getSession = vi.fn(async (k: string) => {
+      const row = await rowOf(k)
+      return row && { ...row, thread: firstLookCoordinate('1') }
+    })
+    expect(await captured()).toBeUndefined()
+  })
+})
 
 describe('per-turn capture writes to the conversation layer, for every agent', () => {
   it.each([false, true])(

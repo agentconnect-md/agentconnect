@@ -433,6 +433,8 @@ export interface SlackDeps {
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
+  /** Fired when the bot itself joins a conversation, with who added it where the event names them (assistant-mode.md §5.13). */
+  onBotJoined?: (channel: string, inviter?: string) => void
   /** Whether an agent's integration is on this socket, in any mode, so a member join is worth a lookup (assistant-mode.md §5.3). */
   checksJoinedMembers?: () => boolean
   /** Fired when a member join shows a channel is external: a guest, an outside member, or a share. */
@@ -1220,7 +1222,7 @@ export class SlackConnection implements PlatformConnection {
     })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
-      const ev = event as { user?: string; channel?: string }
+      const ev = event as { user?: string; channel?: string; inviter?: string }
       if (ev.user !== this.botUserId) {
         // Someone else joined: looked up for every agent (assistant-mode.md §5.3).
         if (!ev.user || !ev.channel || this.deps.checksJoinedMembers?.() !== true) return
@@ -1232,6 +1234,7 @@ export class SlackConnection implements PlatformConnection {
       // A channel the bot just joined resolves by name on the next miss.
       this.channelNamesListedAt = Number.NEGATIVE_INFINITY
       this.deps.onChannelsChanged?.()
+      if (ev.channel) this.deps.onBotJoined?.(ev.channel, ev.inviter || undefined)
     })
     for (const type of ['channel_left', 'group_left']) {
       this.app.event(type, async ({ event }) => {

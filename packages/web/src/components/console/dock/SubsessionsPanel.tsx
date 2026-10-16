@@ -21,6 +21,7 @@ import { ConfirmStrip } from '@/components/console/ConfirmStrip'
 import {
   FollowUpChecks,
   FollowUpChecksToggle,
+  followUpKindKey,
   followUpOf,
   stopTask,
   taskRunning,
@@ -439,7 +440,7 @@ function SubsessionRow({
       <div className="flex flex-wrap items-center gap-x-2 pl-[21px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
         {followUp ? (
           <>
-            <span>{tf('kind')}</span>
+            <span>{tf(followUpKindKey(followUp))}</span>
             <span aria-hidden="true">·</span>
             <span data-subsession-state="">{statusText(followUp)}</span>
           </>

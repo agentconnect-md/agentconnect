@@ -111,7 +111,9 @@ export const AssistantActivityFollowUp = z.object({
   /** The next scheduled check; null when it waits until it is messaged, or has ended. */
   nextCheck: time.nullable(),
   /** Newest first. */
-  recentChecks: z.array(AssistantActivityCheck).max(ASSISTANT_ACTIVITY_CHECKS_MAX)
+  recentChecks: z.array(AssistantActivityCheck).max(ASSISTANT_ACTIVITY_CHECKS_MAX),
+  /** A first look of its place (assistant-mode.md §5.13), which ends after one check. */
+  firstLook: z.boolean().optional()
 })
 export type AssistantActivityFollowUp = z.infer<typeof AssistantActivityFollowUp>
 

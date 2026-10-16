@@ -1453,6 +1453,49 @@ mode, and anything that would ask for approval is refused, never asked. It still
 agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
 keeps it from writing there, and reads over the network that need no approval stay possible.
 
+## Assistant-mode first look
+
+When an agent in assistant mode is added to a channel or group chat, it takes a first look: a
+read-only task reads that conversation once and reports to the conversation's long session, which
+remembers how the place works, introduces the agent once and lists at most three ways it could help.
+
+- **When.** On Slack, the bot itself joining a conversation takes one, from the daemon holding the
+  agent's duty, once the Control Plane lists the conversation for the agent and it is not Off; a
+  join whose conversation is not listed within ten minutes takes none. A conversation the agent was
+  already in, a platform that reports no join, and a second look wait for someone there to ask; the
+  long session then calls `firstLook`. The first look's row is the conversation's record, so
+  rejoining, or switching assistant mode off and on, takes none. Never in a 1:1 DM or a conversation
+  shared with another organization, and only where the platform lets a bot read history (Slack,
+  Discord, Lark/Feishu; not Telegram, QQ or Google Chat). A paused agent runs it once resumed.
+- **What it reads.** Only that conversation: its history, its threads' replies, its details, its
+  members and their profiles, reactions, bookmarks and attachments, plus the agent's memory. Its
+  reads return nothing older than 30 days and nothing past 500 messages in all, history and thread
+  replies together. It cannot post, react, write memory, search, recall, or read another
+  conversation, knowledge or a code host; a read naming another conversation, bot or platform is
+  refused.
+- **What happens with its report.** The report reaches the long session, at the conversation's top
+  level, with what to do: write "How this place works" and "Recurring" to a topic file named after
+  the place, in the layer that conversation writes, plus one index line; post one short
+  introduction (who it is, one line on what it saw, how to reach it: "@-mention me" or "I read
+  every message"); in that same message list each way it could help in one line, and something in
+  flight only if someone is visibly waiting on it, acting on one when someone there asks; ask at
+  most one question; then post nothing more on its own. A conversation with no long session yet
+  gets one, as its first message would have opened it. One that became shared with another
+  organization while the first look ran is told only to write the topic file.
+- **Memory.** The first look's own session feeds no memory: no per-turn capture and no dream reads
+  it. Memory gets only what the long session writes.
+- **Budget and failures.** It counts as one check against `dailyPatrolBudget`. An automatic one
+  waits for the agent's one scheduled-check slot, runs only when no follow-up's check is due, and
+  past the budget waits for it to reset. A requested one starts at once; past the budget `firstLook`
+  is refused with the time the budget resets, and it is refused while another runs in that
+  conversation. Failures back off as a check's do. After five in a row, an automatic one ends
+  without a word in the conversation, its page saying why; a requested one ends and the conversation
+  is told once.
+- **As a task.** It is listed among the conversation's tasks, labelled "First look" in the Tasks
+  tab, the Activity view and its own page, and ends as Done after its one read, or Stopped.
+  `listTasks` lists it as a first look, `messageTask` to it is refused, and `stopTask` or the
+  console's Stop ends it. The reminders of open follow-ups leave it out.
+
 ## Assistant-mode proposals
 
 A check that finds something worth doing asks for approval with `propose`: one plain sentence

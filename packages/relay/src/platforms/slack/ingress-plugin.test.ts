@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
-import { forwardSessionShortcut, forwardSessionStop, slackIngressPlugin } from './ingress-plugin.js'
+import { forwardBotJoined, forwardSessionShortcut, forwardSessionStop, slackIngressPlugin } from './ingress-plugin.js'
 import type { RelayIngressHost } from '../contract.js'
 import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 import type { SlackHttpIngestDeps } from './http-ingest.js'
@@ -272,6 +272,21 @@ describe('slack ingress plugin — review-pinned regressions', () => {
 
     expect(h.forwardAction).toHaveBeenCalledTimes(1)
     expect(vi.mocked(h.forwardAction).mock.calls[0]![1]).toEqual(ROUTE)
+  })
+
+  // assistant-mode.md §5.13: the bot's own join reaches the channel's owning daemon, which may take a first look.
+  it('forwards the bot joining to the owning daemon, with who added it', () => {
+    const h = host()
+    forwardBotJoined(h, 'bot-1', { channelId: 'C1', inviter: 'U-ALICE', interactionId: 'Ev-join' })
+    expect(h.forwardAction).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.forwardAction).mock.calls[0]![0]).toMatchObject({
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: ROUTE.agentId,
+      integrationId: ROUTE.integrationId,
+      userId: 'U-ALICE',
+      payload: { kind: 'bot-joined', channelId: 'C1', inviter: 'U-ALICE' }
+    })
   })
 
   // assistant-mode.md §5.3: another member's join reaches the channel's owning daemon with the envelope's share flag.

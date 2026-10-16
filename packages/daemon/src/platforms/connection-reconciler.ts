@@ -178,6 +178,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   srcIntegrationIds(conn: unknown): string[]
   /** Where a platform's finding that a place is external goes (assistant-mode.md §5.3). */
   placeTrust(): PlaceTrust
+  /** The bot itself joined a conversation on these integrations, added by `inviter` where the platform names one (assistant-mode.md §5.13). */
+  botJoined(srcIntegrationIds: readonly string[], channel: string, inviter?: string): void
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>
   observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
@@ -358,6 +360,7 @@ export class ConnectionReconciler {
         )
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
+      onBotJoined: (channel, inviter) => this.host.botJoined(this.host.srcIntegrationIds(conn()), channel, inviter),
       checksJoinedMembers: () => this.host.placeTrust().watches(this.host.srcIntegrationIds(conn())),
       onPlaceExternal: (channel, reason) =>
         this.host.placeTrust().detected(this.host.srcIntegrationIds(conn()), channel, reason),

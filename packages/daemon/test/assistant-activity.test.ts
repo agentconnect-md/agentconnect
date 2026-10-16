@@ -175,6 +175,29 @@ describe('the Activity view: follow-ups in place of items', () => {
     ])
   })
 
+  // assistant-mode.md §5.13: a first look is a follow-up row marked as one, with no time of its own to show.
+  it('marks a first look, which shows no next check while it waits for the scheduled-check slot', async () => {
+    const { s, a, activity } = await setup()
+    await createFollowUp(s, a, {
+      title: 'First look at support',
+      doneWhen: undefined,
+      nextCheck: 1_000,
+      firstLook: 'joined'
+    })
+    const page = await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })
+    expect(page.subsessions).toEqual([
+      expect.objectContaining({
+        kind: 'follow-up',
+        followUp: expect.objectContaining({
+          title: 'First look at support',
+          status: 'waiting',
+          nextCheck: null,
+          firstLook: true
+        })
+      })
+    ])
+  })
+
   it('keeps a page of follow-ups inside the wire budget, paging on from the last row it carries', async () => {
     const { s, a, activity } = await setup()
     const long = 'x'.repeat(ASSISTANT_ITEM_LIMITS.observation)

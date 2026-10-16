@@ -476,6 +476,14 @@ describe.each([
     expect(summary()?.querySelector('[data-follow-up-checks]')).toBeNull()
   })
 
+  // assistant-mode.md §5.13: a first look's page names it as one.
+  it('names a first look as one', async () => {
+    wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true } }
+    await open(SLACK_PATROL, { parent: OWNER })
+    expect(summary()?.textContent).toContain('First look')
+    expect(summary()?.textContent).not.toContain('Follow-up')
+  })
+
   it.each([
     ['checking', 'Checking'],
     ['paused', 'Paused'],

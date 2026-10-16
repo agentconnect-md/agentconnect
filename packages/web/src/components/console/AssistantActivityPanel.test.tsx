@@ -790,6 +790,16 @@ describe('the Activity view toward a daemon that serves follow-ups', () => {
     expect(row(host, 'sid-follow').textContent).not.toContain('#@')
   })
 
+  // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
+  it('labels a first look as one', async () => {
+    mocks.subsessions = [
+      { ...FOLLOW_UPS[0]!, followUp: { ...FOLLOW_UPS[0]!.followUp!, firstLook: true, nextCheck: null } }
+    ]
+    const host = await mount(false)
+    expect(row(host, 'sid-follow').textContent).toContain('First look')
+    expect(row(host, 'sid-follow').textContent).not.toContain('Follow-up')
+  })
+
   it('lists follow-ups with their state, kind and next check, and their checks only where visible', async () => {
     const host = await mount(false)
     const waiting = row(host, 'sid-follow')
