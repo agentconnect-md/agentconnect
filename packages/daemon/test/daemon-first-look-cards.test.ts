@@ -58,7 +58,7 @@ function scaffold(): string {
 type Post = { channel: string; thread?: string; text: string; blocks?: unknown[]; ts: string }
 type RoundTurn = (ctx: SessionContext, say: (text: string) => void) => Promise<void>
 
-async function boot() {
+async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>; teamId?: string } = {}) {
   const behavior: { round: RoundTurn } = { round: async () => {} }
   const registered: SessionContext[] = []
   // The daemon's tool deps, known once it has started.
@@ -94,7 +94,7 @@ async function boot() {
   const posts: Post[] = []
   const updates: { channel: string; ts: string; text: string }[] = []
   let n = 0
-  const base = fakeSlackAppFactory()
+  const base = fakeSlackAppFactory(opts.teamId ? { teamId: opts.teamId } : {})
   const slackAppFactory = ((...args: unknown[]) => {
     const app = (base as any)(...args)
     app.client.chat.postMessage = async (req: any) => {
@@ -115,6 +115,7 @@ async function boot() {
     app.client.users.info = async ({ user }: { user: string }) => ({
       user: { id: user, name: user.toLowerCase(), is_bot: user.startsWith('B') }
     })
+    if (opts.channel) app.client.conversations.info = async () => ({ channel: opts.channel })
     return app
   }) as typeof base
   const daemon = new Daemon({ slackAppFactory, root: scaffold(), hostFactory: hostFactory as any })
@@ -150,20 +151,22 @@ async function boot() {
   const scope: string = d.transportScopeForIntegrationIds(['int-bot-a'])
   const coordinate: string = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
   const key = sessionKey('slack', 'C1', coordinate, 'bot-a', scope)
-  await d.store.upsertSession({
-    key,
-    agentId: 'bot-a',
-    platform: 'slack',
-    channel: 'C1',
-    thread: coordinate,
-    transportScope: scope,
-    // No runtime yet, so the report's round opens one and is handed its tools.
-    acpSessionId: null,
-    sessionId: 'sid-parent',
-    state: 'idle',
-    lastDeliveredTs: null,
-    updatedAt: Date.now()
-  })
+  // Unless a place nobody spoke in yet is wanted, its long session exists already.
+  if (opts.seeded !== false)
+    await d.store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinate,
+      transportScope: scope,
+      // No runtime yet, so the report's round opens one and is handed its tools.
+      acpSessionId: null,
+      sessionId: 'sid-parent',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
   const placeCtx: SessionContext = {
     agentId: 'bot-a',
     platform: 'slack',
@@ -379,6 +382,69 @@ describe('a first look’s report round on a platform without cards', () => {
     const longSession = registered.find((c) => isAppendCoordinate(c.thread))!
     expect(longSession.tools.map((t) => t.name)).not.toContain('propose')
     expect(refused).toContain('available only in a follow-up’s check')
+    await daemon.stop()
+  })
+})
+
+describe('a first look of a private channel an HTTP bot joined before anyone spoke there', () => {
+  it('opens the place’s long session as the place’s own and threads the cards under its introduction', async () => {
+    const { daemon, d, behavior, registered, dispatched, posts, cards, settled, deps } = await boot({
+      seeded: false,
+      channel: { id: 'C1', name: 'release-train', is_private: true },
+      teamId: 'T0EXAMPLE'
+    })
+    // The relay routes an HTTP bot, so the daemon holds it as a shared integration with no rules of its own.
+    const core = d.agents.get('bot-a').integrations[0].core
+    core.mode = 'shared'
+    core.bindRules = []
+    const scope: string = d.transportScopeForIntegrationIds(['int-bot-a'])
+    behavior.round = async (ctx, say) => {
+      say(INTRO)
+      await executeTool(ctx, 'propose', TASK, deps)
+    }
+    const joined = await d.handleRelaySlackAction({
+      agentId: 'bot-a',
+      integrationId: 'int-bot-a',
+      sessionKey: 'slack:C1',
+      msgId: 'm-join',
+      botId: 'bot-1',
+      userId: 'U0OWNER',
+      payload: { kind: 'bot-joined', channelId: 'C1', inviter: 'U0OWNER' }
+    })
+    expect(joined).toEqual({ msgId: 'm-join', accepted: true })
+    const place = { platform: 'slack', channel: 'C1', transportScope: scope }
+    await vi.waitFor(
+      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place)).toBeDefined(),
+      WAIT
+    )
+    expect(await d.store.placeSession('bot-a', 'slack', 'C1', scope)).toBeUndefined()
+    await d.patrols.sweep()
+    await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
+    await settled()
+
+    // The introduction posts at the top level, and its card in its thread, not in anyone's direct message.
+    const intro = posts.find((p) => p.text.includes('Hi, I am bot-a'))!
+    expect(intro.thread).toBeUndefined()
+    expect(cards().map((p) => [p.channel, p.thread])).toEqual([['C1', intro.ts]])
+
+    // The report opened the place's long session as its root, bound to the channel's people as a person's message would.
+    const opened = await d.store.placeSession('bot-a', 'slack', 'C1', scope)
+    const key = opened.key
+    expect(isAppendCoordinate(opened.thread)).toBe(true)
+    expect(opened.originSessionId ?? null).toBeNull()
+    expect(await d.store.getSessionClassificationByKey(key)).toMatchObject({
+      conversationKind: 'channel',
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T0EXAMPLE',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-bot-a'
+    })
+    expect(await d.store.isCaptureExcluded('bot-a', key)).toBe(false)
+    // The first look stays the long session's child, so the two never name each other.
+    const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
+    const look = await d.store.getSession(sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope))
+    expect(look.originSessionId).toBe(opened.sessionId)
     await daemon.stop()
   })
 })

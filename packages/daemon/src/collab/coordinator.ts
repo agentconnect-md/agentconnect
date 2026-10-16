@@ -952,10 +952,14 @@ export class CollabCoordinator {
       : undefined
     const place = report.place ?? caller
     // The place's current long session speaks (after `!new`, not the retired one), else the recorded parent.
-    const parent =
+    const existing =
       (await store.placeSession(agentId, place.platform, place.channel, place.transportScope ?? null)) ??
-      (await store.getSessionByOutwardId(report.parentSessionId, agentId)) ??
-      (report.opens !== undefined ? openingSession(agentId, place, report.opens, this.host.clock().now()) : undefined)
+      (await store.getSessionByOutwardId(report.parentSessionId, agentId))
+    const opening =
+      !existing && report.opens !== undefined
+        ? openingSession(agentId, place, report.opens, this.host.clock().now())
+        : undefined
+    const parent = existing ?? opening
     const route =
       parent && sessionReplyRoute(parent, (...args) => this.host.integrationIdForSessionTransport(...args), replyTarget)
     if (!parent || !route) {
@@ -978,6 +982,8 @@ export class CollabCoordinator {
       ),
       originCoords: { platform: caller.platform, channel: caller.channel, thread: caller.thread },
       ...(report.firstLook !== undefined ? { firstLookReport: report.firstLook } : {}),
+      // The session it opens is the place's own root, never the reporting sub-session's child, which is the place's.
+      ...(opening ? { opensPlace: true as const } : {}),
       ...(externalOrigin ? { externalOrigin } : {}),
       ...(replierSessionId !== undefined && (await store.isCaptureExcluded(agentId, callerKey))
         ? { parentPrivate: true }

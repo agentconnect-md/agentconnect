@@ -1194,6 +1194,11 @@ function liveSdkLease(l: {
   return l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running'
 }
 
+/** An agent's delivery whose coordinates may not bind its conversation's audience: neither observed on the platform there nor opening its place's long session. */
+function postlessCall(callMeta: CallMeta | undefined): boolean {
+  return callMeta !== undefined && callMeta.platformOrigin !== true && callMeta.opensPlace !== true
+}
+
 /** The store row a memory dream executes under. */
 function dreamExecutionKey(agentId: string, dreamId: string): string {
   return sessionKey('dream', 'memory', dreamId, agentId)
@@ -8343,11 +8348,13 @@ export class Daemon {
     return this.assistantDraftService
   }
 
-  /** Whether a person's own message in a conversation would start a turn of this agent (assistant-mode.md §5.10): the routing ladder over its live rules; a verdict-gated or external place never says yes. */
+  /** Whether a person's own message in a conversation would start a turn of this agent (assistant-mode.md §5.10): the routing ladder over its live rules, the relay's for an HTTP bot; a verdict-gated or external place never says yes. */
   private admitsAsker(agentId: string, integrationId: string, channel: string, isDm: boolean): boolean {
     const int = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)
     // A By decision or routed conversation admits a message only on a verdict, which a click never has.
     if (!int || this.chatSurface(agentId, integrationId, channel) !== 'open') return false
+    // The relay routes an HTTP bot and ships no rules here: it forwards a mention of a one-agent bot wherever the conversation is open.
+    if (integrationCore(int).mode === 'shared' && !this.isShareableSlackIntegration(agentId, integrationId)) return true
     return personCouldActivate(this.mergedRulesForSource([integrationId]), {
       agentId,
       integrationId,
@@ -16880,13 +16887,13 @@ export class Daemon {
           this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)
         }
       }
-      // send-message-guide.md §9.5–§9.6: the sending session is recorded as a new session's creator; the input shows its own message id.
+      // send-message-guide.md §9.5–§9.6: the sending session is recorded as a new session's creator, except where a report opens its place's; the input shows its own message id.
       handled = await this.sessions.handle(
         agentId,
         msg,
         entry.initAbort.signal,
         integrationId,
-        callMeta?.originSessionId,
+        callMeta?.opensPlace ? undefined : callMeta?.originSessionId,
         chatSettingsAllowed(agent) ? webchat?.runtime?.effort : undefined,
         callMeta?.needsReply,
         {
@@ -21866,7 +21873,7 @@ export class Daemon {
     if (msg.adoptedSession && originKindOf(msg.platform) === 'hook') return 'unchanged'
     const direct =
       this.githubExternalSource(hookContext) ??
-      (await this.conversationExternalSource(agentId, msg, callMeta !== undefined && callMeta.platformOrigin !== true))
+      (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))
     // A CONVERSATION audience is only bindable when fully attributed (realm +
     // integration); a repository audience (GitHub) has its own completeness rule.
     // Keyed on the resource kind, so a new platform's audience gets the same
@@ -21924,7 +21931,8 @@ export class Daemon {
     hookContext: HookDispatchContext | undefined,
     isEvaluation: boolean
   ): Promise<void> {
-    const isA2aChild = callMeta !== undefined
+    // A report that opens its place's long session (assistant-mode.md §5.13) is the place's own, not a child.
+    const isA2aChild = callMeta !== undefined && callMeta.opensPlace !== true
     const conversationKind = msg.isDm ? 'dm' : msg.isGroupDm ? 'group_dm' : 'channel'
     const integrationId =
       msg.platform === 'webchat'
@@ -21937,7 +21945,7 @@ export class Daemon {
     // attributed wake of it (human or agent) rejects as a cross-source mismatch.
     const directExternalSource =
       this.githubExternalSource(hookContext) ??
-      (await this.conversationExternalSource(agentId, msg, isA2aChild && callMeta.platformOrigin !== true))
+      (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))
     const inheritedExternalSource = callMeta?.externalOrigin
       ? {
           externalProvider: callMeta.externalOrigin.provider,
