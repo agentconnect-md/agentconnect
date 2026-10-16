@@ -156,6 +156,8 @@ describe('openapi plane', () => {
         ['/items/{itemId}', 'delete', 'deleteAssistantItem', true],
         ['/subsessions', 'get', 'listAssistantSubsessions', false],
         ['/subsessions/{sessionId}/stop', 'post', 'stopAssistantSubsession', /continue that task’s session/],
+        ['/subsessions/{sessionId}', 'get', 'getAssistantSubsession', false],
+        ['/follow-ups/{followUpId}/stop', 'post', 'stopAssistantFollowUp', /continue that conversation may end it/],
         ['/drafts', 'get', 'listAssistantDrafts', true],
         ['/drafts/{draftId}/decision', 'post', 'decideAssistantDraft', true],
         [

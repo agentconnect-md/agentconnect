@@ -137,31 +137,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
         case 'item':
           return { operation: 'item', item: null }
         case 'subsessions': {
-          const subsessionOf = async (row: AssistantSubsession): Promise<AssistantActivitySubsession> => {
-            const child = await store.getSession(row.childSessionKey)
-            const base = {
-              sessionId: child?.agentId === req.agentId ? (child.sessionId ?? null) : null,
-              parentSessionId: row.parentSessionId,
-              createdAt: iso(row.createdAt)
-            }
-            if (row.kind === 'patrol') {
-              const item = await store.assistantItems.byTaskKey(req.agentId, row.childSessionKey)
-              const followUp = item ? await followUpOf(store, row, item) : undefined
-              const ended = followUp?.status === 'done' || followUp?.status === 'stopped'
-              return {
-                ...base,
-                state: ended ? 'done' : 'open',
-                kind: 'follow-up',
-                ...(followUp ? { followUp } : {})
-              }
-            }
-            return {
-              ...base,
-              // A sub-session whose failure report is still on its way has ended, as `failed` shows.
-              state: row.state === 'reporting' ? 'failed' : row.state,
-              kind: isTaskCoordinate(coordinateOf(row.childSessionKey)) ? 'approved-proposal' : 'delegated'
-            }
-          }
+          const subsessionOf = (row: AssistantSubsession) => taskOf(store, req.agentId, row)
           // Follow-ups are listed only in assistant mode.
           const delegationsOnly = !assistant
           if (!req.parent) {
@@ -194,6 +170,14 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
             nextCursor: more ? cursorOf(last) : null,
             followUps: true
           }
+        }
+        case 'task': {
+          const child = await store.getSessionByOutwardId(req.sessionId, req.agentId)
+          const row =
+            child?.agentId === req.agentId ? await store.assistantSubsessions.get(req.agentId, child.key) : undefined
+          // A follow-up is shown only in assistant mode, as the list does.
+          if (!row || (row.kind === 'patrol' && !assistant)) return { operation: 'task', task: null }
+          return { operation: 'task', task: await taskOf(store, req.agentId, row) }
         }
         case 'drafts': {
           // One webchat conversation's proposals only, none for a session that is not one, and none outside assistant mode.
@@ -267,6 +251,16 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const result = await stopIndexedSubsession(row, deps.stopSession, actor)
           return { operation: 'stop-subsession', result }
         }
+        case 'stop-follow-up': {
+          // Only while its row names the conversation the Control Plane checked the caller against, so no other place's follow-up ends.
+          const item = await store.assistantItems.get(req.agentId, req.followUpId)
+          const row = item ? await store.assistantSubsessions.get(req.agentId, item.taskKey) : undefined
+          if (!item || row?.kind !== 'patrol' || row.parentSessionId !== req.parentSessionId || !deps.stopFollowUp)
+            return { operation: 'stop-follow-up', result: 'not-found' }
+          const { userId, name } = req.actor
+          const ended = await deps.stopFollowUp(req.agentId, item, { userId, ...(name ? { name } : {}) })
+          return { operation: 'stop-follow-up', result: ended === 'stopped' ? 'stopped' : 'not-running' }
+        }
       }
     }
   }
@@ -282,7 +276,33 @@ export async function stopIndexedSubsession(
   return (await stopSession(row.childSessionKey, actor)) ? 'stopped' : 'not-running'
 }
 
-/** A follow-up as the task list carries it: its state, next check and newest finished checks. */
+/** One indexed task as the list and the single read carry it: its session once it exists, its kind, and a follow-up's own fields. */
+async function taskOf(
+  store: AssistantActivityStore,
+  agentId: string,
+  row: AssistantSubsession
+): Promise<AssistantActivitySubsession> {
+  const child = await store.getSession(row.childSessionKey)
+  const base = {
+    sessionId: child?.agentId === agentId ? (child.sessionId ?? null) : null,
+    parentSessionId: row.parentSessionId,
+    createdAt: iso(row.createdAt)
+  }
+  if (row.kind === 'patrol') {
+    const item = await store.assistantItems.byTaskKey(agentId, row.childSessionKey)
+    const followUp = item ? await followUpOf(store, row, item) : undefined
+    const ended = followUp?.status === 'done' || followUp?.status === 'stopped'
+    return { ...base, state: ended ? 'done' : 'open', kind: 'follow-up', ...(followUp ? { followUp } : {}) }
+  }
+  return {
+    ...base,
+    // A sub-session whose failure report is still on its way has ended, as `failed` shows.
+    state: row.state === 'reporting' ? 'failed' : row.state,
+    kind: isTaskCoordinate(coordinateOf(row.childSessionKey)) ? 'approved-proposal' : 'delegated'
+  }
+}
+
+/** A follow-up as the task list carries it: its id, state, next check and newest finished checks. */
 async function followUpOf(
   store: AssistantActivityStore,
   row: AssistantSubsession,
@@ -301,6 +321,7 @@ async function followUpOf(
         : 'waiting'
   const checks = await store.assistantPatrols.checks(item.agentId, item.id, ASSISTANT_ACTIVITY_CHECKS_MAX + 1)
   return {
+    id: item.id,
     title: item.title,
     doneWhen: item.doneWhen,
     status,

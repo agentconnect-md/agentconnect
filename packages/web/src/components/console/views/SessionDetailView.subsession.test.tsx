@@ -1,20 +1,29 @@
 // @vitest-environment happy-dom
 
-// A task's own page is read-only (its channel is synthetic and its thread no platform thread, so a composer could reach neither it nor its turn) and names the session it belongs to.
+// A task's own page is read-only (its channel is synthetic and its thread no platform thread, so a composer could reach neither it nor its turn), names the session it belongs to, and shows a follow-up's state and checks.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent, DaemonRow, Session } from '@/lib/data'
-import { sessionFromDto, type SessionDetailDto, type SessionDto, type SessionMessageDto } from '@/lib/api'
+import {
+  sessionFromDto,
+  type AssistantSubsessionDto,
+  type SessionDetailDto,
+  type SessionDto,
+  type SessionMessageDto
+} from '@/lib/api'
 
 const wire = vi.hoisted(() => ({
   rows: [] as unknown[],
   detail: null as unknown,
   messages: [] as unknown[],
   busy: false,
-  draft: 'more please'
+  draft: 'more please',
+  /** What the single-task read answers; null answers 404. */
+  task: null as unknown,
+  taskReads: [] as Array<[string, string]>
 }))
 const spies = vi.hoisted(() => ({ pgAttach: vi.fn(), pgCancel: vi.fn(), listFilters: [] as unknown[] }))
 
@@ -52,7 +61,13 @@ vi.mock('@/lib/api', async (importOriginal) => {
       Promise.resolve({ path: opts.path, exists: true, entries: [], nextCursor: null })
     ),
     fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
-    fetchWorkspaceGitLog: vi.fn(() => Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null }))
+    fetchWorkspaceGitLog: vi.fn(() =>
+      Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null })
+    ),
+    fetchAssistantSubsession: vi.fn((agentId: string, sessionId: string) => {
+      wire.taskReads.push([agentId, sessionId])
+      return wire.task ? Promise.resolve(wire.task) : Promise.reject(new actual.ApiError('task not found', 404))
+    })
   }
 })
 
@@ -71,8 +86,9 @@ const agent = {
 } as unknown as Agent
 
 const daemons = [
-  { daemonId: 'daemon-1', name: 'edge-1', runtimeModels: [], mcpServers: [], caps: { features: [] } }
+  { daemonId: 'daemon-1', name: 'edge-1', runtimeModels: [], mcpServers: [], caps: { features: [] as string[] } }
 ] as unknown as DaemonRow[]
+const daemonFeatures = (daemons[0] as unknown as { caps: { features: string[] } }).caps.features
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -285,6 +301,9 @@ beforeEach(() => {
   wire.messages = [message(1, 'agent-1', 'TRANSCRIPT MARKER')]
   wire.busy = false
   wire.draft = 'more please'
+  wire.task = null
+  wire.taskReads = []
+  daemonFeatures.length = 0
   spies.pgAttach.mockClear()
   spies.pgCancel.mockClear()
   setViewport(false)
@@ -404,5 +423,97 @@ describe.each([
 
     expect(container?.querySelector('[data-task-owner]')).toBeNull()
     expect(container?.querySelector('[data-related-row="startedBy"]')).not.toBeNull()
+  })
+})
+
+/** A follow-up's row as the single-task read answers it. */
+const FOLLOW_UP: AssistantSubsessionDto = {
+  sessionId: 'session-1',
+  title: 'Watch the release',
+  state: 'open',
+  startedAt: '2026-10-01T00:00:00.000Z',
+  visible: true,
+  canStop: true,
+  parent: { sessionId: 'owner-1', title: 'Deploy the thing', platform: 'slack', channelName: null },
+  kind: 'follow-up',
+  followUp: {
+    id: 'item-1',
+    status: 'waiting',
+    nextCheck: '2026-10-16T09:00:00.000Z',
+    doneWhen: 'The release is published',
+    recentChecks: [{ at: '2026-10-15T09:00:00.000Z', observation: 'The tag exists; still a draft.', reported: true }]
+  }
+}
+
+describe.each([
+  ['on a desktop', false],
+  ['on a phone', true]
+])('a follow-up’s own page %s', (_viewport, mobile) => {
+  beforeEach(() => {
+    setViewport(mobile)
+    daemonFeatures.push('assistant-task-handle-v1')
+  })
+  const summary = () => container?.querySelector<HTMLElement>('[data-follow-up-summary]')
+
+  it('shows its state, what counts as done and its recent checks, read by its own session', async () => {
+    wire.task = FOLLOW_UP
+    await open(SLACK_PATROL, { parent: OWNER })
+
+    expect(wire.taskReads).toEqual([['agent-1', 'session-1']])
+    expect(summary()?.dataset.followUpSummary).toBe('waiting')
+    expect(summary()?.querySelector('[data-follow-up-status]')?.textContent).toBe(
+      'Waiting · next check Oct 16, 2026, 9:00 AM'
+    )
+    expect(summary()?.textContent).toContain('Follow-up')
+    const checks = summary()?.querySelector('[data-follow-up-checks]')
+    expect(checks?.textContent).toContain('Done when: The release is published')
+    expect(checks?.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('still a draft.')
+    // The page stays read-only, and still names the session it belongs to.
+    expect(container?.querySelector('[data-task-owner]')?.textContent).toBe('Belongs to Deploy the thing · task')
+    expect(container?.querySelector('textarea')).toBeNull()
+
+    await act(async () => summary()?.querySelector<HTMLButtonElement>('button[aria-label="Hide checks"]')?.click())
+    expect(summary()?.querySelector('[data-follow-up-checks]')).toBeNull()
+  })
+
+  it.each([
+    ['checking', 'Checking'],
+    ['paused', 'Paused'],
+    ['done', 'Done'],
+    ['stopped', 'Stopped']
+  ] as const)('reads %s as its state', async (status, label) => {
+    wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, status, nextCheck: null } }
+    await open(SLACK_PATROL, { parent: OWNER })
+
+    expect(summary()?.querySelector('[data-follow-up-status]')?.textContent).toBe(label)
+  })
+
+  it.each([
+    ['a delegated task', { ...FOLLOW_UP, kind: 'delegated', followUp: undefined }],
+    ['a follow-up the reader may not see', { ...FOLLOW_UP, visible: false }]
+  ] as const)('shows nothing more for %s', async (_name, task) => {
+    wire.task = task
+    await open(SLACK_PATROL, { parent: OWNER })
+
+    expect(wire.taskReads).toEqual([['agent-1', 'session-1']])
+    expect(summary()).toBeNull()
+  })
+
+  it('stays as it was toward a daemon that cannot read one task', async () => {
+    daemonFeatures.length = 0
+    wire.task = FOLLOW_UP
+    await open(SLACK_PATROL, { parent: OWNER })
+
+    expect(wire.taskReads).toEqual([])
+    expect(summary()).toBeNull()
+    expect(container?.querySelector('[data-task-owner]')?.textContent).toBe('Belongs to Deploy the thing · task')
+  })
+
+  it('reads no task on an ordinary session’s page', async () => {
+    wire.task = FOLLOW_UP
+    await open(SLACK, { parent: OWNER })
+
+    expect(wire.taskReads).toEqual([])
+    expect(summary()).toBeNull()
   })
 })

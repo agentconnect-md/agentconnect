@@ -156,6 +156,9 @@ export const consoleKeys = {
     consoleKey(orgId, 'assistant-item', agentId, itemId),
   assistantSubsessions: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-subsessions', agentId),
+  /** One task's row, for its own page. */
+  assistantSubsession: (orgId: string | null | undefined, agentId: string, sessionId: string) =>
+    consoleKey(orgId, 'assistant-subsession', agentId, sessionId),
   assistantDrafts: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-drafts', agentId),
   /** One webchat conversation's proposals, for its pending-requests strip. */

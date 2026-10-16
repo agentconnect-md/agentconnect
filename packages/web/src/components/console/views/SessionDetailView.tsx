@@ -77,6 +77,7 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
+import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { agentToneColor } from '@/lib/agent-tone'
@@ -151,7 +152,7 @@ import {
   type PlanEntry
 } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
-import { activityScope } from '@/lib/agent-activity'
+import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
@@ -3838,6 +3839,14 @@ export default function SessionDetailView() {
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
   // A task's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its owning session's Tasks tab.
   const readOnlySubsession = session.subsession === true
+  // A follow-up's own page also shows its state and checks, read by its session from a daemon that can.
+  const followUpPageAgentId =
+    readOnlySubsession &&
+    !MOCK_MODE &&
+    owner &&
+    agentCapabilitySource(owner, daemons, memberSets)?.caps.features?.includes(ASSISTANT_TASK_HANDLE_FEATURE)
+      ? owner.id
+      : null
   // Continuation is server-computed (webchat-cross-integration-continuation.md §6.5): a transient blocker disables the composer, unauthorized/unsupported stay read-only.
   const isContinuable = !readOnlySubsession && !isPg && !isWebchat && composerDetail?.canContinue === true
   const continuationReason = composerDetail?.continuationUnavailableReason ?? null
@@ -5051,6 +5060,7 @@ export default function SessionDetailView() {
                 </span>
               </div>
             ) : null}
+            {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
             {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
             in the top-bar crumb; with the crumb gone the page has to name itself. The
             mobile title/status live in Shell's app bar, so this region is desktop-only. */}

@@ -170,6 +170,39 @@ describe('assistant/activity frames', () => {
     expect(decodes('assistant/activity/write/result', { operation: 'stop-subsession', result: 'killed' })).toBe(false)
   })
 
+  it('round-trips one task by its session, a follow-up’s id, and ending a follow-up by it', () => {
+    expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'task', sessionId: 'sid-2' })).toBe(true)
+    expect(decodes('assistant/activity/read', { agentId: AGENT_ID, operation: 'task' })).toBe(false)
+    const followUp = {
+      id: 'item-1',
+      title: 'Watch',
+      doneWhen: null,
+      status: 'waiting',
+      nextCheck: null,
+      recentChecks: []
+    }
+    const task = { sessionId: null, parentSessionId: 'sid-1', state: 'open', createdAt: item.createdAt, followUp }
+    expect(decodes('assistant/activity/read/result', { operation: 'task', task })).toBe(true)
+    expect(decodes('assistant/activity/read/result', { operation: 'task', task: null })).toBe(true)
+    expect(
+      decodes('assistant/activity/read/result', {
+        operation: 'task',
+        task: { ...task, followUp: { ...followUp, id: '' } }
+      })
+    ).toBe(false)
+
+    const stop = {
+      agentId: AGENT_ID,
+      operation: 'stop-follow-up',
+      followUpId: 'item-1',
+      parentSessionId: 'sid-1',
+      actor: { userId: 'usr-1', name: null }
+    }
+    expect(decodes('assistant/activity/write', stop)).toBe(true)
+    expect(decodes('assistant/activity/write', { ...stop, parentSessionId: undefined })).toBe(false)
+    expect(decodes('assistant/activity/write/result', { operation: 'stop-follow-up', result: 'not-found' })).toBe(true)
+  })
+
   it('round-trips a draft decision and its outcome', () => {
     const decide = {
       agentId: AGENT_ID,
