@@ -1567,7 +1567,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
 - **Its report.** One report round at the place's top level carries the handling, then the report;
   step 3 is the `propose` wording where the place's integration has an approval card surface, else
   the text form. Where the place has no long session yet, the report opens one on its append
-  coordinate. A first look that ends without handing back a
+  coordinate as the place's own: a root session bound to the conversation's people as a person's
+  first message there would bind it, and not kept out of memory capture. The first look stays its
+  child; recorded as the opened session's creator, each named the other as its parent, and the
+  Control Plane never settled who may see either. A first look that ends without handing back a
   report counts as a failed check, and one whose check is stopped ends as stopped.
 - **Messages.** `messageTask` to a first look is refused while it runs as well as after it ended,
   since its one check takes none. `listTasks` lists it as a first look.
@@ -1586,6 +1589,11 @@ under the introduction works. For a first look, `propose` changes in four ways:
   the first reply message the round posted, else where the place's cards go otherwise (its top
   level for an appending long session). A held card a restart left behind is posted the same way by
   the minute sweep once nothing runs the round; one decided in the console while held gets none.
+- **An HTTP bot's place.** The relay routes an HTTP-mode bot, so the daemon holds no routing rules
+  for it and cannot replay its ladder. Where such a bot serves one agent, a person's mention reaches
+  the agent wherever the conversation is open to it, so the place's people approve there, for every
+  proposal of §5.10. A shareable bot's conversations each name an owning agent the daemon does not
+  know, so its proposals still go to the responsible user.
 - **The follow-up form.** Its record keeps the form, its hash binds it, and its text is its title.
   Approval names a new follow-up id on the record, then takes that follow-up of the proposal's
   place, owned by its long session, with the approver as its asker (a card's clicker as their own
@@ -2232,3 +2240,11 @@ checks per day", and the key keeps its name until the internal rename (issue #28
 `subsession:check-look-<id>`, and the daemon's check state is `assistant_check_state`. The local
 store's version 57 renames the table and rewrites every stored coordinate, and a Control Plane
 migration moves the budget key and the stored threads, with no older names read.
+
+**Fifty-fourth revision (2026-10-16)**: two fixes from §5.13's first live test (issue #2810). In a
+private channel an HTTP-mode bot joined, the first look's cards went to the responsible user's DM:
+the daemon judged who could ask the agent there by routing rules the relay keeps, so it found none.
+A one-agent HTTP bot's place now counts its people wherever the conversation is open. The long
+session the report opened recorded the first look as its creator while being the first look's
+parent, so neither settled its visibility and the console hid both from the channel's own member.
+The report now opens it as the place's own root, bound to the channel's people.
