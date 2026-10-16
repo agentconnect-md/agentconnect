@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// All sessions hides tasks (delegated tasks, patrols, approved proposals) unless "Show tasks" is on: a URL param the list and facet reads pass to the CP, on desktop and in the phone's filter sheet.
+// All sessions hides tasks (delegated tasks, follow-ups, approved proposals) unless "Show tasks" is on: a URL param the list and facet reads pass to the CP, on desktop and in the phone's filter sheet.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

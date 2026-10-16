@@ -376,7 +376,7 @@ export function ApprovalRequestsCard({
   )
 }
 
-/** A patrol's proposal waiting in this conversation: the sentence first, its reason and task folded, Activity's confirm before deciding. */
+/** A follow-up's proposal waiting in this conversation: the sentence first, its reason and task folded, Activity's confirm before deciding. */
 function ProposalRow({
   proposal,
   first,

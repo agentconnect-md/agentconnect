@@ -118,7 +118,7 @@ const SessionFilterQueryDto = z.object({
     .enum(['include', 'exclude'])
     .optional()
     .describe(
-      'Whether tasks are listed: the delegated tasks, patrols and approved proposals that run on a `subsession:` thread of the session they belong to. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
+      'Whether tasks are listed: the delegated tasks, follow-ups (including first looks) and approved proposals that run on a `subsession:` thread of the session they belong to. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
     )
 })
 
@@ -828,8 +828,8 @@ export function sessionRoutes(deps: HttpDeps) {
             'daemon-local. Returns one row per CONVERSATION by default (merged-conversation-view.md §5.2) — sessions ' +
             'sharing a thread group into `conversations`, each carrying its current member sessions. `view=flat` ' +
             'returns the raw `sessions` rows (the pre-grouped shape); `conversationKey` resolves one conversation’s ' +
-            'members directly. `tasks=exclude` leaves tasks (delegated tasks, patrols and approved proposals) out of ' +
-            'the page and its total.',
+            'members directly. `tasks=exclude` leaves tasks (delegated tasks, follow-ups (including first looks) ' +
+            'and approved proposals) out of the page and its total.',
           operationId: 'listSessions',
           querystring: SessionQueryDto,
           response: { 200: SessionListPageDto, 400: ErrorDto }

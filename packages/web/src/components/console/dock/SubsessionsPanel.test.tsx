@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The Tasks tab's Delegated group: it lists only the delegated tasks, patrols or follow-ups, and approved proposals of this conversation, links only those the reader may open, stops one (or ends a follow-up) through the console's stop route, pages on, and reports the verdict that puts its tab in the strip.
+// The Tasks tab's Delegated group: it lists only the delegated tasks, follow-ups and approved proposals of this conversation, links only those the reader may open, stops one (or ends a follow-up) through the console's stop route, pages on, and reports the verdict that puts its tab in the strip.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
