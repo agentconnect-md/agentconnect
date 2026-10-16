@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   agents: [] as Array<Record<string, unknown>>,
   daemons: [] as Array<Record<string, unknown>>,
   memberSets: [] as Array<Record<string, unknown>>,
+  allSessions: [] as Array<Record<string, unknown>>,
+  sessionRows: [] as Array<Record<string, unknown>>,
   menus: [] as Array<{ title: string; value: string; options: string[] }>,
   openPlayground: vi.fn(() => 'pg_1'),
   pgSend: vi.fn(),
@@ -55,7 +57,16 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
 vi.mock('next/link', () => ({
   default: ({ children }: { children: React.ReactNode }) => <a>{children}</a>
 }))
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (p: string) => `/acme${p}` }) }))
+vi.mock('@/lib/org-context', () => ({
+  useOrgs: () => ({ orgPath: (p: string) => `/acme${p}`, activeOrg: { id: 'org-1' } })
+}))
+// Answers as the Control Plane does: `tasks=exclude` leaves the `subsession` rows out.
+vi.mock('@/lib/use-session-list', () => ({
+  useSessionList: (orgId: string | null | undefined, filters: { excludeTasks?: boolean } = {}) => {
+    const sessions = orgId ? mocks.sessionRows.filter((row) => !(filters.excludeTasks && row.subsession)) : []
+    return { sessions, total: sessions.length, isLoading: false }
+  }
+}))
 // The fresh-org bounce is covered by its own logic (lib/onboarding); hold it open here.
 vi.mock('@/lib/use-onboarding-redirect', () => ({ useOnboardingRedirect: () => false }))
 vi.mock('@/lib/data-context', () => ({
@@ -64,7 +75,7 @@ vi.mock('@/lib/data-context', () => ({
     daemons: mocks.daemons,
     memberSets: mocks.memberSets,
     crons: [],
-    allSessions: [],
+    allSessions: mocks.allSessions,
     usage24h: null,
     getAgent: () => undefined,
     loading: false
@@ -165,6 +176,8 @@ const setFlags = (value: string) => {
 beforeEach(() => {
   mocks.menus = []
   mocks.memberSets = []
+  mocks.allSessions = []
+  mocks.sessionRows = []
   setFlags('daemon-pool')
   mocks.openPlayground.mockClear()
   mocks.pgSend.mockClear()
@@ -634,5 +647,30 @@ describe('HomeView blocked-banner placement action', () => {
     await render()
     clickAction()
     expect(mocks.push).toHaveBeenCalledWith('/acme/daemons')
+  })
+})
+
+describe('HomeView Recent', () => {
+  const row = (over: Record<string, unknown>) => ({
+    agentId: 'a1',
+    agentName: 'bot',
+    platform: 'slack',
+    channel: '#eng',
+    time: '2m',
+    status: 'idle',
+    steps: [],
+    ...over
+  })
+  const conversation = row({ id: 's-real', title: 'Release checklist' })
+  const task = row({ id: 's-task', title: 'Follow-up check on the release', subsession: true })
+
+  it('leaves tasks out, as All sessions does, while the shared window keeps them', async () => {
+    mocks.agents = [agent()]
+    mocks.daemons = [daemon()]
+    mocks.allSessions = [task, conversation]
+    mocks.sessionRows = [task, conversation]
+    await render()
+    expect(host.textContent).toContain('Release checklist')
+    expect(host.textContent).not.toContain('Follow-up check on the release')
   })
 })

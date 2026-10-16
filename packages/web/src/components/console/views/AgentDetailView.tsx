@@ -336,11 +336,12 @@ function AgentDetail() {
   } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
+  // Tasks belong to their session, so the Recent card and the header count leave them out as All sessions does.
   const {
     sessions: agentSessionRows,
     total: agentSessionTotal,
     isLoading: agentSessionsLoading
-  } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id })
+  } = useSessionList(MOCK_MODE ? null : activeOrg?.id, { agentId: id, excludeTasks: true })
   const {
     sessions: workspaceSessionRows,
     nextCursor: workspaceSessionsNextCursor,
@@ -367,7 +368,7 @@ function AgentDetail() {
   const recentSessions = useMemo(
     () =>
       MOCK_MODE
-        ? getSessions(id)
+        ? getSessions(id).filter((s) => !s.subsession)
         : agentSessionRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
     [agentSessionRows, getAgent, getSessions, id]
   )
@@ -1023,7 +1024,7 @@ function AgentDetail() {
   const markIntegrations =
     apiEntries.length > 0 ? [...agentInts, { id: 'api', platform: 'api', revoked: false }] : agentInts
   const hasIntegrationMarks = markIntegrations.length > 0 || integrationHookKinds.length > 0
-  const sessionCount = MOCK_MODE ? getSessions(da.id).length : agentSessionTotal
+  const sessionCount = MOCK_MODE ? recentSessions.length : agentSessionTotal
   // Icon upload is available only when the object store is configured (org flag) — the
   // picker hides Upload otherwise. On success the CP has persisted the new icon; refetch.
   const onUploadIcon = activeOrg?.iconUploadEnabled

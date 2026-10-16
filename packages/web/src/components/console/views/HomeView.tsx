@@ -19,6 +19,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { useConsoleData } from '@/lib/data-context'
+import { useSessionList } from '@/lib/use-session-list'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -53,7 +54,9 @@ import {
   effortChoicesFor,
   fastModeAvailableFor,
   displayedEffort,
+  enrichSessionWithAgent,
   isGitWorkspace,
+  MOCK_MODE,
   resolveEffortForModel,
   permissionModeChoicesFor,
   resolvedPermissionMode,
@@ -115,7 +118,7 @@ export default function HomeView() {
   const locale = useLocale()
   const { user } = useProfile()
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading, memberSets, orgSetIds } = useConsoleData()
   const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionPreset, pgStageRuntime } = usePlayground()
   const formatAgo = (iso: string | null): string => {
@@ -433,6 +436,17 @@ export default function HomeView() {
     () => [...agents].sort((a, b) => (sessionsByAgent.get(b.id) ?? 0) - (sessionsByAgent.get(a.id) ?? 0)),
     [agents, sessionsByAgent]
   )
+  // Recent leaves tasks out, as All sessions does; the shared window keeps them for lookups by id and search.
+  const { sessions: recentRows, isLoading: recentRowsLoading } = useSessionList(MOCK_MODE ? null : activeOrg?.id, {
+    excludeTasks: true
+  })
+  const recentSessions = useMemo(
+    () =>
+      MOCK_MODE
+        ? allSessions.filter((s) => !s.subsession)
+        : recentRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
+    [allSessions, getAgent, recentRows]
+  )
 
   // How many rows each dashboard card draws — see `dashboard-rows.ts` for the identity
   // that makes the two columns end on the same line.
@@ -451,17 +465,17 @@ export default function HomeView() {
           }
         : dashboardRowBudget({
             availableHeight,
-            sessions: allSessions.length,
+            sessions: recentSessions.length,
             agents: rankedAgents.length,
             crons: crons.length
           }),
-    [isMobile, availableHeight, allSessions.length, rankedAgents.length, crons.length]
+    [isMobile, availableHeight, recentSessions.length, rankedAgents.length, crons.length]
   )
 
   const topAgents = rankedAgents.slice(0, agentRows)
   const scheduled = crons.slice(0, cronRows)
 
-  if (loading && agents.length === 0 && allSessions.length === 0) return <LoadingState fill />
+  if (loading && agents.length === 0 && recentSessions.length === 0) return <LoadingState fill />
 
   const agentOptions = agents.map((a) => {
     const ready = agentReady(a)
@@ -875,8 +889,8 @@ export default function HomeView() {
             blank strip. A short card beside a taller column reads as "not much here
             yet" — the stretched one just reads as broken. */}
         <RecentSessionsCard
-          sessions={allSessions}
-          loading={loading}
+          sessions={recentSessions}
+          loading={loading || recentRowsLoading}
           allHref={orgPath('/sessions')}
           emptyText={t('dashboard.noSessions')}
           limit={sessionRows}
