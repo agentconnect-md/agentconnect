@@ -1092,6 +1092,8 @@ export interface AgentRepo {
   listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]>
   /** Agents placed on any member set — unscoped, for the boot-time memory-home pass. */
   listSetPlaced(): Promise<AgentRecord[]>
+  /** Agents with assistant mode on — unscoped, for the same pass. */
+  listAssistantModeOn(): Promise<AgentRecord[]>
   /** Unscoped batch read by id — the duty half of the reconcile roster, whose
    *  agents are named by the ledger rather than by placement. */
   listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]>

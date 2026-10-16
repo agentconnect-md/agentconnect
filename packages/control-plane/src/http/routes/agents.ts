@@ -2416,7 +2416,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Check assistant mode admission',
           description:
-            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed or off, or a daemon group whose members do not share one store. Switching it off is never refused.',
+            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed, or a daemon group whose members do not share one store. Switching it off is never refused.',
           operationId: 'getAgentAssistantModeAdmission',
           params: IdParam,
           response: { 200: AssistantModeAdmissionDto, 404: ErrorDto }
@@ -2665,7 +2665,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`).',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home, nor can an agent in assistant mode: turning assistant mode on switches a daemon home to control-plane in the same write and flags the migration, and while it is on the memory must stay managed and the forced return is refused with 409. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`).',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2838,11 +2838,23 @@ export function agentRoutes(deps: HttpDeps) {
               })
             }
           }
-          // The memory home rules (§3.2.1; a member set refuses `daemon`): the friendly refusal here, the authoritative one in the row-locked write (`opts.memoryHome`).
+          // The memory home rules (§3.2.1; a member set and assistant mode refuse `daemon`): the friendly refusal here, the authoritative one in the row-locked write (`opts.memoryHome`).
           const onSet = await placedOnMemberSet(deps, { setId: existing.setId, daemonId: existing.daemonId })
           const force = req.body.force === true
-          const memoryHome = req.body.memory !== undefined ? { input: req.body.memory, onSet, force } : undefined
-          const memoryChange = resolveMemoryBindingOnUpdate(existing.memory, req.body.memory, onSet, force)
+          const targetAssistantMode =
+            req.body.assistantMode !== undefined ? req.body.assistantMode : existing.assistantMode
+          // An assistant mode edit carries a `daemon` home to the CP, so it resolves the home even with no `memory`.
+          const memoryHome =
+            req.body.memory !== undefined || req.body.assistantMode !== undefined
+              ? { input: req.body.memory, onSet, force }
+              : undefined
+          const memoryChange = resolveMemoryBindingOnUpdate(
+            existing.memory,
+            req.body.memory,
+            onSet,
+            force,
+            targetAssistantMode?.enabled === true
+          )
           if (memoryChange.kind === 'refused') {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: memoryChange.message })
           }
@@ -2856,8 +2868,6 @@ export function agentRoutes(deps: HttpDeps) {
           const changesDefinition =
             targetRuntime !== existing.runtime ||
             (targetMemory?.provider ?? 'managed') !== (existing.memory?.provider ?? 'managed')
-          const targetAssistantMode =
-            req.body.assistantMode !== undefined ? req.body.assistantMode : existing.assistantMode
           if (assistantModeEditNeedsAdmission(existing.assistantMode, targetAssistantMode, changesDefinition)) {
             const admission = await assistantModeAdmissionOf(deps.repos.memberSet, {
               ...existing,
@@ -2868,7 +2878,7 @@ export function agentRoutes(deps: HttpDeps) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
-                message: assistantModeRefusalMessage(admission.refusals),
+                message: assistantModeRefusalMessage(admission.refusals, existing.assistantMode?.enabled === true),
                 code: ASSISTANT_MODE_NOT_ADMITTED
               })
             }

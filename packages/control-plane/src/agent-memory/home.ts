@@ -1,5 +1,4 @@
-// The CP's rules for a managed binding's `home` (memory-evolution.md §3.2.1, §6): resolved on create, one way on
-// update (`daemon` → `control-plane` flags a migration), back only by force, and mandated on every member set.
+// The CP's rules for a managed binding's `home` (memory-evolution.md §3.2.1, §6): one way to the CP with a migration, back only by force, mandatory on member sets and in assistant mode.
 import type {
   AgentMemoryBinding,
   ExternalMemoryBinding,
@@ -29,10 +28,15 @@ export const SET_REFUSES_DAEMON_HOME =
   'an agent placed on a group or the managed pool keeps its memory in the Control Plane; set memory.home to control-plane or leave it unset'
 export const REVERSE_NEEDS_FORCE =
   'moving memory back from the Control Plane to the daemon keeps nothing; send force: true to confirm'
+export const ASSISTANT_MODE_HOLDS_HOME =
+  'an agent in assistant mode keeps its memory in the Control Plane; turn assistant mode off first to move it to the daemon'
 export const SET_MOVE_NEEDS_CP_HOME =
   'this agent keeps its memory on the daemon it runs on; switch its memory home to Control Plane in the agent’s Memory tab, wait for the migration to finish, then move it onto the group or the managed pool'
 
-export type MemoryBindingRefusal = { refused: 'set-daemon-home' | 'reverse-needs-force'; message: string }
+export type MemoryBindingRefusal = {
+  refused: 'set-daemon-home' | 'reverse-needs-force' | 'assistant-mode'
+  message: string
+}
 
 /** A refusal raised from inside the row-locked write, where the resolution is authoritative; routes answer 409. */
 export class MemoryHomeRefusedError extends Error {
@@ -45,9 +49,13 @@ export class MemoryHomeRefusedError extends Error {
   }
 }
 
-/** What the row-locked write takes: the binding, or a function of the locked one (the boot-time flip), plus `onSet` and `force`. */
+/** What the row-locked write takes: the binding (absent on an assistant mode edit) or a function of the locked one and locked mode (the boot flip), plus `onSet` and `force`. */
 export interface MemoryHomeUpdate {
-  input: MemoryBindingInput | null | ((current: AgentMemoryBinding | null) => MemoryBindingInput | null)
+  input:
+    | MemoryBindingInput
+    | null
+    | undefined
+    | ((current: AgentMemoryBinding | null, assistantMode: boolean) => MemoryBindingInput | null)
   onSet: boolean
   force: boolean
 }
@@ -91,26 +99,38 @@ export type MemoryBindingUpdate =
   | { kind: 'write'; memory: AgentMemoryBinding | null; dropHome: boolean }
   | ({ kind: 'refused' } & MemoryBindingRefusal)
 
-/** The binding to store for an edit. A patch of `null` is the managed default; an absent `home` keeps the current one. */
+/** The binding to store for an edit: `null` is the managed default, an absent `home` keeps the current one, and assistant mode on after it moves a `daemon` home to the CP for good. */
 export function resolveMemoryBindingOnUpdate(
   current: AgentMemoryBinding | null,
   patch: MemoryBindingInput | null | undefined,
   onSet: boolean,
-  force: boolean
+  force: boolean,
+  assistantMode = false
 ): MemoryBindingUpdate {
-  if (patch === undefined) return { kind: 'unchanged' }
-  // A provider without a managed tree drops `home` with the binding; its rows, if any, stay where they are (§6).
-  if (patch !== null && patch.provider !== 'managed') return { kind: 'write', memory: patch, dropHome: false }
   const currentHome = managedMemoryHomeOf(current)
+  if (patch === undefined) {
+    if (!assistantMode || currentHome !== 'daemon') return { kind: 'unchanged' }
+    return {
+      kind: 'write',
+      memory: { ...managedBindingHomedInControlPlane(current), homeMigration: 'pending' },
+      dropHome: false
+    }
+  }
+  // A provider without a managed tree drops `home` with the binding, its rows staying where they are (§6); assistant mode admission refuses it.
+  if (patch !== null && patch.provider !== 'managed') return { kind: 'write', memory: patch, dropHome: false }
   const base: Omit<ManagedMemoryBinding, 'home' | 'homeMigration'> = patch ?? { provider: 'managed' }
   const requested = patch?.home
+  // A member set's own refusal names the placement, which turning assistant mode off would not change.
+  if (assistantMode && !onSet && requested === 'daemon') {
+    return { kind: 'refused', refused: 'assistant-mode', message: ASSISTANT_MODE_HOLDS_HOME }
+  }
   // Switching back to managed resolves as on create and never migrates; so does the managed default on a set.
   if (currentHome === null) {
-    const resolved = resolveMemoryBindingOnCreate(patch ?? undefined, onSet)
+    const resolved = resolveMemoryBindingOnCreate(patch ?? undefined, onSet || assistantMode)
     if ('refused' in resolved) return { kind: 'refused', ...resolved }
     return { kind: 'write', memory: resolved.memory ?? null, dropHome: false }
   }
-  const target = requested ?? currentHome
+  const target = requested ?? (assistantMode ? 'control-plane' : currentHome)
   if (onSet && target === 'daemon') {
     return { kind: 'refused', refused: 'set-daemon-home', message: SET_REFUSES_DAEMON_HOME }
   }

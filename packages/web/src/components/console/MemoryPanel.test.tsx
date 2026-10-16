@@ -799,6 +799,27 @@ describe('MemoryPanel memory home', () => {
     })
   })
 
+  it('keeps memory managed in the Control Plane while assistant mode is on, with a reason and no way back', async () => {
+    // A binding older than the mode reads as daemon; the draft is still pinned to the only home it may carry.
+    const host = await mount({ assistantMode: true })
+    await openSettings(host)
+    expect(homePill(host, 'daemon')).toBeNull()
+    expect(homePill(host, 'control-plane')?.disabled).toBe(true)
+    expect(homePill(host, 'control-plane')?.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('[data-memory-home-reason]')?.textContent).toContain('Turn assistant mode off')
+    expect(host.textContent).not.toContain('Move memory back to the daemon')
+    const providerPill = (value: string) => host.querySelector<HTMLButtonElement>(`[data-memory-provider="${value}"]`)
+    expect(providerPill('managed')?.disabled).toBe(false)
+    expect(['native', 'external', 'none'].map((value) => providerPill(value)?.disabled)).toEqual([true, true, true])
+
+    const autoDistill = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    await act(async () => autoDistill?.click())
+    await clickButton(host, 'Save memory settings')
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT_ID, {
+      memory: { provider: 'managed', autoDistill: true, home: 'control-plane' }
+    })
+  })
+
   it('renders the field and the return action on mobile too', async () => {
     mocks.isMobile = true
     const host = await mount({ memoryHome: 'control-plane' })

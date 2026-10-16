@@ -2892,6 +2892,7 @@ function AgentDetail() {
           sessionBasePath={orgPath('/sessions')}
           sandboxed={isPoolPlacementKind(da.placementKind)}
           memberSetPlaced={isSetPlacementKind(da.placementKind)}
+          assistantMode={da.assistantMode?.enabled === true}
         />
       )}
 

@@ -622,8 +622,8 @@ export class PgAgentRepo implements AgentRepo {
       // resurrecting a reference the provider-delete guard already checked
       // (routes/mcp-providers.ts). FOR UPDATE holds the row until this
       // transaction commits, so concurrent bag writers fully serialize.
-      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown; orgId: string }>>(
-        Prisma.sql`SELECT "runtimeOverrides", "orgId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown; orgId: string; assistantMode: unknown }>>(
+        Prisma.sql`SELECT "runtimeOverrides", "orgId", "assistantMode" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
       )
       const cur = (rows[0]?.runtimeOverrides ?? null) as RuntimeOverrides | null
       // External-memory fence: the committed binding plus the one this patch
@@ -727,21 +727,26 @@ export class PgAgentRepo implements AgentRepo {
       if (opts?.memoryHome) {
         const { input, onSet, force } = opts.memoryHome
         const locked = cur?.memory ?? null
+        // Assistant mode on after this edit is the second reason the CP home is mandatory (assistant-mode.md §4.1).
+        const assistantMode =
+          (patch.assistantMode !== undefined ? patch.assistantMode : assistantModeOf(rows[0]?.assistantMode))
+            ?.enabled === true
         const change = resolveMemoryBindingOnUpdate(
           locked,
-          typeof input === 'function' ? input(locked) : input,
+          typeof input === 'function' ? input(locked, assistantMode) : input,
           onSet,
-          force
+          force,
+          assistantMode
         )
         if (change.kind === 'refused') throw new MemoryHomeRefusedError(change.refused, change.message)
-        if (change.kind === 'write') {
-          if (change.memory === null) delete next.memory
-          else next.memory = change.memory
-          // The forced return keeps nothing: the CP tree and its change log go with the binding, or neither does.
-          if (change.dropHome) {
-            await new PgAgentMemoryFileRepo(tx).deleteTree(agentId)
-            await new PgAgentMemoryHistoryRepo(tx).deleteTree(agentId)
-          }
+        // The locked resolution is the stored binding: with nothing to write, the caller's copy is not restored.
+        const stored = change.kind === 'write' ? change.memory : locked
+        if (stored === null) delete next.memory
+        else next.memory = stored
+        // The forced return keeps nothing: the CP tree and its change log go with the binding, or neither does.
+        if (change.kind === 'write' && change.dropHome) {
+          await new PgAgentMemoryFileRepo(tx).deleteTree(agentId)
+          await new PgAgentMemoryHistoryRepo(tx).deleteTree(agentId)
         }
       }
       overrides = next
@@ -763,7 +768,7 @@ export class PgAgentRepo implements AgentRepo {
         const changesDefinition =
           runtime !== row.runtime || (memory?.provider ?? 'managed') !== (lockedMemory?.provider ?? 'managed')
         if (assistantModeEditNeedsAdmission(before, after, changesDefinition)) {
-          assertAssistantModeDefinition({ runtime, memory })
+          assertAssistantModeDefinition({ runtime, memory }, before?.enabled === true)
         }
         const base = overrides ?? (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
         const permissionMode = assistantModePermissionModeForEdit(
@@ -1292,6 +1297,15 @@ export class PgAgentRepo implements AgentRepo {
   async listSetPlaced(): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
       where: { setId: { not: null }, placementKind: 'set' },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async listAssistantModeOn(): Promise<AgentRecord[]> {
+    const rows = await this.db.agent.findMany({
+      where: { assistantMode: { path: ['enabled'], equals: true } },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

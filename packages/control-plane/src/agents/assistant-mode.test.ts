@@ -30,14 +30,23 @@ describe('assistant mode admission edges', () => {
   it('throws every definition refusal at once', () => {
     expect(() => assertAssistantModeDefinition({ runtime: 'claude-acp', memory: null })).not.toThrow()
     expect(() => assertAssistantModeDefinition({ runtime: 'codex-acp', memory: null })).not.toThrow()
-    expect(() => assertAssistantModeDefinition({ runtime: 'opencode', memory: { provider: 'none' } })).not.toThrow()
+    expect(() =>
+      assertAssistantModeDefinition({ runtime: 'opencode', memory: { provider: 'managed', home: 'daemon' } })
+    ).not.toThrow()
     try {
       assertAssistantModeDefinition({ runtime: 'qwen-code', memory: { provider: 'native' } })
       expect.unreachable()
     } catch (e) {
       expect(e).toBeInstanceOf(AssistantModeAdmissionRefused)
       expect((e as AssistantModeAdmissionRefused).refusals).toEqual(['runtime-not-admitted', 'memory-provider'])
+      expect((e as Error).message).toMatch(/^assistant mode cannot be turned on: .*memory must be managed$/)
     }
+  })
+
+  it('tells an edit to an agent already in the mode to turn it off first', () => {
+    expect(() => assertAssistantModeDefinition({ runtime: 'claude-acp', memory: { provider: 'none' } }, true)).toThrow(
+      'assistant mode is on, so this edit is refused: memory must be managed; turn assistant mode off first'
+    )
   })
 
   it('needs one shared store across an org group, and nothing elsewhere', async () => {
