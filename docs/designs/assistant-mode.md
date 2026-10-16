@@ -112,6 +112,9 @@ does not pretend to defend against effects it cannot defend against.
 - One message per change; after repeated failures it stops checking that follow-up and tells you
   once, until you message it. A turn interrupted by a rolling deploy is re-run without
   bothering you.
+- **A follow-up waiting on a pull request, merge request or issue wakes when it changes**
+  (proposed, §5.14): a merge, a review, a finished CI run or a reply makes it check now instead of
+  at its next check, which stays as the fallback.
 
 ### 1.6 Approval
 
@@ -197,7 +200,7 @@ Shipped (§5.13 "As shipped").
 | A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; whether an action needs approval is configured per action, never judged by the model; stopping the main task does not stop scheduled ones | One session per thread plus memory retrieval                                                              |
 | An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                                                            | No distinction between senders in an IM; a per-thread persisted "allow all" bypass                        |
 | A team-chat AI coworker trialed in 2026-08                              | Onboarding researched first and reported back; a twice-daily alert watch that spoke only when needed, with one concrete ask and no repeat if ignored (§5.13)                                                                                                                                                                                                      | A quota-based outreach job (up to five DMs and one channel post per run), which the team stopped as noise |
-| A coding agent's project coordinator (2026-10)                          | On a user's first project it may take a turn of its own: a read-only exploration plus setup suggestions, and suggested threads started with one click (§5.13)                                                                                                                                                                                                     | Suggestions to one person: in a shared place they are offered to the place                                |
+| A coding agent's project coordinator (2026-10)                          | On a user's first project it may take a turn of its own: a read-only exploration plus setup suggestions, and suggested threads started with one click (§5.13); a thread with an open pull request wakes on its CI failures and review comments instead of polling (§5.14)                                                                                         | Suggestions to one person: in a shared place they are offered to the place                                |
 
 ---
 
@@ -891,7 +894,8 @@ target below:
 
 - **Wake**: a follow-up's `nextCheck` wakes a check — a duty-gated sweep on the daemon, once per
   `nextCheck` value; pause suspends it and an overdue follow-up is checked once. Its place's
-  `messageTask` starts one at once (§5.12). A schedule, hook events and triage come later.
+  `messageTask` starts one at once (§5.12). An event on a watched object is §5.14 (proposed); a
+  schedule and triage come later.
 - **Where it runs**: a read-only task on the **agent's own host**, with the agent's
   credentials, until the credential-less host exists, in the follow-up's one retained session.
   Read-only rests on layers (a) and (c) below: AgentConnect tools filtered to reads plus
@@ -919,7 +923,7 @@ Shipped in #2887 as patrols, `propose` from them in #2895, and as follow-up chec
 rest of this section is the target.
 
 ```
-a schedule fires / hook event (P2) / a follow-up's nextCheck is due
+a schedule fires / a watched object's event (§5.14) / a follow-up's nextCheck is due
         │
         ▼
   [optional, P2] Decision triage with a small model
@@ -1184,8 +1188,8 @@ The word "patrol" leaves visible text; a round of a follow-up is a check.
   checks, with one report, until it is messaged;
 - recovery settles from the stored observation baseline and held report, as today.
 
-The target in §5.9 (scheduled and hook-woken checks, the credential-less host) applies to
-follow-ups unchanged.
+The target in §5.9 (scheduled checks, the credential-less host) applies to follow-ups unchanged;
+checks woken by events are §5.14.
 
 **The standing list** replaces §5.4 ②, keeping its injection points, its cap of 30 and its
 absence from external places. It is keyed by place:
@@ -1612,6 +1616,384 @@ under the introduction works. For a first look, `propose` changes in four ways:
   bytes, within Claude Code's 2,048-character description cap and Codex's 5,000-byte schema cap. Its
   schema has no top-level `oneOf`, so no runtime flattens it.
 
+### 5.14 Event wake
+
+**Status:** Proposed (2026-10-16). Nothing here is implemented. What is marked _decided_ is the
+product owner's (2026-10-16): who speaks when a pull request has both the session that opened it and
+a follow-up, that discussion wakes only a follow-up with no such session, and that the agent does not
+offer a follow-up when it opens a pull request. Everything else is a recommendation for the owner to
+confirm. The `watch` field changes three agent-facing tools, so it waits for the owner's OK before
+any daemon work.
+
+**Why.** A follow-up such as "tell me when PR #12 merges" or "watch the release build" is woken only
+by time (§5.12). Every timed check spends one of the agent's `dailyCheckBudget` checks whether or not
+anything changed, and the report lags the event by up to the check interval; a shorter interval cuts
+the lag only by spending the budget faster. The event that would answer the question already reaches
+AgentConnect, but only an agent with a hook rule on that repository hears of it, as a hook turn the
+follow-up never sees, and the session that opened a pull request, which is resumed on its reviews
+and failed checks to fix it ([codehost-pr-feedback.md](codehost-pr-feedback.md)) but never told it
+merged. Event wake is the third form of proactivity, after the first look (§5.13) and
+timed checks (§5.12).
+
+**In one line.** A follow-up may name one pull request, merge request or issue it watches. An event
+on that object makes the follow-up's check due now; the check reads the object's current state
+itself, read-only, as every check does, and `nextCheck` stays as the fallback. It rides the
+pull-request feedback lane as its second consumer, beside the session that opened the pull request.
+
+**Today's webhook path** (verified 2026-10-16;
+[webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
+[gitlab-com-integration.md](gitlab-com-integration.md) §10–§12).
+
+- **GitHub.** One deployment-wide App webhook delivers to the relay's `/webhooks/github`, and the App
+  already subscribes to every event used below (`GITHUB_APP_EVENTS` in the Setup Server). The relay
+  verifies the signature, keys the delivery by its delivery id, and then does two things:
+  - _Hook rules._ The Control Plane compiles each enabled `HookDef` row (one agent, one repository or
+    installation, one family, `family:action` patterns, label filter, mention gate) into a rule for
+    every relay (`rc/hook-assign`, replayed on connect). The relay matches a delivery against that
+    in-memory table by numeric repository id or installation, and sends each matching rule's turn
+    straight to the agent's daemon as an `rd/msg`. The daemon deduplicates on `hookId:deliveryKey` and
+    runs one model turn in the hook's session. The Control Plane sees no body, only one `HookRun` row
+    per hook and delivery (`rc/run-report`, `hook/start`, `hook/report`). `check_suite`, `check_run`
+    and `workflow_run` start no hook turn, and a review is only recorded.
+  - _The feedback lane._ Before matching, a review with text or requesting changes, a review comment,
+    a pull-request conversation comment and a failed check suite each send a body-free signal
+    (installation, repository, pull-request number, delivery key) to the Control Plane, for every
+    repository of every installation; the relay answers GitHub only once it is stored. The Control
+    Plane keeps one row per pull request and a receipt per delivery, waits out a ten-second quiet
+    window, and continues only the session whose worktree opened that pull request
+    (`session/pull-request-feedback`, to a daemon advertising `pull-request-feedback-v1`). That
+    session reads the review and check state itself.
+- **GitLab.** There is no App. The Control Plane's provisioner creates one managed project webhook
+  per project binding through the binding's OAuth connection, and keeps it only while something
+  wants it. Its events are the union of the project's enabled GitLab hook rows, plus merge-request,
+  note and pipeline events while an agent's write workspace is that project (the feedback lane), and
+  a sweep reconverges it every five minutes. The relay verifies each delivery with the project's
+  signing key (Standard Webhooks; `webhook-id` is the delivery key), matches hook rules as above, and
+  sends a merge-request note or a failed pipeline of such a project to the Control Plane as
+  body-free feedback.
+- **Who receives an event.** An agent with a hook rule whose repository, family, patterns and gates
+  admit it, as a hook turn; a Decision routing's evaluation agent, which picks among a repository's
+  rows; and the session that opened a pull request, as a feedback continuation. No follow-up hears of
+  any event.
+- **What an event costs.** Per delivery: the relay's signature check and parse, and on GitHub a
+  Control Plane write for each feedback signal, whether or not a session owns the pull request. Per
+  matching rule: a token from the per-hook rate limit (a burst of 10, then one a second; a limited
+  fire is skipped), a durable inbox write and one model turn on the daemon, and one `HookRun` row.
+- **What a check can read.** A check is offered `readCodeHostDiscussions` and
+  `inspectCodeHostPipelines`, whose target is never an argument: outside a hook turn it is the
+  agent's workspace repository, and only GitLab and Gitea register a broker for them. A GitHub object
+  is read through the runtime's native shell and the `gh` wrapper, which mints a token for any
+  repository the agent is authorized for, where the runtime's read-only mode runs the command without
+  asking.
+
+**Options.**
+
+| Option                     | What                                                                                                                                                             | Verdict                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A. Piggyback on hook rules | Events the relay already matches to an agent's hook rows also make that agent's follow-ups on the same object due                                                | Not chosen: narrow. It works only where an editor made a hook row for that agent on that repository, and then every matching event also runs a hook turn. A follow-up in a team channel about a pull request in a repository nobody wired, the common case, gets nothing, and the fix would be asking people for hook rows that run turns they did not want |
+| B. Wake-only subscription  | The follow-up names the object; the Control Plane keeps a subscription that runs nothing and only wakes the follow-up, as a second consumer of the feedback lane | **Recommended**, below                                                                                                                                                                                                                                                                                                                                      |
+| C. No events               | Timed checks only, each reading the CI or pull-request state                                                                                                     | Not chosen: it is the cost and lag this section exists to remove. It stays as the fallback                                                                                                                                                                                                                                                                  |
+
+**Two watchers of one pull request** (_decided_ 2026-10-16). A pull request the agent opened already
+has a watcher. The feedback continuation ([codehost-pr-feedback.md](codehost-pr-feedback.md)) resumes
+the session that opened it on a review with text or requesting changes, a review comment, a
+conversation comment or a failed check suite; that session fixes the pull request with its workspace
+and credentials and replies where the work was asked for. A follow-up is a different promise, to a
+person: "tell me when it merges". Both may exist for one pull request, and they stay two things:
+folding the continuation into a follow-up would have the agent `propose` every fix to its own pull
+request, and taking a follow-up on every pull request it opens would take one without a yes (§1.9).
+What is settled is who speaks:
+
+- **What resumed the opening session does not wake the follow-up.** An event that resumes the
+  agent's own session for that pull request wakes none of that agent's follow-ups watching it. The
+  session says what it did where the work was asked for; a read-only report of the same review half
+  an hour later would be stale and said twice.
+- **Everything else is the follow-up's**: merged, closed, reopened, an approval without text, a
+  check suite that passed. No event resumes the opening session for these today, so without a
+  follow-up nobody says "merged". Where the two rules overlap the first wins: the lane admits any
+  submitted review with a body, so an approval that says "LGTM" resumes the opening session, is that
+  session's to mention, and wakes no follow-up of its agent.
+- **Discussion wakes a follow-up only where no opening session exists**: someone else's pull request,
+  one opened outside AgentConnect, an issue (the lane covers pull requests only), or an agent whose
+  workspace is shared, whose pull requests are never associated. There the follow-up is the only one
+  listening.
+- **Per agent.** Another agent's follow-up on the same pull request hears every event: its people do
+  not see the opening session's replies.
+- **Applied in the Control Plane**, on the lookup the lane already makes for every signal, the pull
+  request's opening session; no new data. Until that association is captured, which happens after the
+  opening session's turn ends, the follow-up hears everything.
+- **The cost.** A follow-up taken in a place other than where the pull request was opened learns of a
+  review only at a change of state or its next timed check. Accepted: late, not lost, and uncommon.
+
+In the common case, a pull request the agent opened from a channel whose people then ask to be told
+when it merges:
+
+| Event                        | The session that opened it                        | The follow-up                  |
+| ---------------------------- | ------------------------------------------------- | ------------------------------ |
+| A review asks for a rename   | resumes, renames, pushes, replies "renamed"       | not woken                      |
+| CI fails on that push        | resumes, fixes, pushes, replies                   | not woken                      |
+| The review approves, "LGTM"  | resumes, replies "approved, nothing to fix"       | not woken                      |
+| The review approves, no text | not resumed, as today                             | woken; reports "approved"      |
+| CI passes                    | not resumed                                       | woken; folds with the approval |
+| Merged                       | not resumed; its worktree is cleaned up, as today | woken; reports "merged", done  |
+
+Merge-when-ready, armed from the console, is a third thing and is untouched: its merge is a change of
+state the follow-up reports.
+
+**The `watch` field** (_proposal_; agent-facing, needs the owner's OK). `followUp`, the follow-up form
+of `propose` (§5.10) and `recordCheck` take one optional string, the URL of the one pull request,
+merge request or issue the follow-up waits on.
+
+- **A URL, not a structure.** The model already holds the link a person pasted or a read tool
+  returned. A `{ provider, repository, kind, number }` object would make it take the link apart and
+  cost four schema properties instead of one. The daemon parses the URL by provider: GitHub's
+  `/<owner>/<repo>/pull/<n>` and `/issues/<n>`, GitLab's `/<path>/-/merge_requests/<iid>` and
+  `/-/issues/<iid>` on the instance the binding names. Anything else refuses the call with a
+  one-line reason, so the model can correct it.
+- **One object per follow-up.** "Watch these three PRs" is three follow-ups, or one woken by time.
+  One object keeps the subscription, the console line and the wake prompt one thing each (§9 Q20).
+- **CI counts as the pull request's.** A finished CI run on the watched pull or merge request is one
+  of its events (Events, below). A run is not watchable by itself in v1: it has no identity before
+  it starts, and the release build people wait for usually runs on a branch or a tag, not in a pull
+  request (§9 Q17).
+- **`followUp`** subscribes as it takes the follow-up. Its result says what is watched, or why not:
+  not readable with the agent's access, no such object, or no events from that host here. The
+  follow-up is taken either way and is then woken by time only, since the person confirmed the
+  follow-up, not the watch; the model passes the reason on.
+- **`propose`'s follow-up form** keeps `watch` on its record and under its hash. The card shows
+  "Watches example-org/example-repo#12"; approval subscribes as it takes the follow-up, and a
+  refused watch is shown on the card once approved.
+- **`recordCheck`** confirms or changes it. Each check's prompt names the watched object and the
+  events that woke it, if any. A new URL moves the subscription (an issue's follow-up starts watching
+  the pull request that fixes it), an empty string stops watching, and leaving it out keeps it.
+  `done` ends the subscription with the follow-up.
+- **Reading the object.** A check of a watching follow-up reads its object as a hook turn reads its
+  repository. On GitLab and Gitea the broker's read tools target the watched project, which the
+  subscription verified, instead of the workspace, so "this session's project" in their descriptions
+  stays true. On GitHub it reads through the `gh` wrapper, as a timed check does today, so how
+  reliably depends on the runtime (§9 Q21).
+- **Descriptions.** One property description each, and no change to the tools' own descriptions,
+  which stay at 961 (`followUp`), 851 (`propose`) and 670 (`recordCheck`) characters. `followUp` and
+  `propose` get "Optional. The URL of the one pull request, merge request or issue this follow-up
+  waits on; its events then wake a check early.", `recordCheck` "Optional. A new pull request, merge
+  request or issue URL to watch instead, or an empty string to stop watching." Measured with a
+  500-character bound, the input schemas grow by 171 to 186 bytes: `followUp` from 730 to 915,
+  `recordCheck` from 862 to 1,032, and `propose` from 1,092 to about 1,280. Every one stays far
+  inside Claude Code's 2,048-character description cap and Codex's 5,000-byte schema cap, and none
+  gains a top-level `oneOf`.
+- **Offered** only toward a Control Plane that advertises the feature (Rollout), and never to a first
+  look, which watches nothing.
+
+**Authorization** (recommended). A subscription may watch only what the agent's own code-host access
+can already read. The wake grants no read: the check reads with the tools and credentials a timed
+check uses (§5.9).
+
+- **At subscribe time** the Control Plane resolves the URL's repository to its numeric identity, as
+  it does for a hook row (a client never supplies a numeric id), and requires it to be one the agent's
+  credentials cover:
+  - GitHub: covered by a live installation of the organization, and the agent's workspace
+    repository, an explicit repository authorization, or a repository of an installation the agent
+    holds a grant for. This is the rule a GitHub hook row is created under ("triggers never outrun
+    credentials"). `resolveAgentRepoAuthorization`, the id-first resolver hook effects and reviews
+    use, already answers it, and the `gh` wrapper answers the same rule by name.
+  - GitLab: a ready project binding of the organization, and the agent's workspace project or a
+    project it holds an explicit authorization on, the two credential authorities of
+    [gitlab-com-integration.md](gitlab-com-integration.md) §13.1.
+
+  It then reads the object once with that credential to confirm it exists and is a pull request,
+  merge request or issue, and stores its numeric identity.
+
+- **At event time** the relay forwards only events whose signature, repository identity and
+  installation (GitHub) or binding (GitLab) verify, and the Control Plane checks the same rule again,
+  from its own tables and with no provider call, before it sends a wake. A subscription whose access
+  is gone (the repository left the installation, a grant or authorization was revoked, the binding was
+  removed) ends there, and the daemon is told why (Delivery, below).
+- **No check on the person.** Whoever may take the follow-up may watch with it: its place's people,
+  as today. A timed check already reads the object with the agent's credentials whoever asked, since
+  §5.5 judges conversations, not repositories; a wake changes when it reads, not what.
+
+**Data** (recommended). The Control Plane stores the subscription and the object's identity, and
+nothing else, keeping the architecture line that it holds no message bodies. It sits beside the
+lane's pull-request row, keyed by the same object identity, since one signal serves both:
+
+```text
+follow_up_watch { orgId, agentId, followUpId,
+  provider, installationId | bindingId, host, repoId, kind: pull | issue, number,
+  repoPath (display only), createdAt,
+  pendingSince?, pendingLatestAt?, pendingKinds[], lastWakeAt?, lastWakeKinds[] }
+```
+
+- The follow-up's title, done-when, observations and asker stay on the daemon; the follow-up id is
+  opaque to the Control Plane.
+- The relay is told only the watched objects (provider, repository identity, kind, number, and for
+  GitLab the binding's signing key, as a feedback watch carries it), never which agent or follow-up
+  watches them.
+- The relay forwards an event's coordinates and kind only, as a feedback signal. The wake carries
+  the follow-up id, the event kinds and when the latest arrived. No payload, title, comment, author or log reaches the Control Plane or the daemon through
+  it.
+- A row goes when its follow-up ends, its agent is deleted, or its access is lost. An agent holds at
+  most 100, a fixed limit as reminders have, beyond which `watch` is refused with that reason.
+
+**Events** (recommended). Two kinds, from deliveries the relay already verifies:
+
+| Watched object       | Wakes after one quiet minute: a change of state                                             | Wakes after 30 minutes: discussion                           |
+| -------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| GitHub pull request  | merged, closed, reopened; a review approving or requesting changes; a check suite completed | a comment, a review comment, a review with text, new commits |
+| GitHub issue         | closed, reopened                                                                            | a comment                                                    |
+| GitLab merge request | merged, closed, reopened, approved; a pipeline for it finished                              | a note, new commits                                          |
+| GitLab issue         | closed, reopened                                                                            | a note                                                       |
+
+- A change of state is what people wait for. One quiet minute folds the burst a single action sends:
+  a merge closes the pull request and completes its suites, and one review sends its comments.
+- Discussion waits 30 minutes, folding a conversation into one check, unless a change of state wakes
+  the follow-up sooner and takes it along; and it wakes a follow-up only where no session of the
+  agent opened the pull request ("Two watchers", above).
+- **Admission is the lane's**, per provider, so one rule serves both consumers. On GitHub a comment
+  by the deployment's App is not vetoed: a managed agent's formal review that GitHub refused lands as
+  one, and a follow-up waiting for that verdict must hear it. On GitLab a note by a bound service
+  account is left out and a managed review notifies through the publication ledger, as the lane does
+  today. The hook matcher's bot veto exists against reply loops, and a check cannot comment, so no
+  loop is possible here. A change of state wakes whoever made it, so a merge an agent performed, by
+  hand or by merge-when-ready, is still reported.
+- A check suite names its pull requests only through GitHub's `check_suite.pull_requests`, which
+  lists none for a pull request from a fork, so a fork's CI wakes nothing and the timed check covers
+  it.
+
+**Coalescing and budget** (recommended).
+
+- **One pending wake.** A subscription holds at most one pending wake. A later event adds its kind
+  and moves its latest time, and a change of state pulls its sending in; nothing queues. The Control
+  Plane sends it when its window closes, and a change of state at most ten minutes after the first,
+  so a stream of events cannot hold it back.
+- **Spacing.** A follow-up starts at most one woken check per 15 minutes, so four an hour. A wake
+  that falls inside waits, still one wake.
+- **Budget.** A woken check is a check and counts against `dailyCheckBudget`. A wake starts one only
+  while a fifth of the day's budget is left (10 of the default 50), so one busy pull request cannot
+  spend the checks the agent's other follow-ups are scheduled for; a messaged check may still use
+  them. Past that the wake waits for the window, still one wake, and `nextCheck` runs as before.
+- **A wake makes the follow-up due, nothing more.** The daemon records a `wakeAt` on the follow-up,
+  and the check sweep takes one whose `nextCheck` or `wakeAt` is due, in the one scheduled-check slot,
+  under pause, backoff and the five-failure stop exactly as for a timed check. A woken check clears
+  `wakeAt`; its `recordCheck` sets the next check as usual, and a scheduled next check it passes over
+  stays due (§5.12).
+- **A running check.** The daemon compares the wake's latest event with the start of the
+  follow-up's latest check. A wake whose every event arrived before that start is answered by the
+  check and is dropped. One with an event after it waits, and the sweep starts it once the running
+  check ends: a merge folded into a pending discussion wake while a scheduled check was already
+  reading is still checked, though the discussion came first.
+- **`messageTask`.** A message and a wake both mean "check now": whichever starts the check takes the
+  other with it, and it counts once. A message still starts its check at once, outside the slot
+  (§5.12).
+- **Stopped after failures.** A follow-up whose checks stopped after five failures records wakes but
+  starts none until it is messaged.
+
+**Delivery and recovery** (recommended: hold the wake, never queue it).
+
+```text
+code host ─ signed delivery ─▶ relay ─ event coordinates and kind ─▶ Control Plane
+                                                                       │ receipt, access, fold,
+                                                                       │ who speaks (above)
+the session that opened it ◀─ session/pull-request-feedback, as today ─┤
+daemon ◀─ wake { agent, follow-up, wakeId, kinds, latest event at } ───┘
+  │ record wakeAt (once per wakeId), acknowledge
+  ▼
+check sweep ─▶ read-only check ─▶ report / propose / silence
+```
+
+- **One lane, two consumers.** Relay to Control Plane is the feedback signal that exists
+  (`rc/pull-request-feedback`, `rc/codehost-feedback`), gaining the event's kind, which GitHub's
+  carries none of today, and the wake-only kinds (merged, closed, reopened, approved, passed, an
+  issue's events) for a watched object only, so an unwatched repository costs nothing new. The Control
+  Plane receives once and serves two consumers under "Two watchers": the session that opened the pull
+  request, as today, and the follow-ups subscribed to the object; its receipts, quiet window, claim
+  and retry loop are the lane's. Control Plane to relay, the watched objects: GitHub a list of its
+  own, replayed on connect as hook rules are; GitLab the project's existing feedback watch, which a
+  watched project joins. Daemon to Control Plane, `assistant/follow-up-watch`: set, remove, or the
+  full set for an agent, answered with what is watched or why not. Control Plane to daemon,
+  `assistant/follow-up-wake`, answered with accepted or a reason, as `session/pull-request-feedback`
+  is; the two stay separate frames, since one resumes a session with its workspace and the other
+  marks a check due. (`agent/wake` is a different frame again: it resumes a sandbox.)
+- **Hold, not drop.** An undelivered wake stays pending on its subscription and is retried every ten
+  seconds while the agent's daemon is offline, draining or not the duty holder, as the feedback lane
+  retries a continuation. Holding costs nothing a drop would save, one pending wake per subscription
+  and no queue, and it covers what `nextCheck` cannot: a pull request merged during a rollout, or
+  while a laptop's daemon slept, is reported on reconnect rather than at a next check hours away. A
+  paused agent's daemon records the wake, and the sweep runs it once after the agent resumes, as for
+  an overdue check (§1.4).
+- **The Control Plane unavailable.** Events then wake nothing, and follow-ups fall back to time. A
+  signal that is only a wake kind is sent without making the code host wait on it: the relay does not
+  answer 503 when the Control Plane cannot store it, since that would also hold back the same
+  delivery's hook turns for something the timed check covers. A feedback kind keeps the lane's 503,
+  which the opening session's continuation relies on. A wake only saves time, so it adds
+  nothing to what [high-availability.md](high-availability.md) asks the Control Plane to keep up.
+- **Self-hosted and the pool.** The Control Plane sends a wake where it sends any trigger
+  (`dispatchDaemon`): a self-hosted agent's own daemon, or a live member of the agent's set, which
+  passes it to the duty holder. A follow-up's rows live in the data plane's store, so whichever member
+  holds the duty runs the check; a member that does not refuses, and the wake stays pending.
+- **Duplicates and replays.** GitHub redelivers under the same delivery id and GitLab retries under the
+  same `webhook-id`. The Control Plane keeps the lane's receipt per consumer and delivery, so a repeat
+  folds into nothing. Each wake carries a `wakeId`, the subscription's wake sequence; the daemon
+  records the last it applied per follow-up, so a retry after a lost acknowledgement starts no
+  second check.
+- **Ending.** The daemon removes the subscription when the follow-up ends, done or stopped; the
+  request is idempotent. The daemon owns follow-ups and the Control Plane only mirrors their watches,
+  so a daemon that starts serving an agent sends the full set of its watching follow-ups, and the
+  Control Plane drops the rest: a lost removal or a restored store leaves nothing behind. When the
+  Control Plane ends one for lost access, it sends a notice instead of a wake. The daemon records it on
+  the follow-up, the next check's prompt says the watch ended and why, and the console shows it; no
+  check runs for it.
+
+**Platforms** (recommended). GitHub and GitLab stay on the code-host seam: neither is a platform
+module ([integration-plugin-architecture.md](integration-plugin-architecture.md) §2). The event mapping
+and the subscribe-time read are each a member of the per-provider code-host surface the Control Plane
+(`codehost/provider.ts`) and the relay's ingress already have, so core names no provider.
+
+|                   | GitHub                                                                                                          | GitLab                                                                                                                                                                                                                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity          | the deployment's App: installation, numeric repository id, number                                               | an OAuth project binding: binding, instance, numeric project id, iid                                                                                                                                                                                                                                    |
+| Webhook           | the App's one webhook already subscribes to every event above (`GITHUB_APP_EVENTS`); no new permission or event | the binding's managed project webhook adds merge-request, issue, note and pipeline events while the project has a subscription, through the union hook rows and feedback already use; narrowing waits for the reconciler's next pass, so a follow-up taken and ended at once does not churn the webhook |
+| Relay match       | numeric repository id and installation, as for hook rules                                                       | numeric project id and its signing key, as for a feedback watch                                                                                                                                                                                                                                         |
+| First events      | at once                                                                                                         | once the webhook has converged; the timed check covers anything earlier                                                                                                                                                                                                                                 |
+| Cannot be watched | a repository no installation of the organization covers                                                         | a project with no binding in the organization, since installing its webhook needs a Maintainer's connection                                                                                                                                                                                             |
+
+Gitea implements the same seam and has a feedback lane, but has no event wake in v1 (§9 Q19).
+
+**Console** (recommended).
+
+- **Tasks tab and Activity.** A watching follow-up's row gains a line, "Watching
+  example-org/example-repo#12", linked to the object, and "· woken 14:05 (merged)" while its latest
+  check was a woken one.
+- **The task page.** A "Watches" field beside "Done when", with the link, and each check in its list
+  says what started it: its time, a message, or the events that woke it ("merged, CI finished").
+- **Visibility.** The watched object shows wherever the follow-up's title does (§5.11), only to a
+  viewer who may open its session; others see its state and next check, as today.
+- **An ended watch** reads "No longer watched: <reason>".
+- The daemon, which holds the URL and the wakes, carries them on the follow-up's row; the Control
+  Plane joins nothing.
+
+**Rollout** (recommended).
+
+- **Features, no flags or settings.** A relay that advertises `follow-up-watch-v1` is sent the watched
+  objects. The Control Plane advertises the same feature to daemons, and a daemon lists `watch` only
+  toward one that does; the daemon advertises `follow-up-wake-v1`, without which the Control Plane
+  accepts no subscription from it and sends it no wake. The assistant-mode flag already gates the
+  mode, and nothing else is added.
+- **Order.** Control Plane and relay first, inert until a daemon subscribes; then the daemon, which
+  turns it on; then the console.
+- **Pull requests.**
+  1. Protocol, Control Plane and relay, GitHub only: the subscription table, the subscribe, remove
+     and full-set requests and their access check, the lane's signal with a kind and the wake-only
+     kinds for watched objects, the second consumer and who speaks, folding, holding, and the wake
+     frame. The opening session's continuation changes in nothing it does, and its tests say so.
+  2. Daemon: `watch` on the three tools, with measured sizes; subscribing on take, approval, change
+     and end, and the full set on serving an agent; `wakeAt` and the sweep's due rule; the prompt
+     line; what started each check on the check log and the follow-up's row.
+  3. GitLab: the relay's event mapping, the webhook union, and a check's broker reads aimed at its
+     watched project.
+  4. Console: the Tasks tab, task page and Activity lines.
+
+  Each needs the one before it, except that 3 and 4 do not depend on each other.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -1629,7 +2011,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
 | Agent pause (#288)                  | Is "stop everything"; also suspends wakes and the outbox                                                                  |
 | Reminder injection (`shouldRemind`) | Carries the standing summary                                                                                              |
 | Dream host                          | The shape of the credential-less check host                                                                               |
-| Cron / hooks                        | Check triggers; hook routing in P2                                                                                        |
+| Cron / hooks                        | Cron: check triggers. Hooks: unchanged; a check is woken by a subscription of its own, not by hook routing (§5.14)        |
+| Pull-request feedback continuation  | The watcher of a pull request the agent opened; event wake is a second consumer of its lane and yields to it (§5.14)      |
 | `OrganizationSuggestion`            | Card component only                                                                                                       |
 | `Decision`                          | P2 triage                                                                                                                 |
 
@@ -1644,7 +2027,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
 | **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                          |
 | P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
 | First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped. Still to come: `propose` in its report round, under the introduction and with a follow-up form; Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                              |
-| P2 — cost and events              | Hook events routed to follow-up checks (§5.12); Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| P2 — cost and events              | Event wake (§5.14, proposed): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ---
@@ -1666,6 +2049,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
 - closing reads or memory in external places — reads are judged by who is asking and memory by
   audience instead (§5.5); drafting replies there (removed by #2979, B4); editing a draft
   before approval (discard and ask again);
+- offering a follow-up when the agent opens a pull request (§5.14): people ask for one, and the
+  session that opened it already handles its reviews;
 - runtimes outside the admission list, external memory plugins, self-hosted groups without a
   shared store.
 
@@ -1713,6 +2098,23 @@ under the introduction works. For a first look, `propose` changes in four ways:
     `member_joined_channel`. Unverified; one it does not report gets a first look only on request.
 15. **Lark/Feishu's own join** (§5.13): its module does not yet listen for the bot being added to a
     chat, so a Lark/Feishu place takes a first look only on request until it does.
+16. **The `watch` field** (§5.14): its name, a URL rather than a structure, and its place on
+    `followUp`, `propose` and `recordCheck` change agent-facing tools. The owner confirms or
+    changes them before the daemon's pull request.
+17. **Runs, branches and releases** (§5.14): "watch the release build" names no pull request.
+    Whether a later version watches a branch's or a tag's CI, or a release, and by what identity
+    before the run exists. Until then such a follow-up is woken by time.
+18. **Discussion wakes** (§5.14): decided 2026-10-16 that comments and new commits wake a follow-up
+    only where no session of the agent opened the pull request. Measure the share of such checks
+    that report nothing before widening or dropping them.
+19. **Gitea** (§5.14): it implements the code-host seam and has a feedback lane, but no event wake
+    in v1.
+20. **Several objects per follow-up** (§5.14): one in v1; "watch these three PRs" is three
+    follow-ups.
+21. **A GitHub read a check can rely on** (§5.14): a check reads a GitHub object only through the
+    runtime's shell and the `gh` wrapper, which runs only where the runtime's read-only mode lets a
+    command through without a permission request. Timed checks have the same gap today. Whether a
+    GitHub broker should give checks the read tools GitLab and Gitea have.
 
 ---
 
@@ -2250,3 +2652,31 @@ The report now opens it as the place's own root, bound to the channel's people.
 **Fifty-fifth revision (2026-10-16)**: §5.1 drops `dailySubsessionsPerItem`, which nothing read;
 follow-ups replaced the items it counted (§5.12), and the console no longer shows "Tasks per item
 per day". A stored policy that still carries it is read without it.
+
+**Fifty-sixth revision (2026-10-16)**: §5.14 proposes event wake (issue #2810; §1.5, §2, §5.9,
+§5.12, §6, §7, §9). A follow-up was woken only by time, so it spent budget whether or not anything
+changed and reported up to a check interval late, while the event that answered it reached only
+agents with a hook rule on the repository. Recommended, for the owner to confirm: a follow-up names
+one pull request, merge request or issue with a `watch` URL on `followUp`, `propose`'s follow-up
+form and `recordCheck` (an agent-facing change that waits for the owner's OK); the Control Plane
+keeps a wake-only subscription limited to what the agent's own code-host access reads, tells the
+relay only the watched objects, and sends the daemon a body-free wake that makes the follow-up's
+check due, with `nextCheck` as the fallback. Changes of state wake after a quiet minute and
+discussion after 30 minutes, at most four woken checks an hour per follow-up, inside
+`dailyCheckBudget` with a fifth kept for scheduled checks. An undelivered wake is held on its
+subscription, one at most, and ends with the follow-up. Piggybacking on hook rules and timed checks
+alone are recorded as not chosen. GitHub needs no new App event; GitLab's managed webhook widens
+while a project is watched.
+
+**Fifty-seventh revision (2026-10-16)**: §5.14 settles its place beside the pull-request feedback
+continuation (issue #2810; §6, §8, §9). The product owner decided who speaks when a pull request has
+both the session that opened it and a follow-up watching it: an event that resumes that session
+(a review with text or requesting changes, a review comment, a conversation comment, a failed check
+suite) wakes none of the same agent's follow-ups on it, since the session already replies where the
+work was asked for; merged, closed, reopened, an approval without text and a passed check suite are
+the follow-up's, as nothing resumes the session for them, and the first rule wins where they overlap; and discussion wakes a follow-up only where no such session
+exists, as for an issue or another's pull request. Event wake becomes the lane's second consumer: the
+relay's feedback signal gains the event's kind and the wake-only kinds for watched objects, the Control
+Plane receives once and serves both, and admission is the lane's per provider, so the App-comment veto
+of the fifty-sixth revision is dropped. The agent does not offer a follow-up when it opens a pull
+request (§8).
