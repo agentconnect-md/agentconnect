@@ -1,9 +1,9 @@
-// A patrol's proposed task on the approval record (assistant-mode.md §5.10): one contract suite, run on SQLite by default and on PostgreSQL by store-postgres.
+// A check's proposed task on the approval record (assistant-mode.md §5.10): one contract suite, run on SQLite by default and on PostgreSQL by store-postgres.
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
 import { afterEach, describe, expect, it } from 'vitest'
-import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import { checkCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import {
   ASSISTANT_DRAFT_TTL_MS,
   assistantFollowUpHash,
@@ -32,8 +32,8 @@ const SCOPE = 'T0EXAMPLE'
 const PLACE = { platform: 'slack', integrationId: 'int-a', channel: 'C0GENERAL', thread: null }
 const TASK = 'Rebase PR #12 onto main and push.'
 const BY = { id: 'user:usr-1', name: 'Grace' }
-const patrolKey = (agentId: string, run = '1'): string =>
-  sessionKey('slack', 'C0GENERAL', patrolCoordinate(run), agentId, SCOPE)
+const checkKey = (agentId: string, run = '1'): string =>
+  sessionKey('slack', 'C0GENERAL', checkCoordinate(run), agentId, SCOPE)
 const taskKey = (agentId: string, run = '1'): string =>
   sessionKey('slack', 'C0GENERAL', taskCoordinate(run), agentId, SCOPE)
 
@@ -51,10 +51,10 @@ const propose = (s: LocalStore, agentId: string, over: Partial<AssistantTaskCrea
       platform: 'slack',
       integrationId: 'int-a',
       channel: 'C0GENERAL',
-      thread: patrolCoordinate('1'),
+      thread: checkCoordinate('1'),
       transportScope: SCOPE,
-      sessionKey: patrolKey(agentId),
-      sessionId: 'sid-patrol-1',
+      sessionKey: checkKey(agentId),
+      sessionId: 'sid-check-1',
       place: false
     },
     now: 1_000,
@@ -165,12 +165,12 @@ describe('a proposal on the approval record', () => {
   it('knows whether the check running in a follow-up’s session since a time already proposed', async () => {
     const s = await open()
     const a = agent()
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 0)).toBe(false)
+    expect(await s.assistantDrafts.proposedFrom(a, checkKey(a), 0)).toBe(false)
     await propose(s, a)
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 1_000)).toBe(true)
+    expect(await s.assistantDrafts.proposedFrom(a, checkKey(a), 1_000)).toBe(true)
     // A later check of the same follow-up has not proposed yet.
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 1_001)).toBe(false)
-    expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a, '2'), 0)).toBe(false)
+    expect(await s.assistantDrafts.proposedFrom(a, checkKey(a), 1_001)).toBe(false)
+    expect(await s.assistantDrafts.proposedFrom(a, checkKey(a, '2'), 0)).toBe(false)
   })
 })
 
@@ -412,7 +412,7 @@ const post = (s: LocalStore, agentId: string) =>
 
 describe.skipIf(usingPostgresStore())('the v39 → v40 approval record on SQLite', () => {
   it('widens the record to tasks and keeps every draft', async () => {
-    expect(SCHEMA_VERSION).toBe(56)
+    expect(SCHEMA_VERSION).toBe(57)
     const path = tempStorePath('ac-assistant-v39-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

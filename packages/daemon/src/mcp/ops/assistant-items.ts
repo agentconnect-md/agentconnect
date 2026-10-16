@@ -15,7 +15,7 @@ import {
   type AssistantPlace
 } from '../../store/assistant-items.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
-import { isPatrolCoordinate } from '../../session/subsession-coordinate.js'
+import { isCheckCoordinate } from '../../session/subsession-coordinate.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { parseArgs, requiredString } from './args.js'
 
@@ -48,7 +48,7 @@ export interface AssistantItemDeps {
     /** A proposal of the place's long session on the round a first look reports back (§5.13); refused on any other. */
     proposeAfterFirstLook?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
     /** A check's side, in the follow-up's own session. */
-    patrol?: {
+    check?: {
       /** The follow-up this session's check is running for; undefined once it ended. */
       itemFor(ctx: SessionContext): Promise<string | undefined>
       /** Keep the check's report; it reaches the follow-up's conversation once the check ends. False once it ended. */
@@ -114,7 +114,7 @@ export const FOLLOW_UP_ARGS = z.object({
 })
 
 /** A check may not set its next check sooner than this, so a follow-up cannot wake itself in a loop. */
-export const PATROL_MIN_NEXT_CHECK_MS = 5 * 60_000
+export const MIN_NEXT_CHECK_MS = 5 * 60_000
 
 /** A check's `recordCheck` (assistant-mode.md §5.12): what it saw, always, its schedule, and an optional report. */
 export const RECORD_CHECK_ARGS = z.object({
@@ -350,21 +350,21 @@ export const followUp: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) 
 
 /** A check's write (assistant-mode.md §5.12): what it saw on its own follow-up, the schedule, and a report kept for its end. */
 export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
-  if (!isPatrolCoordinate(ctx.thread)) throw new Error('recordCheck is available only in a follow-up’s check')
+  if (!isCheckCoordinate(ctx.thread)) throw new Error('recordCheck is available only in a follow-up’s check')
   const input = parseArgs(RECORD_CHECK_ARGS, args)
   const ledger = ledgerOf(ctx, deps)
-  const patrol = deps.assistantItems?.patrol
-  const itemId = patrol ? await patrol.itemFor(ctx) : undefined
-  if (!patrol || itemId === undefined) throw new Error('this check has ended; nothing was written')
+  const port = deps.assistantItems?.check
+  const itemId = port ? await port.itemFor(ctx) : undefined
+  if (!port || itemId === undefined) throw new Error('this check has ended; nothing was written')
   if ((await ledger.get(ctx.agentId, itemId))?.firstLook)
-    return await handBackFirstLook(ctx, input, itemId, ledger, patrol)
+    return await handBackFirstLook(ctx, input, itemId, ledger, port)
   if (input.report !== undefined && input.report.length > ASSISTANT_ITEM_LIMITS.observation)
     throw new Error(
       `argument report must be at most ${ASSISTANT_ITEM_LIMITS.observation} characters; nothing was written`
     )
   if (input.done === true && input.nextCheck !== undefined)
     throw new Error('recordCheck takes `done` or `nextCheck`, not both; nothing was written')
-  if (input.nextCheck !== undefined && input.nextCheck < patrol.now() + PATROL_MIN_NEXT_CHECK_MS)
+  if (input.nextCheck !== undefined && input.nextCheck < port.now() + MIN_NEXT_CHECK_MS)
     throw new Error('nextCheck must be at least five minutes from now; nothing was written')
   const next: AssistantItemSchedule =
     input.done === true
@@ -376,7 +376,7 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   if (!appended) throw new Error('this follow-up is gone; nothing was written')
   // One its conversation ended while this check ran stays ended; what the check saw is still recorded.
   const open = await ledger.schedule(ctx.agentId, itemId, next)
-  if (input.report !== undefined && !(await patrol.report(ctx, itemId, input.report)))
+  if (input.report !== undefined && !(await port.report(ctx, itemId, input.report)))
     throw new Error('this check has ended; the observation was written but the report was not kept')
   return {
     ok: true,
@@ -393,13 +393,13 @@ async function handBackFirstLook(
   input: z.infer<typeof RECORD_CHECK_ARGS>,
   itemId: string,
   ledger: AssistantItemLedgerPort,
-  patrol: NonNullable<NonNullable<AssistantItemDeps['assistantItems']>['patrol']>
+  port: NonNullable<NonNullable<AssistantItemDeps['assistantItems']>['check']>
 ): Promise<Record<string, unknown>> {
   if (input.report === undefined)
     throw new Error('a first look hands back its whole answer as `report`; nothing was written')
   const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'check' })
   if (!appended) throw new Error('this first look is gone; nothing was written')
-  if (!(await patrol.report(ctx, itemId, input.report)))
+  if (!(await port.report(ctx, itemId, input.report)))
     throw new Error('this first look has ended; the observation was written but the report was not kept')
   return { ok: true, report: 'passed on when this first look ends; end your turn now' }
 }
@@ -407,15 +407,15 @@ async function handBackFirstLook(
 /** A check asks for approval to act (assistant-mode.md §5.10), as does a place's long session after a first look (§5.13); it runs nothing itself. */
 export const propose: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
   const afterFirstLook = deps.assistantItems?.proposeAfterFirstLook
-  const check = isPatrolCoordinate(ctx.thread)
+  const check = isCheckCoordinate(ctx.thread)
   if (!check && (!afterFirstLook || !ctx.tools.some((tool) => tool.name === 'propose')))
     throw new Error('propose is available only in a follow-up’s check')
   const input = parseArgs(PROPOSE_ARGS, args)
   ledgerOf(ctx, deps)
   if (!check) return await afterFirstLook!(ctx, input)
-  const patrol = deps.assistantItems?.patrol
-  if (!patrol?.propose) throw new Error('this check has ended; nothing was proposed')
-  return await patrol.propose(ctx, input)
+  const port = deps.assistantItems?.check
+  if (!port?.propose) throw new Error('this check has ended; nothing was proposed')
+  return await port.propose(ctx, input)
 }
 
 /** Registry entries for `ops.ts`, kept here so the shared registry grows by one spread. */

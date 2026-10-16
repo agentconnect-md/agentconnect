@@ -176,9 +176,9 @@ interface Origin {
 
 // What the daemon records: the caller's platform, a channel derived from the agent, and a reserved thread of its own.
 const WEBCHAT_SUBSESSION: Origin = { platform: 'webchat', channel: 'a2a:agent-1', thread: 'subsession:delivery-1' }
-const WEBCHAT_PATROL: Origin = { platform: 'webchat', channel: 'a2a:agent-1', thread: 'subsession:patrol-delivery-2' }
+const WEBCHAT_CHECK: Origin = { platform: 'webchat', channel: 'a2a:agent-1', thread: 'subsession:check-delivery-2' }
 const SLACK_SUBSESSION: Origin = { platform: 'slack', channel: 'a2a:agent-1', thread: 'subsession:delivery-3' }
-const SLACK_PATROL: Origin = { platform: 'slack', channel: 'a2a:agent-1', thread: 'subsession:patrol-delivery-4' }
+const SLACK_CHECK: Origin = { platform: 'slack', channel: 'a2a:agent-1', thread: 'subsession:check-delivery-4' }
 const WEBCHAT: Origin = { platform: 'webchat', channel: 'conv-1', thread: null }
 const SLACK: Origin = { platform: 'slack', channel: 'C0123', thread: '1700000000.000100' }
 
@@ -321,9 +321,9 @@ afterEach(() => {
 
 const SUBSESSIONS = [
   ['a webchat-origin task', WEBCHAT_SUBSESSION],
-  ['a webchat-origin patrol', WEBCHAT_PATROL],
+  ['a webchat-origin check', WEBCHAT_CHECK],
   ['a Slack-origin task', SLACK_SUBSESSION],
-  ['a Slack-origin patrol', SLACK_PATROL]
+  ['a Slack-origin check', SLACK_CHECK]
 ] as const
 
 describe.each([
@@ -457,7 +457,7 @@ describe.each([
 
   it('shows its state, what counts as done and its recent checks, read by its own session', async () => {
     wire.task = FOLLOW_UP
-    await open(SLACK_PATROL, { parent: OWNER })
+    await open(SLACK_CHECK, { parent: OWNER })
 
     expect(wire.taskReads).toEqual([['agent-1', 'session-1']])
     expect(summary()?.dataset.followUpSummary).toBe('waiting')
@@ -479,7 +479,7 @@ describe.each([
   // assistant-mode.md §5.13: a first look's page names it as one.
   it('names a first look as one', async () => {
     wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true } }
-    await open(SLACK_PATROL, { parent: OWNER })
+    await open(SLACK_CHECK, { parent: OWNER })
     expect(summary()?.textContent).toContain('First look')
     expect(summary()?.textContent).not.toContain('Follow-up')
   })
@@ -491,7 +491,7 @@ describe.each([
     ['stopped', 'Stopped']
   ] as const)('reads %s as its state', async (status, label) => {
     wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, status, nextCheck: null } }
-    await open(SLACK_PATROL, { parent: OWNER })
+    await open(SLACK_CHECK, { parent: OWNER })
 
     expect(summary()?.querySelector('[data-follow-up-status]')?.textContent).toBe(label)
   })
@@ -501,7 +501,7 @@ describe.each([
     ['a follow-up the reader may not see', { ...FOLLOW_UP, visible: false }]
   ] as const)('shows nothing more for %s', async (_name, task) => {
     wire.task = task
-    await open(SLACK_PATROL, { parent: OWNER })
+    await open(SLACK_CHECK, { parent: OWNER })
 
     expect(wire.taskReads).toEqual([['agent-1', 'session-1']])
     expect(summary()).toBeNull()
@@ -510,7 +510,7 @@ describe.each([
   it('stays as it was toward a daemon that cannot read one task', async () => {
     daemonFeatures.length = 0
     wire.task = FOLLOW_UP
-    await open(SLACK_PATROL, { parent: OWNER })
+    await open(SLACK_CHECK, { parent: OWNER })
 
     expect(wire.taskReads).toEqual([])
     expect(summary()).toBeNull()

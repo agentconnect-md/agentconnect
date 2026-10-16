@@ -1,4 +1,4 @@
-// Drafts (assistant-mode.md §5.5, §5.10): approval records for a post or a patrol's proposed task.
+// Drafts (assistant-mode.md §5.5, §5.10): approval records for a post or a check's proposed task.
 import { createHash, randomUUID } from 'node:crypto'
 import {
   ASSISTANT_PROPOSAL_SENTENCE_MAX,
@@ -19,7 +19,7 @@ export const ASSISTANT_DRAFT_STATUSES = [
 ] as const
 export type AssistantDraftStatus = (typeof ASSISTANT_DRAFT_STATUSES)[number]
 
-/** `reply`: the turn's reply in an external place; `elsewhere`: a post the agent aimed at another place; `task`: a patrol's proposal. */
+/** `reply`: the turn's reply in an external place; `elsewhere`: a post the agent aimed at another place; `task`: a check's proposal. */
 export type AssistantDraftKind = 'reply' | 'elsewhere' | 'task'
 
 /** `post` is executed by the daemon itself; `task` by a sub-session it opens once approved (§5.10). */
@@ -85,7 +85,7 @@ export interface AssistantProposalFollowUp {
   nextCheck: number | null
 }
 
-/** What a patrol proposes (§5.10): the card's sentence and reason, and the item at the version it was proposed against. */
+/** What a check proposes (§5.10): the card's sentence and reason, and the item at the version it was proposed against. */
 export interface AssistantProposal {
   sentence: string
   why: string
@@ -150,7 +150,7 @@ export interface AssistantDraftCreate {
   now?: number
 }
 
-/** A patrol's proposal: the item's place is its target, and the task its text. */
+/** A check's proposal: the follow-up's place is its target, and the task its text. */
 export interface AssistantTaskCreate {
   id?: string
   agentId: string
@@ -410,7 +410,7 @@ export class AssistantDraftLedger {
     return await this.insert(id, row)
   }
 
-  /** A patrol's proposal (§5.10): awaiting review for the same day a draft is, bound to the task (or follow-up form), the agent and the item's version. */
+  /** A check's proposal (§5.10): awaiting review for the same day a draft is, bound to the task (or follow-up form), the agent and the item's version. */
   async createTask(input: AssistantTaskCreate): Promise<AssistantDraft> {
     const now = input.now ?? Date.now()
     const { target, sentence, why, source, followUp, round } = input

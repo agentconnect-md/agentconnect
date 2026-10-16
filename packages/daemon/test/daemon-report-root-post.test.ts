@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
-import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import { checkCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -208,7 +208,7 @@ describe('a report into a Slack parent that appends, in a DM and in a channel', 
   })
 
   it.each([
-    ['patrol', patrolCoordinate('p-1'), '[patrol] nothing needs you'],
+    ['follow-up', checkCoordinate('p-1'), '[follow-up] nothing needs you'],
     ['task', taskCoordinate('t-1'), '[approved proposal] the proposal ran'],
     ['failure', subsessionCoordinate('s-1'), '[approved proposal ended] it stopped before finishing']
   ])('posts a daemon %s report at the root', async (kind, callerThread, text) => {

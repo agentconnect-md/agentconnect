@@ -113,7 +113,7 @@ import {
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
-import { isPatrolCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { isCheckCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 import { inConversation, requestConversation } from './request-conversation.js'
 import {
   subsessionLabel,
@@ -1055,8 +1055,8 @@ export class PermissionCoordinator {
   async askToJoin(p: Pending, ask: JoinAsk, waitMs: number, offered: JoinOffered): Promise<JoinAnswer> {
     const { hostKey: owner, acpSessionId: sessionId } = p
     const agentId = hostKeyAgentId(owner)
-    // A patrol never asks (assistant-mode.md §5.9).
-    if (!this.turnStillLive(owner, sessionId, p) || isPatrolCoordinate(p.plan.sessionThread))
+    // A check never asks (assistant-mode.md §5.12).
+    if (!this.turnStillLive(owner, sessionId, p) || isCheckCoordinate(p.plan.sessionThread))
       return { outcome: 'unavailable' }
     const requestId = randomUUID()
     const webchat = p.webchat !== undefined && !p.webchat.continuation
@@ -1875,10 +1875,10 @@ export class PermissionCoordinator {
     return { ok: true, allow: true, label, response: { action: 'accept', content: { [propName]: chosen } } }
   }
 
-  /** A background sub-session's route to its conversation (assistant-mode.md §5.6); a patrol never asks, and a failed lookup keeps today's path. */
+  /** A background sub-session's route to its conversation (assistant-mode.md §5.6); a check never asks, and a failed lookup keeps today's path. */
   private async subsessionRoute(p: Pending): Promise<SubsessionApprovalRoute | undefined> {
     const thread = p.plan.sessionThread
-    if (!isSubsessionCoordinate(thread) || isPatrolCoordinate(thread) || !this.host.subsessionApprovalRoute)
+    if (!isSubsessionCoordinate(thread) || isCheckCoordinate(thread) || !this.host.subsessionApprovalRoute)
       return undefined
     try {
       return await this.host.subsessionApprovalRoute(p)
@@ -2301,9 +2301,9 @@ export class PermissionCoordinator {
       })
       return { outcome: { outcome: 'cancelled' } }
     }
-    // assistant-mode.md §5.9: a patrol is read-only, so whatever would need approval is refused, never asked.
-    if (isPatrolCoordinate(p.plan.sessionThread)) {
-      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'assistant_patrol' })
+    // assistant-mode.md §5.12: a check is read-only, so whatever would need approval is refused, never asked.
+    if (isCheckCoordinate(p.plan.sessionThread)) {
+      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'assistant_check' })
       const reject = params.options.find((o) => o.kind === 'reject_once' || o.kind === 'reject_always')
       return reject
         ? { outcome: { outcome: 'selected', optionId: reject.optionId } }
@@ -2427,8 +2427,8 @@ export class PermissionCoordinator {
     // advertised. Correlate its opaque id with a preceding trusted tool event;
     // never infer trust from the human-facing elicitation message.
     if (isBuiltinSystemToolElicitation(params, p.builtinSystemToolCallIds)) return { action: 'accept' }
-    // A patrol asks no one (assistant-mode.md §5.9).
-    if (isPatrolCoordinate(p.plan.sessionThread)) return { action: 'decline' }
+    // A check asks no one (assistant-mode.md §5.12).
+    if (isCheckCoordinate(p.plan.sessionThread)) return { action: 'decline' }
     const isApproval = isMcpToolApprovalElicitation(params)
     if (isApproval && this.callerAnswers(p)) {
       return await this.askCaller<CreateElicitationResponse>(p, sessionId, elicitationApprovalParts(params), {

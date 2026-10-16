@@ -279,7 +279,7 @@ describe('a scheduled run in a place already known external', () => {
 })
 
 describe('cards no event from the place triggered', () => {
-  /** The place's long session in C_ROOM, which a sub-session or a patrol item belongs to. */
+  /** The place's long session in C_ROOM, which a sub-session or a check item belongs to. */
   async function placeSession(h: Awaited<ReturnType<typeof boot>>) {
     const scope: string = h.d.transportScopeForIntegrationIds([INT])
     const key = sessionKey('slack', 'C_ROOM', 'append:1', 'bot-a', scope)
@@ -324,7 +324,7 @@ describe('cards no event from the place triggered', () => {
     }
   })
 
-  it('cards a patrol’s proposal in its place only while the place is confirmed internal', async () => {
+  it('cards a check’s proposal in its place only while the place is confirmed internal', async () => {
     const h = await boot()
     try {
       const { scope } = await placeSession(h)
@@ -333,14 +333,14 @@ describe('cards no event from the place triggered', () => {
         .mockResolvedValue({ draft: { id: 'p-1', expiresAt: Date.now() }, approver: null } as never)
       const run = {
         agentId: 'bot-a',
-        key: 'k-patrol',
+        key: 'k-check',
         item: { id: 'item-1', version: 1, origin: { platform: 'slack', channel: 'C_ROOM', transportScope: scope } }
       }
       const input = { task: 'rerun the job', sentence: 'Rerun the nightly job?', why: 'it failed twice' }
-      await h.d.proposeFromPatrol(run, input)
+      await h.d.proposeFromCheck(run, input)
       h.slack.shared.add('C_ROOM')
       h.later()
-      await h.d.proposeFromPatrol(run, input)
+      await h.d.proposeFromCheck(run, input)
       expect(propose.mock.calls.map(([call]) => (call as { place?: { channel: string } }).place?.channel)).toEqual([
         'C_ROOM',
         undefined

@@ -17,7 +17,7 @@ import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import type { Decider, FollowUpTake, TaskStart } from './drafts.js'
-import type { PatrolParent } from './patrol.js'
+import type { CheckParent } from './follow-up-checks.js'
 
 /** Where a sub-session sits, for a report the daemon makes into its parent on its behalf. */
 export interface TaskCaller {
@@ -55,7 +55,7 @@ export interface AssistantTasksHost {
   /** This daemon holds the agent's duty. */
   servesAgent(agentId: string): boolean
   /** The long session of the item's place, which the task takes as its parent and reports into. */
-  parentFor(agentId: string, place: AssistantItem['origin']): Promise<PatrolParent | undefined>
+  parentFor(agentId: string, place: AssistantItem['origin']): Promise<CheckParent | undefined>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,

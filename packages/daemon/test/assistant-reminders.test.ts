@@ -202,7 +202,7 @@ describe('the assistant reminder ledger', () => {
 
 describe.skipIf(usingPostgresStore())('the v41 → v42 reminder table on SQLite', () => {
   it('adds the table to a v41 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(56)
+    expect(SCHEMA_VERSION).toBe(57)
     const path = tempStorePath('ac-assistant-v41-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
@@ -262,7 +262,7 @@ describe.skipIf(!usingPostgresStore())('the v41 → v42 reminder table on Postgr
         agentId: a,
         title: 'Kept across the upgrade',
         origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
-        taskKey: 'slack:C0GENERAL:subsession:patrol-1:kept'
+        taskKey: 'slack:C0GENERAL:subsession:check-1:kept'
       })
       await first.close()
 

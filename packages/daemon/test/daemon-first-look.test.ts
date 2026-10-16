@@ -12,7 +12,7 @@ import { NO_FOLLOW_UPS, standingSummaryFor } from '../src/assistant/standing-sum
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { isAppendCoordinate } from '../src/session/append-coordinate.js'
 import { isFirstLookCoordinate } from '../src/session/subsession-coordinate.js'
-import { PATROL_MAX_FAILURES } from '../src/store/assistant-patrols.js'
+import { CHECK_MAX_FAILURES } from '../src/store/assistant-checks.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -56,7 +56,7 @@ function scaffold(opts: { budget?: number; bindRules?: unknown[] } = {}): string
         }
       ],
       output: { mode: 'low' },
-      assistantMode: { ...ON, ...(opts.budget !== undefined ? { limits: { dailyPatrolBudget: opts.budget } } : {}) }
+      assistantMode: { ...ON, ...(opts.budget !== undefined ? { limits: { dailyCheckBudget: opts.budget } } : {}) }
     })
   )
   return root
@@ -229,7 +229,7 @@ describe('a first look someone asks for', () => {
     // One check ends it as done; it is listed as a first look and takes no messages.
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
     expect(item).toMatchObject({ firstLook: 'requested', status: 'done', nextCheck: null })
-    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 5)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.id, 5)).toEqual([
       expect.objectContaining({ observation: 'Read 2 weeks of the place.', reported: true })
     ])
     const listed = (await executeTool(placeCtx(place), 'listTasks', {}, deps)) as any
@@ -279,7 +279,7 @@ describe('a first look someone asks for', () => {
   it('is refused past the day’s budget with the time it resets', async () => {
     const { daemon, d, deps } = await boot(scaffold({ budget: 1 }))
     const place = await seedPlace(d)
-    await d.store.assistantPatrols.db.query(
+    await d.store.assistantChecks.db.query(
       'INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)',
       ['bot-a', 'an-earlier-check', Date.now() - 60_000]
     )
@@ -308,12 +308,12 @@ describe('a first look someone asks for', () => {
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
-    for (let n = 2; n <= PATROL_MAX_FAILURES; n++) {
-      await d.store.assistantPatrols.db.query(
-        'UPDATE assistant_patrol SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
+    for (let n = 2; n <= CHECK_MAX_FAILURES; n++) {
+      await d.store.assistantChecks.db.query(
+        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
         ['bot-a', item.id]
       )
-      await d.patrols.sweep()
+      await d.followUpChecks.sweep()
       await vi.waitFor(() => expect(looks()).toHaveLength(n), WAIT)
       await settled()
     }
@@ -407,7 +407,7 @@ describe('the bot joining a place', () => {
     // Nobody spoke there yet, so its owner is the coordinate the place's first message would key.
     expect(await d.store.placeSession('bot-a', 'slack', 'C1', scopeOf(d))).toBeUndefined()
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
     expect(modelText(looks()[0]!.msg)).toContain('a channel you were just added to.')
@@ -483,15 +483,15 @@ describe('the bot joining a place', () => {
       WAIT
     )
     const item = await d.store.assistantItems.latestFirstLook('bot-a', place(d))
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
-    for (let n = 2; n <= PATROL_MAX_FAILURES; n++) {
-      await d.store.assistantPatrols.db.query(
-        'UPDATE assistant_patrol SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
+    for (let n = 2; n <= CHECK_MAX_FAILURES; n++) {
+      await d.store.assistantChecks.db.query(
+        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
         ['bot-a', item.id]
       )
-      await d.patrols.sweep()
+      await d.followUpChecks.sweep()
       await vi.waitFor(() => expect(looks()).toHaveLength(n), WAIT)
       await settled()
     }

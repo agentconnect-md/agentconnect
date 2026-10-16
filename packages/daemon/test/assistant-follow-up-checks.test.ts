@@ -8,14 +8,14 @@ import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
 import { FOLLOW_UP_TOOL, RECORD_CHECK_ARGS, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
-import { DEFAULT_DAILY_PATROL_BUDGET, patrolPrompt, patrolTools } from '../src/assistant/patrol.js'
+import { DEFAULT_DAILY_CHECK_BUDGET, checkPrompt, checkTools } from '../src/assistant/follow-up-checks.js'
 import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
-import { isPatrolCoordinate, isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { isCheckCoordinate, isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import type { AssistantItem } from '../src/store/assistant-items.js'
-import { PATROL_MAX_FAILURES } from '../src/store/assistant-patrols.js'
+import { CHECK_MAX_FAILURES } from '../src/store/assistant-checks.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { ObjectToolSchema } from '../src/tool-schema/descriptor.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -102,7 +102,7 @@ async function boot(root: string) {
         if (!JSON.stringify(blocks).includes(CHECK_OPENING)) return 'end_turn'
         if (behavior.check === 'throw') throw new Error('the runtime exited')
         if (behavior.check === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
-        const ctx = [...registered].reverse().find((c) => isPatrolCoordinate(c.thread))!
+        const ctx = [...registered].reverse().find((c) => isCheckCoordinate(c.thread))!
         // A behavior that never returns waits, like `hang`, until the turn is cancelled.
         return await Promise.race([
           behavior.check(ctx).then(() => 'end_turn'),
@@ -153,7 +153,7 @@ async function boot(root: string) {
     dispatched.push({ agentId, msg, callMeta, turn: turn.catch(() => undefined) })
     return turn
   }
-  const checks = () => dispatched.filter((c) => isPatrolCoordinate(c.msg.thread))
+  const checks = () => dispatched.filter((c) => isCheckCoordinate(c.msg.thread))
   const reports = () => dispatched.filter((c) => c.msg.parentReport === true)
   /** Every turn dispatched so far, and any it dispatched in turn, has settled, and so has the check bookkeeping. */
   const settled = async () => {
@@ -198,7 +198,7 @@ async function takeFollowUp(
   const agentId = over.agentId ?? 'bot-a'
   const scope = scopeOf(d, agentId)
   const nextCheck = over.nextCheck === undefined ? Date.now() - MINUTE : over.nextCheck
-  return await d.patrols.take({
+  return await d.followUpChecks.take({
     agentId,
     origin: { platform: 'slack', channel: 'C1', transportScope: scope },
     caller: { sessionId: `sid-parent-${agentId}`, key: sessionKey('slack', 'C1', 'append:0', agentId, scope) },
@@ -236,7 +236,7 @@ const reporting =
     )
   }
 
-const checkState = (d: any, itemId: string) => d.store.assistantPatrols.get('bot-a', itemId)
+const checkState = (d: any, itemId: string) => d.store.assistantChecks.get('bot-a', itemId)
 
 /** The place's long session in C1, as its bridge context would carry it. */
 const placeCtx = (place: { coordinate: string; scope: string }): SessionContext => ({
@@ -273,7 +273,7 @@ describe('a due next check wakes one check', () => {
     const item = await takeFollowUp(d)
     behavior.check = quiet(deps)
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
 
@@ -287,7 +287,7 @@ describe('a due next check wakes one check', () => {
     expect(check!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, originSessionId: 'sid-parent-bot-a' })
     expect(check!.callMeta.needsReply).toBeUndefined()
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
-      kind: 'patrol',
+      kind: 'follow-up',
       state: 'done',
       parentSessionId: 'sid-parent-bot-a',
       parentSessionKey: place.key
@@ -298,7 +298,7 @@ describe('a due next check wakes one check', () => {
     const after = await d.store.assistantItems.get('bot-a', item.id)
     expect(after.observations.map((o: any) => [o.text, o.author])).toEqual([['The build is still running.', 'check']])
     expect(after).toMatchObject({ status: 'active' })
-    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([
       expect.objectContaining({ checkNo: 1, observation: 'The build is still running.', reported: false })
     ])
 
@@ -311,8 +311,8 @@ describe('a due next check wakes one check', () => {
     expect(host.newSession.mock.calls.at(-1)?.[6]).toEqual(CLAUDE_HEADLESS_DISALLOWED_TOOLS)
 
     // Not again for the same next check, however often the sweep runs.
-    await d.patrols.sweep()
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
+    await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(1)
     await daemon.stop()
@@ -323,17 +323,17 @@ describe('a due next check wakes one check', () => {
     await seedPlace(d)
     const item = await takeFollowUp(d)
     behavior.check = quiet(deps)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
     await settled()
     expect(checks()[1]!.msg.thread).toBe(checks()[0]!.msg.thread)
     // The second check is handed what the first one saw.
     expect(modelText(checks()[1]!.msg)).toContain('The build is still running.')
-    expect((await d.store.assistantPatrols.checks('bot-a', item.id, 10)).map((c: any) => c.checkNo)).toEqual([2, 1])
+    expect((await d.store.assistantChecks.checks('bot-a', item.id, 10)).map((c: any) => c.checkNo)).toEqual([2, 1])
     await daemon.stop()
   })
 
@@ -345,7 +345,7 @@ describe('a due next check wakes one check', () => {
     const item = await takeFollowUp(d)
     behavior.check = reporting(deps)
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
@@ -361,7 +361,7 @@ describe('a due next check wakes one check', () => {
     expect(prompts.find((p: string) => p.includes(CHECK_OPENING))).toContain(CHECK_LANGUAGE)
     expect(prompts.find((p: string) => p.includes('found a change'))).toContain(ANSWER_LANGUAGE)
     expect((await d.store.assistantItems.get('bot-a', item.id)).status).toBe('done')
-    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([
       expect.objectContaining({ observation: 'The release is published.', reported: true })
     ])
     expect(checks()).toHaveLength(1)
@@ -372,8 +372,8 @@ describe('a due next check wakes one check', () => {
     const { daemon, d, checks, settled } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const item = await takeFollowUp(d)
 
-    await d.patrols.sweep()
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
+    await d.followUpChecks.sweep()
     await settled()
 
     expect(checks()).toHaveLength(0)
@@ -391,15 +391,15 @@ describe('a due next check wakes one check', () => {
     behavior.check = quiet(deps)
 
     d.agents.get('bot-a').pause = true
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(0)
 
     d.agents.get('bot-a').pause = false
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(1)
     await daemon.stop()
@@ -413,21 +413,21 @@ describe('a due next check wakes one check', () => {
     const item = await takeFollowUp(d)
     behavior.check = 'hang'
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     d.agents.get('bot-a').pause = true
     await d.interruptAgentTurns('bot-a', 'pause')
     await settled()
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, runningKey: null, patrolledNextCheck: null })
-    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([])
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, runningKey: null, checkedNextCheck: null })
+    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([])
     expect(reports()).toHaveLength(0)
 
     d.agents.get('bot-a').pause = false
     behavior.check = quiet(deps)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
     await settled()
-    expect(await checkState(d, item.id)).toMatchObject({ patrolledNextCheck: item.nextCheck })
+    expect(await checkState(d, item.id)).toMatchObject({ checkedNextCheck: item.nextCheck })
     await daemon.stop()
   })
 
@@ -440,7 +440,7 @@ describe('a due next check wakes one check', () => {
     const serves = d.servesAgent.bind(d)
     d.servesAgent = (agentId: string) => agentId !== 'bot-a' && serves(agentId)
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(0)
     await daemon.stop()
@@ -455,16 +455,16 @@ describe('one scheduled check at a time, beside the delegations', () => {
     await takeFollowUp(d, { title: 'Second', nextCheck: Date.now() - MINUTE })
     behavior.check = 'hang'
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     expect(checks()).toHaveLength(1)
     expect(modelText(checks()[0]!.msg)).toContain('Title: First')
 
     behavior.check = quiet(deps)
     await d.interruptTurn('bot-a', first.taskKey, 'stop')
     await settled()
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
     expect(modelText(checks()[1]!.msg)).toContain('Title: Second')
     await settled()
@@ -478,7 +478,7 @@ describe('one scheduled check at a time, beside the delegations', () => {
     const place = await seedPlace(d)
     await takeFollowUp(d)
     behavior.check = 'hang'
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
 
     const delegation = (n: number): MessageAgentReq => ({
@@ -511,11 +511,11 @@ describe('a check reads and records, nothing else', () => {
     await seedPlace(d)
     await takeFollowUp(d)
     behavior.check = quiet(deps)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
 
-    const ctx = registered.find((c) => isPatrolCoordinate(c.thread))!
+    const ctx = registered.find((c) => isCheckCoordinate(c.thread))!
     const names = ctx.tools.map((t) => t.name)
     expect(names).toEqual(
       expect.arrayContaining(['recordCheck', 'propose', 'recall', 'getChannelHistory', 'readMemory'])
@@ -542,7 +542,7 @@ describe('a check reads and records, nothing else', () => {
       executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'bot-a', message: 'hi' }, deps)
     ).rejects.toThrow('sendMessage is not available in a follow-up’s read-only check')
     // Another session of the agent keeps its whole tool set.
-    const other = registered.find((c) => !isPatrolCoordinate(c.thread))
+    const other = registered.find((c) => !isCheckCoordinate(c.thread))
     if (other) expect(other.tools.map((t) => t.name)).toContain('sendMessage')
     await daemon.stop()
   })
@@ -552,12 +552,12 @@ describe('a check reads and records, nothing else', () => {
     await seedPlace(d)
     await takeFollowUp(d)
     behavior.check = 'hang'
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(
-      () => expect([...d.pending.values()].some((p: any) => isPatrolCoordinate(p.plan.sessionThread))).toBe(true),
+      () => expect([...d.pending.values()].some((p: any) => isCheckCoordinate(p.plan.sessionThread))).toBe(true),
       WAIT
     )
-    const p = [...d.pending.values()].find((turn: any) => isPatrolCoordinate(turn.plan.sessionThread)) as any
+    const p = [...d.pending.values()].find((turn: any) => isCheckCoordinate(turn.plan.sessionThread)) as any
     const answer = await d.permissions.onAcpPermission(p.hostKey, p.acpSessionId, {
       sessionId: p.acpSessionId,
       toolCall: { toolCallId: 'tc-1', title: 'rm -rf build', kind: 'execute' },
@@ -586,7 +586,7 @@ describe('a check reads and records, nothing else', () => {
         results.push(await executeTool(ctx, 'recordCheck', args, deps).catch((err: Error) => err.message))
       await quiet(deps)(ctx)
     }
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(results[0]).toBe('nextCheck must be at least five minutes from now; nothing was written')
@@ -603,33 +603,33 @@ describe('failures back off and stop', () => {
     const item = await takeFollowUp(d)
     behavior.check = 'throw'
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     const first = await checkState(d, item.id)
-    expect(first).toMatchObject({ failures: 1, stopped: false, patrolledNextCheck: null })
+    expect(first).toMatchObject({ failures: 1, stopped: false, checkedNextCheck: null })
     expect(first.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
     expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
       'Scheduled check failed (error); the next attempt is in 2 minutes.'
     ])
-    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 10)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([
       expect.objectContaining({ observation: 'Scheduled check failed (error); the next attempt is in 2 minutes.' })
     ])
     // Backing off: nothing before the wait is over.
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(1)
 
-    for (let n = 2; n <= PATROL_MAX_FAILURES; n++) {
-      await d.store.assistantPatrols.db.query(
-        'UPDATE assistant_patrol SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
+    for (let n = 2; n <= CHECK_MAX_FAILURES; n++) {
+      await d.store.assistantChecks.db.query(
+        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
         ['bot-a', item.id]
       )
-      await d.patrols.sweep()
+      await d.followUpChecks.sweep()
       await vi.waitFor(() => expect(checks()).toHaveLength(n), WAIT)
       await settled()
     }
-    expect(await checkState(d, item.id)).toMatchObject({ failures: PATROL_MAX_FAILURES, stopped: true })
+    expect(await checkState(d, item.id)).toMatchObject({ failures: CHECK_MAX_FAILURES, stopped: true })
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain(
       `Checks of follow-up ${item.taskKey} ("Watch the release build") stopped after 5 failed attempts in a row. ` +
@@ -639,16 +639,16 @@ describe('failures back off and stop', () => {
 
     // A new next check does not resume it.
     await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await settled()
-    expect(checks()).toHaveLength(PATROL_MAX_FAILURES)
+    expect(checks()).toHaveLength(CHECK_MAX_FAILURES)
     // A message does, at once and with a fresh streak.
     behavior.check = 'hang'
     expect(await message(d, place, item.taskKey, 'Try again now.')).toMatchObject({
       delivered: true,
       followUp: 'checking'
     })
-    await vi.waitFor(() => expect(checks()).toHaveLength(PATROL_MAX_FAILURES + 1), WAIT)
+    await vi.waitFor(() => expect(checks()).toHaveLength(CHECK_MAX_FAILURES + 1), WAIT)
     expect(await checkState(d, item.id)).toMatchObject({ failures: 0, stopped: false })
     await d.interruptAgentTurns('bot-a', 'stop')
     await settled()
@@ -660,7 +660,7 @@ describe('failures back off and stop', () => {
     await seedPlace(d)
     const item = await takeFollowUp(d)
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(await checkState(d, item.id)).toMatchObject({ failures: 1 })
@@ -742,7 +742,7 @@ describe('a follow-up owned by its place', () => {
         { observation: 'The build passed.', report: 'It passed.', nextCheck: next },
         deps
       )
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(await handedBack()).toBe(true)
@@ -775,14 +775,14 @@ describe('a follow-up owned by its place', () => {
     d.activeTurnShare.delete(place.key)
     expect(taken.replyThread).toBe('200.1')
     behavior.check = reporting(deps)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
     expect(reports()[0]!.msg).toMatchObject({ thread: '200.1', sessionThread: place.coordinate })
 
     await d.store.setSessionReplyThread(place.key, '300.1')
     await takeFollowUp(d, { title: 'Watch the docs build' })
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(2), WAIT)
     await settled()
     expect(reports()[1]!.msg).toMatchObject({ thread: '300.1', sessionThread: place.coordinate })
@@ -833,17 +833,17 @@ describe('a follow-up owned by its place', () => {
   })
 
   it('refuses a message once the day’s budget is spent, naming when it resets', async () => {
-    expect(DEFAULT_DAILY_PATROL_BUDGET).toBe(50)
+    expect(DEFAULT_DAILY_CHECK_BUDGET).toBe(50)
     const { daemon, d, behavior, checks, settled, deps } = await boot(
-      scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { dailyPatrolBudget: 1 } } }])
+      scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { dailyCheckBudget: 1 } } }])
     )
     const place = await seedPlace(d)
     const item = await takeFollowUp(d)
     behavior.check = quiet(deps)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    const [first] = await d.store.assistantPatrols.checks('bot-a', item.id, 1)
+    const [first] = await d.store.assistantChecks.checks('bot-a', item.id, 1)
     const refused = await message(d, place, item.taskKey, 'Check again.')
     expect(refused).toMatchObject({ delivered: false, reason: 'budget' })
     expect(refused.message).toContain(new Date(first.startedAt + 24 * 60 * MINUTE).toISOString())
@@ -856,7 +856,7 @@ describe('a follow-up owned by its place', () => {
     await seedPlace(d)
     const item = await takeFollowUp(d)
     behavior.check = 'hang'
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await vi.waitFor(async () => expect((await d.store.getSession(item.taskKey))?.sessionId).toBeTruthy(), WAIT)
     const sessionId = (await d.store.getSession(item.taskKey)).sessionId
@@ -869,7 +869,7 @@ describe('a follow-up owned by its place', () => {
         throw new Error('not used')
       },
       stopSession: (k, actor) => d.commands.cancelSessionByKey(k, actor),
-      stopFollowUp: (agentId, followUp, actor) => d.patrols.stop(agentId, followUp, actor)
+      stopFollowUp: (agentId, followUp, actor) => d.followUpChecks.stop(agentId, followUp, actor)
     })
 
     const listed = (await activity.read({
@@ -903,7 +903,7 @@ describe('a follow-up owned by its place', () => {
     expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'dropped' })
     expect(await checkState(d, item.id)).toMatchObject({ failures: 0 })
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
-      kind: 'patrol',
+      kind: 'follow-up',
       state: 'failed'
     })
     await daemon.stop()
@@ -914,7 +914,7 @@ describe('a check replayed after a handover', () => {
   /** The check's turn is cut for a handover that keeps it, then a fresh follow-up service replays it, as a successor daemon would. */
   async function handOver(d: any, behavior: { check: unknown }, next: CheckBehavior) {
     await d.interruptAgentTurns('bot-a', 'handover', 'handoff')
-    d.assistantPatrolService = undefined
+    d.followUpCheckService = undefined
     d.absorbedContextTs.clear()
     behavior.check = next
     await d.replayInbox(new Set(['bot-a']))
@@ -926,7 +926,7 @@ describe('a check replayed after a handover', () => {
     await seedPlace(d)
     const item = await takeFollowUp(d)
     behavior.check = 'hang'
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeTruthy(), WAIT)
 
@@ -935,11 +935,11 @@ describe('a check replayed after a handover', () => {
     await settled()
 
     const state = await checkState(d, item.id)
-    expect(state).toMatchObject({ failures: 1, stopped: false, patrolledNextCheck: null, runningKey: null })
+    expect(state).toMatchObject({ failures: 1, stopped: false, checkedNextCheck: null, runningKey: null })
     expect(state.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
     expect(reports()).toHaveLength(0)
     // The check stays due once the backoff is over.
-    expect(await d.store.assistantPatrols.due('bot-a', Date.now() + 3 * MINUTE, 10)).toEqual([
+    expect(await d.store.assistantChecks.due('bot-a', Date.now() + 3 * MINUTE, 10)).toEqual([
       { itemId: item.id, nextCheck: item.nextCheck }
     ])
     await daemon.stop()
@@ -962,7 +962,7 @@ describe('a check replayed after a handover', () => {
       recorded = true
       await new Promise(() => {})
     }
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(recorded).toBe(true), WAIT)
 
     await handOver(d, behavior, nothing)
@@ -970,7 +970,7 @@ describe('a check replayed after a handover', () => {
     await settled()
 
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, patrolledNextCheck: item.nextCheck })
+    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, checkedNextCheck: item.nextCheck })
     // The replay ran the same check; no second one started.
     expect(new Set(checks().map((c) => c.msg.thread)).size).toBe(1)
     await daemon.stop()
@@ -1002,18 +1002,18 @@ describe('a check passes on what it found before it settles', () => {
     let release!: () => void
     const seen = watchReports(d, new Promise<void>((resolve) => (release = resolve)))
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(seen.calls).toBe(1), WAIT)
     // The report is still on its way, so the check still holds it and is not done.
     const held = await checkState(d, item.id)
-    expect(held).toMatchObject({ runningReport: 'The release is out.', patrolledNextCheck: null })
+    expect(held).toMatchObject({ runningReport: 'The release is out.', checkedNextCheck: null })
     expect(held.runningKey).toBeTruthy()
 
     release()
     await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeNull(), WAIT)
     await settled()
     expect(reports()).toHaveLength(1)
-    expect(await checkState(d, item.id)).toMatchObject({ patrolledNextCheck: item.nextCheck, runningReport: null })
+    expect(await checkState(d, item.id)).toMatchObject({ checkedNextCheck: item.nextCheck, runningReport: null })
     await daemon.stop()
   })
 
@@ -1026,7 +1026,7 @@ describe('a check passes on what it found before it settles', () => {
     behavior.check = reporting(deps)
     const seen = watchReports(d)
     // The process dies after the report is in, before the check is settled.
-    const ledger = d.store.assistantPatrols
+    const ledger = d.store.assistantChecks
     const succeed = ledger.succeed.bind(ledger)
     let crashed = false
     ledger.succeed = async (...args: unknown[]) => {
@@ -1035,18 +1035,18 @@ describe('a check passes on what it found before it settles', () => {
       throw new Error('the daemon was killed')
     }
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(crashed).toBe(true), WAIT)
     await settled()
     expect(reports()).toHaveLength(1)
     expect((await checkState(d, item.id)).runningKey).toBeTruthy()
 
     // The next start finds the check its turn left unsettled, and settles it without a second report.
-    d.assistantPatrolService = undefined
+    d.followUpCheckService = undefined
     await d.replayInbox(new Set(['bot-a']))
     await settled()
 
-    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
+    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, checkedNextCheck: item.nextCheck })
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({ state: 'done' })
     expect(seen.calls).toBe(2)
     expect(reports()).toHaveLength(1)
@@ -1070,17 +1070,17 @@ describe('a check passes on what it found before it settles', () => {
       d.draining = true
     }
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(reports()).toHaveLength(0)
     expect(await checkState(d, item.id)).toMatchObject({
       runningReport: 'The release is out.',
-      patrolledNextCheck: null
+      checkedNextCheck: null
     })
 
     d.draining = false
-    d.assistantPatrolService = undefined
+    d.followUpCheckService = undefined
     await d.replayInbox(new Set(['bot-a']))
     await settled()
     await d.replayInbox(new Set(['bot-a']))
@@ -1088,7 +1088,7 @@ describe('a check passes on what it found before it settles', () => {
 
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, patrolledNextCheck: item.nextCheck })
+    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, checkedNextCheck: item.nextCheck })
     expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
@@ -1100,8 +1100,8 @@ describe('a check passes on what it found before it settles', () => {
     behavior.check = reporting(deps)
     d.reportIntoParent = async () => false
 
-    await d.patrols.sweep()
-    await vi.waitFor(async () => expect((await checkState(d, item.id))?.patrolledNextCheck).toBe(item.nextCheck), WAIT)
+    await d.followUpChecks.sweep()
+    await vi.waitFor(async () => expect((await checkState(d, item.id))?.checkedNextCheck).toBe(item.nextCheck), WAIT)
     await settled()
 
     expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, failures: 0 })
@@ -1109,7 +1109,7 @@ describe('a check passes on what it found before it settles', () => {
       'The release is published.',
       'A report from a check could not reach the conversation this follow-up belongs to.'
     ])
-    expect(await d.store.assistantPatrols.checks('bot-a', item.id, 1)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.id, 1)).toEqual([
       expect.objectContaining({ reported: false })
     ])
     await daemon.stop()
@@ -1156,7 +1156,7 @@ describe('a check’s report after `!new`', () => {
       )
     }
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
@@ -1170,7 +1170,7 @@ describe('a check’s report after `!new`', () => {
     })
     await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
     behavior.check = quiet(deps)
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(
       async () =>
         expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
@@ -1190,7 +1190,7 @@ describe('a check’s report after `!new`', () => {
       await rotate(d, place, false)
     })
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
     await settled()
 
@@ -1202,17 +1202,17 @@ describe('a check’s report after `!new`', () => {
 describe('the daily check budget', () => {
   it('starts no scheduled check past the agent’s budget in 24 hours', async () => {
     const { daemon, d, behavior, checks, settled, deps } = await boot(
-      scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { dailyPatrolBudget: 1 } } }])
+      scaffold([{ id: 'bot-a', assistantMode: { ...ON, limits: { dailyCheckBudget: 1 } } }])
     )
     await seedPlace(d)
     await takeFollowUp(d, { title: 'First', nextCheck: Date.now() - 2 * MINUTE })
     await takeFollowUp(d, { title: 'Second', nextCheck: Date.now() - MINUTE })
     behavior.check = quiet(deps)
 
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(1)
     await daemon.stop()
@@ -1222,7 +1222,7 @@ describe('the daily check budget', () => {
 describe('follow-up tool text', () => {
   const followUp = {
     id: 'item-1',
-    taskKey: 'slack:C1:subsession:patrol-1:bot-a',
+    taskKey: 'slack:C1:subsession:check-1:bot-a',
     version: 1,
     status: 'active',
     title: 'Confirm the new build works',
@@ -1238,7 +1238,7 @@ describe('follow-up tool text', () => {
   })
 
   it('tells a check its report promises no later message, time or check', () => {
-    const prompt = patrolPrompt(followUp, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
+    const prompt = checkPrompt(followUp, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
     expect(prompt).toContain(
       '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no ' +
         'next check. When it should be looked at again, set `nextCheck`; the people in its conversation are not ' +
@@ -1251,7 +1251,7 @@ describe('follow-up tool text', () => {
   })
 
   it('asks a check to write in the language of the people in its conversation', () => {
-    const prompt = patrolPrompt({ ...followUp, title: '确认新版本可用' }, { itemId: 'item-1', nextCheck: 0 })
+    const prompt = checkPrompt({ ...followUp, title: '确认新版本可用' }, { itemId: 'item-1', nextCheck: 0 })
     expect(prompt).toContain(`The check records its observation either way. ${CHECK_LANGUAGE}`)
   })
 
@@ -1287,7 +1287,7 @@ describe('follow-up tool text', () => {
       ),
       FOLLOW_UP_TOOL
     ]
-    const names = patrolTools(all).map((t) => t.name)
+    const names = checkTools(all).map((t) => t.name)
     expect(names).not.toContain('sendMessage')
     expect(names).not.toContain('followUp')
     expect(names).not.toContain('evaluateDecision')

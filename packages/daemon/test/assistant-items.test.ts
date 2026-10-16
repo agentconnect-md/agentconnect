@@ -12,7 +12,7 @@ import {
   ASSISTANT_ITEM_SCHEMA,
   type AssistantPlace
 } from '../src/store/assistant-items.js'
-import { ASSISTANT_PATROL_SCHEMA } from '../src/store/assistant-patrols.js'
+import { ASSISTANT_CHECK_SCHEMA } from '../src/store/assistant-checks.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import { canonicalColumns, POOL_STORE_SCHEMA } from '../src/store/postgres-dialect.js'
@@ -43,7 +43,7 @@ const create = (s: LocalStore, overrides: Partial<Parameters<LocalStore['assista
     agentId: AGENT,
     title: 'Ship the release notes',
     origin: GENERAL,
-    taskKey: `slack:C0GENERAL:subsession:patrol-${randomUUID()}:${AGENT}:T0EXAMPLE`,
+    taskKey: `slack:C0GENERAL:subsession:check-${randomUUID()}:${AGENT}:T0EXAMPLE`,
     asker: ALICE,
     now: 1_000,
     ...overrides
@@ -57,7 +57,7 @@ describe('follow-ups: create and read', () => {
       nextCheck: 5_000,
       summary: 'Alice asked for the notes.',
       origin: WEBCHAT,
-      taskKey: 'webchat:conv-1:subsession:patrol-1:agent-a',
+      taskKey: 'webchat:conv-1:subsession:check-1:agent-a',
       asker: 'user:u-1',
       shared: false,
       replyThread: '100.1'
@@ -70,7 +70,7 @@ describe('follow-ups: create and read', () => {
       nextCheck: 5_000,
       status: 'active',
       origin: WEBCHAT,
-      taskKey: 'webchat:conv-1:subsession:patrol-1:agent-a',
+      taskKey: 'webchat:conv-1:subsession:check-1:agent-a',
       asker: 'user:u-1',
       shared: false,
       replyThread: '100.1',
@@ -223,7 +223,7 @@ describe('follow-ups: links and removal', () => {
     const doomed = await create(s)
     const elsewhere = await create(s, { agentId: OTHER_AGENT, title: 'other' })
     await s.assistantItems.appendObservation(AGENT, doomed.id, { text: 'seen' })
-    await s.assistantPatrols.begin(AGENT, doomed.id, {
+    await s.assistantChecks.begin(AGENT, doomed.id, {
       key: doomed.taskKey,
       nextCheck: null,
       observationVersion: 0,
@@ -234,8 +234,8 @@ describe('follow-ups: links and removal', () => {
     })
     expect(await s.assistantItems.deleteForAgent(AGENT)).toBe(1)
     expect(await s.assistantItems.list(AGENT)).toEqual([])
-    expect(await s.assistantPatrols.get(AGENT, doomed.id)).toBeUndefined()
-    expect(await s.assistantPatrols.checks(AGENT, doomed.id, 10)).toEqual([])
+    expect(await s.assistantChecks.get(AGENT, doomed.id)).toBeUndefined()
+    expect(await s.assistantChecks.checks(AGENT, doomed.id, 10)).toEqual([])
     expect(await s.assistantItems.get(OTHER_AGENT, elsewhere.id)).toMatchObject({ title: 'other' })
   })
 })
@@ -243,7 +243,7 @@ describe('follow-ups: links and removal', () => {
 describe('follow-up schema', () => {
   it('lists every camelCase column in canonicalColumns', () => {
     const names = new Set(
-      [...`${ASSISTANT_ITEM_SCHEMA}${ASSISTANT_PATROL_SCHEMA}`.matchAll(/\b[a-z]+[A-Z][A-Za-z]*\b/g)].map((m) => m[0])
+      [...`${ASSISTANT_ITEM_SCHEMA}${ASSISTANT_CHECK_SCHEMA}`.matchAll(/\b[a-z]+[A-Z][A-Za-z]*\b/g)].map((m) => m[0])
     )
     const canonical = new Set<string>(canonicalColumns)
     expect([...names].filter((name) => !canonical.has(name))).toEqual([])
@@ -304,7 +304,7 @@ describe.skipIf(usingPostgresStore())('the v35 → v36 item trust removal on SQL
         origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
         updatedAt: 2_000
       })
-      expect(kept!.taskKey).toMatch(/^slack:C0GENERAL:subsession:patrol-[^:]+:agent-a$/)
+      expect(kept!.taskKey).toMatch(/^slack:C0GENERAL:subsession:check-[^:]+:agent-a$/)
       expect((await create(upgraded, { title: 'new' })).title).toBe('new')
     } finally {
       await upgraded.close()
@@ -375,6 +375,7 @@ const V52_ITEM_TABLES = `
   )`
 
 const OLD_PATROL = (run: string) => sessionKey('slack', 'C0GENERAL', `subsession:patrol-${run}`, AGENT, 'T0EXAMPLE')
+const MIGRATED = (run: string) => sessionKey('slack', 'C0GENERAL', `subsession:check-${run}`, AGENT, 'T0EXAMPLE')
 const PLACE_KEY = sessionKey('slack', 'C0GENERAL', 'append:1', AGENT, 'T0EXAMPLE')
 const V52_ITEM_ROW = `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform,
     originChannel, originTransportScope, summary, observationVersion, version, createdAt, updatedAt)
@@ -424,7 +425,7 @@ const V52_ROWS: [string, unknown[]][] = [
   ]
 ]
 
-/** After the v53 step: open items are follow-ups of their place, the in-flight patrol is a check, nothing else is carried. */
+/** After the v53 and v57 steps: open items are follow-ups of their place, the in-flight patrol is a check, nothing else is carried. */
 async function expectFollowUps(s: LocalStore): Promise<void> {
   expect(await s.assistantItems.get(AGENT, 'item-done')).toBeUndefined()
   const open = await s.assistantItems.get(AGENT, 'item-open')
@@ -441,26 +442,29 @@ async function expectFollowUps(s: LocalStore): Promise<void> {
   })
   // Only the latest observation is the handover.
   expect(open!.observations.map((o) => o.text)).toEqual(['seen 3'])
-  expect(open!.taskKey).toMatch(/^slack:C0GENERAL:subsession:patrol-[^:]+:agent-a:T0EXAMPLE$/)
+  expect(open!.taskKey).toMatch(/^slack:C0GENERAL:subsession:check-[^:]+:agent-a:T0EXAMPLE$/)
   expect(await s.assistantSubsessions.get(AGENT, open!.taskKey)).toMatchObject({
-    kind: 'patrol',
+    kind: 'follow-up',
     state: 'done',
     parentSessionId: 'sid-place',
     parentSessionKey: PLACE_KEY
   })
   // The patrol in flight becomes that follow-up's check, in its own session.
   const running = await s.assistantItems.get(AGENT, 'item-running')
-  expect(running).toMatchObject({ taskKey: OLD_PATROL('running'), asker: null, status: 'waiting' })
-  expect(await s.assistantPatrols.byRunningKey(AGENT, OLD_PATROL('running'))).toMatchObject({
+  expect(running).toMatchObject({ taskKey: MIGRATED('running'), asker: null, status: 'waiting' })
+  expect(await s.assistantChecks.byRunningKey(AGENT, MIGRATED('running'))).toMatchObject({
     itemId: 'item-running',
     runningCheck: 1,
     runningSince: 40_000
   })
-  expect(await s.assistantPatrols.checks(AGENT, 'item-running', 10)).toEqual([
+  expect(await s.assistantChecks.checks(AGENT, 'item-running', 10)).toEqual([
     { itemId: 'item-running', checkNo: 1, startedAt: 40_000, endedAt: null, observation: null, reported: false }
   ])
-  expect(await s.assistantSubsessions.get(AGENT, OLD_PATROL('running'))).toMatchObject({ state: 'open' })
-  expect(await s.assistantSubsessions.get(AGENT, OLD_PATROL('finished'))).toBeUndefined()
+  expect(await s.assistantSubsessions.get(AGENT, MIGRATED('running'))).toMatchObject({
+    state: 'open',
+    kind: 'follow-up'
+  })
+  expect(await s.assistantSubsessions.get(AGENT, MIGRATED('finished'))).toBeUndefined()
 }
 
 describe.skipIf(usingPostgresStore())('the v52 → v53 follow-up migration on SQLite', () => {
@@ -469,7 +473,7 @@ describe.skipIf(usingPostgresStore())('the v52 → v53 follow-up migration on SQ
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
     old.exec(
-      'DROP TABLE assistant_item; DROP TABLE assistant_patrol; DROP TABLE assistant_check; ' +
+      'DROP TABLE assistant_item; DROP TABLE assistant_check_state; DROP TABLE assistant_check; ' +
         `${V52_ITEM_TABLES}; PRAGMA user_version = 52`
     )
     for (const [sql, params] of V52_ROWS) old.prepare(sql).run(...(params as never[]))
@@ -485,7 +489,9 @@ describe.skipIf(usingPostgresStore())('the v52 → v53 follow-up migration on SQ
     const followers = db.prepare("SELECT name FROM sqlite_master WHERE name = 'assistant_item_follower'").all()
     db.close()
     expect(followers).toEqual([])
-    expect(sqliteColumns(path, 'assistant_patrol')).toEqual(expect.arrayContaining(['runningCheck', 'pendingMessages']))
+    expect(sqliteColumns(path, 'assistant_check_state')).toEqual(
+      expect.arrayContaining(['runningCheck', 'pendingMessages'])
+    )
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 })
@@ -550,7 +556,7 @@ describe.skipIf(!usingPostgresStore())('the item migrations on PostgreSQL', () =
 
   it('makes each open item a follow-up of its place and drops followers and closed items', async () => {
     await onPostgres(async (admin, reopen) => {
-      await admin.query('DROP TABLE assistant_item; DROP TABLE assistant_patrol; DROP TABLE assistant_check')
+      await admin.query('DROP TABLE assistant_item; DROP TABLE assistant_check_state; DROP TABLE assistant_check')
       await admin.query(V52_ITEM_TABLES.replace(/\bINTEGER\b/g, 'BIGINT'))
       for (const [sql, params] of V52_ROWS) await admin.query(numbered(sql), params)
       await admin.query('UPDATE _local_store_schema_version SET version = 52 WHERE singleton = true')

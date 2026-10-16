@@ -418,7 +418,7 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
       WAIT
     )
     expect(await d.store.placeSession('bot-a', 'slack', 'C1', scope)).toBeUndefined()
-    await d.patrols.sweep()
+    await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
     await settled()
 

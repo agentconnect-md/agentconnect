@@ -1,4 +1,4 @@
-// Drafts (assistant-mode.md §5.5, §5.10): a post or a patrol's proposed task that needs approval is recorded, carded to its approvers, and run once approved.
+// Drafts (assistant-mode.md §5.5, §5.10): a post or a check's proposed task that needs approval is recorded, carded to its approvers, and run once approved.
 import { randomUUID } from 'node:crypto'
 import type {
   AgentApprovalRoute,
@@ -110,7 +110,7 @@ export interface AssistantDraftsHost {
   memberAsker?(integrationId: string, userId: string): Promise<string | undefined>
   /** Whether the follow-up an approved follow-up form named was taken. */
   followUpTaken?(agentId: string, itemId: string): Promise<boolean>
-  /** An observation on a proposal's item, so its next patrol knows how the proposal went. */
+  /** An observation on a proposal's item, so its next check knows how the proposal went. */
   observe?(agentId: string, itemId: string, text: string): Promise<void>
   /** Whether a person's own message in this conversation would start a turn of the agent right now; fails closed. */
   admitsAsker?(agentId: string, integrationId: string, channel: string, isDm: boolean): boolean
@@ -142,7 +142,7 @@ export interface ProposalPlace {
   thread?: string
 }
 
-/** A patrol's proposal (§5.10), as the patrol hands it over. */
+/** A check's proposal (§5.10), as the check hands it over. */
 export interface ProposalInput {
   agentId: string
   /** The item's place of origin, where the approved task runs and reports. */
@@ -344,7 +344,7 @@ export class AssistantDrafts {
     }
   }
 
-  /** A patrol's proposal (§5.10): carded in its item's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, else Activity); a first look report round's waits for {@link releaseRound}. */
+  /** A check's proposal (§5.10): carded in its follow-up's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, else Activity); a first look report round's waits for {@link releaseRound}. */
   async propose(input: ProposalInput): Promise<{ draft: AssistantDraft; approver: string | null }> {
     const id = randomUUID()
     const ledger = this.host.ledger()
@@ -773,7 +773,7 @@ export class AssistantDrafts {
     return undefined
   }
 
-  /** One line on the proposal's item for each step it takes, so its next patrol knows. */
+  /** One line on the proposal's item for each step it takes, so its next check knows. */
   private async observeTask(draft: AssistantDraft): Promise<void> {
     const proposal = draft.proposal
     if (!proposal || !this.host.observe) return

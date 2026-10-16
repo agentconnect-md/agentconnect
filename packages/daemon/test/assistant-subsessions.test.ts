@@ -199,10 +199,10 @@ describe('the assistant sub-session index', () => {
     const owner = { sessionId: 'sid-parent-1', key: row(a, 'x').parentSessionKey }
     await index.open({ ...row(a, 'done'), now: 1_000 })
     await index.open({ ...row(a, 'task-approved'), now: 2_000 })
-    await index.openFollowUp({ ...row(a, 'patrol-1'), now: 3_000 })
+    await index.openFollowUp({ ...row(a, 'check-1'), now: 3_000 })
     await index.open({ ...row(a, 'running'), now: 500 })
     await index.finish(a, childKey(a, 'done'), 'done')
-    await index.finish(a, childKey(a, 'patrol-1'), 'failed')
+    await index.finish(a, childKey(a, 'check-1'), 'failed')
     // Another owner by id, the same id on another key (a session recreated elsewhere), and another agent.
     await index.open({ ...row(a, 'elsewhere', 'sid-parent-2'), now: 4_000 })
     await index.open({ ...row(a, 'other-key'), parentSessionKey: 'slack:C0GENERAL:append:2:x', now: 4_000 })
@@ -214,10 +214,10 @@ describe('the assistant sub-session index', () => {
     expect(keys(all.rows)).toEqual([
       childKey(a, 'task-approved'),
       childKey(a, 'running'),
-      childKey(a, 'patrol-1'),
+      childKey(a, 'check-1'),
       childKey(a, 'done')
     ])
-    expect(all.rows.find((r) => r.childSessionKey === childKey(a, 'patrol-1'))).toMatchObject({ kind: 'patrol' })
+    expect(all.rows.find((r) => r.childSessionKey === childKey(a, 'check-1'))).toMatchObject({ kind: 'follow-up' })
     // A session that does not own its place's follow-ups lists none of them.
     const without = await index.listForOwner(a, owner, 10, { followUps: false })
     expect([keys(without.rows), without.total]).toEqual([
@@ -269,8 +269,8 @@ describe('the failure report a sub-session index row holds (assistant-mode.md §
     const index = s.assistantSubsessions
     await index.open({ ...row(a, '1'), now: 2_000 })
     for (const id of ['2', '3', '4']) await index.open(row(a, id))
-    await index.openFollowUp(row(a, 'patrol-5'))
-    await index.checking(a, childKey(a, 'patrol-5'))
+    await index.openFollowUp(row(a, 'check-5'))
+    await index.checking(a, childKey(a, 'check-5'))
     await index.open(row(b, '6'))
     await index.finish(a, childKey(a, '3'), 'done')
     const kept = `inbox-${a}`
@@ -453,7 +453,7 @@ describe.skipIf(!usingPostgresStore())('the v43 → v44 failure report columns o
 
 describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLite', () => {
   it('adds the table to a v37 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(56)
+    expect(SCHEMA_VERSION).toBe(57)
     const path = tempStorePath('ac-assistant-v37-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
@@ -500,7 +500,7 @@ describe.skipIf(!usingPostgresStore())('the v37 → v38 sub-session index on Pos
         agentId: a,
         title: 'Kept across the upgrade',
         origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
-        taskKey: 'slack:C0GENERAL:subsession:patrol-1:kept'
+        taskKey: 'slack:C0GENERAL:subsession:check-1:kept'
       })
       await first.close()
 

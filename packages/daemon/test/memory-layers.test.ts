@@ -301,8 +301,8 @@ describe('what a session reads and is injected with', () => {
     expect(personId('hook:repo-events')).toBe(false)
   })
 
-  it("gives patrol sessions in two people's DMs those two people's layers, never one shared key", async () => {
-    // A patrol's row records the agent as its opener; the platform names whom each DM is with.
+  it("gives check sessions in two people's DMs those two people's layers, never one shared key", async () => {
+    // A check's row records the agent as its opener; the platform names whom each DM is with.
     const { layers: l } = layers({ peers: { D1: 'U1', D2: 'U2' } })
     const one = await l.resolve(place({ channel: 'D1', kinds: ['dm'], opener: AGENT_UUID }))
     const two = await l.resolve(place({ channel: 'D2', kinds: ['dm'], opener: AGENT_UUID }))

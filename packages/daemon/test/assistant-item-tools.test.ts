@@ -21,7 +21,7 @@ import { openTestStore } from './store-support.js'
 const AGENT = 'agent-a'
 const ALICE = 'slack:T0EXAMPLE:U0ALICE'
 const NOW = Date.UTC(2026, 9, 9, 0, 0)
-const TASK_KEY = 'slack:D0ALICE:subsession:patrol-1:agent-a:slack:scope-1'
+const TASK_KEY = 'slack:D0ALICE:subsession:check-1:agent-a:slack:scope-1'
 
 const session = (over: Partial<SessionContext> = {}): SessionContext => ({
   agentId: AGENT,
@@ -36,7 +36,7 @@ const session = (over: Partial<SessionContext> = {}): SessionContext => ({
   ...over
 })
 const ALICE_DM = session()
-const CHECK = session({ thread: 'subsession:patrol-1', tools: [RECORD_CHECK_TOOL, PROPOSE_TOOL] })
+const CHECK = session({ thread: 'subsession:check-1', tools: [RECORD_CHECK_TOOL, PROPOSE_TOOL] })
 
 let store: LocalStore | undefined
 afterEach(async () => {
@@ -70,7 +70,7 @@ async function setup(options: { enabled?: boolean } = {}) {
           taskKey: TASK_KEY,
           asker: input.asker
         }),
-      patrol: {
+      check: {
         itemFor: async () => checking,
         report: async (_ctx: SessionContext, _itemId: string, text: string) => {
           if (!checking) return false
@@ -349,7 +349,7 @@ describe('the daemon offers followUp by the agent’s switch', () => {
       expect(registeredTools({ id: on, assistantMode: { enabled: true } })).not.toContain('recordCheck')
       expect(registeredTools({ id: off })).not.toContain('followUp')
       // A follow-up's check records and proposes, and takes no follow-up of its own.
-      const inCheck = registeredTools({ id: on, assistantMode: { enabled: true } }, 'subsession:patrol-1')
+      const inCheck = registeredTools({ id: on, assistantMode: { enabled: true } }, 'subsession:check-1')
       expect(inCheck).toEqual(expect.arrayContaining(['recordCheck', 'propose']))
       expect(inCheck).not.toContain('followUp')
 

@@ -86,7 +86,7 @@ async function read<O extends AssistantActivityReadReq['operation']>(
 
 /** A follow-up taken in the support channel, with its index row under that channel's long session. */
 async function createFollowUp(s: LocalStore, agentId: string, over: Record<string, unknown> = {}) {
-  const key = sessionKey('slack', 'C0SUPPORT', `subsession:patrol-${randomUUID()}`, agentId, 'T0EXAMPLE')
+  const key = sessionKey('slack', 'C0SUPPORT', `subsession:check-${randomUUID()}`, agentId, 'T0EXAMPLE')
   const item = await s.assistantItems.create({
     agentId,
     title: 'Ship the release notes',
@@ -109,7 +109,7 @@ async function createFollowUp(s: LocalStore, agentId: string, over: Record<strin
 
 /** Start one check of a follow-up at `at`. */
 const begin = (s: LocalStore, agentId: string, item: { id: string; taskKey: string }, at: number) =>
-  s.assistantPatrols.begin(agentId, item.id, {
+  s.assistantChecks.begin(agentId, item.id, {
     key: item.taskKey,
     nextCheck: null,
     observationVersion: 0,
@@ -141,12 +141,12 @@ describe('the Activity view: follow-ups in place of items', () => {
     const item = await createFollowUp(s, a, { nextCheck: 86_400_000 })
     for (let i = 1; i <= 7; i++) {
       const begun = await begin(s, a, item, i * 1_000)
-      await s.assistantPatrols.endCheck(a, item.id, begun!.checkNo, {
+      await s.assistantChecks.endCheck(a, item.id, begun!.checkNo, {
         observation: `check ${i}`,
         reported: i === 7,
         now: i * 1_000 + 1
       })
-      await s.assistantPatrols.succeed(a, item.id, item.taskKey, i * 1_000 + 1)
+      await s.assistantChecks.succeed(a, item.id, item.taskKey, i * 1_000 + 1)
     }
     // A running check has seen nothing yet, so it is not among them.
     await begin(s, a, item, 8_000)
@@ -206,12 +206,12 @@ describe('the Activity view: follow-ups in place of items', () => {
       for (let i = 1; i <= 5; i++) {
         const at = (f * 10 + i) * 1_000
         const begun = await begin(s, a, item, at)
-        await s.assistantPatrols.endCheck(a, item.id, begun!.checkNo, {
+        await s.assistantChecks.endCheck(a, item.id, begun!.checkNo, {
           observation: long,
           reported: false,
           now: at + 1
         })
-        await s.assistantPatrols.succeed(a, item.id, item.taskKey, at + 1)
+        await s.assistantChecks.succeed(a, item.id, item.taskKey, at + 1)
       }
     }
     const bytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result), 'utf8')
@@ -252,7 +252,7 @@ describe('the Activity view: follow-ups in place of items', () => {
     // Five failed checks in a row pause it until it is messaged.
     for (let n = 0; n < 5; n++) {
       await begin(s, a, item, 6_000 + n)
-      await s.assistantPatrols.fail(a, item.id, item.taskKey, 6_000 + n, 5_000)
+      await s.assistantChecks.fail(a, item.id, item.taskKey, 6_000 + n, 5_000)
     }
     expect(await status()).toEqual([['follow-up', 'open', 'paused', '1970-01-01T00:00:05.000Z']])
     await s.assistantItems.schedule(a, item.id, { status: 'done', nextCheck: null })
@@ -713,7 +713,7 @@ describe('the Activity view: one webchat conversation’s proposals', () => {
         platform,
         integrationId: null,
         channel,
-        thread: 'subsession:patrol-1',
+        thread: 'subsession:check-1',
         transportScope: null,
         sessionKey: null,
         sessionId: null,
@@ -801,7 +801,7 @@ describe('the Activity view: one webchat conversation’s proposals', () => {
         platform: 'webchat',
         integrationId: null,
         channel: 'conv-1',
-        thread: 'subsession:patrol-1',
+        thread: 'subsession:check-1',
         transportScope: null,
         sessionKey: null,
         sessionId: null,
@@ -942,7 +942,7 @@ describe('the Activity view: deciding a draft', () => {
         platform: 'webchat',
         integrationId: null,
         channel: 'conv-1',
-        thread: 'subsession:patrol-1',
+        thread: 'subsession:check-1',
         transportScope: null,
         sessionKey: null,
         sessionId: null,
@@ -996,7 +996,7 @@ describe('the Activity view: who it answers', () => {
     expect(await s.assistantItems.get(a, item.id)).toBeDefined()
   })
 
-  it('answers an agent outside assistant mode with its permission requests, sub-sessions and drafts, and no items, patrols or proposals', async () => {
+  it('answers an agent outside assistant mode with its permission requests, sub-sessions and drafts, and no items, checks or proposals', async () => {
     const { s, off, activity, stopSession } = await setup()
     // What the agent kept from a time it was in assistant mode stays out of view.
     const item = await createFollowUp(s, off)
@@ -1017,7 +1017,7 @@ describe('the Activity view: who it answers', () => {
     const child = (id: string) => sessionKey('webchat', 'conv-1', subsessionCoordinate(id), off)
     const open = { agentId: off, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
     await s.assistantSubsessions.open({ ...open, childSessionKey: child('delegated'), now: 1_000 })
-    await s.assistantSubsessions.openFollowUp({ ...open, childSessionKey: child('patrol-1'), now: 2_000 })
+    await s.assistantSubsessions.openFollowUp({ ...open, childSessionKey: child('check-1'), now: 2_000 })
     await s.upsertSession({
       key: child('delegated'),
       agentId: off,
@@ -1044,7 +1044,7 @@ describe('the Activity view: who it answers', () => {
         platform: 'webchat',
         integrationId: null,
         channel: 'conv-1',
-        thread: 'subsession:patrol-1',
+        thread: 'subsession:check-1',
         transportScope: null,
         sessionKey: null,
         sessionId: null,

@@ -131,7 +131,7 @@ export interface DaemonReportCaller {
   transportScope?: string | undefined
 }
 
-/** One daemon-authored report — a patrol's, a task's, or a sub-session's failure report — into the place its sub-session belongs to. */
+/** One daemon-authored report — a check's, a task's, or a sub-session's failure report — into the place its sub-session belongs to. */
 export interface DaemonReport {
   agentId: string
   /** The sub-session the report speaks for. */
@@ -631,7 +631,7 @@ export class CollabCoordinator {
     return await this.withSubsessionReportLock(key, async () => {
       const index = this.host.store().assistantSubsessions
       const row = await index.get(req.callerAgentId, key)
-      const ended = rounds && row?.kind !== 'patrol' ? row !== undefined && row.state !== 'open' : undefined
+      const ended = rounds && row?.kind !== 'follow-up' ? row !== undefined && row.state !== 'open' : undefined
       if (ended ?? (row?.state === 'failed' || row?.state === 'reporting')) {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
         return { delivered: false, inReplyTo: answered.messageId, reason: TASK_ENDED }
@@ -928,7 +928,7 @@ export class CollabCoordinator {
     }
   }
 
-  /** One daemon-authored report (patrol, task, sub-session failure) into the place's current session, else the recorded parent, injected as `replyToSession` would; at most once per `reportId`, and no tool reaches it. */
+  /** One daemon-authored report (check, task, sub-session failure) into the place's current session, else the recorded parent, injected as `replyToSession` would; at most once per `reportId`, and no tool reaches it. */
   async deliverDaemonReport(report: DaemonReport): Promise<{ admitted: boolean; reason?: string }> {
     const { agentId, caller, text, shown } = report
     const store = this.host.store()
@@ -2195,7 +2195,7 @@ export class CollabCoordinator {
   ): Promise<{ row: AssistantSubsession; caller: DaemonReportCaller } | undefined> {
     const store = this.host.store()
     const row = await this.indexedSubsession(agentId, id)
-    if (!row || row.kind === 'patrol' || row.parentSessionKey !== callerKey) return undefined
+    if (!row || row.kind === 'follow-up' || row.parentSessionKey !== callerKey) return undefined
     // The recorded parent, by outward id too: a rotated or recreated caller session is not the one that opened it.
     if (!(await store.getSession(callerKey))) return undefined
     const callerId = await store.ensureOutwardSessionId(callerKey, agentId, this.host.clock().now())
@@ -2219,7 +2219,7 @@ export class CollabCoordinator {
     if (isSubsessionCoordinate(req.callerThread)) return notFound()
     // A follow-up is owned by its place, which the host judges (assistant-mode.md §5.12).
     const indexed = await this.indexedSubsession(agentId, req.sessionId)
-    const followUp = indexed?.kind === 'patrol' && this.host.messageFollowUp ? indexed : undefined
+    const followUp = indexed?.kind === 'follow-up' && this.host.messageFollowUp ? indexed : undefined
     const owned = followUp ? undefined : await this.ownedSubsession(agentId, req.sessionId, callerKey)
     if (!followUp && !owned) return notFound()
     const key = followUp?.childSessionKey ?? owned!.row.childSessionKey
@@ -2512,11 +2512,11 @@ export class CollabCoordinator {
     if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) return failed('hop_limit')
     const local = await store.getSessionByOutwardId(answered.sourceSessionId, answered.sourceAgentId || undefined)
     if (local && local.agentId === req.callerAgentId && isSubsessionCoordinate(local.thread)) {
-      // A patrol or approved proposal runs once (§8.9), so no reply wakes it again.
+      // A check or approved proposal runs once (§8.9), so no reply wakes it again.
       if (!isDelegationCoordinate(local.thread)) return { delivered: false, inReplyTo, reason: 'not_authorized' }
       const row = await store.assistantSubsessions.get(local.agentId, local.key)
       // §8.2: the owner answering its own task is messaging it; any other session's reply is delivered like a peer's.
-      if (row && row.kind !== 'patrol' && row.parentSessionKey === callerKey)
+      if (row && row.kind !== 'follow-up' && row.parentSessionKey === callerKey)
         return await this.replyIntoTask(req, answered, local.key)
     }
     const replierSessionId = callerRec
