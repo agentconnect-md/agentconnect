@@ -1708,9 +1708,11 @@ What is settled is who speaks:
   agent's own session for that pull request wakes none of that agent's follow-ups watching it. The
   session says what it did where the work was asked for; a read-only report of the same review half
   an hour later would be stale and said twice.
-- **Everything else is the follow-up's**: merged, closed, reopened, approved, a check suite that
-  passed. No event resumes the opening session for these today, so without a follow-up nobody says
-  "merged".
+- **Everything else is the follow-up's**: merged, closed, reopened, an approval without text, a
+  check suite that passed. No event resumes the opening session for these today, so without a
+  follow-up nobody says "merged". Where the two rules overlap the first wins: the lane admits any
+  submitted review with a body, so an approval that says "LGTM" resumes the opening session, is that
+  session's to mention, and wakes no follow-up of its agent.
 - **Discussion wakes a follow-up only where no opening session exists**: someone else's pull request,
   one opened outside AgentConnect, an issue (the lane covers pull requests only), or an agent whose
   workspace is shared, whose pull requests are never associated. There the follow-up is the only one
@@ -1726,13 +1728,14 @@ What is settled is who speaks:
 In the common case, a pull request the agent opened from a channel whose people then ask to be told
 when it merges:
 
-| Event                      | The session that opened it                        | The follow-up                  |
-| -------------------------- | ------------------------------------------------- | ------------------------------ |
-| A review asks for a rename | resumes, renames, pushes, replies "renamed"       | not woken                      |
-| CI fails on that push      | resumes, fixes, pushes, replies                   | not woken                      |
-| The review approves        | not resumed, as today                             | woken; reports "approved"      |
-| CI passes                  | not resumed                                       | woken; folds with the approval |
-| Merged                     | not resumed; its worktree is cleaned up, as today | woken; reports "merged", done  |
+| Event                        | The session that opened it                        | The follow-up                  |
+| ---------------------------- | ------------------------------------------------- | ------------------------------ |
+| A review asks for a rename   | resumes, renames, pushes, replies "renamed"       | not woken                      |
+| CI fails on that push        | resumes, fixes, pushes, replies                   | not woken                      |
+| The review approves, "LGTM"  | resumes, replies "approved, nothing to fix"       | not woken                      |
+| The review approves, no text | not resumed, as today                             | woken; reports "approved"      |
+| CI passes                    | not resumed                                       | woken; folds with the approval |
+| Merged                       | not resumed; its worktree is cleaned up, as today | woken; reports "merged", done  |
 
 Merge-when-ready, armed from the console, is a third thing and is untouched: its merge is a change of
 state the follow-up reports.
@@ -2670,8 +2673,8 @@ continuation (issue #2810; §6, §8, §9). The product owner decided who speaks 
 both the session that opened it and a follow-up watching it: an event that resumes that session
 (a review with text or requesting changes, a review comment, a conversation comment, a failed check
 suite) wakes none of the same agent's follow-ups on it, since the session already replies where the
-work was asked for; merged, closed, reopened, approved and a passed check suite are the follow-up's,
-as nothing resumes the session for them; and discussion wakes a follow-up only where no such session
+work was asked for; merged, closed, reopened, an approval without text and a passed check suite are
+the follow-up's, as nothing resumes the session for them, and the first rule wins where they overlap; and discussion wakes a follow-up only where no such session
 exists, as for an issue or another's pull request. Event wake becomes the lane's second consumer: the
 relay's feedback signal gains the event's kind and the wake-only kinds for watched objects, the Control
 Plane receives once and serves both, and admission is the lane's per provider, so the App-comment veto
