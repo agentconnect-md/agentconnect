@@ -21,6 +21,8 @@ export const FIRST_LOOK_MAX_MESSAGES = 500
 export const FIRST_LOOK_WINDOW_MS = FIRST_LOOK_DAYS * 24 * 60 * 60_000
 /** A join whose place is not listed by then takes no first look. */
 export const FIRST_LOOK_JOIN_WAIT_MS = 10 * 60_000
+/** Proposals the round a first look's report arrives in may make (§5.13). */
+export const FIRST_LOOK_MAX_PROPOSALS = 3
 
 // The place's own reads (§5.13): history, thread replies, the conversation's details, members and profiles, reactions, bookmarks.
 const FIRST_LOOK_READ_TOOLS = new Set([
@@ -157,8 +159,8 @@ Hand it back with recordCheck: a one-line observation, this answer as its report
 set. It is your only output.`
 }
 
-/** What the long session is told to do with the report (§5.13); step 3 is the text form until `propose` takes the report round. */
-export function firstLookHandling(reach: string, opts: { external: boolean }): string {
+/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form. */
+export function firstLookHandling(reach: string, opts: { external: boolean; cards?: boolean }): string {
   const step1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
    plus one index line. Leave out "In flight" and anything you would not say in every
    conversation that reads this layer.`
@@ -170,8 +172,13 @@ This place is now shared with another organization, so post nothing about this f
 ${step1}
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you (${reach}).
-3. In the same message, list each "Where I could help" item in one line, and an "In flight" item
-   only if someone is visibly waiting on it; act on one when someone here asks for it.
+${
+  opts.cards
+    ? `3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
+   follow-up only if someone is visibly waiting on it.`
+    : `3. In the same message, list each "Where I could help" item in one line, and an "In flight" item
+   only if someone is visibly waiting on it; act on one when someone here asks for it.`
+}
 4. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.`
 }

@@ -243,6 +243,34 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     expect(host!.textContent).toBe('')
   })
 
+  it('shows a follow-up form as the follow-up it takes, and once approved says this conversation lists it', async () => {
+    mocks.proposals = [
+      proposal({
+        task: 'The release date',
+        followUp: { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: null }
+      })
+    ]
+    mocks.decideProposal.mockResolvedValueOnce({
+      status: 'succeeded',
+      failure: null,
+      followUp: { id: 'item-taken', conversation: null }
+    })
+    await renderStrip(false)
+    await click('Reason and details')
+    const shown = row('proposal-1')!.querySelector('[data-proposed-follow-up]')!
+    expect(shown.textContent).toContain('Takes this follow-up')
+    expect(shown.textContent).toContain('Done when: A date is posted.')
+    expect(shown.textContent).toContain('No check until it is messaged')
+    await choose('proposal-1', 'Approve')
+    expect(host!.textContent).toContain(
+      'Take this follow-up in this conversation? It is followed up for you, and nothing else runs.'
+    )
+    await confirm('proposal-1')
+    expect(row('proposal-1')!.textContent).toContain(
+      'Approved. The follow-up was taken; this conversation’s Tasks list it.'
+    )
+  })
+
   it('denies one after a confirmation, and says a proposal decided elsewhere first is no longer its to decide', async () => {
     mocks.proposals = [proposal(), proposal({ id: 'proposal-2', sentence: 'I want to close PR #9.' })]
     mocks.decideProposal.mockResolvedValueOnce({ status: 'denied', failure: null })

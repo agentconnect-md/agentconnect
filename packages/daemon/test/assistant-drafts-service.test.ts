@@ -93,6 +93,8 @@ async function world(
     routesResponsible?: boolean
     /** The card surface the drafts reach, in place of the fake port. */
     cardPort?: DraftCardPort
+    /** Whether the follow-up an approved follow-up form named exists. */
+    followUpTaken?: boolean
   } = {}
 ) {
   store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
@@ -147,6 +149,7 @@ async function world(
     afterPost,
     startTask,
     observe: async () => {},
+    ...(over.followUpTaken !== undefined ? { followUpTaken: async () => over.followUpTaken! } : {}),
     admitsAsker: (_agent, id, channel, isDm) => id === INT && askable.has(channel) && isDm === channel.startsWith('D')
   })
   const click = (requestId: string, optionId: string, userId = 'U0ALICE') =>
@@ -173,8 +176,8 @@ async function world(
     startTask,
     describeDestination,
     afterPost,
-    // A patrol's proposal for an item taken in `place`'s conversation.
-    propose: (place?: ProposalPlace) =>
+    // A patrol's proposal for an item taken in `place`'s conversation; `extra` holds it for a round or makes it a follow-up form.
+    propose: (place?: ProposalPlace, extra: Partial<Parameters<AssistantDrafts['propose']>[0]> = {}) =>
       drafts.propose({
         agentId: AGENT,
         target: { platform: 'slack', integrationId: INT, channel: place?.channel ?? 'C0GENERAL', thread: null },
@@ -185,7 +188,8 @@ async function world(
         itemId: 'item-1',
         itemVersion: 1,
         source: PATROL,
-        ...(place ? { place } : {})
+        ...(place ? { place } : {}),
+        ...extra
       }),
     // `null` stands for no asker: an explicit undefined would take the default.
     post: (post: InterceptedPost = TO_SUPPORT, source: AssistantDraftSource = HERE, asker: DraftAsker | null = ALICE) =>
@@ -793,6 +797,65 @@ describe('recovery', () => {
   })
 })
 
+describe('a first look report round’s held cards (assistant-mode.md §5.13)', () => {
+  const GENERAL: ProposalPlace = { integrationId: INT, channel: 'C0GENERAL' }
+  const ROUND = 'assistant-report:round-1'
+
+  it('cards nothing while held, then each once in the given thread, in the order proposed', async () => {
+    const w = await world()
+    const second = await w.propose(GENERAL, { hold: { round: ROUND, seq: 2 }, sentence: 'Second.' })
+    const first = await w.propose(GENERAL, { hold: { round: ROUND, seq: 1 }, sentence: 'First.' })
+    expect(first.approver).toBe('the people in the conversation the follow-up belongs to')
+    expect(w.port.postCard).not.toHaveBeenCalled()
+    await w.drafts.releaseRound(AGENT, ROUND, '1700000000.000900')
+    await w.drafts.releaseRound(AGENT, ROUND, '1700000000.000900')
+    expect(w.port.postCard.mock.calls.map((call) => [call[1].view.proposal?.sentence, call[2]])).toEqual([
+      ['First.', '1700000000.000900'],
+      ['Second.', '1700000000.000900']
+    ])
+    expect(await w.store.assistantDrafts.get(second.draft.id)).toMatchObject({
+      cardTs: 'card-2',
+      proposal: { held: false }
+    })
+  })
+
+  it('cards none decided from the console while it was held', async () => {
+    const w = await world()
+    const { draft } = await w.propose(GENERAL, { hold: { round: ROUND, seq: 1 } })
+    await w.decide(draft.id, 'discard')
+    await w.drafts.releaseRound(AGENT, ROUND, undefined)
+    expect(w.port.postCard).not.toHaveBeenCalled()
+  })
+})
+
+describe('a follow-up form a restart cut short', () => {
+  const FORM = { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: null }
+
+  it('settles as taken when its follow-up exists, else as not taken, and its card says which', async () => {
+    for (const taken of [true, false]) {
+      const w = await world({ followUpTaken: taken })
+      const { draft } = await w.propose(
+        { integrationId: INT, channel: 'C0GENERAL' },
+        { task: undefined, followUp: FORM }
+      )
+      expect(
+        await w.store.assistantDrafts.beginFollowUp(draft.id, { id: 'user:u', name: 'Ada' }, 'item-9', 11_000)
+      ).toBe(true)
+      await w.drafts.recover([AGENT])
+      expect(await w.store.assistantDrafts.get(draft.id)).toMatchObject(
+        taken
+          ? { status: 'succeeded', failure: null }
+          : { status: 'failed', failure: expect.stringContaining('restart') }
+      )
+      expect(w.port.updateCard.mock.calls.at(-1)![2]).toMatchObject({
+        outcome: expect.stringContaining(taken ? 'The follow-up was taken' : 'Could not take the follow-up')
+      })
+      await store?.close()
+      store = undefined
+    }
+  })
+})
+
 describe('the sent-message bookkeeping an approved draft shares with sendMessage', () => {
   const origin = {
     agentId: AGENT,
@@ -890,6 +953,24 @@ describe('the Slack draft card', () => {
     const other = text(view({ platform: 'telegram', channel: '-1001', name: 'ops' }, 'Telegram'))
     expect(other).toContain('*ops* on Telegram')
     expect(other).toContain('Telegram `-1001`')
+  })
+  it('shows a follow-up form as the follow-up an approval takes, in place of work it runs', () => {
+    const card = text({
+      ...view({ channel: 'C0GENERAL', name: 'general' }),
+      kind: 'task',
+      text: 'The release date',
+      proposal: {
+        sentence: 'I want to follow up the release date.',
+        why: 'Ada is waiting on it.',
+        followUp: { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: 1_760_000_000_000 }
+      }
+    })
+    expect(card).toContain('**Follow-up**')
+    expect(card).toContain('> The release date')
+    expect(card).toContain('Done when: A date is posted.')
+    expect(card).toContain('First check <!date^1760000000^')
+    expect(card).toContain('Approving takes this follow-up in <#C0GENERAL> (#general) for you; nothing else runs.')
+    expect(card).not.toContain('**Work**')
   })
 })
 

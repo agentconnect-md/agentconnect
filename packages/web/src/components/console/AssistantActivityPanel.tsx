@@ -36,6 +36,7 @@ import {
   FollowUpChecksToggle,
   followUpKindKey,
   followUpOf,
+  ProposedFollowUp,
   stopTask,
   taskStopKey
 } from '@/components/console/follow-up'
@@ -886,11 +887,23 @@ function DraftRow({
           ) : null}
         </div>
       )}
-      <div className="mt-2 max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-primary)">
-        {draft.text}
-      </div>
+      {proposal?.followUp ? (
+        <div className="mt-2">
+          <ProposedFollowUp followUp={proposal.followUp} />
+        </div>
+      ) : (
+        <div className="mt-2 max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-primary)">
+          {draft.text}
+        </div>
+      )}
       <div className="mt-2 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:gap-3">
-        {proposal ? <span>{t('drafts.proposal.runsIn', { place: target })}</span> : null}
+        {proposal ? (
+          <span>
+            {proposal.followUp
+              ? t('drafts.proposal.followUpIn', { place: target })
+              : t('drafts.proposal.runsIn', { place: target })}
+          </span>
+        ) : null}
         {proposal?.itemTitle ? <span>{t('drafts.proposal.item', { title: proposal.itemTitle })}</span> : null}
         <span>{t('drafts.approver', { name: approverName })}</span>
         <span>
@@ -899,14 +912,23 @@ function DraftRow({
           })}
         </span>
       </div>
-      {result ? <DraftOutcome result={result} pending={pending} proposalPlace={proposal ? target : undefined} /> : null}
+      {result ? (
+        <DraftOutcome
+          result={result}
+          pending={pending}
+          proposalPlace={proposal ? target : undefined}
+          followUpForm={proposal?.followUp !== undefined}
+        />
+      ) : null}
       {!canDecide ? null : confirming ? (
         <ConfirmStrip
           prompt={
             proposal
               ? confirming === 'discard'
                 ? t('drafts.proposal.denyConfirm')
-                : t('drafts.proposal.approveConfirm', { place: target })
+                : proposal.followUp
+                  ? t('drafts.proposal.takeConfirm', { place: target })
+                  : t('drafts.proposal.approveConfirm', { place: target })
               : confirming === 'discard'
                 ? t('drafts.discardConfirm')
                 : t('drafts.approveConfirm', { target })
@@ -947,19 +969,24 @@ const OUTCOME_CLASS: Record<AssistantDraftOutcomeDto['status'], string> = {
   outcome_unknown: 'text-(--status-paused)'
 }
 
-/** What a decision did, in place of the draft's buttons; a proposal's names the conversation it runs in. */
+/** What a decision did, in place of the draft's buttons; a proposal's names the conversation it runs in, and a follow-up form's links to the conversation of the follow-up it took. */
 function DraftOutcome({
   result,
   pending,
-  proposalPlace
+  proposalPlace,
+  followUpForm = false
 }: {
   result: DraftResult
   pending: boolean
   proposalPlace?: string | undefined
+  followUpForm?: boolean
 }) {
   const t = useTranslations('Agents.detail.activity')
+  const { orgPath } = useOrgs()
   let text: string
   let tone = 'text-(--text-secondary)'
+  // The follow-up a follow-up form took has no page before its first check; its conversation lists it under Tasks.
+  const taken = 'outcome' in result ? result.outcome.followUp?.conversation : undefined
   if ('busy' in result) {
     tone = 'text-(--status-paused)'
     text = result.busy
@@ -975,6 +1002,15 @@ function DraftOutcome({
       proposalPlace !== undefined && result.refused === 'expired'
         ? t('drafts.proposal.outcome.expired')
         : t(`drafts.outcome.${result.refused}`)
+  } else if (proposalPlace !== undefined && followUpForm) {
+    const { status, failure } = result.outcome
+    tone = OUTCOME_CLASS[status]
+    text =
+      status === 'failed'
+        ? t('drafts.proposal.outcome.notTaken', { reason: failure ?? t('drafts.outcome.unknownReason') })
+        : status === 'denied'
+          ? t('drafts.proposal.outcome.deniedFollowUp')
+          : t('drafts.proposal.outcome.taken', { place: proposalPlace })
   } else if (proposalPlace !== undefined) {
     const { status, failure } = result.outcome
     tone = OUTCOME_CLASS[status]
@@ -1000,6 +1036,14 @@ function DraftOutcome({
       data-assistant-draft-outcome
     >
       {text}
+      {taken ? (
+        <>
+          {' '}
+          <Link className="lnk" href={orgPath(`/sessions/${encodeURIComponent(taken.sessionId)}`)}>
+            {t('drafts.proposal.outcome.seeFollowUp')}
+          </Link>
+        </>
+      ) : null}
     </div>
   )
 }

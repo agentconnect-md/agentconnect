@@ -4,7 +4,13 @@ import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
 import { afterEach, describe, expect, it } from 'vitest'
 import { patrolCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
-import { ASSISTANT_DRAFT_TTL_MS, assistantTaskHash, type AssistantTaskCreate } from '../src/store/assistant-drafts.js'
+import {
+  ASSISTANT_DRAFT_TTL_MS,
+  assistantFollowUpHash,
+  assistantProposalHash,
+  assistantTaskHash,
+  type AssistantTaskCreate
+} from '../src/store/assistant-drafts.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
 import { openTestStore, tempStorePath, usingPostgresStore } from './store-support.js'
@@ -165,6 +171,75 @@ describe('a proposal on the approval record', () => {
     // A later check of the same follow-up has not proposed yet.
     expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a), 1_001)).toBe(false)
     expect(await s.assistantDrafts.proposedFrom(a, patrolKey(a, '2'), 0)).toBe(false)
+  })
+})
+
+const FORM = { title: 'Release notes for 2.6', doneWhen: 'The notes are posted in the channel.', nextCheck: 5_000 }
+
+describe('a first look’s proposals and the follow-up form (assistant-mode.md §5.13)', () => {
+  it('records the follow-up form bound to its follow-up, with its title as its text', async () => {
+    const s = await open()
+    const a = agent()
+    const proposal = await propose(s, a, { task: '', followUp: FORM })
+    expect(proposal).toMatchObject({
+      action: 'task',
+      text: FORM.title,
+      proposal: { followUp: FORM, round: null, held: false, tookItemId: null }
+    })
+    expect(proposal.hash).toBe(assistantFollowUpHash(a, 'item-1', 3, FORM))
+    expect(proposal.hash).toBe(assistantProposalHash(a, proposal.proposal!, proposal.text))
+    expect(proposal.hash).not.toBe(assistantTaskHash(a, 'item-1', 3, FORM.title))
+    // A changed form no longer matches the hash it was approved against.
+    expect(
+      assistantProposalHash(a, { ...proposal.proposal!, followUp: { ...FORM, nextCheck: null } }, proposal.text)
+    ).not.toBe(proposal.hash)
+    await expect(propose(s, a, { task: '', followUp: { ...FORM, doneWhen: ' ' } })).rejects.toThrow(
+      'what counts as done'
+    )
+  })
+
+  it('numbers a round’s proposals and holds their cards until the round releases each once', async () => {
+    const s = await open()
+    const a = agent()
+    const round = 'assistant-report:round-1'
+    const third = await propose(s, a, { round: { id: round, seq: 3 }, now: 1_000 })
+    const first = await propose(s, a, { round: { id: round, seq: 1 }, now: 1_000 })
+    await propose(s, a, { round: { id: round, seq: 2 }, followUp: FORM, task: '', now: 1_000 })
+    await propose(s, a, { round: { id: 'assistant-report:other', seq: 1 } })
+    await propose(s, a)
+    expect(await s.assistantDrafts.countInRound(a, round)).toBe(3)
+    expect(first.proposal).toMatchObject({ round, held: true })
+    const held = await s.assistantDrafts.heldInRound(a, round)
+    expect(held.map((d) => d.id)).toEqual([first.id, expect.any(String), third.id])
+    expect(await s.assistantDrafts.unhold(first.id)).toBe(true)
+    expect(await s.assistantDrafts.unhold(first.id)).toBe(false)
+    expect((await s.assistantDrafts.heldInRound(a, round)).map((d) => d.id)).not.toContain(first.id)
+    expect((await s.assistantDrafts.heldRounds([a])).map((r) => r.round).sort()).toEqual([
+      'assistant-report:other',
+      round
+    ])
+  })
+
+  it('takes a follow-up form once, naming the follow-up, and leaves it out of the tasks’ recovery', async () => {
+    const s = await open()
+    const a = agent()
+    const proposal = await propose(s, a, { task: '', followUp: FORM })
+    const task = await propose(s, a)
+    expect(await s.assistantDrafts.beginFollowUp(task.id, BY, 'item-new', 2_000)).toBe(false)
+    expect(await s.assistantDrafts.beginFollowUp(proposal.id, BY, 'item-new', 2_000)).toBe(true)
+    expect(await s.assistantDrafts.beginFollowUp(proposal.id, BY, 'item-other', 2_000)).toBe(false)
+    expect(await s.assistantDrafts.executingTasks([a])).toEqual([])
+    expect((await s.assistantDrafts.executingFollowUps([a])).map((d) => d.id)).toEqual([proposal.id])
+    expect(await s.assistantDrafts.settleFollowUp(proposal.id, 'succeeded', null, 3_000)).toBe(true)
+    expect(await s.assistantDrafts.settleFollowUp(proposal.id, 'failed', 'late', 3_000)).toBe(false)
+    expect(await s.assistantDrafts.get(proposal.id)).toMatchObject({
+      status: 'succeeded',
+      decidedBy: BY.id,
+      proposal: { tookItemId: 'item-new' }
+    })
+    // An expired one is never taken.
+    const late = await propose(s, a, { task: '', followUp: FORM, now: 1_000 })
+    expect(await s.assistantDrafts.beginFollowUp(late.id, BY, 'item-late', 1_000 + ASSISTANT_DRAFT_TTL_MS)).toBe(false)
   })
 })
 
@@ -337,7 +412,7 @@ const post = (s: LocalStore, agentId: string) =>
 
 describe.skipIf(usingPostgresStore())('the v39 → v40 approval record on SQLite', () => {
   it('widens the record to tasks and keeps every draft', async () => {
-    expect(SCHEMA_VERSION).toBe(55)
+    expect(SCHEMA_VERSION).toBe(56)
     const path = tempStorePath('ac-assistant-v39-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
@@ -439,6 +514,85 @@ describe.skipIf(!usingPostgresStore())('the v39 → v40 approval record on Postg
           proposal: { itemId: 'item-1', itemVersion: 3 },
           subsessionKey: taskKey(a)
         })
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
+const V56_COLUMNS = [
+  'followUpTitle',
+  'followUpDoneWhen',
+  'followUpNextCheck',
+  'reportRound',
+  'reportSeq',
+  'heldForReply',
+  'tookItemId'
+]
+
+describe.skipIf(usingPostgresStore())('the v55 → v56 approval record on SQLite', () => {
+  it('adds the follow-up form and the held round to a v55 store and keeps every proposal', async () => {
+    const path = tempStorePath('ac-assistant-v55-')
+    const first = await LocalStore.open(path)
+    const a = agent()
+    const kept = await propose(first, a)
+    await first.close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP INDEX IF EXISTS assistant_draft_by_round')
+    for (const column of V56_COLUMNS) old.exec(`ALTER TABLE assistant_draft DROP COLUMN ${column}`)
+    old.exec('PRAGMA user_version = 55')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect(await upgraded.assistantDrafts.get(kept.id)).toMatchObject({
+        proposal: { followUp: null, round: null, held: false, tookItemId: null }
+      })
+      const held = await propose(upgraded, a, { task: '', followUp: FORM, round: { id: 'r', seq: 1 } })
+      expect((await upgraded.assistantDrafts.heldInRound(a, 'r')).map((d) => d.id)).toEqual([held.id])
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v55 → v56 approval record on PostgreSQL', () => {
+  it('adds the follow-up form and the held round to a v55 store and keeps every proposal', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      const first = await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })
+      const kept = await propose(first, a)
+      await first.close()
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('DROP INDEX IF EXISTS assistant_draft_by_round')
+      for (const column of V56_COLUMNS)
+        await admin.query(`ALTER TABLE assistant_draft DROP COLUMN ${column.toLowerCase()}`)
+      await admin.query('UPDATE _local_store_schema_version SET version = 55 WHERE singleton = true')
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        expect(await upgraded.assistantDrafts.get(kept.id)).toMatchObject({
+          proposal: { followUp: null, round: null, held: false, tookItemId: null }
+        })
+        const held = await propose(upgraded, a, { task: '', followUp: FORM, round: { id: 'r', seq: 1 } })
+        expect((await upgraded.assistantDrafts.heldInRound(a, 'r')).map((d) => d.id)).toEqual([held.id])
       } finally {
         await upgraded.close()
       }

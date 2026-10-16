@@ -101,6 +101,8 @@ export interface SlackTurn {
      *  because chat.update REPLACES content, so closing the response means re-sending what
      *  is already displayed. */
     lastResponse?: { ts: string; text: string }
+    /** ts of the FIRST agent-authored body posted this turn, the message a first look's cards thread under. */
+    firstResponse?: string
     /** Routing facts of the COMPLETE response, resolved by the host before the final body
      *  flush (§5.5): the recipient set, the addressed-anyone bit, whether any peer agent
      *  shares this conversation at all, and whether one of them posts as the SAME bot —
@@ -405,6 +407,7 @@ async function postSlackReply<TTurn extends SlackTurn>(
   // the response (§5.5). Tracked for every agent-authored body, including `attributed:
   // false` sections: "last posted" is a fact about ordering, not about footer ownership.
   if (ts) p.reply.lastResponse = { ts, text }
+  if (ts && p.reply.firstResponse === undefined) p.reply.firstResponse = ts
   // Record the born-final ts only when the closing metadata actually rode the post.
   if (ts && closure && agentPostOptions?.response) p.reply.finalStamped = ts
   if (ts && trackReply) {

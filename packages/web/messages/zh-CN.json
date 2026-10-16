@@ -209,7 +209,12 @@
       "keep": "保留",
       "ended": "跟进已结束。",
       "alreadyEnded": "它已经结束了。",
-      "endFailed": "结束失败，请重试。"
+      "endFailed": "结束失败，请重试。",
+      "proposed": {
+        "takes": "将接下这个跟进",
+        "firstCheck": "首次检查：{time}",
+        "noCheck": "收到消息前不检查"
+      }
     }
   },
   "Profile": {
@@ -3250,6 +3255,9 @@
             "approveConfirmHere": "现在执行？结果会回报到此对话。",
             "denyConfirm": "拒绝这项提议？不会执行任何操作。",
             "dismiss": "关闭",
+            "followUpIn": "在 {place} 中跟进",
+            "takeConfirm": "在 {place} 中接下这个跟进？它会为你跟进，不会执行其他操作。",
+            "takeConfirmHere": "在此对话中接下这个跟进？它会为你跟进，不会执行其他操作。",
             "outcome": {
               "executing": "已批准，作为任务执行，完成后回报到 {place}。",
               "executingHere": "已批准，作为任务执行，完成后回报到此对话。",
@@ -3259,7 +3267,12 @@
               "outcome_unknown": "不确定是否已执行，请查看 {place}；不会再次执行。",
               "expired": "已过期，没有执行任何操作。",
               "unconfirmedGone": "无法确认是否已处理，它已不在等待批准。请查看 {place}，可能已经开始执行。",
-              "unconfirmedHere": "无法确认是否已处理，它已不在等待批准，可能已经开始执行。"
+              "unconfirmedHere": "无法确认是否已处理，它已不在等待批准，可能已经开始执行。",
+              "taken": "已批准，已接下这个跟进，结果会回报到 {place}。",
+              "takenHere": "已批准，已接下这个跟进，可在此对话的任务中查看。",
+              "notTaken": "无法接下这个跟进：{reason}。",
+              "deniedFollowUp": "已拒绝，没有接下跟进。",
+              "seeFollowUp": "在所属对话的任务中查看"
             }
           }
         },

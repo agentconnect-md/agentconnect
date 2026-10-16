@@ -200,6 +200,8 @@ export interface CallMeta {
    * locator stays at the direct ingress; descendants inherit only the stable
    * provider/realm/resource tuple. */
   externalOrigin?: ExternalSessionAudience
+  /** Daemon-internal, never a tool input: this turn is the round a first look's report arrives in, naming its follow-up (assistant-mode.md §5.13), so the place's long session may `propose` on it. Persisted with the inbox row. */
+  firstLookReport?: string
   /** Daemon-internal (issue #536, never a tool input): when this turn calls
    *  `messageAgent`, deliver the woken peer's turn HEADLESS so it records silently
    *  with no channel output. Set only by the self-introduce-on-join fan-out; does
@@ -555,6 +557,8 @@ export interface ReplyAccumulator {
    *  Undefined when the turn posted no conversational body (chrome-only, `none` mode, or
    *  a headless turn): there is then no response event to close. */
   lastResponse?: { ts: string; text: string }
+  /** ts of the FIRST agent-authored conversational message posted this turn; a first look's cards thread under it (assistant-mode.md §5.13). */
+  firstResponse?: string
   /** send-message-routing-rework.md §5.1: the id of the ONE complete logical response
    *  this turn produces. Every physical message of a long answer carries it, so a peer
    *  deduplicates on (responseId, target agent) and activates exactly once even when the

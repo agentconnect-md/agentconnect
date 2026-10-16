@@ -23,6 +23,7 @@ import { useOptionalNotifications } from '@/lib/notifications'
 import { approvalSourceKey } from '@/lib/approval-notifications'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+import { ProposedFollowUp } from '@/components/console/follow-up'
 
 /** How a decision on a conversation's proposal ended here: its outcome, or why it was no longer waiting. */
 interface SettledProposal {
@@ -174,13 +175,23 @@ export function ApprovalRequestsCard({
     if (!sessionId) return null
     try {
       const { status, failure } = await decideAssistantConversationProposal(agentId, sessionId, proposal.id, decision)
-      if (status === 'denied') settleProposal(proposal, ta('drafts.proposal.outcome.denied'), 'text-(--text-secondary)')
+      const form = proposal.followUp !== undefined
+      if (status === 'denied')
+        settleProposal(
+          proposal,
+          ta(form ? 'drafts.proposal.outcome.deniedFollowUp' : 'drafts.proposal.outcome.denied'),
+          'text-(--text-secondary)'
+        )
       else if (status === 'failed')
         settleProposal(
           proposal,
-          ta('drafts.proposal.outcome.failed', { reason: failure ?? ta('drafts.outcome.unknownReason') }),
+          ta(form ? 'drafts.proposal.outcome.notTaken' : 'drafts.proposal.outcome.failed', {
+            reason: failure ?? ta('drafts.outcome.unknownReason')
+          }),
           'text-(--status-error)'
         )
+      // A follow-up form's follow-up belongs to this conversation, so its Tasks tab lists it.
+      else if (form) settleProposal(proposal, ta('drafts.proposal.outcome.takenHere'), 'text-(--status-online-text)')
       else settleProposal(proposal, ta('drafts.proposal.outcome.executingHere'), 'text-(--status-info)')
       void mutateProposals()
       return null
@@ -434,14 +445,26 @@ function ProposalRow({
               {t('drafts.proposal.why', { why: proposal.why })}
             </div>
           ) : null}
-          <div className="mt-1 max-h-[160px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-2 py-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-primary)">
-            {proposal.task}
-          </div>
+          {proposal.followUp ? (
+            <div className="mt-1">
+              <ProposedFollowUp followUp={proposal.followUp} compact />
+            </div>
+          ) : (
+            <div className="mt-1 max-h-[160px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-2 py-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-primary)">
+              {proposal.task}
+            </div>
+          )}
         </div>
       ) : null}
       {confirming ? (
         <ConfirmStrip
-          prompt={confirming === 'deny' ? t('drafts.proposal.denyConfirm') : t('drafts.proposal.approveConfirmHere')}
+          prompt={
+            confirming === 'deny'
+              ? t('drafts.proposal.denyConfirm')
+              : proposal.followUp
+                ? t('drafts.proposal.takeConfirmHere')
+                : t('drafts.proposal.approveConfirmHere')
+          }
           confirm={confirming === 'deny' ? t('drafts.proposal.deny') : t('drafts.approve')}
           keep={t('drafts.cancel')}
           busy={busy}

@@ -5,6 +5,7 @@ import {
   ASSISTANT_PROPOSAL_TASK_MAX,
   ASSISTANT_PROPOSAL_WHY_MAX
 } from '@agentconnect.md/protocol'
+import { ASSISTANT_ITEM_LIMITS } from './assistant-items.js'
 import type { StoreQueryResult } from './store-database.js'
 
 export const ASSISTANT_DRAFT_STATUSES = [
@@ -77,12 +78,27 @@ export interface AssistantDraftApprover {
   consoleUserId: string | null
 }
 
+/** A proposal's follow-up form (assistant-mode.md §5.13): what an approval takes in place of running a task. */
+export interface AssistantProposalFollowUp {
+  title: string
+  doneWhen: string
+  nextCheck: number | null
+}
+
 /** What a patrol proposes (§5.10): the card's sentence and reason, and the item at the version it was proposed against. */
 export interface AssistantProposal {
   sentence: string
   why: string
   itemId: string
   itemVersion: number
+  /** Set on the follow-up form, whose approval takes this follow-up and runs no task. */
+  followUp: AssistantProposalFollowUp | null
+  /** The first look report round it was proposed in (§5.13), whose reply its card waits for. */
+  round: string | null
+  /** Its card waits for the round's reply to post. */
+  held: boolean
+  /** The follow-up an approval of the follow-up form took. */
+  tookItemId: string | null
 }
 
 export interface AssistantDraft {
@@ -148,6 +164,10 @@ export interface AssistantTaskCreate {
   itemVersion: number
   source: AssistantDraftSource
   approver?: AssistantDraftApprover | null
+  /** The follow-up form; `task` is then its title. */
+  followUp?: AssistantProposalFollowUp
+  /** A first look report round's proposal, numbered in the round; its card is held until the round's reply posts. */
+  round?: { id: string; seq: number }
   now?: number
 }
 
@@ -204,10 +224,18 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         itemId TEXT,
         itemVersion INTEGER,
         subsessionKey TEXT,
-        cardShows TEXT
+        cardShows TEXT,
+        followUpTitle TEXT,
+        followUpDoneWhen TEXT,
+        followUpNextCheck INTEGER,
+        reportRound TEXT,
+        reportSeq INTEGER,
+        heldForReply INTEGER NOT NULL DEFAULT 0,
+        tookItemId TEXT
       );
       CREATE INDEX IF NOT EXISTS assistant_draft_by_status ON assistant_draft (agentId, status, expiresAt);
       CREATE INDEX IF NOT EXISTS assistant_draft_by_subsession ON assistant_draft (agentId, subsessionKey);
+      CREATE INDEX IF NOT EXISTS assistant_draft_by_round ON assistant_draft (agentId, reportRound);
 `
 
 /** What the ledger needs from the store. */
@@ -225,6 +253,24 @@ export function assistantDraftHash(target: AssistantDraftTarget, text: string): 
 export function assistantTaskHash(agentId: string, itemId: string, itemVersion: number, task: string): string {
   const parts = ['task', agentId, itemId, itemVersion, task]
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
+}
+
+/** The same for the follow-up form: the follow-up it takes in place of a task. */
+export function assistantFollowUpHash(
+  agentId: string,
+  itemId: string,
+  itemVersion: number,
+  form: AssistantProposalFollowUp
+): string {
+  const parts = ['follow-up', agentId, itemId, itemVersion, form.title, form.doneWhen, form.nextCheck]
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
+}
+
+/** The digest a proposal's record must still carry to run: its task's, or its follow-up form's. */
+export function assistantProposalHash(agentId: string, proposal: AssistantProposal, task: string): string {
+  return proposal.followUp
+    ? assistantFollowUpHash(agentId, proposal.itemId, proposal.itemVersion, proposal.followUp)
+    : assistantTaskHash(agentId, proposal.itemId, proposal.itemVersion, task)
 }
 
 type Row = Record<string, unknown>
@@ -257,7 +303,18 @@ function draftOf(row: Row): AssistantDraft {
             sentence: String(row.sentence ?? ''),
             why: String(row.why ?? ''),
             itemId: String(row.itemId ?? ''),
-            itemVersion: Number(row.itemVersion ?? 0)
+            itemVersion: Number(row.itemVersion ?? 0),
+            followUp:
+              row.followUpTitle === null || row.followUpTitle === undefined
+                ? null
+                : {
+                    title: String(row.followUpTitle),
+                    doneWhen: String(row.followUpDoneWhen ?? ''),
+                    nextCheck: num(row.followUpNextCheck)
+                  },
+            round: str(row.reportRound),
+            held: Number(row.heldForReply ?? 0) === 1,
+            tookItemId: str(row.tookItemId)
           }
         : null,
     source: sourcePlatform
@@ -353,10 +410,11 @@ export class AssistantDraftLedger {
     return await this.insert(id, row)
   }
 
-  /** A patrol's proposal (§5.10): awaiting review for the same day a draft is, bound to the task, the agent and the item's version. */
+  /** A patrol's proposal (§5.10): awaiting review for the same day a draft is, bound to the task (or follow-up form), the agent and the item's version. */
   async createTask(input: AssistantTaskCreate): Promise<AssistantDraft> {
     const now = input.now ?? Date.now()
-    const { target, task, sentence, why, source } = input
+    const { target, sentence, why, source, followUp, round } = input
+    const task = followUp ? followUp.title : input.task
     if (!target.platform || !target.channel) throw new Error('a proposal needs the place it runs in')
     if (sentence.trim() === '') throw new Error('a proposal needs its sentence')
     if (task.trim() === '') throw new Error('a proposal needs its task')
@@ -366,6 +424,10 @@ export class AssistantDraftLedger {
       throw new Error(`a proposal's reason exceeds ${ASSISTANT_PROPOSAL_WHY_MAX} characters`)
     if (task.length > ASSISTANT_PROPOSAL_TASK_MAX)
       throw new Error(`a proposal's task exceeds ${ASSISTANT_PROPOSAL_TASK_MAX} characters`)
+    if (followUp && followUp.title.length > ASSISTANT_ITEM_LIMITS.title)
+      throw new Error(`a proposal's follow-up title exceeds ${ASSISTANT_ITEM_LIMITS.title} characters`)
+    if (followUp && (followUp.doneWhen.trim() === '' || followUp.doneWhen.length > ASSISTANT_ITEM_LIMITS.doneWhen))
+      throw new Error('a proposal’s follow-up needs what counts as done, within its limit')
     const id = input.id ?? randomUUID()
     const approver = input.approver ?? null
     const destination = input.destination ?? {}
@@ -399,15 +461,106 @@ export class AssistantDraftLedger {
       approverTeamId: approver?.teamId ?? null,
       approverConsoleUserId: approver?.consoleUserId ?? null,
       status: 'awaiting_review',
-      hash: assistantTaskHash(input.agentId, input.itemId, input.itemVersion, task),
+      hash: followUp
+        ? assistantFollowUpHash(input.agentId, input.itemId, input.itemVersion, followUp)
+        : assistantTaskHash(input.agentId, input.itemId, input.itemVersion, task),
       createdAt: now,
       expiresAt: now + ASSISTANT_DRAFT_TTL_MS,
       sentence,
       why,
       itemId: input.itemId,
-      itemVersion: input.itemVersion
+      itemVersion: input.itemVersion,
+      followUpTitle: followUp?.title ?? null,
+      followUpDoneWhen: followUp?.doneWhen ?? null,
+      followUpNextCheck: followUp?.nextCheck ?? null,
+      reportRound: round?.id ?? null,
+      reportSeq: round?.seq ?? null,
+      heldForReply: round ? 1 : 0
     }
     return await this.insert(id, row)
+  }
+
+  /** How many proposals a first look report round made (§5.13). */
+  async countInRound(agentId: string, round: string): Promise<number> {
+    const rows = (
+      await this.db.query('SELECT COUNT(*) AS n FROM assistant_draft WHERE agentId = ? AND reportRound = ?', [
+        agentId,
+        round
+      ])
+    ).rows as { n: number | string }[]
+    return Number(rows[0]?.n ?? 0)
+  }
+
+  /** A round's proposals whose cards still wait for its reply, in the order proposed. */
+  async heldInRound(agentId: string, round: string): Promise<AssistantDraft[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_draft WHERE agentId = ? AND reportRound = ? AND heldForReply = 1
+         ORDER BY reportSeq, createdAt, id`,
+        [agentId, round]
+      )
+    ).rows as Row[]
+    return rows.map(draftOf)
+  }
+
+  /** The rounds of these agents with a card still held, each once. */
+  async heldRounds(agentIds: readonly string[]): Promise<{ agentId: string; round: string; sessionKey: string }[]> {
+    const held = await this.select(agentIds, 'heldForReply = 1', [])
+    const rounds = new Map<string, { agentId: string; round: string; sessionKey: string }>()
+    for (const draft of held) {
+      const round = draft.proposal?.round
+      if (round && draft.source?.sessionKey)
+        rounds.set(JSON.stringify([draft.agentId, round]), {
+          agentId: draft.agentId,
+          round,
+          sessionKey: draft.source.sessionKey
+        })
+    }
+    return [...rounds.values()]
+  }
+
+  /** Stop holding a card so this caller posts it; false when another already did. */
+  async unhold(id: string): Promise<boolean> {
+    const { changes } = await this.db.query(
+      'UPDATE assistant_draft SET heldForReply = 0 WHERE id = ? AND heldForReply = 1',
+      [id]
+    )
+    return changes > 0
+  }
+
+  /** Approve the follow-up form: awaiting review and unexpired → executing, naming the follow-up it takes. */
+  async beginFollowUp(
+    id: string,
+    by: { id: string | null; name: string | null },
+    itemId: string,
+    now = Date.now()
+  ): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_draft SET status = 'executing', decidedAt = ?, decidedBy = ?, decidedByName = ?, tookItemId = ?
+       WHERE id = ? AND action = 'task' AND followUpTitle IS NOT NULL AND status = 'awaiting_review' AND expiresAt > ?`,
+      [now, by.id, by.name, itemId, id, now]
+    )
+    return changes > 0
+  }
+
+  /** The follow-up form's outcome once taken, or why it was not; only an executing one settles. */
+  async settleFollowUp(
+    id: string,
+    status: 'succeeded' | 'failed',
+    failure: string | null,
+    now = Date.now()
+  ): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_draft SET status = ?, settledAt = ?, failure = ?
+       WHERE id = ? AND followUpTitle IS NOT NULL AND status = 'executing'`,
+      [status, now, failure, id]
+    )
+    return changes > 0
+  }
+
+  /** Follow-up forms of these agents an approval left executing, as a restart found them. */
+  async executingFollowUps(agentIds: readonly string[]): Promise<AssistantDraft[]> {
+    return await this.select(agentIds, "followUpTitle IS NOT NULL AND status = 'executing'", [])
   }
 
   private async insert(id: string, row: Record<string, unknown>): Promise<AssistantDraft> {
@@ -553,7 +706,7 @@ export class AssistantDraftLedger {
 
   /** The tasks of these agents still executing, oldest first. */
   async executingTasks(agentIds: readonly string[]): Promise<AssistantDraft[]> {
-    return await this.select(agentIds, "action = 'task' AND status = 'executing'", [])
+    return await this.select(agentIds, "action = 'task' AND followUpTitle IS NULL AND status = 'executing'", [])
   }
 
   /** Whether the follow-up's check running in this session since `since` already proposed: a check proposes at most once. */

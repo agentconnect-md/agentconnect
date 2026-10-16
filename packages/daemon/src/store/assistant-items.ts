@@ -57,6 +57,8 @@ export interface AssistantItem {
 export type AssistantItemOverview = Omit<AssistantItem, 'observations'>
 
 export interface AssistantItemCreate {
+  /** An id the caller minted, as an approved proposal's follow-up form names it before taking it. */
+  id?: string
   agentId: string
   title: string
   doneWhen?: string
@@ -235,7 +237,7 @@ export class AssistantItemLedger {
     checkPlace(input.origin)
     if (input.firstLook !== undefined && !ASSISTANT_FIRST_LOOK_TRIGGERS.includes(input.firstLook))
       throw new Error(`assistant item firstLook is not one of ${ASSISTANT_FIRST_LOOK_TRIGGERS.join(', ')}`)
-    const id = randomUUID()
+    const id = input.id ?? randomUUID()
     await this.db.query(
       `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
          originTransportScope, taskKey, asker, shared, replyThread, firstLook, summary, observationVersion, version,

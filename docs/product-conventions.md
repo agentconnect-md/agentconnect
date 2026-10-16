@@ -1457,7 +1457,7 @@ keeps it from writing there, and reads over the network that need no approval st
 
 When an agent in assistant mode is added to a channel or group chat, it takes a first look: a
 read-only task reads that conversation once and reports to the conversation's long session, which
-remembers how the place works, introduces the agent once and lists at most three ways it could help.
+remembers how the place works, introduces the agent once and offers at most three ways it could help.
 
 - **When.** On Slack, the bot itself joining a conversation takes one, from the daemon holding the
   agent's duty, once the Control Plane lists the conversation for the agent and it is not Off; a
@@ -1480,11 +1480,18 @@ remembers how the place works, introduces the agent once and lists at most three
   level, with what to do: write "How this place works" and "Recurring" to a topic file named after
   the place, in the layer that conversation writes, plus one index line; post one short
   introduction (who it is, one line on what it saw, how to reach it: "@-mention me" or "I read
-  every message"); in that same message list each way it could help in one line, and something in
-  flight only if someone is visibly waiting on it, acting on one when someone there asks; ask at
-  most one question; then post nothing more on its own. A conversation with no long session yet
-  gets one, as its first message would have opened it. One that became shared with another
-  organization while the first look ran is told only to write the topic file.
+  every message") at the conversation's top level; offer each way it could help, and something in
+  flight only if someone is visibly waiting on it; ask at most one question; then post nothing more
+  on its own. A conversation with no long session yet gets one, as its first message would have
+  opened it. One that became shared with another organization while the first look ran is told only
+  to write the topic file.
+- **Its offers.** On Slack each offer is a proposal card (see "Assistant-mode proposals"), at most
+  three, posted in the thread under the introduction in the order offered once the introduction has
+  posted; if no introduction posts, the cards go where the conversation's cards go otherwise. Only
+  the round that brings the report may offer cards. Something in flight, or something that recurs
+  and is worth checking on a schedule, is offered as a follow-up to take. On a platform without
+  cards, the introduction lists each offer in one line instead, and the agent acts on one when
+  someone there asks.
 - **Memory.** The first look's own session feeds no memory: no per-turn capture and no dream reads
   it. Memory gets only what the long session writes.
 - **Budget and failures.** It counts as one check against `dailyPatrolBudget`. An automatic one
@@ -1503,8 +1510,18 @@ remembers how the place works, introduces the agent once and lists at most three
 
 A check that finds something worth doing asks for approval with `propose`: one plain sentence
 ("I want to do X because Y"), the reason, and the work it would carry out once approved, such
-as "rebase PR #12 onto main and push". A check proposes at most once and runs nothing itself; no
-other session and no agent outside assistant mode is offered `propose`.
+as "rebase PR #12 onto main and push". A check proposes at most once and runs nothing itself. The
+only other session offered `propose` is a conversation's long session on Slack, on the round a first
+look's report arrives in, at most three times (see "Assistant-mode first look"); no agent outside
+assistant mode is offered it.
+
+Instead of work to carry out, a proposal may offer a follow-up to take: what it would follow up,
+what counts as done and, optionally, when to check first. Approving it takes that follow-up of the
+conversation, with whoever approved it as the person it is followed up for, as if they had
+confirmed it there; nothing runs, it counts toward no limit, and the card then says the follow-up
+was taken. The card, Activity and a webchat conversation's pending requests show what it would
+take; once approved in Activity, the row links to the conversation the follow-up belongs to, whose
+Tasks tab lists it, for someone who may open that conversation.
 
 The proposal is carded in the Slack conversation the follow-up belongs to, where that conversation's
 replies land: its top level when it is one long conversation, else its thread. Whoever could ask
@@ -1536,7 +1553,8 @@ check's read-only mode. It reports back once: its own report, or the daemon's "e
 when it ends without one. It counts toward the agent's concurrent tasks; while that is
 full the approval is refused with the reason, nothing runs and the proposal keeps waiting. A proposal whose record changed after it was written, whose follow-up
 ended, whose conversation has no long session, or whose agent left assistant mode is
-refused and never runs. When a restart or handover cuts the approved proposal short before it reports, it is
+refused and never runs. A first look's proposals are the exception to the follow-up having ended,
+since a first look ends after its one read by design. When a restart or handover cuts the approved proposal short before it reports, it is
 never run again: the conversation is told once that it is not sure this went through and should
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
 without reporting, uncertain) is recorded on the follow-up.

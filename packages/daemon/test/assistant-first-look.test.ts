@@ -15,7 +15,7 @@ import {
   withinWindow
 } from '../src/assistant/first-look.js'
 import { FIRST_LOOK_TOOL, firstLookToolsFor } from '../src/mcp/ops/first-look.js'
-import { RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
+import { PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
 import type { RoutingRule } from '../src/router/routing-rule.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
 
@@ -62,8 +62,25 @@ describe('which places take a first look', () => {
     expect(firstLookToolsFor(agent, { ...at, integrationId: 'int-other' })).toEqual([])
   })
 
+  it('offers that long session propose for its report round only where the place has cards', () => {
+    const agent = { ...ON, integrations: [integration()] }
+    const at = { channel: 'C1', thread: APPEND, integrationId: 'int-a', isDm: false }
+    expect(firstLookToolsFor(agent, at, { cards: true })).toEqual([FIRST_LOOK_TOOL, PROPOSE_TOOL])
+    expect(firstLookToolsFor(agent, at, { cards: false })).toEqual([FIRST_LOOK_TOOL])
+    expect(firstLookToolsFor(agent, { ...at, thread: '1700000000.000100' }, { cards: true })).toEqual([])
+    expect(
+      firstLookToolsFor({ ...ON, integrations: [integration({ externalChannels: ['C1'] })] }, at, { cards: true })
+    ).toEqual([])
+  })
+
   it('keeps each tool within the runtimes’ limits', () => {
-    for (const descriptor of [FIRST_LOOK_TOOL, ...firstLookTools([]).filter((t) => t.name === 'recordCheck')]) {
+    for (const descriptor of [
+      FIRST_LOOK_TOOL,
+      PROPOSE_TOOL,
+      ...firstLookTools([]).filter((t) => t.name === 'recordCheck')
+    ]) {
+      // A top-level oneOf would be flattened by the runtime and grow the description; none is used.
+      expect('oneOf' in descriptor.inputSchema).toBe(false)
       expect(descriptor.description.length).toBeLessThanOrEqual(2_048)
       expect(Buffer.byteLength(JSON.stringify(descriptor.inputSchema))).toBeLessThanOrEqual(5_000)
     }
@@ -154,6 +171,13 @@ describe('the prompts', () => {
     expect(handling).toContain('3. In the same message, list each "Where I could help" item in one line')
     expect(handling).toContain('Then post nothing\n   more on your own.')
     expect(handling).not.toContain('propose')
+    // Where the place has cards, step 3 offers the suggestions with propose, under the introduction.
+    const cards = firstLookHandling('@-mention me', { external: false, cards: true })
+    expect(cards).toContain(
+      '3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a\n   follow-up only if someone is visibly waiting on it.'
+    )
+    expect(cards).not.toContain('In the same message')
+    expect(firstLookHandling('@-mention me', { external: true, cards: true })).not.toContain('propose')
     const external = firstLookHandling('@-mention me', { external: true })
     expect(external).toContain('1. Write "How this place works"')
     expect(external).not.toContain('2. Post one short introduction')

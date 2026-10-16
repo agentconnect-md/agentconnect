@@ -333,14 +333,18 @@ import {
   followUpToolsFor,
   memberAskerIdentity,
   placeOfSession,
-  type FirstLookRequest
+  proposalWork,
+  type FirstLookRequest,
+  type ProposeInput
 } from './mcp/ops/assistant-items.js'
 import {
   AssistantDrafts,
   postAsAgent,
   type DraftAsker,
+  type DraftCardPort,
   type InterceptedPost,
-  type PostInterception
+  type PostInterception,
+  type ProposalPlace
 } from './assistant/drafts.js'
 import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
@@ -374,6 +378,7 @@ import {
 } from './assistant/patrol.js'
 import {
   FIRST_LOOK_MAX_MESSAGES,
+  FIRST_LOOK_MAX_PROPOSALS,
   FIRST_LOOK_REFUSAL_REASONS,
   FIRST_LOOK_REFUSALS,
   FIRST_LOOK_WINDOW_MS,
@@ -386,7 +391,6 @@ import {
 import { firstLookToolsFor } from './mcp/ops/first-look.js'
 import type { ToolDescriptor } from './tool-schema/descriptor.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
-import type { ProposeInput } from './mcp/ops/assistant-items.js'
 import type { AssistantItem, AssistantPlace } from './store/assistant-items.js'
 import type {
   AssistantDraft,
@@ -4288,6 +4292,8 @@ export class Daemon {
         askerFor: (ctx) => this.assistantAskerFor(ctx),
         // A first look of the session's place, as its long session asked (§5.13).
         firstLook: (ctx) => this.requestFirstLook(ctx),
+        // The place's long session offers a first look's suggestions as cards, on its report's round (§5.13).
+        proposeAfterFirstLook: (ctx, input) => this.proposeAfterFirstLook(ctx, input),
         // A follow-up of the session's place, owned by its long session, else by the session taking it (§5.12).
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
@@ -8303,10 +8309,7 @@ export class Daemon {
       },
       gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
       placeExternal: (agentId, integrationId, channel) => this.placeKnownExternal(agentId, integrationId, channel),
-      cardPortFor: (integrationId) => {
-        const conn = this.connByIntegration.get(integrationId)
-        return conn ? slackDraftCardPort(conn, integrationId) : undefined
-      },
+      cardPortFor: (integrationId) => this.draftCardPort(integrationId),
       approvalRoute: async (agentId, req) => {
         const cp =
           this.cpClient?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) === true ? this.cpClient : undefined
@@ -8322,6 +8325,12 @@ export class Daemon {
       describeDestination: (target, opts) => this.describeDraftDestination(target, opts),
       afterPost: (draft, messageId) => this.settleApprovedDraft(draft, messageId),
       startTask: (draft, by) => this.tasks.start(draft, by),
+      takeFollowUp: (draft, by) => this.tasks.takeFollowUp(draft, by),
+      memberAsker: async (integrationId, userId) => {
+        const int = this.integrationConfigById(integrationId)
+        return int ? memberAskerIdentity(int.platform, await this.tenantScopeForIntegration(int), userId) : undefined
+      },
+      followUpTaken: async (agentId, itemId) => (await this.store.assistantItems.get(agentId, itemId)) !== undefined,
       observe: async (agentId, itemId, text) => {
         await this.store.assistantItems.appendObservation(agentId, itemId, {
           text,
@@ -8429,19 +8438,22 @@ export class Daemon {
       reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
         this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
+      takeFollowUp: (input) => this.patrols.take(input),
       draining: () => this.draining
     })
     return this.assistantTaskService
   }
 
-  /** A check's proposal (assistant-mode.md §5.10): run in its follow-up's place once approved, carded there or decided on a webchat conversation's page. */
-  private async proposeFromPatrol(
-    run: { agentId: string; key: string; item: AssistantItem },
-    input: ProposeInput
-  ): Promise<Record<string, unknown>> {
-    const { agentId, key, item } = run
-    const origin = item.origin
-    const rec = await this.store.getSession(key)
+  /** Where a proposal for a follow-up of this place runs and is carded (§5.10): the place itself, and its card's own place where it is confirmed internal. */
+  private async proposalPlace(
+    agentId: string,
+    origin: AssistantPlace
+  ): Promise<{
+    integrationId: string | undefined
+    target: AssistantDraftTarget
+    destination: Partial<AssistantDraftDestination>
+    place: ProposalPlace | undefined
+  }> {
     const integrationId = this.integrationIdForSessionTransport(agentId, origin.platform, origin.transportScope)
     const target: AssistantDraftTarget = {
       platform: origin.platform,
@@ -8457,6 +8469,32 @@ export class Daemon {
       ? await this.store.placeSession(agentId, origin.platform, origin.channel, origin.transportScope)
       : undefined
     const placeThread = platformThread(placeRec?.thread)
+    // The card posts in the place with no event from it, so only a place confirmed internal gets it (§5.3).
+    const carded =
+      integrationId !== undefined &&
+      (await this.placeConfirmedInternal(agentId, integrationId, origin.channel, {
+        dm: placeRec?.conversationKind === 'dm'
+      }))
+    return {
+      integrationId,
+      target,
+      destination,
+      place:
+        carded && integrationId !== undefined
+          ? { integrationId, channel: origin.channel, ...(placeThread ? { thread: placeThread } : {}) }
+          : undefined
+    }
+  }
+
+  /** A check's proposal (assistant-mode.md §5.10): run in its follow-up's place once approved, carded there or decided on a webchat conversation's page. */
+  private async proposeFromPatrol(
+    run: { agentId: string; key: string; item: AssistantItem },
+    input: ProposeInput
+  ): Promise<Record<string, unknown>> {
+    const { agentId, key, item } = run
+    const origin = item.origin
+    const rec = await this.store.getSession(key)
+    const { integrationId, target, destination, place } = await this.proposalPlace(agentId, origin)
     const source: AssistantDraftSource = {
       platform: rec?.platform ?? origin.platform,
       integrationId: integrationId ?? null,
@@ -8467,25 +8505,17 @@ export class Daemon {
       sessionId: rec?.sessionId ?? null,
       place: false
     }
-    // The card posts in the place with no event from it, so only a place confirmed internal gets it (§5.3).
-    const carded =
-      integrationId !== undefined &&
-      (await this.placeConfirmedInternal(agentId, integrationId, origin.channel, {
-        dm: placeRec?.conversationKind === 'dm'
-      }))
     const { draft, approver } = await this.drafts.propose({
       agentId,
       target,
       destination,
-      task: input.task,
+      ...proposalWork(input),
       sentence: input.sentence,
       why: input.why,
       itemId: item.id,
       itemVersion: item.version,
       source,
-      ...(carded
-        ? { place: { integrationId, channel: origin.channel, ...(placeThread ? { thread: placeThread } : {}) } }
-        : {}),
+      ...(place ? { place } : {}),
       ...(origin.platform === 'webchat' ? { webchat: true } : {})
     })
     const expiresAt = new Date(draft.expiresAt).toISOString()
@@ -8502,6 +8532,118 @@ export class Daemon {
     }
   }
 
+  /** One round's proposals at a time, so the cap of three and their order hold when calls overlap. */
+  private readonly roundProposals = new Map<string, Promise<unknown>>()
+
+  /** The place's long session offers a first look's suggestions (assistant-mode.md §5.13): on its report's round only, where the place has cards, at most three; each card waits for the round's reply. */
+  private async proposeAfterFirstLook(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>> {
+    const agentId = ctx.agentId
+    const key = this.sessionKeyOf(ctx)
+    const meta = this.activeTurnCallMeta.get(key)
+    const itemId = meta?.firstLookReport
+    if (!meta || itemId === undefined)
+      throw new Error(
+        'propose is offered here only on the round a first look reports back; nothing was proposed. Answer in your ' +
+          'reply instead.'
+      )
+    if (!ctx.integrationId || !this.hasCardSurface(ctx.integrationId))
+      throw new Error(
+        'this conversation has no approval cards; list the suggestions in your reply. Nothing was proposed.'
+      )
+    const item = await this.store.assistantItems.get(agentId, itemId)
+    if (!item?.firstLook) throw new Error('this first look is gone; nothing was proposed')
+    const round = meta.deliveryId
+    const prior = this.roundProposals.get(round) ?? Promise.resolve()
+    const next = prior
+      .catch(() => undefined)
+      .then(async () => {
+        const made = await this.store.assistantDrafts.countInRound(agentId, round)
+        if (made >= FIRST_LOOK_MAX_PROPOSALS)
+          throw new Error(
+            `a first look's report is offered at most ${FIRST_LOOK_MAX_PROPOSALS} proposals, and this round made them; ` +
+              'nothing was proposed'
+          )
+        const { integrationId, target, destination, place } = await this.proposalPlace(agentId, item.origin)
+        // A place that turned external keeps step 1 alone (§5.13): its cards would leave the place.
+        if (!place) throw new Error('this place is no longer one whose people can approve here; nothing was proposed')
+        const rec = await this.store.getSession(key)
+        const { draft, approver } = await this.drafts.propose({
+          agentId,
+          target,
+          destination,
+          ...proposalWork(input),
+          sentence: input.sentence,
+          why: input.why,
+          itemId: item.id,
+          itemVersion: item.version,
+          source: {
+            platform: ctx.platform,
+            integrationId: integrationId ?? null,
+            channel: ctx.channel,
+            thread: ctx.thread,
+            transportScope: ctx.transportScope ?? null,
+            sessionKey: key,
+            sessionId: rec?.sessionId ?? null,
+            place: false
+          },
+          place,
+          hold: { round, seq: made + 1 }
+        })
+        const expiresAt = new Date(draft.expiresAt).toISOString()
+        return {
+          proposed: true,
+          proposalId: draft.id,
+          expiresAt,
+          approver,
+          note:
+            'Its card is posted in the thread under your reply once your reply has posted, in the order proposed. ' +
+            `Nothing runs until a person approves it, and it expires at ${expiresAt}.`
+        }
+      })
+    this.roundProposals.set(round, next)
+    try {
+      return await next
+    } finally {
+      if (this.roundProposals.get(round) === next) this.roundProposals.delete(round)
+    }
+  }
+
+  /** A first look report round's held cards (§5.13): under its reply once that posted, else where the place's cards go. */
+  private async releaseRoundCards(agentId: string, round: string, replyTs: string | undefined): Promise<void> {
+    const held = await this.store.assistantDrafts.heldInRound(agentId, round)
+    const first = held[0]
+    if (!first) return
+    const origin = {
+      platform: first.target.platform,
+      channel: first.target.channel,
+      transportScope: first.source?.transportScope ?? null
+    }
+    const thread = replyTs ?? (await this.proposalPlace(agentId, origin)).place?.thread
+    await this.drafts.releaseRound(agentId, round, thread)
+  }
+
+  /** Held cards of a round nothing runs any more (a restart, or a round cut short) post where the place's cards go. */
+  private async releaseStrandedRounds(): Promise<void> {
+    const agents = [...this.agents.keys()].filter((agentId) => this.servesAgent(agentId))
+    for (const { agentId, round, sessionKey: key } of await this.store.assistantDrafts.heldRounds(agents)) {
+      if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
+        continue
+      await this.releaseRoundCards(agentId, round, undefined).catch((err) =>
+        this.log.warn(`first look cards of ${round}: not posted: ${formatErr(err)}`)
+      )
+    }
+  }
+
+  /** Whether an integration has an approval card surface (a `DraftCardPort`). */
+  private hasCardSurface(integrationId: string): boolean {
+    return this.draftCardPort(integrationId) !== undefined
+  }
+
+  private draftCardPort(integrationId: string): DraftCardPort | undefined {
+    const conn = this.connByIntegration.get(integrationId)
+    return conn ? slackDraftCardPort(conn, integrationId) : undefined
+  }
+
   /** One daemon-authored report of a patrol or task into its place, through the coordinator's one path for them; true once admitted, at most once per `reportId`. */
   private async reportIntoParent(
     agentId: string,
@@ -8510,7 +8652,8 @@ export class Daemon {
     text: string,
     reportId: string,
     replyThread?: string | null,
-    opens?: string
+    opens?: string,
+    firstLook?: string
   ): Promise<boolean> {
     const report = {
       agentId,
@@ -8519,7 +8662,8 @@ export class Daemon {
       text,
       reportId,
       ...(replyThread !== undefined ? { replyThread } : {}),
-      ...(opens !== undefined ? { opens } : {})
+      ...(opens !== undefined ? { opens } : {}),
+      ...(firstLook !== undefined ? { firstLook } : {})
     }
     return (await this.collab.deliverDaemonReport(report)).admitted
   }
@@ -8542,8 +8686,8 @@ export class Daemon {
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread, opens) =>
-        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens),
+      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread, opens, firstLook) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens, firstLook),
       endedSession: async (agentId, key) => {
         if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
           return undefined
@@ -8640,8 +8784,11 @@ export class Daemon {
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]
     // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
     tools = [...tools, ...followUpToolsFor(agent)]
-    // A first look on request (§5.13), only to a place's long session where one could run.
-    tools = [...tools, ...firstLookToolsFor(agent, at)]
+    // A first look on request (§5.13), only to a place's long session where one could run, with `propose` for its report round where the place has cards.
+    tools = [
+      ...tools,
+      ...firstLookToolsFor(agent, at, { cards: integrationId !== undefined && this.hasCardSurface(integrationId) })
+    ]
     // Its reminders (§5.9), in a platform conversation of the session's own only.
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
     // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
@@ -8744,7 +8891,8 @@ export class Daemon {
               : 'channel',
       tools,
       reach: firstLookReach(this.mergedRulesForSource([integrationId]), { agentId, integrationId, platform, channel }),
-      external: refusal === 'external'
+      external: refusal === 'external',
+      cards: this.hasCardSurface(integrationId)
     }
   }
 
@@ -8861,6 +9009,9 @@ export class Daemon {
     this.patrolSweepTimer = this.clock.setTimeout(async () => {
       this.patrolSweepTimer = undefined
       await this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look sweep failed: ${formatErr(err)}`))
+      await this.releaseStrandedRounds().catch((err) =>
+        this.log.warn(`first look card sweep failed: ${formatErr(err)}`)
+      )
       await this.patrols.sweep().catch((err) => this.log.warn(`patrol sweep failed: ${formatErr(err)}`))
       await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
       // A sub-session failure report whose admission was refused is retried here (assistant-mode.md §5.7).
@@ -18658,6 +18809,11 @@ export class Daemon {
     // notice. Release before local metadata cleanup so even a cleanup exception
     // cannot strand the connection lease forever.
     releaseReplyConn()
+    // A first look's report round: its held cards go under the reply it posted, else where the place's cards go (§5.13).
+    if (callMeta?.firstLookReport !== undefined)
+      await this.releaseRoundCards(agentId, callMeta.deliveryId, p.reply.firstResponse).catch((err) =>
+        this.log.warn(`first look cards of ${callMeta.deliveryId}: not posted: ${formatErr(err)}`)
+      )
     this.clearIdle(p)
     this.clearFeishuStream(p)
     this.clearSlackStream(p)

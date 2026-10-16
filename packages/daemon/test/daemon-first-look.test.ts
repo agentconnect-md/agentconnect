@@ -222,7 +222,8 @@ describe('a first look someone asks for', () => {
     const text = modelText(report)
     expect(text).toContain('[first look] Your first look at "fake" reported back.')
     expect(text).toContain('reach you (@-mention me).')
-    expect(text).toContain('3. In the same message, list each "Where I could help" item in one line')
+    // Slack has approval cards, so its suggestions are offered with propose (§5.13).
+    expect(text).toContain('3. Under it, offer each "Where I could help" item with propose.')
     expect(text).toContain(`Its report:\n\n${REPORT}`)
 
     // One check ends it as done; it is listed as a first look and takes no messages.

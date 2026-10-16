@@ -155,6 +155,8 @@ export interface DaemonReport {
   replyThread?: string | null | undefined
   /** The coordinate a place with no session yet opens its long session at, as its first message would (a first look's, assistant-mode.md §5.13). */
   opens?: string | undefined
+  /** A first look's report (§5.13), by its follow-up: the round it starts may propose. */
+  firstLook?: string | undefined
 }
 
 /** The long session a report opens in a place nobody spoke in yet; the report's turn creates its row. */
@@ -975,6 +977,7 @@ export class CollabCoordinator {
         this.host.activeGateEntries().get(callerKey)?.githubReply
       ),
       originCoords: { platform: caller.platform, channel: caller.channel, thread: caller.thread },
+      ...(report.firstLook !== undefined ? { firstLookReport: report.firstLook } : {}),
       ...(externalOrigin ? { externalOrigin } : {}),
       ...(replierSessionId !== undefined && (await store.isCaptureExcluded(agentId, callerKey))
         ? { parentPrivate: true }

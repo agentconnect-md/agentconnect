@@ -1,6 +1,6 @@
 'use client'
 
-// What the Tasks tab, Activity and a task's own page share about a follow-up (assistant-mode.md §5.12): its state, its recent checks, the toggle that shows them, and how it is ended.
+// What the Tasks tab, Activity and a task's own page share about a follow-up (assistant-mode.md §5.12): its state, its recent checks, the toggle that shows them, how it is ended, and one a proposal would take.
 
 import { useState } from 'react'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -11,6 +11,7 @@ import {
   stopAssistantFollowUp,
   stopAssistantSubsession,
   type AssistantFollowUpDto,
+  type AssistantProposalFollowUpDto,
   type AssistantSubsessionDto
 } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
@@ -118,6 +119,42 @@ export function FollowUpChecks({ followUp }: { followUp: AssistantFollowUpDto })
           ))}
         </ol>
       )}
+    </div>
+  )
+}
+
+/** What a proposal's follow-up form would take once approved (assistant-mode.md §5.13): its label, what counts as done and its first check. */
+export function ProposedFollowUp({
+  followUp,
+  compact = false
+}: {
+  followUp: AssistantProposalFollowUpDto
+  compact?: boolean
+}) {
+  const t = useTranslations('Common.followUp')
+  const format = useFormatter()
+  const size = compact ? 'text-[12px]' : 'text-[12.5px]'
+  return (
+    <div
+      data-proposed-follow-up=""
+      className="flex flex-col gap-1 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2"
+    >
+      <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
+        {t('proposed.takes')}
+      </span>
+      <span className={`break-words font-sans ${size} font-semibold leading-[1.5] text-(--text-primary)`}>
+        {followUp.title}
+      </span>
+      <span
+        className={`whitespace-pre-wrap break-words font-sans ${size} font-normal leading-[1.5] text-(--text-secondary)`}
+      >
+        {t('doneWhen', { text: followUp.doneWhen })}
+      </span>
+      <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+        {followUp.nextCheck
+          ? t('proposed.firstCheck', { time: format.dateTime(new Date(followUp.nextCheck), DATE_TIME) })
+          : t('proposed.noCheck')}
+      </span>
     </div>
   )
 }

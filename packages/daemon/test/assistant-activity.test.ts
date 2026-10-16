@@ -784,6 +784,80 @@ describe('the Activity view: one webchat conversation’s proposals', () => {
     }
     expect(decideDraft).toHaveBeenCalledTimes(1)
   })
+
+  it('carries a follow-up form’s follow-up on the proposal, and the follow-up an approval took', async () => {
+    const { s, a, activity, decideDraft } = await setup()
+    await seedSession(s, a, 'sid-webchat', 'webchat', 'webchat:conv-1')
+    const form = await s.assistantDrafts.createTask({
+      agentId: a,
+      target: { platform: 'webchat', integrationId: '', channel: 'conv-1', thread: null },
+      task: '',
+      followUp: { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: 1_760_000_000_000 },
+      sentence: 'I want to follow up the release date.',
+      why: 'Ada is waiting on it.',
+      itemId: 'item-1',
+      itemVersion: 1,
+      source: {
+        platform: 'webchat',
+        integrationId: null,
+        channel: 'conv-1',
+        thread: 'subsession:patrol-1',
+        transportScope: null,
+        sessionKey: null,
+        sessionId: null,
+        place: false
+      },
+      approver: {
+        kind: 'place',
+        integrationId: '',
+        channel: 'conv-1',
+        userId: null,
+        teamId: null,
+        consoleUserId: null
+      },
+      now: 1_000
+    })
+    const page = await read(activity, {
+      agentId: a,
+      operation: 'drafts',
+      limit: 10,
+      conversation: { sessionId: 'sid-webchat' }
+    })
+    expect(page.drafts).toEqual([
+      expect.objectContaining({
+        id: form.id,
+        text: 'The release date',
+        proposal: expect.objectContaining({
+          followUp: {
+            title: 'The release date',
+            doneWhen: 'A date is posted.',
+            nextCheck: new Date(1_760_000_000_000).toISOString()
+          }
+        })
+      })
+    ])
+    decideDraft.mockResolvedValueOnce({
+      result: 'decided',
+      status: 'succeeded',
+      failure: null,
+      followUp: { id: 'item-taken', parentSessionId: 'sid-webchat' }
+    })
+    expect(
+      await activity.write({
+        agentId: a,
+        operation: 'decide-draft',
+        draftId: form.id,
+        choice: 'approve',
+        decider: { userId: 'usr-2', name: 'Grace' }
+      })
+    ).toEqual({
+      operation: 'decide-draft',
+      result: 'decided',
+      status: 'succeeded',
+      failure: null,
+      followUp: { id: 'item-taken', parentSessionId: 'sid-webchat' }
+    })
+  })
 })
 
 describe('the Activity view: deciding a draft', () => {
