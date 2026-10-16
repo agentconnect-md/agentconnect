@@ -1,7 +1,7 @@
 // The first look (assistant-mode.md §5.13): which places take one, what it may read, how it is asked, and what its report tells the place's long session.
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
-import { assistantModeOn } from '../mcp/ops/assistant-items.js'
+import { assistantModeOn, type ProposeInput } from '../mcp/ops/assistant-items.js'
 import { integrationCore } from '../platforms/integration-config.js'
 import { declaresPort, isAttachmentReadTool } from '../platforms/read-ports.js'
 import { routeRules } from '../router/routing-table.js'
@@ -147,7 +147,9 @@ Unanswered questions, commitments with a date, threads waiting on someone: owner
 ## Where I could help
 At most three; none is a fine answer. Each must rest on two or more messages or on a request
 nobody took. Say what you would do first, whether it is one task or a check on a schedule, and
-what you lack (a tool, an integration, access). Offer only what the place's conversation can
+what you lack (a tool, an integration, access). A check runs only on its schedule or when
+messaged, never on a new message, so put one that must notice new messages as a check on a
+schedule of what came in since the last one. Offer only what the place's conversation can
 actually do with its tools: ${input.tools}.
 
 ## Not covered
@@ -159,11 +161,16 @@ Hand it back with recordCheck: a one-line observation, this answer as its report
 set. It is your only output.`
 }
 
+// A follow-up wakes only at its next check or when messaged (§5.12), so one offered after a first look needs a schedule.
+const FOLLOW_UP_SCHEDULE = `A follow-up runs only at its next check or when messaged, so give each one a first check,
+   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
+   I'll look for releases announced since the last check and confirm their notes were posted").`
+
 /** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form. */
 export function firstLookHandling(reach: string, opts: { external: boolean; cards?: boolean }): string {
   const step1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. Leave out "In flight" and anything you would not say in every
-   conversation that reads this layer.`
+   plus one index line. Leave out "In flight", any request still open wherever it is listed,
+   and anything you would not say in every conversation that reads this layer.`
   if (opts.external)
     return `When a first look reports back:
 ${step1}
@@ -179,8 +186,18 @@ ${
     : `3. In the same message, list each "Where I could help" item in one line, and an "In flight" item
    only if someone is visibly waiting on it; act on one when someone here asks for it.`
 }
+   ${FOLLOW_UP_SCHEDULE}
 4. Ask at most one question, and only if the answer changes what you do. Then post nothing
-   more on your own.`
+   more on your own.
+In everything people read, name a channel by its name or link, never by its raw id.`
+}
+
+/** Why a first look's report round refuses a proposal: a follow-up form without a first check would never run (§5.13). */
+export function firstLookProposalRefusal(input: Pick<ProposeInput, 'followUp'>): string | undefined {
+  return input.followUp && input.followUp.nextCheck === undefined
+    ? 'a follow-up offered after a first look needs followUp.nextCheck, since nothing else would wake it: set its ' +
+        'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'
+    : undefined
 }
 
 /** The report round's text: the handling first, then the first look's report. */

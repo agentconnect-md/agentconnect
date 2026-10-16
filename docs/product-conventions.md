@@ -1489,7 +1489,8 @@ remembers how the place works, introduces the agent once and offers at most thre
   three, posted in the thread under the introduction in the order offered once the introduction has
   posted; if no introduction posts, the cards go where the conversation's cards go otherwise. Only
   the round that brings the report may offer cards. Something in flight, or something that recurs
-  and is worth checking on a schedule, is offered as a follow-up to take. On a platform without
+  and is worth checking on a schedule, is offered as a follow-up to take, always with its first
+  check, since nothing else would wake it; one offered without is refused. On a platform without
   cards, the introduction lists each offer in one line instead, and the agent acts on one when
   someone there asks.
 - **Memory.** The first look's own session feeds no memory: no per-turn capture and no dream reads

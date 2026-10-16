@@ -268,6 +268,32 @@ describe('a first look’s report round on a platform with cards', () => {
     await daemon.stop()
   })
 
+  it('refuses a follow-up form with no first check, which nothing would wake, and cards one with a first check', async () => {
+    const { daemon, behavior, posts, cards, deps, look } = await boot()
+    const unscheduled = { title: FOLLOW_UP.followUp.title, doneWhen: FOLLOW_UP.followUp.doneWhen }
+    const results: unknown[] = []
+    behavior.round = async (ctx, say) => {
+      results.push(
+        await executeTool(ctx, 'propose', { ...FOLLOW_UP, followUp: unscheduled }, deps).catch(
+          (err: Error) => err.message
+        )
+      )
+      results.push(await executeTool(ctx, 'propose', FOLLOW_UP, deps))
+      say(INTRO)
+    }
+    await look()
+    expect(results).toEqual([
+      expect.stringContaining('needs followUp.nextCheck'),
+      expect.objectContaining({ proposed: true })
+    ])
+    // The refused call made no proposal, so only the scheduled one is carded, under the introduction.
+    const intro = posts.find((p) => p.text.includes('Hi, I am bot-a'))!
+    expect(cards().map((p) => [p.thread, JSON.stringify(p.blocks)])).toEqual([
+      [intro.ts, expect.stringContaining('The 2.6 release date')]
+    ])
+    await daemon.stop()
+  })
+
   it('refuses propose on any other round of the long session', async () => {
     const { daemon, registered, deps, look } = await boot()
     await look()

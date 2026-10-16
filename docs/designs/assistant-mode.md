@@ -1380,7 +1380,9 @@ Unanswered questions, commitments with a date, threads waiting on someone: owner
 ## Where I could help
 At most three; none is a fine answer. Each must rest on two or more messages or on a request
 nobody took. Say what you would do first, whether it is one task or a check on a schedule, and
-what you lack (a tool, an integration, access). Offer only what the place's conversation can
+what you lack (a tool, an integration, access). A check runs only on its schedule or when
+messaged, never on a new message, so put one that must notice new messages as a check on a
+schedule of what came in since the last one. Offer only what the place's conversation can
 actually do with its tools: {tools}.
 
 ## Not covered
@@ -1398,14 +1400,18 @@ in a tool description:
 ```text
 When a first look reports back:
 1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. Leave out "In flight" and anything you would not say in every
-   conversation that reads this layer.
+   plus one index line. Leave out "In flight", any request still open wherever it is listed,
+   and anything you would not say in every conversation that reads this layer.
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you ({reach}).
 3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
    follow-up only if someone is visibly waiting on it.
+   A follow-up runs only at its next check or when messaged, so give each one a first check,
+   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
+   I'll look for releases announced since the last check and confirm their notes were posted").
 4. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
+In everything people read, name a channel by its name or link, never by its raw id.
 ```
 
 Changed from the agreed drafts, each to fit a verified fact:
@@ -1426,6 +1432,18 @@ Changed from the agreed drafts, each to fit a verified fact:
 - On a platform with no card surface, step 3 reads "In the same message, list each 'Where I could
   help' item in one line, and an 'In flight' item only if someone is visibly waiting on it; act on
   one when someone here asks for it."
+- "Where I could help" says a check runs only on its schedule or when messaged, and step 3, in
+  both forms, says the same of a follow-up, so each offered one gets a first check and one that
+  must notice new messages is worded as a check on a schedule. In a live run, both suggestions were
+  shaped by events ("after each release announcement, check its notes were posted") and offered
+  with no first check. Nothing would have woken them: the long session hears the place only as
+  its trigger says, and event wake (§5.14) covers code-host objects only.
+- Step 1 also leaves out "any request still open wherever it is listed". A live run filed a
+  request for a weekly reminder under "Recurring".
+- A last line, "In everything people read, name a channel by its name or link, never by its raw
+  id", the rule a follow-up's `taskId` already follows. A live introduction asked about another
+  channel by its platform id. Memory may keep ids, which the agent's reads take, so the task
+  prompt does not say it.
 
 **Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
 marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
@@ -1603,6 +1621,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
   summary. The record then succeeds: no task runs and no limit counts. A restart between the two
   settles it as succeeded when the follow-up exists, else as failed. The card shows the follow-up
   and its first check, and once approved says it was taken. Local store version 56.
+- **A first check.** On a first look's report round, a follow-up form without `nextCheck` is
+  refused, saying it needs one since nothing else would wake it, and counts toward no limit. A
+  follow-up runs only at its next check or when messaged, and nothing in the place messages one on
+  its own. `followUp` itself still takes one with no schedule, for a person who says they will ask.
 - **Its proposals after it ended.** A proposal whose follow-up is a first look is not refused for
   that follow-up having ended, in either form; every other refusal stands. An approved task's prompt
   says it was proposed after the first look.
@@ -1614,7 +1636,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
   on the decision.
 - **Tool size.** `propose` went from 614 to 851 characters and its input schema from 505 to 1,092
   bytes, within Claude Code's 2,048-character description cap and Codex's 5,000-byte schema cap. Its
-  schema has no top-level `oneOf`, so no runtime flattens it.
+  schema has no top-level `oneOf`, so no runtime flattens it. The first check's refusal changed no
+  tool description.
 
 ### 5.14 Event wake
 
@@ -2680,3 +2703,13 @@ relay's feedback signal gains the event's kind and the wake-only kinds for watch
 Plane receives once and serves both, and admission is the lane's per provider, so the App-comment veto
 of the fifty-sixth revision is dropped. The agent does not offer a follow-up when it opens a pull
 request (§8).
+
+**Fifty-eighth revision (2026-10-17)**: two fixes to §5.13 from a first look in a busy public
+channel (issue #2810). Both of its suggested follow-ups were shaped by events and offered with no
+first check, so approving either would have taken a follow-up nothing wakes. The task prompt and
+step 3 of the handling now say a follow-up runs only at its next check or when messaged, so an
+event-shaped suggestion is worded as a check on a schedule, and the report round refuses a
+follow-up form without `nextCheck`. The introduction named another channel by its raw platform
+id; the handling now says what people read names a channel by its name or link. Step 1 also
+leaves out an open request filed under another heading. `followUp` and every tool description
+are unchanged.

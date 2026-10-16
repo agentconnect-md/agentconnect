@@ -6,6 +6,7 @@ import {
   firstLookHandling,
   firstLookPlaceRefusal,
   firstLookPrompt,
+  firstLookProposalRefusal,
   firstLookReach,
   firstLookReadRefusal,
   firstLookTools,
@@ -158,6 +159,10 @@ describe('the prompts', () => {
     expect(joined).toMatch(/^You are taking a first look at "releases", a public channel you were just added to\./)
     expect(joined).toContain('the last 30 days or 500 messages, whichever\nis less')
     expect(joined).toContain('actually do with its tools: sendMessage, followUp.')
+    // A check never sees a new message, so an event-shaped suggestion is put as a check on a schedule.
+    expect(joined).toContain(
+      'A check runs only on its schedule or when\nmessaged, never on a new message, so put one that must notice new messages as a check on a\nschedule of what came in since the last one.'
+    )
     expect(joined).toMatch(
       /Hand it back with recordCheck: a one-line observation, this answer as its report, and done\nset\. It is your only output\.$/
     )
@@ -171,6 +176,10 @@ describe('the prompts', () => {
     expect(handling).toContain('3. In the same message, list each "Where I could help" item in one line')
     expect(handling).toContain('Then post nothing\n   more on your own.')
     expect(handling).not.toContain('propose')
+    // An open request is left out of memory even when the report lists it under another heading.
+    expect(handling).toContain('Leave out "In flight", any request still open wherever it is listed,')
+    // What people read names a channel, never its raw platform id.
+    expect(handling).toMatch(/\nIn everything people read, name a channel by its name or link, never by its raw id\.$/)
     // Where the place has cards, step 3 offers the suggestions with propose, under the introduction.
     const cards = firstLookHandling('@-mention me', { external: false, cards: true })
     expect(cards).toContain(
@@ -181,7 +190,29 @@ describe('the prompts', () => {
     const external = firstLookHandling('@-mention me', { external: true })
     expect(external).toContain('1. Write "How this place works"')
     expect(external).not.toContain('2. Post one short introduction')
+    expect(external).not.toContain('raw id')
     expect(external).toContain('post nothing about this first look in it')
+  })
+
+  it('tells step 3 in both forms that a follow-up needs a first check, and how to word an event-shaped one', () => {
+    for (const cards of [true, false]) {
+      const step3 = firstLookHandling('@-mention me', { external: false, cards }).split('\n3. ')[1]!.split('\n4. ')[0]!
+      expect(step3).toContain(
+        'A follow-up runs only at its next check or when messaged, so give each one a first check,\n   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00'
+      )
+    }
+  })
+
+  it('refuses a follow-up form with no first check, and lets one with a first check or a task through', () => {
+    const followUp = { title: 'Release notes', doneWhen: 'Each release has notes.', nextCheck: undefined }
+    expect(firstLookProposalRefusal({ followUp })).toBe(
+      'a follow-up offered after a first look needs followUp.nextCheck, since nothing else would wake it: set its ' +
+        'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'
+    )
+    expect(firstLookProposalRefusal({ followUp: { ...followUp, nextCheck: Date.parse('2099-01-01T10:00:00Z') } })).toBe(
+      undefined
+    )
+    expect(firstLookProposalRefusal({ followUp: undefined })).toBeUndefined()
   })
 
   it('names how people reach the agent there from its trigger', () => {
