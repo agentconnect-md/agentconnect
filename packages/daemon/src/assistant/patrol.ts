@@ -126,13 +126,14 @@ export interface AssistantPatrolsHost {
     callMeta: CallMeta,
     onAdmission: (result: { accepted: boolean; reason?: string }) => void
   ): Promise<unknown>
-  /** One report into the place's current long session, else the recorded parent; true once admitted, at most once per `reportId`. */
+  /** One report into the place's current long session, else the recorded parent, in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. */
   reportToParent(
     agentId: string,
     caller: TaskCaller,
     parentSessionId: string,
     text: string,
-    reportId: string
+    reportId: string,
+    replyThread?: string | null
   ): Promise<boolean>
   /** Where a check's session sits once its turn neither runs nor awaits replay here; `missing` when it never started, undefined while it runs. */
   endedSession(agentId: string, key: string): Promise<TaskCaller | 'missing' | undefined>
@@ -322,6 +323,8 @@ export class AssistantPatrols {
     nextCheck?: number
     summary?: string
     asker: string
+    /** The platform thread the taking turn replies in. */
+    replyThread?: string
   }): Promise<AssistantItem> {
     const { agentId, origin } = input
     const now = this.host.now()
@@ -343,6 +346,7 @@ export class AssistantPatrols {
       taskKey,
       asker: input.asker,
       shared,
+      ...(input.replyThread !== undefined ? { replyThread: input.replyThread } : {}),
       ...(input.summary !== undefined ? { summary: input.summary } : {}),
       now
     })
@@ -746,18 +750,21 @@ export class AssistantPatrols {
     const item = await this.host.items.get(agentId, itemId)
     const stops = verdict.kind === 'failed' && state.failures + 1 >= PATROL_MAX_FAILURES
     const name = `follow-up ${key}${item ? ` ("${quote(item.title)}")` : ''}`
+    // Its reports reply in the thread it was taken in (assistant-mode.md §5.12).
+    const thread = item?.replyThread ?? null
     if (row && caller && stops && item) {
       const text =
         `[follow-up] Checks of ${name} stopped after ${PATROL_MAX_FAILURES} failed attempts in a row. They resume ` +
         'once it is messaged with messageTask. Tell the people here.'
       const reportId = `patrol:${key}:${check}:stopped`
-      if ((await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text)) === 'draining') return
+      if ((await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)) === 'draining')
+        return
     }
     let reported = false
     if (report !== null && row && caller) {
       const text = `[follow-up] The check of ${name} found a change. Pass it on to the people here:\n\n${report}`
       const reportId = `patrol:${key}:${check}:report`
-      const delivered = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text)
+      const delivered = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
     }
@@ -806,19 +813,20 @@ export class AssistantPatrols {
     await this.host.patrols.setPendingMessages(agentId, itemId, JSON.stringify(all), now)
   }
 
-  /** One report into the place; one refused is recorded on the follow-up instead. `draining` leaves the check to recovery. */
+  /** One report into the place, in the thread the follow-up was taken in; one refused is recorded on the follow-up instead. `draining` leaves the check to recovery. */
   private async deliver(
     agentId: string,
     itemId: string,
     caller: TaskCaller,
     parentSessionId: string,
     reportId: string,
-    text: string
+    text: string,
+    replyThread: string | null
   ): Promise<'delivered' | 'refused' | 'draining'> {
     if (this.host.draining()) return 'draining'
     let delivered = false
     try {
-      delivered = await this.host.reportToParent(agentId, caller, parentSessionId, text, reportId)
+      delivered = await this.host.reportToParent(agentId, caller, parentSessionId, text, reportId, replyThread)
     } catch (err) {
       this.host.log.warn(`follow-up report for ${itemId} failed: ${(err as Error).message}`)
     }

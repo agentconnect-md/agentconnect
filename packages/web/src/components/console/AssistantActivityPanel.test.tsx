@@ -779,6 +779,14 @@ describe('the Activity view toward a daemon that serves follow-ups', () => {
     expect(button(host, 'Done and dropped')).toBeUndefined()
   })
 
+  it('names a follow-up taken in a DM by its person, with no channel sigil', async () => {
+    const dm = { sessionId: 'sid-dm', title: null, platform: 'slack', channelName: '@Alice' }
+    mocks.subsessions = [{ ...FOLLOW_UPS[0]!, parent: dm }]
+    const host = await mount(false)
+    expect(row(host, 'sid-follow').textContent).toContain('From @Alice')
+    expect(row(host, 'sid-follow').textContent).not.toContain('#@')
+  })
+
   it('lists follow-ups with their state, kind and next check, and their checks only where visible', async () => {
     const host = await mount(false)
     const waiting = row(host, 'sid-follow')

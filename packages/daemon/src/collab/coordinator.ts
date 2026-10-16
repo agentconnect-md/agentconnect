@@ -35,7 +35,7 @@ import { codeHostReplySnapshot, sessionReplyRoute } from '../session/reply-route
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { isPlatformMemberId } from '../platforms/member-id.js'
 import { threadKeyForPost } from '../platforms/thread-keys.js'
-import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
+import { sessionThreadOf, wakeThreadFields, type NormalizedMessage } from '../messages/normalized.js'
 import type { AssistantSubsession } from '../store/assistant-subsessions.js'
 import { newSessionMessageId, type ReceivedSessionMessage, type SessionMessageKind } from '../store/session-messages.js'
 import {
@@ -151,6 +151,8 @@ export interface DaemonReport {
   ownerSessionKey?: string | undefined
   /** A task's round report is a session message (send-message-guide.md §9.3) under this id, when it lands in its owner. */
   messageId?: string | undefined
+  /** A follow-up's report replies in this thread of an appending place, else (null) where its latest turn replied. */
+  replyThread?: string | null | undefined
 }
 
 /** What a `reporting` row holds to send its round-end report again after a refusal or a restart. */
@@ -958,6 +960,10 @@ export class CollabCoordinator {
       ? this.host.botUserIds()[route.integrationId]
       : this.host.resolveCpAgent(agentId, parent.platform)?.botUserId
     const elsewhere = report.ownerSessionKey !== undefined && parent.key !== report.ownerSessionKey
+    const replyThread =
+      report.replyThread !== undefined && isAppendCoordinate(parent.thread)
+        ? (report.replyThread ?? parent.replyThread ?? undefined)
+        : undefined
     // §9.3: a task's report into its owner is a session message; a later session of the place cannot answer the task.
     const messageId = !elsewhere && replierSessionId !== undefined ? report.messageId : undefined
     if (messageId !== undefined) {
@@ -978,12 +984,8 @@ export class CollabCoordinator {
       source: 'agent',
       platform: parent.platform,
       channel: parent.channel,
-      // A synthetic stored thread is the session's, never a reply target, so the parent posts at the root.
-      ...(isAppendCoordinate(parent.thread)
-        ? { sessionThread: parent.thread }
-        : parent.thread
-          ? { thread: parent.thread }
-          : {}),
+      // A synthetic stored thread is the session's, never a reply target: a follow-up's report replies in its thread, else at the root.
+      ...wakeThreadFields(parent.thread, replyThread),
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },

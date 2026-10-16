@@ -59,7 +59,8 @@ describe('follow-ups: create and read', () => {
       origin: WEBCHAT,
       taskKey: 'webchat:conv-1:subsession:patrol-1:agent-a',
       asker: 'user:u-1',
-      shared: false
+      shared: false,
+      replyThread: '100.1'
     })
     expect(item).toEqual({
       id: expect.any(String),
@@ -72,6 +73,7 @@ describe('follow-ups: create and read', () => {
       taskKey: 'webchat:conv-1:subsession:patrol-1:agent-a',
       asker: 'user:u-1',
       shared: false,
+      replyThread: '100.1',
       summary: 'Alice asked for the notes.',
       observations: [],
       observationVersion: 0,
@@ -432,7 +434,9 @@ async function expectFollowUps(s: LocalStore): Promise<void> {
     status: 'active',
     summary: 'Alice asked.',
     asker: 'slack:T0EXAMPLE:U0ALICE',
-    shared: false
+    shared: false,
+    // A migrated follow-up knows no thread it was taken in, so it reports where its place last replied.
+    replyThread: null
   })
   // Only the latest observation is the handover.
   expect(open!.observations.map((o) => o.text)).toEqual(['seen 3'])

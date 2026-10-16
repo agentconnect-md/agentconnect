@@ -34,6 +34,11 @@ export function renderStandingSummary(
   )
 }
 
+/** What a place that may see no open follow-ups is told, so a list given earlier does not stand. */
+export const NO_FOLLOW_UPS =
+  '<system-reminder>\nThis conversation may see no open follow-ups now; this replaces any list of them given earlier.\n' +
+  '</system-reminder>'
+
 /** The conversation a session belongs to, through the agent's bot when it is known. */
 export interface SummaryPlace {
   platform: string
@@ -56,7 +61,7 @@ function sharedWithOutsiders(agent: Pick<Agent, 'integrations'>, place: SummaryP
   )
 }
 
-/** The list for an agent's session: its place's follow-ups and every public channel's, none outside assistant mode or where people from outside the organization are. */
+/** The list for an agent's session: its place's follow-ups and every public channel's, else {@link NO_FOLLOW_UPS}; none outside assistant mode or where people from outside the organization are. */
 export async function standingSummaryFor(
   ledger: Pick<AssistantItemLedger, 'list'>,
   agent: Pick<Agent, 'id' | 'assistantMode' | 'integrations'> | undefined,
@@ -71,6 +76,7 @@ export async function standingSummaryFor(
     visibleFrom,
     limit: STANDING_SUMMARY_LIMIT + 1
   })
+  if (items.length === 0) return NO_FOLLOW_UPS
   return renderStandingSummary(items.slice(0, STANDING_SUMMARY_LIMIT), items.length > STANDING_SUMMARY_LIMIT, place)
 }
 

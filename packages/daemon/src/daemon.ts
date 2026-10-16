@@ -4255,10 +4255,13 @@ export class Daemon {
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
+          // The thread the taking turn replies in, where the follow-up's reports reply too.
+          const replyThread = this.activeTurnShare.get(key)?.thread
           return await this.patrols.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
             caller: { sessionId, key },
+            ...(replyThread !== undefined ? { replyThread } : {}),
             ...input
           })
         },
@@ -4310,7 +4313,9 @@ export class Daemon {
           own: async (ctx) =>
             (await this.followUpOwner(ctx.agentId, this.sessionKeyOf(ctx), placeOfSession(ctx))) !== undefined,
           get: (agentId, key) => this.store.assistantItems.byTaskKey(agentId, key),
-          stop: (ctx, item) => this.patrols.stop(ctx.agentId, item, this.taskStopper(ctx))
+          stop: (ctx, item) => this.patrols.stop(ctx.agentId, item, this.taskStopper(ctx)),
+          reported: async (item) =>
+            (await this.store.assistantPatrols.checks(item.agentId, item.id, 1))[0]?.reported ?? false
         },
         sessionOf: async (key) => {
           const rec = await this.store.getSession(key)
@@ -8483,9 +8488,18 @@ export class Daemon {
     caller: TaskCaller,
     parentSessionId: string,
     text: string,
-    reportId: string
+    reportId: string,
+    replyThread?: string | null
   ): Promise<boolean> {
-    return (await this.collab.deliverDaemonReport({ agentId, caller, parentSessionId, text, reportId })).admitted
+    const report = {
+      agentId,
+      caller,
+      parentSessionId,
+      text,
+      reportId,
+      ...(replyThread !== undefined ? { replyThread } : {})
+    }
+    return (await this.collab.deliverDaemonReport(report)).admitted
   }
 
   /** Assistant-mode follow-ups (assistant-mode.md §5.12), built on first use over the live store. */
@@ -8506,8 +8520,8 @@ export class Daemon {
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
-        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
+      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread),
       endedSession: async (agentId, key) => {
         if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
           return undefined

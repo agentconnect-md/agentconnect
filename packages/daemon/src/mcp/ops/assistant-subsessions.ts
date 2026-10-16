@@ -37,6 +37,8 @@ export interface AssistantSubsessionDeps {
       get(agentId: string, taskKey: string): Promise<AssistantItem | undefined>
       /** End it; `ended` when it already had. */
       stop(ctx: SessionContext, item: AssistantItem): Promise<'stopped' | 'ended'>
+      /** Whether its latest check handed back a report; false before any. */
+      reported(item: AssistantItem): Promise<boolean>
     }
     now?(): number
   }
@@ -177,7 +179,7 @@ export interface ListedTask {
   endedAt?: string
   /** A follow-up's next scheduled check; null while it waits to be messaged. */
   nextCheck?: string | null
-  /** Its latest round ended with a result delivered here; a follow-up's latest check recorded what it saw. */
+  /** Its latest round ended with a result delivered here; a follow-up's latest check handed back a report. */
   handedBackResult: boolean
 }
 
@@ -252,7 +254,7 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
           startedAt: new Date(row.createdAt).toISOString(),
           ...(state === 'done' || state === 'stopped' ? { endedAt: new Date(item.updatedAt).toISOString() } : {}),
           nextCheck: item.nextCheck === null ? null : new Date(item.nextCheck).toISOString(),
-          handedBackResult: row.state === 'done'
+          handedBackResult: (await port.followUps?.reported(item)) ?? false
         }
       }
       const label = subsessionLabel(session?.title, undefined)

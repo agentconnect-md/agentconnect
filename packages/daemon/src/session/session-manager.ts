@@ -47,7 +47,7 @@ import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from '
 import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
-import { runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
+import { NO_FOLLOW_UPS, runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
@@ -327,6 +327,8 @@ export class SessionManager {
   private readonly lastContextUsed = new Map<string, number>()
   // The running-sub-session list each main conversation was last shown, so a change re-injects it.
   private readonly runningSubsessionsShown = new Map<string, string>()
+  // Sessions last told they may see no open follow-ups, so the empty list is said once after a list (assistant-mode.md §5.12).
+  private readonly noFollowUpsSaid = new Set<string>()
   // The answerable-messages list each session was last shown, so a change re-injects it.
   private readonly sessionMessagesShown = new Map<string, string>()
   // Sessions whose runtime may not hold the current standing context, until a delivered prompt carries it (see standingDelivered).
@@ -1011,7 +1013,12 @@ export class SessionManager {
     // The follow-ups this place may see ride the same points: first turn, restart, compaction, every 12th turn (§5.12).
     if (opening || reminded) {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
-      if (summary) promptPrelude.push({ type: 'text', text: summary })
+      const none = summary === NO_FOLLOW_UPS
+      // An empty list replaces one the context may still hold: never on a fresh context, once until a list is shown again.
+      if (summary && !(none && (opening || this.noFollowUpsSaid.has(key))))
+        promptPrelude.push({ type: 'text', text: summary })
+      if (none) this.noFollowUpsSaid.add(key)
+      else if (summary) this.noFollowUpsSaid.delete(key)
     }
     // Every session that can own tasks: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
     if (rec.sessionId && !isSubsessionCoordinate(thread)) {
