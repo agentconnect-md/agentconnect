@@ -8902,7 +8902,11 @@ export class Daemon {
       tools,
       reach: firstLookReach(this.mergedRulesForSource([integrationId]), { agentId, integrationId, platform, channel }),
       external: refusal === 'external',
-      cards: this.hasCardSurface(integrationId)
+      cards: this.hasCardSurface(integrationId),
+      // Only a place that writes the shared layer adds to the organization's file; an unknown layer adds nothing.
+      shared:
+        refusal !== 'external' &&
+        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared'
     }
   }
 

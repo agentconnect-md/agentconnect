@@ -23,6 +23,8 @@ export const FIRST_LOOK_WINDOW_MS = FIRST_LOOK_DAYS * 24 * 60 * 60_000
 export const FIRST_LOOK_JOIN_WAIT_MS = 10 * 60_000
 /** Proposals the round a first look's report arrives in may make (§5.13). */
 export const FIRST_LOOK_MAX_PROPOSALS = 3
+/** The one shared memory file every first look keeps current about the organization as a whole (§5.13). */
+export const ORGANIZATION_MEMORY_FILE = 'organization.md'
 
 // The place's own reads (§5.13): history, thread replies, the conversation's details, members and profiles, reactions, bookmarks.
 const FIRST_LOOK_READ_TOOLS = new Set([
@@ -138,6 +140,12 @@ What it is for, in two sentences. Who owns or decides what, as people here say i
 never opinions of people. How requests are made, where decisions are recorded, links people
 keep using, other bots and what they post.
 
+## About the organization
+Only what this place shows about the organization as a whole: what it builds or does, its
+products, teams, stated goals and priorities, key systems, and terms people use. First read
+${ORGANIZATION_MEMORY_FILE} in shared memory, if it exists, and give only what is new or contradicts it.
+"Nothing new" is a fine answer.
+
 ## Recurring
 Things that happened at least twice on a rhythm, and when.
 
@@ -166,8 +174,17 @@ const FOLLOW_UP_SCHEDULE = `A follow-up runs only at its next check or when mess
    and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
    I'll look for releases announced since the last check and confirm their notes were posted").`
 
-/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form. */
-export function firstLookHandling(reach: string, opts: { external: boolean; cards?: boolean }): string {
+// Only a place that writes the shared layer adds to it (§5.13): a private place's content must never reach it.
+const ORGANIZATION_STEP = `   Unless "About the organization" has nothing new, merge it into ${ORGANIZATION_MEMORY_FILE}: into its
+   existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the place
+   it came from named by its channel name. Keep that file short and its index line one line;
+   every conversation reads it.`
+
+/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form; step 1 adds to the organization's file only where the place writes the shared layer. */
+export function firstLookHandling(
+  reach: string,
+  opts: { external: boolean; cards?: boolean; organization?: boolean }
+): string {
   const step1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
    plus one index line. Leave out "In flight", any request still open wherever it is listed,
    and anything you would not say in every conversation that reads this layer.`
@@ -176,7 +193,7 @@ export function firstLookHandling(reach: string, opts: { external: boolean; card
 ${step1}
 This place is now shared with another organization, so post nothing about this first look in it.`
   return `When a first look reports back:
-${step1}
+${step1}${opts.organization ? `\n${ORGANIZATION_STEP}` : ''}
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you (${reach}).
 ${

@@ -15,7 +15,11 @@ import type { MessageGateway } from '../src/mcp/ops/context.js'
 import { settlePost } from '../src/mcp/ops/messaging.js'
 import { slackDraftCardPort } from '../src/platforms/slack/draft-card.js'
 import { SlackConnection } from '../src/slack/connection.js'
-import { buildAssistantDraftCard, type AssistantDraftCardView } from '../src/slack/render.js'
+import {
+  buildAssistantDraftCard,
+  buildAssistantDraftSettledCard,
+  type AssistantDraftCardView
+} from '../src/slack/render.js'
 import {
   ASSISTANT_DRAFT_TTL_MS,
   type AssistantDraft,
@@ -954,23 +958,88 @@ describe('the Slack draft card', () => {
     expect(other).toContain('*ops* on Telegram')
     expect(other).toContain('Telegram `-1001`')
   })
-  it('shows a follow-up form as the follow-up an approval takes, in place of work it runs', () => {
-    const card = text({
-      ...view({ channel: 'C0GENERAL', name: 'general' }),
-      kind: 'task',
-      text: 'The release date',
-      proposal: {
-        sentence: 'I want to follow up the release date.',
-        why: 'Ada is waiting on it.',
-        followUp: { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: 1_760_000_000_000 }
-      }
-    })
-    expect(card).toContain('**Follow-up**')
-    expect(card).toContain('> The release date')
-    expect(card).toContain('Done when: A date is posted.')
-    expect(card).toContain('First check <!date^1760000000^')
-    expect(card).toContain('Approving takes this follow-up in <#C0GENERAL> (#general) for you; nothing else runs.')
-    expect(card).not.toContain('**Work**')
+  const blocks = (v: AssistantDraftCardView): any[] => buildAssistantDraftCard('d-1', v, {}) as any[]
+  const proposal = (over: Partial<AssistantDraftCardView> = {}): AssistantDraftCardView => ({
+    ...view({ channel: 'C0GENERAL', name: 'release-train' }),
+    kind: 'task',
+    text: 'Draft the release notes for 2.6 from the merged pull requests.',
+    proposal: {
+      sentence: 'I want to draft the release notes because two releases went out without them.',
+      why: 'Asked twice this month.'
+    },
+    sessionUrl: 'https://console.example.test/example-org/sessions/s-1',
+    ...over
+  })
+
+  it('shows a follow-up form as what it will do and its first check, in the agent’s own words', () => {
+    const card = blocks(
+      proposal({
+        text: 'Release notes',
+        proposal: {
+          sentence: 'I want to check each release has notes.',
+          why: 'Two releases went out without them.',
+          followUp: {
+            title: 'Release notes',
+            doneWhen: 'I’ll look each Monday morning and remind the owner here; I stop once every release has notes.',
+            nextCheck: 1_760_000_000_000
+          }
+        }
+      })
+    )
+    expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'markdown', 'context', 'actions'])
+    expect(card[0].text.text).toBe('*I want to check each release has notes.*')
+    expect(card[1].text).toBe('Two releases went out without them.')
+    expect(card[2].text).toBe(
+      'I’ll look each Monday morning and remind the owner here; I stop once every release has notes.'
+    )
+    expect(card[3].elements[0].text).toBe('🕒 <!date^1760000000^{date_short_pretty} {time}|2025-10-09T08:53:20.000Z>')
+    const all = JSON.stringify(card)
+    for (const gone of ['Butler', 'Release notes', 'Follow-up', 'Why', 'Done when', 'First check', 'nothing else runs'])
+      expect(all).not.toContain(gone)
+    expect(all).not.toContain('C0GENERAL')
+  })
+
+  it('shows no first check for a follow-up form without one', () => {
+    const card = blocks(
+      proposal({
+        proposal: {
+          sentence: 'I want to follow this up.',
+          why: 'Asked.',
+          followUp: { title: 'Notes', doneWhen: 'I stop once the notes are posted.', nextCheck: null }
+        }
+      })
+    )
+    expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'markdown', 'actions'])
+    expect(JSON.stringify(card)).not.toContain('No check until')
+  })
+
+  it('shows a task form as its sentence and reason, its exact work one click away on the proposing session', () => {
+    const card = blocks(proposal())
+    expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'context', 'actions'])
+    expect(card[0].text.text).toBe('*I want to draft the release notes because two releases went out without them.*')
+    expect(card[1].text).toBe('Asked twice this month.')
+    expect(card[2].elements).toEqual([
+      { type: 'mrkdwn', text: '<https://console.example.test/example-org/sessions/s-1|🔗>' }
+    ])
+    const all = JSON.stringify(card)
+    for (const gone of ['Butler', 'Draft the release notes for 2.6', 'Work', 'Why', 'Runs with', 'Open the check'])
+      expect(all).not.toContain(gone)
+    expect(card[3].elements.map((b: any) => b.text.text)).toEqual(['Approve', 'Deny'])
+  })
+
+  it('quotes a task form’s exact work, with no label, where no session link exists', () => {
+    const { sessionUrl: _, ...rest } = proposal()
+    const card = blocks(rest)
+    expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'markdown', 'actions'])
+    expect(card[2].text).toBe('> Draft the release notes for 2.6 from the merged pull requests.')
+    expect(JSON.stringify(card)).not.toContain('Work')
+  })
+
+  it('keeps the settled outcome and drops the footer once a proposal is decided', () => {
+    const settled = buildAssistantDraftSettledCard(proposal(), '🚫 Denied by Ada. Nothing was run.') as any[]
+    expect(settled.map((b) => b.type)).toEqual(['section', 'markdown', 'context', 'section'])
+    expect(JSON.stringify(settled.at(-1))).toContain('🚫 Denied by Ada. Nothing was run.')
+    expect(JSON.stringify(settled)).not.toContain('Runs with')
   })
 })
 

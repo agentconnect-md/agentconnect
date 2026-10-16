@@ -170,6 +170,30 @@ describe('the prompts', () => {
     expect(firstLookPrompt({ ...facts, requested: true })).toContain('a public channel you are in. Read it')
   })
 
+  it('asks after how the place works for what is new about the organization, read against its shared file', () => {
+    const prompt = firstLookPrompt({ ...facts, requested: false })
+    const section = prompt.split('## About the organization\n')[1]!.split('\n\n')[0]!
+    expect(prompt.indexOf('## How this place works')).toBeLessThan(prompt.indexOf('## About the organization'))
+    expect(prompt.indexOf('## About the organization')).toBeLessThan(prompt.indexOf('## Recurring'))
+    expect(section).toContain('what it builds or does, its\nproducts, teams, stated goals and priorities, key systems')
+    expect(section).toContain(
+      'First read\norganization.md in shared memory, if it exists, and give only what is new or contradicts it.'
+    )
+    expect(section).toContain('"Nothing new" is a fine answer.')
+  })
+
+  it('merges what is new about the organization into its shared file only where the place writes the shared layer', () => {
+    const step1 = (handling: string) => handling.split('\n1. ')[1]!.split('\n2. ')[0]!
+    const shared = firstLookHandling('@-mention me', { external: false, cards: true, organization: true })
+    expect(step1(shared)).toContain(
+      'Unless "About the organization" has nothing new, merge it into organization.md: into its\n   existing sections, not as a new block'
+    )
+    expect(step1(shared)).toContain('the place\n   it came from named by its channel name')
+    // A private place's, a group chat's or an external place's content never reaches the shared layer.
+    expect(firstLookHandling('@-mention me', { external: false, cards: true })).not.toContain('organization.md')
+    expect(firstLookHandling('@-mention me', { external: true, organization: true })).not.toContain('organization.md')
+  })
+
   it('tells the long session what to do, step 3 as text, and only step 1 once the place turned external', () => {
     const handling = firstLookHandling('I read every message', { external: false })
     expect(handling).toContain('how to\n   reach you (I read every message).')

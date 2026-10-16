@@ -198,6 +198,11 @@ const FOLLOW_UP = {
   why: 'Ada asked for a date on Monday.',
   followUp: { title: 'The 2.6 release date', doneWhen: 'A date is posted here.', nextCheck: '2099-01-01T09:00:00Z' }
 }
+const PIN = {
+  sentence: 'I want to pin the release checklist because people keep asking for it.',
+  why: 'Asked three times.',
+  task: 'Pin the release checklist.'
+}
 
 describe('a first look’s report round on a platform with cards', () => {
   it('offers propose three times, holds the cards and threads them under the reply in the order proposed', async () => {
@@ -209,7 +214,7 @@ describe('a first look’s report round on a platform with cards', () => {
       // Nothing is carded while the round runs.
       expect(cards()).toEqual([])
       say(INTRO)
-      results.push(await executeTool(ctx, 'propose', { ...TASK, task: 'Pin the release checklist.' }, deps))
+      results.push(await executeTool(ctx, 'propose', PIN, deps))
       results.push(await executeTool(ctx, 'propose', TASK, deps).catch((err: Error) => err.message))
     }
     await look()
@@ -227,10 +232,15 @@ describe('a first look’s report round on a platform with cards', () => {
     const carded = cards()
     expect(carded.map((p) => p.thread)).toEqual([intro.ts, intro.ts, intro.ts])
     expect(carded.map((p) => JSON.stringify(p.blocks))).toEqual([
-      expect.stringContaining('Draft the release notes for 2.6.'),
-      expect.stringContaining('The 2.6 release date'),
-      expect.stringContaining('Pin the release checklist.')
+      expect.stringContaining('I want to draft the release notes'),
+      expect.stringContaining('A date is posted here.'),
+      expect.stringContaining('I want to pin the release checklist')
     ])
+    // A task's exact work is one click away on the proposing session, not on the card.
+    const [draft, , pin] = carded.map((p) => JSON.stringify(p.blocks))
+    expect(draft).toMatch(/\/sessions\/sid-parent[^|]*\|🔗>/)
+    expect(draft).not.toContain('Draft the release notes for 2.6.')
+    expect(pin).not.toContain('Pin the release checklist.')
     expect(posts.indexOf(intro)).toBeLessThan(posts.indexOf(carded[0]!))
     const pending = await d.store.assistantDrafts.listPending('bot-a', 10, Date.now(), { tasks: true })
     expect(pending.every((draft: any) => draft.proposal.held === false && draft.cardTs !== null)).toBe(true)
@@ -289,8 +299,20 @@ describe('a first look’s report round on a platform with cards', () => {
     // The refused call made no proposal, so only the scheduled one is carded, under the introduction.
     const intro = posts.find((p) => p.text.includes('Hi, I am bot-a'))!
     expect(cards().map((p) => [p.thread, JSON.stringify(p.blocks)])).toEqual([
-      [intro.ts, expect.stringContaining('The 2.6 release date')]
+      [intro.ts, expect.stringContaining('A date is posted here.')]
     ])
+    await daemon.stop()
+  })
+
+  it('tells a public internal channel’s long session to merge what is new about the organization into its shared file', async () => {
+    const { daemon, dispatched, look } = await boot({
+      channel: { id: 'C1', name: 'release-train', is_private: false, is_ext_shared: false }
+    })
+    await look()
+    const report = dispatched.find((c) => c.msg.parentReport === true)!
+    expect(report.msg.turnBody?.prompt ?? report.msg.text ?? '').toContain(
+      'Unless "About the organization" has nothing new, merge it into organization.md'
+    )
     await daemon.stop()
   })
 
@@ -471,6 +493,9 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
     const look = await d.store.getSession(sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope))
     expect(look.originSessionId).toBe(opened.sessionId)
+    // A private channel writes its own layer, so nothing of it is merged into the organization's shared file.
+    const report = dispatched.find((c) => c.msg.parentReport === true)!
+    expect(report.msg.turnBody?.prompt ?? report.msg.text ?? '').not.toContain('organization.md')
     await daemon.stop()
   })
 })

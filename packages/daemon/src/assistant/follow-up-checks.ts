@@ -111,7 +111,7 @@ export type FollowUpMessageResult =
 
 /** What a first look's prompt and handling name (assistant-mode.md §5.13), or why its place may no longer take one. */
 export type FirstLookFacts =
-  | { place: string; kind: string; tools: string; reach: string; external: boolean; cards?: boolean }
+  | { place: string; kind: string; tools: string; reach: string; external: boolean; cards?: boolean; shared?: boolean }
   | { refused: string }
 
 /** What a requested first look says back to the session that asked for it. */
@@ -983,7 +983,8 @@ export class FollowUpChecks {
     if (verdict.kind === 'completed' && report !== null && row && caller) {
       const handling = firstLookHandling(known?.reach ?? '@-mention me', {
         external: known?.external ?? false,
-        cards: known?.cards ?? false
+        cards: known?.cards ?? false,
+        organization: known?.shared ?? false
       })
       const text = firstLookReportText(place, handling, report)
       const reportId = `check:${key}:${check}:report`

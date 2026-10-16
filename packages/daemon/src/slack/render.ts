@@ -752,10 +752,10 @@ function draftDestinationNote(view: AssistantDraftCardView): string {
   return parts.join(' · ')
 }
 
-/** The one plain sentence a draft card leads with: where it goes, and that it posts on approval; a proposal's own sentence. */
+/** The one plain sentence a draft card leads with: where it goes, and that it posts on approval; a proposal's own sentence, bold, as the bot already names its sender. */
 function draftSentence(view: AssistantDraftCardView): string {
+  if (view.kind === 'task') return `*${escapeSlackMrkdwn(clampTo(view.proposal?.sentence.trim() ?? '', 300))}*`
   const agent = `*${escapeMrkdwnLabel(clampTo(view.agentName, 60))}*`
-  if (view.kind === 'task') return `${agent}: ${escapeSlackMrkdwn(clampTo(view.proposal?.sentence ?? '', 300))}`
   const place = draftPlace(view)
   if (view.kind === 'reply') {
     return `${agent} drafted a reply in ${place}, which is shared with another organization. It posts in the same thread once you approve.`
@@ -764,7 +764,7 @@ function draftSentence(view: AssistantDraftCardView): string {
   return `${agent} will post this to ${place}${external} once you approve.`
 }
 
-/** The exact text, quoted; a text longer than the card holds says how much is shown. A proposal shows its reason and its work. */
+/** The exact text, quoted; a text longer than the card holds says how much is shown. A proposal shows its reason and what it does. */
 function draftBody(view: AssistantDraftCardView): unknown[] {
   if (view.kind === 'task') return proposalBody(view)
   const shown = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
@@ -783,57 +783,51 @@ function draftBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A proposal's reason and the work an approval runs, then where it runs and reports; a follow-up form's, the follow-up it takes. */
+/** A proposal's reason, then a link to its exact work (quoted where there is none); a follow-up form's, what it will do and its first check. */
 function proposalBody(view: AssistantDraftCardView): unknown[] {
-  const quote = (text: string) =>
-    text
+  const why = view.proposal?.why.trim() ?? ''
+  const blocks: unknown[] = why ? [{ type: 'markdown', text: clampTo(why, 2_000) }] : []
+  const followUp = view.proposal?.followUp
+  if (followUp) return [...blocks, ...followUpProposalBody(followUp)]
+  // The proposing session shows the exact work its approval runs, which the record's hash binds.
+  const session = safeSlackLinkUrl(view.sessionUrl)
+  if (session) return [...blocks, { type: 'context', elements: [{ type: 'mrkdwn', text: `<${session}|🔗>` }] }]
+  const task = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
+  blocks.push({
+    type: 'markdown',
+    text: task
       .split('\n')
       .map((line) => `> ${line}`)
       .join('\n')
-  const followUp = view.proposal?.followUp
-  if (followUp) return followUpProposalBody(view, followUp, quote)
-  const task = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
-  const why = view.proposal?.why.trim() ?? ''
-  const blocks: unknown[] = [
-    ...(why ? [{ type: 'markdown', text: `**Why**\n${quote(clampTo(why, 2_000))}` }] : []),
-    { type: 'markdown', text: `**Work**\n${quote(task)}` }
-  ]
-  const notes = [
-    `Runs with ${escapeMrkdwnLabel(clampTo(view.agentName, 60))}’s own permissions, then reports in ${draftPlace(view)}`
-  ]
-  if (task.length < view.text.length) notes.push(`Showing the first ${task.length} of ${view.text.length} characters.`)
-  const session = safeSlackLinkUrl(view.sessionUrl)
-  if (session) notes.push(`<${session}|Open the check>`)
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: notes.join(' · ') }] })
+  })
+  if (task.length < view.text.length)
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `Showing the first ${task.length} of ${view.text.length} characters.` }]
+    })
   return blocks
 }
 
-/** A follow-up form's reason and the follow-up an approval takes, with the approver as its asker. */
-function followUpProposalBody(
-  view: AssistantDraftCardView,
-  followUp: { title: string; doneWhen: string; nextCheck: number | null },
-  quote: (text: string) => string
-): unknown[] {
-  const why = view.proposal?.why.trim() ?? ''
+/** A follow-up form's sentence of what it will do, and its first check as a date in the reader's own time zone. */
+function followUpProposalBody(followUp: { doneWhen: string; nextCheck: number | null }): unknown[] {
+  const doneWhen = followUp.doneWhen.trim()
   const at = followUp.nextCheck
-  // Slack's date token renders in the reader's own time zone, which a markdown block does not.
-  const next =
-    at === null
-      ? 'No check until someone asks for one'
-      : `First check <!date^${Math.floor(at / 1000)}^{date_short_pretty} {time}|${new Date(at).toISOString()}>`
-  const body = `${clampTo(followUp.title, 300)}\nDone when: ${clampTo(followUp.doneWhen, 2_000)}`
   return [
-    ...(why ? [{ type: 'markdown', text: `**Why**\n${quote(clampTo(why, 2_000))}` }] : []),
-    { type: 'markdown', text: `**Follow-up**\n${quote(body)}` },
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `${next} · Approving takes this follow-up in ${draftPlace(view)} for you; nothing else runs.`
-        }
-      ]
-    }
+    ...(doneWhen ? [{ type: 'markdown', text: clampTo(doneWhen, 2_000) }] : []),
+    // Slack's date token renders in the reader's own time zone, which a markdown block does not.
+    ...(at === null
+      ? []
+      : [
+          {
+            type: 'context',
+            elements: [
+              {
+                type: 'mrkdwn',
+                text: `🕒 <!date^${Math.floor(at / 1000)}^{date_short_pretty} {time}|${new Date(at).toISOString()}>`
+              }
+            ]
+          }
+        ])
   ]
 }
 
