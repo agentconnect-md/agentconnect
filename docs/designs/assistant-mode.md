@@ -699,9 +699,12 @@ member (below).
   go to the conversation's layer: the shared layer only from a public channel the platform
   confirms internal, the person's layer from their DM or console conversation, the place's own
   layer anywhere else. The shared layer therefore never holds what a DM, a private place or a
-  place with outsiders said. The per-person memory space this section planned for P1 is the
-  person layer, built for every agent; "allow for this session" is gone for every agent. Runtime
-  native memory must be disableable (admission) and is disabled on enable.
+  place with outsiders said, unless a person in a DM or a private place asks on their own turn to
+  remember it for everyone; a check, a first look's or a task's report and a wake are refused that
+  write, and a place with outsiders is refused it on every round. The
+  per-person memory space this section planned for P1 is the person layer, built for every
+  agent; "allow for this session" is gone for every agent. Runtime native memory must be
+  disableable (admission) and is disabled on enable.
 
 ### 5.6 Tasks
 

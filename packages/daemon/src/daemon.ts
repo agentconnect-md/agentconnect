@@ -410,6 +410,8 @@ import { slackDraftCardPort } from './platforms/slack/draft-card.js'
 import {
   MEMORY_NO_PERSON_LAYER,
   MEMORY_PERSON_LAYER_REFUSED,
+  MEMORY_SHARED_LAYER_EXTERNAL,
+  MEMORY_SHARED_LAYER_NEEDS_PERSON,
   MEMORY_SHARED_LAYER_ONLY,
   MEMORY_TOOL_NAMES,
   MEMORY_TOOLS
@@ -826,8 +828,10 @@ import { MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
 import {
   MemoryLayers,
   memoryLayerFolder,
+  typedByPerson,
   type MemoryLayerChoice,
   type MemoryPlace,
+  type PlaceAudience,
   type ResolvedMemoryLayer
 } from './memory/layers.js'
 import {
@@ -8125,7 +8129,7 @@ export class Daemon {
     msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm' | 'headless'>
   ): MemoryPlace {
     // Only a message a person typed names a person; a check, a task, another agent or a schedule never does.
-    const speaker = msg && msg.source === 'user' && !msg.sender.isBot && !msg.headless ? msg.sender.id : undefined
+    const speaker = msg && typedByPerson(msg) ? msg.sender.id : undefined
     const observed = msg?.isDm ? (msg.isGroupDm ? 'group_dm' : 'dm') : undefined
     return {
       agentId,
@@ -8147,7 +8151,14 @@ export class Daemon {
     const sourceTurnId = this.activeMemorySourceTurns.get(key)
     const turn = sourceTurnId ? { sourceTurnId } : {}
     const managed = (this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed') === 'managed'
-    if (call.layer === 'shared') return { agentId: ctx.agentId, ...turn }
+    if (call.layer === 'shared') {
+      const audience = call.mode === 'write' ? await this.conversationAudience(ctx, key) : undefined
+      // Outsiders never add to the layer every conversation reads; a narrower conversation does only on a person's round.
+      if (audience?.external) throw new Error(MEMORY_SHARED_LAYER_EXTERNAL)
+      if (audience && audience.layer !== 'shared' && !this.personTypedTurn(key))
+        throw new Error(MEMORY_SHARED_LAYER_NEEDS_PERSON)
+      return { agentId: ctx.agentId, ...turn }
+    }
     if (call.layer === 'person') {
       if (!managed) throw new Error(MEMORY_NO_PERSON_LAYER)
       // Only the person behind the whole turn reaches their own layer, the way their own reads are judged.
@@ -8168,6 +8179,20 @@ export class Daemon {
     // A write refreshes the name its place layer is listed under; best-effort, never delaying the write.
     if (call.mode === 'write' && layer === 'place') void this.memoryLayers.notePlace(scope)
     return { ...scope, ...(call.layer === 'here' ? { alone: true } : {}), ...turn }
+  }
+
+  /** Whether a person typed one of the live turn's messages, its own or one folded into it. */
+  private personTypedTurn(key: string): boolean {
+    const live = this.activeGateEntries.get(key)
+    return !!live && [live.msg, ...(live.foldedMessages ?? []).map((m) => m.msg)].some(typedByPerson)
+  }
+
+  /** The layer a session's conversation writes with no `layer`, as `memoryLayerFor` decides it, and whether outsiders are known there; one it cannot place counts as external. */
+  private async conversationAudience(ctx: SessionContext, key: string): Promise<PlaceAudience> {
+    const provider = this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed'
+    if (provider !== 'managed' && provider !== 'external') return { layer: 'shared', external: false }
+    const place = this.memoryPlaceOf(ctx.agentId, ctx, await this.store.getSession(key), this.liveTurn(ctx)?.msg)
+    return await this.memoryLayers.audienceOf(place).catch(() => ({ layer: 'place' as const, external: true }))
   }
 
   /** Whether the agent already holds a conversation external (a share or a guest detected); one it cannot place counts as such. */

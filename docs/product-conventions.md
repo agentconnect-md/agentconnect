@@ -1813,9 +1813,14 @@ unknown, keeps a place layer of its own; a shared channel still reads its own ea
 folder beneath the shared layer.
 
 Per-turn distillation and an explicit "remember this" write to the session's layer with no
-card. "Remember this for everyone" writes to the shared layer. A person may read their own
-layer with a memory tool from any conversation, as the one asking; it is injected only in
-their own DM or console conversation. In the console the person sees their own layer under
+card. "Remember this for everyone" writes to the shared layer. Where the conversation does not
+write there itself, only a turn a person started may: a check, a report round, a schedule or
+another agent's message is refused, and the agent asks the person instead. A conversation with
+people from outside (shared with another organization, or with a known guest) never writes it,
+not even on a person's own turn, so a guest cannot add to what every conversation reads: the
+write is refused, and the agent may keep it in that conversation's own layer. A person may read
+their own layer with a memory tool from any conversation, as the one asking; it is injected
+only in their own DM or console conversation. In the console the person sees their own layer under
 Your memory on the agent's Memory page; nobody else sees it, editors included. A place layer is
 shown only to people the console shows a session of its conversation (see
 [Memory backend selection](#memory-backend-selection)). Dreams consolidate the shared layer only, mining only the conversations that use
