@@ -1106,6 +1106,8 @@ proposals.
   - `messageTask` gives it new instructions and runs a check at once, counted against the daily
     budget. While a check runs, the message waits for the next input, as a delegated task's does;
     with the day's budget spent, it is refused with the time the budget resets.
+  - The `taskId` is for the agent's own calls alone. Every place that hands the agent a task's id
+    tells it never to show the id to people, who know a task by its title or label.
 - **Visible where its place is.** It inherits its conversation's visibility, as every task does.
   The organization-visible ledger goes away.
 - **Its asker.** A check's asker for §5.5 "Reads" is the person who confirmed `followUp` (a

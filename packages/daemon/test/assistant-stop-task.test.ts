@@ -510,7 +510,8 @@ describe('who is offered stopTask', () => {
           'when it is no longer needed: the plan changed, a task it depended on failed, or its result is not wanted any ' +
           'more. Stopping a follow-up ends it: no further checks run. What it already did is not undone, and a process ' +
           'its runtime started in the background (a build, a dev server) may keep running; the result says so. When it ' +
-          'is not clear which task a person means, ask them before stopping one.',
+          'is not clear which task a person means, ask them, naming each by its label and never by its taskId, before ' +
+          'stopping one.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -698,6 +699,7 @@ describe('listTasks (send-message-guide.md §8.7)', () => {
         expect(task).not.toHaveProperty('endedAt')
       }
       expect(mine.note).toContain('A delegated task or a follow-up has a taskId')
+      expect(mine.note).toContain('never shown to people, who know it by its label')
       expect(JSON.stringify(mine)).not.toContain(theirs)
       expect((await list(h, other)).tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([theirs])
 
