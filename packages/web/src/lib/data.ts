@@ -1350,7 +1350,7 @@ export interface Session {
   /** Platform-native deep link back to the source message/thread, captured or
    *  derived by the daemon. Absent when the platform exposes none. */
   threadUrl?: string
-  /** Runs on a reserved background-work coordinate (a task, a patrol or approved work), so no one continues it from its own page. */
+  /** Runs on a reserved background-work coordinate (a task, a follow-up or approved work), so no one continues it from its own page. */
   subsession?: true
   user: string
   /** Raw platform sender id behind `user` — e.g. `cron:<id>` for a scheduled

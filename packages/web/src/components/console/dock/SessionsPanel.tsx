@@ -57,7 +57,7 @@ const EMPTY_RELATIONS: SessionRelationDto[] = []
 /** The session that started the open one, or a session the open one called or woke. */
 type RelationKind = 'startedBy' | 'references'
 
-/** Real sessions only: a task (delegated task, patrol, approved proposal) belongs to its session and is listed in its Tasks tab. */
+/** Real sessions only: a task (delegated task, follow-up, approved proposal) belongs to its session and is listed in its Tasks tab. */
 export function relatedSessions(relations: readonly SessionRelationDto[]): SessionRelationDto[] {
   return relations.filter((relation) => relation.subsession !== true)
 }

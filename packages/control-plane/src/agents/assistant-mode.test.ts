@@ -4,7 +4,8 @@ import {
   assertAssistantModeDefinition,
   assistantModeEditNeedsAdmission,
   assistantModePermissionModeForEdit,
-  assistantModeStoreRefusals
+  assistantModeStoreRefusals,
+  StoredAssistantModePolicyRow
 } from './assistant-mode.js'
 
 const ON = { enabled: true }
@@ -84,5 +85,21 @@ describe('assistant mode permission default', () => {
     expect(assistantModePermissionModeForEdit(OFF, ON, { runtime: 'opencode', permissionMode: 'plan' }, false)).toBe(
       undefined
     )
+  })
+})
+
+describe('a stored assistant mode policy', () => {
+  it('keeps the routing keys an older CP wrote and drops a removed key instead of failing the read', () => {
+    const stored = {
+      enabled: true,
+      responsibleUserId: 'usr_1',
+      patrolSchedule: '0 9 * * *',
+      limits: { dailyPatrolBudget: 5 }
+    }
+    expect(StoredAssistantModePolicyRow.parse(stored)).toEqual({
+      enabled: true,
+      responsibleUserId: 'usr_1',
+      limits: { dailyPatrolBudget: 5 }
+    })
   })
 })

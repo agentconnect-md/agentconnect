@@ -1,6 +1,6 @@
 'use client'
 
-// The dock's Tasks tab (§3.5): one session's tasks in two groups — what the runtime reports for this turn, read-only, and the tasks AgentConnect manages for it (delegated tasks, patrols, approved proposals), which can be stopped.
+// The dock's Tasks tab (§3.5): one session's tasks in two groups — what the runtime reports for this turn, read-only, and the tasks AgentConnect manages for it (delegated tasks, follow-ups, approved proposals), which can be stopped.
 // The runtime group is READ-ONLY by measurement: no agent-protocol primitive can address ONE background command, so a per-row control could only cancel unrelated work; the composer's turn-scoped stop is the escape hatch.
 // Both reads are proxied through the CP from the owning daemon and stored nowhere (body-locality, §2), so an offline daemon, an old daemon and an untracked session are expected answers drawn as data.
 // What the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line, and no "Logs" link (§3.5 records the measurement behind each).

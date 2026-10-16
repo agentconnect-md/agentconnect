@@ -132,7 +132,7 @@ export default function SessionsView() {
   const fChannel = params.get('channel') ?? 'all'
   const fTrigger = params.get('trigger') ?? 'all'
   const flatView = isFlatSessionView(params)
-  // Tasks (delegated tasks, patrols, approved proposals) belong to a session, so the list hides them unless asked.
+  // Tasks (delegated tasks, follow-ups, approved proposals) belong to a session, so the list hides them unless asked.
   const showTasks = showsTasks(params)
   const fGithubRepoId = githubRepoIdFromSessionTriggerFilter(fTrigger)
   const sessionFilters = {

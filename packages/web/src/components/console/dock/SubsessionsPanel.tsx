@@ -1,6 +1,6 @@
 'use client'
 
-// The Tasks tab's Delegated group (assistant-mode.md §1.3, §5.6, §5.12): the delegated tasks, patrols or follow-ups, and approved proposals of this conversation, read from the agent's daemon through the CP and kept nowhere else.
+// The Tasks tab's Delegated group (assistant-mode.md §1.3, §5.6, §5.12): the delegated tasks, follow-ups and approved proposals of this conversation, read from the agent's daemon through the CP and kept nowhere else.
 // Each row links to its own page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'

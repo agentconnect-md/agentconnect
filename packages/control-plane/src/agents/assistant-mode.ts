@@ -10,11 +10,11 @@ import {
 import { canEdit } from '../authorization/policy.js'
 import type { AgentRecord, MemberSetRepo, OrgMemberRecord, StoredAssistantModePolicy } from '../persistence/ports.js'
 
-// Expand step (assistant-mode.md §5.1): a row an older CP wrote keeps its two routing keys, read past and never written.
+// Expand step (assistant-mode.md §5.1): an older CP's routing keys are read past and never written; removed keys are dropped.
 export const StoredAssistantModePolicyRow = AssistantModePolicy.extend({
   responsibleUserId: z.unknown().optional(),
   fallbackConversation: z.unknown().optional()
-})
+}).strip()
 
 /** The stored policy as the API serves it, without the routing keys an older CP wrote. */
 export function servedAssistantMode(policy: StoredAssistantModePolicy): AssistantModePolicy {

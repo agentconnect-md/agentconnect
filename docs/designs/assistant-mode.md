@@ -283,8 +283,6 @@ A per-agent built-in policy beside `BuiltInMemoryBinding.dreaming`:
 export const AssistantModePolicy = z
   .object({
     enabled: z.boolean(),
-    /** Follow-up check cadence (not read yet); absent ⇒ each follow-up's own next check only */
-    patrolSchedule: z.string().min(1).max(128).optional(),
     timezone: z.string().min(1).max(64).optional(),
     instructions: z.string().max(4096).optional(),
     limits: z
@@ -898,7 +896,7 @@ a check, and "each follower's place" becomes that place.
 
 - **Wake**: a follow-up's `nextCheck` wakes a check — a duty-gated sweep on the daemon, once per
   `nextCheck` value; pause suspends it and an overdue follow-up is checked once. Its place's
-  `messageTask` starts one at once (§5.12). `patrolSchedule`, hook events and triage come later.
+  `messageTask` starts one at once (§5.12). A schedule, hook events and triage come later.
 - **Where it runs**: a read-only task on the **agent's own host**, with the agent's
   credentials, until the credential-less host exists, in the follow-up's one retained session.
   Read-only rests on layers (a) and (c) below: AgentConnect tools filtered to reads plus
@@ -926,7 +924,7 @@ Shipped in #2887 as patrols, `propose` from them in #2895, and as follow-up chec
 rest of this section is the target.
 
 ```
-patrolSchedule fires / hook event (P2) / an item's nextCheck is due
+a schedule fires / hook event (P2) / an item's nextCheck is due
         │
         ▼
   [optional, P2] Decision triage with a small model
@@ -2225,3 +2223,7 @@ available wherever it is offered: approving it takes that follow-up of the place
 as its asker, running no task. A first look's proposals are not refused because the first look has
 ended. The console shows what a follow-up form would take and links an approved one to its
 conversation. §5.13 is marked shipped; pins and Lark/Feishu's join stay open in §9.
+
+**Fifty-second revision (2026-10-16)**: §5.1 drops `patrolSchedule`, which nothing read; a stored
+policy that still carries it is read without it. The console labels `dailyPatrolBudget` "Follow-up
+checks per day", and the key keeps its name until the internal rename (issue #2810).

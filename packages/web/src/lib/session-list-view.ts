@@ -10,7 +10,7 @@ export function isFlatSessionView(params: SearchParamsReader): boolean {
   return params.get('view') === 'flat'
 }
 
-/** Whether the list shows tasks (delegated tasks, patrols, approved proposals) as well as conversations. */
+/** Whether the list shows tasks (delegated tasks, follow-ups, approved proposals) as well as conversations. */
 export function showsTasks(params: SearchParamsReader): boolean {
   return params.get(SHOW_TASKS_PARAM) === SHOW_TASKS_VALUE
 }

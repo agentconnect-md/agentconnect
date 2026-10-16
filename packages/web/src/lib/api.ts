@@ -551,7 +551,7 @@ export interface SessionListFilters {
   channel?: string
   triggeredBy?: string
   githubRepoId?: string
-  /** Leave tasks (delegated tasks, patrols and approved proposals) out of the rows, the total and the facets. */
+  /** Leave tasks (delegated tasks, follow-ups and approved proposals) out of the rows, the total and the facets. */
   excludeTasks?: boolean
 }
 
@@ -585,7 +585,7 @@ export interface SessionRelationDto {
   agentName?: string | null
   platform: string
   title: string | null
-  /** A task (delegated task, patrol or approved proposal) rather than a conversation; absent on older Control Planes. */
+  /** A task (delegated task, follow-up or approved proposal) rather than a conversation; absent on older Control Planes. */
   subsession?: boolean
 }
 
@@ -3963,7 +3963,7 @@ export interface AssistantItemDto {
   title: string
   status: AssistantItemStatus
   doneWhen: string | null
-  /** When a patrol next checks the item (assistant-mode.md §5.9). */
+  /** When the follow-up's next check is due (assistant-mode.md §5.12). */
   nextCheck: string | null
   origin: AssistantPlaceDto
   places: AssistantPlaceDto[]

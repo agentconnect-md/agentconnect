@@ -155,7 +155,7 @@ describe('console approval requests', () => {
   })
 })
 
-/** A patrol's proposal waiting in the webchat conversation `sid-webchat`. */
+/** A follow-up's proposal waiting in the webchat conversation `sid-webchat`. */
 const proposal = (extra: Record<string, unknown> = {}) => ({
   id: 'proposal-1',
   sentence: 'I want to rebase PR #12 because it conflicts with main.',
