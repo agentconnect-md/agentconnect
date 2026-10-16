@@ -342,11 +342,12 @@ describe('a follow-up’s check proposes', () => {
     const [channel, blocks, , thread] = h.cards.post.mock.calls[0]!
     expect(channel).toBe('C1')
     expect(thread).toBeUndefined()
-    // The card leads with the sentence, shows the reason and the task, and offers approve or deny only.
+    // The card leads with the sentence and the reason, links the exact task on the check's session, and offers approve or deny only.
     const card = JSON.stringify(blocks)
     expect(card.indexOf(SENTENCE)).toBeGreaterThan(-1)
-    expect(card.indexOf(SENTENCE)).toBeLessThan(card.indexOf(TASK))
     expect(card).toContain('The check found a merge conflict.')
+    expect(card).not.toContain(TASK)
+    expect(card).toMatch(/\/sessions\/[^|"]+\|🔗>/)
     expect(card).toContain('Approve')
     expect(card).toContain('Deny')
     expect(card).not.toContain('Always allow')
