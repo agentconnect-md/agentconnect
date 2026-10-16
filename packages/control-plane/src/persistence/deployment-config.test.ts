@@ -48,6 +48,16 @@ describe('DeploymentConfigValuesV1Schema', () => {
 })
 
 describe('deploymentSecretsRequiringRefresh', () => {
+  it.each(['telegram', 'discord'] as const)('binds the %s login secret to its client ID', (provider) => {
+    const key = `${provider}Connector` as const
+    const next = DeploymentConfigValuesV1Schema.parse({
+      ...base,
+      logto: { ...base.logto, [key]: { clientId: 'login-client' } }
+    })
+    expect(deploymentSecretsRequiringRefresh(base, next)).toEqual([`logto.${provider}ConnectorClientSecret`])
+    expect(deploymentSecretsRequiringRefresh(next, next)).toEqual([])
+  })
+
   it('binds write-only secrets only to provider identity fields', () => {
     expect(
       deploymentSecretsRequiringRefresh(base, {

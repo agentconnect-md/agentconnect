@@ -180,14 +180,15 @@ describe('Logto setup reconciliation', () => {
       if (url.pathname === '/api/applications') return response(application ? [application] : [])
       if (url.pathname === '/api/connectors' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>
-        const target =
-          body.connectorId === 'google-universal'
-            ? 'google'
-            : body.connectorId === 'slack-universal'
-              ? 'slack'
-              : 'github'
+        const metadata = body.metadata as { target?: string } | undefined
+        const target = metadata?.target ?? String(body.connectorId).replace('-universal', '')
         const connector = { ...body, target }
         connectors.push(connector)
+        return response(connector)
+      }
+      if (url.pathname.startsWith('/api/connectors/') && init?.method === 'PATCH') {
+        const connector = connectors.find((item) => item.id === url.pathname.split('/').at(-1))!
+        Object.assign(connector, JSON.parse(String(init.body)))
         return response(connector)
       }
       if (url.pathname === '/api/connectors') return response(connectors)
@@ -210,9 +211,11 @@ describe('Logto setup reconciliation', () => {
       applicationName: 'AgentConnect',
       redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
       postLogoutRedirectUris: ['http://localhost:3000/login'],
-      socialProviders: ['github', 'google', 'slack'],
+      socialProviders: ['github', 'google', 'slack', 'telegram', 'discord'],
       github: { clientId: 'github-client', clientSecret: 'github-secret' },
       google: { clientId: 'google-client', clientSecret: 'google-secret' },
+      telegram: { clientId: '123456789', clientSecret: 'telegram-secret' },
+      discord: { clientId: '123456789012345678', clientSecret: 'discord-secret' },
       slack: {
         clientId: 'slack-client',
         clientSecret: 'slack-secret',
@@ -226,7 +229,9 @@ describe('Logto setup reconciliation', () => {
       connectors: [
         { target: 'github', id: 'agentconnect-github', created: true },
         { target: 'google', id: 'agentconnect-google', created: true },
-        { target: 'slack', id: 'agentconnect-slack', created: true }
+        { target: 'slack', id: 'agentconnect-slack', created: true },
+        { target: 'telegram', id: 'agentconnect-telegram', created: true },
+        { target: 'discord', id: 'agentconnect-discord', created: true }
       ],
       signInExperienceChanged: true,
       adminRoleCreated: true
@@ -237,7 +242,9 @@ describe('Logto setup reconciliation', () => {
       connectors: [
         { target: 'github', id: 'agentconnect-github', created: false },
         { target: 'google', id: 'agentconnect-google', created: false },
-        { target: 'slack', id: 'agentconnect-slack', created: false }
+        { target: 'slack', id: 'agentconnect-slack', created: false },
+        { target: 'telegram', id: 'agentconnect-telegram', created: false },
+        { target: 'discord', id: 'agentconnect-discord', created: false }
       ],
       signInExperienceChanged: false,
       adminRoleCreated: false
@@ -246,9 +253,56 @@ describe('Logto setup reconciliation', () => {
       signIn: { methods: [] },
       signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
       socialSignIn: { automaticAccountLinking: false, skipRequiredIdentifiers: false },
-      socialSignInConnectorTargets: ['github', 'google', 'slack'],
+      socialSignInConnectorTargets: desired.socialProviders,
       signInMode: 'SignInAndRegister'
     })
+    const telegram = connectors.find((connector) => connector.target === 'telegram')!
+    expect(telegram).toMatchObject({
+      connectorId: 'oidc',
+      metadata: { target: 'telegram', name: { en: 'Telegram' } },
+      config: {
+        clientId: '123456789',
+        scope: 'openid profile',
+        authorizationEndpoint: 'https://oauth.telegram.org/auth',
+        tokenEndpoint: 'https://oauth.telegram.org/token',
+        tokenEndpointAuthMethod: 'client_secret_basic',
+        idTokenVerificationConfig: {
+          issuer: 'https://oauth.telegram.org',
+          jwksUri: 'https://oauth.telegram.org/.well-known/jwks.json',
+          algorithms: ['RS256']
+        }
+      }
+    })
+    expect(connectors.find((connector) => connector.target === 'discord')).toMatchObject({
+      connectorId: 'discord-universal',
+      config: { clientId: '123456789012345678', scope: 'identify' }
+    })
+    const telegramConfig = telegram.config as Record<string, unknown>
+    delete telegramConfig.customConfig
+    delete telegramConfig.authRequestOptionalConfig
+    expect((await client.reconcileSetup(desired)).changed).toBe(false)
+    telegramConfig.tokenEndpointAuthMethod = 'client_secret_post'
+    expect((await client.inspectSetup(desired)).connectors.find((item) => item.target === 'telegram')?.matches).toBe(
+      false
+    )
+    expect((await client.reconcileSetup(desired)).connectors.find((item) => item.target === 'telegram')).toMatchObject({
+      id: 'agentconnect-telegram',
+      created: false,
+      changed: true
+    })
+    await client.reconcileSetup(
+      { ...desired, telegram: { ...desired.telegram, clientSecret: 'rotated-secret' } },
+      { refreshConnectorSecrets: true }
+    )
+    expect(telegram.config).toMatchObject({
+      clientSecret: 'rotated-secret',
+      tokenEndpointAuthMethod: 'client_secret_basic'
+    })
+    const externalConnectors = { ...desired, telegram: undefined, discord: undefined }
+    expect((await client.reconcileSetup(externalConnectors)).changed).toBe(false)
+    expect((await client.inspectSetup(externalConnectors)).connectors.every((connector) => connector.matches)).toBe(
+      true
+    )
   })
 
   it('deletes the Logto Cloud demo connectors parked on the managed social targets', async () => {

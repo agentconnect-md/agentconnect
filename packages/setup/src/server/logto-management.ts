@@ -1,5 +1,11 @@
 /** Minimal Logto Management API client for setup reconciliation and ADMIN claim. */
-import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
+import { isDeepStrictEqual } from 'node:util'
+import {
+  LOGTO_GITHUB_CONNECTOR_ID,
+  LOGTO_GOOGLE_CONNECTOR_ID,
+  LOGTO_SLACK_CONNECTOR_ID,
+  LOGTO_LOGIN_APPS
+} from '../logto-connectors.js'
 import { ADMIN_ROLE } from './auth.js'
 
 const MANAGED_APP_TAG = 'agentconnectSetup'
@@ -32,6 +38,8 @@ export interface LogtoSetupDesired {
   github?: { clientId: string; clientSecret: string }
   google?: { clientId: string; clientSecret: string }
   slack?: { clientId: string; clientSecret: string; scope: string }
+  telegram?: { clientId: string; clientSecret: string }
+  discord?: { clientId: string; clientSecret: string }
 }
 
 interface LogtoRole {
@@ -65,10 +73,11 @@ interface LogtoSignInExperience {
   signInMode: unknown
 }
 
-type ManagedConnectorTarget = 'github' | 'google' | 'slack'
-
-function isManagedConnectorTarget(target: string): target is ManagedConnectorTarget {
-  return target === 'github' || target === 'google' || target === 'slack'
+interface DesiredConnector {
+  id: string
+  connectorId: string
+  config: Record<string, unknown>
+  metadata?: { target: string; name: { en: string } }
 }
 
 export interface LogtoAdminRoleInspection {
@@ -203,10 +212,7 @@ function parseConnector(value: unknown): LogtoConnector | null {
   }
 }
 
-function desiredConnector(
-  target: ManagedConnectorTarget,
-  desired: LogtoSetupDesired
-): { id: string; connectorId: string; config: Record<string, string> } {
+function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredConnector | undefined {
   if (target === 'github') {
     if (!desired.github) {
       throw new LogtoManagementError(
@@ -234,14 +240,44 @@ function desiredConnector(
     }
     return { id: LOGTO_SLACK_CONNECTOR_ID, connectorId: 'slack-universal', config: desired.slack }
   }
-  throw new Error(`unsupported managed Logto connector target: ${target}`)
+  if (target === 'discord' && desired.discord) {
+    return {
+      id: LOGTO_LOGIN_APPS.discord.id,
+      connectorId: 'discord-universal',
+      config: { ...desired.discord, scope: 'identify' }
+    }
+  }
+  if (target === 'telegram' && desired.telegram) {
+    return {
+      id: LOGTO_LOGIN_APPS.telegram.id,
+      connectorId: 'oidc',
+      metadata: { target: 'telegram', name: { en: 'Telegram' } },
+      config: {
+        ...desired.telegram,
+        scope: 'openid profile',
+        authorizationEndpoint: 'https://oauth.telegram.org/auth',
+        tokenEndpoint: 'https://oauth.telegram.org/token',
+        tokenEndpointAuthMethod: 'client_secret_basic',
+        idTokenVerificationConfig: {
+          issuer: 'https://oauth.telegram.org',
+          jwksUri: 'https://oauth.telegram.org/.well-known/jwks.json',
+          algorithms: ['RS256']
+        },
+        customConfig: {},
+        authRequestOptionalConfig: {},
+        trustUnverifiedEmail: false
+      }
+    }
+  }
+  return undefined
 }
 
-function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof desiredConnector>): boolean {
+function connectorMatches(connector: LogtoConnector, desired: DesiredConnector): boolean {
   return (
     connector.connectorId === desired.connectorId &&
-    connector.config.clientId === desired.config.clientId &&
-    (desired.connectorId !== 'slack-universal' || connector.config.scope === desired.config.scope)
+    Object.entries(desired.config).every(
+      ([key, value]) => key === 'clientSecret' || isDeepStrictEqual(connector.config[key] ?? {}, value)
+    )
   )
 }
 
@@ -388,14 +424,14 @@ export class LogtoAdminClaimClient {
         diff: applicationDiff
       },
       connectors: desired.socialProviders.map((target) => {
-        // A Logto Cloud demo connector on this target is not the connector we want; report it so
-        // the operator sees why the target reads as missing and what reconciliation will remove.
+        // Report demo connectors that reconciliation will replace.
         const demos = selectDemoConnectors(connectors, target).map((demo): LogtoConfigurationDiff => ({
           field: `${target} demo connector`,
           current: demo.name ?? demo.connectorId,
           expected: 'Removed'
         }))
-        if (!isManagedConnectorTarget(target)) {
+        const expected = desiredConnector(target, desired)
+        if (!expected) {
           const connector = selectConnector(connectors, target)
           return {
             target,
@@ -407,7 +443,6 @@ export class LogtoAdminClaimClient {
               : [...demos, { field: `${target} connector`, current: 'Missing', expected: 'Configured' }]
           }
         }
-        const expected = desiredConnector(target, desired)
         const connector = selectConnector(connectors, target)
         const diff: LogtoConfigurationDiff[] = [...demos]
         if (!connector) {
@@ -604,7 +639,8 @@ export class LogtoAdminClaimClient {
     const existing = await this.listConnectors()
     const result: Array<{ target: string; id: string; created: boolean; changed: boolean }> = []
     for (const target of desired.socialProviders) {
-      if (!isManagedConnectorTarget(target)) {
+      const expected = desiredConnector(target, desired)
+      if (!expected) {
         const connector = selectConnector(existing, target)
         if (!connector) {
           // Never delete a demo connector we cannot replace — name it so the operator can.
@@ -618,10 +654,14 @@ export class LogtoAdminClaimClient {
         result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
-      // Resolve the replacement first: a missing credential must fail before anything is deleted.
-      const expected = desiredConnector(target, desired)
-      await this.deleteDemoConnectors(existing, target)
       const connector = selectConnector(existing, target)
+      if (connector && connector.connectorId !== expected.connectorId) {
+        throw new LogtoManagementError(
+          'SOCIAL_CONNECTOR_UNSUPPORTED',
+          `the existing ${target} connector must use ${expected.connectorId}`
+        )
+      }
+      await this.deleteDemoConnectors(existing, target)
       if (connector && connectorMatches(connector, expected) && !refreshSecrets) {
         result.push({ target, id: connector.id, created: false, changed: false })
         continue
@@ -630,7 +670,11 @@ export class LogtoAdminClaimClient {
         const response = await this.request(`/api/connectors/${encodeURIComponent(connector.id)}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ config: expected.config, syncProfile: true })
+          body: JSON.stringify({
+            config: expected.config,
+            ...(expected.metadata ? { metadata: expected.metadata } : {}),
+            syncProfile: true
+          })
         })
         const updated = parseConnector(await response.json().catch(() => null))
         if (!updated || updated.target !== target) {
@@ -647,6 +691,7 @@ export class LogtoAdminClaimClient {
           id: expected.id,
           connectorId: expected.connectorId,
           config: expected.config,
+          ...(expected.metadata ? { metadata: expected.metadata } : {}),
           syncProfile: true
         })
       })
