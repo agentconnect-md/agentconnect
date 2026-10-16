@@ -234,7 +234,7 @@ Shipped (§5.13 "As shipped").
 
 | Dimension         | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                   | Why                                                                                                                                                                                                                    |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the patrol guarantee is stated by layer in §5.9, and a runtime without one shows as degraded                                                                                                                                                                                 | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out                                                                       |
+| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the check guarantee is stated by layer in §5.9, and a runtime without one shows as degraded                                                                                                                                                                                  | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out                                                                       |
 | Memory            | `managed`, kept in the Control Plane (`home: control-plane`). Turning the mode on moves a `daemon` home in the same write, and the owning daemon copies the tree, one way. While the mode is on, a `daemon` home, the forced return and any other provider are refused; turning it off moves nothing back. Per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies | The person layer exists for managed memory only; person and place memory must be readable and clearable in the console with no daemon online, and must survive a move. Distillation runs on the credentialed warm host |
 | Self-hosted group | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                                                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                                                                                            |
 | Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                                                                                                                                                                                                      | Not possible today either                                                                                                                                                                                              |
@@ -268,8 +268,8 @@ on sets a default, §1.8; an asking mode only warns), a linked identity for the 
 
 Not a prerequisite: per-turn distillation on the credentialed warm host (#2814, closed) — it is
 off by default and its exposure is a recorded trade-off in [memory-dreaming.md](memory-dreaming.md)
-§8; moving it to a credential-less host would cost a cold host launch per turn. Patrols have their
-own credential-less launch.
+§8; moving it to a credential-less host would cost a cold host launch per turn. Follow-up checks
+are to get their own credential-less launch (§5.9).
 
 ---
 
@@ -795,7 +795,7 @@ with `listTasks`.
 
 ### 5.7 The report channel
 
-> **Tasks never speak on the platform.** Delegated-task reports, patrol results,
+> **Tasks never speak on the platform.** Delegated-task reports, follow-up check reports,
 > permission requests and notifications are each one report injected into the target place's main
 > session, which speaks for them.
 
@@ -814,10 +814,10 @@ proposal is left to its own recovery (§5.10). The report waits on the task's in
 until it
 is admitted: a refused admission is retried on the minute sweep, three attempts in all, a drain or
 restart leaves it to be re-sent on the next start, and a fixed delivery id with the inbox's
-receipt keeps a re-send from arriving twice. Like patrol and approved-proposal reports, it goes to
+receipt keeps a re-send from arriving twice. Like follow-up and approved-proposal reports, it goes to
 the current session of the owning session's place (after `!new`, the new conversation), else the
 recorded owning session. Every report the daemon sends ends by telling that session to answer its
-people in their language, since its framing is English; patrols and approved proposals are asked to
+people in their language, since its framing is English; checks and approved proposals are asked to
 write their report in it, and an owning session tells its delegated task which it is. The outbox below is
 the deferred target.
 
@@ -886,13 +886,10 @@ narrowed** — effects at this level cannot be defended against, and the design 
 to. Resume: no catch-up; follow-ups whose `nextCheck` passed are each checked once;
 stopped tasks do not restart. Stopping never undoes completed effects.
 
-### 5.9 Patrol (P1)
+### 5.9 Follow-up checks (P1)
 
-An item's patrols became the checks of a follow-up (§5.12); wake, limits and recovery are as
-below. A check reports only to the follow-up's place, so where the target below says "patrol" read
-a check, and "each follower's place" becomes that place.
-
-**P1 ships a minimal check first**, ahead of the target below:
+Each round of a follow-up (§5.12) is a check. **P1 ships a minimal check first**, ahead of the
+target below:
 
 - **Wake**: a follow-up's `nextCheck` wakes a check — a duty-gated sweep on the daemon, once per
   `nextCheck` value; pause suspends it and an overdue follow-up is checked once. Its place's
@@ -924,24 +921,24 @@ Shipped in #2887 as patrols, `propose` from them in #2895, and as follow-up chec
 rest of this section is the target.
 
 ```
-a schedule fires / hook event (P2) / an item's nextCheck is due
+a schedule fires / hook event (P2) / a follow-up's nextCheck is due
         │
         ▼
   [optional, P2] Decision triage with a small model
         │
         ▼
-  Patrol: a headless read-only task on a **credential-less host**
-  "read these items → check for changes with read tools → update the items (with notify) → end"
+  Check: a headless read-only task on a **credential-less host**
+  "read the follow-up → check for changes with read tools → record what it saw → end"
         │
   ┌─────┼──────────────┐
- notify  propose      silence
- (through §5.7 to each follower's place)
+ report  propose      silence
+ (through §5.7 to the follow-up's place)
 ```
 
 - **"Read-only" has three layers, each with its own guarantee:**
-  (a) AgentConnect-injected tools are filtered per session; a patrol gets read tools and
-  `propose` — **guarantees** nothing is written through AgentConnect;
-  (b) the patrol host is launched like a dream host: **without the agent's tool credentials** and
+  (a) AgentConnect-injected tools are filtered per session; a check gets read tools,
+  `recordCheck` and `propose` — **guarantees** nothing is written through AgentConnect;
+  (b) the check host is launched like a dream host: **without the agent's tool credentials** and
   with a **throwaway cwd** (a dream's `input/` works this way), not the agent's workspace —
   **guarantees** nothing is done under the agent's identity; the cwd only anchors relative paths
   and is not filesystem isolation;
@@ -954,28 +951,29 @@ a schedule fires / hook event (P2) / an item's nextCheck is due
   and no sandbox): the native shell can still write the agent's workspace by absolute path or
   `../` and still make network requests that need no credentials; only (a) and (b) hold. This is
   the residual class [memory-dreaming.md](memory-dreaming.md) records for dreams; it is accepted
-  and the settings page marks the patrol _complete_ or _degraded_ per runtime.
-- **The patrol's read surface** (in the standing prompt): the bridge's code-host read tools
+  and the settings page marks checks _complete_ or _degraded_ per runtime.
+- **A check's read surface** (in the standing prompt): the bridge's code-host read tools
   (`readCodeHostDiscussions`, `inspectCodeHostPipelines`, using the daemon's credentials),
-  channel history, the ledger, memory under §5.5. `gh`, `curl` and user MCP servers are
+  channel history, its follow-up's summary and observations, memory under §5.5. `gh`, `curl` and user MCP servers are
   **unavailable**.
-- **Completion**: each round must update the `observations` of the items it checked; a round
-  that updates nothing is recorded as `incomplete` and reported once.
-- **Wake on time**: an item's `nextCheck` falls due on the patrol's minute sweep.
-- **Two tiers of self-scheduling**: `remind` (deliver text at a time, no model turn) and
-  `patrol`. `remind` ships first, to every agent's sessions that have a platform conversation
-  of their own, in assistant mode or not; `patrol` stays assistant mode's:
+- **Completion**: each check records an observation with `recordCheck`; a check that records
+  nothing counts as a failure, under the backoff below.
+- **Wake on time**: a follow-up's `nextCheck` falls due on the duty holder's once-a-minute check
+  sweep.
+- **Two tiers of self-scheduling**: `remind` (deliver text at a time, no model turn) and a
+  follow-up's checks. `remind` ships first, to every agent's sessions that have a platform
+  conversation of their own, in assistant mode or not; follow-ups stay assistant mode's:
   - `remind({ at, message })` keeps `message` verbatim for `at`, an ISO-8601 instant with an offset,
     in the future and at most 366 days ahead; the text is non-empty and at most 40,000 characters.
     `listReminders` and `cancelReminder` reach only the current conversation's pending reminders.
-    Only an agent in assistant mode is told, in `remind`'s description, to take an item with a
+    Only an agent in assistant mode is told, in `remind`'s description, to take a follow-up with a
     next check instead for something to be checked on at a time; the descriptions are otherwise
     the same.
   - It lands only where the setting session's replies land, that conversation and thread; there is
-    no target argument. It is refused in delegated tasks, patrols and approved proposals, and in webchat, which has no
+    no target argument. It is refused in delegated tasks, follow-up checks and approved proposals, and in webchat, which has no
     daemon-side post path without a turn. An external place sets and receives reminders like any
     other (#2979, B4).
-  - The duty holder's sweep, on the patrol cadence, claims a due reminder atomically and posts it
+  - The duty holder's reminder sweep, once a minute beside the check sweep, claims a due reminder atomically and posts it
     through the executed-draft post path as the agent: no ACP, no turn. A claim cut short by a
     restart or handover fails and is never posted again, so delivery is at most once. A platform
     error is retried on later sweeps, three attempts in all, then fails with a warning; a send
@@ -988,7 +986,8 @@ a schedule fires / hook event (P2) / an item's nextCheck is due
     fixed limit with no setting. Settled rows stay, like the other assistant tables' settled rows,
     until the agent is removed.
 - **Budget and backoff**: `dailyCheckBudget`; after a failure the next attempt backs off by
-  `min(60, 2ⁿ)` minutes, and five consecutive failures pause that item's patrols.
+  `min(60, 2ⁿ)` minutes, and five consecutive failures stop that follow-up's checks, with one
+  report, until it is messaged.
 - **Start condition**: not before each runtime has been tested for exactly the residual stated
   above.
 
@@ -1064,8 +1063,8 @@ first look, whose having ended refuses none of them.
 
 ### 5.11 Activity
 
-The console's agent page gains an Activity view: items, scheduled wakes, running tasks,
-recent patrols, pending cards — all derived from the ledger, the approval records, the outbox and
+The console's agent page gains an Activity view: follow-ups and their recent checks, scheduled
+wakes, running tasks, pending cards — all derived from the follow-ups, the approval records, the outbox and
 session records, read from the daemon through the BFF proxy. A background report into a webchat
 conversation only raises an unread badge.
 
@@ -1117,8 +1116,8 @@ folds an item and its patrols into one task.
 approved proposals, so a session's tasks are its delegated tasks, its follow-ups and its approved
 proposals.
 
-- **Read-only.** Every round is what a patrol is today: the read profile and layers of §5.9, on
-  the agent's own host, marked degraded where §5.9 says so.
+- **Read-only.** Every round is a check: the read profile and layers of §5.9, on the agent's own
+  host, marked degraded where §5.9 says so.
 - **Woken by time.** A round starts when the follow-up's next check falls due. It ends by
   recording what it saw and, unless the follow-up is done, when to look again.
 - **Retained.** Rounds run in the follow-up's own retained context, as a delegated task's rounds
@@ -1177,7 +1176,7 @@ The word "patrol" leaves visible text; a round of a follow-up is a check.
   - `done: true` ends the follow-up when its done-when holds. Without `nextCheck` or `done`, it
     waits with no scheduled check until it is messaged or stopped.
 
-**Wake, limits and recovery** are the minimal patrol's (§5.9), unchanged:
+**Wake, limits and recovery** are the minimal check's (§5.9):
 
 - a duty-gated minute sweep, once per next-check value; pause suspends it, and an overdue check
   runs once;
@@ -1623,8 +1622,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
 | Orchestration tool triple           | Removed with its deadline wake; not restored                                                                              |
 | Agent pause (#288)                  | Is "stop everything"; also suspends wakes and the outbox                                                                  |
 | Reminder injection (`shouldRemind`) | Carries the standing summary                                                                                              |
-| Dream host                          | The shape of the patrol host                                                                                              |
-| Cron / hooks                        | Patrol triggers; hook routing in P2                                                                                       |
+| Dream host                          | The shape of the credential-less check host                                                                               |
+| Cron / hooks                        | Check triggers; hook routing in P2                                                                                        |
 | `OrganizationSuggestion`            | Card component only                                                                                                       |
 | `Decision`                          | P2 triage                                                                                                                 |
 

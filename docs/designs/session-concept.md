@@ -397,9 +397,11 @@ type ReplyTarget = { messageId: string }
 - `delegateTask` hands work off as a delegated task of the current session and returns its
   `taskId`; `messageTask` sends that task more work. Only the task's **owning session**, the
   session that delegated it, may message it or stop it with `stopTask`, on any of its turns
-  (send-message-guide.md §2.1, §8). The read-only `listTasks` tool lists the session's tasks:
-  its delegated tasks, with their `taskId`, and the patrols and approved proposals that report
-  to it.
+  (send-message-guide.md §2.1, §8). A follow-up, taken with `followUp`, belongs to its place
+  instead: the place's current long session messages it with `messageTask` and ends it with
+  `stopTask`. The read-only `listTasks` tool lists the session's tasks: its delegated tasks and,
+  while it is its place's current long session, the place's follow-ups, both with their
+  `taskId`, and the approved proposals that report to it.
 - `replyToSession` answers one session message by its id, and goes only to the session
   that sent it (section 5). It never names a session.
 - An unknown, foreign, or unowned id is refused in words that reveal nothing about other

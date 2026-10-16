@@ -1158,17 +1158,20 @@ alias `listChannelAgents`) and `viewSessionStatus`; channel/user information
 `getCurrentChannel`, `listChannels`, `listKnownUsers`, `listChannelMembers`,
 `getUserProfile`; attachment readers `readSlackFile`, `readTelegramFile`;
 memory `readMemory`, `writeMemory`, `searchMemory`; and others. An agent in assistant mode also
-gets its item ledger tools `takeItem`, `listItems`, `updateItem` and `followItem`
-(`src/mcp/ops/assistant-items.ts`, [assistant-mode.md](assistant-mode.md) §5.4); each call
-re-checks the mode, and the asker is the sender of the message that started the live turn. A
-session of such an agent with a platform conversation of its own also gets `remind`,
-`listReminders` and `cancelReminder` (`src/mcp/ops/assistant-reminders.ts`, §5.9): the daemon's
-patrol sweep posts a due reminder's text into that conversation, with no turn. Every session
-that can delegate a task (every one except a task itself, whether a delegated task, a patrol or
-an approved proposal, of every agent, webchat, hook and scheduled runs included) also gets `stopTask {taskId}`
-(`src/mcp/ops/assistant-subsessions.ts`, [send-message-guide.md](send-message-guide.md) §8.7):
-it stops a delegated task that same session started, through the console's own Stop core; any other id
-is refused in one set of words.
+gets `followUp` (`src/mcp/ops/assistant-items.ts`, [assistant-mode.md](assistant-mode.md) §5.12),
+which takes a follow-up of the session's place; each call re-checks the mode, and the asker is
+the sender of the message that started the live turn. A follow-up's check is offered only read
+tools, `recordCheck` and `propose` (`checkTools` in `src/assistant/follow-up-checks.ts`), and the
+dispatcher refuses any other tool name inside it. A session of any agent with a platform
+conversation of its own also gets `remind`, `listReminders` and `cancelReminder`
+(`src/mcp/ops/assistant-reminders.ts`, §5.9): the duty holder's once-a-minute reminder sweep
+posts a due reminder's text into that conversation, with no turn. Every session that can delegate
+a task (every one except a task itself, whether a delegated task, a follow-up's check or an
+approved proposal, of every agent, webchat, hook and scheduled runs included) also gets
+`listTasks` and `stopTask {taskId}` (`src/mcp/ops/assistant-subsessions.ts`,
+[send-message-guide.md](send-message-guide.md) §8.7): `stopTask` stops a delegated task that same
+session started, through the console's own Stop core, or ends a follow-up of the session's place
+when it is that place's current long session; any other id is refused in one set of words.
 
 A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of
@@ -1314,7 +1317,8 @@ Control Plane's session-visibility verdict for the console user behind the asker
 person is behind reads only public channels on its own bot. The askers are the turn message's sender
 and every message coalesced or steered into it (`QueueEntry.foldedMessages`, recorded before the
 runtime sees the message), a console user for webchat and console continuations, a delegated task's
-opener (in memory), a patrol's or approved proposal's item asker, and a CP schedule's `askerUserId`. Every
+opener (in memory), a check's follow-up asker and the senders behind the messages its
+conversation sent it, an approved proposal's follow-up asker, and a CP schedule's `askerUserId`. Every
 refusal is the same opaque "I can't share that here", with a sign-in hint for a chat member who
 linked no console account; an allowed read of a private source carries a `privateSource` note.
 
