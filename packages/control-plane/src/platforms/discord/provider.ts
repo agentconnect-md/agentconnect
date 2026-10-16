@@ -95,6 +95,7 @@ export function createDiscordCpProvider(deps: DiscordCpProviderDeps): CpPlatform
   return {
     platformId: 'discord',
     legacySessionAudience: (channel) => /^[1-9]\d*$/.test(channel),
+    sessionAudienceResource: ({ channel, thread }) => (thread && /^[1-9]\d*$/.test(thread) ? thread : channel),
     chatMemberTenant: (bot) => (bot.revokedAt ? null : 'global'),
     sessionAudienceRealm: async (bot) => {
       const secret = await deps.botSecrets?.get(bot.orgId, bot.id)

@@ -520,6 +520,8 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   legacySessionAudience?(channel: string): boolean
   // The durable realm a bot can prove for an incoming conversation audience.
   sessionAudienceRealm?(bot: BotRecord): string | null | Promise<string | null>
+  // The provider resource behind normalized coordinates, when it differs from the enclosing channel.
+  sessionAudienceResource?(coordinates: { channel?: string; thread?: string }): string | undefined
 
   /** A relay's `rc/bot-tenant` for this bot (google-chat-integration.md §10.3), decided under the row lock from its current identity. Pure. Absent ⇒ every report refused. */
   learnTenant?(bot: BotRecord, current: BotIdentitySnapshot, tenantId: string): CpTenantLearning

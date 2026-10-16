@@ -58,6 +58,8 @@ Complete a Profile link before enabling sync for the organization.
 - Missing identities, revoked bots, mismatched organizations or realms, malformed
   responses and provider failures never grant access. Bot permission failures
   direct users to Integrations; missing identities direct them to Profile.
+- Enabling sync also limits in-chat approvals and settings to linked Agent editors,
+  following the same chat-authority policy as Slack.
 - A successful provider verdict lasts at most two minutes, plus the shared
   session-access snapshot lease. Credential and scope revisions key verdicts;
   unlink invalidation and the shared policy fence continue to apply.
@@ -75,8 +77,8 @@ unresolved history stays hidden until a trusted milestone supplies its scope.
 Upgrade the Control Plane before the daemons so it recognizes the new source providers.
 The daemon upgrades known conversation bindings in place so the same runtime can
 continue. Synthetic coordinates, console launches and ambiguous sources are not
-claimed by a later chat message. Discord's stable bot ID replaces the earlier
-minted realm for new conversation bindings.
+claimed by a later chat message. Discord's conversation audience uses a stable bot
+ID; its existing per-person memory identity stays unchanged.
 
 Disabling sync makes new sessions organization-visible. Already protected
 sessions stay hidden until sync is enabled again. Earlier agent memory is not

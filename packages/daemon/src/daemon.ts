@@ -21847,7 +21847,7 @@ export class Daemon {
       externalProvider: msg.platform,
       ...(realmKey ? { externalRealmKey: realmKey } : {}),
       externalResourceKind: 'conversation',
-      externalResourceKey: msg.channel,
+      externalResourceKey: audience.resourceKey?.(msg) ?? msg.channel,
       ...(integrationId ? { externalIntegrationId: integrationId } : {})
     }
   }

@@ -164,7 +164,8 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
   }
   // The bot behind an integration row this resolver already matched against the reporting agent.
   const bot = await deps.bot?.get(orgId, BotId(integration.botId))
-  const realmKey = bot ? await deps.platforms?.get(origin.provider)?.sessionAudienceRealm?.(bot) : null
+  const provider = deps.platforms?.get(origin.provider)
+  const realmKey = bot ? await provider?.sessionAudienceRealm?.(bot) : null
   if (
     !bot ||
     bot.orgId !== integration.orgId ||
@@ -172,7 +173,7 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
     bot.revokedAt !== null ||
     !realmKey ||
     realmKey !== origin.realmKey ||
-    origin.resourceKey !== p.channel
+    origin.resourceKey !== (provider?.sessionAudienceResource?.(p) ?? p.channel)
   ) {
     return { provider: origin.provider, resolution: 'invalid' as const }
   }

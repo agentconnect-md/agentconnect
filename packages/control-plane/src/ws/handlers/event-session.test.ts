@@ -118,6 +118,23 @@ describe('handleEventSession', () => {
           externalCandidate: expect.objectContaining({ provider: platform, resolution: 'settled' })
         })
       )
+      if (platform === 'discord') {
+        payload.thread = '100000000000000005'
+        await handleEventSession(frame, conn, deps)
+        expect(recordMilestone).toHaveBeenLastCalledWith(
+          expect.objectContaining({ externalCandidate: { provider: platform, resolution: 'invalid' } })
+        )
+        payload.externalOrigin = { ...(payload.externalOrigin as object), resourceKey: payload.thread }
+        await handleEventSession(frame, conn, deps)
+        expect(recordMilestone).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            externalCandidate: expect.objectContaining({
+              resolution: 'settled',
+              scope: expect.objectContaining({ resourceKey: payload.thread })
+            })
+          })
+        )
+      }
       payload.externalOrigin = { ...(payload.externalOrigin as object), realmKey: 'bot999' }
       await handleEventSession(frame, conn, deps)
       expect(recordMilestone).toHaveBeenLastCalledWith(

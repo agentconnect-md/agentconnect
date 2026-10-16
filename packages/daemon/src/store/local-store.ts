@@ -1961,23 +1961,31 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     if (!(await tableExists(db, store.postgres, 'sessions'))) return
     const rows = (
       await db.query(
-        `SELECT key, platform, channel, tenantScope FROM sessions
+        `SELECT key, platform, channel, thread, tenantScope FROM sessions
       WHERE platform IN ('telegram', 'discord') AND externalProvider IS NULL
         AND transportScope IS NOT NULL AND conversationKind IS NOT NULL
         AND launchCorrelationId IS NULL AND (originSessionId IS NULL OR directDestination = 1)`,
         []
       )
     ).rows
-    for (const row of rows as { key: string; platform: string; channel: string; tenantScope: string | null }[]) {
+    for (const row of rows as {
+      key: string
+      platform: string
+      channel: string
+      thread: string | null
+      tenantScope: string | null
+    }[]) {
       const realConversation =
         row.platform === 'telegram' ? /^-?[1-9]\d*$/.test(row.channel) : /^[1-9]\d*$/.test(row.channel)
       if (!realConversation) continue
       const realm = row.tenantScope && /^bot[1-9]\d*$/.test(row.tenantScope) ? row.tenantScope : null
+      const resource =
+        row.platform === 'discord' && row.thread && /^[1-9]\d*$/.test(row.thread) ? row.thread : row.channel
       await db.query(
         `UPDATE sessions SET externalProvider = platform, externalRealmKey = ?,
-        externalResourceKind = 'conversation', externalResourceKey = channel, sourceBindingKind = 'external'
+        externalResourceKind = 'conversation', externalResourceKey = ?, sourceBindingKind = 'external'
         WHERE key = ?`,
-        [realm, row.key]
+        [realm, resource, row.key]
       )
     }
     await db.exec(`WITH RECURSIVE audience AS (

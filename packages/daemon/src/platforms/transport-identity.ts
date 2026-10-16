@@ -101,14 +101,6 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
       return botId ? `bot${botId}` : await host.minted(int.id)
     }
   ],
-  [
-    'discord',
-    async (host, int) => {
-      const token = platformIntegrationConfig('discord', int)?.botToken
-      const id = token ? Buffer.from(token.split('.')[0]!, 'base64url').toString('utf8') : ''
-      return /^\d{17,20}$/.test(id) ? `bot${id}` : host.minted(int.id)
-    }
-  ],
   // App id + region is the tenant anchor Feishu/Lark exposes to us.
   [
     'feishu',
@@ -124,7 +116,7 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
   ]
 ])
 
-// Unknown platforms use a stable per-integration mint; an absent scope never grants ownership.
+// Platforms without a tenant anchor keep their durable per-integration mint; an absent scope never grants ownership.
 export async function tenantScopeFor(host: TenantScopeHost, integration: Integration): Promise<string | undefined> {
   const strategy = TENANT_SCOPE.get(integration.platform)
   return strategy ? await strategy(host, integration) : await host.minted(integration.id)

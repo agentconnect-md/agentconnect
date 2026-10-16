@@ -426,17 +426,21 @@ describe('integrationToSpec chatAuthority', () => {
     expect(spec?.core.chatAuthority).toBe('editors')
   })
 
-  it('names anyone in a conversation whose members its platform cannot match, synced or not', async () => {
-    const telegram = { ...INTEGRATION, platform: 'telegram' as const }
-    const spec = await integrationToSpec(
-      PLATFORMS,
-      policies({ telegram: 'enabled' }),
-      telegram,
-      bot({ platform: 'telegram' }),
-      { botToken: '123:abc', appToken: null, signingSecret: null }
-    )
-    expect(spec?.core.chatAuthority).toBe('participants')
-  })
+  it.each(['telegram', 'discord'] as const)(
+    'names linked editors on synced %s and participants otherwise',
+    async (platform) => {
+      for (const state of ['enabled', 'disabled'] as const) {
+        const spec = await integrationToSpec(
+          PLATFORMS,
+          policies({ [platform]: state }),
+          { ...INTEGRATION, platform },
+          bot({ platform }),
+          { botToken: '123:abc', appToken: null, signingSecret: null }
+        )
+        expect(spec?.core.chatAuthority).toBe(state === 'enabled' ? 'editors' : 'participants')
+      }
+    }
+  )
 
   it('names anyone in the conversation where the sync is off, never set, or on for another platform only', async () => {
     const cases: Array<Parameters<typeof policies>[0]> = [{ slack: 'disabled' }, {}, { feishu: 'enabled' }]

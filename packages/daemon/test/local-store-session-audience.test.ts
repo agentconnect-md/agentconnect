@@ -24,7 +24,7 @@ describe('Telegram/Discord audience upgrade', () => {
           platform,
           channel,
           agentId: 'agent-1',
-          thread: 'thread',
+          thread: key === 'discord' ? '100000000000000005' : 'thread',
           transportScope: 'transport-1',
           sessionId: `session-${key}`,
           acpSessionId: `acp-${key}`,
@@ -57,7 +57,7 @@ describe('Telegram/Discord audience upgrade', () => {
         acpSessionId: 'acp-discord',
         externalProvider: 'discord',
         externalRealmKey: null,
-        externalResourceKey: '100000000000000004',
+        externalResourceKey: '100000000000000005',
         sourceBindingKind: 'external'
       })
       expect(await store.getSession('child')).toMatchObject({
