@@ -426,7 +426,6 @@ describe('a first look in the follow-up tables', () => {
 
 describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite', () => {
   it('marks the existing sub-sessions as delegations and adds the patrol state', async () => {
-    expect(SCHEMA_VERSION).toBe(57)
     const path = tempStorePath('ac-assistant-v38-')
     await (await LocalStore.open(path)).close()
     const a = agent()
@@ -619,7 +618,6 @@ describe.skipIf(usingPostgresStore())('the v56 → v57 check names on SQLite', (
     )
 
   it('renames the check state and rewrites every stored check coordinate', async () => {
-    expect(SCHEMA_VERSION).toBe(57)
     const path = tempStorePath('ac-assistant-v56-')
     const a = agent()
     const fresh = await LocalStore.open(path)

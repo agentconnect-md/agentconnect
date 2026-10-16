@@ -36,7 +36,8 @@
  */
 import { z } from 'zod'
 import type { IntegrationDiscordConfig } from '@agentconnect.md/protocol'
-import type { BotSecretMaterial } from '../../persistence/ports.js'
+import type { BotSecretMaterial, BotSecretStore } from '../../persistence/ports.js'
+import { discordSessionRealm } from './session-access.js'
 import {
   discordAppIdFromBotToken,
   type DiscordBotVerifier,
@@ -76,6 +77,7 @@ export function discordIntegrationConfig(secret: Pick<BotSecretMaterial, 'botTok
  *  offline; the intent ensurer is required (tests inject an offline success
  *  stub, exactly as they do for the route). */
 export interface DiscordCpProviderDeps {
+  botSecrets?: Pick<BotSecretStore, 'get'>
   /** Live `users/@me` token check (`http/discord-identity.ts`). Absent ⇒ no
    *  token validation (the route's own fallback: name derivation is skipped
    *  and the create tail falls back to the agent name). */
@@ -92,6 +94,13 @@ export function createDiscordCpProvider(deps: DiscordCpProviderDeps): CpPlatform
   const { verifyBot, ensureMessageContentIntent, syncBotProfile } = deps
   return {
     platformId: 'discord',
+    legacySessionAudience: (channel) => /^[1-9]\d*$/.test(channel),
+    sessionAudienceResource: ({ channel, thread }) => (thread && /^[1-9]\d*$/.test(thread) ? thread : channel),
+    chatMemberTenant: (bot) => (bot.revokedAt ? null : 'global'),
+    sessionAudienceRealm: async (bot) => {
+      const secret = await deps.botSecrets?.get(bot.orgId, bot.id)
+      return secret ? discordSessionRealm(secret.botToken) : null
+    },
 
     // No install funnel: no org-scoped wizard routes, no public OAuth
     // callbacks. The whole install is the create-DTO path (contract §9 note).

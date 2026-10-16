@@ -116,7 +116,7 @@ export function useGithubAppEnabled(): boolean | undefined {
 // points at a card that renders null — SessionAccessCard hides itself once every
 // provider is BOTH unavailable and disabled (`hasNothingToOffer`, SettingsView.tsx).
 // Undefined while any read is still pending/unanswered — keep the step rather than
-// guess; only a definitive "nothing to offer" from all three hides it.
+// guess; only a definitive "nothing to offer" from every provider hides it.
 export function useSessionAccessCardAvailable(): boolean | undefined {
   const { activeOrg } = useOrgs()
   const key = (provider: SessionAccessProvider) => consoleKeys.sessionAccess(activeOrg?.id, provider)
@@ -126,7 +126,9 @@ export function useSessionAccessCardAvailable(): boolean | undefined {
   const slack = useSWR(key('slack'), fetcher, opts)
   const github = useSWR(key('github'), fetcher, opts)
   const feishu = useSWR(key('feishu'), fetcher, opts)
-  const results = [slack, github, feishu]
+  const telegram = useSWR(key('telegram'), fetcher, opts)
+  const discord = useSWR(key('discord'), fetcher, opts)
+  const results = [slack, github, feishu, telegram, discord]
   if (results.some(({ data, error }) => data === undefined && !error)) return undefined
   return results.some(({ data }) => data === undefined || data.available || data.enabled)
 }

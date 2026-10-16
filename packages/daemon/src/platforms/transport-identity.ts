@@ -116,10 +116,7 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
   ]
 ])
 
-/** The durable tenant scope for `integration` (session-visibility §2). Total by
- *  construction: a platform with no durable tenant id of its own — Discord, and
- *  anything unregistered — gets the minted per-integration scope. Undefined ⇒
- *  the CP records no owner (fail closed), never a guessed one. */
+// Platforms without a tenant anchor keep their durable per-integration mint; an absent scope never grants ownership.
 export async function tenantScopeFor(host: TenantScopeHost, integration: Integration): Promise<string | undefined> {
   const strategy = TENANT_SCOPE.get(integration.platform)
   return strategy ? await strategy(host, integration) : await host.minted(integration.id)

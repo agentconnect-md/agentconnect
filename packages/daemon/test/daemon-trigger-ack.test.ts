@@ -49,6 +49,10 @@ async function harness(opts: { statusShown?: boolean | Error } = {}) {
     hostFactory: () => fakeHost as never
   })
   await daemon.start()
+  // These turns isolate acknowledgement rendering; source binding has separate admission coverage.
+  vi.spyOn(daemon as never as { bindSessionSource: () => Promise<string> }, 'bindSessionSource').mockResolvedValue(
+    'unchanged'
+  )
   const react = vi.fn(async () => {})
   const statusShown = opts.statusShown ?? true
   // The Slack lifecycle facet reports whether Slack took the `processing` write.

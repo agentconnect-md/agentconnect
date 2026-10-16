@@ -81,6 +81,7 @@ import {
   type SessionStayedHomeReason,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  ConversationSessionAudience,
   MAX_TASK_DESCRIPTION,
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
@@ -16763,8 +16764,8 @@ export class Daemon {
       const conn = this.replyConnFor(agentId, integrationId)
       const reason =
         sourceBinding === 'unavailable'
-          ? 'This Slack conversation could not be assigned a stable workspace audience. Reconnect the Slack integration and try again.'
-          : 'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.'
+          ? 'This conversation could not be assigned a stable audience. Reconnect the integration and try again.'
+          : 'This thread already belongs to a session created from another source. Start a new conversation and mention the agent there.'
       // Only a human ingress gets a repair notice; a rejected A2A wake stays postless so no workflow state leaks.
       if (!callMeta && msg.source === 'user') {
         try {
@@ -21760,13 +21761,10 @@ export class Daemon {
   }
 
   private externalAudienceForSessionRecord(rec: SessionRecord | undefined): ExternalSessionAudience | undefined {
-    if (
-      (rec?.externalProvider === 'slack' || rec?.externalProvider === 'feishu') &&
-      rec.externalResourceKind === 'conversation' &&
-      rec.externalResourceKey
-    ) {
+    const provider = ConversationSessionAudience.shape.provider.safeParse(rec?.externalProvider)
+    if (rec && provider.success && rec.externalResourceKind === 'conversation' && rec.externalResourceKey) {
       return {
-        provider: rec.externalProvider,
+        provider: provider.data,
         ...(rec.externalRealmKey ? { realmKey: rec.externalRealmKey } : {}),
         resourceKind: 'conversation',
         resourceKey: rec.externalResourceKey
@@ -21828,10 +21826,7 @@ export class Daemon {
     // Daemon-minted coordinates reach no conversation, so they can bind no audience. `headless` is not that fact:
     // a channel-root seed and a channel intro are headless turns in a REAL channel, and both must still bind.
     if (msg.syntheticChannel === true) return undefined
-    // Which platforms bind sessions to a conversation audience, which of their
-    // conversations qualify, and what identifies the realm are platform facts
-    // (§7.4 conversation-audience strategy). No registered audience — Telegram,
-    // Discord, webchat — means local classification rules alone, as before.
+    // Platform strategies choose which conversations and realm bind an external audience.
     const audience = conversationAudienceFor(msg.platform)
     if (!audience || !audience.applies(msg) || isA2aChild) {
       return undefined
@@ -21852,7 +21847,7 @@ export class Daemon {
       externalProvider: msg.platform,
       ...(realmKey ? { externalRealmKey: realmKey } : {}),
       externalResourceKind: 'conversation',
-      externalResourceKey: msg.channel,
+      externalResourceKey: audience.resourceKey?.(msg) ?? msg.channel,
       ...(integrationId ? { externalIntegrationId: integrationId } : {})
     }
   }
@@ -21910,7 +21905,7 @@ export class Daemon {
     if (existing.externalProvider !== null && existing.externalProvider !== undefined) {
       const sameScope =
         existing.externalProvider === source.externalProvider &&
-        existing.externalRealmKey === source.externalRealmKey &&
+        (!existing.externalRealmKey || existing.externalRealmKey === source.externalRealmKey) &&
         existing.externalResourceKind === source.externalResourceKind &&
         existing.externalResourceKey === source.externalResourceKey
       if (!sameScope) return 'mismatch'

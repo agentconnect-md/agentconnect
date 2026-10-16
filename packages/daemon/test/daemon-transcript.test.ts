@@ -303,7 +303,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(host.prompt).toHaveBeenCalledOnce()
     expect(conn.postMessage).toHaveBeenLastCalledWith(
       'C1',
-      'This thread already belongs to a session created from another source. Start a new Slack thread and mention the agent there.',
+      'This thread already belongs to a session created from another source. Start a new conversation and mention the agent there.',
       'T1'
     )
     // Only a hook delivery has a run waiting on a completion report.

@@ -2655,7 +2655,7 @@ export async function putSessionVisibility(
   })
 }
 
-export type SessionAccessProvider = 'slack' | 'github' | 'feishu'
+export type SessionAccessProvider = 'slack' | 'github' | 'feishu' | 'telegram' | 'discord'
 export type SessionProfileProvider = SessionAccessProvider | 'lark'
 
 export interface SessionExternalAccessDto {

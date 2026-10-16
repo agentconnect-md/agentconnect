@@ -327,13 +327,14 @@ export class LogtoIdentityService {
     return feishuIdentitiesOf(await this.logtoUser(sub, this.identityTtlMs))
   }
 
-  /** Every chat identity the user linked, as chat members are matched by: a Slack pair, and each Feishu/Lark union_id by region. */
+  // Verified chat identities use workspace, developer region, or global provider user ids.
   async chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> {
     const user = await this.logtoUser(sub, this.identityTtlMs)
     const slack = slackIdentityOf(user)
     return [
       ...(slack ? [{ platform: 'slack', tenant: slack.teamId, memberId: slack.userId }] : []),
-      ...feishuIdentitiesOf(user).map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId }))
+      ...feishuIdentitiesOf(user).map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId })),
+      ...globalChatIdentitiesOf(user)
     ]
   }
 
@@ -822,4 +823,17 @@ function feishuIdentitiesOf(user: LogtoUser | null): FeishuIdentity[] {
     if (unionId) identities.push({ region, unionId })
   }
   return identities
+}
+
+// Telegram's OIDC sub is not its Bot API user id; only the verified profile claim names the chat user.
+function globalChatIdentitiesOf(user: LogtoUser | null): LinkedChatIdentity[] {
+  const telegram = user?.identities?.telegram?.details?.rawData?.id
+  const telegramId = typeof telegram === 'number' && Number.isSafeInteger(telegram) ? String(telegram) : telegram
+  const discordId = user?.identities?.discord?.userId
+  return [
+    { platform: 'telegram', memberId: telegramId },
+    { platform: 'discord', memberId: discordId }
+  ].flatMap(({ platform, memberId }) =>
+    typeof memberId === 'string' && /^[1-9]\d*$/.test(memberId) ? [{ platform, tenant: 'global', memberId }] : []
+  )
 }

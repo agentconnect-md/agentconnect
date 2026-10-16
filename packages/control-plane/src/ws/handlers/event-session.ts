@@ -80,6 +80,17 @@ async function dmPlatformNamesPeople(p: EventSession, orgId: OrgId, deps: Daemon
 
 async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId, deps: DaemonWsDeps) {
   const origin = p.externalOrigin
+  // Older daemons classified these conversations locally before their platform supported permission sync.
+  if (
+    !origin &&
+    (!p.parentSessionId || p.directDestination) &&
+    !p.launchCorrelationId &&
+    p.platform &&
+    p.channel &&
+    deps.platforms?.get(p.platform)?.legacySessionAudience?.(p.channel)
+  ) {
+    return { provider: p.platform, resolution: 'pending' as const }
+  }
   // An explicit local source binding is authoritative; absent provenance uses the mixed-version fallback below.
   if (p.sourceBindingKind === 'local' && !origin) return undefined
   if (!origin) {
@@ -153,12 +164,8 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
   }
   // The bot behind an integration row this resolver already matched against the reporting agent.
   const bot = await deps.bot?.get(orgId, BotId(integration.botId))
-  const feishuRegion = bot?.platform === 'feishu' ? (bot.feishuRegion ?? 'feishu') : undefined
-  const feishuAppId = bot?.feishuAppId ?? undefined
-  const realmKey =
-    origin.provider === 'feishu' && feishuRegion && feishuAppId
-      ? `${feishuRegion}:${feishuAppId}`
-      : (bot?.workspaceId ?? bot?.teamId)
+  const provider = deps.platforms?.get(origin.provider)
+  const realmKey = bot ? await provider?.sessionAudienceRealm?.(bot) : null
   if (
     !bot ||
     bot.orgId !== integration.orgId ||
@@ -166,7 +173,7 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
     bot.revokedAt !== null ||
     !realmKey ||
     realmKey !== origin.realmKey ||
-    origin.resourceKey !== p.channel
+    origin.resourceKey !== (provider?.sessionAudienceResource?.(p) ?? p.channel)
   ) {
     return { provider: origin.provider, resolution: 'invalid' as const }
   }

@@ -719,11 +719,13 @@ export class PgSessionRepo implements SessionRepo {
         SELECT child."id"
         FROM "session_meta" child
         WHERE child."parentSessionId" = ${parent.id} AND child."orgId" = ${parent.orgId}
+          AND child."visibilitySource" IN ('inherited', 'inherited_pending')
         UNION
         SELECT child."id"
         FROM "session_meta" child
         JOIN descendants prior ON child."parentSessionId" = prior."id"
         WHERE child."orgId" = ${parent.orgId}
+          AND child."visibilitySource" IN ('inherited', 'inherited_pending')
       )
       UPDATE "session_meta" s SET
         "visibility" = ${parent.visibility}::"SessionVisibility",

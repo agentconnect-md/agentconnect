@@ -56,6 +56,36 @@ export interface UnverifiedConversationNotice {
   action?: SessionAccessNotificationAction
 }
 
+const BOT_PLATFORM_NAMES: Record<string, string> = { telegram: 'Telegram', discord: 'Discord' }
+
+function botAccessNotice(
+  issue: SessionAccessIssue,
+  orgPath: (path: string) => string
+): UnverifiedConversationNotice | undefined {
+  const name = BOT_PLATFORM_NAMES[issue.provider]
+  if (!name) return undefined
+  if (issue.reason === 'authorization')
+    return {
+      message: `Link your ${name} account in Profile to check access to these conversations.`,
+      retry: false,
+      action: {
+        label: `Link ${name}`,
+        href: orgPath(`/profile?reauthorize=${issue.provider}#sign-in-methods`),
+        external: false
+      }
+    }
+  if (issue.reason === 'app_authorization')
+    return {
+      message:
+        issue.provider === 'telegram'
+          ? 'The Telegram chat bot must be an administrator to verify group membership. Ask a group administrator to check its role and credentials.'
+          : 'The Discord bot cannot verify conversation access. Ask a server administrator to check its channel access and credentials.',
+      retry: false,
+      action: { label: 'Open Integrations', href: orgPath(`/integrations?platform=${issue.provider}`), external: false }
+    }
+  return undefined
+}
+
 export function unverifiedConversationNotice(
   failed: boolean,
   issues: readonly SessionAccessIssue[],
@@ -69,6 +99,8 @@ export function unverifiedConversationNotice(
       retry: true
     }
   }
+  const botNotice = issues.map((issue) => botAccessNotice(issue, orgPath)).find((notice) => notice !== undefined)
+  if (botNotice) return botNotice
   if (issues.some(isAppAuthorizationIssue)) {
     return {
       message:
@@ -191,6 +223,19 @@ export function sessionAccessNotifications(
   let needsGeneric = issues.length === 0
 
   for (const issue of issues) {
+    const notice = botAccessNotice(issue, orgPath)
+    if (notice) {
+      const sourceKey = `${surface}:${issue.provider}:${issue.reason}`
+      notifications.set(sourceKey, {
+        category: 'session_access',
+        severity: 'warning',
+        sourceKey,
+        title: `${BOT_PLATFORM_NAMES[issue.provider]} access needs attention`,
+        message: notice.message,
+        action: notice.action
+      })
+      continue
+    }
     if (
       issue.provider === 'feishu' &&
       (issue.region === 'feishu' || issue.region === 'lark') &&

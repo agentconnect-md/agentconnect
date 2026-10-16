@@ -1,20 +1,5 @@
-/**
- * The **conversation-audience strategy** (§7.4, stage S2; the daemon-side
- * counterpart of §9's per-platform session-audience resolvers).
- *
- * A session born in a real shared platform conversation is externally bound:
- * its visibility follows the CONVERSATION's audience, resolved by the CP
- * against the platform (who can see this channel?). Which platforms support
- * that binding, which of their conversations qualify, and what identifies the
- * REALM the conversation lives in (workspace, tenant) are platform facts:
- *
- *  - Slack binds channels but not DMs (a Slack DM's audience is the DM itself,
- *    already private); realm = the live connection's workspace id.
- *  - Feishu/Lark binds every conversation; realm = the durable tenant anchor
- *    (`region:appId`).
- *  - Telegram and Discord (and anything unregistered) bind nothing — their
- *    sessions classify by the local rules alone, exactly as before this seam.
- */
+// Platform strategies bind real conversations to a stable realm for platform permission checks.
+import { IntegrationDiscordConfig } from '@agentconnect.md/protocol'
 
 /** Core-owned inputs an audience strategy may consult. */
 export interface ConversationAudienceHost {
@@ -28,13 +13,15 @@ export interface ConversationAudience {
   readonly platform: string
   /** Does THIS conversation carry an external audience? */
   applies(msg: { isDm: boolean }): boolean
+  // A provider may give a thread its own audience; otherwise the enclosing channel owns it.
+  resourceKey?(msg: { channel: string; thread?: string }): string
   /** The realm the conversation lives in. Undefined ⇒ unattributable here and
    *  now; the caller decides whether that fails closed (system turns) or rides
    *  incomplete (human ingress). */
   realmKey(
     host: ConversationAudienceHost,
     integrationId: string | undefined,
-    integration: { id: string; platform: string } | undefined
+    integration: { id: string; platform: string; config?: unknown } | undefined
   ): Promise<string | undefined>
 }
 
@@ -54,6 +41,27 @@ const AUDIENCES = new Map<string, ConversationAudience>([
       applies: () => true,
       realmKey: async (host, _integrationId, integration) =>
         integration ? await host.tenantScope(integration) : undefined
+    }
+  ],
+  [
+    'telegram',
+    {
+      platform: 'telegram',
+      applies: () => true,
+      realmKey: async (host, _integrationId, integration) => (integration ? host.tenantScope(integration) : undefined)
+    }
+  ],
+  [
+    'discord',
+    {
+      platform: 'discord',
+      applies: () => true,
+      resourceKey: (msg) => (msg.thread && /^[1-9]\d*$/.test(msg.thread) ? msg.thread : msg.channel),
+      realmKey: async (_host, _integrationId, integration) => {
+        const config = IntegrationDiscordConfig.safeParse(integration?.config)
+        const id = config.success ? Buffer.from(config.data.botToken.split('.')[0]!, 'base64url').toString('utf8') : ''
+        return /^\d{17,20}$/.test(id) ? `bot${id}` : undefined
+      }
     }
   ]
 ])

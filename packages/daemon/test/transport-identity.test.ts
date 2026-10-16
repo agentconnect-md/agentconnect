@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { normalizeDiscordMessage } from '@agentconnect.md/message'
 import {
   connectionIdentityFor,
   tenantScopeFor,
@@ -142,6 +143,13 @@ describe('tenant scope (durable owner identity)', () => {
 
   it('mints for platforms with no durable tenant id (Discord, unknown)', async () => {
     expect(await tenantScopeFor(host(undefined, 'm4'), { id: 'i3', platform: 'discord' } as never)).toBe('m4')
+    expect(
+      await tenantScopeFor(host(undefined, 'm4'), {
+        id: 'i3',
+        platform: 'discord',
+        config: { botToken: `${Buffer.from('100000000000000001').toString('base64url')}.signature` }
+      } as never)
+    ).toBe('m4')
     expect(await tenantScopeFor(host(undefined, 'm5'), { id: 'i9', platform: 'some-future-platform' } as never)).toBe(
       'm5'
     )
@@ -166,6 +174,27 @@ describe('tenant scope pending (read-side)', () => {
 })
 
 describe('conversation audience', () => {
+  it('binds a normalized Discord thread to its own audience instead of the parent channel', () => {
+    const msg = normalizeDiscordMessage(
+      {
+        id: '100000000000000006',
+        channelId: '100000000000000005',
+        parentChannelId: '100000000000000004',
+        content: 'hello',
+        authorId: '100000000000000002',
+        authorIsBot: false,
+        inGuild: true,
+        isThread: true,
+        mentionUserIds: [],
+        attachments: []
+      },
+      { traceId: 'trace-1' }
+    )
+    expect(msg.channel).toBe('100000000000000004')
+    expect(conversationAudienceFor('discord')!.resourceKey!(msg)).toBe('100000000000000005')
+    expect(conversationAudienceFor('discord')!.resourceKey!({ channel: msg.channel })).toBe(msg.channel)
+  })
+
   it('binds Slack channels but not Slack DMs', async () => {
     const slack = conversationAudienceFor('slack')!
     expect(slack.applies({ isDm: false })).toBe(true)
@@ -191,8 +220,21 @@ describe('conversation audience', () => {
   })
 
   it('binds nothing elsewhere — local classification rules alone', () => {
-    for (const p of ['telegram', 'discord', 'webchat', 'hook', 'some-future-platform']) {
+    for (const p of ['webchat', 'hook', 'some-future-platform']) {
       expect(conversationAudienceFor(p)).toBeUndefined()
     }
+  })
+
+  it.each(['telegram', 'discord'])('binds %s conversations to the bot realm', async (platform) => {
+    const audience = conversationAudienceFor(platform)!
+    expect(audience.applies({ isDm: true })).toBe(true)
+    expect(audience.applies({ isDm: false })).toBe(true)
+    expect(
+      await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => 'bot42' }, 'i1', {
+        id: 'i1',
+        platform,
+        config: { botToken: `${Buffer.from('100000000000000001').toString('base64url')}.signature` }
+      })
+    ).toBe(platform === 'telegram' ? 'bot42' : 'bot100000000000000001')
   })
 })

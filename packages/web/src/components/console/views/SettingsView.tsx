@@ -163,6 +163,22 @@ function SessionAccessRow({
       unavailable: t('providers.feishu.unavailable'),
       unresolved: (count: number) => t('providers.feishu.unresolved', { count }),
       degraded: t('providers.feishu.degraded')
+    },
+    telegram: {
+      name: t('providers.telegram.name'),
+      label: t('providers.telegram.label'),
+      details: t('providers.telegram.details'),
+      unavailable: t('providers.telegram.unavailable'),
+      unresolved: (count: number) => t('providers.telegram.unresolved', { count }),
+      degraded: t('providers.telegram.degraded')
+    },
+    discord: {
+      name: t('providers.discord.name'),
+      label: t('providers.discord.label'),
+      details: t('providers.discord.details'),
+      unavailable: t('providers.discord.unavailable'),
+      unresolved: (count: number) => t('providers.discord.unresolved', { count }),
+      degraded: t('providers.discord.degraded')
     }
   }[provider]
   const hiddenSessions = access?.hiddenSessions ?? 0
@@ -237,12 +253,13 @@ function SessionAccessRow({
 
 export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner: boolean }) {
   const t = useTranslations('Settings.sessionAccess')
-  // Three fixed hooks, one per provider — the card decides what to render, so it
-  // has to hold the reads.
+  // Fixed hooks keep the provider reads stable while the card filters unavailable rows.
   const providers = [
     useSessionAccess('github', orgId, isOwner),
     useSessionAccess('slack', orgId, isOwner),
-    useSessionAccess('feishu', orgId, isOwner)
+    useSessionAccess('feishu', orgId, isOwner),
+    useSessionAccess('telegram', orgId, isOwner),
+    useSessionAccess('discord', orgId, isOwner)
   ]
   const pending = providers.some((state) => state.access === undefined && !state.loadError)
   const rows = providers.filter((state) => !hasNothingToOffer(state))

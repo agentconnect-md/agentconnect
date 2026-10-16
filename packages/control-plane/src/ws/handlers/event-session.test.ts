@@ -5,6 +5,11 @@ import type { DaemonWsDeps } from '../deps.js'
 import type { SessionMetaRecord, SessionMilestoneResult } from '../../persistence/ports.js'
 import { SessionId } from '../../domain/ids.js'
 import { handleEventSession, handleEventSessionSync } from './event-session.js'
+import { buildCpPlatformRegistry } from '../../platforms/registry.js'
+import { createSlackCpProvider } from '../../platforms/slack/provider.js'
+import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
+import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -17,6 +22,24 @@ const GITHUB_INSTALLATION_ROW_ID = '44444444-4444-4444-8444-444444444444'
 
 function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
+    platforms: buildCpPlatformRegistry([
+      createSlackCpProvider({}),
+      createFeishuCpProvider({}),
+      createTelegramCpProvider({
+        verifyBot: async () => ({ status: 'invalid' }),
+        botSecrets: { get: async () => ({ botToken: '42:synthetic', appToken: null, signingSecret: null }) }
+      }),
+      createDiscordCpProvider({
+        ensureMessageContentIntent: async () => 'ready',
+        botSecrets: {
+          get: async () => ({
+            botToken: `${Buffer.from('100000000000000001').toString('base64url')}.synthetic.token`,
+            appToken: null,
+            signingSecret: null
+          })
+        }
+      })
+    ]),
     log: { error: vi.fn() },
     agent: { get: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
@@ -53,6 +76,73 @@ function recorded(session: Partial<SessionMetaRecord> = {}): SessionMilestoneRes
 }
 
 describe('handleEventSession', () => {
+  it.each(['telegram', 'discord'] as const)(
+    'validates %s bot realms and quarantines older local milestones',
+    async (platform) => {
+      const recordMilestone = vi.fn().mockResolvedValue(recorded())
+      const realmKey = platform === 'telegram' ? 'bot42' : 'bot100000000000000001'
+      const channel = platform === 'telegram' ? '-10042' : '100000000000000004'
+      const deps = scopedDeps({
+        session: { recordMilestone },
+        integration: {
+          get: async () => ({
+            id: INTEGRATION_ID,
+            agentId: AGENT_ID,
+            botId: BOT_ID,
+            orgId: ORG_ID,
+            platform,
+            status: 'active'
+          })
+        },
+        bot: { get: async () => ({ id: BOT_ID, orgId: ORG_ID, platform, revokedAt: null }) },
+        events: { publish: vi.fn() }
+      })
+      const frame = eventSessionFrame()
+      const payload = frame.payload as Record<string, unknown>
+      Object.assign(payload, { platform, channel, sourceBindingKind: 'local' })
+      const conn = { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection
+      await handleEventSession(frame, conn, deps)
+      expect(recordMilestone).toHaveBeenLastCalledWith(
+        expect.objectContaining({ externalCandidate: { provider: platform, resolution: 'pending' } })
+      )
+      payload.externalOrigin = {
+        provider: platform,
+        realmKey,
+        resourceKind: 'conversation',
+        resourceKey: channel,
+        integrationId: INTEGRATION_ID
+      }
+      await handleEventSession(frame, conn, deps)
+      expect(recordMilestone).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          externalCandidate: expect.objectContaining({ provider: platform, resolution: 'settled' })
+        })
+      )
+      if (platform === 'discord') {
+        payload.thread = '100000000000000005'
+        await handleEventSession(frame, conn, deps)
+        expect(recordMilestone).toHaveBeenLastCalledWith(
+          expect.objectContaining({ externalCandidate: { provider: platform, resolution: 'invalid' } })
+        )
+        payload.externalOrigin = { ...(payload.externalOrigin as object), resourceKey: payload.thread }
+        await handleEventSession(frame, conn, deps)
+        expect(recordMilestone).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            externalCandidate: expect.objectContaining({
+              resolution: 'settled',
+              scope: expect.objectContaining({ resourceKey: payload.thread })
+            })
+          })
+        )
+      }
+      payload.externalOrigin = { ...(payload.externalOrigin as object), realmKey: 'bot999' }
+      await handleEventSession(frame, conn, deps)
+      expect(recordMilestone).toHaveBeenLastCalledWith(
+        expect.objectContaining({ externalCandidate: { provider: platform, resolution: 'invalid' } })
+      )
+    }
+  )
+
   it('ACKs a durable snapshot only after metadata and exact-session capture are durable', async () => {
     const order: string[] = []
     let finishPersist!: () => void
