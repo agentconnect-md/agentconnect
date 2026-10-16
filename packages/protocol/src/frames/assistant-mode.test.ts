@@ -62,10 +62,14 @@ describe('assistant mode admission', () => {
     expect(assistantModeRuntimeAdmitted('constructor')).toBe(false)
   })
 
-  it('refuses an unset or unlisted runtime and memory other than managed or none', () => {
+  it('refuses an unset or unlisted runtime and memory other than managed', () => {
     expect(assistantModeDefinitionRefusals({ runtime: 'claude-acp', memory: null })).toEqual([])
-    expect(assistantModeDefinitionRefusals({ runtime: 'claude-acp', memory: { provider: 'none' } })).toEqual([])
-    expect(assistantModeDefinitionRefusals({ runtime: 'codex-acp', memory: { provider: 'none' } })).toEqual([])
+    expect(
+      assistantModeDefinitionRefusals({ runtime: 'codex-acp', memory: { provider: 'managed', home: 'daemon' } })
+    ).toEqual([])
+    expect(assistantModeDefinitionRefusals({ runtime: 'claude-acp', memory: { provider: 'none' } })).toEqual([
+      'memory-provider'
+    ])
     expect(assistantModeDefinitionRefusals({ runtime: 'opencode', memory: null })).toEqual([])
     expect(assistantModeDefinitionRefusals({ runtime: null, memory: undefined })).toEqual(['runtime-unset'])
     expect(assistantModeDefinitionRefusals({ runtime: 'codex-acp', memory: { provider: 'native' } })).toEqual([

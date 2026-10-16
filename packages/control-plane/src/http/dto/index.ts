@@ -782,10 +782,9 @@ export const UpdateAgentBody = z
     decisionIds: AgentDecisionIds.nullable().optional(),
     modelSelection: AgentModelSelection.nullable().optional(),
     repositorySelector: RepositorySelectorBody.nullable().optional(), // null clears
-    // Memory backend; null clears (revert to managed). A managed `home` moves one way, `daemon` → `control-plane`;
-    // the reverse is refused unless `force` is set, and never accepted on the managed pool.
+    // Memory backend; null clears to managed. `home` moves one way to `control-plane`; back only with `force`, never on a member set or in assistant mode.
     memory: MemoryConfigInputBody.nullable().optional(),
-    // Assistant mode (assistant-mode.md §5.1), replaced wholesale; null clears. Turning it on runs the admission checks.
+    // Assistant mode (assistant-mode.md §5.1), replaced wholesale; null clears. Turning it on runs admission and moves a `daemon` memory home to the CP.
     assistantMode: AssistantModePolicy.nullable().optional(),
     // Confirms the one destructive edit: returning a memory home from the Control Plane to the daemon keeps nothing.
     force: z.boolean().optional()

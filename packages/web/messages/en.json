@@ -3050,6 +3050,9 @@
         "onDaemonHelp": "The daemon keeps the memory files on the machine that runs the agent.",
         "inControlPlaneHelp": "The Control Plane keeps the memory files, so they follow the agent to any daemon and need no machine to be up.",
         "movingToControlPlane": "Moving memory to the Control Plane…",
+        "homeSetReason": "Agents on a group or the managed pool keep their memory in the Control Plane.",
+        "homeAssistantModeReason": "Agents in assistant mode keep managed memory in the Control Plane. Turn assistant mode off to change it.",
+        "homeControlPlaneFixed": "Memory in the Control Plane stays there; moving it back is a separate, forced action below.",
         "externalDescription": "An owner-reviewed external plugin; configure exactly what may be recalled and captured below.",
         "nativeDescription": "The runtime's own memory (Claude / Codex), kept in its own directories.",
         "noneDescription": "No persistent memory is loaded or saved.",
@@ -3155,7 +3158,7 @@
         "refusals": {
           "runtime-unset": "Choose a runtime first.",
           "runtime-not-admitted": "This runtime is not supported yet: it must be able to turn off its own memory and resume a session after a restart.",
-          "memory-provider": "Memory must be managed or off.",
+          "memory-provider": "Memory must be managed.",
           "store-not-shared": "Every daemon in this agent’s group must share one store."
         },
         "blockers": {

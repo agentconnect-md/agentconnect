@@ -1,4 +1,4 @@
-// The boot-time memory-home flip (memory-evolution.md §3.2.1 "Rollout"): set-placed agents, and only those, move home.
+// The boot-time memory-home flip (memory-evolution.md §3.2.1 "Rollout", assistant-mode.md §4.1): set-placed and assistant-mode agents, and only those, move home.
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -160,6 +160,58 @@ describe('SetMemoryHomeReconciler', () => {
     expect(
       await Promise.all([homed, migrating, external, selfHosted].map(async (id) => (await row(id)).configRevision))
     ).toEqual(revisions)
+    expect(spy.upserts).toEqual([])
+  })
+
+  it('flips an assistant-mode agent wherever it is placed, and gives one with memory off the managed default', async () => {
+    const setId = await seedGroup()
+    const pinned = await seed({ ...DAEMON_HOME, autoDistill: false }, { daemonId: SOURCE })
+    const bare = await seed(null, { daemonId: SOURCE })
+    const off = await seed({ provider: 'none' }, { daemonId: SOURCE })
+    const homed = await seed(CP, { daemonId: SOURCE })
+    const grouped = await seed({ provider: 'none' }, { setId })
+    const plain = await seed(DAEMON_HOME, { daemonId: SOURCE })
+    await seedDutyGroup(prisma, randomUUID(), SOURCE, [grouped], { confirmed: true })
+    await prisma.agent.updateMany({
+      where: { id: { in: [pinned, bare, off, homed, grouped] } },
+      data: { assistantMode: { enabled: true } }
+    })
+    const { reconciler, spy } = harness()
+
+    // The grouped agent is listed by both scans and counted once.
+    expect(await reconciler.run()).toEqual({ flipped: 4, already: 1, skipped: 0, failed: 0 })
+    expect(await storedMemory(pinned)).toEqual({ ...PENDING, autoDistill: false })
+    expect(await storedMemory(bare)).toEqual(PENDING)
+    expect(await storedMemory(off)).toEqual(CP)
+    expect(await storedMemory(homed)).toEqual(CP)
+    expect(await storedMemory(grouped)).toEqual(CP)
+    expect(await storedMemory(plain)).toEqual(DAEMON_HOME)
+    expect(spy.upserts.map((u) => u.agentId).sort()).toEqual([pinned, bare, off, grouped].sort())
+    expect(await reconciler.run()).toEqual({ flipped: 0, already: 5, skipped: 0, failed: 0 })
+  })
+
+  it('leaves an assistant-mode agent alone when the mode is switched off before the row lock', async () => {
+    await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
+    const agentId = await seed(DAEMON_HOME, { daemonId: SOURCE })
+    await prisma.agent.update({ where: { id: agentId }, data: { assistantMode: { enabled: true } } })
+    const spy = new ControlSpy()
+    running = buildHttpApp(prisma, undefined, live, spy as unknown as ControlSender)
+    const { repos, agentDelivery } = running.deps
+    const agents: typeof repos.agent = Object.assign(Object.create(repos.agent), {
+      update: async (...args: Parameters<typeof repos.agent.update>) => {
+        await repos.agent.update(args[0], args[1], { assistantMode: { enabled: false } })
+        return repos.agent.update(...args)
+      }
+    })
+    const reconciler = new SetMemoryHomeReconciler({
+      agents,
+      memberSets: repos.memberSet,
+      delivery: agentDelivery,
+      log
+    })
+
+    expect(await reconciler.run()).toEqual({ flipped: 0, already: 0, skipped: 1, failed: 0 })
+    expect(await storedMemory(agentId)).toEqual(DAEMON_HOME)
     expect(spy.upserts).toEqual([])
   })
 
