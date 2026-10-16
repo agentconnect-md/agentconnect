@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   allAttachmentReadTools,
   attachmentReadToolsFor,
+  declaresPort,
   directMessagePlatformFor,
   directMessagePlatformList,
   isAttachmentReadTool,
@@ -114,6 +115,22 @@ describe('the read-port registry', () => {
     expect(reportsSharedConversations('slack')).toBe(true)
     for (const platform of ['telegram', 'discord', 'feishu', 'qq', 'linear', 'googlechat', 'webchat', ''])
       expect(reportsSharedConversations(platform), platform).toBe(false)
+  })
+
+  // assistant-mode.md §5.13: a first look runs only where the platform declares channel history.
+  it('declares channel history exactly where the adapter reads it', () => {
+    for (const [platform, ctor] of [
+      ['slack', SlackConnection],
+      ['discord', DiscordConnection],
+      ['feishu', FeishuConnection]
+    ] as const) {
+      expect(declaresPort(platform, 'channelHistory'), platform).toBe(true)
+      expect(has(ctor, 'getChannelHistory'), platform).toBe(true)
+    }
+    expect(declaresPort('telegram', 'channelHistory')).toBe(false)
+    expect(has(TelegramConnection, 'getChannelHistory')).toBe(false)
+    for (const platform of ['qq', 'linear', 'googlechat', 'webchat', ''])
+      expect(declaresPort(platform, 'channelHistory'), platform).toBe(false)
   })
 
   it('is fail-closed for an unregistered platform', () => {

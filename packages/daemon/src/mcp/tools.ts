@@ -179,7 +179,8 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     {
       name: 'getCurrentChannel',
       description:
-        'Return the channel/chat (and thread/topic) THIS conversation is bound to, including its name when available.',
+        'Return the channel/chat (and thread/topic) THIS conversation is bound to, including its name when available, ' +
+        "and the channel's own topic and description text where the platform keeps them.",
       inputSchema: obj({})
     },
     {

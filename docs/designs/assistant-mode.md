@@ -1276,8 +1276,9 @@ else, and nobody but its own conversation is told of it.
 
 ### 5.13 First look
 
-**Status:** Proposed (2026-10-16). Nothing is implemented. What is marked _decided_ is the product
-owner's (2026-10-16); the rest is recommended, each point with its reason, for the owner to confirm.
+**Status:** Proposed (2026-10-16). Implemented: the read ports' topic, description and message
+links (below). What is marked _decided_ is the product owner's (2026-10-16); the rest is
+recommended, each point with its reason, for the owner to confirm.
 
 **Why.** Added to a channel, an assistant-mode agent does nothing until someone @-mentions it, and
 then knows nothing of how the place works. A first look reads the place once as the agent arrives,
@@ -1401,9 +1402,9 @@ When a first look reports back:
 
 Changed from the agreed drafts, each to fit a verified fact:
 
-- "Link every claim" adds "(its link, or its time where it has none)". History pages carry no link
-  today; this section adds one where the platform can form it (below), and elsewhere a link the
-  model made up would be worse than a time.
+- "Link every claim" adds "(its link, or its time where it has none)". History pages carry a link
+  only where the platform can form one (below), and elsewhere a link the model made up would be
+  worse than a time.
 - "Offer only what your tools can actually do" names the place's tools, `{tools}`. The first look
   itself has only reads, so "your tools" would rule out everything.
 - A last line hands the answer back with `recordCheck`, a check's only output (§5.12).
@@ -1470,12 +1471,14 @@ are read where their ports exist; the rest goes under "Not covered".
 The read ports this adds, each declared by the platform's own module:
 
 - `getChannelInfo` reports a conversation's topic and description where the platform keeps them
-  (Slack's topic and purpose, a Discord channel's topic, a Lark/Feishu chat's description); it
-  reports neither today.
+  (Slack's topic and purpose, a Discord channel's topic, a Lark/Feishu chat's description), and
+  `getCurrentChannel` returns them. Shipped.
 - A pinned-messages read. Slack's needs `pins:read`, which the app manifest does not request today,
   so an install that has not granted it lists pins under "Not covered" (§9).
-- History and thread messages carry a link where the platform can form one, such as Slack's from
-  the workspace URL, the channel and the timestamp.
+- History and thread messages carry a link where the platform can form one. Shipped: Slack's from
+  the workspace URL, the channel and the timestamp (a reply's opens in its thread), and Discord's
+  from its guild, channel and message ids. Lark/Feishu's carry none: its message list returns no
+  position to form one from, and its only documented message link comes back from a forward.
 - A connection callback for the bot's own join. Slack's handler already sees the event; a
   Lark/Feishu module would raise it from its bot-added event.
 
@@ -2111,3 +2114,9 @@ the platform declares channel history (Slack, Discord, Lark/Feishu; not Telegram
 and never in an external place in v1. `propose` gains the report round, cards held until the
 introduction posts, and a follow-up form that turns an approval into a follow-up. It counts as one
 check, and an automatic one yields to due follow-up checks.
+
+**Forty-ninth revision (2026-10-16)**: §5.13's read ports ship for topic, description and links.
+`getCurrentChannel` reports Slack's topic and purpose, Discord's topic and Lark/Feishu's
+description. Slack's history and thread messages and Discord's history messages carry a link;
+Lark/Feishu's carry none, since no stable one can be formed. `channelHistory` already declared
+exactly Slack, Discord and Lark/Feishu.

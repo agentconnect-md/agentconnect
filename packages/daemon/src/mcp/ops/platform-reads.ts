@@ -375,7 +375,8 @@ function projectThreadMessage(m: PlatformThreadMessage): unknown {
     text: m.text,
     isBot: m.isBot,
     ...(m.agentAuthorId ? { agentId: m.agentAuthorId } : {}),
-    ...(attachments.length > 0 ? { attachments } : {})
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(m.link ? { link: m.link } : {})
   }
 }
 
@@ -514,6 +515,8 @@ export async function getCurrentChannel(
     channel: ctx.channel,
     thread: deliveryThread,
     name: info?.name ?? null,
-    isIm: info?.isIm ?? null
+    isIm: info?.isIm ?? null,
+    ...(info?.topic ? { topic: info.topic } : {}),
+    ...(info?.description ? { description: info.description } : {})
   }
 }

@@ -224,9 +224,14 @@ export interface FeishuApi {
   createImage(chatId: string, imageKey: string): Promise<{ messageId?: string }>
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string }>
   /** im.chat.get; `chatType` is `public` or `private`, and `external` a chat shared with another tenant. */
-  getChat(
-    chatId: string
-  ): Promise<{ id: string; name?: string; chatMode?: string; chatType?: string; external?: boolean }>
+  getChat(chatId: string): Promise<{
+    id: string
+    name?: string
+    description?: string
+    chatMode?: string
+    chatType?: string
+    external?: boolean
+  }>
   /** im.chatMembers.get (capped). */
   listChatMembers(chatId: string, cap: number): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   /** One page of im.chatMembers.get by union_id, the id a message sender carries. */
@@ -437,12 +442,13 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     },
     async getChat(chatId) {
       const res = (await client.im.chat.get({ path: { chat_id: chatId } })) as {
-        data?: { name?: string; chat_mode?: string; chat_type?: string; external?: boolean }
+        data?: { name?: string; description?: string; chat_mode?: string; chat_type?: string; external?: boolean }
       }
       const d = res?.data ?? {}
       return {
         id: chatId,
         ...(d.name ? { name: d.name } : {}),
+        ...(d.description ? { description: d.description } : {}),
         ...(d.chat_mode ? { chatMode: d.chat_mode } : {}),
         ...(d.chat_type ? { chatType: d.chat_type } : {}),
         ...(typeof d.external === 'boolean' ? { external: d.external } : {})
@@ -1418,12 +1424,15 @@ export class FeishuConnection implements PlatformConnection {
     }
   }
 
-  async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
+  async getChannelInfo(
+    channel: string
+  ): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean; description?: string }> {
     try {
       const c = await this.handle.api.getChat(channel)
       return {
         id: channel,
         ...(c.name ? { name: c.name } : {}),
+        ...(c.description ? { description: c.description } : {}),
         isIm: c.chatMode === 'p2p',
         // Only a public group of this tenant is public; a chat whose type was not reported stays undetermined.
         ...(c.chatType ? { isPrivate: c.chatType !== 'public' || c.external === true } : {})

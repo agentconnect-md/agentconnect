@@ -88,6 +88,9 @@ export interface PlatformChannelInfo {
   url?: string
   /** Shared with another organization right now, where the platform declares `sharedConversations` (assistant-mode.md §5.3); null when it is not. */
   externalReason?: PlaceExternalReason | null
+  /** The conversation's own topic line and description, where the platform keeps them (assistant-mode.md §5.13). */
+  topic?: string
+  description?: string
 }
 
 /** A conversation in an enumeration (`listChannels` / `listBotChannels`). */
@@ -139,6 +142,8 @@ export interface PlatformThreadMessage {
   chromeOwnerAgentId?: string
   appId?: string
   attachments: unknown[]
+  /** The message's own link, only where the platform can form one; never guessed. */
+  link?: string
 }
 
 /** Bounded window for a thread read; `readState` reports truncation back to the
@@ -158,6 +163,8 @@ export interface PlatformChannelHistoryMessage {
   isBot: boolean
   threadTs?: string
   replyCount?: number
+  /** The message's own link, only where the platform can form one; never guessed. */
+  link?: string
 }
 
 export interface PlatformChannelHistoryOptions {

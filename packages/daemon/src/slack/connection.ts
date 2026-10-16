@@ -35,6 +35,7 @@ import { profileTimeZone } from '../messages/time-zone.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
+import { slackMessageUrl } from '../platforms/slack/permalink.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -638,6 +639,8 @@ export type AppLike = {
           is_mpim?: boolean
           is_private?: boolean
           user?: string
+          topic?: { value?: string }
+          purpose?: { value?: string }
         }
       }>
       members: (a: unknown) => Promise<{ members?: string[]; response_metadata?: { next_cursor?: string } }>
@@ -2157,6 +2160,7 @@ export class SlackConnection implements PlatformConnection {
       isBot: boolean
       chrome: boolean
       attachments: Attachment[]
+      link?: string
     }[]
   > {
     const out: {
@@ -2169,6 +2173,7 @@ export class SlackConnection implements PlatformConnection {
       isBot: boolean
       chrome: boolean
       attachments: Attachment[]
+      link?: string
     }[] = []
     let cursor: string | undefined
     try {
@@ -2202,6 +2207,7 @@ export class SlackConnection implements PlatformConnection {
             typeof m.metadata.event_payload?.owner_agent_id === 'string'
               ? m.metadata.event_payload.owner_agent_id.trim()
               : ''
+          const link = slackMessageUrl(this.workspaceUrl, channel, m.ts, threadTs)
           out.push({
             // Some Slack bot rows expose both `user` and `bot_id`. Keep the stable bot
             // identity as sender so legacy rows from the same app reconcile consistently.
@@ -2217,7 +2223,8 @@ export class SlackConnection implements PlatformConnection {
             chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE || isSlackStreamChromeMessage(m),
             attachments: (m.files ?? [])
               .map(toAttachment)
-              .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null)
+              .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null),
+            ...(link ? { link } : {})
           })
           if (out.length >= maxMessages) {
             if (window?.readState && (index < messages.length - 1 || Boolean(res.has_more))) {
@@ -2261,6 +2268,7 @@ export class SlackConnection implements PlatformConnection {
         if (!m.ts) return []
         const appId = m.app_id ?? m.bot_profile?.app_id
         const replyCount = typeof m.reply_count === 'number' && m.reply_count > 0 ? m.reply_count : undefined
+        const link = slackMessageUrl(this.workspaceUrl, channel, m.ts, m.thread_ts)
         return [
           {
             sender: m.bot_id ?? m.user ?? 'unknown',
@@ -2268,7 +2276,8 @@ export class SlackConnection implements PlatformConnection {
             text: extractSlackMessageText(m),
             isBot: Boolean(m.bot_id || appId),
             ...(m.thread_ts ? { threadTs: m.thread_ts } : {}),
-            ...(replyCount !== undefined ? { replyCount } : {})
+            ...(replyCount !== undefined ? { replyCount } : {}),
+            ...(link ? { link } : {})
           }
         ]
       })
@@ -2599,7 +2608,9 @@ export class SlackConnection implements PlatformConnection {
       isMpim: c.is_mpim,
       isPrivate: c.is_private,
       user: c.user,
-      externalReason: slackExternalReason(c)
+      externalReason: slackExternalReason(c),
+      ...(c.topic?.value ? { topic: c.topic.value } : {}),
+      ...(c.purpose?.value ? { description: c.purpose.value } : {})
     }
   }
 
