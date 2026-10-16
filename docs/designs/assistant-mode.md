@@ -1767,7 +1767,7 @@ nothing else, keeping the architecture line that it holds no message bodies:
 follow_up_watch { orgId, agentId, followUpId,
   provider, installationId | bindingId, host, repoId, kind: pull | issue, number,
   repoPath (display only), createdAt,
-  pendingSince?, pendingKinds[], lastWakeAt?, lastWakeKinds[] }
+  pendingSince?, pendingLatestAt?, pendingKinds[], lastWakeAt?, lastWakeKinds[] }
 ```
 
 - The follow-up's title, done-when, observations and asker stay on the daemon; the follow-up id is
@@ -1776,7 +1776,7 @@ follow_up_watch { orgId, agentId, followUpId,
   GitLab the binding's signing key, as a feedback watch carries it), never which agent or follow-up
   watches them.
 - The relay forwards an event's coordinates and kind only, having applied the own-identity veto
-  (Events, below) itself. The wake carries the follow-up id, the event kinds and when the first
+  (Events, below) itself. The wake carries the follow-up id, the event kinds and when the latest
   arrived. No payload, title, comment, author or log reaches the Control Plane or the daemon through
   it.
 - A row goes when its follow-up ends, its agent is deleted, or its access is lost. An agent holds at
@@ -1805,9 +1805,10 @@ follow_up_watch { orgId, agentId, followUpId,
 
 **Coalescing and budget** (recommended).
 
-- **One pending wake.** A subscription holds at most one pending wake. A later event adds its kind,
-  and a change of state pulls its time in; nothing queues. The Control Plane sends it when its window
-  closes.
+- **One pending wake.** A subscription holds at most one pending wake. A later event adds its kind
+  and moves its latest time, and a change of state pulls its sending in; nothing queues. The Control
+  Plane sends it when its window closes, and a change of state at most ten minutes after the first,
+  so a stream of events cannot hold it back.
 - **Spacing.** A follow-up starts at most one woken check per 15 minutes, so four an hour. A wake
   that falls inside waits, still one wake.
 - **Budget.** A woken check is a check and counts against `dailyCheckBudget`. A wake starts one only
@@ -1819,9 +1820,11 @@ follow_up_watch { orgId, agentId, followUpId,
   under pause, backoff and the five-failure stop exactly as for a timed check. A woken check clears
   `wakeAt`; its `recordCheck` sets the next check as usual, and a scheduled next check it passes over
   stays due (§5.12).
-- **A running check.** A wake whose first event arrived before the follow-up's latest check started
-  is answered by that check, and the daemon drops it. One that arrived later waits, and the sweep
-  starts it once the running check ends.
+- **A running check.** The daemon compares the wake's latest event with the start of the
+  follow-up's latest check. A wake whose every event arrived before that start is answered by the
+  check and is dropped. One with an event after it waits, and the sweep starts it once the running
+  check ends: a merge folded into a pending discussion wake while a scheduled check was already
+  reading is still checked, though the discussion came first.
 - **`messageTask`.** A message and a wake both mean "check now": whichever starts the check takes the
   other with it, and it counts once. A message still starts its check at once, outside the slot
   (§5.12).
@@ -1834,7 +1837,7 @@ follow_up_watch { orgId, agentId, followUpId,
 code host ─ signed delivery ─▶ relay ─ event coordinates and kind ─▶ Control Plane
                                                                        │ match subscriptions,
                                                                        │ check access, fold
-daemon ◀─ wake { agent, follow-up, wakeId, kinds, first event at } ───┘
+daemon ◀─ wake { agent, follow-up, wakeId, kinds, latest event at } ──┘
   │ record wakeAt (once per wakeId), acknowledge
   ▼
 check sweep ─▶ read-only check ─▶ report / propose / silence
