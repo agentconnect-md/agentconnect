@@ -138,7 +138,7 @@ async function boot(root: string, pages: HistoryPage[] = []) {
     }
   }
   const deps = { ...d.mcp.deps, canRun: () => true }
-  return { daemon, d, behavior, registered, looks, reports, settled, deps }
+  return { daemon, d, behavior, registered, dispatched, looks, reports, settled, deps }
 }
 
 const scopeOf = (d: any): string => d.transportScopeForIntegrationIds(['int-bot-a'])
@@ -395,13 +395,14 @@ describe('the bot joining a place', () => {
   it('takes one first look once the row is listed, and its report opens the place’s long session', async () => {
     const { daemon, d, behavior, looks, reports, settled, deps } = await boot(scaffold())
     behavior.look = handsBack(deps)
-    d.botJoined(['int-bot-a'], 'C1', 'U0INVITER')
+    await joins(d, 'C1', 'U0INVITER')
     await vi.waitFor(
       async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
       WAIT
     )
     const item = await d.store.assistantItems.latestFirstLook('bot-a', place(d))
     expect(item).toMatchObject({ firstLook: 'joined', status: 'active', title: 'First look at fake' })
+    expect(item.asker).toMatch(/^slack:.+:U0INVITER$/)
     // Nobody spoke there yet, so its owner is the coordinate the place's first message would key.
     expect(await d.store.placeSession('bot-a', 'slack', 'C1', scopeOf(d))).toBeUndefined()
 
@@ -416,7 +417,8 @@ describe('the bot joining a place', () => {
     expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'done' })
 
     // A rejoin takes none: the first look's row is the place's record.
-    d.botJoined(['int-bot-a'], 'C1')
+    await d.store.db.prepare('DELETE FROM channel_intro WHERE agentId = ?').run('bot-a')
+    await joins(d, 'C1')
     await d.takeJoinedFirstLooks()
     const rows = await d.store.assistantItems.list('bot-a', {})
     expect(rows.filter((row: any) => row.firstLook !== null)).toHaveLength(1)
@@ -445,9 +447,27 @@ describe('the bot joining a place', () => {
     await daemon.stop()
   })
 
+  it('replaces the agent’s join introduction where a first look will run, and keeps it where none will', async () => {
+    const { daemon, d, dispatched } = await boot(scaffold())
+    const agent = d.agents.get('bot-a')
+    agent.introduceOnJoin = true
+    agent.integrations[0].core.externalChannels = ['C2']
+    const intros = () => dispatched.filter((c) => c.msg.msgId.startsWith('intro:')).map((c) => c.msg.channel)
+    await joins(d, 'C1')
+    await vi.waitFor(
+      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
+      WAIT
+    )
+    expect(intros()).toEqual([])
+    // A place shared with another organization takes no first look, so the introduction stays.
+    await joins(d, 'C2')
+    expect(intros()).toEqual(['C2'])
+    await daemon.stop()
+  })
+
   it('takes none for a conversation the Control Plane has not listed', async () => {
     const { daemon, d } = await boot(scaffold())
-    d.botJoined(['int-bot-a'], 'C9')
+    await joins(d, 'C9')
     await d.takeJoinedFirstLooks()
     expect(await d.store.assistantItems.list('bot-a', {})).toEqual([])
     await daemon.stop()
@@ -456,7 +476,7 @@ describe('the bot joining a place', () => {
   it('ends an automatic one after five failures without a word in the place', async () => {
     const { daemon, d, behavior, looks, reports, settled } = await boot(scaffold())
     behavior.look = 'throw'
-    d.botJoined(['int-bot-a'], 'C1')
+    await joins(d, 'C1')
     await vi.waitFor(
       async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
       WAIT
@@ -485,3 +505,12 @@ describe('the bot joining a place', () => {
 })
 
 const place = (d: any) => ({ platform: 'slack', channel: 'C1', transportScope: scopeOf(d) })
+
+/** The bot's channels re-listed after Slack said it joined `joined`: the first snapshot is the baseline, so it is listed first. */
+async function joins(d: any, channel: string, inviter?: string): Promise<void> {
+  await d.connections.maybeIntroduceOnJoin('slack', 'int-bot-a', [])
+  await d.connections.maybeIntroduceOnJoin('slack', 'int-bot-a', [{ id: channel }], {
+    channel,
+    ...(inviter ? { inviter } : {})
+  })
+}

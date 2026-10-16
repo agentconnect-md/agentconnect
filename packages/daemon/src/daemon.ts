@@ -2602,11 +2602,13 @@ export class Daemon {
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
-      refreshChannels: (conn) => this.connections.refreshChannels(conn),
+      refreshChannels: (conn, joined) =>
+        joined ? this.connections.refreshChannels(conn, joined) : this.connections.refreshChannels(conn),
       onInbound: (msg, srcIntegrationIds) => this.onInbound(msg, srcIntegrationIds),
       srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
       placeTrust: () => this.placeTrust,
-      botJoined: (srcIntegrationIds, channel, inviter) => this.botJoined(srcIntegrationIds, channel, inviter),
+      firstLookOnJoin: (agentId, integrationId, channel, inviter) =>
+        this.firstLookOnJoin(agentId, integrationId, channel, inviter),
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
@@ -8749,22 +8751,33 @@ export class Daemon {
   /** Bot joins waiting for their place's row before a first look (assistant-mode.md §5.13). */
   private readonly pendingFirstLooks = new PendingFirstLooks()
 
-  /** The bot itself joined a conversation: every assistant-mode agent this daemon serves on those bots waits for the place's row, then takes a first look. */
-  private botJoined(srcIntegrationIds: readonly string[], channel: string, inviter?: string): void {
-    const at = this.clock.now()
-    for (const agent of this.agents.values()) {
-      if (!assistantModeOn(agent) || !this.servesAgent(agent.id)) continue
-      for (const int of agent.integrations)
-        if (srcIntegrationIds.includes(int.id))
-          this.pendingFirstLooks.note({
-            agentId: agent.id,
-            integrationId: int.id,
-            channel,
-            ...(inviter ? { inviter } : {}),
-            at
-          })
+  /** A genuine join of the agent's bot to a conversation (§5.13): where a first look will run, it waits for the place's row and takes one; true then. */
+  private async firstLookOnJoin(
+    agentId: string,
+    integrationId: string,
+    channel: string,
+    inviter?: string
+  ): Promise<boolean> {
+    const agent = this.agents.get(agentId)
+    const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
+    if (!agent || !int || !this.servesAgent(agentId)) return false
+    if (firstLookPlaceRefusal(agent, int, { channel }) !== undefined) return false
+    const place: AssistantPlace = {
+      platform: int.platform,
+      channel,
+      transportScope: this.transportScopeForIntegration(int) || null
     }
+    // The first look's row is the place's record, so a rejoin takes none.
+    if (await this.store.assistantItems.latestFirstLook(agentId, place)) return false
+    this.pendingFirstLooks.note({
+      agentId,
+      integrationId,
+      channel,
+      ...(inviter ? { inviter } : {}),
+      at: this.clock.now()
+    })
     void this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look on join failed: ${formatErr(err)}`))
+    return true
   }
 
   /** Joins whose place is now listed take a first look, once per place; the rest wait for a later sweep. */
@@ -12437,7 +12450,7 @@ export class Daemon {
     }
     // The HTTP arm of the bot's own join (assistant-mode.md §5.13).
     if (payload.kind === 'bot-joined') {
-      this.botJoined([integration.id], payload.channelId, payload.inviter)
+      await this.firstLookOnJoin(agent.id, integration.id, payload.channelId, payload.inviter)
       return { msgId: msg.msgId, accepted: true }
     }
     // The HTTP arm of a member join (assistant-mode.md §5.3), looked up for every agent.

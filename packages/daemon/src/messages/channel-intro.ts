@@ -13,6 +13,12 @@ import type { NormalizedMessage } from './normalized.js'
  * The whole feature is opt-in per agent (`agent.introduceOnJoin`, default off).
  */
 
+/** The conversation a platform said the bot just joined, and who added it where it says; a hint to the snapshot that follows. */
+export interface JoinedChannel {
+  channel: string
+  inviter?: string
+}
+
 /** A batch this large in one snapshot is far more likely a re-list / bulk invite than
  *  genuine one-at-a-time joins — adopt it silently rather than message every peer. */
 export const INTRO_MAX_BURST = 3

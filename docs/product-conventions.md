@@ -1461,7 +1461,10 @@ remembers how the place works, introduces the agent once and lists at most three
 
 - **When.** On Slack, the bot itself joining a conversation takes one, from the daemon holding the
   agent's duty, once the Control Plane lists the conversation for the agent and it is not Off; a
-  join whose conversation is not listed within ten minutes takes none. A conversation the agent was
+  join whose conversation is not listed within ten minutes takes none. Conversations the bot is in
+  when the agent's daemon first lists them, and several joined at once (more than three in one
+  listing), take none. Where a first look runs for a join, it replaces the agent's "Introduce on
+  channel join" introduction to the other agents there; elsewhere that introduction is unchanged. A conversation the agent was
   already in, a platform that reports no join, and a second look wait for someone there to ask; the
   long session then calls `firstLook`. The first look's row is the conversation's record, so
   rejoining, or switching assistant mode off and on, takes none. Never in a 1:1 DM or a conversation

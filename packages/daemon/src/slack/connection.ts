@@ -32,6 +32,7 @@ import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import { profileTimeZone } from '../messages/time-zone.js'
+import type { JoinedChannel } from '../messages/channel-intro.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
@@ -431,10 +432,8 @@ export interface SlackDeps {
   onAssistantThreadStarted?: (channel: string, userId?: string, startedAtMs?: number) => Promise<void>
   appHomeContext?: () => SlackAppHomeContext
   /** Fired when the bot's channel membership changes (invited to / removed from a
-   *  channel), so the daemon can re-list + re-report the membership snapshot. */
-  onChannelsChanged?: () => void
-  /** Fired when the bot itself joins a conversation, with who added it where the event names them (assistant-mode.md §5.13). */
-  onBotJoined?: (channel: string, inviter?: string) => void
+   *  channel), so the daemon can re-list + re-report the membership snapshot; a join names its channel and inviter. */
+  onChannelsChanged?: (joined?: JoinedChannel) => void
   /** Whether an agent's integration is on this socket, in any mode, so a member join is worth a lookup (assistant-mode.md §5.3). */
   checksJoinedMembers?: () => boolean
   /** Fired when a member join shows a channel is external: a guest, an outside member, or a share. */
@@ -1233,8 +1232,9 @@ export class SlackConnection implements PlatformConnection {
       log?.debug(`slack: bot joined channel ${ev.channel ?? '?'}`)
       // A channel the bot just joined resolves by name on the next miss.
       this.channelNamesListedAt = Number.NEGATIVE_INFINITY
-      this.deps.onChannelsChanged?.()
-      if (ev.channel) this.deps.onBotJoined?.(ev.channel, ev.inviter || undefined)
+      this.deps.onChannelsChanged?.(
+        ev.channel ? { channel: ev.channel, ...(ev.inviter ? { inviter: ev.inviter } : {}) } : undefined
+      )
     })
     for (const type of ['channel_left', 'group_left']) {
       this.app.event(type, async ({ event }) => {

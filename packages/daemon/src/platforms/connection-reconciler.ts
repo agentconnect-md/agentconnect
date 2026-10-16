@@ -28,7 +28,8 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import type { CpClient } from '../cp/client.js'
 import type { Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
-import { buildIntroMessage, planChannelIntros } from '../messages/channel-intro.js'
+import { buildIntroMessage, planChannelIntros, type JoinedChannel } from '../messages/channel-intro.js'
+import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import type { ChannelNameResolver } from '../messages/channel-name-resolver.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { SlackNameResolver } from '../slack/name-resolver.js'
@@ -173,13 +174,13 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   slackNameResolver(): SlackNameResolver | undefined
   channelNameResolver(): ChannelNameResolver | undefined
   /** Host hop back into `ConnectionReconciler.refreshChannels` — every internal re-list goes through it so the membership refresh stays one seam. */
-  refreshChannels(conn: SlackConnection): Promise<void>
+  refreshChannels(conn: SlackConnection, joined?: JoinedChannel): Promise<void>
   onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void
   srcIntegrationIds(conn: unknown): string[]
   /** Where a platform's finding that a place is external goes (assistant-mode.md §5.3). */
   placeTrust(): PlaceTrust
-  /** The bot itself joined a conversation on these integrations, added by `inviter` where the platform names one (assistant-mode.md §5.13). */
-  botJoined(srcIntegrationIds: readonly string[], channel: string, inviter?: string): void
+  /** A genuine join of the agent's bot to a conversation: true when a first look takes it, which replaces the join introduction (assistant-mode.md §5.13). */
+  firstLookOnJoin(agentId: string, integrationId: string, channel: string, inviter?: string): Promise<boolean>
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>
   observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
@@ -359,8 +360,7 @@ export class ConnectionReconciler {
           startedAtMs
         )
       },
-      onChannelsChanged: () => void this.host.refreshChannels(conn()),
-      onBotJoined: (channel, inviter) => this.host.botJoined(this.host.srcIntegrationIds(conn()), channel, inviter),
+      onChannelsChanged: (joined) => void this.host.refreshChannels(conn(), joined),
       checksJoinedMembers: () => this.host.placeTrust().watches(this.host.srcIntegrationIds(conn())),
       onPlaceExternal: (channel, reason) =>
         this.host.placeTrust().detected(this.host.srcIntegrationIds(conn()), channel, reason),
@@ -1212,7 +1212,7 @@ export class ConnectionReconciler {
   }
 
   /** Re-list the bot's channels and report them per bound integration; never throws, and the cached snapshot replays on a CP reconnect. */
-  async refreshChannels(conn: SlackConnection): Promise<void> {
+  async refreshChannels(conn: SlackConnection, joined?: JoinedChannel): Promise<void> {
     try {
       const channels = await conn.listBotChannels()
       if (!channels) return
@@ -1232,7 +1232,7 @@ export class ConnectionReconciler {
         const merged = this.host.placeTrust().listed(integrationId, [...channels, ...direct])
         snapshots.set(integrationId, { channels: merged, authoritative: true })
         this.host.cpClient()?.emitIntegrationChannels({ integrationId, channels: merged })
-        await this.maybeIntroduceOnJoin('slack', integrationId, channels)
+        await this.maybeIntroduceOnJoin('slack', integrationId, channels, joined)
       }
       this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
     } catch (err) {
@@ -1251,10 +1251,16 @@ export class ConnectionReconciler {
    * socket reconnect that re-lists every channel never fires intros. State is
    * marked BEFORE dispatch, so a failed turn is simply skipped (never retried in a
    * loop). Not opted in ⇒ no seeding either, so enabling it later baselines cleanly.
+   * An assistant-mode agent's genuine join takes a first look instead where one will run (assistant-mode.md §5.13).
    */
-  async maybeIntroduceOnJoin(platform: string, integrationId: string, channels: { id: string }[]): Promise<void> {
+  async maybeIntroduceOnJoin(
+    platform: string,
+    integrationId: string,
+    channels: { id: string }[],
+    joined?: JoinedChannel
+  ): Promise<void> {
     const agent = [...this.host.agents().values()].find((a) => a.integrations.some((i) => i.id === integrationId))
-    if (!agent?.introduceOnJoin) return
+    if (!agent || (!agent.introduceOnJoin && !assistantModeOn(agent))) return
     const store = this.host.store()
     const plan = planChannelIntros(
       {
@@ -1268,6 +1274,10 @@ export class ConnectionReconciler {
     if (plan.markSeeded) await store.markChannelIntroSeeded(integrationId, now)
     for (const ch of plan.introduce) {
       await store.markChannelIntro(agent.id, platform, ch, now)
+      // A first look's own introduction replaces this one where it will run.
+      const inviter = joined?.channel === ch ? joined.inviter : undefined
+      if (await this.host.firstLookOnJoin(agent.id, integrationId, ch, inviter).catch(() => false)) continue
+      if (!agent.introduceOnJoin) continue
       this.log.info(`intro: agent "${agent.id}" self-introducing in channel ${ch}`)
       const traceId = randomUUID()
       const msg = buildIntroMessage(agent.id, platform, ch, traceId)
