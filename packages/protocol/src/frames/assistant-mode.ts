@@ -10,7 +10,6 @@ export const AssistantModePolicy = z
       .object({
         maxConcurrentSubsessions: z.number().int().min(1).max(50).optional(),
         dailyCheckBudget: z.number().int().min(1).max(500).optional(),
-        dailySubsessionsPerItem: z.number().int().min(1).max(50).optional(),
         permissionWaitHours: z.number().int().min(1).max(72).optional()
       })
       .optional()

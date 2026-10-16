@@ -94,7 +94,7 @@ describe('a stored assistant mode policy', () => {
       enabled: true,
       responsibleUserId: 'usr_1',
       patrolSchedule: '0 9 * * *',
-      limits: { dailyCheckBudget: 5 }
+      limits: { dailyCheckBudget: 5, dailySubsessionsPerItem: 3 }
     }
     expect(StoredAssistantModePolicyRow.parse(stored)).toEqual({
       enabled: true,
