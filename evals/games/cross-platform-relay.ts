@@ -113,7 +113,7 @@ export class CrossPlatformRelayGame implements CollaborationGameWorld {
       return this.delivery(
         this.origin,
         'bridge',
-        'Forward the exact request packet to the review channel using sendMessage with the given target. ' +
+        'Forward the exact request packet to the review channel using sendMessage action=postMessage with the given target. ' +
           'Use channel-root sends; do not invent a thread. Wait for reviewer feedback before reporting completion.\n' +
           `RELAY_TARGET ${JSON.stringify(target)}\nRELAY_REQUEST ${JSON.stringify(this.fixture.task)}`
       )
@@ -170,7 +170,7 @@ export class CrossPlatformRelayGame implements CollaborationGameWorld {
             'The reviewer delivered the following feedback. Use the highest revision; deduplicate identical IDs. ' +
               'Conflicting highest-revision values require needs_clarification; omit quantity/format in that case. ' +
               'Otherwise report completed with the revised quantity and format. Include caseId, sourceId and all unique ' +
-              'highest-revision evidenceIds. Send RELAY_REPORT JSON to the request returnTarget using sendMessage. ' +
+              'highest-revision evidenceIds. Send RELAY_REPORT JSON to the request returnTarget using sendMessage action=postMessage. ' +
               'Never claim approval absent from the feedback.\n' +
               `RELAY_REQUEST ${JSON.stringify(this.fixture.task)}\nRELAY_FEEDBACK ${JSON.stringify(feedback)}`
           )
@@ -284,6 +284,7 @@ function scriptedRelayHostFactory() {
               : `RELAY_REQUEST ${JSON.stringify(task)}`
             const result = await callDaemonTool(binding, 'sendMessage', {
               ...(target as Record<string, unknown>),
+              action: 'postMessage',
               message
             })
             if (!result.ok) output = `relay send failed: ${result.error}`
