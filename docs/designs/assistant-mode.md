@@ -206,8 +206,8 @@ Proposed (§5.15).
 - **One conversation keeps it.** A conversation of its own, outside every place, keeps those
   files. What first looks in public channels find is brought to it, and a public channel can hand
   it a fact someone stated there, so two channels never overwrite each other.
-  Everyone who may see the agent can read it on the agent's page; editors talk to it there
-  ("research the company again").
+  Everyone who may see the agent can read it on the agent's page; editors correct it there, and one
+  action there has it research the organization again.
 - **It says what it learned.** When research ends it tells whoever started it, the person who
   switched the mode on by DM or the conversation that asked: what it learned and what changed.
 - **Facts with sources.** Every line names its source, the organization's own sources win over the
@@ -2169,9 +2169,9 @@ owner's OK before any daemon work.
 _home_. It alone writes the shared layer's organization files: `organization.md`, `channels.md`
 and `members.md`, all in the agent's memory (§5.16, §5.17). The daemon brings it what first looks
 in internal public channels find, such a channel's session hands it a fact someone stated there,
-and editors talk to it from the agent's page. It starts
-_organization research_, a read-only background task that reads the organization's own sources,
-its code hosts and the public web and reports back to it. No reply waits for research.
+and editors talk to it from the agent's page. _Organization research_, a read-only background
+task the daemon takes on onboarding or at an editor's request, reads the organization's own
+sources, its code hosts and the public web and reports back to it. No reply waits for research.
 
 **Part one: the home session.**
 
@@ -2212,14 +2212,14 @@ looks and research find, and one tool lets a channel's session hand it a fact. W
 home becomes shared-layer memory, which every conversation reads, those with outside guests
 included, so content comes only from places whose own memory already goes there.
 
-| Input                                | From                                                                     | Form                                                             |
-| ------------------------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------- |
-| What a first look found in its place | the daemon, from a first look in an internal public channel              | a report round (§5.7) carrying parts of that first look's report |
-| A fact stated in conversation        | an internal public channel's long session, on a turn a person typed      | `rememberForOrganization`, which the daemon checks and holds     |
-| A research report                    | its own organization research                                            | a report round (§5.7)                                            |
-| A request for research               | an internal public channel's long session, or an editor through the home | `researchOrganization`, which the daemon takes as research       |
-| Onboarding                           | the daemon, when assistant mode is first switched on                     | research the daemon takes itself (Part two)                      |
-| An editor's message                  | the agent's page in the console                                          | a console turn, answered in the home's conversation              |
+| Input                                | From                                                                | Form                                                             |
+| ------------------------------------ | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| What a first look found in its place | the daemon, from a first look in an internal public channel         | a report round (§5.7) carrying parts of that first look's report |
+| A fact stated in conversation        | an internal public channel's long session, on a turn a person typed | `rememberForOrganization`, which the daemon checks and holds     |
+| A research report                    | its own organization research                                       | a report round (§5.7)                                            |
+| A request for research               | an editor, from the Organization section                            | a console action; the daemon takes research (Part two)           |
+| Onboarding                           | the daemon, when assistant mode is first switched on                | research the daemon takes itself (Part two)                      |
+| An editor's message                  | the agent's page in the console                                     | a console turn, answered in the home's conversation              |
 
 - **A first look's findings.** When a first look's report reaches its place's long session, the
   daemon also delivers three parts of it to the home: the place's name and what it is for, "About
@@ -2228,19 +2228,20 @@ included, so content comes only from places whose own memory already goes there.
   goes home. The daemon forwards only where the place's memory layer is the shared one when the
   report arrives, the test #3074's step 1 already makes. A private channel, a group DM or an
   external place forwards nothing, and a DM takes no first look.
-- **A request for research.** `researchOrganization` takes no argument and asks the daemon to take
-  organization research (Part two), as `firstLook` asks it to take a first look. It is offered only
-  on an internal public channel's appending long session, since a session's tools are fixed when it
-  starts, and the daemon judges the calling session's layer again at the call. It carries no
-  content, only who asked and where, which the daemon records from the calling session, so the
-  summary can go back there. The home has the same tool for editors' requests.
+- **A request for research.** An editor asks for it with one action in the Organization section
+  (Console, below), and the daemon takes organization research (Part two) as it takes a first look.
+  No tool starts it: research runs long and spends the check budget, so a control that shows it
+  running suits it better than a chat command, and it keeps the agent's tools to one. A person who
+  asks in a channel is pointed to an editor. The home's conversation answers questions and takes
+  corrections; it does not start research.
 - **A fact stated in conversation.** `rememberForOrganization({ fact, person? })` hands the home
   one fact someone stated in the place: about the organization as a whole ("we stopped selling X
   in June"), or, with `person`, about a person's work ("@alice now owns billing"). A correction
   then reaches the organization files at once rather than at the next research, which matters when
   the agent has just been told it is wrong. The tool, not the model, settles who and whence:
-  - **Offered** only on an internal public channel's appending long session and on the home, as
-    `researchOrganization` is, and the daemon judges the calling session's layer again at the call.
+  - **Offered** only on an internal public channel's appending long session, as `firstLook` is,
+    since a session's tools are fixed when it starts; the daemon judges the calling session's
+    layer again at the call. The home has no need of it: it writes the files itself.
   - **Only on a turn a person typed.** A report round, a check, a hook run, a schedule or another
     agent's message is refused: a fact "stated in conversation" needs a person to have stated it,
     the rule #3077 set for shared-layer writes from other conversations.
@@ -2267,7 +2268,7 @@ included, so content comes only from places whose own memory already goes there.
   (§5.7). The home merges them with judgment the daemon does not have: the same fact twice, which
   of ten lines to drop, two statements that disagree, which section of `organization.md`. An
   editor's message starts a turn at once.
-- A person in a DM who wants research asks an editor, or asks in a public channel.
+- A person who wants research asks an editor.
 
 **What it may do.**
 
@@ -2275,8 +2276,8 @@ included, so content comes only from places whose own memory already goes there.
   - read the shared layer and write it, and alone write the organization files (below);
   - read the organization's knowledge (`findKnowledge`, `listKnowledge`) and the names of the
     internal public channels its bots are in (`listChannels`);
-  - start organization research with `researchOrganization`, and list, message and stop it with
-    `listTasks`, `messageTask` and `stopTask`.
+  - list, message and stop organization research with `listTasks`, `messageTask` and `stopTask`,
+    as a place's session does its follow-ups (§5.12).
 - **It reads as no one.** Whoever typed in the console, the home's reads are those of a turn no
   person is behind: public channels on its own bots only (§5.5 "Reads"). An editor's access would
   otherwise carry their private channels into the shared layer through it.
@@ -2338,17 +2339,17 @@ may see the agent reads it; only editors talk to it.
   files, which every conversation reads, came from. The shared
   layer itself is shown to whoever may see the agent (product conventions, "Memory backend
   selection").
-- Talking to it starts research, spends the check budget and changes the file every session
-  reads: editor decisions. What an editor types there is as visible as the file it changes.
+- Talking to it changes the files every session reads, and the Research again action spends the
+  check budget: editor decisions. What an editor types there is as visible as the file it changes.
 - For a restricted agent `org` is wider than who may see the agent, as it already is for its
   public channels' sessions; nothing private reaches the home.
 - Not chosen: editors only. Most people would then be unable to see where a file they all read
   came from, and the home holds nothing that needs hiding.
 
 **Console** (recommended). The agent's page gains an Organization section: the organization files
-read-only with their sources, the organization research runs, and the home's conversation with a
-composer for editors. The home is not listed among sessions or in Home's
-Recent, as tasks are not (#3072). Its name is §9 Q24.
+read-only with their sources, the organization research runs with a **Research again** action for
+editors, and the home's conversation with a composer for editors. The home is not listed among
+sessions or in Home's Recent, as tasks are not (#3072). Its name is §9 Q24.
 
 **Cost** (recommended).
 
@@ -2380,10 +2381,9 @@ any shared-layer file.
   Its row is the record, so switching the mode off and on takes none, as a first look's row
   records its place (§5.13). An agent already in assistant mode when this ships takes none until
   someone asks, so the upgrade sends nobody a message.
-- **On request.** An editor asks the home in the console, or someone asks in an internal public
-  channel, whose long session calls `researchOrganization` (Part one). One runs at a time per agent.
-  A request while one runs is answered with when it started, and that requester is told when it
-  ends too.
+- **On request.** An editor uses Research again in the Organization section (Part one). One runs
+  at a time per agent; while one runs the action shows when it started, and the editor who asked is
+  told when it ends too. A person who asks in a channel is pointed to an editor.
 - _Undecided_ (§9 Q25): a periodic re-run, offered as a follow-up of the home or on a fixed rhythm.
 
 **What it reads** (recommended).
@@ -2554,9 +2554,8 @@ An editor's correction through the home is an internal source dated that day.
     Plane names that person with the edit it projects and resolves their DM as it does the
     responsible user's (§5.1). A daemon that missed the edit falls back to the responsible user;
     with nobody reachable by DM, the summary stays in the home's conversation in the console.
-  - **A channel's request**: that place's current long session (after `!new`, the new one), which
-    says it there.
-  - **A console request**: the home's conversation, where it was asked.
+  - **An editor's request**: the home's conversation, which the Organization section shows, so the
+    editor who pressed Research again reads it there.
 
 **Budget** (recommended). Each research check counts as one against `dailyCheckBudget`.
 Onboarding's waits for the budget if it is spent; a requested one past it is refused with when it
@@ -2598,16 +2597,17 @@ shape. Whether it does, from a fixed set or by its own choice, and how many.
 
 1. #3074's per-place merge, shipped and unchanged.
 2. Daemon and protocol: the home's coordinate, opening and rollover, recognized by the Control
-   Plane; the daemon's forwarding of a first look's findings, and `researchOrganization` and
-   `rememberForOrganization` with their audience rule and the latter's checks on the turn, the
-   person and the source; the organization files' single writer and shapes; the first look's handling
+   Plane; the daemon's forwarding of a first look's findings, and `rememberForOrganization` with
+   its audience rule and its checks on the turn, the person and the source; the organization files'
+   single writer and shapes; the first look's handling
    without its shared-file merge.
 3. Research: the start condition's live tests first. Then the research marker on a follow-up of
    the home, the credential-less host for it, the web-read list, the code-host bridge reads and the
    read grant's `pull_requests: read`, the prelude line, the summary's delivery, and onboarding
    with who switched the mode on.
 4. People profiles (§5.17): the directory's shape, the subject's own reads and writes, and leaving.
-5. Console: the Organization section, and a person's view of their own entry.
+5. Console: the Organization section with its Research again action, and a person's view of their
+   own entry.
 
 Each needs the one before it, except that 5's Organization section needs only 2.
 
@@ -2935,8 +2935,8 @@ subject's control is what that move would have to carry over.
     GitHub broker should give checks the read tools GitLab and Gitea have. Organization research
     adds bridge reads of its own (§5.15 "Code hosts"), which such a broker could reuse.
 22. **The new names** (§5.15): the `assistant:home:<generation>` coordinate, the
-    `researchOrganization` and `rememberForOrganization` tools (on the home and on internal public
-    channels' long sessions), research's form of `recordCheck`, and `listCodeHostRepositories` and
+    `rememberForOrganization` tool on internal public channels' long sessions, research's form of
+    `recordCheck`, and `listCodeHostRepositories` and
     `readCodeHostRepository` change agent-facing tools. `sendMessage` is unchanged. The owner
     confirms or changes them before the daemon's pull request, and each description and schema is
     measured against the runtimes' caps, as `propose`'s were (§5.13).
@@ -3566,12 +3566,13 @@ to confirm, except what is marked decided or undecided.
   daemon opens it with no creator, and a webchat coordinate would be one person's. It alone writes
   the organization files in fixed shapes: `organization.md`, `channels.md` and `members.md`. No
   session messages it: the daemon forwards a first look's organization and role findings from
-  places that write the shared layer; `rememberForOrganization` lets such a place hand over one
+  places that write the shared layer, and `rememberForOrganization` lets such a place hand over one
   fact on a turn a person typed, about the organization or, with a `person` the daemon checks is
-  on the turn, a member and not opted out, about someone's work; and `researchOrganization` lets
-  it ask for research. A `sendMessage` action, `messageHome`, was drafted and dropped as a special
-  case in a generic tool. It reads as no one, writes only memory, is `org`-visible,
-  and talks to editors from an Organization section of the agent's page. It rolls over with no
+  on the turn, a member and not opted out, about someone's work. Research is started by the daemon
+  on onboarding and by an editor's action in the console, with no tool. A `sendMessage` action,
+  `messageHome`, was drafted and dropped as a special case in a generic tool. It reads as no one,
+  writes only memory, is `org`-visible, and talks to editors from an Organization section of the
+  agent's page. It rolls over with no
   handover, since its files are its state, and replaces #3074's per-place merge once it ships.
 - **Research.** A follow-up of the home that the daemon takes on onboarding or on request: a
   read-only check, not a delegated task, on the credential-less host. It reads the shared layer,
