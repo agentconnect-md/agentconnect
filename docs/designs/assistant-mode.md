@@ -2579,7 +2579,7 @@ session the report opened recorded the first look as its creator while being the
 parent, so neither settled its visibility and the console hid both from the channel's own member.
 The report now opens it as the place's own root, bound to the channel's people.
 
-**Fifty-fifth revision (2026-10-16)**: §5.14 proposes event wake (issue #2810; §1.5, §2, §5.9,
+**Fifty-sixth revision (2026-10-16)**: §5.14 proposes event wake (issue #2810; §1.5, §2, §5.9,
 §5.12, §6, §7, §9). A follow-up was woken only by time, so it spent budget whether or not anything
 changed and reported up to a check interval late, while the event that answered it reached only
 agents with a hook rule on the repository. Recommended, for the owner to confirm: a follow-up names
