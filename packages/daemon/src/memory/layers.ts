@@ -1,6 +1,7 @@
 // Which memory layer a conversation reads and writes, decided by its audience for every agent (unified-memory-interface.md §6).
 import type { PlaceKind, ReadAsker, SourcePlace } from '../assistant/place-access.js'
 import { kindFromRows } from '../mcp/ops/place-gate.js'
+import type { NormalizedMessage } from '../messages/normalized.js'
 import { confirmsInternalAudience } from '../platforms/read-ports.js'
 import {
   adoptMemoryLayer,
@@ -78,6 +79,11 @@ const usableId = (id: string | null | undefined): id is string => !!id && !/[\s:
 
 // Agent ids are UUIDs (the protocol's AgentId); a schedule's or hook's trigger id carries a colon.
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Whether a person typed a message: a check's, a task's, a report's, another agent's or a schedule's never counts. */
+export function typedByPerson(msg: Pick<NormalizedMessage, 'source' | 'sender' | 'headless'>): boolean {
+  return msg.source === 'user' && !msg.sender.isBot && !msg.headless && !!msg.sender.id
+}
 
 /** Whether an initiator is a person: never an agent (a check's, a task's, another agent's message) or an automation trigger. */
 export function personId(id: string | null | undefined): id is string {

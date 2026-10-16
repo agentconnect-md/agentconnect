@@ -13,7 +13,11 @@ import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { memoryChannelKey, memoryPersonKey } from '../src/memory/store.js'
-import { MEMORY_PERSON_LAYER_REFUSED, MEMORY_SHARED_LAYER_ONLY } from '../src/memory/tools.js'
+import {
+  MEMORY_PERSON_LAYER_REFUSED,
+  MEMORY_SHARED_LAYER_NEEDS_PERSON,
+  MEMORY_SHARED_LAYER_ONLY
+} from '../src/memory/tools.js'
 import { openTestStore } from './store-support.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { appendCoordinate } from '../src/session/append-coordinate.js'
@@ -132,10 +136,21 @@ function world(place: Place, agent: Agent = {}) {
   // What the session manager resolves when a session starts on this message, before its row exists.
   const start = async (msg: unknown) =>
     (await daemon.memoryLayerFor(daemon.memoryPlaceOf(AGENT, { platform, channel }, undefined, msg))).scope
-  return { daemon, captured, tool, ctx, start }
+  // The session's live turn: the message it answers, and any folded into it.
+  const turn = (msg: unknown, folded: unknown[] = []) =>
+    daemon.activeGateEntries.set(key, { msg, integrationId: 'int-1', foldedMessages: folded.map((m) => ({ msg: m })) })
+  return { daemon, captured, tool, ctx, start, turn }
 }
 
 const PUBLIC = { isPrivate: false, externalReason: null }
+// A message a person typed, and the rounds no person starts, as the daemon builds them.
+const TYPED = { source: 'user', platform: 'slack', sender: { id: 'U1', isBot: false }, isDm: false }
+const ROUNDS = {
+  report: { source: 'agent', sender: { id: AGENT, isBot: true }, parentReport: true, isDm: false },
+  check: { source: 'agent', sender: { id: AGENT, isBot: true }, headless: true, isDm: false },
+  'session message': { source: 'agent', sender: { id: AGENT_UUID, isBot: true }, isDm: false },
+  schedule: { source: 'cron', sender: { id: 'cron:daily', isBot: false }, isDm: false }
+}
 
 // assistant-mode.md §5.13: memory gets only what the place's long session writes from a first look's report.
 describe('a first look’s own session', () => {
@@ -226,15 +241,23 @@ describe('external memory keeps the shared layer alone', () => {
 
   it('refuses a default write from a DM, and takes one the person asked to share with everyone', async () => {
     const w = world({ channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' }, { provider: 'external' })
+    w.turn({ ...TYPED, isDm: true })
     await expect(w.tool({ mode: 'write' })).rejects.toThrow(MEMORY_SHARED_LAYER_ONLY)
     expect(await w.tool({ mode: 'read' })).toEqual({ agentId: AGENT })
     expect(await w.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
+  })
+
+  it('refuses a named shared write from a private place on a round no person started', async () => {
+    const w = world({ snapshot: { isPrivate: true } }, { provider: 'external' })
+    w.turn(ROUNDS.report)
+    await expect(w.tool({ mode: 'write', layer: 'shared' })).rejects.toThrow(MEMORY_SHARED_LAYER_NEEDS_PERSON)
   })
 })
 
 describe("explicit memory tools: the session's layer, or the one `layer` names", () => {
   it('writes a DM to the person layer with no card, and to the shared layer when asked for everyone', async () => {
     const w = world({ channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' })
+    w.turn({ ...TYPED, isDm: true })
     expect(await w.tool({ mode: 'write' })).toEqual({
       agentId: AGENT,
       personKey: memoryPersonKey(`slack:${TENANT}:U1`)
@@ -277,6 +300,44 @@ describe("explicit memory tools: the session's layer, or the one `layer` names",
     })
     expect(dm).toEqual({ agentId: AGENT, personKey: memoryPersonKey('user:user-1') })
     expect(web).toEqual(dm)
+  })
+})
+
+describe('a named shared write from a narrower conversation needs a person on the turn', () => {
+  const NARROWER: [string, Place][] = [
+    ['a private channel', { snapshot: { isPrivate: true } }],
+    ['a group DM', { channel: 'G1', conversationKind: 'group_dm' }],
+    ['a Slack Connect channel', { snapshot: { isPrivate: false, externalReason: 'externallyShared' } }],
+    ['a 1:1 DM', { channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' }]
+  ]
+
+  it.each(NARROWER)('refuses it in %s on a report, check, session-message or schedule round', async (_, place) => {
+    const w = world(place)
+    await expect(w.tool({ mode: 'write', layer: 'shared' })).rejects.toThrow(MEMORY_SHARED_LAYER_NEEDS_PERSON)
+    for (const msg of Object.values(ROUNDS)) {
+      w.turn(msg)
+      await expect(w.tool({ mode: 'write', layer: 'shared' })).rejects.toThrow(MEMORY_SHARED_LAYER_NEEDS_PERSON)
+      // Reading the shared layer and writing the conversation's own stay open.
+      expect(await w.tool({ mode: 'read', layer: 'shared' })).toEqual({ agentId: AGENT })
+      expect(await w.tool({ mode: 'write' })).not.toEqual({ agentId: AGENT })
+    }
+  })
+
+  it("takes it on a person's own turn in the same place, or one a person's message folded into", async () => {
+    const w = world({ snapshot: { isPrivate: true } })
+    w.turn(TYPED)
+    expect(await w.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
+    w.turn(ROUNDS.report, [TYPED])
+    expect(await w.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
+  })
+
+  it("leaves a public internal channel's rounds as they were", async () => {
+    const w = world({ snapshot: PUBLIC })
+    for (const msg of [TYPED, ...Object.values(ROUNDS)]) {
+      w.turn(msg)
+      expect(await w.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
+      expect(await w.tool({ mode: 'write' })).toMatchObject({ sharedPlace: true })
+    }
   })
 })
 
@@ -413,7 +474,7 @@ describe('a memory write names the layer it landed in', () => {
     } as unknown as OpsDeps
     const write = async (name: string, args: Record<string, unknown>) =>
       (await executeTool(w.ctx, name, args, deps)) as Record<string, unknown>
-    return { write, landed: (path: string) => existsSync(join(dir, 'agent', path)) }
+    return { write, turn: w.turn, landed: (path: string) => existsSync(join(dir, 'agent', path)) }
   }
   const DM: Place = { channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' }
   const PERSON_DIR = `people/${memoryPersonKey(`slack:${TENANT}:U1`)}/memory`
@@ -440,6 +501,7 @@ describe('a memory write names the layer it landed in', () => {
 
   it('names the shared layer when asked for everyone, and where the conversation itself shares', async () => {
     const dm = await writer(DM)
+    dm.turn({ ...TYPED, isDm: true })
     expect(await dm.write('writeMemory', { path: 'prefs.md', content: '- tabs', layer: 'shared' })).toMatchObject({
       layer: 'shared',
       note: MEMORY_LAYER_NOTES.shared
