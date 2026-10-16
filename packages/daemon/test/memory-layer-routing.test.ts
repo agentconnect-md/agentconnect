@@ -15,6 +15,7 @@ import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { memoryChannelKey, memoryPersonKey } from '../src/memory/store.js'
 import {
   MEMORY_PERSON_LAYER_REFUSED,
+  MEMORY_SHARED_LAYER_EXTERNAL,
   MEMORY_SHARED_LAYER_NEEDS_PERSON,
   MEMORY_SHARED_LAYER_ONLY
 } from '../src/memory/tools.js'
@@ -303,11 +304,10 @@ describe("explicit memory tools: the session's layer, or the one `layer` names",
   })
 })
 
-describe('a named shared write from a narrower conversation needs a person on the turn', () => {
+describe('a named shared write needs a person on the turn, and never comes from outsiders', () => {
   const NARROWER: [string, Place][] = [
     ['a private channel', { snapshot: { isPrivate: true } }],
     ['a group DM', { channel: 'G1', conversationKind: 'group_dm' }],
-    ['a Slack Connect channel', { snapshot: { isPrivate: false, externalReason: 'externallyShared' } }],
     ['a 1:1 DM', { channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' }]
   ]
 
@@ -329,6 +329,24 @@ describe('a named shared write from a narrower conversation needs a person on th
     expect(await w.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
     w.turn(ROUNDS.report, [TYPED])
     expect(await w.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
+  })
+
+  it.each<[string, Place]>([
+    ['a Slack Connect channel', { snapshot: { isPrivate: false, externalReason: 'externallyShared' } }],
+    ['a public channel with a known guest', { snapshot: PUBLIC, external: true }],
+    ['a private channel with a known guest', { snapshot: { isPrivate: true }, external: true }],
+    ['a group DM with a known guest', { channel: 'G1', conversationKind: 'group_dm', external: true }]
+  ])("refuses it in %s on every round, a guest's own turn included", async (_, place) => {
+    const w = world(place)
+    for (const msg of [{ ...TYPED, sender: { id: 'U-GUEST', isBot: false } }, ...Object.values(ROUNDS)]) {
+      w.turn(msg)
+      await expect(w.tool({ mode: 'write', layer: 'shared' })).rejects.toThrow(MEMORY_SHARED_LAYER_EXTERNAL)
+      expect(await w.tool({ mode: 'write' })).toMatchObject({ channelKey: memoryChannelKey(w.ctx.channel) })
+    }
+    // An internal member's own turn in a private channel with no outsiders still may.
+    const internal = world({ snapshot: { isPrivate: true } })
+    internal.turn(TYPED)
+    expect(await internal.tool({ mode: 'write', layer: 'shared' })).toEqual({ agentId: AGENT })
   })
 
   it("leaves a public internal channel's rounds as they were", async () => {

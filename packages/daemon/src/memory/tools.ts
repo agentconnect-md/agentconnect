@@ -25,6 +25,10 @@ export const MEMORY_SHARED_LAYER_ONLY =
 export const MEMORY_SHARED_LAYER_NEEDS_PERSON =
   'layer "shared" is refused: no person started this round, and this conversation\'s content stays in its own layer. Omit layer to keep it here; if it should be shared with everyone, ask the person, and save it on their turn if they say so.'
 
+/** Refusal of `layer: "shared"` on every round of a conversation known to hold people from outside the organization. */
+export const MEMORY_SHARED_LAYER_EXTERNAL =
+  'layer "shared" is refused: this conversation includes people from outside the organization, so nothing said here is added to the memory everyone shares, and nothing was saved. Omit layer to keep it in this conversation; to share it with everyone, someone can ask in an internal channel.'
+
 /** The agent's long-term memory tools, for EVERY agent: `<agent-root>/memory/` with a `MEMORY.md` index plus topic files. */
 export const MEMORY_TOOLS: ToolDescriptor[] = [
   ...MEMORY_ENTRY_TOOLS,

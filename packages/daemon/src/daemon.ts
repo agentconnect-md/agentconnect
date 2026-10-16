@@ -409,6 +409,7 @@ import { slackDraftCardPort } from './platforms/slack/draft-card.js'
 import {
   MEMORY_NO_PERSON_LAYER,
   MEMORY_PERSON_LAYER_REFUSED,
+  MEMORY_SHARED_LAYER_EXTERNAL,
   MEMORY_SHARED_LAYER_NEEDS_PERSON,
   MEMORY_SHARED_LAYER_ONLY,
   MEMORY_TOOL_NAMES,
@@ -827,9 +828,9 @@ import {
   MemoryLayers,
   memoryLayerFolder,
   typedByPerson,
-  type MemoryLayer,
   type MemoryLayerChoice,
   type MemoryPlace,
+  type PlaceAudience,
   type ResolvedMemoryLayer
 } from './memory/layers.js'
 import {
@@ -8150,8 +8151,10 @@ export class Daemon {
     const turn = sourceTurnId ? { sourceTurnId } : {}
     const managed = (this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed') === 'managed'
     if (call.layer === 'shared') {
-      // A narrower conversation's content reaches the shared layer only on a round a person started.
-      if (call.mode === 'write' && !this.personTypedTurn(key) && (await this.conversationLayer(ctx, key)) !== 'shared')
+      const audience = call.mode === 'write' ? await this.conversationAudience(ctx, key) : undefined
+      // Outsiders never add to the layer every conversation reads; a narrower conversation does only on a person's round.
+      if (audience?.external) throw new Error(MEMORY_SHARED_LAYER_EXTERNAL)
+      if (audience && audience.layer !== 'shared' && !this.personTypedTurn(key))
         throw new Error(MEMORY_SHARED_LAYER_NEEDS_PERSON)
       return { agentId: ctx.agentId, ...turn }
     }
@@ -8183,12 +8186,12 @@ export class Daemon {
     return !!live && [live.msg, ...(live.foldedMessages ?? []).map((m) => m.msg)].some(typedByPerson)
   }
 
-  /** The layer a session's conversation writes with no `layer`, as `memoryLayerFor` decides it; one it cannot describe keeps its own. */
-  private async conversationLayer(ctx: SessionContext, key: string): Promise<MemoryLayer> {
+  /** The layer a session's conversation writes with no `layer`, as `memoryLayerFor` decides it, and whether outsiders are known there; one it cannot place counts as external. */
+  private async conversationAudience(ctx: SessionContext, key: string): Promise<PlaceAudience> {
     const provider = this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed'
-    if (provider !== 'managed' && provider !== 'external') return 'shared'
+    if (provider !== 'managed' && provider !== 'external') return { layer: 'shared', external: false }
     const place = this.memoryPlaceOf(ctx.agentId, ctx, await this.store.getSession(key), this.liveTurn(ctx)?.msg)
-    return await this.memoryLayers.layerOf(place).catch(() => 'place' as const)
+    return await this.memoryLayers.audienceOf(place).catch(() => ({ layer: 'place' as const, external: true }))
   }
 
   /** Whether the agent already holds a conversation external (a share or a guest detected); one it cannot place counts as such. */

@@ -45,6 +45,12 @@ export interface ResolvedMemoryLayer {
   scope: MemoryScope
 }
 
+/** A conversation's layer, and whether it is known to hold people from outside the organization. */
+export interface PlaceAudience {
+  layer: MemoryLayer
+  external: boolean
+}
+
 export interface MemoryLayerDeps {
   /** Whether sessions on this platform are conversations at all: a chat platform's or webchat's, never a code host's. */
   chatPlatform(platform: string): boolean
@@ -107,17 +113,23 @@ export class MemoryLayers {
 
   /** The layer a conversation's memory goes to; a place that cannot be described keeps its own. */
   async layerOf(place: MemoryPlace): Promise<MemoryLayer> {
-    if (place.platform === 'webchat') return 'person'
+    return (await this.audienceOf(place)).layer
+  }
+
+  /** Its layer, and whether it is known to hold people from outside: shared with another organization, or a known guest. */
+  async audienceOf(place: MemoryPlace): Promise<PlaceAudience> {
+    if (place.platform === 'webchat') return { layer: 'person', external: false }
     // A code-host review or an internal pass is no conversation: what it learns is the organization's.
-    if (!this.deps.chatPlatform(place.platform)) return 'shared'
-    const rowKind = kindFromRows(place.platform, place.kinds)
-    if (rowKind === 'dm') return 'person'
-    if (rowKind === 'group_dm') return 'place'
+    if (!this.deps.chatPlatform(place.platform)) return { layer: 'shared', external: false }
     const integrationId = this.deps.integrationFor(place.agentId, place.platform, place.transportScope)
+    const known = this.deps.external(place.agentId, integrationId, place.channel)
+    const rowKind = kindFromRows(place.platform, place.kinds)
+    if (rowKind === 'dm') return { layer: 'person', external: known }
+    if (rowKind === 'group_dm') return { layer: 'place', external: known }
     const described = await this.deps
       .describe({ platform: place.platform, channel: place.channel }, rowKind, integrationId)
       .catch(() => ({ platform: place.platform, channel: place.channel }) as SourcePlace)
-    return layerOfPlace(described, this.deps.external(place.agentId, integrationId, place.channel))
+    return { layer: layerOfPlace(described, known), external: known || described.external === true }
   }
 
   /** The layer and its scope; a 1:1 DM whose person cannot be told keeps a place layer of its own. */
