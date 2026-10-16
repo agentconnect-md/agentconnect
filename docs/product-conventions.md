@@ -1335,13 +1335,16 @@ it a title. Whoever may continue a running task's session may stop it there: Sto
 current turn as the composer's stop does, mutes nothing and undoes nothing it already did, and a
 process its runtime started in the background may keep running. The task then reports to the
 conversation that it ended, its transcript names who stopped it, and the row says whether a turn
-was stopped or nothing was running. An agent whose daemon cannot list one conversation's tasks
-says to upgrade it.
+was stopped or nothing was running. A follow-up's Stop ends it after a confirmation; one whose first
+check has not run has no session yet, and whoever may continue its conversation may end it. An
+agent whose daemon cannot list one conversation's tasks says to upgrade it.
 
 A task's own page, a follow-up's included, opens with a line naming the session it belongs to,
-"Belongs to <that session's title> · task", which links back to it. The page is read-only: it
-shows the transcript, its tool calls included, with no composer and no composer stop, since
-nothing sent from there would reach it.
+"Belongs to <that session's title> · task", which links back to it. A follow-up's page then shows
+its status ("Waiting · next check <time>", Checking, Paused, Done or Stopped), what counts as done
+and its newest checks, which can be hidden; an agent whose daemon cannot read one task shows only
+the line. The page is read-only: it shows the transcript, its tool calls included, with no
+composer and no composer stop, since nothing sent from there would reach it.
 
 The session page shows no hierarchy. Its Sessions tab's Related list is flat and holds real
 sessions only, each with a visible label: the session that started this one, "Started by", and
@@ -1510,7 +1513,8 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   that conversation. A follow-up is listed under its conversation's current long session, with its
   status (waiting, checking, paused after five failed checks until it is messaged, done or stopped)
   and next check; what counts as done and its newest checks (when, what it saw, and whether it was
-  reported) appear only where its title does. Stopping a follow-up here ends it. An agent whose daemon
+  reported) appear only where its title does. Stopping a follow-up here ends it, before its first
+  check too, for whoever may continue its conversation. An agent whose daemon
   keeps follow-ups has no items; on a daemon that still keeps an item ledger, its items are listed as
   before.
 - **Waiting for approval** is shown to editors only: each pending draft's target, its exact text,

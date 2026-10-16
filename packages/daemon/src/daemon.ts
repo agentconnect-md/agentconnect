@@ -88,6 +88,7 @@ import {
   ASSISTANT_ACTIVITY_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  ASSISTANT_TASK_HANDLE_FEATURE,
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   FOLLOW_UP_TASKS_V1_FEATURE,
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
@@ -7811,6 +7812,8 @@ export class Daemon {
       ACTIVITY_EVERY_AGENT_V1_FEATURE,
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
       FOLLOW_UP_TASKS_V1_FEATURE,
+      // Ends a follow-up by its id before its first check, and reads one task by its session; static.
+      ASSISTANT_TASK_HANDLE_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),

@@ -3981,6 +3981,8 @@ export interface AssistantItemDetailDto extends AssistantItemDto {
 export type AssistantFollowUpStatus = 'waiting' | 'checking' | 'paused' | 'done' | 'stopped'
 
 export interface AssistantFollowUpDto {
+  /** Its own id where the row is visible, from a daemon that ends a follow-up by it. */
+  id?: string
   status: AssistantFollowUpStatus
   /** When it checks next; null when none is scheduled or it has ended. */
   nextCheck: string | null
@@ -4093,12 +4095,26 @@ export async function fetchAssistantSubsessions(
   return apiGet(`${assistantBase(agentId)}/subsessions${query ? `?${query}` : ''}`)
 }
 
+/** One task by its own session id, as the list carries it; a daemon without `assistant-task-handle-v1` answers 409. */
+export async function fetchAssistantSubsession(agentId: string, sessionId: string): Promise<AssistantSubsessionDto> {
+  return apiGet(`${assistantBase(agentId)}/subsessions/${encodeURIComponent(sessionId)}`)
+}
+
 /** Interrupt background work's current turn, or end a follow-up; `not_running` when there was nothing to stop. */
 export async function stopAssistantSubsession(
   agentId: string,
   sessionId: string
 ): Promise<{ result: 'stopped' | 'not_running' }> {
   return apiPost(`${assistantBase(agentId)}/subsessions/${encodeURIComponent(sessionId)}/stop`, {})
+}
+
+/** End a follow-up by its id under the conversation its row is listed in, which works before its first check too. */
+export async function stopAssistantFollowUp(
+  agentId: string,
+  followUpId: string,
+  parentSessionId: string
+): Promise<{ result: 'stopped' | 'not_running' }> {
+  return apiPost(`${assistantBase(agentId)}/follow-ups/${encodeURIComponent(followUpId)}/stop`, { parentSessionId })
 }
 
 /** Background work's runtime permission request waiting on an answer; decided like any approval request. */

@@ -1234,9 +1234,14 @@ else, and nobody but its own conversation is told of it.
 - **Standing list.** A place is judged public as its memory layer is: shared only for a channel its
   platform confirms public and internal. A migrated follow-up is listed only in its own place until
   its first check judges it.
-- **Console.** Activity's task rows carry `kind`, and a follow-up's row its `followUp` fields; a
-  console Stop ends the follow-up. A follow-up whose first check has not run has no session yet,
-  so the console cannot stop it until then; its place can.
+- **Console.** Activity's task rows carry `kind`, and a follow-up's row its `followUp` fields with
+  its own id; a console Stop ends the follow-up. One whose first check has not run has no session
+  yet, so the console ends it by that id (`stop-follow-up`), under the rule of the conversation
+  its row names, which the daemon checks the row still names. A task's own page reads its row by
+  the task's session (`task`) and shows a follow-up's status, what counts as done and its recent
+  checks. A daemon advertises both with `assistant-task-handle-v1`; toward an older one a row
+  carries no id, so it cannot be stopped from the console before its first check, and the page
+  shows only the session it belongs to.
 
 ---
 
@@ -1773,3 +1778,9 @@ advertises `follow-up-tasks-v1`: Activity carries follow-ups among the tasks and
 and the Control Plane refuses the item routes toward it. Store version 53 turns each open item into
 a follow-up of its place and drops followers and closed items. §1, §5.4, §5.6–§5.11 and §7 now
 describe follow-ups; §5.12 records how it shipped.
+
+**Forty-fifth revision (2026-10-16)**: §5.12 "As shipped" closes its two console gaps. A
+follow-up's row carries its own id, by which the console ends one whose first check has not run,
+under the rule of the conversation its row names. A task's own page reads its row by the task's
+session and shows a follow-up's status, what counts as done and its recent checks. The daemon
+advertises both as `assistant-task-handle-v1`.

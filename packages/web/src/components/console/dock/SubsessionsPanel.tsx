@@ -12,7 +12,6 @@ import { useDockRefresh } from '@/components/console/dock/auto-refresh'
 import {
   ApiError,
   fetchAssistantSubsessions,
-  stopAssistantSubsession,
   type AssistantFollowUpStatus,
   type AssistantSubsessionDto,
   type AssistantSubsessionsPageDto
@@ -23,7 +22,9 @@ import {
   FollowUpChecks,
   FollowUpChecksToggle,
   followUpOf,
+  stopTask,
   taskRunning,
+  taskStopKey,
   useFollowUpStatusText
 } from '@/components/console/follow-up'
 import { TaskGroupHeading, formatTaskElapsed } from './task-group'
@@ -219,12 +220,14 @@ export function SubsessionsPanel({
   }, [agentId, current?.cursor, more.loading, scope, sessionId])
 
   const stop = useCallback(
-    async (id: string) => {
+    async (row: AssistantSubsessionDto) => {
+      const id = taskStopKey(row)
+      if (!id) return
       const mark = (state: StopState) =>
         setStops((prev) => ({ scope, byId: { ...(prev.scope === scope ? prev.byId : {}), [id]: state } }))
       mark('busy')
       try {
-        mark((await stopAssistantSubsession(agentId, id)).result)
+        mark((await stopTask(agentId, row)).result)
       } catch (e) {
         mark(e instanceof ApiError && e.code === 'DAEMON_FEATURE_MISSING' ? 'upgrade' : 'failed')
       }
@@ -255,15 +258,18 @@ export function SubsessionsPanel({
             warn={current.error.status !== 503}
           />
         ) : null}
-        {rows.map((row, i) => (
-          <SubsessionRow
-            key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
-            row={row}
-            now={now}
-            stop={row.sessionId ? stopById[row.sessionId] : undefined}
-            onStop={stop}
-          />
-        ))}
+        {rows.map((row, i) => {
+          const stopKey = taskStopKey(row)
+          return (
+            <SubsessionRow
+              key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
+              row={row}
+              now={now}
+              stop={stopKey ? stopById[stopKey] : undefined}
+              onStop={stop}
+            />
+          )
+        })}
         {current?.cursor ? (
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <Button variant="ghost" size="xs" disabled={more.loading} onClick={() => void loadMore()}>
@@ -354,7 +360,7 @@ function SubsessionRow({
   row: AssistantSubsessionDto
   now: number
   stop: StopState | undefined
-  onStop: (sessionId: string) => Promise<void>
+  onStop: (row: AssistantSubsessionDto) => Promise<void>
 }) {
   const t = useTranslations('Sessions.detail.subsessionsPanel')
   const tf = useTranslations('Common.followUp')
@@ -365,12 +371,13 @@ function SubsessionRow({
   const [confirming, setConfirming] = useState(false)
   const followUp = followUpOf(row)
   const runningNow = taskRunning(row)
-  const stoppable = row.state === 'open' && row.canStop && row.sessionId !== null
+  // A follow-up whose first check has not run is ended by its own id.
+  const stoppable = row.state === 'open' && row.canStop && taskStopKey(row) !== null
   const icon = followUp ? FOLLOW_UP_ICON[followUp.status] : null
   // Ending a follow-up is asked once more; stopping a turn is not.
   const askStop = () => {
     if (followUp) setConfirming(true)
-    else void onStop(row.sessionId!)
+    else void onStop(row)
   }
   return (
     <div
@@ -467,7 +474,7 @@ function SubsessionRow({
           confirm={tf('end')}
           keep={tf('keep')}
           busy={stop === 'busy'}
-          onConfirm={() => void onStop(row.sessionId!).then(() => setConfirming(false))}
+          onConfirm={() => void onStop(row).then(() => setConfirming(false))}
           onKeep={() => setConfirming(false)}
         />
       ) : null}

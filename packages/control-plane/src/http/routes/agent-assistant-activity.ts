@@ -15,6 +15,7 @@ import {
   AssistantActivitySubsessionState,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  ASSISTANT_TASK_HANDLE_FEATURE,
   AssistantDraftStatus,
   AssistantSubsessionCursor,
   AssistantActivityFollowUpStatus,
@@ -24,6 +25,7 @@ import {
   isSubsessionCoordinate,
   type AssistantActivityReadReq,
   type AssistantActivityReadResult,
+  type AssistantActivitySubsession,
   type AssistantActivityWriteReq,
   type AssistantActivityWriteResult
 } from '@agentconnect.md/protocol'
@@ -82,6 +84,8 @@ const DraftsPageDto = z.object({
 })
 /** A follow-up's own fields; `doneWhen` and `recentChecks` only where the row is `visible`. */
 const FollowUpDto = z.object({
+  /** Its own id where the row is visible, from an agent that ends a follow-up by it with `stopAssistantFollowUp`. */
+  id: z.string().optional(),
   /** `paused` stopped after five failed checks in a row, until it is messaged. */
   status: AssistantActivityFollowUpStatus,
   /** The next scheduled check; null when it waits until it is messaged, or has ended. */
@@ -100,7 +104,7 @@ const SubsessionDto = z.object({
   startedAt: z.string(),
   /** The caller may see this background work's conversation; otherwise only its state and start are shown. */
   visible: z.boolean(),
-  /** The caller may stop its current turn: it is running and they may continue its session. */
+  /** The caller may stop its current turn, or end a follow-up: it is open and they may continue its session, or its conversation's while it has none. */
   canStop: z.boolean(),
   /** The conversation that opened it, when the caller may see it. */
   parent: ConversationDto.nullable(),
@@ -130,6 +134,11 @@ const SubsessionsQuery = z.object({
     .default(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX)
 })
 const SubsessionParam = IdParam.extend({ sessionId: z.string().min(1).max(512) })
+const FollowUpParam = IdParam.extend({ followUpId: z.string().min(1).max(512) })
+const FollowUpStopBody = z.object({
+  /** The conversation its row is listed under (`parent.sessionId`). */
+  parentSessionId: z.string().min(1).max(512)
+})
 const SubsessionStopDto = z.object({
   /** `stopped` interrupted its current turn; `not_running` found none to interrupt. */
   result: z.enum(['stopped', 'not_running'])
@@ -141,6 +150,10 @@ const ACTIVITY = {
 const SUBSESSION_PANEL = {
   feature: ASSISTANT_SUBSESSION_PANEL_FEATURE,
   refusal: 'this agent version cannot list or stop a conversation’s tasks; upgrade its daemon'
+}
+const TASK_HANDLE = {
+  feature: ASSISTANT_TASK_HANDLE_FEATURE,
+  refusal: 'this agent version cannot read one task or end a follow-up by its id; upgrade its daemon'
 }
 const ConversationParam = IdParam.extend({ sessionId: z.string().min(1).max(512) })
 const ConversationProposalParam = ConversationParam.extend({ draftId: z.string().min(1).max(512) })
@@ -325,7 +338,13 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       editorOnly: boolean,
       need: { feature: string; refusal: string } = ACTIVITY,
       everyAgent = false
-    ): Promise<{ agent: AgentRecord; daemonId: DaemonId; assistant: boolean; followUps: boolean } | null> => {
+    ): Promise<{
+      agent: AgentRecord
+      daemonId: DaemonId
+      assistant: boolean
+      followUps: boolean
+      taskHandle: boolean
+    } | null> => {
       const agent = await deps.repos.agent.get(orgOf(req), AgentId((req.params as { id: string }).id))
       if (!agent || !canView(agent, ctxOf(req))) {
         await send(reply, notFound('agent not found'))
@@ -372,7 +391,50 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         agent,
         daemonId,
         assistant,
-        followUps: daemon.capabilities.features.includes(FOLLOW_UP_TASKS_V1_FEATURE)
+        followUps: daemon.capabilities.features.includes(FOLLOW_UP_TASKS_V1_FEATURE),
+        taskHandle: daemon.capabilities.features.includes(ASSISTANT_TASK_HANDLE_FEATURE)
+      }
+    }
+
+    // One task as the caller sees it: its session, label and details only where they may view it, and whether they may stop it.
+    const taskDto = (
+      req: FastifyRequest,
+      s: AssistantActivitySubsession,
+      { rows, audience, viewable }: Awaited<ReturnType<typeof sessionsOf>>,
+      endsById: boolean
+    ) => {
+      const child = s.sessionId ? viewable.get(s.sessionId) : undefined
+      const parent = viewable.get(s.parentSessionId)
+      // Background work takes its owning session's audience; until its own row exists the owner decides.
+      const ownRow = !!s.sessionId && rows.some((row) => String(row.id) === s.sessionId)
+      const visible = ownRow ? !!child : !!parent
+      const followUp = s.followUp
+      // The same authority the console composer's own stop needs on that session.
+      const mayContinue = (row: SessionMetaRecord) =>
+        canContinueSession(row, ctxOf(req), audience.identitySet, audience.externalAccess)
+      // A follow-up with no session yet is ended by its id, under its conversation's rule.
+      const byId = endsById && !ownRow && !!followUp?.id && parent !== undefined
+      return {
+        sessionId: child ? String(child.id) : null,
+        // A follow-up's label, like a session's title, only where its conversation may be seen.
+        title: followUp ? (visible ? followUp.title : null) : (child?.title ?? null),
+        state: s.state,
+        startedAt: s.createdAt,
+        visible,
+        canStop: s.state === 'open' && (child ? mayContinue(child) : byId && mayContinue(parent)),
+        parent: conversationOf(parent),
+        ...(s.kind ? { kind: s.kind } : {}),
+        ...(followUp
+          ? {
+              followUp: {
+                ...(visible && followUp.id ? { id: followUp.id } : {}),
+                status: followUp.status,
+                nextCheck: followUp.nextCheck,
+                doneWhen: visible ? followUp.doneWhen : null,
+                recentChecks: visible ? followUp.recentChecks : []
+              }
+            }
+          : {})
       }
     }
 
@@ -513,7 +575,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s tasks',
-          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done and its newest checks. A follow-up is listed under its place’s current long session. Nothing is stored by this call.`,
+          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
@@ -560,44 +622,13 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         const listed = parentRow
           ? page.subsessions.filter((s) => s.parentSessionId === String(parentRow.id))
           : page.subsessions
-        const { rows, audience, viewable } = await sessionsOf(
+        const seen = await sessionsOf(
           req,
           admitted.agent.id,
           listed.flatMap((s) => [s.parentSessionId, ...(s.sessionId ? [s.sessionId] : [])])
         )
         return {
-          subsessions: listed.map((s) => {
-            const child = s.sessionId ? viewable.get(s.sessionId) : undefined
-            const parent = viewable.get(s.parentSessionId)
-            // Background work takes its owning session's audience; until its own row exists the owner decides.
-            const visible = s.sessionId && rows.some((row) => String(row.id) === s.sessionId) ? !!child : !!parent
-            const followUp = s.followUp
-            return {
-              sessionId: child ? String(child.id) : null,
-              // A follow-up's label, like a session's title, only where its conversation may be seen.
-              title: followUp ? (visible ? followUp.title : null) : (child?.title ?? null),
-              state: s.state,
-              startedAt: s.createdAt,
-              visible,
-              // The same authority the console composer's own stop needs on that session.
-              canStop:
-                s.state === 'open' &&
-                !!child &&
-                canContinueSession(child, ctxOf(req), audience.identitySet, audience.externalAccess),
-              parent: conversationOf(parent),
-              ...(s.kind ? { kind: s.kind } : {}),
-              ...(followUp
-                ? {
-                    followUp: {
-                      status: followUp.status,
-                      nextCheck: followUp.nextCheck,
-                      doneWhen: visible ? followUp.doneWhen : null,
-                      recentChecks: visible ? followUp.recentChecks : []
-                    }
-                  }
-                : {})
-            }
-          }),
+          subsessions: listed.map((s) => taskDto(req, s, seen, admitted.taskHandle)),
           truncated: page.truncated,
           nextCursor: parentRow ? (page.nextCursor ?? null) : null,
           ...(admitted.followUps ? { followUps: true } : {})
@@ -644,6 +675,90 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         })
         if (!answer) return reply
         if (answer.result === 'not-found') return send(reply, notFound('task not found'))
+        return { result: answer.result === 'stopped' ? ('stopped' as const) : ('not_running' as const) }
+      }
+    )
+
+    r.get(
+      '/agents/:id/assistant/subsessions/:sessionId',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Get one of an agent’s tasks',
+          description:
+            'Reads one task the agent started (a delegated task, a follow-up or an approved proposal) by its own session id, as `listAssistantSubsessions` lists it: its state, start, title, the conversation it belongs to where the caller may view it, and `canStop`; a follow-up also carries its status, next check, what counts as done and its newest checks. Only a task session of this agent the caller may view is read; any other answers 404, as does one the daemon no longer holds. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot read one task, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s. Nothing is stored by this call.',
+          operationId: 'getAssistantSubsession',
+          params: SubsessionParam,
+          response: { 200: SubsessionDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const admitted = await admit(req, reply, false, TASK_HANDLE, true)
+        if (!admitted) return reply
+        const row = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
+        // A task session of this agent the caller may view, as its own page needs.
+        if (!row || row.agentId !== admitted.agent.id || !isSubsessionCoordinate(row.thread)) {
+          return send(reply, notFound('task not found'))
+        }
+        const audience = await access.forSessions(req, [row])
+        if (!canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess)) {
+          return send(reply, notFound('task not found'))
+        }
+        const answer = await readSection(reply, admitted.daemonId, {
+          agentId: admitted.agent.id,
+          operation: 'task',
+          sessionId: String(row.id)
+        })
+        if (!answer) return reply
+        // A daemon answers for the task asked about only.
+        const task = answer.task
+        if (!task || task.sessionId !== String(row.id)) return send(reply, notFound('task not found'))
+        const seen = await sessionsOf(req, admitted.agent.id, [task.parentSessionId, String(row.id)])
+        return taskDto(req, task, seen, admitted.taskHandle)
+      }
+    )
+
+    r.post(
+      '/agents/:id/assistant/follow-ups/:followUpId/stop',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'End an agent’s follow-up',
+          description:
+            'Ends one follow-up by its id (`followUp.id` on a `listAssistantSubsessions` row), as `stopAssistantSubsession` does, including one whose first check has not run and so has no session yet: no further checks run, and a running check is stopped. `parentSessionId` is the conversation its row is listed under; only callers who may continue that conversation may end it. The answer is `stopped`, or `not_running` when it had already ended; a follow-up that conversation does not hold answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot end a follow-up by its id, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s.',
+          operationId: 'stopAssistantFollowUp',
+          params: FollowUpParam,
+          body: FollowUpStopBody,
+          response: { 200: SubsessionStopDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const admitted = await admit(req, reply, false, TASK_HANDLE, true)
+        if (!admitted) return reply
+        const parent = await deps.repos.session.get(orgOf(req), SessionId(req.body.parentSessionId))
+        // A conversation of this agent the caller may view; the daemon ends the follow-up only while its row names it.
+        if (!parent || parent.agentId !== admitted.agent.id || isSubsessionCoordinate(parent.thread)) {
+          return send(reply, notFound('follow-up not found'))
+        }
+        const ctx = ctxOf(req)
+        const audience = await access.forSessions(req, [parent])
+        if (!canViewSession(parent, ctx, audience.identitySet, audience.externalAccess)) {
+          return send(reply, notFound('follow-up not found'))
+        }
+        if (!canContinueSession(parent, ctx, audience.identitySet, audience.externalAccess)) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'not authorized to end this follow-up' })
+        }
+        const answer = await writeEdit(reply, admitted.daemonId, {
+          agentId: admitted.agent.id,
+          operation: 'stop-follow-up',
+          followUpId: req.params.followUpId,
+          parentSessionId: String(parent.id),
+          actor: await actorOf(req)
+        })
+        if (!answer) return reply
+        if (answer.result === 'not-found') return send(reply, notFound('follow-up not found'))
         return { result: answer.result === 'stopped' ? ('stopped' as const) : ('not_running' as const) }
       }
     )

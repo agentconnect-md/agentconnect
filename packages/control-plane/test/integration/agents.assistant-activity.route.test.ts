@@ -7,6 +7,7 @@ import {
   ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
   ASSISTANT_DRAFT_DECISION_FEATURE,
   ASSISTANT_SUBSESSION_PANEL_FEATURE,
+  ASSISTANT_TASK_HANDLE_FEATURE,
   FOLLOW_UP_TASKS_V1_FEATURE,
   SUBSESSION_COORDINATE_PREFIX,
   TASK_LIST_FEATURE,
@@ -69,6 +70,8 @@ class ActivitySpy {
   writes: AssistantActivityWriteReq[] = []
   subsessions: Extract<AssistantActivityReadResult, { operation: 'subsessions' }>['subsessions'] = []
   nextCursor: string | null = null
+  /** What a read of one task answers. */
+  task: Extract<AssistantActivityReadResult, { operation: 'task' }>['task'] = null
   /** Unset: the daemon predates listing sub-sessions' permission requests. */
   permissions: AssistantActivityPermission[] | undefined
   /** What a read narrowed to one conversation answers. */
@@ -101,6 +104,8 @@ class ActivitySpy {
                 }
               : null
         }
+      case 'task':
+        return { operation: 'task', task: this.task }
       case 'subsessions':
         return req.parent
           ? {
@@ -148,6 +153,7 @@ class ActivitySpy {
     if (this.failure) throw this.failure
     if (req.operation === 'decide-draft') return { operation: 'decide-draft', ...this.decision }
     if (req.operation === 'stop-subsession') return { operation: 'stop-subsession', result: this.stopResult }
+    if (req.operation === 'stop-follow-up') return { operation: 'stop-follow-up', result: this.stopResult }
     return { operation: req.operation, found: this.found }
   }
 }
@@ -684,6 +690,143 @@ describe('one conversation’s sub-sessions', () => {
 
 const stop = (running: HttpApp, sessionId: string) =>
   running.app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/assistant/subsessions/${sessionId}/stop` })
+
+const endFollowUp = (running: HttpApp, followUpId: string, parentSessionId: string) =>
+  running.app.inject({
+    method: 'POST',
+    url: `${ORG}/agents/${AGENT}/assistant/follow-ups/${followUpId}/stop`,
+    payload: { parentSessionId }
+  })
+
+/** A follow-up row whose first check has not run, so it has no session yet. */
+const unchecked = (parentSessionId: string, id = 'item-1') => ({
+  sessionId: null,
+  parentSessionId,
+  state: 'open' as const,
+  createdAt: '2026-10-09T08:00:00.000Z',
+  kind: 'follow-up' as const,
+  followUp: {
+    id,
+    title: 'Watch the release',
+    doneWhen: 'The release is published',
+    status: 'waiting' as const,
+    nextCheck: '2026-10-10T09:00:00.000Z',
+    recentChecks: []
+  }
+})
+
+describe('a follow-up before its first check, and one task by its session', () => {
+  const HANDLE = [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE, ASSISTANT_TASK_HANDLE_FEATURE]
+
+  it('offers ending a follow-up with no session yet by its id, to whoever may continue its conversation', async () => {
+    await seedAssistant({ features: HANDLE })
+    const { team, dm, plain, teamChild, foreign } = await seedConversations()
+    const member = await makeUser(`handle-member-${randomUUID()}`, 'collaborator')
+    const viewer = await makeUser(`handle-viewer-${randomUUID()}`, 'viewer')
+    await new PgUserRepo(prisma).updateProfile(member, { displayName: 'Grace' })
+    const control = new ActivitySpy()
+    control.subsessions = [unchecked(team), unchecked(dm, 'item-2')]
+
+    const [own, hidden] = (await get(app(control, member), '/subsessions')).json().subsessions
+    expect(own).toMatchObject({ sessionId: null, visible: true, canStop: true, followUp: { id: 'item-1' } })
+    // Its conversation is not the member's: no id and nothing to stop.
+    expect(hidden).toMatchObject({ visible: false, canStop: false })
+    expect(hidden.followUp).not.toHaveProperty('id')
+    expect((await get(app(control, viewer), '/subsessions')).json().subsessions[0]).toMatchObject({ canStop: false })
+
+    const res = await endFollowUp(app(control, member), 'item-1', team)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toEqual({ result: 'stopped' })
+    control.stopResult = 'not-running'
+    expect((await endFollowUp(app(control, member), 'item-1', team)).json()).toEqual({ result: 'not_running' })
+    control.stopResult = 'not-found'
+    expect((await endFollowUp(app(control, member), 'item-1', team)).statusCode).toBe(404)
+    const actor = { userId: member, name: 'Grace' }
+    expect(control.writes).toEqual(
+      Array.from({ length: 3 }, () => ({
+        agentId: AGENT,
+        operation: 'stop-follow-up',
+        followUpId: 'item-1',
+        parentSessionId: team,
+        actor
+      }))
+    )
+
+    control.writes = []
+    // A conversation the member may not view, a task session, another agent's, or none is never written to.
+    for (const parent of [dm, teamChild, foreign, randomUUID()]) {
+      expect((await endFollowUp(app(control, member), 'item-2', parent)).statusCode).toBe(404)
+    }
+    // An ordinary thread is a conversation like any other: the daemon decides whether it holds the follow-up.
+    control.stopResult = 'not-found'
+    expect((await endFollowUp(app(control, member), 'item-2', plain)).statusCode).toBe(404)
+    expect(control.writes).toHaveLength(1)
+    // A viewer may watch but not end it.
+    expect((await endFollowUp(app(control, viewer), 'item-1', team)).statusCode).toBe(403)
+    expect(control.writes).toHaveLength(1)
+  })
+
+  it('keeps a follow-up with no session unstoppable, and refuses both routes, toward a daemon without the handle', async () => {
+    await seedAssistant({ features: [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE] })
+    const { team, teamChild } = await seedConversations()
+    const control = new ActivitySpy()
+    control.subsessions = [unchecked(team)]
+    const [row] = (await get(app(control), '/subsessions')).json().subsessions
+    expect(row).toMatchObject({ visible: true, canStop: false })
+    const ended = await endFollowUp(app(control), 'item-1', team)
+    expect(ended.json()).toMatchObject({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    const one = await get(app(control), `/subsessions/${teamChild}`)
+    expect(one.json()).toMatchObject({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.reads).toHaveLength(1)
+    expect(control.writes).toEqual([])
+  })
+
+  it('reads one task by its own session for whoever may view it, in the list’s shape', async () => {
+    await seedAssistant({ features: HANDLE })
+    const { team, teamChild, dmChild, plain, foreign } = await seedConversations()
+    const member = await makeUser(`task-reader-${randomUUID()}`, 'collaborator')
+    const control = new ActivitySpy()
+    const checks = [{ at: '2026-10-09T09:00:00.000Z', observation: 'Still building.', reported: true }]
+    control.task = {
+      ...unchecked(team),
+      sessionId: teamChild,
+      followUp: { ...unchecked(team).followUp, recentChecks: checks }
+    }
+
+    const res = await get(app(control, member), `/subsessions/${teamChild}`)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toEqual({
+      sessionId: teamChild,
+      title: 'Watch the release',
+      state: 'open',
+      startedAt: '2026-10-09T08:00:00.000Z',
+      visible: true,
+      canStop: true,
+      parent: expect.objectContaining({ sessionId: team }),
+      kind: 'follow-up',
+      followUp: {
+        id: 'item-1',
+        status: 'waiting',
+        nextCheck: '2026-10-10T09:00:00.000Z',
+        doneWhen: 'The release is published',
+        recentChecks: checks
+      }
+    })
+    expect(control.reads).toEqual([{ agentId: AGENT, operation: 'task', sessionId: teamChild }])
+
+    // A task the member may not view, an ordinary thread, another agent's task, or none is never read.
+    control.reads = []
+    for (const id of [dmChild, plain, foreign, randomUUID()]) {
+      expect((await get(app(control, member), `/subsessions/${id}`)).statusCode).toBe(404)
+    }
+    expect(control.reads).toEqual([])
+    // A task the daemon no longer holds, or an answer about another session, reads as absent.
+    control.task = null
+    expect((await get(app(control, member), `/subsessions/${teamChild}`)).statusCode).toBe(404)
+    control.task = { ...unchecked(team), sessionId: dmChild }
+    expect((await get(app(control, member), `/subsessions/${teamChild}`)).statusCode).toBe(404)
+  })
+})
 
 const decide = (running: HttpApp, decision: string, draftId = 'draft-1') =>
   running.app.inject({
