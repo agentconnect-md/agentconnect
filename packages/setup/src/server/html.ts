@@ -1,4 +1,6 @@
-/** One deliberately small, dependency-free deployment administration page. */
+import { LOGTO_LOGIN_APPS } from '../logto-connectors.js'
+
+// One small, dependency-free deployment administration page.
 export const SETUP_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -144,6 +146,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#slack-section">Slack</a>
       <a href="#linear-section">Linear</a>
       <a href="#google-section">Google</a>
+      <a href="#telegram-section">Telegram</a>
+      <a href="#discord-section">Discord</a>
       <a href="#googlechat-section">Google Chat</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>
@@ -376,6 +380,32 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <div class="row"><button id="save-google">Save Google client</button><button id="cancel-google-configuration" hidden>Cancel</button><button id="check-google" hidden>Check match</button><button id="clear-google" class="danger" hidden>Clear configuration</button></div>
       </section>
 
+      ${Object.entries(LOGTO_LOGIN_APPS)
+        .map(
+          ([provider, app]) => String.raw`
+      <section id="${provider}-section" class="panel setup-section" aria-labelledby="${provider}-heading">
+        <div class="provider-head">
+          <div><h3 id="${provider}-heading">${app.name}</h3><p class="muted">Login app shared by all organizations. Agents keep their own chat bots.</p></div>
+          <span id="${provider}-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Client ID</dt><dd class="value-line"><code id="${provider}-client-id">Not configured</code><button class="edit-configuration" data-provider="${provider}">Edit</button></dd>
+          <dt>Client secret</dt><dd class="secret-line"><span id="${provider}-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="logto.${provider}ConnectorClientSecret" data-secret-display="${provider}-client-secret-display">Edit</button></dd>
+        </dl>
+        <p id="${provider}-status" class="muted"></p>
+        <div id="${provider}-drift" class="notice" hidden></div>
+        <p>Redirect URIs:</p><ul id="${provider}-redirects" class="uris"></ul>
+        <p class="muted">${app.instruction}</p>
+        <div class="row"><a class="button" href="${app.settingsUrl}" target="_blank" rel="noopener">Open ${app.name} settings</a></div>
+        <div id="${provider}-config-controls" class="subsection">
+          <label class="field">Client ID<input id="${provider}-id" autocomplete="off"></label>
+          <label id="${provider}-initial-secret-field" class="field">Client secret<input id="${provider}-secret" type="password" autocomplete="new-password" placeholder="Required when Client ID changes"></label>
+        </div>
+        <div class="row"><button id="save-${provider}">Save and configure sign-in</button><button id="cancel-${provider}-configuration" hidden>Cancel</button><button id="check-${provider}" hidden>Check Logto</button><button id="clear-${provider}" class="danger" hidden>Clear configuration</button></div>
+      </section>`
+        )
+        .join('')}
+
       <section id="googlechat-section" class="panel setup-section" aria-labelledby="googlechat-heading">
         <div class="provider-head">
           <div><h3 id="googlechat-heading">Google Chat</h3><p class="muted">One Chat app for the deployment. Each Google Workspace organization connects itself from Google Chat.</p></div>
@@ -500,6 +530,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
     const base64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const random = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
     const configured = (byKey, key) => Boolean(byKey.get(key) && byKey.get(key).configured);
+    const loginApps = ${JSON.stringify(LOGTO_LOGIN_APPS)};
 
     function showIdentityEditors(provider, show) {
       for (const button of document.querySelectorAll('.edit-configuration[data-provider="' + provider + '"]')) {
@@ -869,6 +900,28 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('check-google').hidden = !google || !googleSecret;
       el('clear-google').hidden = !google;
 
+      for (const [provider, app] of Object.entries(loginApps)) {
+        const saved = values.logto && values.logto[provider + 'Connector'];
+        const secretKey = 'logto.' + provider + 'ConnectorClientSecret';
+        const hasSecret = configured(byKey, secretKey);
+        renderUriList(provider + '-redirects', expected[provider].redirects);
+        text(provider + '-client-id', saved && saved.clientId);
+        secretText(provider + '-client-secret-display', byKey, secretKey, Boolean(saved));
+        showIdentityEditors(provider, Boolean(saved));
+        el(provider + '-id').value = saved ? saved.clientId : '';
+        el(provider + '-status').hidden = !saved;
+        el(provider + '-status').textContent = saved ? app.name + ' login application is saved.' : '';
+        showDiff(provider + '-drift', []);
+        match(provider + '-match', saved ? 'warn' : '', !saved ? 'Not configured' : !hasSecret ? 'Missing secret' : 'Not checked');
+        el(provider + '-initial-secret-field').hidden = hasSecret;
+        el(provider + '-config-controls').hidden = Boolean(saved);
+        el('save-' + provider).hidden = Boolean(saved);
+        el('save-' + provider).disabled = !values.logto || !values.logto.browser;
+        el('cancel-' + provider + '-configuration').hidden = true;
+        el('check-' + provider).hidden = !saved || !hasSecret;
+        el('clear-' + provider).hidden = !saved;
+      }
+
       const feishuSecret = byKey.get('feishu.loginAppSecret');
       const larkSecret = byKey.get('lark.loginAppSecret');
       el('feishu-login-id').value = values.feishu ? values.feishu.loginAppId : '';
@@ -1013,6 +1066,14 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('cancel-google-configuration').hidden = false;
         el('clear-google').hidden = true;
         el('google-id').focus();
+      } else if (Object.hasOwn(loginApps, provider)) {
+        el(provider + '-secret').value = '';
+        el(provider + '-config-controls').hidden = false;
+        el(provider + '-initial-secret-field').hidden = false;
+        el('save-' + provider).hidden = false;
+        el('cancel-' + provider + '-configuration').hidden = false;
+        el('clear-' + provider).hidden = true;
+        el(provider + '-id').focus();
       } else if (provider === 'feishu' || provider === 'lark') {
         el(provider + '-config-controls').hidden = false;
         el(provider + '-create-name-field').hidden = true;
@@ -1549,6 +1610,44 @@ export const SETUP_HTML = String.raw`<!doctype html>
       message('Google OAuth client and Logto connector are configured. Restart AgentConnect to apply the saved settings.');
     }
 
+    async function saveLoginApp(provider, clear = false) {
+      const app = loginApps[provider];
+      if (clear && !window.confirm('Clear the saved ' + app.name + ' login application and secret?')) return;
+      const clientSecret = el(provider + '-secret').value;
+      const application = clear ? null : {
+        clientId: requiredInput(provider + '-id', 'the ' + app.name + ' Client ID'),
+        ...(clientSecret ? { clientSecret } : {})
+      };
+      try {
+        await json(await fetch(api + '/configure/login-app/' + provider, {
+          method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+          body: JSON.stringify({ application })
+        }));
+      } finally {
+        el(provider + '-secret').value = '';
+      }
+      try {
+        await reconcileLogto(Boolean(clientSecret) && !clear);
+      } finally {
+        await load();
+      }
+      message(app.name + (clear ? ' sign-in configuration cleared.' : ' login application and Logto connector configured.') + ' Restart AgentConnect to apply the saved settings.');
+    }
+
+    function renderLoginAppChecks(report) {
+      const connectors = report.findings.find((finding) => finding.id === 'logto.connectors');
+      for (const [provider, app] of Object.entries(loginApps)) {
+        if (!currentStatus?.values.logto?.[provider + 'Connector']) continue;
+        const diff = connectors?.diff?.filter((item) => item.field.toLowerCase().startsWith(provider)) || [];
+        const passed = Boolean(connectors && diff.length === 0 && (connectors.status === 'pass' || connectors.diff?.length));
+        showDiff(provider + '-drift', diff);
+        match(provider + '-match', passed ? 'pass' : 'warn', passed ? 'Logto matches' : 'Could not verify');
+        el(provider + '-status').textContent = passed
+          ? app.name + ' connector matches. Confirm the redirect URLs in the provider settings.'
+          : app.name + ' connector could not be verified. Review the Logto check above.';
+      }
+    }
+
     function regionalLoginApp(prefix) {
       const appId = el(prefix + '-login-id').value.trim();
       const appSecret = el(prefix + '-login-secret').value;
@@ -1627,6 +1726,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
           : [{ field: finding.id.replace(/^logto\./, '').replaceAll('_', ' '), current: finding.message, expected: 'Matches expected configuration' }])
       );
       el('logto-settings').hidden = failures.length === 0;
+      renderLoginAppChecks(report);
       return report;
     }
 
@@ -1721,6 +1821,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const refreshLogto =
         (key === 'logto.githubConnectorClientSecret' && currentStatus.values.logto && currentStatus.values.logto.githubConnector) ||
         (key === 'logto.googleConnectorClientSecret' && currentStatus.values.logto && currentStatus.values.logto.googleConnector) ||
+        Object.keys(loginApps).some((provider) => key === 'logto.' + provider + 'ConnectorClientSecret' && currentStatus.values.logto?.[provider + 'Connector']) ||
         (key === 'slack.clientSecret' && currentStatus.values.logto && currentStatus.values.logto.slackConnector);
       await json(await fetch(api + '/deployment-config', {
         method: 'PUT', headers: { 'content-type': 'application/json', ...bearer() },
@@ -1818,6 +1919,12 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-google-configuration').onclick = cancelConfigurationEdit;
     el('clear-google').onclick = () => clearProvider('google').catch((error) => message(error.message, true));
     el('check-google').onclick = () => checkGoogle().catch((error) => message(error.message, true));
+    for (const provider of Object.keys(loginApps)) {
+      el('save-' + provider).onclick = () => saveLoginApp(provider).catch((error) => message(error.message, true));
+      el('cancel-' + provider + '-configuration').onclick = cancelConfigurationEdit;
+      el('clear-' + provider).onclick = () => saveLoginApp(provider, true).catch((error) => message(error.message, true));
+      el('check-' + provider).onclick = () => checkLogto().catch((error) => message(error.message, true));
+    }
     el('create-feishu-login-app').onclick = () => createRegionalLoginApp('feishu').catch((error) => message(error.message, true));
     el('save-feishu-login-app').onclick = () => saveRegionalLoginApp('feishu').catch((error) => message(error.message, true));
     el('cancel-feishu-configuration').onclick = cancelConfigurationEdit;
