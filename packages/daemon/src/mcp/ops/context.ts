@@ -104,6 +104,8 @@ export interface MessageGateway {
     isPrivate?: boolean
     user?: string
     externalReason?: PlatformChannelInfo['externalReason']
+    topic?: string
+    description?: string
   }>
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   /** Every current member's id, all pages; offered where the platform declares `authoritativeMembers`. */

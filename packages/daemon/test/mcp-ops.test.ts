@@ -1215,6 +1215,26 @@ describe('executeTool: read tools', () => {
     const { deps: d } = deps(fakeGateway())
     const res = (await executeTool(ctx, 'getCurrentChannel', {}, d)) as Record<string, unknown>
     expect(res).toMatchObject({ channel: 'C_CURRENT', thread: '111.1', name: 'general' })
+    expect(res).not.toHaveProperty('topic')
+    expect(res).not.toHaveProperty('description')
+  })
+
+  // assistant-mode.md §5.13: a first look reads the place's own topic and description.
+  it('getCurrentChannel reports the topic and description the platform keeps', async () => {
+    const getChannelInfo = vi.fn(async (id: string) => ({
+      id,
+      name: 'release-train',
+      topic: 'Freeze on Thursdays',
+      description: 'Where releases are coordinated'
+    }))
+    const { deps: d } = deps(fakeGateway({ getChannelInfo }))
+    const res = (await executeTool(ctx, 'getCurrentChannel', {}, d)) as Record<string, unknown>
+    expect(res).toMatchObject({
+      channel: 'C_CURRENT',
+      name: 'release-train',
+      topic: 'Freeze on Thursdays',
+      description: 'Where releases are coordinated'
+    })
   })
 
   it('listChannelMembers defaults to the current channel', async () => {
@@ -1226,8 +1246,9 @@ describe('executeTool: read tools', () => {
   })
 
   it('reads one channel-history page and forwards Slack pagination arguments', async () => {
+    const link = 'https://workspace.example.test/archives/C_CURRENT/p1005'
     const getChannelHistory = vi.fn(async () => ({
-      messages: [{ sender: 'U1', ts: '100.5', text: 'hello', isBot: false }],
+      messages: [{ sender: 'U1', ts: '100.5', text: 'hello', isBot: false, link }],
       hasMore: true,
       nextCursor: 'next-page'
     }))
@@ -1250,6 +1271,7 @@ describe('executeTool: read tools', () => {
     expect(res).toMatchObject({
       platform: 'slack',
       channel: 'C_CURRENT',
+      messages: [{ sender: 'U1', ts: '100.5', text: 'hello', isBot: false, link }],
       hasMore: true,
       nextCursor: 'next-page'
     })
@@ -1569,6 +1591,7 @@ describe('executeTool: getThreadHistory', () => {
             agentAuthorId: 'agent-7',
             appId: 'A123',
             chromeOwnerAgentId: 'agent-7',
+            link: 'https://workspace.example.test/archives/C_CURRENT/p1002?thread_ts=99.9&cid=C_CURRENT',
             attachments: [
               { id: 'F1', name: 'chart.png', mimeType: 'image/png', sourceUrl: 'https://files.slack.com/x' }
             ]
@@ -1591,7 +1614,8 @@ describe('executeTool: getThreadHistory', () => {
         text: 'hello',
         isBot: false,
         agentId: 'agent-7',
-        attachments: [{ name: 'chart.png', mimeType: 'image/png', url: 'https://files.slack.com/x' }]
+        attachments: [{ name: 'chart.png', mimeType: 'image/png', url: 'https://files.slack.com/x' }],
+        link: 'https://workspace.example.test/archives/C_CURRENT/p1002?thread_ts=99.9&cid=C_CURRENT'
       }
     ])
   })

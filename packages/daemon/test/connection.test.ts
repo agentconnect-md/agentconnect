@@ -270,6 +270,18 @@ describe('SlackConnection.getChannelInfo', () => {
     expect(await reasonOf({ id: 'C1', is_ext_shared: false })).toBeNull()
     expect(await reasonOf({ id: 'C1' })).toBeNull()
   })
+
+  // assistant-mode.md §5.13: the topic, and the purpose as the description; an empty one is left out.
+  it('reports the topic and the purpose as the description', async () => {
+    const infoOf = async (channel: Record<string, unknown>) =>
+      await new SlackConnection(deps() as any, () => fakeAppWithInfo(channel) as any).getChannelInfo('C1')
+    expect(
+      await infoOf({ id: 'C1', topic: { value: 'Freeze on Thursdays' }, purpose: { value: 'Release coordination' } })
+    ).toMatchObject({ topic: 'Freeze on Thursdays', description: 'Release coordination' })
+    const bare = await infoOf({ id: 'C1', topic: { value: '' }, purpose: { value: '' } })
+    expect(bare).not.toHaveProperty('topic')
+    expect(bare).not.toHaveProperty('description')
+  })
 })
 
 describe('SlackConnection.listBotChannels', () => {
@@ -662,6 +674,37 @@ describe('SlackConnection.getThreadReplies', () => {
       expect.objectContaining({ ts: '100.3', chrome: false })
     ])
   })
+
+  it('links the root plainly and each reply inside its thread, and links nothing before auth.test names the workspace', async () => {
+    const replies = vi.fn(async () => ({
+      messages: [
+        { ts: '100.1', user: 'U1', text: 'root' },
+        { ts: '100.2', user: 'U2', text: 'reply', thread_ts: '100.1' }
+      ],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          view() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+
+    expect((await conn.getThreadReplies('C1', '100.1')).map((m) => m.link)).toEqual([undefined, undefined])
+    conn.workspaceUrl = 'https://workspace.example.test/'
+    expect((await conn.getThreadReplies('C1', '100.1')).map((m) => m.link)).toEqual([
+      'https://workspace.example.test/archives/C1/p1001',
+      'https://workspace.example.test/archives/C1/p1002?thread_ts=100.1&cid=C1'
+    ])
+  })
 })
 
 describe('SlackConnection.getChannelHistory', () => {
@@ -729,6 +772,39 @@ describe('SlackConnection.getChannelHistory', () => {
     )
 
     await expect(conn.getChannelHistory('C1')).rejects.toThrow('Slack channel history failed: missing_scope')
+  })
+
+  it('links each message from the workspace URL, a broadcast reply inside its thread', async () => {
+    const history = vi.fn(async () => ({
+      messages: [
+        { ts: '100.5', user: 'U1', text: 'also sent to the channel', thread_ts: '100.1' },
+        { ts: '100.1', user: 'U2', text: 'root', thread_ts: '100.1', reply_count: 3 },
+        { ts: '100.0', user: 'U3', text: 'plain' }
+      ],
+      has_more: false
+    }))
+    const conn = new SlackConnection(
+      deps() as any,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          view() {},
+          client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+    conn.workspaceUrl = 'https://workspace.example.test/'
+
+    const page = await conn.getChannelHistory('C1')
+    expect(page.messages.map((m) => m.link)).toEqual([
+      'https://workspace.example.test/archives/C1/p1005?thread_ts=100.1&cid=C1',
+      'https://workspace.example.test/archives/C1/p1001',
+      'https://workspace.example.test/archives/C1/p1000'
+    ])
   })
 })
 

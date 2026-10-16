@@ -60,6 +60,7 @@ describe('FeishuConnection.getChannelHistory', () => {
       () => handle
     )
 
+    // No message carries a link: the message list returns no position a Lark/Feishu link could be formed from.
     await expect(
       connection.getChannelHistory('oc_current', {
         cursor: 'page-1',
@@ -88,5 +89,34 @@ describe('FeishuConnection.getChannelHistory', () => {
       startTime: '2',
       endTime: '4'
     })
+  })
+})
+
+// assistant-mode.md §5.13: a first look reads the chat's description; a chat without one reports none.
+describe('FeishuConnection.getChannelInfo', () => {
+  it('reports the chat description', async () => {
+    const chats: Record<string, { name?: string; description?: string; chatMode?: string }> = {
+      oc_described: { name: 'release-train', description: 'Where releases are coordinated', chatMode: 'group' },
+      oc_plain: { name: 'general', chatMode: 'group' }
+    }
+    const handle = {
+      api: { getChat: vi.fn(async (id: string) => ({ id, ...chats[id] })) },
+      startWs: async () => {},
+      close: () => {}
+    } as unknown as FeishuClientHandle
+    const connection = new FeishuConnection(
+      {
+        group: { appId: 'cli_info', appSecret: 'secret', mode: 'direct', region: 'feishu', integrations: [] },
+        onMessage: () => {},
+        newTraceId: () => 'trace'
+      },
+      () => handle
+    )
+
+    await expect(connection.getChannelInfo('oc_described')).resolves.toMatchObject({
+      name: 'release-train',
+      description: 'Where releases are coordinated'
+    })
+    expect(await connection.getChannelInfo('oc_plain')).not.toHaveProperty('description')
   })
 })

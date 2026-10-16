@@ -6,6 +6,7 @@ import {
   Events,
   MessageFlags,
   PermissionFlagsBits,
+  messageLink,
   type Message,
   type Channel,
   type ChatInputCommandInteraction,
@@ -899,6 +900,8 @@ export class DiscordConnection implements PlatformConnection {
 
       const ch = await this.client.channels.fetch(channel)
       if (!ch?.isTextBased()) throw new Error('channel does not expose message history')
+      // A message link names its guild, or `@me` in a direct message.
+      const guildId = ch.isDMBased() ? undefined : ch.guildId
       const fetched = await ch.messages.fetch({ limit, ...(options.cursor ? { before: options.cursor } : {}) })
       const raw = [...fetched.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp)
       const messages = raw
@@ -920,7 +923,8 @@ export class DiscordConnection implements PlatformConnection {
             ),
             isBot: message.author.bot,
             ...(message.thread ? { threadTs: message.thread.id } : {}),
-            ...(typeof replyCount === 'number' && replyCount > 0 ? { replyCount } : {})
+            ...(typeof replyCount === 'number' && replyCount > 0 ? { replyCount } : {}),
+            link: guildId === undefined ? messageLink(channel, message.id) : messageLink(channel, message.id, guildId)
           }
         })
 
@@ -949,6 +953,7 @@ export class DiscordConnection implements PlatformConnection {
     spaceId?: string
     spaceName?: string
     user?: string
+    topic?: string
   }> {
     const ch = await this.client.channels.fetch(channel).catch(() => null)
     const c = ch as
@@ -960,6 +965,7 @@ export class DiscordConnection implements PlatformConnection {
           parentId?: string | null
           guildId?: string | null
           guild?: { id: string; name?: string } | null
+          topic?: string | null
         })
       | null
     const isIm = typeof c?.isDMBased === 'function' ? c.isDMBased() : false
@@ -983,7 +989,8 @@ export class DiscordConnection implements PlatformConnection {
       isIm,
       // A 1:1 DM names the person it is with.
       ...(isIm && c?.recipientId ? { user: c.recipientId } : {}),
-      ...(isIm ? {} : privacyOf(ch as DiscordViewable | null))
+      ...(isIm ? {} : privacyOf(ch as DiscordViewable | null)),
+      ...(c?.topic ? { topic: c.topic } : {})
     }
   }
 
