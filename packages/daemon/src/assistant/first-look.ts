@@ -1,7 +1,7 @@
 // The first look (assistant-mode.md §5.13): which places take one, what it may read, how it is asked, and what its report tells the place's long session.
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
-import { assistantModeOn } from '../mcp/ops/assistant-items.js'
+import { assistantModeOn, type ProposeInput } from '../mcp/ops/assistant-items.js'
 import { integrationCore } from '../platforms/integration-config.js'
 import { declaresPort, isAttachmentReadTool } from '../platforms/read-ports.js'
 import { routeRules } from '../router/routing-table.js'
@@ -23,6 +23,10 @@ export const FIRST_LOOK_WINDOW_MS = FIRST_LOOK_DAYS * 24 * 60 * 60_000
 export const FIRST_LOOK_JOIN_WAIT_MS = 10 * 60_000
 /** Proposals the round a first look's report arrives in may make (§5.13). */
 export const FIRST_LOOK_MAX_PROPOSALS = 3
+/** The one shared memory file every first look keeps current about the organization as a whole (§5.13). */
+export const ORGANIZATION_MEMORY_FILE = 'organization.md'
+/** The one shared memory file listing each internal public channel in a line, so the index holds one line for all (§5.13). */
+export const CHANNELS_MEMORY_FILE = 'channels.md'
 
 // The place's own reads (§5.13): history, thread replies, the conversation's details, members and profiles, reactions, bookmarks.
 const FIRST_LOOK_READ_TOOLS = new Set([
@@ -138,6 +142,12 @@ What it is for, in two sentences. Who owns or decides what, as people here say i
 never opinions of people. How requests are made, where decisions are recorded, links people
 keep using, other bots and what they post.
 
+## About the organization
+Only what this place shows about the organization as a whole: what it builds or does, its
+products, teams, stated goals and priorities, key systems, and terms people use. First read
+${ORGANIZATION_MEMORY_FILE} in shared memory, if it exists, and give only what is new or contradicts it.
+"Nothing new" is a fine answer.
+
 ## Recurring
 Things that happened at least twice on a rhythm, and when.
 
@@ -147,7 +157,9 @@ Unanswered questions, commitments with a date, threads waiting on someone: owner
 ## Where I could help
 At most three; none is a fine answer. Each must rest on two or more messages or on a request
 nobody took. Say what you would do first, whether it is one task or a check on a schedule, and
-what you lack (a tool, an integration, access). Offer only what the place's conversation can
+what you lack (a tool, an integration, access). A check runs only on its schedule or when
+messaged, never on a new message, so put one that must notice new messages as a check on a
+schedule of what came in since the last one. Offer only what the place's conversation can
 actually do with its tools: ${input.tools}.
 
 ## Not covered
@@ -159,17 +171,44 @@ Hand it back with recordCheck: a one-line observation, this answer as its report
 set. It is your only output.`
 }
 
-/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form. */
-export function firstLookHandling(reach: string, opts: { external: boolean; cards?: boolean }): string {
-  const step1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. Leave out "In flight" and anything you would not say in every
-   conversation that reads this layer.`
+// A follow-up wakes only at its next check or when messaged (§5.12), so one offered after a first look needs a schedule.
+const FOLLOW_UP_SCHEDULE = `A follow-up runs only at its next check or when messaged, so give each one a first check,
+   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
+   I'll look for releases announced since the last check and confirm their notes were posted").`
+
+const LEAVE_OUT = `Leave out "In flight", any request still open wherever it is listed,
+   and anything you would not say in every conversation that reads this layer.`
+
+// A place that writes its own layer keeps one topic file there, listed in that layer's index.
+const PLACE_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   plus one index line. ${LEAVE_OUT}`
+
+// Only a place that writes the shared layer adds to it (§5.13); its own file stays out of the index every session reads.
+const SHARED_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   with "index: false" in its header so MEMORY.md leaves it out. ${LEAVE_OUT}
+   Then update two shared files, each listed in MEMORY.md by its own description header:
+   - ${CHANNELS_MEMORY_FILE}: one line for this place by its channel name, linking the file above:
+     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —
+     [[release-train]]". This place's later sessions find its own notes through that link.
+   - ${ORGANIZATION_MEMORY_FILE}: unless "About the organization" has nothing new, merge it into the
+     existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
+     place it came from named by its channel name. Keep it short.
+   Other places update these two files too, so never rewrite them with writeMemory: find each
+   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
+   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
+   CONFLICT, read it again, merge, and save again.`
+
+/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form; step 1 adds to the shared files only where the place writes the shared layer. */
+export function firstLookHandling(
+  reach: string,
+  opts: { external: boolean; cards?: boolean; organization?: boolean }
+): string {
   if (opts.external)
     return `When a first look reports back:
-${step1}
+${PLACE_STEP1}
 This place is now shared with another organization, so post nothing about this first look in it.`
   return `When a first look reports back:
-${step1}
+${opts.organization ? SHARED_STEP1 : PLACE_STEP1}
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you (${reach}).
 ${
@@ -179,8 +218,18 @@ ${
     : `3. In the same message, list each "Where I could help" item in one line, and an "In flight" item
    only if someone is visibly waiting on it; act on one when someone here asks for it.`
 }
+   ${FOLLOW_UP_SCHEDULE}
 4. Ask at most one question, and only if the answer changes what you do. Then post nothing
-   more on your own.`
+   more on your own.
+In everything people read, name a channel by its name or link, never by its raw id.`
+}
+
+/** Why a first look's report round refuses a proposal: a follow-up form without a first check would never run (§5.13). */
+export function firstLookProposalRefusal(input: Pick<ProposeInput, 'followUp'>): string | undefined {
+  return input.followUp && input.followUp.nextCheck === undefined
+    ? 'a follow-up offered after a first look needs followUp.nextCheck, since nothing else would wake it: set its ' +
+        'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'
+    : undefined
 }
 
 /** The report round's text: the handling first, then the first look's report. */

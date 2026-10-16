@@ -294,7 +294,10 @@ export const PROPOSE_TOOL: ToolDescriptor = {
             type: 'string',
             minLength: 1,
             maxLength: ASSISTANT_ITEM_LIMITS.doneWhen,
-            description: 'What counts as done.'
+            description:
+              'One sentence people read on the card, in the place’s language: when you look, what you do and when ' +
+              'you stop, e.g. "I’ll look each Monday morning and remind the owner here; I stop once every issue has ' +
+              'a root cause".'
           },
           nextCheck: { type: 'string', description: `Optional. When to check first: ${NEXT_CHECK}` }
         },

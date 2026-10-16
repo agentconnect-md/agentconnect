@@ -145,6 +145,7 @@ export function localAuthLogtoPut(
     values: {
       ...current.values,
       logto: {
+        ...existing,
         managementAppId,
         managementResource:
           bootstrap.managementResource ?? existing?.managementResource ?? 'https://default.logto.app/api',
@@ -298,14 +299,43 @@ export function googleChatDeploymentPut(
   })
 }
 
-export interface LogtoGoogleConnectorCredentials {
+export interface LogtoOAuthClientCredentials {
   clientId: string
   clientSecret?: string
 }
 
+export function logtoLoginAppPut(
+  current: CurrentDeploymentConfig,
+  provider: 'telegram' | 'discord',
+  credentials: LogtoOAuthClientCredentials | null
+): DeploymentConfigPut {
+  const logto = current.values.logto
+  if (!logto?.browser) throw new Error('save Logto browser configuration first')
+  const key = `${provider}Connector` as const
+  if (credentials && !credentials.clientSecret && logto[key]?.clientId !== credentials.clientId) {
+    throw new Error('a new login application requires its client secret')
+  }
+  const socialProviders = credentials
+    ? [...new Set([...logto.browser.socialProviders, provider])]
+    : logto.browser.socialProviders.filter((target) => target !== provider)
+  if (!credentials && socialProviders.length === 0) throw new Error('keep at least one sign-in provider configured')
+  const secret = credentials ? credentials.clientSecret : null
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      logto: {
+        ...logto,
+        browser: { ...logto.browser, socialProviders },
+        [key]: credentials ? { clientId: credentials.clientId } : null
+      }
+    },
+    ...(secret === undefined ? {} : { secrets: { [`logto.${provider}ConnectorClientSecret`]: secret } })
+  })
+}
+
 export function logtoGoogleConnectorPut(
   current: CurrentDeploymentConfig,
-  credentials: LogtoGoogleConnectorCredentials
+  credentials: LogtoOAuthClientCredentials
 ): DeploymentConfigPut {
   if (!current.values.logto) throw new Error('save Logto configuration before configuring its Google connector')
   if (!credentials.clientSecret && current.values.logto.googleConnector?.clientId !== credentials.clientId) {

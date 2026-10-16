@@ -126,7 +126,7 @@ does not pretend to defend against effects it cannot defend against.
 - A runtime permission request inside that run follows the existing in-chat approval rules: where
   "What people can do in chat" includes approving tool calls, anyone who sees the card can click;
   otherwise the console and the editor DM path. That card offers "always allow this tool".
-- The card leads with one plain sentence; the raw arguments are folded underneath.
+- The card leads with one plain sentence and its reason; the exact work is a link away (§5.10).
 - It acts only after approval and reports back. An uncertain outcome is reported as "not sure this
   went through, please look" — never retried. An expired card is never executed.
 
@@ -740,9 +740,12 @@ member (below).
   go to the conversation's layer: the shared layer only from a public channel the platform
   confirms internal, the person's layer from their DM or console conversation, the place's own
   layer anywhere else. The shared layer therefore never holds what a DM, a private place or a
-  place with outsiders said. The per-person memory space this section planned for P1 is the
-  person layer, built for every agent; "allow for this session" is gone for every agent. Runtime
-  native memory must be disableable (admission) and is disabled on enable.
+  place with outsiders said, unless a person in a DM or a private place asks on their own turn to
+  remember it for everyone; a check, a first look's or a task's report and a wake are refused that
+  write, and a place with outsiders is refused it on every round. The
+  per-person memory space this section planned for P1 is the person layer, built for every
+  agent; "allow for this session" is gone for every agent. Runtime native memory must be
+  disableable (admission) and is disabled on enable.
 
 ### 5.6 Tasks
 
@@ -1104,6 +1107,22 @@ approval is the confirmation `followUp` requires. It runs no task and counts aga
 first look's report round also offers `propose`, at most three times, and its proposals point at the
 first look, whose having ended refuses none of them.
 
+**The card** (Slack; _decided_ by the owner, 2026-10-17). It reads as the agent talking, since the
+bot is already its sender.
+
+- **Both forms.** The `sentence` in bold, with no name before it, then the `why`, unlabelled. No
+  footer says where it runs, whose permissions it runs with or where it reports. Approve and Deny
+  and the settled outcomes are unchanged.
+- **A task.** A 🔗 to the session that proposed it, whose transcript holds the exact work the
+  record's hash binds. No console page shows one proposal alone. Activity lists them but cannot
+  point at one, and only people who may open the agent see it, while the card's approvers are the
+  place's people. With no session to link, the work is quoted instead, unlabelled.
+- **A follow-up.** Its `doneWhen`, which `propose` asks for as one sentence of when it looks, what it
+  does and when it stops. Then 🕒 and its first check as Slack's date token, shown in the reader's
+  own time zone. The follow-up's title is for the Tasks list and is not shown.
+
+A draft's card (§5.5) is unchanged.
+
 ### 5.11 Activity
 
 The console's agent page gains an Activity view: follow-ups and their recent checks, scheduled
@@ -1373,6 +1392,12 @@ code-host reads are not offered, and §5.5's read gate refuses any source but it
    - The shared layer is read in every conversation, those with outside guests included, so the
      file holds only what is fine to say in every conversation that reads that layer. There is no
      new memory layer for public channels.
+   - In an internal public channel only, the shared index stays short (_decided_ by the owner,
+     2026-10-17): the place's file says `index: false` and gets no `MEMORY.md` line. The place
+     gets one line in the shared `channels.md` instead, linking its file. What is new about the organization as a
+     whole is merged into the shared `organization.md`, each fact dated and named after the
+     place it came from. Those two files each have their one index line, and both are updated
+     only with revision-checked entry writes, since other places update them too (below).
 2. **Report.** The whole report is the task's result: its check's report, on the task's own page,
    visible to whoever may see the place's conversation, as every task is (§5.6).
 3. **Introduction and suggestions.**
@@ -1412,6 +1437,12 @@ What it is for, in two sentences. Who owns or decides what, as people here say i
 never opinions of people. How requests are made, where decisions are recorded, links people
 keep using, other bots and what they post.
 
+## About the organization
+Only what this place shows about the organization as a whole: what it builds or does, its
+products, teams, stated goals and priorities, key systems, and terms people use. First read
+organization.md in shared memory, if it exists, and give only what is new or contradicts it.
+"Nothing new" is a fine answer.
+
 ## Recurring
 Things that happened at least twice on a rhythm, and when.
 
@@ -1421,7 +1452,9 @@ Unanswered questions, commitments with a date, threads waiting on someone: owner
 ## Where I could help
 At most three; none is a fine answer. Each must rest on two or more messages or on a request
 nobody took. Say what you would do first, whether it is one task or a check on a schedule, and
-what you lack (a tool, an integration, access). Offer only what the place's conversation can
+what you lack (a tool, an integration, access). A check runs only on its schedule or when
+messaged, never on a new message, so put one that must notice new messages as a check on a
+schedule of what came in since the last one. Offer only what the place's conversation can
 actually do with its tools: {tools}.
 
 ## Not covered
@@ -1439,14 +1472,39 @@ in a tool description:
 ```text
 When a first look reports back:
 1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. Leave out "In flight" and anything you would not say in every
-   conversation that reads this layer.
+   plus one index line. Leave out "In flight", any request still open wherever it is listed,
+   and anything you would not say in every conversation that reads this layer.
 2. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you ({reach}).
 3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
    follow-up only if someone is visibly waiting on it.
+   A follow-up runs only at its next check or when messaged, so give each one a first check,
+   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
+   I'll look for releases announced since the last check and confirm their notes were posted").
 4. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
+In everything people read, name a channel by its name or link, never by its raw id.
+```
+
+In an internal public channel, the one place whose conversation writes the shared layer, step 1
+reads instead:
+
+```text
+1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   with "index: false" in its header so MEMORY.md leaves it out. Leave out "In flight", any
+   request still open wherever it is listed, and anything you would not say in every
+   conversation that reads this layer.
+   Then update two shared files, each listed in MEMORY.md by its own description header:
+   - channels.md: one line for this place by its channel name, linking the file above:
+     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —
+     [[release-train]]". This place's later sessions find its own notes through that link.
+   - organization.md: unless "About the organization" has nothing new, merge it into the
+     existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
+     place it came from named by its channel name. Keep it short.
+   Other places update these two files too, so never rewrite them with writeMemory: find each
+   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
+   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
+   CONFLICT, read it again, merge, and save again.
 ```
 
 Changed from the agreed drafts, each to fit a verified fact:
@@ -1467,6 +1525,42 @@ Changed from the agreed drafts, each to fit a verified fact:
 - On a platform with no card surface, step 3 reads "In the same message, list each 'Where I could
   help' item in one line, and an 'In flight' item only if someone is visibly waiting on it; act on
   one when someone here asks for it."
+- "Where I could help" says a check runs only on its schedule or when messaged, and step 3, in
+  both forms, says the same of a follow-up, so each offered one gets a first check and one that
+  must notice new messages is worded as a check on a schedule. In a live run, both suggestions were
+  shaped by events ("after each release announcement, check its notes were posted") and offered
+  with no first check. Nothing would have woken them: the long session hears the place only as
+  its trigger says, and event wake (§5.14) covers code-host objects only.
+- Step 1 also leaves out "any request still open wherever it is listed". A live run filed a
+  request for a weekly reminder under "Recurring".
+- A last line, "In everything people read, name a channel by its name or link, never by its raw
+  id", the rule a follow-up's `taskId` already follows. A live introduction asked about another
+  channel by its platform id. Memory may keep ids, which the agent's reads take, so the task
+  prompt does not say it.
+- A section, "About the organization", after "How this place works" (_decided_ by the owner,
+  2026-10-17). Each place's file said how that place works, and nothing recorded what the
+  organization does or aims for. The task first reads `organization.md` in shared memory and
+  reports only what is new or contradicts it, so the file builds up one first look at a time.
+- Step 1 merges that section into `organization.md` only where the conversation writes the shared
+  layer: an internal public channel, the one place whose writes land in the layer every
+  conversation reads. A private channel, a group chat or an external place gets no such step.
+  Its content must never reach the shared layer, and its writes go to its own layer unless a
+  person asks to remember something for everyone. The name is fixed, so every first look updates
+  the same file and its one index line.
+- In that channel, step 1 also keeps the shared index short (_decided_ by the owner,
+  2026-10-17). The shared `MEMORY.md` is injected into every session, and a line per public
+  channel would grow without bound. So the place's own file says `index: false`, the one header
+  field that keeps a topic out of the generated index ([unified-memory-interface.md](unified-memory-interface.md)),
+  and the place gets one line in `channels.md` instead. That line links the file with
+  `[[name]]`: nothing else points to it once it is out of the index. A later session of the place
+  (after `!new` or a rollover) sees only the shared index, which leads it to `channels.md` and
+  from there to its own notes. A place layer is unchanged: its file is that layer's only topic.
+- Several places' report rounds can run at once, and a full rewrite of `channels.md` or
+  `organization.md` would drop another place's update. So step 1 saves them only through the
+  memory entry tools with the revision it read, and reads and merges again on a conflict. The
+  store's revision check is what makes that safe. `writeMemory` itself is not refused for these
+  two names: the generic memory tool would have to know two first-look file names, and its
+  targeted-edit mode is safe already. A whole-file `writeMemory` is left to the prompt.
 
 **Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
 marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
@@ -1609,7 +1703,9 @@ under the introduction works. For a first look, `propose` changes in four ways:
   on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
 - **Its report.** One report round at the place's top level carries the handling, then the report;
   step 3 is the `propose` wording where the place's integration has an approval card surface, else
-  the text form. Where the place has no long session yet, the report opens one on its append
+  the text form, and step 1 is the shared-channel form (`index: false`, `channels.md`,
+  `organization.md`) only where the place's memory layer is the shared one when the report
+  arrives. Where the place has no long session yet, the report opens one on its append
   coordinate as the place's own: a root session bound to the conversation's people as a person's
   first message there would bind it, and not kept out of memory capture. The first look stays its
   child; recorded as the opened session's creator, each named the other as its parent, and the
@@ -1642,8 +1738,13 @@ under the introduction works. For a first look, `propose` changes in four ways:
   place, owned by its long session, with the approver as its asker (a card's clicker as their own
   message there would carry them, a console user as `user:<id>`) and the proposal's reason as its
   summary. The record then succeeds: no task runs and no limit counts. A restart between the two
-  settles it as succeeded when the follow-up exists, else as failed. The card shows the follow-up
-  and its first check, and once approved says it was taken. Local store version 56.
+  settles it as succeeded when the follow-up exists, else as failed. The card shows what the
+  follow-up will do (its `doneWhen`) and its first check (§5.10 "The card"), and once approved says
+  it was taken. Local store version 56.
+- **A first check.** On a first look's report round, a follow-up form without `nextCheck` is
+  refused, saying it needs one since nothing else would wake it, and counts toward no limit. A
+  follow-up runs only at its next check or when messaged, and nothing in the place messages one on
+  its own. `followUp` itself still takes one with no schedule, for a person who says they will ask.
 - **Its proposals after it ended.** A proposal whose follow-up is a first look is not refused for
   that follow-up having ended, in either form; every other refusal stands. An approved task's prompt
   says it was proposed after the first look.
@@ -1655,7 +1756,9 @@ under the introduction works. For a first look, `propose` changes in four ways:
   on the decision.
 - **Tool size.** `propose` went from 614 to 851 characters and its input schema from 505 to 1,092
   bytes, within Claude Code's 2,048-character description cap and Codex's 5,000-byte schema cap. Its
-  schema has no top-level `oneOf`, so no runtime flattens it.
+  schema has no top-level `oneOf`, so no runtime flattens it. The first check's refusal changed no
+  tool description. The follow-up form's `doneWhen` now asks for the one sentence the card shows,
+  which took the schema to 1,292 bytes; the description stays 851 characters.
 
 ### 5.14 Event wake
 
@@ -2047,7 +2150,7 @@ daemon work.
 
 **Why.**
 
-- **Many writers of one file.** #3074, in review when this was written, adds an "About the
+- **Many writers of one file.** #3074, merged as this was written, adds an "About the
   organization" part to a first look's report. Each internal public channel's long session then
   merges it into the shared layer's `organization.md` and lists the place in a `channels.md` index,
   with revision-checked updates. That loses no write, but it settles disagreement by whichever
@@ -2242,7 +2345,7 @@ Recent, as tasks are not (#3072). Its name is §9 Q24.
   current generation, as a follow-up reports to its place's current session (§5.12).
 - **Nothing idle.** It runs only when something reaches it; nothing wakes it by time.
 
-**The per-place merge** (recommended: #3074's merge ships first, and the home replaces it later).
+**The per-place merge** (recommended: #3074's merge, now shipped, stays until the home replaces it).
 The revision-checked merge needs nothing new. The home needs a coordinate, a `sendMessage` action,
 the shapes above and a console section. When the home ships, the first look's merge step becomes
 the `messageHome` step above, places' writes to the files are refused, and the files stay as they
@@ -2473,7 +2576,7 @@ shape. Whether it does, from a fixed set or by its own choice, and how many.
 
 **Rollout** (recommended).
 
-1. #3074's per-place merge, unchanged.
+1. #3074's per-place merge, shipped and unchanged.
 2. Daemon and protocol: the home's coordinate, opening and rollover, recognized by the Control
    Plane; `messageHome` with its audience rule; the organization files' single writer and shapes;
    the first look's `messageHome` step. `sendMessage`'s description is measured against the
@@ -2629,7 +2732,9 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
 - **Correcting and clearing.** In their own DM, at their request, the agent replaces or removes that
   person's entry and nothing else; "forget me" clears it. The daemon admits a DM session's write to
   `members.md` only for the entry keyed to the DM's own person, a trusted fact of the conversation,
-  never a model argument. The console offers the same under Your memory. A person with no console
+  never a model argument. It is also a shared-layer write from a conversation that does not write
+  there itself, so it is honoured only on a turn the person typed, the rule #3077 set for every
+  such write. The console offers the same under Your memory. A person with no console
   account, the common case on Slack, has the DM.
 - **Opting out is clearing.** Clearing an entry leaves a marker that keeps the person out of the
   directory: the home writes nothing for them again until they write their entry themselves. No
@@ -3402,6 +3507,28 @@ relay's feedback signal gains the event's kind and the wake-only kinds for watch
 Plane receives once and serves both, and admission is the lane's per provider, so the App-comment veto
 of the fifty-sixth revision is dropped. The agent does not offer a follow-up when it opens a pull
 request (§8).
+
+**Fifty-eighth revision (2026-10-17)**: a first look in a busy public channel, and two changes the
+owner then decided (issue #2810; §1, §5.10, §5.13).
+
+- **Follow-ups that never run.** Both of the first look's suggested follow-ups were shaped by events
+  and offered with no first check, so approving either would have taken a follow-up nothing wakes.
+  The task prompt and step 3 of the handling now say a follow-up runs only at its next check or
+  when messaged, so an event-shaped suggestion is worded as a check on a schedule. The report round
+  also refuses a follow-up form without `nextCheck`.
+- **Raw ids.** The introduction named another channel by its raw platform id. The handling now says
+  what people read names a channel by its name or link. Step 1 also leaves out an open request
+  filed under another heading.
+- **The organization's file.** The task prompt gains "About the organization": what is new about
+  the organization as a whole against `organization.md` in shared memory. Where the place writes
+  the shared layer (an internal public channel), step 1 merges it into that one file. It also
+  keeps the place's own file out of the shared index with a new `index: false` header field and
+  lists the place in one line of `channels.md`. Both shared files are saved only through
+  revision-checked memory entry writes, re-read and merged on a conflict.
+- **The proposal card** now reads as the agent talking: its sentence in bold, its reason, and a 🔗
+  to the exact work or, for a follow-up, its sentence of what it will do and 🕒 its first check.
+  Labels, the title and the footer go. `propose`'s follow-up `doneWhen` asks for that sentence;
+  `followUp` is unchanged.
 
 **Fifty-ninth revision (2026-10-17)**: §5.15–§5.17 propose a home session, organization research,
 where what it learns is kept, and people profiles (issue #2810; §1.10, §1.11, §2, §7, §8, §9

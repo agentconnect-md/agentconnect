@@ -26,6 +26,8 @@ export interface MemoryHeader {
   description?: string
   type?: MemoryEntryType
   modified?: string
+  /** `index: false` keeps the topic out of the generated `MEMORY.md`; it is still listed, read and searched. */
+  index?: false
 }
 
 export interface ParsedMemory {
@@ -94,6 +96,8 @@ export function parseMemoryFrontmatter(text: string): ParsedMemory {
     if (!value) continue
     if (key === 'type') {
       if ((MEMORY_ENTRY_TYPES as readonly string[]).includes(value)) header.type = value as MemoryEntryType
+    } else if (key === 'index') {
+      if (value === 'false') header.index = false
     } else if (KNOWN.has(key)) {
       header[key as 'name' | 'description' | 'modified'] = value
     }

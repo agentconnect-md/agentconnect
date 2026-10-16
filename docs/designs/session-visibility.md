@@ -688,7 +688,8 @@ from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
 to the session's own layer, which only that audience reads, so the "Allow once /
 Allow for this session" card is retired for every agent. A write to the shared
 layer from a narrower conversation happens only when the tool names
-`layer: "shared"`, the person's request to remember it for everyone; external
+`layer: "shared"` on a turn a person started, as their request to remember it
+for everyone, and never from a conversation with people from outside; external
 memory, which is the shared layer alone, refuses any other write from such a
 conversation.
 

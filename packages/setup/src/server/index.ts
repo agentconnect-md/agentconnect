@@ -32,7 +32,12 @@ import {
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { loadDeploymentEnvironment } from '../deployment-environment.js'
-import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
+import {
+  LOGTO_GITHUB_CONNECTOR_ID,
+  LOGTO_GOOGLE_CONNECTOR_ID,
+  LOGTO_SLACK_CONNECTOR_ID,
+  LOGTO_LOGIN_APPS
+} from '../logto-connectors.js'
 import {
   githubDeploymentPut,
   giteaDeploymentPut,
@@ -41,6 +46,7 @@ import {
   linearDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
+  logtoLoginAppPut,
   logtoGithubConnectorPut,
   slackDeploymentPut
 } from '../deployment-config-client.js'
@@ -171,6 +177,9 @@ const ConfigureGoogleBody = z.strictObject({
   clientId: z.string().trim().min(1).max(500),
   clientSecret: z.string().min(1).max(10_000).optional()
 })
+
+const LoginAppProvider = z.enum(['telegram', 'discord'])
+const ConfigureLoginAppBody = z.strictObject({ application: ConfigureGoogleBody.nullable() })
 
 const RegionalLoginAppBody = z
   .strictObject({
@@ -434,7 +443,14 @@ function logtoSetup(
               scope: 'openid profile email'
             }
           }
-        : {})
+        : {}),
+      ...Object.fromEntries(
+        LoginAppProvider.options.flatMap((provider) => {
+          const app = logto[`${provider}Connector`]
+          const clientSecret = record.secrets[`logto.${provider}ConnectorClientSecret`]
+          return app && clientSecret ? [[provider, { clientId: app.clientId, clientSecret }]] : []
+        })
+      )
     }
   }
 }
@@ -494,13 +510,18 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     return result
   }
 
-  type ManagedConnectorIds = Partial<Record<'github' | 'google' | 'slack', string>>
+  type ManagedConnectorIds = Partial<Record<'github' | 'google' | 'slack' | z.infer<typeof LoginAppProvider>, string>>
 
   const resolveLogtoConnectorIds = async (): Promise<ManagedConnectorIds> => {
     const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
     const config = logtoConfig(runtime, logtoManagementEndpoint)
     if (!config) return {}
-    return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds(['github', 'google', 'slack'])
+    return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds([
+      'github',
+      'google',
+      'slack',
+      ...LoginAppProvider.options
+    ])
   }
 
   const resolveRegionalLogtoConnector = async (region: 'feishu' | 'lark'): Promise<LogtoNamedConnector | undefined> => {
@@ -584,6 +605,20 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       slack,
       linear,
       googleChat,
+      ...Object.fromEntries(
+        LoginAppProvider.options.map((provider) => [
+          provider,
+          {
+            redirects: values.logto?.browser
+              ? socialRedirectUris(
+                  logtoEndpoint,
+                  connectorIds[provider] ?? LOGTO_LOGIN_APPS[provider].id,
+                  localAuthBootstrap.services.web
+                )
+              : []
+          }
+        ])
+      ),
       google: values.logto?.browser
         ? {
             origins: [logtoEndpoint],
@@ -1078,6 +1113,29 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
   })
 
   app.post(
+    '/api/v1/configure/login-app/:provider',
+    { preHandler: requireConfigurationAccess },
+    async (request, reply) => {
+      const params = z.strictObject({ provider: LoginAppProvider }).safeParse(request.params)
+      const parsed = ConfigureLoginAppBody.safeParse(request.body)
+      if (!params.success || !parsed.success)
+        return problem(reply, 400, 'a Telegram or Discord login application is required')
+      return serializeMutation(async () => {
+        const current = await deps.store.getAdmin()
+        if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
+        let put: ReturnType<typeof logtoLoginAppPut>
+        try {
+          put = logtoLoginAppPut(current, params.data.provider, parsed.data.application)
+        } catch (error) {
+          return problem(reply, 400, error instanceof Error ? error.message : 'invalid login application')
+        }
+        const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+        return { revision: saved.revision, restartRequired: true as const }
+      })
+    }
+  )
+
+  app.post(
     '/api/v1/configure/regional-login-app',
     { preHandler: requireConfigurationAccess },
     async (request, reply) => {
@@ -1505,6 +1563,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         'logto.managementAppSecret',
         'logto.githubConnectorClientSecret',
         'logto.googleConnectorClientSecret',
+        'logto.telegramConnectorClientSecret',
+        'logto.discordConnectorClientSecret',
         'slack.clientSecret',
         'github.clientSecret'
       ] as const
@@ -1589,6 +1649,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       'logto.managementAppSecret',
       'logto.githubConnectorClientSecret',
       'logto.googleConnectorClientSecret',
+      'logto.telegramConnectorClientSecret',
+      'logto.discordConnectorClientSecret',
       'slack.clientSecret'
     ])
 

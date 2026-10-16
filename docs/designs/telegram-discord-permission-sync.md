@@ -13,9 +13,10 @@ No shared chat bot or per-organization login application is required.
 
 ### Telegram
 
-Create a login bot in BotFather and register Logto's connector callback URL in its
-Login Widget settings. Use the provided **OIDC client ID and secret**. Configure a
-Logto OIDC social connector with target `telegram`, code flow and scope
+Open **Setup → Telegram**, then create a login bot in BotFather and register all
+displayed redirect URIs in its Login Widget settings. Save the provided **OIDC
+client ID and secret** in Setup. Setup creates or updates a Logto OIDC social
+connector with target `telegram`, code flow and scope
 `openid profile`. Use discovery at
 `https://oauth.telegram.org/.well-known/openid-configuration` or its authorization,
 token and JWKS endpoints. Set token authentication to HTTP Basic and validate
@@ -31,18 +32,29 @@ Phone and messaging scopes are unnecessary. See
 
 ### Discord
 
-Create an OAuth2 application in the Discord Developer Portal. Register the
-callback URL shown by Logto's Discord connector, then configure its client ID and
-secret with target `discord`. The `identify` scope supplies the stable Discord
+Open **Setup → Discord**, then create an OAuth2 application in the Discord
+Developer Portal. Register all displayed redirect URIs, then save its client ID
+and secret in Setup. Setup creates or updates the Discord connector with target
+`discord`. The `identify` scope supplies the stable Discord
 user ID; session permission checks use the installed bot's token. See
 [Logto's Discord setup](https://docs.logto.io/integrations/discord).
 
-Enable `telegram` / `discord` in the existing deployment browser social-provider
-configuration and reconcile it through Setup Server. These connectors must
-already exist in Logto; Setup Server validates and preserves them. Restart the
-Control Plane to load the updated deployment snapshot. The switches are available
-only when console identity lookup and the corresponding social provider are configured.
-Complete a Profile link before enabling sync for the organization.
+Saving an application also enables its social-provider target and reconciles
+Logto. Secrets are write-only. Existing connector IDs are preserved so registered
+callbacks remain valid; a new connector uses `agentconnect-telegram` or
+`agentconnect-discord`. **Check Logto** verifies connector configuration; provider
+redirect registration and a successful login must be verified separately.
+
+Replacing a client ID requires its new secret. **Clear configuration** removes
+the saved credentials and disables that sign-in target, while keeping at least
+one sign-in provider. It preserves the Logto connector and linked identities.
+Pre-existing externally configured connectors remain supported without importing
+their secrets into Setup.
+
+Restart the Control Plane to load the updated deployment snapshot. The sync
+switches are available only when console identity lookup and the corresponding
+social provider are configured. Complete a Profile link before enabling sync for
+the organization.
 
 ## Access rules
 
