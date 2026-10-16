@@ -2091,7 +2091,13 @@ self-hosted daemon on a hosted Control Plane keeps person and place layers there
 unavailable while the Control Plane is unreachable, and the move is one way. The console fixes the
 Memory tab's backend and home while the mode is on.
 
-**Forty-seventh revision (2026-10-16)**: §5.13 proposes a first look (issue #2810; §1.9, §2, §7,
+**Forty-seventh revision (2026-10-16)**: the console reads an assistant's memory with no daemon
+online. For a Control-Plane home the Control Plane answers the shared layer, a place layer, the
+caller's own person layer and the place-layer listing from its own tables, and clears a place
+layer there, under the same per-caller rules, so the forty-sixth revision's remaining gap is
+closed. A console edit still goes through the agent's daemon, which owns the write path.
+
+**Forty-eighth revision (2026-10-16)**: §5.13 proposes a first look (issue #2810; §1.9, §2, §7,
 §9). Added to a channel, an assistant-mode agent did nothing until someone @-mentioned it. The
 product owner decided what a first look is: a read-only task of the place reads its last 30 days or
 500 messages, whichever is less, and reports to the place's long session. That session writes how

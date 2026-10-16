@@ -139,6 +139,7 @@ import {
 } from '../../agent-memory/home.js'
 import { memoryHistoryRoot, toHistoryEvent } from '../../agent-memory/history.js'
 import { memoryHomeUnavailable, SANDBOX_UNAVAILABLE_CODE } from '../../agent-memory/unavailable.js'
+import { MemoryStorePathError } from '../../agent-memory/paths.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import {
@@ -152,6 +153,7 @@ import {
 } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { makeMemoryPlaceAccess } from '../memory-place-access.js'
+import { makeMemorySources, type MemorySource } from '../memory-source.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
@@ -938,6 +940,19 @@ function sendMemoryHomeUnavailable(reply: FastifyReply, err: unknown): boolean {
   return true
 }
 
+/** A console memory read's failure: an unreachable home as above, a path the CP's table refuses as 400, a daemon-edge failure as 503; false ⇒ rethrow. */
+function sendMemoryReadFailure(reply: FastifyReply, err: unknown): boolean {
+  if (sendMemoryHomeUnavailable(reply, err)) return true
+  if (err instanceof MemoryStorePathError) {
+    void reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: err.message })
+    return true
+  }
+  const unavailable = daemonEdgeFailure(err)
+  if (unavailable === null) return false
+  void reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+  return true
+}
+
 /** A workspace MUTATION's failure mapping, which differs from a read's on purpose: the
  *  status is the mutation's (409 for a conflict, 400 for a refused payload) whatever the
  *  daemon names, and a reason only rides along as the machine `code` — a write that was
@@ -1055,15 +1070,17 @@ export function agentRoutes(deps: HttpDeps) {
 
     // A place layer the caller may not see is absent to them on every route that names one (product-conventions.md "Memory layers").
     const placeAccess = makeMemoryPlaceAccess(deps)
+    // A Control-Plane home's console memory comes from the CP's tables, so it needs no daemon online.
+    const memorySourceOf = makeMemorySources(deps)
     const placeHidden = async (
       req: FastifyRequest,
-      daemonId: DaemonId,
+      source: MemorySource,
       agentId: string,
       channelKey: string | undefined
     ): Promise<boolean> => {
       if (channelKey === undefined) return false
       if (!MemoryChannelKey.safeParse(channelKey).success) return true
-      const page = await deps.control.memoryChannels(daemonId, { agentId, channelKey })
+      const page = await source.channels({ agentId, channelKey })
       const entry = page.channels.find((candidate) => candidate.channelKey === channelKey)
       if (!entry) return true
       const [view] = await placeAccess.judge(req, agentId, [entry], false)
@@ -1094,7 +1111,8 @@ export function agentRoutes(deps: HttpDeps) {
         return reply
           .code(403)
           .send({ error: 'Forbidden', statusCode: 403, message: 'memory edit access is required', code: 'FORBIDDEN' })
-      if (!agent.daemonId)
+      const source = memorySourceOf(agent)
+      if (!agent.daemonId || !source)
         return reply.code(503).send({
           error: 'Service Unavailable',
           statusCode: 503,
@@ -1102,8 +1120,7 @@ export function agentRoutes(deps: HttpDeps) {
           code: 'UNAVAILABLE'
         })
       try {
-        if (await placeHidden(req, agent.daemonId, agent.id, operation.channelKey))
-          return reply.code(404).send(PLACE_NOT_FOUND)
+        if (await placeHidden(req, source, agent.id, operation.channelKey)) return reply.code(404).send(PLACE_NOT_FOUND)
         const payload = { ...operation, agentId: agent.id }
         const answer = mutation
           ? await deps.control.memoryEntriesWrite(agent.daemonId, payload as MemoryEntriesWriteReq)
@@ -4503,10 +4520,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Agent memory: a directory at the agent root (outside the workspace) — a
-    // MEMORY.md index plus topic files — proxied live from the owning daemon. A
-    // not-yet-created file/dir is data (`exists:false`). The CP stores nothing
-    // (body-locality §1/§12). Convenience: `GET …/memory` reads the index.
+    // Agent memory, a MEMORY.md index plus topic files: from the CP's tables for a Control-Plane home, else live from the owning daemon.
     r.get(
       '/agents/:id/memory',
       {
@@ -4514,7 +4528,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read the agent memory index',
           description:
-            "Proxy the agent's memory index (<agent-root>/memory/MEMORY.md) live from the owning daemon; a not-yet-created file is data (exists:false). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
+            "Read the agent's memory index (MEMORY.md); a not-yet-created file is data (exists:false). A memory home in the Control Plane is read here with no daemon involved; a home on the daemon is proxied live from the owning daemon, and is 503 when the agent is unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'readAgentMemory',
           params: IdParam,
           querystring: MemoryFileQueryDto,
@@ -4532,15 +4546,16 @@ export function agentRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'external memory does not expose files' })
         }
-        if (!agent.daemonId) {
+        const source = memorySourceOf(agent)
+        if (!source) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
-          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+          if (await placeHidden(req, source, agent.id, req.query.channelKey))
             return reply.code(404).send(PLACE_NOT_FOUND)
-          const rep = await deps.control.memoryRead(agent.daemonId, {
+          const rep = await source.read({
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
             path: req.query.path ?? 'MEMORY.md',
@@ -4549,11 +4564,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (sendMemoryHomeUnavailable(reply, err)) return
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendMemoryReadFailure(reply, err)) return
           throw err
         }
       }
@@ -4567,7 +4578,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent memory files',
           description:
-            "List the files in the agent's memory dir (MEMORY.md index + topic files) live from the owning daemon. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
+            "List the files in the agent's memory dir (MEMORY.md index + topic files). A memory home in the Control Plane is listed here with no daemon involved; a home on the daemon is listed live from the owning daemon, and is 503 when the agent is unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listAgentMemoryFiles',
           params: IdParam,
           querystring: MemoryFilesQueryDto,
@@ -4585,32 +4596,26 @@ export function agentRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'external memory does not expose files' })
         }
-        if (!agent.daemonId) {
+        const source = memorySourceOf(agent)
+        if (!source) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
-          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+          if (await placeHidden(req, source, agent.id, req.query.channelKey))
             return reply.code(404).send(PLACE_NOT_FOUND)
-          const rep = await deps.control.memoryList(agent.daemonId, {
+          const rep = await source.list({
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {})
           })
           return toMemoryFilesDto(rep)
         } catch (err) {
-          if (sendMemoryHomeUnavailable(reply, err)) return
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendMemoryReadFailure(reply, err)) return
           throw err
         }
       }
     )
-
-    const daemonFeature = async (orgId: OrgId, daemonId: DaemonId, feature: string): Promise<boolean> =>
-      (await deps.registry.getAvailable(orgId, daemonId))?.capabilities.features.includes(feature) === true
 
     // The signed-in caller's own memory layer, named by who is asking and never by the request.
     const myMemory = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
@@ -4626,16 +4631,16 @@ export function agentRoutes(deps: HttpDeps) {
       }
       // Only managed memory keeps a layer for one person.
       if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed')
-        return { agentId: agent.id, daemonId: null, userId: null }
-      if (!agent.daemonId) {
+        return { agentId: agent.id, source: null, userId: null }
+      const source = memorySourceOf(agent)
+      if (!source) {
         await reply
           .code(503)
           .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         return null
       }
       // Version skew: a daemon that predates person layers would read the shared one instead.
-      const daemon = await deps.registry.getAvailable(agent.orgId, agent.daemonId)
-      if (!daemon?.capabilities.features.includes(MEMORY_PERSON_LAYER_FEATURE)) {
+      if (!(await source.supports(MEMORY_PERSON_LAYER_FEATURE))) {
         await reply.code(503).send({
           error: 'Service Unavailable',
           statusCode: 503,
@@ -4643,14 +4648,7 @@ export function agentRoutes(deps: HttpDeps) {
         })
         return null
       }
-      return { agentId: agent.id, daemonId: agent.daemonId, userId }
-    }
-    const myMemoryFailure = (reply: FastifyReply, err: unknown) => {
-      if (sendMemoryHomeUnavailable(reply, err)) return true
-      const unavailable = daemonEdgeFailure(err)
-      if (unavailable === null) return false
-      void reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-      return true
+      return { agentId: agent.id, source, userId }
     }
 
     // List the files of the caller's own memory layer.
@@ -4661,7 +4659,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List your memory files',
           description:
-            "List the files of the signed-in caller's own memory layer for this agent: what it keeps for that person from their DMs on linked platforms and their console conversations, live from the owning daemon. Only the caller's own layer can be read; nobody else's, editors included. Empty for an agent whose memory is not managed. 503 when unplaced, the daemon is offline or too old, or the memory home of the agent is not reachable right now; `code` says why.",
+            "List the files of the signed-in caller's own memory layer for this agent: what it keeps for that person from their DMs on linked platforms and their console conversations. A memory home in the Control Plane is read here with no daemon involved, any other live from the owning daemon. Only the caller's own layer can be read; nobody else's, editors included. Empty for an agent whose memory is not managed. 503 when a home on the daemon is unplaced or its daemon is offline or too old, or the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listMyAgentMemoryFiles',
           params: IdParam,
           response: { 200: MemoryFilesDto, 401: ErrorDto, 404: ErrorDto, 503: ErrorDto }
@@ -4670,16 +4668,11 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const mine = await myMemory(req, reply)
         if (!mine) return
-        if (!mine.userId || !mine.daemonId)
-          return toMemoryFilesDto({ agentId: mine.agentId, exists: false, entries: [] })
+        if (!mine.userId || !mine.source) return toMemoryFilesDto({ agentId: mine.agentId, exists: false, entries: [] })
         try {
-          const rep = await deps.control.memoryList(mine.daemonId, {
-            agentId: mine.agentId,
-            personUserId: mine.userId
-          })
-          return toMemoryFilesDto(rep)
+          return toMemoryFilesDto(await mine.source.list({ agentId: mine.agentId, personUserId: mine.userId }))
         } catch (err) {
-          if (myMemoryFailure(reply, err)) return
+          if (sendMemoryReadFailure(reply, err)) return
           throw err
         }
       }
@@ -4693,7 +4686,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read your memory file',
           description:
-            "Proxy one byte slice of a file in the signed-in caller's own memory layer (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). Only the caller's own layer can be read. 503 when unplaced, the daemon is offline or too old, or the memory home of the agent is not reachable right now; `code` says why.",
+            "Read one byte slice of a file in the signed-in caller's own memory layer (?path defaults to MEMORY.md); a missing file is data (exists:false). A memory home in the Control Plane is read here with no daemon involved, any other live from the owning daemon. Only the caller's own layer can be read. 503 when a home on the daemon is unplaced or its daemon is offline or too old, or the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'readMyAgentMemoryFile',
           params: IdParam,
           querystring: MyMemoryFileQueryDto,
@@ -4704,9 +4697,9 @@ export function agentRoutes(deps: HttpDeps) {
         const mine = await myMemory(req, reply)
         if (!mine) return
         const path = req.query.path ?? 'MEMORY.md'
-        if (!mine.userId || !mine.daemonId) return toAgentMemoryDto({ agentId: mine.agentId, path, exists: false })
+        if (!mine.userId || !mine.source) return toAgentMemoryDto({ agentId: mine.agentId, path, exists: false })
         try {
-          const rep = await deps.control.memoryRead(mine.daemonId, {
+          const rep = await mine.source.read({
             agentId: mine.agentId,
             personUserId: mine.userId,
             path,
@@ -4715,7 +4708,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (myMemoryFailure(reply, err)) return
+          if (sendMemoryReadFailure(reply, err)) return
           throw err
         }
       }
@@ -4729,7 +4722,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent channel memory folders',
           description:
-            "List the conversations whose memory has a place layer of its own (a private channel, a group DM, a conversation shared with another organization or one the platform cannot confirm internal), live from the owning daemon, each named by its platform and display name. Only the layers whose conversation shows the caller a session in the console are listed; an organization owner also sees the others with `visible: false`, which they may clear but not read. A person's layer is never listed. Empty for an agent whose memory is not managed. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
+            "List the conversations whose memory has a place layer of its own (a private channel, a group DM, a conversation shared with another organization or one the platform cannot confirm internal), each named by its platform and display name. A memory home in the Control Plane is listed here with no daemon involved, any other live from the owning daemon. Only the layers whose conversation shows the caller a session in the console are listed; an organization owner also sees the others with `visible: false`, which they may clear but not read. A person's layer is never listed. Empty for an agent whose memory is not managed. 503 when a home on the daemon is unplaced or its daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listAgentMemoryChannels',
           params: IdParam,
           response: { 200: MemoryChannelsDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
@@ -4741,23 +4734,20 @@ export function agentRoutes(deps: HttpDeps) {
         if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed') {
           return { channels: [] }
         }
-        if (!agent.daemonId) {
+        const source = memorySourceOf(agent)
+        if (!source) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
-          const rep = await deps.control.memoryChannels(agent.daemonId, { agentId: agent.id })
+          const rep = await source.channels({ agentId: agent.id })
           const owner = can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })
-          const clearable = owner && (await daemonFeature(agent.orgId, agent.daemonId, MEMORY_PLACE_CLEAR_FEATURE))
+          const clearable = owner && (await source.supports(MEMORY_PLACE_CLEAR_FEATURE))
           const views = await placeAccess.judge(req, agent.id, rep.channels, owner)
           return { channels: views.map((view) => ({ ...view, clearable })) }
         } catch (err) {
-          if (sendMemoryHomeUnavailable(reply, err)) return
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendMemoryReadFailure(reply, err)) return
           throw err
         }
       }
@@ -4771,7 +4761,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Clear an agent memory place layer',
           description:
-            "Delete every file of one conversation's place layer, its change history included, on the owning daemon. Organization owners only; the answer says whether there was a layer and never carries its content. Someone who cannot see a session of the conversation gets 404, as for an absent layer; anyone else who is not an owner gets 403. The change is recorded in the organization's audit log without content. 409 when the agent's daemon is too old to clear a layer; 503 when unplaced, the daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.",
+            "Delete every file of one conversation's place layer, its change history included: in the Control Plane for a memory home there, with no daemon involved, otherwise on the owning daemon. Organization owners only; the answer says whether there was a layer and never carries its content. Someone who cannot see a session of the conversation gets 404, as for an absent layer; anyone else who is not an owner gets 403. The change is recorded in the organization's audit log without content. 409 when the agent's daemon is too old to clear a layer; 503 when a home on the daemon is unplaced or its daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'clearAgentMemoryChannel',
           params: IdParam.extend({ channelKey: MemoryChannelKey.describe(PLACE_LAYER_KEY_DESCRIPTION) }),
           response: {
@@ -4792,7 +4782,8 @@ export function agentRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'only managed memory keeps place layers' })
         }
-        if (!agent.daemonId) {
+        const source = memorySourceOf(agent)
+        if (!source) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
@@ -4810,7 +4801,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
         try {
           const owner = can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })
-          const page = await deps.control.memoryChannels(agent.daemonId, { agentId: agent.id, channelKey })
+          const page = await source.channels({ agentId: agent.id, channelKey })
           const entry = page.channels.find((candidate) => candidate.channelKey === channelKey)
           if (!entry) return reply.code(404).send(PLACE_NOT_FOUND)
           if (!owner) {
@@ -4825,7 +4816,7 @@ export function agentRoutes(deps: HttpDeps) {
         } catch (err) {
           return failed(err)
         }
-        if (!(await daemonFeature(agent.orgId, agent.daemonId, MEMORY_PLACE_CLEAR_FEATURE))) {
+        if (!(await source.supports(MEMORY_PLACE_CLEAR_FEATURE))) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
@@ -4834,13 +4825,11 @@ export function agentRoutes(deps: HttpDeps) {
         }
         let cleared: boolean
         try {
-          cleared = (await deps.control.memoryChannelClear(agent.daemonId, { agentId: agent.id, channelKey })).cleared
+          // A Control-Plane home drops the layer's change log with its files, since it holds the content the clear removed.
+          cleared = (await source.clearChannel({ agentId: agent.id, channelKey })).cleared
         } catch (err) {
           return failed(err)
         }
-        // A Control-Plane home keeps the layer's change log here, and it holds the content the clear removed.
-        if (memoryHomedInControlPlane(agent.memory))
-          await deps.repos.agentMemoryHistory.deleteRoot(AgentId(agent.id), memoryHistoryRoot(channelKey))
         // The layer's own change log is gone with it, so the organization's audit log records the clear, without content.
         await deps.repos.audit
           .append({
@@ -4865,7 +4854,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read a memory file',
           description:
-            'Proxy one byte slice of a memory file (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
+            'Read one byte slice of a memory file (?path defaults to MEMORY.md); a missing file is data (exists:false). A memory home in the Control Plane is read here with no daemon involved; a home on the daemon is proxied live from the owning daemon, and is 503 when the agent is unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'readAgentMemoryFile',
           params: IdParam,
           querystring: MemoryFileQueryDto,
@@ -4883,15 +4872,16 @@ export function agentRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'external memory does not expose files' })
         }
-        if (!agent.daemonId) {
+        const source = memorySourceOf(agent)
+        if (!source) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
-          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+          if (await placeHidden(req, source, agent.id, req.query.channelKey))
             return reply.code(404).send(PLACE_NOT_FOUND)
-          const rep = await deps.control.memoryRead(agent.daemonId, {
+          const rep = await source.read({
             agentId: agent.id,
             ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
             path: req.query.path ?? 'MEMORY.md',
@@ -4900,11 +4890,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (sendMemoryHomeUnavailable(reply, err)) return
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendMemoryReadFailure(reply, err)) return
           throw err
         }
       }
@@ -4919,7 +4905,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Replace a memory file',
           description:
-            'Replace one memory file (?path defaults to MEMORY.md) on the owning daemon; returns the written size/mtime. `ifMatchMtime` (optional) is optimistic concurrency — a 409 if the file changed under you. Requires edit permission. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
+            'Replace one memory file (?path defaults to MEMORY.md) through the owning daemon, whatever the memory home, since the daemon stamps the header, regenerates the index and records the change; returns the written size/mtime. `ifMatchMtime` (optional) is optimistic concurrency — a 409 if the file changed under you. Requires edit permission. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'putAgentMemoryFile',
           params: IdParam,
           querystring: PutMemoryFileQueryDto,
@@ -4950,13 +4936,15 @@ export function agentRoutes(deps: HttpDeps) {
             .code(400)
             .send({ error: 'Bad Request', statusCode: 400, message: 'external memory does not expose files' })
         }
-        if (!agent.daemonId) {
+        // A write goes to the daemon whatever the home: header stamping, the generated index and the dream fence's write ledger live there.
+        const source = memorySourceOf(agent)
+        if (!agent.daemonId || !source) {
           return reply
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
-          if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+          if (await placeHidden(req, source, agent.id, req.query.channelKey))
             return reply.code(404).send(PLACE_NOT_FOUND)
           const ok = await deps.control.memoryWrite(agent.daemonId, {
             agentId: agent.id,
@@ -4994,7 +4982,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List memory file history',
           description:
-            'Return one newest-first page of add/update/delete provenance for a managed memory file. For a memory home on the daemon the page is proxied live from the owning daemon and not persisted here; for a home in the Control Plane it is answered from the change log the Control Plane keeps, with no daemon involved. 503 when unplaced, the daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.',
+            'Return one newest-first page of add/update/delete provenance for a managed memory file. For a memory home on the daemon the page is proxied live from the owning daemon and not persisted here; for a home in the Control Plane it is answered from the change log the Control Plane keeps, with no daemon involved. 503 when a home on the daemon is unplaced or its daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'listAgentMemoryFileHistory',
           params: IdParam,
           querystring: MemoryHistoryQueryDto,
@@ -5017,14 +5005,15 @@ export function agentRoutes(deps: HttpDeps) {
             message: 'file change history is available only for managed memory'
           })
         }
-        // Naming a place layer asks the daemon whose conversation it is, even where the change log is kept here.
+        // Naming a place layer asks the memory's source whose conversation it is: the CP's own tables for a Control-Plane home.
         if (req.query.channelKey !== undefined) {
-          if (!agent.daemonId)
+          const source = memorySourceOf(agent)
+          if (!source)
             return reply
               .code(503)
               .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
           try {
-            if (await placeHidden(req, agent.daemonId, agent.id, req.query.channelKey))
+            if (await placeHidden(req, source, agent.id, req.query.channelKey))
               return reply.code(404).send(PLACE_NOT_FOUND)
           } catch (err) {
             const failure = memoryAdminFailure(err)

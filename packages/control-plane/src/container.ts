@@ -1947,6 +1947,7 @@ export function buildContainer(
       externalMemoryGrant: repos.externalMemoryGrant,
       memoryConnectionWriter: repos.memoryConnectionWriter,
       agentMemoryHistory: repos.agentMemoryHistory,
+      agentMemoryFile: repos.agentMemoryFile,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
       slackWorkspaceInstall: repos.slackWorkspaceInstall,
