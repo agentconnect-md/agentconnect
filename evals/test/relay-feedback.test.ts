@@ -49,6 +49,41 @@ describe('relay scoring', () => {
     ).toBe(false)
   })
 
+  it.each(RELAY_VARIANTS)('scores revision 2 and rejects superseded feedback for %s', (variant) => {
+    const { task, feedback } = relayFixture(compileTopology(relayManifest(7)), variant)
+    const previous = scriptedRelayReport(task, feedback)
+    const revised = feedback.map((item) => ({
+      ...item,
+      id: `${item.id}-revised`,
+      revision: item.revision + 1,
+      quantity: item.quantity + 10,
+      format: 'markdown'
+    }))
+    const combined = [...feedback, ...revised, ...feedback]
+    const current = revised.filter((item) => item.revision === 2)
+    const valid = {
+      caseId: task.caseId,
+      sourceId: task.sourceId,
+      status: variant === 'conflict' ? 'needs_clarification' : 'completed',
+      ...(variant !== 'conflict' ? { quantity: current[0]!.quantity, format: 'markdown' } : {}),
+      evidenceIds: [...new Set(current.map((item) => item.id))]
+    }
+    expect(scriptedRelayReport(task, combined)).toEqual(valid)
+    expect(scoreRelayReport(task, combined, variant, valid).successful).toBe(true)
+    expect(scoreRelayReport(task, combined, variant, previous).successful).toBe(false)
+    expect(
+      scoreRelayReport(task, combined, variant, { ...valid, evidenceIds: previous.evidenceIds }).evidenceCorrect
+    ).toBe(false)
+    if (variant !== 'conflict') {
+      expect(
+        scoreRelayReport(task, combined, variant, { ...valid, quantity: previous.quantity }).requirementsSatisfied
+      ).toBe(false)
+      expect(
+        scoreRelayReport(task, combined, variant, { ...valid, format: previous.format }).requirementsSatisfied
+      ).toBe(false)
+    }
+  })
+
   it('rejects adopting stale feedback, duplicate citations, and fabricated conflict resolution', () => {
     for (const variant of ['stale', 'duplicate', 'conflict'] as const) {
       const { task, feedback } = relayFixture(compileTopology(relayManifest(42)), variant)

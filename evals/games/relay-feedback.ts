@@ -74,7 +74,8 @@ export function scoreRelayReport(task: RelayTask, feedback: RelayFeedback[], var
   const report = raw as Partial<RelayReport> | null
   const record = typeof report === 'object' && report !== null && !Array.isArray(report)
   const ids = record && Array.isArray(report.evidenceIds) ? report.evidenceIds : []
-  const latest = feedback.filter((item) => item.revision === 1)
+  const revision = Math.max(...feedback.map((item) => item.revision))
+  const latest = feedback.filter((item) => item.revision === revision)
   const requiredIds = new Set(latest.map((item) => item.id))
   const evidenceCorrect =
     ids.length === requiredIds.size &&
