@@ -251,7 +251,7 @@ describe.skipIf(usingPostgresStore())('the v36 → v37 draft tables on SQLite', 
   }
 
   it('adds the draft table to a v36 store and stamps the current version', async () => {
-    expect(SCHEMA_VERSION).toBe(54)
+    expect(SCHEMA_VERSION).toBe(55)
     const path = tempStorePath('ac-assistant-v36-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)

@@ -31,7 +31,14 @@ import { chatPlaceName, chatPlatformName, chatRoomSigil } from '@/lib/platform-l
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
-import { FollowUpChecks, FollowUpChecksToggle, followUpOf, stopTask, taskStopKey } from '@/components/console/follow-up'
+import {
+  FollowUpChecks,
+  FollowUpChecksToggle,
+  followUpKindKey,
+  followUpOf,
+  stopTask,
+  taskStopKey
+} from '@/components/console/follow-up'
 
 const REFRESH_MS = 30_000
 
@@ -600,7 +607,7 @@ function SubsessionRow({
         )}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-        {followUp ? <span>{tf('kind')}</span> : null}
+        {followUp ? <span>{tf(followUpKindKey(followUp))}</span> : null}
         {followUp?.status === 'waiting' && followUp.nextCheck ? (
           <span>
             {tf('nextCheck', {

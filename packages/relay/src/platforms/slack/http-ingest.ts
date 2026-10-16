@@ -35,6 +35,8 @@ import type { RelayForwardOutcome } from '../contract.js'
 export { normalizeSlackMessage } from '@agentconnect.md/message'
 export type SlackMessageEvent = SlackMessageLike & {
   tab?: string
+  /** Who added the member, on a `member_joined_channel`. */
+  inviter?: string
   assistant_thread?: { user_id?: string; channel_id?: string; thread_ts?: string }
 }
 
@@ -98,6 +100,13 @@ export interface HttpSlackAssistantThreadStarted extends HttpSlackInteractionRec
   channelId: string
   threadTs: string
   userId?: string
+}
+
+/** The bot itself joined a channel; the owning daemon may take a first look of it. */
+export interface HttpSlackBotJoined extends HttpSlackInteractionReceipt {
+  channelId: string
+  /** Who added the bot, where the event names them. */
+  inviter?: string
 }
 
 /** Someone other than the bot joined a channel; the owning daemon decides whether the place turned external. */
@@ -428,6 +437,8 @@ export interface SlackHttpIngestDeps {
   onAssistantThreadStarted?: (started: HttpSlackAssistantThreadStarted) => void
   /** Forward another member's join to the channel's owning daemon (assistant-mode.md §5.3); the relay looks nobody up. */
   onMemberJoined?: (joined: HttpSlackMemberJoined) => void
+  /** Forward the bot's own join to the channel's owning daemon (assistant-mode.md §5.13). */
+  onBotJoined?: (joined: HttpSlackBotJoined) => void
   appHomeContext?: (channelId?: string) => SlackAppHomeContext
   /** The bot's credential is definitively dead (an uninstall, a token revocation, or a probe saying so); report it so the CP revokes the bot. */
   onBotRevoked?: (reason: 'app_uninstalled' | 'tokens_revoked', proof: SlackRevocationProof) => void
@@ -592,6 +603,12 @@ export class SlackHttpIngest {
         return
       }
       if (event && this.isOwnMembershipChange(event)) {
+        if (event.type === 'member_joined_channel' && event.channel)
+          this.deps.onBotJoined?.({
+            channelId: event.channel,
+            ...(event.inviter ? { inviter: event.inviter } : {}),
+            interactionId: eventId ?? `${event.channel}:${event.user ?? ''}:${eventAtMs ?? ''}`
+          })
         await this.refreshChannels()
         return
       }

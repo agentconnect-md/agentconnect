@@ -325,7 +325,9 @@ async function followUpOf(
     title: item.title,
     doneWhen: item.doneWhen,
     status,
-    nextCheck: open && item.nextCheck !== null ? iso(item.nextCheck) : null,
+    // A first look waits for the scheduled-check slot, not a time it set (assistant-mode.md §5.13).
+    nextCheck: open && item.nextCheck !== null && !item.firstLook ? iso(item.nextCheck) : null,
+    ...(item.firstLook ? { firstLook: true } : {}),
     recentChecks: checks
       .filter((check) => check.endedAt !== null && check.observation !== null)
       .slice(0, ASSISTANT_ACTIVITY_CHECKS_MAX)

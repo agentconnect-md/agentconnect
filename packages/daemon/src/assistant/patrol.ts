@@ -7,14 +7,20 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { assistantModeOn, PROPOSE_TOOL, RECORD_CHECK_TOOL, type ProposeInput } from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
-import { patrolCoordinate } from '../session/subsession-coordinate.js'
-import type { AssistantItem, AssistantItemLedger, AssistantPlace } from '../store/assistant-items.js'
+import { firstLookCoordinate, patrolCoordinate } from '../session/subsession-coordinate.js'
+import type {
+  AssistantFirstLookTrigger,
+  AssistantItem,
+  AssistantItemLedger,
+  AssistantPlace
+} from '../store/assistant-items.js'
 import type { AssistantPatrolDue, AssistantPatrolLedger, AssistantPatrolState } from '../store/assistant-patrols.js'
 import { PATROL_BUDGET_WINDOW_MS, PATROL_MAX_FAILURES, patrolBackoffMs } from '../store/assistant-patrols.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
+import { firstLookFailedText, firstLookHandling, firstLookPrompt, firstLookReportText } from './first-look.js'
 import type { ReadAsker } from './place-access.js'
 import { callerOfMessage, type TaskCaller } from './tasks.js'
 
@@ -103,6 +109,14 @@ interface CheckMessage {
 export type FollowUpMessageResult =
   { kind: 'started' } | { kind: 'queued' } | { kind: 'refused'; reason: string; message: string }
 
+/** What a first look's prompt and handling name (assistant-mode.md §5.13), or why its place may no longer take one. */
+export type FirstLookFacts =
+  { place: string; kind: string; tools: string; reach: string; external: boolean } | { refused: string }
+
+/** What a requested first look says back to the session that asked for it. */
+export type FirstLookRequestResult =
+  { kind: 'started'; item: AssistantItem } | { kind: 'refused'; reason: string; message: string }
+
 type Admission = Promise<{ accepted: boolean; reason?: string }>
 
 export interface AssistantPatrolsHost {
@@ -112,11 +126,16 @@ export interface AssistantPatrolsHost {
   /** This daemon holds the agent's duty, and the agent is neither paused nor draining. */
   mayPatrol(agentId: string): boolean
   draining(): boolean
-  items: Pick<AssistantItemLedger, 'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared'>
+  items: Pick<
+    AssistantItemLedger,
+    'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestFirstLook'
+  >
   patrols: AssistantPatrolLedger
   subsessions: Pick<AssistantSubsessionIndex, 'openFollowUp' | 'checking' | 'adoptFollowUps' | 'finish' | 'get'>
-  /** The place's one long session; undefined when it has none. */
-  parentFor(agentId: string, place: AssistantPlace): Promise<PatrolParent | undefined>
+  /** The place's one long session; with `open`, else the one its first message would key (a first look's, §5.13); undefined when it has none. */
+  parentFor(agentId: string, place: AssistantPlace, opts?: { open?: boolean }): Promise<PatrolParent | undefined>
+  /** What a first look of this follow-up names now, or why its place may no longer take one. */
+  firstLookFacts?(agentId: string, item: AssistantItem): Promise<FirstLookFacts>
   /** Whether the place is a public channel, so every internal place lists its follow-ups. */
   sharedPlace?(agentId: string, place: AssistantPlace): Promise<boolean>
   dispatch(
@@ -126,14 +145,15 @@ export interface AssistantPatrolsHost {
     callMeta: CallMeta,
     onAdmission: (result: { accepted: boolean; reason?: string }) => void
   ): Promise<unknown>
-  /** One report into the place's current long session, else the recorded parent, in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. */
+  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. */
   reportToParent(
     agentId: string,
     caller: TaskCaller,
     parentSessionId: string,
     text: string,
     reportId: string,
-    replyThread?: string | null
+    replyThread?: string | null,
+    opens?: string
   ): Promise<boolean>
   /** Where a check's session sits once its turn neither runs nor awaits replay here; `missing` when it never started, undefined while it runs. */
   endedSession(agentId: string, key: string): Promise<TaskCaller | 'missing' | undefined>
@@ -362,6 +382,107 @@ export class AssistantPatrols {
     return item
   }
 
+  /** A first look of a place (assistant-mode.md §5.13): a follow-up marked as one, due at once, owned by the place's long session, which its report opens if nobody spoke there yet. */
+  async takeFirstLook(input: {
+    agentId: string
+    place: AssistantPlace
+    trigger: AssistantFirstLookTrigger
+    title: string
+    asker?: string
+  }): Promise<AssistantItem | undefined> {
+    const { agentId, place } = input
+    const owner = await this.host.parentFor(agentId, place, { open: true }).catch(() => undefined)
+    if (!owner) return undefined
+    const now = this.host.now()
+    const taskKey = sessionKey(
+      place.platform,
+      place.channel,
+      firstLookCoordinate(monotonicTs()),
+      agentId,
+      place.transportScope
+    )
+    const shared = (await this.host.sharedPlace?.(agentId, place).catch(() => false)) ?? false
+    const item = await this.host.items.create({
+      agentId,
+      title: input.title,
+      nextCheck: now,
+      status: 'active',
+      origin: place,
+      taskKey,
+      ...(input.asker !== undefined ? { asker: input.asker } : {}),
+      shared,
+      firstLook: input.trigger,
+      now
+    })
+    await this.host.subsessions.openFollowUp({
+      agentId,
+      childSessionKey: taskKey,
+      parentSessionId: owner.sessionId,
+      parentSessionKey: owner.key,
+      now
+    })
+    this.host.log.info(`first look: agent ${agentId} took ${item.id} (${taskKey}, ${input.trigger})`)
+    return item
+  }
+
+  /** A first look someone asked for (§5.13): one at a time per place, counted against the budget, and started at once. */
+  async requestFirstLook(input: {
+    agentId: string
+    place: AssistantPlace
+    title: string
+    asker?: string
+  }): Promise<FirstLookRequestResult> {
+    const { agentId, place } = input
+    if (!this.host.mayPatrol(agentId) || this.host.draining())
+      return {
+        kind: 'refused',
+        reason: 'paused',
+        message: 'This agent is paused or draining, so no first look can run now. Nothing was started.'
+      }
+    const lockKey = JSON.stringify(['first-look', agentId, place.platform, place.channel, place.transportScope ?? ''])
+    type Decided = FirstLookRequestResult | { kind: 'start'; item: AssistantItem; admitted: Admission }
+    const decided = await this.withLock(lockKey, async (): Promise<Decided> => {
+      const latest = await this.host.items.latestFirstLook(agentId, place)
+      if (latest && followUpOpen(latest))
+        return {
+          kind: 'refused',
+          reason: 'running',
+          message: 'A first look of this place is already running; its report comes here. Nothing was started.'
+        }
+      const now = this.host.now()
+      const refusal = await this.overBudget(agentId, now, 'first look')
+      if (refusal?.kind === 'refused') return refusal
+      const item = await this.takeFirstLook({ ...input, trigger: 'requested' })
+      if (!item)
+        return {
+          kind: 'refused',
+          reason: 'parent_gone',
+          message: 'This place has no ongoing conversation to report to. Nothing was started.'
+        }
+      const due = { itemId: item.id, nextCheck: item.nextCheck ?? now }
+      const started = await this.withLock(
+        item.taskKey,
+        async () => await this.begin(agentId, item.id, due, this.host.now(), false)
+      )
+      if (started === 'no-place' || started === 'busy')
+        return {
+          kind: 'refused',
+          reason: started === 'busy' ? 'busy' : 'parent_gone',
+          message: 'The first look could not start now. Nothing was started.'
+        }
+      return { kind: 'start', item, admitted: started.admitted }
+    })
+    if (decided.kind !== 'start') return decided
+    const admitted = await decided.admitted
+    if (admitted.accepted) return { kind: 'started', item: decided.item }
+    // A refused start stays due, so it runs once the agent can take it.
+    return {
+      kind: 'refused',
+      reason: admitted.reason ?? 'busy',
+      message: `The first look could not start now (${admitted.reason ?? 'busy'}); it runs as soon as it can.`
+    }
+  }
+
   /** One pass over the agents this daemon checks for: waiting messages first, then at most one scheduled check per agent. */
   async sweep(): Promise<void> {
     if (this.sweeping || this.host.draining()) return
@@ -421,6 +542,14 @@ export class AssistantPatrols {
     item: AssistantItem,
     input: { text: string; askers: CheckAskers }
   ): Promise<FollowUpMessageResult> {
+    if (item.firstLook !== null)
+      return {
+        kind: 'refused',
+        reason: 'first_look',
+        message:
+          'A first look takes no messages: it ends after its one read, and its report comes here. Nothing was sent; ' +
+          'once it has ended, ask for another with firstLook.'
+      }
     if (!followUpOpen(item))
       return {
         kind: 'refused',
@@ -500,7 +629,11 @@ export class AssistantPatrols {
   }
 
   /** The day's budget, or the refusal that names when it resets. */
-  private async overBudget(agentId: string, now: number): Promise<FollowUpMessageResult | undefined> {
+  private async overBudget(
+    agentId: string,
+    now: number,
+    what: 'message' | 'first look' = 'message'
+  ): Promise<FollowUpMessageResult | undefined> {
     const agent = [...this.host.agents()].find((a) => a.id === agentId)
     const budget = agent?.assistantMode?.limits?.dailyPatrolBudget ?? DEFAULT_DAILY_PATROL_BUDGET
     const { count, oldest } = await this.host.patrols.checksSince(agentId, now - PATROL_BUDGET_WINDOW_MS)
@@ -510,8 +643,11 @@ export class AssistantPatrols {
       kind: 'refused',
       reason: 'budget',
       message:
-        `This agent already ran its ${budget} follow-up checks of the last 24 hours. Nothing was sent; message it ` +
-        `again after ${resets}, when the budget has room.`
+        what === 'first look'
+          ? `This agent already ran its ${budget} checks of the last 24 hours, and a first look counts as one. ` +
+            `Nothing was started; ask again after ${resets}, when the budget has room.`
+          : `This agent already ran its ${budget} follow-up checks of the last 24 hours. Nothing was sent; message ` +
+            `it again after ${resets}, when the budget has room.`
     }
   }
 
@@ -534,17 +670,33 @@ export class AssistantPatrols {
     if (item) await this.withLock(item.taskKey, async () => await this.begin(agent.id, due.itemId, due, now))
   }
 
-  /** Start a check, holding the follow-up's lock: a scheduled one only while none of the agent's runs, a messaged one at once. */
+  /** Start a check, holding the follow-up's lock: a scheduled one only while none of the agent's runs, a messaged or requested one at once. */
   private async begin(
     agentId: string,
     itemId: string,
     due: AssistantPatrolDue | undefined,
-    now: number
+    now: number,
+    exclusive = due !== undefined
   ): Promise<'no-place' | 'busy' | { admitted: Admission }> {
     const item = await this.host.items.get(agentId, itemId)
     if (!item || !followUpOpen(item) || (due && item.nextCheck !== due.nextCheck)) return 'busy'
     const thread = threadOf(item)
-    const parent = await this.host.parentFor(agentId, item.origin)
+    const parent = await this.host.parentFor(agentId, item.origin, item.firstLook ? { open: true } : undefined)
+    // A first look whose place may no longer take one ends without reading (§5.13).
+    const facts = item.firstLook ? await this.host.firstLookFacts?.(agentId, item) : undefined
+    if (item.firstLook && (!facts || 'refused' in facts || facts.external || !parent || !thread)) {
+      const why = !facts
+        ? 'its place could not be described'
+        : 'refused' in facts
+          ? facts.refused
+          : facts.external
+            ? 'its place is shared with another organization'
+            : 'its place has no conversation to report to'
+      await this.host.items.schedule(agentId, item.id, { status: 'dropped', nextCheck: null }, now)
+      await this.observe(agentId, item.id, `No first look ran: ${why}.`)
+      this.host.log.info(`first look ${item.taskKey}: ended without reading (${why})`)
+      return 'no-place'
+    }
     if (!parent || !thread) {
       // No conversation to report to: a scheduled check is passed over, once.
       if (due) {
@@ -577,7 +729,7 @@ export class AssistantPatrols {
       input: pending.length > 0 ? JSON.stringify(input) : null,
       now,
       staleBefore: now - PATROL_STALE_MS,
-      exclusive: due !== undefined
+      exclusive
     })
     // A check of it, or the agent's one scheduled check, is still running.
     if (!begun) return 'busy'
@@ -607,12 +759,16 @@ export class AssistantPatrols {
           sourceSessionId: parent.sessionId,
           replyRequested: false
         },
-        patrolPrompt(item, due, messages)
+        facts && !('refused' in facts)
+          ? firstLookPrompt({ ...facts, requested: item.firstLook === 'requested' })
+          : patrolPrompt(item, due, messages)
       ),
       mentionedBots: [],
       isDm: false,
       headless: true,
-      initialSessionTitle: `Follow-up: ${quote(item.title).slice(0, 80)}`
+      initialSessionTitle: item.firstLook
+        ? quote(item.title).slice(0, 80)
+        : `Follow-up: ${quote(item.title).slice(0, 80)}`
     }
     const callMeta: CallMeta = {
       callFrom: agentId,
@@ -728,11 +884,12 @@ export class AssistantPatrols {
     }
   }
 
-  /** Whether the check added an observation since it started. */
+  /** Whether the check added an observation since it started, and a first look also kept its report. */
   private async recorded(agentId: string, state: AssistantPatrolState): Promise<boolean> {
     const baseline = state.runningObservationVersion
     if (baseline === null) return true
     const item = await this.host.items.get(agentId, state.itemId)
+    if (item?.firstLook && state.runningReport === null) return false
     return !item || item.observationVersion > baseline
   }
 
@@ -749,6 +906,7 @@ export class AssistantPatrols {
     const row = await this.host.subsessions.get(agentId, key)
     const item = await this.host.items.get(agentId, itemId)
     const stops = verdict.kind === 'failed' && state.failures + 1 >= PATROL_MAX_FAILURES
+    if (item?.firstLook) return await this.concludeFirstLook(agentId, key, caller, state, verdict, item, stops)
     const name = `follow-up ${key}${item ? ` ("${quote(item.title)}")` : ''}`
     // Its reports reply in the thread it was taken in (assistant-mode.md §5.12).
     const thread = item?.replyThread ?? null
@@ -799,6 +957,81 @@ export class AssistantPatrols {
     }
   }
 
+  /** A first look's one check (§5.13): its report and handling reach the place's top level, and it ends as done; after five failures it ends, said once only when someone asked for it. */
+  private async concludeFirstLook(
+    agentId: string,
+    key: string,
+    caller: TaskCaller | undefined,
+    state: AssistantPatrolState,
+    verdict: Verdict,
+    item: AssistantItem,
+    stops: boolean
+  ): Promise<void> {
+    const { itemId, runningReport: report } = state
+    const check = state.runningCheck ?? 0
+    const row = await this.host.subsessions.get(agentId, key)
+    const facts = await this.host.firstLookFacts?.(agentId, item).catch(() => undefined)
+    const known = facts && !('refused' in facts) ? facts : undefined
+    const place = known?.place ?? quote(item.title)
+    // A place nobody spoke in yet has its long session opened by this report (§5.13).
+    const opens = (await this.host.parentFor(agentId, item.origin, { open: true }).catch(() => undefined))?.thread
+    let reported = false
+    if (verdict.kind === 'completed' && report !== null && row && caller) {
+      const handling = firstLookHandling(known?.reach ?? '@-mention me', { external: known?.external ?? false })
+      const text = firstLookReportText(place, handling, report)
+      const reportId = `patrol:${key}:${check}:report`
+      const delivered = await this.deliver(
+        agentId,
+        itemId,
+        caller,
+        row.parentSessionId,
+        reportId,
+        text,
+        undefined,
+        opens
+      )
+      if (delivered === 'draining') return
+      reported = delivered === 'delivered'
+    }
+    if (stops && item.firstLook === 'requested' && row && caller) {
+      const text = firstLookFailedText(place, PATROL_MAX_FAILURES)
+      const reportId = `patrol:${key}:${check}:stopped`
+      const sent = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, undefined, opens)
+      if (sent === 'draining') return
+    }
+    const now = this.host.now()
+    if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
+      const latest = (await this.host.items.get(agentId, itemId))?.observations.at(-1)
+      const baseline = state.runningObservationVersion
+      const seen = latest && baseline !== null && latest.version > baseline ? latest.text : null
+      if (state.runningCheck !== null)
+        await this.host.patrols.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
+      await this.host.patrols.succeed(agentId, itemId, key, now)
+      // Its one check ends it: done once read, stopped when someone stopped the read.
+      const status = verdict.kind === 'completed' ? 'done' : 'dropped'
+      await this.host.items.schedule(agentId, itemId, { status, nextCheck: null }, now)
+      await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
+    } else if (verdict.kind === 'released') {
+      await this.host.patrols.release(agentId, itemId, key, now)
+      await this.host.subsessions.finish(agentId, key, 'failed')
+    } else {
+      await this.host.subsessions.finish(agentId, key, 'failed')
+      const failed = await this.host.patrols.fail(agentId, itemId, key, now, item.nextCheck)
+      if (!failed) return
+      const note = failed.stopped
+        ? `First look failed (${verdict.why}), ${PATROL_MAX_FAILURES} times in a row; it ended without reporting.`
+        : `First look failed (${verdict.why}); the next attempt is in ${patrolBackoffMs(failed.failures) / 60_000} minutes.`
+      if (state.runningCheck !== null)
+        await this.host.patrols.endCheck(agentId, itemId, state.runningCheck, {
+          observation: note,
+          reported: false,
+          now
+        })
+      await this.observe(agentId, itemId, note)
+      if (failed.stopped) await this.host.items.schedule(agentId, itemId, { status: 'dropped', nextCheck: null }, now)
+    }
+  }
+
   /** Put a check's messages back in front of any that arrived meanwhile. */
   private async restore(
     agentId: string,
@@ -821,12 +1054,14 @@ export class AssistantPatrols {
     parentSessionId: string,
     reportId: string,
     text: string,
-    replyThread: string | null
+    // Undefined posts at the place's top level, as a first look's report does.
+    replyThread?: string | null,
+    opens?: string
   ): Promise<'delivered' | 'refused' | 'draining'> {
     if (this.host.draining()) return 'draining'
     let delivered = false
     try {
-      delivered = await this.host.reportToParent(agentId, caller, parentSessionId, text, reportId, replyThread)
+      delivered = await this.host.reportToParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens)
     } catch (err) {
       this.host.log.warn(`follow-up report for ${itemId} failed: ${(err as Error).message}`)
     }

@@ -359,6 +359,16 @@ describe('SubsessionsPanel', () => {
     expect(last()).toEqual({ settled: true, count: 1, running: 1, failed: false })
   })
 
+  // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
+  it('labels a first look as one', async () => {
+    wire.pages = [
+      page([followUp('waiting', { title: 'First look at releases' }, { firstLook: true, nextCheck: null })])
+    ]
+    await render()
+    expect(rows()[0]?.textContent).toContain('First look')
+    expect(rows()[0]?.textContent).not.toContain('Follow-up')
+  })
+
   it('draws a follow-up in each state with its kind, and counts only a check as running', async () => {
     wire.pages = [
       page([

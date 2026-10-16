@@ -22,6 +22,10 @@ import { parseArgs, requiredString } from './args.js'
 /** The ledger calls a check's tools make. */
 export type AssistantItemLedgerPort = Pick<AssistantItemLedger, 'get' | 'appendObservation' | 'schedule'>
 
+/** What a request for a first look says back. */
+export type FirstLookRequest =
+  { kind: 'started'; taskId: string } | { kind: 'refused'; reason: string; message: string }
+
 /** What `followUp` asks the daemon to take. */
 export interface FollowUpInput {
   title: string
@@ -39,6 +43,8 @@ export interface AssistantItemDeps {
     askerFor(ctx: SessionContext): Promise<string | undefined>
     /** Take a follow-up of the session's place (assistant-mode.md §5.12). */
     take?(ctx: SessionContext, input: FollowUpInput): Promise<AssistantItem>
+    /** Start a first look of the session's place, as its long session asked (assistant-mode.md §5.13). */
+    firstLook?(ctx: SessionContext): Promise<FirstLookRequest>
     /** A check's side, in the follow-up's own session. */
     patrol?: {
       /** The follow-up this session's check is running for; undefined once it ended. */
@@ -62,7 +68,17 @@ export function askerIdentity(msg: NormalizedMessage, tenantScope: string | unde
   const uid = msg.sender.id
   if (!uid || /[\s:]/.test(uid)) return undefined
   if (msg.platform === 'webchat') return `user:${uid}`
-  return tenantScope && !/\s/.test(tenantScope) ? `${msg.platform}:${tenantScope}:${uid}` : undefined
+  return memberAskerIdentity(msg.platform, tenantScope, uid)
+}
+
+/** A chat member's asker identity, `'<platform>:<tenant scope>:<uid>'`, as a turn's sender would have it. */
+export function memberAskerIdentity(
+  platform: string,
+  tenantScope: string | undefined,
+  uid: string
+): string | undefined {
+  if (!uid || /[\s:]/.test(uid)) return undefined
+  return tenantScope && !/\s/.test(tenantScope) ? `${platform}:${tenantScope}:${uid}` : undefined
 }
 
 /** The place a session belongs to (§5.2): its conversation, never a thread inside it. */
@@ -101,7 +117,8 @@ export const PATROL_MIN_NEXT_CHECK_MS = 5 * 60_000
 /** A check's `recordCheck` (assistant-mode.md §5.12): what it saw, always, its schedule, and an optional report. */
 export const RECORD_CHECK_ARGS = z.object({
   observation: boundedString('observation', ASSISTANT_ITEM_LIMITS.observation),
-  report: optionalBoundedString('report', ASSISTANT_ITEM_LIMITS.observation, 1),
+  // A first look's report is longer; a follow-up's is held to an observation's length below.
+  report: optionalBoundedString('report', ASSISTANT_ITEM_LIMITS.firstLookReport, 1),
   nextCheck: nextCheckArg,
   done: z
     .boolean('argument done must be a boolean')
@@ -285,6 +302,12 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   const patrol = deps.assistantItems?.patrol
   const itemId = patrol ? await patrol.itemFor(ctx) : undefined
   if (!patrol || itemId === undefined) throw new Error('this check has ended; nothing was written')
+  if ((await ledger.get(ctx.agentId, itemId))?.firstLook)
+    return await handBackFirstLook(ctx, input, itemId, ledger, patrol)
+  if (input.report !== undefined && input.report.length > ASSISTANT_ITEM_LIMITS.observation)
+    throw new Error(
+      `argument report must be at most ${ASSISTANT_ITEM_LIMITS.observation} characters; nothing was written`
+    )
   if (input.done === true && input.nextCheck !== undefined)
     throw new Error('recordCheck takes `done` or `nextCheck`, not both; nothing was written')
   if (input.nextCheck !== undefined && input.nextCheck < patrol.now() + PATROL_MIN_NEXT_CHECK_MS)
@@ -308,6 +331,23 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
       : { state: 'ended', nextCheck: null },
     ...(input.report !== undefined ? { report: 'passed on when this check ends' } : {})
   }
+}
+
+/** A first look hands back its one report (assistant-mode.md §5.13); its check's end delivers it and marks it done. */
+async function handBackFirstLook(
+  ctx: SessionContext,
+  input: z.infer<typeof RECORD_CHECK_ARGS>,
+  itemId: string,
+  ledger: AssistantItemLedgerPort,
+  patrol: NonNullable<NonNullable<AssistantItemDeps['assistantItems']>['patrol']>
+): Promise<Record<string, unknown>> {
+  if (input.report === undefined)
+    throw new Error('a first look hands back its whole answer as `report`; nothing was written')
+  const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'check' })
+  if (!appended) throw new Error('this first look is gone; nothing was written')
+  if (!(await patrol.report(ctx, itemId, input.report)))
+    throw new Error('this first look has ended; the observation was written but the report was not kept')
+  return { ok: true, report: 'passed on when this first look ends; end your turn now' }
 }
 
 /** A check asks for approval to act (assistant-mode.md §5.10); no other session may, and it runs nothing itself. */

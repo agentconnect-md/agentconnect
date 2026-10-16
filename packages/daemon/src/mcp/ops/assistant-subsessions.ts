@@ -170,7 +170,7 @@ export const LIST_TASKS_LIMIT = 20
 /** One listed task as its owning session reads it; an approved proposal carries no handle. */
 export interface ListedTask {
   taskId?: string
-  kind: 'delegated task' | 'follow-up' | 'approved proposal'
+  kind: 'delegated task' | 'follow-up' | 'first look' | 'approved proposal'
   label: string | null
   state: 'running' | 'reporting' | 'finished' | 'ended' | 'checking' | 'waiting' | 'done' | 'stopped'
   startedAt: string
@@ -250,7 +250,8 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
         const state = followUpState(row, item)
         return {
           taskId: row.childSessionKey,
-          kind,
+          // A first look is a follow-up that reads its place once and takes no messages (assistant-mode.md §5.13).
+          kind: item.firstLook ? 'first look' : kind,
           label: oneLine(item.title),
           state,
           startedAt: new Date(row.createdAt).toISOString(),

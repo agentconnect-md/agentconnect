@@ -434,7 +434,8 @@ describe('the assistant Activity routes', () => {
         state: 'open',
         createdAt: '2026-10-09T07:00:00.000Z',
         kind: 'follow-up',
-        followUp: followUp('Renew the certificate')
+        // A first look keeps its label wherever its row is listed (assistant-mode.md §5.13).
+        followUp: { ...followUp('Renew the certificate'), firstLook: true }
       },
       {
         sessionId: null,
@@ -466,7 +467,13 @@ describe('the assistant Activity routes', () => {
         title: null,
         visible: false,
         kind: 'follow-up',
-        followUp: { status: 'waiting', nextCheck: '2026-10-10T09:00:00.000Z', doneWhen: null, recentChecks: [] }
+        followUp: {
+          status: 'waiting',
+          nextCheck: '2026-10-10T09:00:00.000Z',
+          doneWhen: null,
+          recentChecks: [],
+          firstLook: true
+        }
       }),
       expect.objectContaining({ state: 'done', kind: 'delegated' })
     ])

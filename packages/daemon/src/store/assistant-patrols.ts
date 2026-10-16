@@ -86,6 +86,7 @@ export const ASSISTANT_PATROL_SCHEMA = `
         endedAt INTEGER,
         observation TEXT,
         reported INTEGER NOT NULL DEFAULT 0,
+        historyRead INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (agentId, itemId, checkNo)
       );
       CREATE INDEX IF NOT EXISTS assistant_check_by_agent ON assistant_check (agentId, startedAt);
@@ -131,7 +132,7 @@ const CLEAR_RUNNING =
 export class AssistantPatrolLedger {
   constructor(private readonly db: AssistantPatrolDatabase) {}
 
-  /** Open follow-ups whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; earliest first. */
+  /** Open follow-ups whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; follow-ups before first looks, then earliest first. */
   async due(agentId: string, now: number, limit: number, staleBefore = 0): Promise<AssistantPatrolDue[]> {
     const rows = (
       await this.db.query(
@@ -142,7 +143,7 @@ export class AssistantPatrolLedger {
               (p.patrolledNextCheck IS NULL OR p.patrolledNextCheck <> i.nextCheck)
               AND (p.retryAt IS NULL OR p.retryAt <= ?)
               AND p.stopped = 0 AND (p.runningKey IS NULL OR p.runningSince < ?)))
-          ORDER BY i.nextCheck, i.id LIMIT ?`,
+          ORDER BY CASE WHEN i.firstLook IS NULL THEN 0 ELSE 1 END, i.nextCheck, i.id LIMIT ?`,
         [agentId, now, now, staleBefore, limit]
       )
     ).rows as Row[]
@@ -358,6 +359,28 @@ export class AssistantPatrolLedger {
       'UPDATE assistant_patrol SET patrolledNextCheck = ?, updatedAt = ? WHERE agentId = ? AND itemId = ?',
       [nextCheck, now, agentId, itemId]
     )
+  }
+
+  /** Grant up to `want` more history messages to a running check, at most `max` in all; how many it may read now. */
+  async takeHistory(agentId: string, itemId: string, checkNo: number, want: number, max: number): Promise<number> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const row = (
+        await this.db.query(
+          'SELECT historyRead FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo = ?',
+          [agentId, itemId, checkNo]
+        )
+      ).rows[0] as Row | undefined
+      if (!row) return 0
+      const read = Number(row.historyRead)
+      const granted = Math.max(0, Math.min(want, max - read))
+      if (granted === 0) return 0
+      const { changes } = await this.db.query(
+        `UPDATE assistant_check SET historyRead = ? WHERE agentId = ? AND itemId = ? AND checkNo = ? AND historyRead = ?`,
+        [read + granted, agentId, itemId, checkNo, read]
+      )
+      if (changes > 0) return granted
+    }
+    return 0
   }
 
   /** A follow-up's newest checks, newest first. */

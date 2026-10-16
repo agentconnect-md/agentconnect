@@ -153,6 +153,29 @@ export interface DaemonReport {
   messageId?: string | undefined
   /** A follow-up's report replies in this thread of an appending place, else (null) where its latest turn replied. */
   replyThread?: string | null | undefined
+  /** The coordinate a place with no session yet opens its long session at, as its first message would (a first look's, assistant-mode.md §5.13). */
+  opens?: string | undefined
+}
+
+/** The long session a report opens in a place nobody spoke in yet; the report's turn creates its row. */
+function openingSession(
+  agentId: string,
+  place: { platform: string; channel: string; transportScope?: string | null | undefined },
+  thread: string,
+  now: number
+): SessionRecord {
+  return {
+    key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
+    agentId,
+    platform: place.platform,
+    channel: place.channel,
+    thread,
+    transportScope: place.transportScope ?? null,
+    acpSessionId: null,
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: now
+  }
 }
 
 /** What a `reporting` row holds to send its round-end report again after a refusal or a restart. */
@@ -929,7 +952,8 @@ export class CollabCoordinator {
     // The place's current long session speaks (after `!new`, not the retired one), else the recorded parent.
     const parent =
       (await store.placeSession(agentId, place.platform, place.channel, place.transportScope ?? null)) ??
-      (await store.getSessionByOutwardId(report.parentSessionId, agentId))
+      (await store.getSessionByOutwardId(report.parentSessionId, agentId)) ??
+      (report.opens !== undefined ? openingSession(agentId, place, report.opens, this.host.clock().now()) : undefined)
     const route =
       parent && sessionReplyRoute(parent, (...args) => this.host.integrationIdForSessionTransport(...args), replyTarget)
     if (!parent || !route) {

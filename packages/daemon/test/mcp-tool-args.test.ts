@@ -6,6 +6,7 @@ import { externalMemoryTools } from '../src/memory/tools.js'
 import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { FIRST_LOOK_TOOL } from '../src/mcp/ops/first-look.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -75,6 +76,7 @@ const advertised: ToolDescriptor[] = [
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS,
   FOLLOW_UP_TOOL,
+  FIRST_LOOK_TOOL,
   RECORD_CHECK_TOOL,
   PROPOSE_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,

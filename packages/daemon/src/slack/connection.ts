@@ -32,6 +32,7 @@ import { SLACK_LIFECYCLE_EVENTS, slackLifecycleRevocation } from './lifecycle.js
 import type { CredentialRevocation } from '../platforms/credential-revocation.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import { profileTimeZone } from '../messages/time-zone.js'
+import type { JoinedChannel } from '../messages/channel-intro.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
@@ -431,8 +432,8 @@ export interface SlackDeps {
   onAssistantThreadStarted?: (channel: string, userId?: string, startedAtMs?: number) => Promise<void>
   appHomeContext?: () => SlackAppHomeContext
   /** Fired when the bot's channel membership changes (invited to / removed from a
-   *  channel), so the daemon can re-list + re-report the membership snapshot. */
-  onChannelsChanged?: () => void
+   *  channel), so the daemon can re-list + re-report the membership snapshot; a join names its channel and inviter. */
+  onChannelsChanged?: (joined?: JoinedChannel) => void
   /** Whether an agent's integration is on this socket, in any mode, so a member join is worth a lookup (assistant-mode.md §5.3). */
   checksJoinedMembers?: () => boolean
   /** Fired when a member join shows a channel is external: a guest, an outside member, or a share. */
@@ -1220,7 +1221,7 @@ export class SlackConnection implements PlatformConnection {
     })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
-      const ev = event as { user?: string; channel?: string }
+      const ev = event as { user?: string; channel?: string; inviter?: string }
       if (ev.user !== this.botUserId) {
         // Someone else joined: looked up for every agent (assistant-mode.md §5.3).
         if (!ev.user || !ev.channel || this.deps.checksJoinedMembers?.() !== true) return
@@ -1231,7 +1232,9 @@ export class SlackConnection implements PlatformConnection {
       log?.debug(`slack: bot joined channel ${ev.channel ?? '?'}`)
       // A channel the bot just joined resolves by name on the next miss.
       this.channelNamesListedAt = Number.NEGATIVE_INFINITY
-      this.deps.onChannelsChanged?.()
+      this.deps.onChannelsChanged?.(
+        ev.channel ? { channel: ev.channel, ...(ev.inviter ? { inviter: ev.inviter } : {}) } : undefined
+      )
     })
     for (const type of ['channel_left', 'group_left']) {
       this.app.event(type, async ({ event }) => {

@@ -3990,6 +3990,8 @@ export interface AssistantFollowUpDto {
   doneWhen: string | null
   /** Newest first, at most five; empty where the row is not visible. */
   recentChecks: { at: string; observation: string; reported: boolean }[]
+  /** A first look of its conversation (assistant-mode.md §5.13), which ends after one check. */
+  firstLook?: boolean
 }
 
 export interface AssistantSubsessionDto {

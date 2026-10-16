@@ -327,7 +327,14 @@ import {
   type LiveApp
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
-import { askerIdentity, assistantModeOn, followUpToolsFor, placeOfSession } from './mcp/ops/assistant-items.js'
+import {
+  askerIdentity,
+  assistantModeOn,
+  followUpToolsFor,
+  memberAskerIdentity,
+  placeOfSession,
+  type FirstLookRequest
+} from './mcp/ops/assistant-items.js'
 import {
   AssistantDrafts,
   postAsAgent,
@@ -358,7 +365,26 @@ import {
   type TurnAskers
 } from './assistant/place-access.js'
 import { personCouldActivate } from './assistant/place-askers.js'
-import { AssistantPatrols, PATROL_SWEEP_INTERVAL_MS, patrolTools, type PatrolParent } from './assistant/patrol.js'
+import {
+  AssistantPatrols,
+  PATROL_SWEEP_INTERVAL_MS,
+  patrolTools,
+  type FirstLookFacts,
+  type PatrolParent
+} from './assistant/patrol.js'
+import {
+  FIRST_LOOK_MAX_MESSAGES,
+  FIRST_LOOK_REFUSAL_REASONS,
+  FIRST_LOOK_REFUSALS,
+  FIRST_LOOK_WINDOW_MS,
+  firstLookPlaceRefusal,
+  firstLookReach,
+  firstLookTools,
+  joinVerdict,
+  PendingFirstLooks
+} from './assistant/first-look.js'
+import { firstLookToolsFor } from './mcp/ops/first-look.js'
+import type { ToolDescriptor } from './tool-schema/descriptor.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
 import type { ProposeInput } from './mcp/ops/assistant-items.js'
 import type { AssistantItem, AssistantPlace } from './store/assistant-items.js'
@@ -874,8 +900,13 @@ import {
   sessionThreadOf,
   wakeThreadFields
 } from './messages/normalized.js'
-import { isAppendCoordinate } from './session/append-coordinate.js'
-import { isPatrolCoordinate, isSubsessionCoordinate, isTaskCoordinate } from './session/subsession-coordinate.js'
+import { appendCoordinate, isAppendCoordinate } from './session/append-coordinate.js'
+import {
+  isFirstLookCoordinate,
+  isPatrolCoordinate,
+  isSubsessionCoordinate,
+  isTaskCoordinate
+} from './session/subsession-coordinate.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -2571,10 +2602,13 @@ export class Daemon {
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
-      refreshChannels: (conn) => this.connections.refreshChannels(conn),
+      refreshChannels: (conn, joined) =>
+        joined ? this.connections.refreshChannels(conn, joined) : this.connections.refreshChannels(conn),
       onInbound: (msg, srcIntegrationIds) => this.onInbound(msg, srcIntegrationIds),
       srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
       placeTrust: () => this.placeTrust,
+      firstLookOnJoin: (agentId, integrationId, channel, inviter) =>
+        this.firstLookOnJoin(agentId, integrationId, channel, inviter),
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
@@ -4252,6 +4286,8 @@ export class Daemon {
       assistantItems: {
         ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
         askerFor: (ctx) => this.assistantAskerFor(ctx),
+        // A first look of the session's place, as its long session asked (§5.13).
+        firstLook: (ctx) => this.requestFirstLook(ctx),
         // A follow-up of the session's place, owned by its long session, else by the session taking it (§5.12).
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
@@ -4512,6 +4548,11 @@ export class Daemon {
       },
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
+      // A first look's reads stop at its window and its message cap (assistant-mode.md §5.13).
+      firstLookHistory: {
+        since: () => this.clock.now() - FIRST_LOOK_WINDOW_MS,
+        grant: (ctx, want) => this.grantFirstLookHistory(ctx, want)
+      },
       maxAttachmentBytes: cfg.limits.maxAttachmentBytes
     })
     await this.mcp.start()
@@ -4646,36 +4687,12 @@ export class Daemon {
           return []
         }
         const servers: McpServer[] = []
-        let tools = toolsForIntegrations(agent.integrations, {
-          organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
-          decisions:
-            !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
-          currentPlatform: platform,
-          // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
-          consoleImages: this.relays?.supportsWebchatImages?.() === true
-        })
-        // Static descriptor, dynamic authority: a per-thread ACP session can
-        // outlive many hook deliveries. The call resolves the CURRENT daemon-
-        // private turn and fails closed everywhere else.
-        tools = [...tools, ...GITHUB_REVIEW_TOOLS]
-        // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
-        tools = [...tools, ...followUpToolsFor(agent)]
-        // Its reminders (§5.9), in a platform conversation of the session's own only.
-        tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-        // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
-        tools = [...tools, ...stopTaskToolsFor({ thread })]
-        // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
-        const managedRepo = this.managedWorkspaceRepo(agent.id)
-        if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
-        // Replace the legacy managed descriptors with this provider's stable core
-        // tools. An external plugin's raw MCP tools never enter the ACP session.
-        tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
-        if (this.evaluationProfile.memory === 'configured') {
-          tools.push(...this.memory.toolsForAgent(agent.id))
-        }
+        let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const patrol = isPatrolCoordinate(thread)
-        if (patrol) tools = patrolTools(tools)
+        // A first look (§5.13) gets only its own place's reads, memory reads and recordCheck.
+        if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
+        else if (patrol) tools = patrolTools(tools)
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
         // by per-agent visibility (e.g. only living players see `vote`).
@@ -8492,7 +8509,8 @@ export class Daemon {
     parentSessionId: string,
     text: string,
     reportId: string,
-    replyThread?: string | null
+    replyThread?: string | null,
+    opens?: string
   ): Promise<boolean> {
     const report = {
       agentId,
@@ -8500,7 +8518,8 @@ export class Daemon {
       parentSessionId,
       text,
       reportId,
-      ...(replyThread !== undefined ? { replyThread } : {})
+      ...(replyThread !== undefined ? { replyThread } : {}),
+      ...(opens !== undefined ? { opens } : {})
     }
     return (await this.collab.deliverDaemonReport(report)).admitted
   }
@@ -8518,13 +8537,13 @@ export class Daemon {
       items: this.store.assistantItems,
       patrols: this.store.assistantPatrols,
       subsessions: this.store.assistantSubsessions,
-      parentFor: (agentId, place) => this.patrolParent(agentId, place),
+      parentFor: (agentId, place, opts) => this.patrolParent(agentId, place, opts),
       sharedPlace: async (agentId, place) =>
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread) =>
-        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread),
+      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread, opens) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens),
       endedSession: async (agentId, key) => {
         if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
           return undefined
@@ -8539,6 +8558,7 @@ export class Daemon {
         }
       },
       stopSession: (key, actor) => this.stopSessionByKey(key, actor),
+      firstLookFacts: (agentId, item) => this.firstLookFacts(agentId, item),
       proposals: {
         proposedFrom: (agentId, key, since) => this.store.assistantDrafts.proposedFrom(agentId, key, since),
         propose: (run, input) => this.proposeFromPatrol(run, input)
@@ -8602,9 +8622,50 @@ export class Daemon {
     }
   }
 
-  /** The long session of a follow-up's place, which owns it and takes its reports. */
-  private async patrolParent(agentId: string, place: AssistantPlace): Promise<PatrolParent | undefined> {
-    const rec = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
+  /** The AgentConnect tools a session at these coordinates is offered, before a check's filter. */
+  private sessionBridgeTools(
+    agent: Agent,
+    at: { platform: string; channel: string; thread: string; integrationId?: string | undefined; isDm: boolean }
+  ): ToolDescriptor[] {
+    const { platform, thread, integrationId } = at
+    let tools = toolsForIntegrations(agent.integrations, {
+      organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
+      decisions:
+        !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
+      currentPlatform: platform,
+      // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
+      consoleImages: this.relays?.supportsWebchatImages?.() === true
+    })
+    // Static descriptor, dynamic authority: the call resolves the current daemon-private turn and fails closed elsewhere.
+    tools = [...tools, ...GITHUB_REVIEW_TOOLS]
+    // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
+    tools = [...tools, ...followUpToolsFor(agent)]
+    // A first look on request (§5.13), only to a place's long session where one could run.
+    tools = [...tools, ...firstLookToolsFor(agent, at)]
+    // Its reminders (§5.9), in a platform conversation of the session's own only.
+    tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
+    // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
+    tools = [...tools, ...stopTaskToolsFor({ thread })]
+    // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
+    const managedRepo = this.managedWorkspaceRepo(agent.id)
+    if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
+    // The provider's stable core tools replace the legacy managed descriptors; an external plugin's raw tools never enter.
+    tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
+    if (this.evaluationProfile.memory === 'configured') {
+      tools.push(...this.memory.toolsForAgent(agent.id))
+    }
+    return tools
+  }
+
+  /** The long session of a follow-up's place, which owns it and takes its reports; with `open`, a place nobody spoke in yet gets the one its first message would key (a first look's, §5.13). */
+  private async patrolParent(
+    agentId: string,
+    place: AssistantPlace,
+    opts: { open?: boolean } = {}
+  ): Promise<PatrolParent | undefined> {
+    const rec =
+      (await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)) ??
+      (opts.open ? await this.openingPlaceSession(agentId, place) : undefined)
     if (!rec?.thread) return undefined
     const sessionId = await this.store.ensureOutwardSessionId(rec.key, agentId, this.clock.now())
     const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
@@ -8625,10 +8686,181 @@ export class Daemon {
     }
   }
 
+  /** The coordinate a place's first message would key, where that is its one appending session (§5.2); its row comes with the first turn there. */
+  private async openingPlaceSession(agentId: string, place: AssistantPlace): Promise<SessionRecord | undefined> {
+    const integrationId = this.integrationIdForTransportScope(agentId, place.platform, place.transportScope)
+    const int = this.agents.get(agentId)?.integrations.find((candidate) => candidate.id === integrationId)
+    if (!int || conversationSessionMode(int, place.channel) !== 'append') return undefined
+    const thread = await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
+    return {
+      key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
+      agentId,
+      platform: place.platform,
+      channel: place.channel,
+      thread,
+      transportScope: place.transportScope,
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: this.clock.now()
+    }
+  }
+
+  /** What a first look of this place names (assistant-mode.md §5.13), or why it may no longer take one; a place turned external is named so its handling keeps step 1 alone. */
+  private async firstLookFacts(agentId: string, item: AssistantItem): Promise<FirstLookFacts> {
+    const agent = this.agents.get(agentId)
+    const { platform, channel, transportScope } = item.origin
+    const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
+    const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
+    if (!agent || !int || !integrationId) return { refused: 'the agent no longer reaches this place' }
+    const refusal = firstLookPlaceRefusal(agent, int, { channel })
+    if (refusal && refusal !== 'external') return { refused: FIRST_LOOK_REFUSAL_REASONS[refusal] }
+    const info = await this.gatewayForIntegration(integrationId)
+      ?.getChannelInfo(channel)
+      .catch(() => undefined)
+    const name = info?.name?.trim()
+    // The place's own tools, as its long session is offered them; any appending coordinate names that session.
+    const thread =
+      (await this.store.placeSession(agentId, platform, channel, transportScope))?.thread ??
+      appendCoordinate(this.clock.now())
+    const names = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm: false }).map(
+      (tool) => tool.name
+    )
+    const servers = agent.mcpServers.filter((server) => server !== ADMIN_MCP_SERVER_NAME)
+    const tools = [
+      ...names,
+      ...(servers.length > 0 ? [`the MCP servers ${servers.join(', ')}`] : []),
+      'and your runtime’s own tools'
+    ].join(', ')
+    return {
+      place: name ? `"${name}"` : 'this conversation',
+      kind:
+        info && 'isMpim' in info && info.isMpim === true
+          ? 'group chat'
+          : info?.isPrivate === true
+            ? 'private channel'
+            : info?.isPrivate === false
+              ? 'public channel'
+              : 'channel',
+      tools,
+      reach: firstLookReach(this.mergedRulesForSource([integrationId]), { agentId, integrationId, platform, channel }),
+      external: refusal === 'external'
+    }
+  }
+
+  /** Bot joins waiting for their place's row before a first look (assistant-mode.md §5.13). */
+  private readonly pendingFirstLooks = new PendingFirstLooks()
+
+  /** A genuine join of the agent's bot to a conversation (§5.13): where a first look will run, it waits for the place's row and takes one; true then. */
+  private async firstLookOnJoin(
+    agentId: string,
+    integrationId: string,
+    channel: string,
+    inviter?: string
+  ): Promise<boolean> {
+    const agent = this.agents.get(agentId)
+    const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
+    if (!agent || !int || !this.servesAgent(agentId)) return false
+    if (firstLookPlaceRefusal(agent, int, { channel }) !== undefined) return false
+    const place: AssistantPlace = {
+      platform: int.platform,
+      channel,
+      transportScope: this.transportScopeForIntegration(int) || null
+    }
+    // The first look's row is the place's record, so a rejoin takes none.
+    if (await this.store.assistantItems.latestFirstLook(agentId, place)) return false
+    this.pendingFirstLooks.note({
+      agentId,
+      integrationId,
+      channel,
+      ...(inviter ? { inviter } : {}),
+      at: this.clock.now()
+    })
+    void this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look on join failed: ${formatErr(err)}`))
+    return true
+  }
+
+  /** Joins whose place is now listed take a first look, once per place; the rest wait for a later sweep. */
+  private async takeJoinedFirstLooks(): Promise<void> {
+    for (const join of this.pendingFirstLooks.waiting(this.clock.now())) {
+      const agent = this.agents.get(join.agentId)
+      const int = agent?.integrations.find((candidate) => candidate.id === join.integrationId)
+      const verdict = int ? joinVerdict(agent, int, join.channel) : 'drop'
+      if (verdict === 'wait' || !this.pendingFirstLooks.done(join) || verdict === 'drop' || !int) continue
+      const place: AssistantPlace = {
+        platform: int.platform,
+        channel: join.channel,
+        transportScope: this.transportScopeForIntegration(int) || null
+      }
+      // The first look's row is the place's record, so a rejoin or a mode switch takes none.
+      if (await this.store.assistantItems.latestFirstLook(join.agentId, place)) continue
+      const asker = join.inviter
+        ? memberAskerIdentity(int.platform, await this.tenantScopeForIntegration(int), join.inviter)
+        : undefined
+      await this.patrols.takeFirstLook({
+        agentId: join.agentId,
+        place,
+        trigger: 'joined',
+        title: await this.firstLookTitle(int.id, join.channel),
+        ...(asker !== undefined ? { asker } : {})
+      })
+    }
+  }
+
+  /** A first look's title, by its place's name where the platform gives one. */
+  private async firstLookTitle(integrationId: string, channel: string): Promise<string> {
+    const info = await this.gatewayForIntegration(integrationId)
+      ?.getChannelInfo(channel)
+      .catch(() => undefined)
+    const name = info?.name?.trim()
+    return name ? `First look at ${name}` : 'First look'
+  }
+
+  /** `firstLook` (assistant-mode.md §5.13): only from its place's long session, where a first look could run. */
+  private async requestFirstLook(ctx: SessionContext): Promise<FirstLookRequest> {
+    const agentId = ctx.agentId
+    const agent = this.agents.get(agentId)
+    const int = agent?.integrations.find((candidate) => candidate.id === ctx.integrationId)
+    if (!agent || !int || !ctx.integrationId)
+      return { kind: 'refused', reason: 'not_here', message: 'No first look can run in this conversation.' }
+    const refusal = firstLookPlaceRefusal(agent, int, { channel: ctx.channel, isDm: ctx.isDm })
+    if (refusal) return { kind: 'refused', reason: refusal, message: FIRST_LOOK_REFUSALS[refusal] }
+    const place = placeOfSession(ctx)
+    const rec = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
+    if (rec?.key !== this.sessionKeyOf(ctx))
+      return {
+        kind: 'refused',
+        reason: 'not_long_session',
+        message: 'Only this place’s ongoing conversation asks for a first look. Nothing was started.'
+      }
+    const asker = await this.assistantAskerFor(ctx)
+    const result = await this.patrols.requestFirstLook({
+      agentId,
+      place,
+      title: await this.firstLookTitle(ctx.integrationId, ctx.channel),
+      ...(asker !== undefined ? { asker } : {})
+    })
+    return result.kind === 'started' ? { kind: 'started', taskId: result.item.taskKey } : result
+  }
+
+  /** How many more history rows a first look's running check may read (assistant-mode.md §5.13). */
+  private async grantFirstLookHistory(ctx: SessionContext, want: number): Promise<number> {
+    const state = await this.store.assistantPatrols.byRunningKey(ctx.agentId, this.sessionKeyOf(ctx))
+    if (!state || state.runningCheck === null) return 0
+    return await this.store.assistantPatrols.takeHistory(
+      ctx.agentId,
+      state.itemId,
+      state.runningCheck,
+      want,
+      FIRST_LOOK_MAX_MESSAGES
+    )
+  }
+
   /** Once a minute, the duty holder's patrol and reminder sweeps (assistant-mode.md §5.9), failure-report retries and idle sub-sessions (§5.7). */
   private armPatrolSweep(): void {
     this.patrolSweepTimer = this.clock.setTimeout(async () => {
       this.patrolSweepTimer = undefined
+      await this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look sweep failed: ${formatErr(err)}`))
       await this.patrols.sweep().catch((err) => this.log.warn(`patrol sweep failed: ${formatErr(err)}`))
       await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
       // A sub-session failure report whose admission was refused is retried here (assistant-mode.md §5.7).
@@ -9322,6 +9554,8 @@ export class Daemon {
     if (!output.trim()) return
     // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
     const rec = session ? await this.store.getSession(session.key) : undefined
+    // A first look's own session feeds no memory; only what its place's long session writes does (assistant-mode.md §5.13).
+    if (isFirstLookCoordinate(rec?.thread)) return
     const placed = await this.memoryLayerOfSession(agentId, rec, msg)
     if (!placed) return
     // The shared layer never takes a capture-excluded turn, checked before distillation and the external outbox alike.
@@ -12212,6 +12446,11 @@ export class Daemon {
     const payload = msg.payload
     if (payload.kind === 'app-home-opened') {
       await conn.welcomeBuiltin(payload.channelId, agent, integration)
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // The HTTP arm of the bot's own join (assistant-mode.md §5.13).
+    if (payload.kind === 'bot-joined') {
+      await this.firstLookOnJoin(agent.id, integration.id, payload.channelId, payload.inviter)
       return { msgId: msg.msgId, accepted: true }
     }
     // The HTTP arm of a member join (assistant-mode.md §5.3), looked up for every agent.

@@ -6,6 +6,10 @@ import type { StoreQueryResult, StoreTx } from './store-database.js'
 export const ASSISTANT_ITEM_STATUSES = ['active', 'waiting', 'done', 'dropped'] as const
 export type AssistantItemStatus = (typeof ASSISTANT_ITEM_STATUSES)[number]
 
+/** How a first look (assistant-mode.md §5.13) was started: the bot joined the place, or someone there asked. */
+export const ASSISTANT_FIRST_LOOK_TRIGGERS = ['joined', 'requested'] as const
+export type AssistantFirstLookTrigger = (typeof ASSISTANT_FIRST_LOOK_TRIGGERS)[number]
+
 /** A place (§5.2) in the coordinate a session row wears; an absent transport scope reads back as null. */
 export type AssistantPlace = Pick<SessionRecord, 'platform' | 'channel' | 'transportScope'>
 
@@ -34,6 +38,8 @@ export interface AssistantItem {
   shared: boolean
   /** The platform thread it was taken in, where its reports reply; null when taken outside one. */
   replyThread: string | null
+  /** Set on a first look of its place (assistant-mode.md §5.13), which ends after one check; null on a follow-up. */
+  firstLook: AssistantFirstLookTrigger | null
   summary: string
   /** The newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT} observations, oldest first. */
   observations: AssistantObservation[]
@@ -61,6 +67,7 @@ export interface AssistantItemCreate {
   asker?: string
   shared?: boolean
   replyThread?: string
+  firstLook?: AssistantFirstLookTrigger
   summary?: string
   now?: number
 }
@@ -71,6 +78,8 @@ export interface AssistantItemFilter {
   origin?: AssistantPlace
   /** Items this place may see listed: its own, and every shared one. */
   visibleFrom?: AssistantPlace
+  /** Follow-ups alone, leaving first looks out. */
+  followUpsOnly?: boolean
   limit?: number
 }
 
@@ -94,7 +103,9 @@ export const ASSISTANT_ITEM_LIMITS = {
   identity: 512,
   author: 512,
   refId: 256,
-  taskKey: 1_024
+  taskKey: 1_024,
+  /** A first look's report: room for its 1,500 words in any language (assistant-mode.md §5.13). */
+  firstLookReport: 16_000
 } as const
 
 // Normalized children, not JSON columns: each is written piecewise and concurrently.
@@ -113,6 +124,7 @@ export const ASSISTANT_ITEM_SCHEMA = `
         asker TEXT,
         shared INTEGER NOT NULL DEFAULT 0,
         replyThread TEXT,
+        firstLook TEXT,
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -162,6 +174,7 @@ interface ItemRow {
   asker: string | null
   shared: number
   replyThread: string | null
+  firstLook: string | null
   summary: string
   observationVersion: number
   version: number
@@ -196,6 +209,7 @@ const ITEM_COLUMNS = [
   'asker',
   'shared',
   'replyThread',
+  'firstLook',
   'summary',
   'observationVersion',
   'version',
@@ -219,12 +233,14 @@ export class AssistantItemLedger {
     checkStatus(status)
     checkNextCheck(input.nextCheck)
     checkPlace(input.origin)
+    if (input.firstLook !== undefined && !ASSISTANT_FIRST_LOOK_TRIGGERS.includes(input.firstLook))
+      throw new Error(`assistant item firstLook is not one of ${ASSISTANT_FIRST_LOOK_TRIGGERS.join(', ')}`)
     const id = randomUUID()
     await this.db.query(
       `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
-         originTransportScope, taskKey, asker, shared, replyThread, summary, observationVersion, version, createdAt,
-         updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+         originTransportScope, taskKey, asker, shared, replyThread, firstLook, summary, observationVersion, version,
+         createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
       [
         id,
         input.agentId,
@@ -239,6 +255,7 @@ export class AssistantItemLedger {
         input.asker ?? null,
         input.shared === true ? 1 : 0,
         input.replyThread ?? null,
+        input.firstLook ?? null,
         input.summary ?? '',
         now,
         now
@@ -266,6 +283,20 @@ export class AssistantItemLedger {
     return row ? await this.withObservations(agentId, row) : undefined
   }
 
+  /** The place's newest first look, in any state: the record that it had one (assistant-mode.md §5.13). */
+  async latestFirstLook(agentId: string, place: AssistantPlace): Promise<AssistantItemOverview | undefined> {
+    const rows = (
+      await this.db.query(
+        `SELECT ${itemColumns('i.')} FROM assistant_item i
+         WHERE i.agentId = ? AND i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?
+           AND i.firstLook IS NOT NULL
+         ORDER BY i.createdAt DESC, i.id LIMIT 1`,
+        [agentId, place.platform, place.channel, scopeOf(place)]
+      )
+    ).rows as ItemRow[]
+    return (await this.withLinks(agentId, rows))[0]
+  }
+
   /** The agent's items, most recently updated first. */
   async list(agentId: string, filter: AssistantItemFilter = {}): Promise<AssistantItemOverview[]> {
     const where = ['i.agentId = ?']
@@ -284,6 +315,7 @@ export class AssistantItemLedger {
       where.push('(i.shared = 1 OR (i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?))')
       params.push(filter.visibleFrom.platform, filter.visibleFrom.channel, scopeOf(filter.visibleFrom))
     }
+    if (filter.followUpsOnly === true) where.push('i.firstLook IS NULL')
     const limit = Math.min(
       Math.max(1, Math.floor(filter.limit ?? ASSISTANT_ITEM_LIST_DEFAULT)),
       ASSISTANT_ITEM_LIST_MAX
@@ -446,6 +478,7 @@ export class AssistantItemLedger {
       asker: row.asker ?? null,
       shared: Number(row.shared) === 1,
       replyThread: row.replyThread ?? null,
+      firstLook: triggerOf(row.firstLook),
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
       subsessions: links.filter((l) => l.itemId === row.id && l.kind === 'subsession').map((l) => l.refId),
@@ -477,6 +510,9 @@ async function lockItem(tx: StoreTx, agentId: string, itemId: string): Promise<b
 async function touchItem(tx: StoreTx, agentId: string, itemId: string, now: number): Promise<void> {
   await tx.query('UPDATE assistant_item SET updatedAt = ? WHERE agentId = ? AND id = ?', [now, agentId, itemId])
 }
+
+const triggerOf = (value: string | null | undefined): AssistantFirstLookTrigger | null =>
+  ASSISTANT_FIRST_LOOK_TRIGGERS.find((trigger) => trigger === value) ?? null
 
 // Stored as '' like append_reservation and thread_participation, so equality needs no NULL handling.
 const scopeOf = (place: AssistantPlace): string => place.transportScope ?? ''
