@@ -45,6 +45,8 @@ export interface AssistantItemDeps {
     take?(ctx: SessionContext, input: FollowUpInput): Promise<AssistantItem>
     /** Start a first look of the session's place, as its long session asked (assistant-mode.md §5.13). */
     firstLook?(ctx: SessionContext): Promise<FirstLookRequest>
+    /** A proposal of the place's long session on the round a first look reports back (§5.13); refused on any other. */
+    proposeAfterFirstLook?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
     /** A check's side, in the follow-up's own session. */
     patrol?: {
       /** The follow-up this session's check is running for; undefined once it ended. */
@@ -126,13 +128,43 @@ export const RECORD_CHECK_ARGS = z.object({
     .transform((value) => value ?? undefined)
 })
 
-/** A check's `propose` (assistant-mode.md §5.10): the card's sentence, the reason, and the task an approval runs. */
-export const PROPOSE_ARGS = z.object({
-  sentence: boundedString('sentence', ASSISTANT_PROPOSAL_SENTENCE_MAX),
-  why: boundedString('why', ASSISTANT_PROPOSAL_WHY_MAX),
-  task: boundedString('task', ASSISTANT_PROPOSAL_TASK_MAX)
-})
+/** `propose` (assistant-mode.md §5.10, §5.13): the card's sentence, the reason, and the task an approval runs or the follow-up it takes. */
+export const PROPOSE_ARGS = z
+  .object({
+    sentence: boundedString('sentence', ASSISTANT_PROPOSAL_SENTENCE_MAX),
+    why: boundedString('why', ASSISTANT_PROPOSAL_WHY_MAX),
+    task: optionalBoundedString('task', ASSISTANT_PROPOSAL_TASK_MAX, 1),
+    followUp: z
+      .object(
+        {
+          title: boundedString('followUp.title', ASSISTANT_ITEM_LIMITS.title),
+          doneWhen: boundedString('followUp.doneWhen', ASSISTANT_ITEM_LIMITS.doneWhen),
+          nextCheck: nextCheckArg
+        },
+        'argument followUp must be an object with title and doneWhen'
+      )
+      .nullish()
+      .transform((value) => value ?? undefined)
+  })
+  .refine((input) => (input.task === undefined) !== (input.followUp === undefined), {
+    message: 'propose takes either `task` or `followUp`, not both and not neither; nothing was proposed'
+  })
 export type ProposeInput = z.infer<typeof PROPOSE_ARGS>
+
+/** What an approval of a proposal does: the task it runs, or the follow-up form's follow-up it takes (§5.13). */
+export function proposalWork(
+  input: ProposeInput
+): { task: string } | { followUp: { title: string; doneWhen: string; nextCheck: number | null } } {
+  return input.followUp
+    ? {
+        followUp: {
+          title: input.followUp.title,
+          doneWhen: input.followUp.doneWhen,
+          nextCheck: input.followUp.nextCheck ?? null
+        }
+      }
+    : { task: input.task ?? '' }
+}
 
 const NEXT_CHECK =
   'an ISO-8601 instant with an offset, e.g. `2026-10-09T09:00:00+08:00`. At that time a read-only check runs on ' +
@@ -216,16 +248,18 @@ export const RECORD_CHECK_TOOL: ToolDescriptor = {
   )
 }
 
-/** A check's third outcome (assistant-mode.md §5.10): ask for approval to act; offered only inside a check. */
+/** A check's third outcome (assistant-mode.md §5.10), and a first look's suggestions (§5.13): ask for approval to act. */
 export const PROPOSE_TOOL: ToolDescriptor = {
   name: 'propose',
   description:
-    'Ask for approval to act on the follow-up this check is for, when something should be done rather than only ' +
-    'reported. `sentence` is the one plain sentence the approver reads first ("I want to do X because Y"); `why` ' +
-    'is the reason; `task` is exactly what a background session with your normal permissions should do once ' +
-    'approved, e.g. "rebase PR #12 onto main and push". Nothing runs until a person approves it, within 24 hours; ' +
-    'the approved proposal then reports back in the conversation the follow-up belongs to. Propose at most once ' +
-    'per check and do not also report it; still record what you saw with recordCheck.',
+    'Ask for approval to act on the follow-up this check is for, or on what a first look found, when something ' +
+    'should be done rather than only reported. `sentence` is the one plain sentence the approver reads first ("I ' +
+    'want to do X because Y"); `why` is the reason; `task` is exactly what a background session with your normal ' +
+    'permissions should do once approved, e.g. "rebase PR #12 onto main and push"; or, in place of `task`, ' +
+    '`followUp` is the follow-up of that conversation an approval takes, with the approver as its asker. Nothing ' +
+    'runs until a person approves it, within 24 hours; the approved proposal then reports back in the conversation ' +
+    'the follow-up belongs to. Propose at most once per check and do not also report it; still record what you ' +
+    'saw with recordCheck. After a first look, propose at most three times, on the round its report arrives.',
   inputSchema: obj(
     {
       sentence: {
@@ -244,10 +278,30 @@ export const PROPOSE_TOOL: ToolDescriptor = {
         type: 'string',
         minLength: 1,
         maxLength: ASSISTANT_PROPOSAL_TASK_MAX,
-        description: 'What the approved background session does, specific enough to carry out without asking.'
-      }
+        description:
+          'Unless `followUp` is given: what the approved background session does, specific enough to carry out ' +
+          'without asking.'
+      },
+      followUp: obj(
+        {
+          title: {
+            type: 'string',
+            minLength: 1,
+            maxLength: ASSISTANT_ITEM_LIMITS.title,
+            description: 'A short name for what is followed up.'
+          },
+          doneWhen: {
+            type: 'string',
+            minLength: 1,
+            maxLength: ASSISTANT_ITEM_LIMITS.doneWhen,
+            description: 'What counts as done.'
+          },
+          nextCheck: { type: 'string', description: `Optional. When to check first: ${NEXT_CHECK}` }
+        },
+        ['title', 'doneWhen']
+      )
     },
-    ['sentence', 'why', 'task']
+    ['sentence', 'why']
   )
 }
 
@@ -350,11 +404,15 @@ async function handBackFirstLook(
   return { ok: true, report: 'passed on when this first look ends; end your turn now' }
 }
 
-/** A check asks for approval to act (assistant-mode.md §5.10); no other session may, and it runs nothing itself. */
+/** A check asks for approval to act (assistant-mode.md §5.10), as does a place's long session after a first look (§5.13); it runs nothing itself. */
 export const propose: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
-  if (!isPatrolCoordinate(ctx.thread)) throw new Error('propose is available only in a follow-up’s check')
+  const afterFirstLook = deps.assistantItems?.proposeAfterFirstLook
+  const check = isPatrolCoordinate(ctx.thread)
+  if (!check && (!afterFirstLook || !ctx.tools.some((tool) => tool.name === 'propose')))
+    throw new Error('propose is available only in a follow-up’s check')
   const input = parseArgs(PROPOSE_ARGS, args)
   ledgerOf(ctx, deps)
+  if (!check) return await afterFirstLook!(ctx, input)
   const patrol = deps.assistantItems?.patrol
   if (!patrol?.propose) throw new Error('this check has ended; nothing was proposed')
   return await patrol.propose(ctx, input)

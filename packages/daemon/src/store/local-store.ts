@@ -1308,7 +1308,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 55
+export const SCHEMA_VERSION = 56
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1940,6 +1940,19 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   async (db, store) => {
     await addColumn(db, store.postgres, 'assistant_item', 'firstLook', 'TEXT')
     await addColumn(db, store.postgres, 'assistant_check', 'historyRead', 'INTEGER NOT NULL DEFAULT 0')
+  },
+  // v56 keeps a proposal's follow-up form, the first look report round it was made in and whether its card waits for that round's reply (§5.13).
+  async (db, store) => {
+    for (const [column, type] of [
+      ['followUpTitle', 'TEXT'],
+      ['followUpDoneWhen', 'TEXT'],
+      ['followUpNextCheck', 'INTEGER'],
+      ['reportRound', 'TEXT'],
+      ['reportSeq', 'INTEGER'],
+      ['heldForReply', 'INTEGER NOT NULL DEFAULT 0'],
+      ['tookItemId', 'TEXT']
+    ] as const)
+      await addColumn(db, store.postgres, 'assistant_draft', column, type)
   }
 ]
 

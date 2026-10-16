@@ -412,6 +412,31 @@ describe('a follow-up’s check proposes', () => {
     await h.daemon.stop()
   })
 
+  it('takes a task or a follow-up form, exactly one of them', () => {
+    const base = { sentence: SENTENCE, why: 'x' }
+    expect(PROPOSE_ARGS.parse({ ...base, task: TASK })).toEqual({ ...base, task: TASK })
+    expect(
+      PROPOSE_ARGS.parse({
+        ...base,
+        followUp: { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: '2026-10-20T09:00:00+08:00' }
+      })
+    ).toEqual({
+      ...base,
+      followUp: {
+        title: 'The release date',
+        doneWhen: 'A date is posted.',
+        nextCheck: Date.parse('2026-10-20T01:00:00Z')
+      }
+    })
+    for (const bad of [
+      base,
+      { ...base, task: TASK, followUp: { title: 't', doneWhen: 'd' } },
+      { ...base, followUp: { title: 't' } },
+      { ...base, followUp: { title: 't', doneWhen: 'd', nextCheck: 'tomorrow' } }
+    ])
+      expect(PROPOSE_ARGS.safeParse(bad).success).toBe(false)
+  })
+
   it('advertises exactly the arguments it takes', () => {
     const view = (schema: { properties?: Record<string, unknown>; required?: string[] }) => ({
       properties: Object.keys(schema.properties ?? {}).sort(),
@@ -420,6 +445,45 @@ describe('a follow-up’s check proposes', () => {
     expect(view(z.toJSONSchema(PROPOSE_ARGS, { io: 'input', unrepresentable: 'any' }) as never)).toEqual(
       view(PROPOSE_TOOL.inputSchema as never)
     )
+  })
+})
+
+describe('a check’s follow-up form (assistant-mode.md §5.13)', () => {
+  it('takes that follow-up of the place once approved, with the approver as its asker, and runs no task', async () => {
+    const h = await boot(scaffold())
+    await seedPlace(h.d)
+    const item = await takeItem(h.d)
+    const form = { title: 'The 2.6 release date', doneWhen: 'A date is posted here.' }
+    h.behavior.patrol = async (ctx) => {
+      await executeTool(ctx, 'propose', { sentence: SENTENCE, why: 'Ada is waiting on it.', followUp: form }, h.deps)
+      await executeTool(ctx, 'recordCheck', { observation: 'No date yet.' }, h.deps)
+    }
+    await h.d.patrols.sweep()
+    await vi.waitFor(() => expect(h.patrols()).toHaveLength(1), WAIT)
+    await h.settled()
+    const [record] = await h.records()
+    expect(record).toMatchObject({ text: form.title, proposal: { followUp: { ...form, nextCheck: null } } })
+    const answer = await h.decide(record!.id)
+    expect(answer).toMatchObject({
+      result: 'decided',
+      status: 'succeeded',
+      followUp: { id: expect.any(String), parentSessionId: 'sid-parent-bot-a' }
+    })
+    expect(await h.d.store.assistantItems.get('bot-a', answer.followUp.id)).toMatchObject({
+      ...form,
+      status: 'waiting',
+      nextCheck: null,
+      asker: 'user:usr-editor',
+      summary: 'Ada is waiting on it.',
+      origin: { platform: 'slack', channel: 'C1' }
+    })
+    await h.settled()
+    expect(h.tasks()).toEqual([])
+    const observed = (await h.d.store.assistantItems.get('bot-a', item.id)).observations.at(-1).text
+    expect(observed).toContain(`was taken as the follow-up "${form.title}"`)
+    // A second decision finds it already decided and takes nothing more.
+    expect(await h.decide(record!.id)).toMatchObject({ result: 'already-decided' })
+    await h.daemon.stop()
   })
 })
 

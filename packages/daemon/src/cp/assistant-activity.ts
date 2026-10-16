@@ -403,7 +403,16 @@ function draftOf(
             sentence: proposal.sentence,
             why: proposal.why,
             itemId: proposal.itemId,
-            itemTitle: titles.get(proposal.itemId) ?? null
+            itemTitle: titles.get(proposal.itemId) ?? null,
+            ...(proposal.followUp
+              ? {
+                  followUp: {
+                    title: proposal.followUp.title,
+                    doneWhen: proposal.followUp.doneWhen,
+                    nextCheck: proposal.followUp.nextCheck === null ? null : iso(proposal.followUp.nextCheck)
+                  }
+                }
+              : {})
           }
         }
       : {}),

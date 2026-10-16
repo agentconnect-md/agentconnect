@@ -137,13 +137,24 @@ export const ASSISTANT_PROPOSAL_WHY_MAX = 2_000
 /** The longest task a proposal asks to run. */
 export const ASSISTANT_PROPOSAL_TASK_MAX = 8_000
 
+/** The follow-up a proposal's follow-up form takes once approved (assistant-mode.md §5.13), in place of a task. */
+export const AssistantActivityProposalFollowUp = z.object({
+  title: z.string().min(1).max(300),
+  doneWhen: z.string().max(2_000),
+  /** Its first check; null waits until it is messaged. */
+  nextCheck: time.nullable()
+})
+export type AssistantActivityProposalFollowUp = z.infer<typeof AssistantActivityProposalFollowUp>
+
 /** What a follow-up's check proposes to do (assistant-mode.md §5.10): the card's sentence, its reason and its follow-up, by `itemId`; the task is the draft's `text`. */
 export const AssistantActivityProposal = z.object({
   sentence: z.string().min(1).max(ASSISTANT_PROPOSAL_SENTENCE_MAX),
   why: z.string().max(ASSISTANT_PROPOSAL_WHY_MAX),
   itemId: ref,
   /** The follow-up's title as the daemon last saw it; null once it is gone. */
-  itemTitle: z.string().max(300).nullable()
+  itemTitle: z.string().max(300).nullable(),
+  /** The follow-up form: what an approval takes, with the approver as its asker; the draft's `text` is then its title. */
+  followUp: AssistantActivityProposalFollowUp.optional()
 })
 export type AssistantActivityProposal = z.infer<typeof AssistantActivityProposal>
 
@@ -327,7 +338,9 @@ export const AssistantActivityWriteResult = z.discriminatedUnion('operation', [
     operation: z.literal('decide-draft'),
     result: AssistantDraftDecisionResult,
     status: AssistantDraftStatus.nullable(),
-    failure: z.string().max(2_000).nullable()
+    failure: z.string().max(2_000).nullable(),
+    /** The follow-up an approved follow-up form took, and the conversation it belongs to by its session's outward id. */
+    followUp: z.object({ id: ref, parentSessionId: ref }).optional()
   }),
   z.object({ operation: z.literal('stop-subsession'), result: AssistantSubsessionStopResult }),
   z.object({ operation: z.literal('stop-follow-up'), result: AssistantSubsessionStopResult })

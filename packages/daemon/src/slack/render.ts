@@ -693,8 +693,12 @@ function subsessionSettledLine(asker: string, outcome: SubsessionNoticeOutcome):
 export interface AssistantDraftCardView {
   agentName: string
   kind: 'reply' | 'elsewhere' | 'task'
-  /** A proposal's own sentence, which the card leads with, and its reason. */
-  proposal?: { sentence: string; why: string }
+  /** A proposal's own sentence, which the card leads with, its reason, and a follow-up form's follow-up. */
+  proposal?: {
+    sentence: string
+    why: string
+    followUp?: { title: string; doneWhen: string; nextCheck: number | null }
+  }
   target: {
     platform: string
     channel: string
@@ -779,13 +783,15 @@ function draftBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A proposal's reason and the work an approval runs, then where it runs and reports. */
+/** A proposal's reason and the work an approval runs, then where it runs and reports; a follow-up form's, the follow-up it takes. */
 function proposalBody(view: AssistantDraftCardView): unknown[] {
   const quote = (text: string) =>
     text
       .split('\n')
       .map((line) => `> ${line}`)
       .join('\n')
+  const followUp = view.proposal?.followUp
+  if (followUp) return followUpProposalBody(view, followUp, quote)
   const task = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
   const why = view.proposal?.why.trim() ?? ''
   const blocks: unknown[] = [
@@ -800,6 +806,35 @@ function proposalBody(view: AssistantDraftCardView): unknown[] {
   if (session) notes.push(`<${session}|Open the check>`)
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: notes.join(' · ') }] })
   return blocks
+}
+
+/** A follow-up form's reason and the follow-up an approval takes, with the approver as its asker. */
+function followUpProposalBody(
+  view: AssistantDraftCardView,
+  followUp: { title: string; doneWhen: string; nextCheck: number | null },
+  quote: (text: string) => string
+): unknown[] {
+  const why = view.proposal?.why.trim() ?? ''
+  const at = followUp.nextCheck
+  // Slack's date token renders in the reader's own time zone, which a markdown block does not.
+  const next =
+    at === null
+      ? 'No check until someone asks for one'
+      : `First check <!date^${Math.floor(at / 1000)}^{date_short_pretty} {time}|${new Date(at).toISOString()}>`
+  const body = `${clampTo(followUp.title, 300)}\nDone when: ${clampTo(followUp.doneWhen, 2_000)}`
+  return [
+    ...(why ? [{ type: 'markdown', text: `**Why**\n${quote(clampTo(why, 2_000))}` }] : []),
+    { type: 'markdown', text: `**Follow-up**\n${quote(body)}` },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `${next} · Approving takes this follow-up in ${draftPlace(view)} for you; nothing else runs.`
+        }
+      ]
+    }
+  ]
 }
 
 /** A pending draft: the sentence, the exact text, and approve / discard; a proposal offers approve / deny. */

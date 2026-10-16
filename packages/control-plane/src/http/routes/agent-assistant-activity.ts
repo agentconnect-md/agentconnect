@@ -46,11 +46,25 @@ const IdParam = z.object({ id: z.string().uuid() })
 const ItemParam = IdParam.extend({ itemId: z.string().min(1).max(512) })
 const DraftParam = IdParam.extend({ draftId: z.string().min(1).max(512) })
 const DraftDecisionBody = z.object({ decision: z.enum(['approve', 'discard']) })
+/** The follow-up an approved follow-up form took, with its conversation where the caller may view it. */
+const TakenFollowUpDto = z.object({
+  id: z.string(),
+  conversation: z
+    .object({
+      sessionId: z.string(),
+      title: z.string().nullable(),
+      platform: z.string().nullable(),
+      channelName: z.string().nullable()
+    })
+    .nullable()
+})
 const DraftDecisionDto = z.object({
-  /** `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted and is never retried; an approved proposal answers `executing`. */
+  /** `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted and is never retried; an approved proposal answers `executing`, and an approved follow-up form `succeeded`. */
   status: AssistantDraftStatus,
   /** Why the post failed or is uncertain. */
-  failure: z.string().nullable()
+  failure: z.string().nullable(),
+  /** Present when an approved follow-up form took its follow-up. */
+  followUp: TakenFollowUpDto.optional()
 })
 
 const ItemsPageDto = z.object({ items: z.array(AssistantActivityItem), truncated: z.boolean() })
@@ -172,15 +186,19 @@ const ConversationProposalDto = z.object({
   itemId: z.string(),
   /** The follow-up's title as the agent last saw it; null once it is gone. */
   itemTitle: z.string().nullable(),
+  /** The follow-up form: what approval takes in place of running `task`, which is then its title. */
+  followUp: z.object({ title: z.string(), doneWhen: z.string(), nextCheck: z.string().nullable() }).optional(),
   createdAt: z.string(),
   expiresAt: z.string()
 })
 const ConversationProposalsDto = z.object({ proposals: z.array(ConversationProposalDto), truncated: z.boolean() })
 const ProposalDecisionDto = z.object({
-  /** `executing` started its work, `denied` dropped it, `failed` ran nothing. */
+  /** `executing` started its work, `succeeded` took a follow-up form's follow-up, `denied` dropped it, `failed` ran nothing. */
   status: AssistantDraftStatus,
   /** Why it could not run. */
-  failure: z.string().nullable()
+  failure: z.string().nullable(),
+  /** Present when an approved follow-up form took its follow-up. */
+  followUp: TakenFollowUpDto.optional()
 })
 const CONVERSATION_PROPOSALS = {
   feature: ASSISTANT_CONVERSATION_PROPOSALS_FEATURE,
@@ -295,6 +313,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
     }
     const conversationOf = (row: SessionMetaRecord | undefined) =>
       row ? { sessionId: String(row.id), title: row.title, platform: row.platform, channelName: row.channelName } : null
+    // The follow-up an approval took, naming its conversation only to a caller who may view it.
+    const takenOf = async (req: FastifyRequest, agentId: string, taken: { id: string; parentSessionId: string }) => {
+      const { viewable } = await sessionsOf(req, agentId, [taken.parentSessionId])
+      return { id: taken.id, conversation: conversationOf(viewable.get(taken.parentSessionId)) }
+    }
     // The console user acting, stamped here from the session, never taken from the request.
     const actorOf = async (req: FastifyRequest) => {
       const { userId } = ctxOf(req)
@@ -772,7 +795,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s pending drafts',
-          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a check of an assistant-mode agent’s follow-up asks to do: its sentence, its reason and its follow-up (\`itemId\`, \`itemTitle\`), with the work it asks to do as its text; once approved it runs in the conversation its follow-up belongs to. \`permissionRequests\` lists the runtime permission requests tasks are waiting on, oldest first: what each asks to run, when it is denied and its task stops unless someone answers, and its options; the task and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
+          description: `Lists the posts and proposals waiting for an internal member’s approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: where each would post, its exact text, who is asked to approve it and when it expires. A proposal (\`kind: task\`) is what a check of an assistant-mode agent’s follow-up, or its conversation after a first look, asks to do: its sentence, its reason and its follow-up (\`itemId\`, \`itemTitle\`), with the work it asks to do as its text; once approved it runs in the conversation its follow-up belongs to. A proposal with \`followUp\` runs nothing: approving it takes that follow-up of the conversation, with the approver as the one it follows up for. \`permissionRequests\` lists the runtime permission requests tasks are waiting on, oldest first: what each asks to run, when it is denied and its task stops unless someone answers, and its options; the task and its conversation are named only where the caller may view them. Decide one with \`decideAgentPermissionRequest\`. An agent outside assistant mode is answered, without proposals, only when its daemon serves every agent’s Activity, and 409 \`ASSISTANT_MODE_OFF\` otherwise. This read changes nothing. Only callers who can edit the agent may read it.`,
           operationId: 'listAssistantDrafts',
           params: IdParam,
           response: { 200: DraftsPageDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -823,7 +846,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide an agent’s pending draft',
           description:
-            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts it as a task and answers `executing`, and while the agent already runs as many tasks as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. An agent outside assistant mode is answered only when its daemon serves every agent’s Activity, and 409 `ASSISTANT_MODE_OFF` otherwise. Only callers who can edit the agent may decide, and they are recorded as the decider.',
+            'Approves or discards one post waiting for approval, exactly as its card would: `approve` posts the text unchanged, once; `discard` drops it. The answer is the outcome: `succeeded`, `denied`, `failed` (nothing was sent), or `outcome_unknown` (it may have posted and is never retried). A proposal is approved or denied the same way: approval starts it as a task and answers `executing`, and while the agent already runs as many tasks as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. Approving a proposal with `followUp` takes that follow-up instead, with the caller as the one it follows up for, and answers `succeeded` with the follow-up taken and its conversation where the caller may view it; it counts against no limit. The card is rewritten to the decision. A draft that expired or was already decided is refused with 409 and posts nothing. An agent outside assistant mode is answered only when its daemon serves every agent’s Activity, and 409 `ASSISTANT_MODE_OFF` otherwise. Only callers who can edit the agent may decide, and they are recorded as the decider.',
           operationId: 'decideAssistantDraft',
           params: DraftParam,
           body: DraftDecisionBody,
@@ -861,7 +884,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         if (answer.result !== 'decided' || !answer.status) {
           return send(reply, DRAFT_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
         }
-        return { status: answer.status, failure: answer.failure }
+        return {
+          status: answer.status,
+          failure: answer.failure,
+          ...(answer.followUp ? { followUp: await takenOf(req, admitted.agent.id, answer.followUp) } : {})
+        }
       }
     )
 
@@ -871,7 +898,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List a webchat conversation’s pending proposals',
-          description: `Lists what the agent’s scheduled checks propose to do for follow-ups of one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out, its follow-up and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
+          description: `Lists what the agent’s scheduled checks propose to do for follow-ups of one webchat conversation, still waiting for approval, the soonest to lapse first, at most ${ASSISTANT_ACTIVITY_DRAFTS_MAX}: each proposal’s sentence, its reason, the work a background session would carry out (or, with \`followUp\`, the follow-up approval takes), its follow-up and when it expires. Only callers who may continue that conversation, or who can edit the agent, may read it; the conversation must be one the caller may view. Answers 409 \`DAEMON_FEATURE_MISSING\` when the agent’s daemon cannot narrow its proposals to one conversation. Nothing is stored by this call.`,
           operationId: 'listAssistantConversationProposals',
           params: ConversationParam,
           response: { 200: ConversationProposalsDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -901,6 +928,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
                   task: d.text,
                   itemId: d.proposal.itemId,
                   itemTitle: d.proposal.itemTitle,
+                  ...(d.proposal.followUp ? { followUp: d.proposal.followUp } : {}),
                   createdAt: d.createdAt,
                   expiresAt: d.expiresAt
                 }
@@ -918,7 +946,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Decide a webchat conversation’s pending proposal',
           description:
-            'Approves or denies one proposal waiting in a webchat conversation, exactly as Activity would: `approve` starts it as a task of that conversation and answers `executing`, `deny` drops it and runs nothing. While the agent already runs as many tasks as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. Whichever surface answers first decides it: one that expired or was already decided is refused with 409 and runs nothing, and a proposal of another conversation answers 404. Only callers who may continue that conversation, or who can edit the agent, may decide, and they are recorded as the decider. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
+            'Approves or denies one proposal waiting in a webchat conversation, exactly as Activity would: `approve` starts it as a task of that conversation and answers `executing` (a proposal with `followUp` takes that follow-up, with the caller as the one it follows up for, and answers `succeeded` with it), `deny` drops it and runs nothing. While the agent already runs as many tasks as it may, approval is refused with 409 `SUBSESSION_LIMIT` and the proposal keeps waiting. Whichever surface answers first decides it: one that expired or was already decided is refused with 409 and runs nothing, and a proposal of another conversation answers 404. Only callers who may continue that conversation, or who can edit the agent, may decide, and they are recorded as the decider. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot bind a decision to one conversation.',
           operationId: 'decideAssistantConversationProposal',
           params: ConversationProposalParam,
           body: ProposalDecisionBody,
@@ -950,7 +978,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         if (answer.result !== 'decided' || !answer.status) {
           return send(reply, PROPOSAL_REFUSED[answer.result === 'expired' ? 'expired' : 'already-decided'])
         }
-        return { status: answer.status, failure: answer.failure }
+        return {
+          status: answer.status,
+          failure: answer.failure,
+          ...(answer.followUp ? { followUp: await takenOf(req, admitted.agent.id, answer.followUp) } : {})
+        }
       }
     )
   }

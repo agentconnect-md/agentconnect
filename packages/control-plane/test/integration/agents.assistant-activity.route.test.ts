@@ -1141,6 +1141,45 @@ describe('a webchat conversation’s proposals', () => {
     expect(control.writes).toHaveLength(4)
   })
 
+  it('carries a follow-up form, and the follow-up an approval took with its conversation only to whoever may view it', async () => {
+    await seedAssistant()
+    const owner = await makeUser(`proposals-form-${randomUUID()}`, 'collaborator')
+    const editor = await makeUser(`proposals-form-editor-${randomUUID()}`, 'collaborator')
+    const { mine } = await seedWebchat(owner)
+    const control = new ActivitySpy()
+    const form = { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: '2026-10-20T01:00:00.000Z' }
+    const base = proposalIn('proposal-1', 'webchat', 'conv-mine')
+    control.conversationDrafts = [{ ...base, text: form.title, proposal: { ...base.proposal!, followUp: form } }]
+    const listed = await proposals(app(control, owner), mine)
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json().proposals).toEqual([expect.objectContaining({ task: form.title, followUp: form })])
+
+    control.decision = {
+      result: 'decided',
+      status: 'succeeded',
+      failure: null,
+      followUp: { id: 'item-taken', parentSessionId: mine }
+    }
+    const approved = await decideIn(app(control, owner), mine, 'approve')
+    expect(approved.statusCode, approved.body).toBe(200)
+    expect(approved.json()).toEqual({
+      status: 'succeeded',
+      failure: null,
+      followUp: {
+        id: 'item-taken',
+        conversation: expect.objectContaining({ sessionId: mine, platform: 'webchat' })
+      }
+    })
+    // An editor who may not view the owner's private conversation still learns the follow-up was taken, not where.
+    const fromActivity = await decide(app(control, editor), 'approve', 'proposal-1')
+    expect(fromActivity.statusCode, fromActivity.body).toBe(200)
+    expect(fromActivity.json()).toEqual({
+      status: 'succeeded',
+      failure: null,
+      followUp: { id: 'item-taken', conversation: null }
+    })
+  })
+
   it('refuses a daemon that cannot narrow proposals to one conversation, before any daemon I/O', async () => {
     await seedAssistant({
       features: [ASSISTANT_ACTIVITY_FEATURE, ASSISTANT_DRAFT_DECISION_FEATURE, ASSISTANT_SUBSESSION_PANEL_FEATURE]

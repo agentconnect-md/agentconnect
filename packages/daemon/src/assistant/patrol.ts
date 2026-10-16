@@ -111,7 +111,8 @@ export type FollowUpMessageResult =
 
 /** What a first look's prompt and handling name (assistant-mode.md §5.13), or why its place may no longer take one. */
 export type FirstLookFacts =
-  { place: string; kind: string; tools: string; reach: string; external: boolean } | { refused: string }
+  | { place: string; kind: string; tools: string; reach: string; external: boolean; cards?: boolean }
+  | { refused: string }
 
 /** What a requested first look says back to the session that asked for it. */
 export type FirstLookRequestResult =
@@ -145,7 +146,7 @@ export interface AssistantPatrolsHost {
     callMeta: CallMeta,
     onAdmission: (result: { accepted: boolean; reason?: string }) => void
   ): Promise<unknown>
-  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. */
+  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. A first look's report names its follow-up in `firstLook`. */
   reportToParent(
     agentId: string,
     caller: TaskCaller,
@@ -153,7 +154,8 @@ export interface AssistantPatrolsHost {
     text: string,
     reportId: string,
     replyThread?: string | null,
-    opens?: string
+    opens?: string,
+    firstLook?: string
   ): Promise<boolean>
   /** Where a check's session sits once its turn neither runs nor awaits replay here; `missing` when it never started, undefined while it runs. */
   endedSession(agentId: string, key: string): Promise<TaskCaller | 'missing' | undefined>
@@ -335,6 +337,8 @@ export class AssistantPatrols {
 
   /** A new follow-up of the caller's place with its own session key, owned by the place's long session, else the caller. */
   async take(input: {
+    /** An id the caller minted, as an approved proposal's follow-up form names it (§5.13). */
+    id?: string
     agentId: string
     origin: AssistantPlace
     caller: { sessionId: string; key: string }
@@ -357,6 +361,7 @@ export class AssistantPatrols {
     )
     const shared = (await this.host.sharedPlace?.(agentId, origin).catch(() => false)) ?? false
     const item = await this.host.items.create({
+      ...(input.id !== undefined ? { id: input.id } : {}),
       agentId,
       title: input.title,
       doneWhen: input.doneWhen,
@@ -977,9 +982,13 @@ export class AssistantPatrols {
     const opens = (await this.host.parentFor(agentId, item.origin, { open: true }).catch(() => undefined))?.thread
     let reported = false
     if (verdict.kind === 'completed' && report !== null && row && caller) {
-      const handling = firstLookHandling(known?.reach ?? '@-mention me', { external: known?.external ?? false })
+      const handling = firstLookHandling(known?.reach ?? '@-mention me', {
+        external: known?.external ?? false,
+        cards: known?.cards ?? false
+      })
       const text = firstLookReportText(place, handling, report)
       const reportId = `patrol:${key}:${check}:report`
+      // Its round may propose, where the place has cards (§5.13).
       const delivered = await this.deliver(
         agentId,
         itemId,
@@ -988,7 +997,8 @@ export class AssistantPatrols {
         reportId,
         text,
         undefined,
-        opens
+        opens,
+        itemId
       )
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
@@ -1056,12 +1066,22 @@ export class AssistantPatrols {
     text: string,
     // Undefined posts at the place's top level, as a first look's report does.
     replyThread?: string | null,
-    opens?: string
+    opens?: string,
+    firstLook?: string
   ): Promise<'delivered' | 'refused' | 'draining'> {
     if (this.host.draining()) return 'draining'
     let delivered = false
     try {
-      delivered = await this.host.reportToParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens)
+      delivered = await this.host.reportToParent(
+        agentId,
+        caller,
+        parentSessionId,
+        text,
+        reportId,
+        replyThread,
+        opens,
+        firstLook
+      )
     } catch (err) {
       this.host.log.warn(`follow-up report for ${itemId} failed: ${(err as Error).message}`)
     }

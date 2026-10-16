@@ -260,6 +260,19 @@ const PROPOSAL: AssistantDraftDto = {
   createdAt: '2026-10-09T09:00:00.000Z',
   expiresAt: '2026-10-10T09:00:00.000Z'
 }
+/** A first look's follow-up form: approving takes this follow-up instead of running a task (assistant-mode.md §5.13). */
+const FOLLOW_UP_FORM: AssistantDraftDto = {
+  ...PROPOSAL,
+  id: 'proposal-2',
+  text: 'The 2.6 release date',
+  proposal: {
+    sentence: 'I want to follow up the 2.6 release date because Ada is waiting on it.',
+    why: 'Ada asked for a date on Monday.',
+    itemId: 'item-look',
+    itemTitle: 'First look at support',
+    followUp: { title: 'The 2.6 release date', doneWhen: 'A date is posted.', nextCheck: '2026-10-20T01:00:00.000Z' }
+  }
+}
 /** Background work waiting for permission, with the options its runtime offered. */
 const PERMISSION: AssistantPermissionRequestDto = {
   requestId: 'request-1',
@@ -622,6 +635,60 @@ describe('the Activity view for an editor', () => {
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
       'Approved. It runs as a task and reports back in #support.'
+    )
+  })
+
+  it('shows a follow-up form as what it would take, and once approved links to its conversation', async () => {
+    mocks.drafts = [FOLLOW_UP_FORM]
+    mocks.outcome = {
+      status: 'succeeded',
+      failure: null,
+      followUp: {
+        id: 'item-taken',
+        conversation: { sessionId: 'sid-support', title: 'support', platform: 'slack', channelName: 'support' }
+      }
+    }
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-2"]')!
+    const proposed = row.querySelector('[data-proposed-follow-up]')!
+    expect(proposed.textContent).toContain('Takes this follow-up')
+    expect(proposed.textContent).toContain('The 2.6 release date')
+    expect(proposed.textContent).toContain('Done when: A date is posted.')
+    expect(proposed.textContent).toContain('First check')
+    expect(row.textContent).toContain('Followed up in #support')
+    expect(row.textContent).not.toContain('Runs in')
+    await click(button(row, 'Approve'))
+    expect(row.querySelector('[role="group"]')?.textContent).toContain(
+      'Take this follow-up in #support? It is followed up for you, and nothing else runs.'
+    )
+    await click(button(row.querySelector('[role="group"]')!, 'Approve'))
+    const outcome = row.querySelector('[data-assistant-draft-outcome]')!
+    expect(outcome.textContent).toContain('Approved. The follow-up was taken; it reports back in #support.')
+    expect(outcome.querySelector('a')?.getAttribute('href')).toBe('/example/sessions/sid-support')
+    expect(outcome.querySelector('a')?.textContent).toBe('See it in its conversation’s Tasks')
+  })
+
+  it('names no conversation for a taken follow-up the viewer may not open', async () => {
+    mocks.drafts = [FOLLOW_UP_FORM]
+    mocks.outcome = { status: 'succeeded', failure: null, followUp: { id: 'item-taken', conversation: null } }
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-2"]')!
+    await click(button(row, 'Approve'))
+    await click(button(row.querySelector('[role="group"]')!, 'Approve'))
+    const outcome = row.querySelector('[data-assistant-draft-outcome]')!
+    expect(outcome.textContent).toBe('Approved. The follow-up was taken; it reports back in #support.')
+    expect(outcome.querySelector('a')).toBeNull()
+  })
+
+  it('says why a follow-up form’s follow-up was not taken', async () => {
+    mocks.drafts = [FOLLOW_UP_FORM]
+    mocks.outcome = { status: 'failed', failure: 'its follow-up is gone' }
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-2"]')!
+    await click(button(row, 'Approve'))
+    await click(button(row.querySelector('[role="group"]')!, 'Approve'))
+    expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
+      'Couldn’t take the follow-up: its follow-up is gone.'
     )
   })
 

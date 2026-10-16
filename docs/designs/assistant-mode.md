@@ -165,8 +165,7 @@ does not pretend to defend against effects it cannot defend against.
 
 ### 1.9 When it joins a place
 
-Partly shipped (§5.13 "As shipped"): the first look runs and reports, and its offers are lines in
-the introduction until the cards below come.
+Shipped (§5.13 "As shipped").
 
 - **It takes a first look.** Added to a channel or group chat, it reads that place once: the last
   30 days or 500 messages, whichever is less, and nothing else. It remembers how the place works:
@@ -1058,6 +1057,13 @@ already sent ⇒ `failed`, otherwise `outcome_unknown` with one "please check" r
 With follow-ups (§5.12), a proposal comes from a check and points at its follow-up instead of an
 item, at most once per check; nothing else here changes.
 
+**The follow-up form** (§5.13): wherever `propose` is offered, it may give `followUp: { title,
+doneWhen, nextCheck? }` in place of `task`. Approving it takes that follow-up of the proposal's
+place, with the approver as its asker; the approver is someone who could ask the agent there, so the
+approval is the confirmation `followUp` requires. It runs no task and counts against no limit. A
+first look's report round also offers `propose`, at most three times, and its proposals point at the
+first look, whose having ended refuses none of them.
+
 ### 5.11 Activity
 
 The console's agent page gains an Activity view: items, scheduled wakes, running tasks,
@@ -1277,10 +1283,11 @@ else, and nobody but its own conversation is told of it.
 
 ### 5.13 First look
 
-**Status:** Partly shipped (2026-10-16). What is marked _decided_ is the product owner's
-(2026-10-16), who confirmed every recommendation below the same day. The first look itself and the
-read ports' topic, description and message links have shipped; the `propose` changes ("Cards") and
-pins have not. How the first look shipped is under "As shipped" at the end of this section.
+**Status:** Shipped (2026-10-16). What is marked _decided_ is the product owner's (2026-10-16),
+who confirmed every recommendation below the same day. The first look, the read ports' topic,
+description and message links, and the `propose` changes ("Cards") have shipped. Pins are left out
+of v1 (§9 Q12), and Lark/Feishu's join waits for its module to listen for the bot being added (§9
+Q15). How it shipped is under "As shipped" at the end of this section.
 
 **Why.** Added to a channel, an assistant-mode agent does nothing until someone @-mentions it, and
 then knows nothing of how the place works. A first look reads the place once as the agent arrives,
@@ -1561,14 +1568,46 @@ under the introduction works. For a first look, `propose` changes in four ways:
 - **A request.** `firstLook` is offered on a place's appending long session only and checked again
   on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
 - **Its report.** One report round at the place's top level carries the handling, then the report;
-  step 3 is the text form until `propose` takes the round. Where the place has no long session yet,
-  the report opens one on its append coordinate. A first look that ends without handing back a
+  step 3 is the `propose` wording where the place's integration has an approval card surface, else
+  the text form. Where the place has no long session yet, the report opens one on its append
+  coordinate. A first look that ends without handing back a
   report counts as a failed check, and one whose check is stopped ends as stopped.
 - **Messages.** `messageTask` to a first look is refused while it runs as well as after it ended,
   since its one check takes none. `listTasks` lists it as a first look.
 - **Console.** Activity's follow-up row carries `firstLook: true` and no next check; the console
   labels it "First look". Tool sizes: `firstLook` 433 characters with a 76-byte input schema, and a
   first look's `recordCheck` 244 characters with a 391-byte schema.
+- **The report round's `propose`.** A session's tools are fixed when it starts, so `propose` is
+  listed beside `firstLook` on a place's long session wherever the place's integration has a card
+  surface, and a call is refused unless its turn is a first look's report round. The report's
+  delivery marks that round's call metadata with the first look, which a replay keeps. A round
+  makes at most three proposals, numbered in the order made; a fourth is refused with that reason. A
+  place no longer confirmed internal refuses them, since its cards would leave it.
+- **Holding the cards.** Each proposal is recorded at once, its approver chosen as §5.10 chooses
+  (the place's people, else the responsible user), but its card waits. When the round's turn ends,
+  however it ends, the daemon cards the round's proposals in the order proposed, in the thread of
+  the first reply message the round posted, else where the place's cards go otherwise (its top
+  level for an appending long session). A held card a restart left behind is posted the same way by
+  the minute sweep once nothing runs the round; one decided in the console while held gets none.
+- **The follow-up form.** Its record keeps the form, its hash binds it, and its text is its title.
+  Approval names a new follow-up id on the record, then takes that follow-up of the proposal's
+  place, owned by its long session, with the approver as its asker (a card's clicker as their own
+  message there would carry them, a console user as `user:<id>`) and the proposal's reason as its
+  summary. The record then succeeds: no task runs and no limit counts. A restart between the two
+  settles it as succeeded when the follow-up exists, else as failed. The card shows the follow-up
+  and its first check, and once approved says it was taken. Local store version 56.
+- **Its proposals after it ended.** A proposal whose follow-up is a first look is not refused for
+  that follow-up having ended, in either form; every other refusal stands. An approved task's prompt
+  says it was proposed after the first look.
+- **Console.** Activity's "Waiting for approval" and a webchat conversation's pending requests show
+  a follow-up form as the follow-up it takes: its title, what counts as done and its first check.
+  Approved in Activity, its outcome links to the conversation the follow-up belongs to, whose Tasks
+  tab lists it, when the viewer may open that conversation; a follow-up has no page of its own
+  before its first check. The wire carries the form on `proposal.followUp` and the follow-up taken
+  on the decision.
+- **Tool size.** `propose` went from 614 to 851 characters and its input schema from 505 to 1,092
+  bytes, within Claude Code's 2,048-character description cap and Codex's 5,000-byte schema cap. Its
+  schema has no top-level `oneOf`, so no runtime flattens it.
 
 ---
 
@@ -1669,6 +1708,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
     share that offer nothing before widening either.
 14. **Group DMs on Slack** (§5.13): whether Slack reports the bot added to a group DM as its own
     `member_joined_channel`. Unverified; one it does not report gets a first look only on request.
+15. **Lark/Feishu's own join** (§5.13): its module does not yet listen for the bot being added to a
+    chat, so a Lark/Feishu place takes a first look only on request until it does.
 
 ---
 
@@ -2174,3 +2215,13 @@ messages, reports with the handling into the long session, opening it where ther
 after one check. It counts against `dailyPatrolBudget`, yields to due follow-up checks when
 automatic, and its own session feeds no memory. The suggestions are text until the `propose`
 changes; Lark/Feishu's join and pins come later.
+
+**Fifty-first revision (2026-10-16)**: §5.13 ships its `propose` changes (issue #2810; §5.10). On
+the round a first look's report arrives in, the place's long session may call `propose` at most
+three times where the place's integration has approval cards; elsewhere step 3 stays text. The
+round's cards wait until its reply has posted and are then threaded under it in the order proposed,
+or posted where the place's cards go when no reply posted. `propose` gains a follow-up form,
+available wherever it is offered: approving it takes that follow-up of the place with the approver
+as its asker, running no task. A first look's proposals are not refused because the first look has
+ended. The console shows what a follow-up form would take and links an approved one to its
+conversation. §5.13 is marked shipped; pins and Lark/Feishu's join stay open in §9.

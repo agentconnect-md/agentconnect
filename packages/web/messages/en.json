@@ -209,7 +209,12 @@
       "keep": "Keep",
       "ended": "Follow-up ended.",
       "alreadyEnded": "It had already ended.",
-      "endFailed": "Couldn’t end it. Try again."
+      "endFailed": "Couldn’t end it. Try again.",
+      "proposed": {
+        "takes": "Takes this follow-up",
+        "firstCheck": "First check {time}",
+        "noCheck": "No check until it is messaged"
+      }
     }
   },
   "Profile": {
@@ -3250,6 +3255,9 @@
             "approveConfirmHere": "Run this now? It reports back in this conversation.",
             "denyConfirm": "Deny this proposal? Nothing is run.",
             "dismiss": "Dismiss",
+            "followUpIn": "Followed up in {place}",
+            "takeConfirm": "Take this follow-up in {place}? It is followed up for you, and nothing else runs.",
+            "takeConfirmHere": "Take this follow-up in this conversation? It is followed up for you, and nothing else runs.",
             "outcome": {
               "executing": "Approved. It runs as a task and reports back in {place}.",
               "executingHere": "Approved. It runs as a task and reports back in this conversation.",
@@ -3259,7 +3267,12 @@
               "outcome_unknown": "Not sure this went through. Check {place}; it won’t be run again.",
               "expired": "Expired. Nothing was run.",
               "unconfirmedGone": "Couldn’t confirm the decision, and it is no longer waiting. Check {place}; it may have started.",
-              "unconfirmedHere": "Couldn’t confirm the decision, and it is no longer waiting. It may have started."
+              "unconfirmedHere": "Couldn’t confirm the decision, and it is no longer waiting. It may have started.",
+              "taken": "Approved. The follow-up was taken; it reports back in {place}.",
+              "takenHere": "Approved. The follow-up was taken; this conversation’s Tasks list it.",
+              "notTaken": "Couldn’t take the follow-up: {reason}.",
+              "deniedFollowUp": "Denied. No follow-up was taken.",
+              "seeFollowUp": "See it in its conversation’s Tasks"
             }
           }
         },

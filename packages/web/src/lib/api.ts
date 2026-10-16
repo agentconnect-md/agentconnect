@@ -4021,12 +4021,28 @@ export interface AssistantSubsessionsPageDto {
   followUps?: boolean
 }
 
+/** The follow-up a proposal's follow-up form takes once approved, in place of running a task (assistant-mode.md §5.13). */
+export interface AssistantProposalFollowUpDto {
+  title: string
+  doneWhen: string
+  /** Its first check; null waits until it is messaged. */
+  nextCheck: string | null
+}
+
 /** What a scheduled check proposes to do: the sentence its card leads with, why, and the item it serves. */
 export interface AssistantProposalDto {
   sentence: string
   why: string
   itemId: string
   itemTitle: string | null
+  /** The follow-up form: approving takes this follow-up, and `text` is its title. */
+  followUp?: AssistantProposalFollowUpDto
+}
+
+/** The follow-up an approved follow-up form took, with its conversation where the viewer may open it. */
+export interface AssistantTakenFollowUpDto {
+  id: string
+  conversation: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
 }
 
 export interface AssistantDraftDto {
@@ -4061,10 +4077,12 @@ export interface AssistantDraftDto {
 
 export type AssistantDraftDecision = 'approve' | 'discard'
 
-/** What a decision did: `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted; an approved proposal is `executing`. */
+/** What a decision did: `succeeded` posted, `denied` discarded, `failed` sent nothing, `outcome_unknown` may have posted; an approved proposal is `executing`, and an approved follow-up form `succeeded`. */
 export interface AssistantDraftOutcomeDto {
   status: 'succeeded' | 'failed' | 'outcome_unknown' | 'denied' | 'executing'
   failure: string | null
+  /** The follow-up an approved follow-up form took. */
+  followUp?: AssistantTakenFollowUpDto
 }
 
 const assistantBase = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant`
@@ -4154,10 +4172,12 @@ export interface AssistantConversationProposalDto {
   id: string
   sentence: string
   why: string
-  /** What a background session would carry out once approved. */
+  /** What a background session would carry out once approved; a follow-up form's title. */
   task: string
   itemId: string
   itemTitle: string | null
+  /** The follow-up form: approving takes this follow-up instead of running a task. */
+  followUp?: AssistantProposalFollowUpDto
   createdAt: string
   expiresAt: string
 }
@@ -4169,13 +4189,13 @@ export async function fetchAssistantConversationProposals(
   return apiGet(`${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals`)
 }
 
-/** Approve (start its task) or deny one; `executing` started it, `failed` ran nothing. */
+/** Approve (start its task, or take a follow-up form's follow-up) or deny one; `executing` started it, `succeeded` took the follow-up, `failed` ran nothing. */
 export async function decideAssistantConversationProposal(
   agentId: string,
   sessionId: string,
   draftId: string,
   decision: 'approve' | 'deny'
-): Promise<{ status: AssistantDraftOutcomeDto['status']; failure: string | null }> {
+): Promise<AssistantDraftOutcomeDto> {
   return apiPost(
     `${assistantBase(agentId)}/conversations/${encodeURIComponent(sessionId)}/proposals/${encodeURIComponent(draftId)}/decision`,
     { decision }
