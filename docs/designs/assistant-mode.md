@@ -204,7 +204,8 @@ Proposed (§5.15).
   page, and an editor corrects the organization file and the index there. The organization's
   Knowledge is left as it is.
 - **One conversation keeps it.** A conversation of its own, outside every place, keeps those
-  files. Public channels send it what they learn, so two channels never overwrite each other.
+  files. What first looks in public channels find is brought to it, so two channels never
+  overwrite each other.
   Everyone who may see the agent can read it on the agent's page; editors talk to it there
   ("research the company again").
 - **It says what it learned.** When research ends it tells whoever started it, the person who
@@ -2145,9 +2146,8 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
 on 2026-10-17 and asked whether replies should wait for research. Everything below is a
 recommendation for the owner to confirm, and what is marked _undecided_ is listed in §9 (Q22–Q31).
 Why its files stay in memory and not in organization knowledge is §5.16 (_decided_ by the owner,
-2026-10-17), and people profiles are §5.17. The home
-adds a `sendMessage` action and research adds tools, so both wait for the owner's OK before any
-daemon work.
+2026-10-17), and people profiles are §5.17. Research adds agent-facing tools, so it waits for the
+owner's OK before any daemon work.
 
 **Why.**
 
@@ -2167,10 +2167,10 @@ daemon work.
 
 **In one line.** Each assistant-mode agent keeps one long session that belongs to no place, its
 _home_. It alone writes the shared layer's organization files: `organization.md`, `channels.md`
-and `members.md`, all in the agent's memory (§5.16, §5.17). Internal public channels send it what
-they learn, and editors talk to it from the agent's page. It starts _organization research_, a
-read-only background task that reads the organization's own sources, its code hosts and the public
-web and reports back to it. No reply waits for research.
+and `members.md`, all in the agent's memory (§5.16, §5.17). The daemon brings it what first looks
+in internal public channels find, and editors talk to it from the agent's page. It starts
+_organization research_, a read-only background task that reads the organization's own sources,
+its code hosts and the public web and reports back to it. No reply waits for research.
 
 **Part one: the home session.**
 
@@ -2206,54 +2206,43 @@ decides the rest:
 - **Not a place.** A pseudo-channel would bring every place rule along (triggers, `!new`, the
   standing list, external detection, first looks) for a session with no people in it.
 
-**Who may send it content** (recommended). Only an internal public channel's long session. What
-reaches the home becomes shared-layer memory, which every conversation reads, those with outside
-guests included. Private channels, group DMs, DMs, webchat conversations and external places may
-not, nor may a task, a follow-up's check, a first look or an approved proposal.
+**What reaches it** (recommended). No session messages the home; the daemon brings it what it
+needs. What reaches the home becomes shared-layer memory, which every conversation reads, those
+with outside guests included, so content comes only from places whose own memory already goes
+there.
 
-- **The rule is the shared layer's own.** A session may message the home exactly when its own
-  conversation writes the shared layer: `layerOf` resolves it to `shared`, which only a channel
-  its platform confirms public and internal does. So the home opens no new path into the shared
-  layer: what such a channel's session may send home, its own memory writes could already put
-  there.
-- **The daemon enforces it, not the prompt.** The action is listed only on an appending long
-  session whose conversation resolved to the shared layer when the session started, since a
-  session's tools are fixed then. The call is judged again: the daemon resolves the calling
-  session's layer at the call, so a channel that turned external or private since is refused, and
-  so is a call from any other coordinate (`subsession:`, a hook, a scheduled run). The refusal is
-  one line naming the rule. The model never names the source; the daemon takes it from the
-  calling session and names the place to the home by its name.
+| Input                                | From                                                                     | Form                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| What a first look found in its place | the daemon, from a first look in an internal public channel              | a report round (§5.7) carrying parts of that first look's report |
+| A research report                    | its own organization research                                            | a report round (§5.7)                                            |
+| A request for research               | an internal public channel's long session, or an editor through the home | `researchOrganization`, which the daemon takes as research       |
+| Onboarding                           | the daemon, when assistant mode is first switched on                     | research the daemon takes itself (Part two)                      |
+| An editor's message                  | the agent's page in the console                                          | a console turn, answered in the home's conversation              |
+
+- **A first look's findings.** When a first look's report reaches its place's long session, the
+  daemon also delivers three parts of it to the home: the place's name and what it is for, "About
+  the organization", and "How this place works", whose roles as people state them feed the
+  directory (§5.17). The report is already structured by its headings, so no model decides what
+  goes home. The daemon forwards only where the place's memory layer is the shared one when the
+  report arrives, the test #3074's step 1 already makes. A private channel, a group DM or an
+  external place forwards nothing, and a DM takes no first look.
+- **A request for research.** `researchOrganization` takes no argument and asks the daemon to take
+  organization research (Part two), as `firstLook` asks it to take a first look. It is offered only
+  on an internal public channel's appending long session, since a session's tools are fixed when it
+  starts, and the daemon judges the calling session's layer again at the call. It carries no
+  content, only who asked and where, which the daemon records from the calling session, so the
+  summary can go back there. The home has the same tool for editors' requests.
+- **Ordinary conversation.** A fact someone states in a channel ("@alice now owns billing") stays
+  where that channel's memory puts it, its own file in the shared layer. Research reads those files,
+  so the organization files catch up at the next research, not at once. Waking the home on
+  every shared-layer write would cost a turn for each and is not done.
+- **No `sendMessage` action.** One was drafted, `messageHome`, and dropped: a fixed target with an
+  audience rule of its own would have been a special case inside a generic tool, with its own reply
+  and folding rules. A self `callAgent` with `sessionId` stays refused (send-message-guide.md §9.2).
+- **Folding.** Forwarded findings wait until a minute passes without another, five minutes at most,
+  and arrive as one turn, as a report round folds a place's pending reports (§5.7). An editor's
+  message starts a turn at once.
 - A person in a DM who wants research asks an editor, or asks in a public channel.
-
-**What reaches it.**
-
-| Input                                    | From                                                 | Form                                                |
-| ---------------------------------------- | ---------------------------------------------------- | --------------------------------------------------- |
-| Organization-level findings and requests | an internal public channel's long session            | `sendMessage` action `messageHome { message }`      |
-| A research report                        | its own organization research                        | a report round (§5.7)                               |
-| Onboarding                               | the daemon, when assistant mode is first switched on | a daemon-authored message that starts research      |
-| An editor's message                      | the agent's page in the console                      | a console turn, answered in the home's conversation |
-
-- **`messageHome`** is a new `sendMessage` action whose only argument is `message`, like
-  `delegateTask`. It delivers a session message of kind `call` with no reply requested
-  ([send-message-guide.md](send-message-guide.md) §9.3): one-way, for a finding the channel need
-  not wait on. The message keeps its id and source session, so the home may still answer it with
-  `replyToSession` when a channel asked for something; since that is the exception, `needsReply`
-  is not offered. Its description says what to send: what someone stated about the organization
-  (what it does, its products, its teams as people describe them, its tools) and work facts about
-  people as §5.17 allows them, never what is in flight in the place, and no quote beyond a short
-  phrase.
-- **Why not `callAgent`.** A self `callAgent` with `sessionId` is refused on purpose: it would be
-  a self-activation path into any of the agent's sessions (send-message-guide.md §9.2). The home
-  is one fixed target with an audience rule of its own, so it gets an action of its own, not an
-  exception in `callAgent`'s admission. `delegateTask`, `messageTask` and `postMessage` do not
-  reach it.
-- **Folding.** `messageHome` deliveries wait until a minute passes without another, five minutes at
-  most, and arrive as one turn, as a report round folds a place's pending reports (§5.7). An
-  editor's message starts a turn at once.
-- **The first look's handling** gains a step in an internal public channel: send "About the
-  organization", and the roles people state in "How this place works", home with `messageHome` when
-  they say anything. Elsewhere nothing is sent home.
 
 **What it may do.**
 
@@ -2262,8 +2251,7 @@ not, nor may a task, a follow-up's check, a first look or an approved proposal.
   - read the organization's knowledge (`findKnowledge`, `listKnowledge`) and the names of the
     internal public channels its bots are in (`listChannels`);
   - start organization research with `researchOrganization`, and list, message and stop it with
-    `listTasks`, `messageTask` and `stopTask`;
-  - answer a message by id with `replyToSession`.
+    `listTasks`, `messageTask` and `stopTask`.
 - **It reads as no one.** Whoever typed in the console, the home's reads are those of a turn no
   person is behind: public channels on its own bots only (§5.5 "Reads"). An editor's access would
   otherwise carry their private channels into the shared layer through it.
@@ -2281,14 +2269,14 @@ not, nor may a task, a follow-up's check, a first look or an approved proposal.
 
 **How it differs** from what exists.
 
-|            | Delegated task               | Follow-up                    | Session reached by `callAgent` | Home                                                     |
-| ---------- | ---------------------------- | ---------------------------- | ------------------------------ | -------------------------------------------------------- |
-| Belongs to | its owning session           | its place                    | its conversation               | the agent                                                |
-| Input      | `messageTask` from its owner | `messageTask` from its place | its conversation, `callAgent`  | `messageHome` from internal public channels; the console |
-| Writes     | with the agent's permissions | nothing                      | with the agent's permissions   | shared-layer memory only                                 |
-| Woken by   | its owner's messages         | time (events, §5.14)         | messages                       | messages                                                 |
-| Speaks     | through its owner            | through its place            | in its conversation            | through the place it reports to                          |
-| Ends       | stopped, or never            | done or stopped              | by its conversation's rules    | never; it rolls over                                     |
+|            | Delegated task               | Follow-up                    | Session reached by `callAgent` | Home                                                             |
+| ---------- | ---------------------------- | ---------------------------- | ------------------------------ | ---------------------------------------------------------------- |
+| Belongs to | its owning session           | its place                    | its conversation               | the agent                                                        |
+| Input      | `messageTask` from its owner | `messageTask` from its place | its conversation, `callAgent`  | first looks' findings the daemon forwards; research; the console |
+| Writes     | with the agent's permissions | nothing                      | with the agent's permissions   | shared-layer memory only                                         |
+| Woken by   | its owner's messages         | time (events, §5.14)         | messages                       | messages                                                         |
+| Speaks     | through its owner            | through its place            | in its conversation            | through the place it reports to                                  |
+| Ends       | stopped, or never            | done or stopped              | by its conversation's rules    | never; it rolls over                                             |
 
 **One writer of the organization files** (recommended). The daemon refuses a write to
 `organization.md`, `channels.md` or `members.md` from any session but the home,
@@ -2300,8 +2288,9 @@ its marker and audit record), and any other editor asks the home (§5.17). A dre
 and proposes nothing for them. Each
 keeps the one index line #3074 gives it, and its body is read when a session needs it. Every other
 shared-layer file is written as today: a first look's topic file by its place, "remember this for
-everyone" by whoever is asked. A person who wants the organization file changed says so in a
-public channel, whose session sends it home, or asks an editor to tell the home.
+everyone" by whoever is asked. A person who wants the organization file changed asks an editor, who
+corrects it on the Memory page or tells the home; said in a public channel, it reaches the file at
+the next research.
 
 **Their shapes** (recommended). The daemon checks each write against the file's shape and refuses
 one that does not fit, naming the line that failed so the model can correct it:
@@ -2339,7 +2328,7 @@ Recent, as tasks are not (#3072). Its name is §9 Q24.
 **Cost** (recommended).
 
 - **One more turn per finding.** A first look in an internal public channel costs a check turn and
-  a long-session turn today; sending "About the organization" home adds a home turn. Folding
+  a long-session turn today; forwarding its findings home adds a home turn. Folding
   (above) makes a burst of first looks one turn or a few, and automatic first looks are already
   serialized by the agent's one scheduled-check slot (§5.13).
 - **Context.** The home's state is the organization files, which it reads at its start like any
@@ -2350,12 +2339,13 @@ Recent, as tasks are not (#3072). Its name is §9 Q24.
 - **Nothing idle.** It runs only when something reaches it; nothing wakes it by time.
 
 **The per-place merge** (recommended: #3074's merge, now shipped, stays until the home replaces it).
-The revision-checked merge needs nothing new. The home needs a coordinate, a `sendMessage` action,
-the shapes above and a console section. When the home ships, the first look's merge step becomes
-the `messageHome` step above, places' writes to the files are refused, and the files stay as they
-are: the home reads them at its start, earlier merges' lines keep their sources, and the home cuts
-`organization.md` to the summary's shape on its first write. Until then the merge loses no write, and a contradiction settles by the latest write, as
-for any shared-layer file.
+The revision-checked merge needs nothing new. The home needs a coordinate, the daemon's
+forwarding, the shapes above and a console section. When the home ships, the first look's step that
+merges into the shared files goes, since the daemon forwards those parts home. Places' writes to the
+files are refused, and the files stay as they are: the home reads them at its start, earlier
+merges' lines keep their sources, and the home brings `organization.md` to its shape on its first
+write. Until then the merge loses no write, and a contradiction settles by the latest write, as for
+any shared-layer file.
 
 **Part two: organization research.**
 
@@ -2366,14 +2356,15 @@ for any shared-layer file.
   records its place (§5.13). An agent already in assistant mode when this ships takes none until
   someone asks, so the upgrade sends nobody a message.
 - **On request.** An editor asks the home in the console, or someone asks in an internal public
-  channel, whose session sends the request home with `messageHome`. One runs at a time per agent.
+  channel, whose long session calls `researchOrganization` (Part one). One runs at a time per agent.
   A request while one runs is answered with when it started, and that requester is told when it
   ends too.
 - _Undecided_ (§9 Q25): a periodic re-run, offered as a follow-up of the home or on a fixed rhythm.
 
 **What it reads** (recommended).
 
-- The shared layer: the organization files and the topic files public channels' first looks wrote.
+- The shared layer: the organization files and every topic file public channels wrote, their first
+  looks' and ordinary conversation's alike.
 - The organization's knowledge in AgentConnect (`findKnowledge`, `listKnowledge`).
 - The names of the internal public channels the agent's bots are in: a listing, not their history,
   which is each place's first look's to read.
@@ -2582,9 +2573,9 @@ shape. Whether it does, from a fixed set or by its own choice, and how many.
 
 1. #3074's per-place merge, shipped and unchanged.
 2. Daemon and protocol: the home's coordinate, opening and rollover, recognized by the Control
-   Plane; `messageHome` with its audience rule; the organization files' single writer and shapes;
-   the first look's `messageHome` step. `sendMessage`'s description is measured against the
-   guide's size budget (send-message-guide.md §5).
+   Plane; the daemon's forwarding of a first look's findings, and `researchOrganization` with its
+   audience rule; the organization files' single writer and shapes; the first look's handling
+   without its shared-file merge.
 3. Research: the start condition's live tests first. Then the research marker on a follow-up of
    the home, the credential-less host for it, the web-read list, the code-host bridge reads and the
    read grant's `pull_requests: read`, the prelude line, the summary's delivery, and onboarding
@@ -2690,8 +2681,8 @@ could keep, so this section says what one may hold, who sees it, and how its sub
   review"), sensitive personal attributes (health, family, religion, politics, ethnicity,
   sexuality, finances, immigration status, where they live), absences and their reasons, or
   anything from a private place.
-- **The prompt** carries both lists wherever an entry is written: the home's handling,
-  `messageHome`'s description and research's prompt.
+- **The prompt** carries both lists wherever an entry is written: the home's handling, the first
+  look's prompt and research's prompt.
 - **The write** keeps the entry's shape. An entry is a heading with the person's display name and
   handles, then at most ten lines in four fields, each ending in its source and date: `Role:`,
   `Works on:`, `Knows about:` and `Ask about:`. The daemon refuses another field, a line with no
@@ -2711,10 +2702,11 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
 **How it is built** (recommended).
 
 - **As the agent goes.** A first look's report in an internal public channel names roles as people
-  there state them, and its long session sends them home with `messageHome`. So does any public
-  channel's session when someone states a work fact ("@alice now owns billing"). Organization
-  research adds what the code hosts show: CODEOWNERS, maintainers, and who reviews which area
-  (§5.15 "Code hosts"). The home merges each into the person's entry.
+  there state them, and the daemon forwards that part home (§5.15). Organization research adds what
+  the code hosts show: CODEOWNERS, maintainers, and who reviews which area (§5.15 "Code hosts").
+  It also reads the work facts people state in ordinary conversation ("@alice now owns billing"),
+  which the channel's own memory keeps. The home merges each into the person's entry, so a fact
+  from ordinary conversation reaches the directory at the next research.
 - **A deeper pass, only for oneself.** A person may ask, in their own DM or in the console, for
   their own entry to be filled in. The home takes a one-check, read-only task, as research is, and
   it counts as one check against `dailyCheckBudget`. It reads only that person's own messages in
@@ -2816,16 +2808,16 @@ subject's control is what that move would have to carry over.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                 |
-| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                         |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                |
-| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped. Still to come: `propose` in its report round, under the introduction and with a follow-up form; Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                             |
-| Home and organization research    | §5.15–§5.17, proposed: an agent-level home session that alone writes the organization files (`organization.md`, `channels.md` and `members.md`, in its memory; organization knowledge is unchanged), takes findings from internal public channels with `messageHome` and editors' requests from the console; organization research, a read-only check on the credential-less host that reads the organization's own sources, its code hosts and the public web on onboarding and on request, and is waited for by no reply; people profiles of work facts, which their subject sees, corrects and clears. After #3074's per-place merge, which it replaces; research waits for a live test of each runtime's web tools |
-| P2 — cost and events              | Event wake (§5.14, proposed): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                                                                |
+| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                                                                        |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                               |
+| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped. Still to come: `propose` in its report round, under the introduction and with a follow-up form; Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                            |
+| Home and organization research    | §5.15–§5.17, proposed: an agent-level home session that alone writes the organization files (`organization.md`, `channels.md` and `members.md`, in its memory; organization knowledge is unchanged), takes the findings of first looks in internal public channels, forwarded by the daemon, and requests for research from those channels and the console; organization research, a read-only check on the credential-less host that reads the organization's own sources, its code hosts and the public web on onboarding and on request, and is waited for by no reply; people profiles of work facts, which their subject sees, corrects and clears. After #3074's per-place merge, which it replaces; research waits for a live test of each runtime's web tools |
+| P2 — cost and events              | Event wake (§5.14, proposed): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ---
 
@@ -2915,10 +2907,11 @@ subject's control is what that move would have to carry over.
     command through without a permission request. Timed checks have the same gap today. Whether a
     GitHub broker should give checks the read tools GitLab and Gitea have. Organization research
     adds bridge reads of its own (§5.15 "Code hosts"), which such a broker could reuse.
-22. **The new names** (§5.15): the `assistant:home:<generation>` coordinate, the `messageHome`
-    action of `sendMessage`, the home's `researchOrganization` tool, research's form of
-    `recordCheck`, and `listCodeHostRepositories` and `readCodeHostRepository` change agent-facing
-    tools. The owner confirms or changes them before the daemon's pull request.
+22. **The new names** (§5.15): the `assistant:home:<generation>` coordinate, the
+    `researchOrganization` tool (on the home and on internal public channels' long sessions),
+    research's form of `recordCheck`, and `listCodeHostRepositories` and `readCodeHostRepository`
+    change agent-facing tools. `sendMessage` is unchanged. The owner confirms or changes them
+    before the daemon's pull request.
 23. **What else the home may do** (§5.15), _undecided_: call `firstLook` for places, so "take a
     first look at every channel you're in" works from the console, which posts an introduction in
     each; take follow-ups, which would report into a conversation no person is in; send a daily
@@ -3543,10 +3536,11 @@ to confirm, except what is marked decided or undecided.
 - **The home.** Each assistant-mode agent keeps one long session that belongs to no place, keyed
   `assistant:home:<generation>:<agentId>`. A non-chat platform already writes the shared layer, the
   daemon opens it with no creator, and a webchat coordinate would be one person's. It alone writes
-  the organization files in fixed shapes: `organization.md`, `channels.md` and, if it stays in
-  memory, `members.md`. Only an internal public channel's long session may send it content, with a
-  new `sendMessage` action, `messageHome`, which the daemon admits exactly where the caller's own
-  conversation writes the shared layer. It reads as no one, writes only memory, is `org`-visible,
+  the organization files in fixed shapes: `organization.md`, `channels.md` and `members.md`. No
+  session messages it: the daemon forwards a first look's organization and role findings from
+  places that write the shared layer, and `researchOrganization` lets such a place ask for
+  research. A `sendMessage` action, `messageHome`, was drafted and dropped as a special case in a
+  generic tool. It reads as no one, writes only memory, is `org`-visible,
   and talks to editors from an Organization section of the agent's page. It rolls over with no
   handover, since its files are its state, and replaces #3074's per-place merge once it ships.
 - **Research.** A follow-up of the home that the daemon takes on onboarding or on request: a
