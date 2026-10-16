@@ -163,18 +163,41 @@ does not pretend to defend against effects it cannot defend against.
   _external_ (§5.3).
 - It acts with the agent's own identity and permissions, never someone's personal account.
 
+### 1.9 When it joins a place
+
+Proposed (§5.13); nothing here is implemented yet.
+
+- **It takes a first look.** Added to a channel or group chat, it reads that place once: the last
+  30 days or 500 messages, whichever is less, and nothing else. It remembers how the place works:
+  what it is for, who decides what as people there say it, how requests are made, what recurs. It
+  does not remember what is in flight, or anything about a person beyond their role there.
+- **It introduces itself once**: who it is, one line on what it saw, how to reach it. Under that
+  it offers at most three concrete ways to help, each resting on what people there said, or none.
+  On Slack each offer is a card anyone who could ask it there may approve; elsewhere it is a line to
+  answer. It asks at most one question, then posts nothing more on its own.
+- **Nothing is taken without a yes.** Something someone is visibly waiting on may be offered as a
+  follow-up; a regular rhythm may be offered as a timed check of the place.
+- **Only new places, by itself.** Places it was already in when assistant mode was switched on
+  get a first look only when someone there asks ("take a first look"), so switching the mode on
+  posts nothing in old channels. Never in a 1:1 DM, not yet in a place shared with another
+  organization, and only where the platform lets a bot read history (Slack, Discord, Lark/Feishu;
+  not Telegram).
+- What it read and reported is on the first look's task page, for whoever may see that place.
+
 ---
 
 ## 2. Prior art
 
-| Reference                                                               | Taken                                                                                                                                                                                                                                                                                                                                                             | Not taken                                                                          |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Hosted always-on personal and coworker agents (two launched in 2026-09) | Goals outlive conversations; the agent wakes itself; proactive research is read-only; it speaks only when needed; **rules first, free rein on its own computer, consequential actions brought back for approval, waiting without a deadline**; stopping the main task does not stop delegated work; each task in its own environment                              | The personal form (acting as a user with that user's accounts)                     |
-| An open-source personal-agent template                                  | The approval record: hash-bound, expiring, `outcome_unknown` never retried; idempotent notifications; failure backoff and auto-pause                                                                                                                                                                                                                              | Rule-based idea generation; a task model that re-runs from scratch each time       |
-| An open-source coworker-agent template                                  | Scheduled turns run in the original conversation; interruption waits for human review before retry                                                                                                                                                                                                                                                                | One task at a time globally                                                        |
-| A durable agent-harness library                                         | The shape of background sub-agents: own conversation, anchored outside the parent's abort, replies delivered back as follow-ups, request ids on every delivery and report; sub-agents cannot spawn sub-agents                                                                                                                                                     | Using it as a runtime                                                              |
-| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; whether an action needs approval is configured per action, never judged by the model; stopping the main task does not stop scheduled ones | One session per thread plus memory retrieval                                       |
-| An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                                                            | No distinction between senders in an IM; a per-thread persisted "allow all" bypass |
+| Reference                                                               | Taken                                                                                                                                                                                                                                                                                                                                                             | Not taken                                                                                                 |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Hosted always-on personal and coworker agents (two launched in 2026-09) | Goals outlive conversations; the agent wakes itself; proactive research is read-only; it speaks only when needed; **rules first, free rein on its own computer, consequential actions brought back for approval, waiting without a deadline**; stopping the main task does not stop delegated work; each task in its own environment                              | The personal form (acting as a user with that user's accounts)                                            |
+| An open-source personal-agent template                                  | The approval record: hash-bound, expiring, `outcome_unknown` never retried; idempotent notifications; failure backoff and auto-pause                                                                                                                                                                                                                              | Rule-based idea generation; a task model that re-runs from scratch each time                              |
+| An open-source coworker-agent template                                  | Scheduled turns run in the original conversation; interruption waits for human review before retry                                                                                                                                                                                                                                                                | One task at a time globally                                                                               |
+| A durable agent-harness library                                         | The shape of background sub-agents: own conversation, anchored outside the parent's abort, replies delivered back as follow-ups, request ids on every delivery and report; sub-agents cannot spawn sub-agents                                                                                                                                                     | Using it as a runtime                                                                                     |
+| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; whether an action needs approval is configured per action, never judged by the model; stopping the main task does not stop scheduled ones | One session per thread plus memory retrieval                                                              |
+| An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                                                            | No distinction between senders in an IM; a per-thread persisted "allow all" bypass                        |
+| A team-chat AI coworker trialed in 2026-08                              | Onboarding researched first and reported back; a twice-daily alert watch that spoke only when needed, with one concrete ask and no repeat if ignored (§5.13)                                                                                                                                                                                                      | A quota-based outreach job (up to five DMs and one channel post per run), which the team stopped as noise |
+| A coding agent's project coordinator (2026-10)                          | On a user's first project it may take a turn of its own: a read-only exploration plus setup suggestions, and suggested threads started with one click (§5.13)                                                                                                                                                                                                     | Suggestions to one person: in a shared place they are offered to the place                                |
 
 ---
 
@@ -1251,6 +1274,256 @@ else, and nobody but its own conversation is told of it.
   carries no id, so it cannot be stopped from the console before its first check, and the page
   shows only the session it belongs to.
 
+### 5.13 First look
+
+**Status:** Proposed (2026-10-16). Nothing is implemented. What is marked _decided_ is the product
+owner's (2026-10-16); the rest is recommended, each point with its reason, for the owner to confirm.
+
+**Why.** Added to a channel, an assistant-mode agent does nothing until someone @-mentions it, and
+then knows nothing of how the place works. A first look reads the place once as the agent arrives,
+remembers how it works, introduces the agent and offers at most three concrete ways to help. It is
+the first part of the agent's proactivity: a timed check of the place is offered through it as a
+follow-up (below), and waking on platform events is later work (§7).
+
+**What runs** (_decided_).
+
+- A read-only task of the place reads it and reports to the place's long session. The task cannot
+  post, react or write memory.
+- The long session then writes memory, posts the introduction and offers the suggestions.
+
+**Where** (_decided_): channels and group chats only, never a 1:1 DM, which has nothing to read.
+Three conditions are recommended below: the agent answers in the place (its row is not Off), the
+place is internal, and its platform can read history.
+
+**What it reads** (_decided_).
+
+- Newest first, the last 30 days or 500 messages, whichever is less.
+- The place's description, topic, pinned messages and bookmarks.
+- Every top-level message, plus the replies of any thread with three or more replies or an
+  unanswered question.
+- It stops early once new messages stop changing the picture, and reads only this place.
+
+The daemon holds it to the bounds, not the prompt alone. Its history reads go back no further than
+30 days and return nothing past 500 messages in all. Its tools are the place's own reads (history,
+thread replies, the conversation's details, members and profiles, reactions, bookmarks, pins and
+attachments), memory reads and `recordCheck`. `recall`, search, other channels, knowledge and
+code-host reads are not offered, and §5.5's read gate refuses any source but its own place.
+
+**Outputs** (_decided_). Each goes somewhere different.
+
+1. **Memory.** A topic file named after the place, plus one index line, written to the layer that
+   conversation writes ([product conventions](../product-conventions.md#memory-layers)): an internal
+   public channel writes the shared layer; a private channel, a group DM or an external place
+   writes its place layer.
+   - Only how the place works (its purpose; roles as people state them, never opinions of people;
+     how requests are made; where decisions are recorded; links people keep using; other bots) and
+     what recurs. Dated, with inferred items marked "(inferred)".
+   - Never what is in flight, opinions of people, quotes beyond a short phrase, credentials,
+     private links or personal details.
+   - The shared layer is read in every conversation, those with outside guests included, so the
+     file holds only what is fine to say in every conversation that reads that layer. There is no
+     new memory layer for public channels.
+2. **Report.** The whole report is the task's result: its check's report, on the task's own page,
+   visible to whoever may see the place's conversation, as every task is (§5.6).
+3. **Introduction and suggestions.**
+   - One short introduction in the place: who it is, one line on what it saw, how to reach it.
+   - Suggestions are `propose` cards in the thread under that introduction, not a DM to whoever
+     added the agent, so who sees them is who sees the place.
+   - At most three, each resting on two or more messages or on a request nobody took. None is a
+     fine outcome: a threshold, never a quota.
+   - At most one question, and only if the answer changes what it does. Then it stays quiet unless
+     the place's trigger says otherwise.
+   - Something in flight becomes a follow-up (§5.12) only if someone is visibly waiting on it, and
+     only as an offer, never taken silently.
+
+The first look's own session is excluded from memory capture, as a private session is, so neither
+per-turn distillation nor a dream mines what it read: memory gets only what the long session
+writes in step 1 of its handling. The report itself arrives as a report round of the long session,
+which a dream of the shared layer mines as it mines every report round in such a channel.
+
+**The prompts** (_decided_, adjusted where noted below). The task's prompt, in English as product
+text:
+
+```text
+You are taking a first look at {place}, a {kind} you were just added to. Read it and report
+back. You cannot post, react or change anything, and nothing you write here reaches the place.
+
+Read, newest first, until you have the last {days} days or {maxMessages} messages, whichever
+is less: the description, topic, pinned messages and bookmarks; every top-level message; the
+replies of any thread with 3+ replies or an unanswered question. Stop early once new messages
+stop changing your picture. Read only this place.
+
+Answer in these sections, in the place's main language. Link every claim to the message it
+rests on (its link, or its time where it has none), and mark anything inferred rather than
+read as (inferred).
+
+## How this place works
+What it is for, in two sentences. Who owns or decides what, as people here say it: roles,
+never opinions of people. How requests are made, where decisions are recorded, links people
+keep using, other bots and what they post.
+
+## Recurring
+Things that happened at least twice on a rhythm, and when.
+
+## In flight
+Unanswered questions, commitments with a date, threads waiting on someone: owner, date, link.
+
+## Where I could help
+At most three; none is a fine answer. Each must rest on two or more messages or on a request
+nobody took. Say what you would do first, whether it is one task or a check on a schedule, and
+what you lack (a tool, an integration, access). Offer only what the place's conversation can
+actually do with its tools: {tools}.
+
+## Not covered
+What you could not read or check.
+
+Stay under 1,500 words. Quote no more than a short phrase, record nothing about a person
+beyond their role here, and leave out credentials, private links and personal details.
+Hand it back with recordCheck: a one-line observation, this answer as its report, and done
+set. It is your only output.
+```
+
+The long session's handling arrives with the report, as a `[follow-up]` report's text does, never
+in a tool description:
+
+```text
+When a first look reports back:
+1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
+   plus one index line. Leave out "In flight" and anything you would not say in every
+   conversation that reads this layer.
+2. Post one short introduction in the place: who you are, one line on what you saw, how to
+   reach you ({reach}).
+3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
+   follow-up only if someone is visibly waiting on it.
+4. Ask at most one question, and only if the answer changes what you do. Then post nothing
+   more on your own.
+```
+
+Changed from the agreed drafts, each to fit a verified fact:
+
+- "Link every claim" adds "(its link, or its time where it has none)". History pages carry no link
+  today; this section adds one where the platform can form it (below), and elsewhere a link the
+  model made up would be worse than a time.
+- "Offer only what your tools can actually do" names the place's tools, `{tools}`. The first look
+  itself has only reads, so "your tools" would rule out everything.
+- A last line hands the answer back with `recordCheck`, a check's only output (§5.12).
+- A first look someone asked for in a place the agent was already in reads "a {kind} you are in"
+  instead of "you were just added to".
+- Step 2's "how to reach you" names the place's trigger, `{reach}` ("@-mention me", "I read every
+  message"). A report round carries no mention to infer it from.
+- Step 4's "Then stay quiet unless mentioned" becomes "Then post nothing more on your own". In a
+  place whose trigger is every message people reach it without a mention, and the decided rule
+  defers to the trigger.
+- On a platform with no card surface, step 3 reads "In the same message, list each 'Where I could
+  help' item in one line, and an 'In flight' item only if someone is visibly waiting on it; act on
+  one when someone here asks for it."
+
+**Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
+marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
+It reuses the read-only check and its layers (§5.9), the one scheduled-check slot,
+`dailyPatrolBudget`, backoff, recovery, the report path into the place's long session, and the
+console's follow-up rows, labelled "First look", in the Tasks tab, Activity and its own page. A new
+task kind would repeat all of that for a run that differs only in what the marker decides:
+
+- **Who takes it.** The daemon, on a join or a request (below). `followUp`'s confirmation protects
+  people from commitments made in their name; a first look commits to nothing and posts nothing.
+- **Its asker.** The person who invited the bot where the platform names one, else the person who
+  asked for it, else nobody. It reads only its own place, which every turn may read (§5.5), so the
+  asker changes nothing it reads.
+- **Its tools and prompt** are the ones above. It has no `propose`: the cards come from the long
+  session.
+- **Its one check** ends it as done. No next check is set, and `messageTask` is refused, as for any
+  ended follow-up.
+- **The standing list** leaves it out: it is no commitment to remind anyone of.
+
+Nothing found needs more than the marker. Outside the follow-up machinery, `propose` and the read
+ports change (below). A new place has no long session until its first message (§5.2), and a report
+needs one, so a first look's report opens it on the coordinate that first message would key.
+
+**Triggers** (recommended).
+
+- **A new join, automatically.** The platform reports that the bot itself joined a conversation,
+  and the conversation becomes a place of an assistant-mode agent: its row is listed and not Off.
+  The daemon holding the agent's duty then takes a first look. A join that leaves the row Off takes
+  none, such as one a person confirmed so the agent could read or post there once ("Joining a public
+  channel" in product-conventions.md) or a restricted agent's: §5.3 already says it is no place.
+- **Everything else, on request.** A place the agent was already in when the mode was switched on,
+  a platform that reports no join, and a second look all wait for a person there to ask ("take a
+  first look"); the long session then calls `firstLook`, a tool offered only to a place's long
+  session where a first look could run. Switching the mode on therefore posts no introduction in
+  old channels, however many the agent is in.
+- A paused agent takes it on the join and runs it once resumed, as an overdue check does.
+
+**Platforms** (verified 2026-10-16). Whether a first look can run is the platform's declaration,
+never its name ([integration-plugin-architecture.md](integration-plugin-architecture.md)): it runs
+only where the platform's read ports declare `channelHistory`. Thread replies, bookmarks and pins
+are read where their ports exist; the rest goes under "Not covered".
+
+| Platform        | Reports the bot's own join                    | History                          | Thread replies | `propose` card           | First look                                  |
+| --------------- | --------------------------------------------- | -------------------------------- | -------------- | ------------------------ | ------------------------------------------- |
+| Slack           | Yes: its own `member_joined_channel`, handled | Yes                              | Yes            | Yes, and one in a thread | On join and on request                      |
+| Discord         | No: a bot joins a server, not a channel       | Yes                              | No port        | No                       | On request                                  |
+| Lark/Feishu     | A bot-added event exists, not subscribed      | Yes                              | No port        | No                       | On request; on join once its module listens |
+| Telegram        | Yes (`new_chat_members`)                      | No: the Bot API gives a bot none | —              | No                       | Never                                       |
+| Google Chat, QQ | —                                             | No                               | —              | No                       | Never                                       |
+
+The read ports this adds, each declared by the platform's own module:
+
+- `getChannelInfo` reports a conversation's topic and description where the platform keeps them
+  (Slack's topic and purpose, a Discord channel's topic, a Lark/Feishu chat's description); it
+  reports neither today.
+- A pinned-messages read. Slack's needs `pins:read`, which the app manifest does not request today,
+  so an install that has not granted it lists pins under "Not covered" (§9).
+- History and thread messages carry a link where the platform can form one, such as Slack's from
+  the workspace URL, the channel and the timestamp.
+- A connection callback for the bot's own join. Slack's handler already sees the event; a
+  Lark/Feishu module would raise it from its bot-added event.
+
+**Repeats** (recommended). Once per place, automatically. The first look's follow-up row, kept like
+other settled rows until the agent is removed, records it per agent and place: a rejoin finds it and
+takes none, nor does switching the mode off and on take one. A person asks for another with `firstLook`,
+which runs a new one; its handling updates the same topic file. One runs at a time per place, and
+asking while one runs is refused with that reason.
+
+**External places** (recommended): no first look in v1, automatic or requested, and `firstLook` is
+not offered there. A card in an external place goes to an internal member's DM (§5.5 "Drafts"), so
+its suggestions would leave the place, which output 3 exists to avoid; and what an introduction
+should tell people from outside is undecided (§9). A place that turns external while a first look
+runs keeps only step 1 of its handling.
+
+**Cards** (verified, then recommended). Only Slack has a `propose` card surface (`DraftCardPort`);
+elsewhere a proposal is carded to the responsible user's DM or waits in Activity (§5.10). Slack's
+card takes a thread, as a proposal's card does today in a long session that lives in one, so a card
+under the introduction works. For a first look, `propose` changes in four ways:
+
+1. **Offered in the report round.** The place's long session is offered `propose` on the round that
+   delivers a first look's report, at most three times, and only where the platform has a card
+   surface; elsewhere step 3 is text, as above. Approvers and expiry are unchanged (§5.10): whoever
+   could ask the agent in the place, for 24 hours.
+2. **Under the introduction.** The round's reply posts at the place's top level. The daemon holds
+   the round's cards until that reply has posted, then cards them in its thread in the order
+   proposed; a round whose reply never posts has its cards posted where the place's cards go
+   otherwise.
+3. **A follow-up form.** `propose({ sentence, why, followUp: { title, doneWhen, nextCheck? } })`,
+   in place of `task`. Approving it takes that follow-up of the place with the approver as its
+   asker, the confirmation `followUp` requires; it runs no task and counts against no limit, and
+   its card says it was taken. This is how something in flight becomes a follow-up, and how a
+   "Recurring" rhythm becomes a timed check of the place: a follow-up whose checks each set the
+   next one, not a cron.
+4. **The first look has ended.** Its proposals point at the first look's follow-up, which ends after
+   its check by design, so "its follow-up ended" refuses none of them; every other refusal stands.
+
+**Budget** (recommended). A first look counts as one check against `dailyPatrolBudget`.
+
+- An automatic one waits for the agent's one scheduled-check slot, and takes it only when no
+  follow-up's check is due, so an agent added to twenty channels at once delays no existing
+  follow-up. Past the budget it waits for the window.
+- A requested one starts at once, as a messaged check does; past the budget it is refused with the
+  time the budget resets.
+- Its turn is bounded by the read cap above and the 1,500-word report.
+- Failures back off as a check's do. After five, an automatic first look ends without a word in the
+  place, its page saying why; a requested one is reported once, as a check is.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -1282,6 +1555,7 @@ else, and nobody but its own conversation is told of it.
 | **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                  |
 | **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                          |
 | P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent |
+| First look (proposed)             | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu); `firstLook`; `propose` in its report round, under the introduction and with a follow-up form; the read ports it needs (topic and description, pins, message links) and the bot-join callback. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                 |
 | P2 — cost and events              | Hook events routed to follow-up checks (§5.12); Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
@@ -1338,6 +1612,16 @@ else, and nobody but its own conversation is told of it.
     rules ([session-concept.md](session-concept.md) §2.3). Claude applies them on load and gets no
     block. A session whose context changes while its runtime stays up keeps what it has until it
     next resumes.
+11. **First look in external places** (§5.13): none in v1. Whether to allow one on request, with its
+    suggestions as text in the place, once what an introduction may tell people from outside is
+    decided.
+12. **Slack pins** (§5.13): reading them needs `pins:read`, a scope every workspace must grant again.
+    Whether to add it with the first look, or ship without pins and list them under "Not covered".
+13. **The first look's window and threshold** (§5.13): whether 30 days or 500 messages, and
+    "resting on two or more messages", give useful first looks. Measure one first look's cost and the
+    share that offer nothing before widening either.
+14. **Group DMs on Slack** (§5.13): whether Slack reports the bot added to a group DM as its own
+    `member_joined_channel`. Unverified; one it does not report gets a first look only on request.
 
 ---
 
@@ -1812,3 +2096,18 @@ online. For a Control-Plane home the Control Plane answers the shared layer, a p
 caller's own person layer and the place-layer listing from its own tables, and clears a place
 layer there, under the same per-caller rules, so the forty-sixth revision's remaining gap is
 closed. A console edit still goes through the agent's daemon, which owns the write path.
+
+**Forty-eighth revision (2026-10-16)**: §5.13 proposes a first look (issue #2810; §1.9, §2, §7,
+§9). Added to a channel, an assistant-mode agent did nothing until someone @-mentioned it. The
+product owner decided what a first look is: a read-only task of the place reads its last 30 days or
+500 messages, whichever is less, and reports to the place's long session. That session writes how
+the place works to the layer that conversation writes (the shared layer for an internal public
+channel, else the place layer), introduces the agent once, and offers at most three suggestions as
+`propose` cards under the introduction, none being a fine outcome. The two prompts are recorded
+with the changes made to fit verified facts. Recommended for the owner to confirm: a first look is
+a follow-up the daemon takes and ends after one check, reusing the follow-up machinery, not a new
+task kind. It runs on a new join automatically and otherwise on request (`firstLook`), only where
+the platform declares channel history (Slack, Discord, Lark/Feishu; not Telegram), once per place,
+and never in an external place in v1. `propose` gains the report round, cards held until the
+introduction posts, and a follow-up form that turns an approval into a follow-up. It counts as one
+check, and an automatic one yields to due follow-up checks.
