@@ -1333,15 +1333,16 @@ describe('a first look of a channel the bot just joined', () => {
     const repo = new PgSessionRepo(prisma)
     await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
     const [place, look, waiting] = [randomUUID(), randomUUID(), randomUUID()]
-    const reported = (sessionId: string, own: boolean) =>
+    const reported = (sessionId: string, own: boolean, parent: string | null = place) =>
       repo.recordMilestone({
         sessionId: SessionId(sessionId),
-        parentSessionId: SessionId(place),
+        ...(parent ? { parentSessionId: SessionId(parent) } : {}),
         agentId: AgentId(AGENT),
         phase: 'start',
         platform: 'slack',
         channel: 'C0EXAMPLE',
-        thread: `${SUBSESSION_COORDINATE_PREFIX}check-look-1`,
+        channelName: 'release',
+        ...(parent ? { thread: `${SUBSESSION_COORDINATE_PREFIX}check-look-1` } : {}),
         at: new Date(),
         // Reported as the channel's own, as the daemon does with no long session to inherit from; else waiting to inherit.
         ...(own
@@ -1395,14 +1396,34 @@ describe('a first look of a channel the bot just joined', () => {
     })
     const listed = async (userId: string, inChannel: boolean) =>
       (await get(app(control, userId, members(inChannel)), '/subsessions')).json().subsessions
-    expect(await listed(member, true)).toEqual([
-      expect.objectContaining({ sessionId: look, visible: true, title: 'First look at release', parent: null }),
+    // With no long session yet, the row names its place from its own session, never by a title.
+    const running = await listed(member, true)
+    expect(running).toEqual([
+      expect.objectContaining({
+        sessionId: look,
+        visible: true,
+        title: 'First look at release',
+        parent: null,
+        place: { platform: 'slack', channelName: 'release' }
+      }),
       // A row that waits on a parent with no row is hidden from everyone until that parent lands.
       expect.objectContaining({ sessionId: null, visible: false })
     ])
-    expect(await listed(outsider, false)).toEqual([
+    expect(running[1]).not.toHaveProperty('place')
+    const hidden = await listed(outsider, false)
+    expect(hidden).toEqual([
       expect.objectContaining({ sessionId: null, visible: false, title: null }),
       expect.objectContaining({ sessionId: null, visible: false })
     ])
+    expect(hidden[0]).not.toHaveProperty('place')
+
+    // Once the report opens the place's long session, the row names it as its conversation instead.
+    await reported(place, true, null)
+    const [settled] = await listed(member, true)
+    expect(settled).toMatchObject({
+      sessionId: look,
+      parent: { sessionId: place, platform: 'slack', channelName: 'release' }
+    })
+    expect(settled).not.toHaveProperty('place')
   })
 })

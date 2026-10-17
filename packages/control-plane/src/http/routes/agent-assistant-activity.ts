@@ -124,6 +124,8 @@ const SubsessionDto = z.object({
   canStop: z.boolean(),
   /** The conversation that opened it, when the caller may see it. */
   parent: ConversationDto.nullable(),
+  /** Where it runs, from its own session, while its conversation has no session yet and the caller may view it (a first look before it reports). */
+  place: z.object({ platform: z.string().nullable(), channelName: z.string().nullable() }).optional(),
   /** Which kind of task it is; absent from an agent version that does not say. */
   kind: AssistantActivityTaskKind.optional(),
   /** Present on a follow-up (`kind: 'follow-up'`). */
@@ -448,6 +450,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         visible,
         canStop: s.state === 'open' && (child ? mayContinue(child) : byId && mayContinue(parent)),
         parent: conversationOf(parent),
+        // A first look runs before its place's long session exists, so its own row names the place; never its title.
+        ...(!parent && child ? { place: { platform: child.platform, channelName: child.channelName } } : {}),
         ...(s.kind ? { kind: s.kind } : {}),
         ...(followUp
           ? {

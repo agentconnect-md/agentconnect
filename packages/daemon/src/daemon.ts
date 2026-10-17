@@ -15315,6 +15315,7 @@ export class Daemon {
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
       noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
+      activeTurnThread: (key) => this.activeTurnShare.get(key)?.thread,
       messageFollowUp: (req, taskKey, callerKey) => this.messageFollowUp(req, taskKey, callerKey),
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),

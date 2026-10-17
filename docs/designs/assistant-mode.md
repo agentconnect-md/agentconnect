@@ -869,7 +869,12 @@ is admitted: a refused admission is retried on the minute sweep, three attempts 
 restart leaves it to be re-sent on the next start, and a fixed delivery id with the inbox's
 receipt keeps a re-send from arriving twice. Like follow-up and approved-proposal reports, it goes to
 the current session of the owning session's place (after `!new`, the new conversation), else the
-recorded owning session. Every report the daemon sends ends by telling that session to answer its
+recorded owning session. In a place that appends, it replies in the platform thread of the turn that
+last asked the task for work, `delegateTask` or `messageTask` (store version 60), as a follow-up's
+report does (§5.12); a round the daemon itself asked for, such as research's own second round,
+reports at the top level. Every report names the task, follow-up or approved proposal by its title,
+never by its key: people read it in the console. A `taskId` the session needs stays in the part the
+console folds. Every report the daemon sends ends by telling that session to answer its
 people in their language, since its framing is English; checks and approved proposals are asked to
 write their report in it, and an owning session tells its delegated task which it is. The outbox below is
 the deferred target.

@@ -388,6 +388,7 @@ export function BackgroundTaskRow({
   const followUp = followUpOf(row)
   const stoppable = row.state === 'open' && row.canStop && taskStopKey(row) !== null
   const parent = withPlace ? row.parent : null
+  const ownPlace = withPlace && !parent ? (row.place ?? null) : null
   const lastCheck = followUp?.recentChecks[0]
 
   const title = row.sessionId ? (
@@ -405,7 +406,13 @@ export function BackgroundTaskRow({
     <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{t('hidden')}</span>
   )
 
-  const place = parent ? <ParentPlace parent={parent} /> : null
+  const place = parent ? (
+    <ParentPlace parent={parent} />
+  ) : ownPlace ? (
+    <span data-task-place="">
+      <PlaceName place={ownPlace} />
+    </span>
+  ) : null
   const parts: ReactNode[] = followUp
     ? [
         place,
@@ -432,7 +439,7 @@ export function BackgroundTaskRow({
   const viaPreview = checksOpen && withPlace && !!followUp.doneWhen
   const meta = (
     <MetaLine
-      platform={parent?.platform}
+      platform={parent?.platform ?? ownPlace?.platform}
       parts={parts}
       toggle={
         checksOpen && !viaPreview
@@ -510,20 +517,20 @@ export function ParentPlace({
 }: {
   parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null }
 }) {
-  const t = useTranslations('Common.taskList')
   const { orgPath } = useOrgs()
-  // A session's title is never its place: with no name known, the meta line's platform mark and a neutral label stand in.
-  const name = parent.channelName
-    ? chatPlaceName(parent.platform ?? undefined, parent.channelName)
-    : parent.platform === 'webchat'
-      ? t('webchat')
-      : t('conversation')
   return (
     <Link
       className="text-inherit no-underline hover:underline"
       href={orgPath(`/sessions/${encodeURIComponent(parent.sessionId)}`)}
     >
-      {name}
+      <PlaceName place={parent} />
     </Link>
   )
+}
+
+/** A place by its channel's name; a session's title is never its place, so with no name a neutral label stands in beside the platform mark. */
+function PlaceName({ place }: { place: { platform: string | null; channelName: string | null } }) {
+  const t = useTranslations('Common.taskList')
+  if (place.channelName) return <>{chatPlaceName(place.platform ?? undefined, place.channelName)}</>
+  return <>{place.platform === 'webchat' ? t('webchat') : t('conversation')}</>
 }

@@ -1309,7 +1309,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 59
+export const SCHEMA_VERSION = 60
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2037,7 +2037,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
       externalResourceKind = 'conversation', sourceBindingKind = 'external'
       WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
-  }
+  },
+  // v60 keeps the thread of the turn that asked a task for work, where its round's report replies (assistant-mode.md §5.6).
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'replyThread', 'TEXT')
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */

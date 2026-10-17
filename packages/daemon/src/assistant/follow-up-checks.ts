@@ -923,13 +923,14 @@ export class FollowUpChecks {
     const item = await this.host.items.get(agentId, itemId)
     const stops = verdict.kind === 'failed' && state.failures + 1 >= CHECK_MAX_FAILURES
     if (item?.firstLook) return await this.concludeFirstLook(agentId, key, caller, state, verdict, item, stops)
-    const name = `follow-up ${key}${item ? ` ("${quote(item.title)}")` : ''}`
+    // People read this in the console, so the follow-up is named by its title, never its key.
+    const name = item ? `the follow-up "${quote(item.title)}"` : 'one of your follow-ups'
     // Its reports reply in the thread it was taken in (assistant-mode.md §5.12).
     const thread = item?.replyThread ?? null
     if (row && caller && stops && item) {
       const text =
         `[follow-up] Checks of ${name} stopped after ${CHECK_MAX_FAILURES} failed attempts in a row. They resume ` +
-        'once it is messaged with messageTask. Tell the people here.'
+        'once it is messaged with messageTask, by the taskId listTasks shows for it. Tell the people here.'
       const reportId = `check:${key}:${check}:stopped`
       if ((await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)) === 'draining')
         return

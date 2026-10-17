@@ -217,8 +217,8 @@ const stop = (h: Harness, c: Conversation, taskId: string) =>
   executeTool(c.ctx, 'stopTask', { taskId }, h.deps) as Promise<any>
 
 const NOT_OWNED = { result: 'refused', reason: 'This session started no task with that id. Nothing was stopped.' }
-const ended = (key: string) =>
-  `[task ended] Task ${key} stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${key}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
+const ended = (key: string, label = 'write the release notes') =>
+  `[task ended] Task "${label}" stopped before finishing (cancel). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${key}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
 
 const stateOf = async (h: Harness, key: string) => (await h.d.store.assistantSubsessions.get(AGENT, key))?.state
 
@@ -271,13 +271,13 @@ describe('stopTask in a Slack DM conversation', () => {
       ])
       expect(info).toHaveBeenCalledWith(`session ${byTool}: "cancel" by U0ALICE`)
       expect(info).toHaveBeenCalledWith(`session ${byConsole}: "cancel" by usr-1`)
-      const stoppedBy: [string, string][] = [
-        [byTool, 'Alice'],
-        [byConsole, 'Grace']
+      const stoppedBy: [string, string, string][] = [
+        [byTool, 'Alice', 'write the release notes'],
+        [byConsole, 'Grace', 'update the changelog']
       ]
-      for (const [key, who] of stoppedBy) {
+      for (const [key, who, label] of stoppedBy) {
         await vi.waitFor(async () => expect(await stateOf(h, key)).toBe('failed'), WAIT)
-        await vi.waitFor(() => expect(h.reports()).toContain(ended(key)), WAIT)
+        await vi.waitFor(() => expect(h.reports()).toContain(ended(key, label)), WAIT)
         const { thread } = await h.d.store.getSession(key)
         const rows = await h.d.store.threadTranscript(transcriptChannelKey(DM, h.scope), thread)
         expect(rows.map((row: { text: string }) => row.text)).toContain(`🛑 Turn cancelled by ${who}.`)
@@ -349,10 +349,10 @@ describe('stopTask in a Slack DM conversation', () => {
       const noTurn = await delegate(h, dm, 'tidy the docs')
       h.rt.behavior.plain = 'answer'
       for (const [sessionId, release] of h.rt.hung) if (!h.rt.subPrompts.includes(sessionId)) release('end_turn')
-      await vi.waitFor(() => expect(h.reports()).toContain(ended(onReport)), WAIT)
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(onReport, 'update the changelog')), WAIT)
       await idle()
       expect(await stop(h, dm, noTurn)).toMatchObject({ result: 'stopped', taskId: noTurn })
-      await vi.waitFor(() => expect(h.reports()).toContain(ended(noTurn)), WAIT)
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(noTurn, 'tidy the docs')), WAIT)
       await idle()
 
       // On a turn another agent's reply started.
@@ -362,7 +362,7 @@ describe('stopTask in a Slack DM conversation', () => {
       expect(await stop(h, dm, onPeer)).toMatchObject({ result: 'stopped', taskId: onPeer })
       h.rt.behavior.plain = 'answer'
       for (const [sessionId, release] of h.rt.hung) if (!h.rt.subPrompts.includes(sessionId)) release('end_turn')
-      await vi.waitFor(() => expect(h.reports()).toContain(ended(onPeer)), WAIT)
+      await vi.waitFor(() => expect(h.reports()).toContain(ended(onPeer, 'check the release')), WAIT)
       await idle()
 
       // On a scheduled run in this conversation.

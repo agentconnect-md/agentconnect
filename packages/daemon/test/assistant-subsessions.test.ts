@@ -328,6 +328,51 @@ describe('work rounds and parent inputs (send-message-guide.md §8.4, §8.6)', (
   })
 })
 
+describe('the thread a task’s round reports in (assistant-mode.md §5.7)', () => {
+  it('keeps the asking turn’s thread from the open, replaces it per round, and clears it', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await index.openWithinLimit({ ...row(a, '1'), replyThread: '200.1' }, { limit: 3, startedSince: 0 })
+    await index.open(row(a, '2'))
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ replyThread: '200.1' })
+    expect(await index.get(a, childKey(a, '2'))).not.toHaveProperty('replyThread')
+    await index.setReplyThread(a, childKey(a, '1'), '300.1')
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ replyThread: '300.1' })
+    await index.setReplyThread(a, childKey(a, '1'), null)
+    expect(await index.get(a, childKey(a, '1'))).not.toHaveProperty('replyThread')
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v59 → v60 reply thread column on SQLite', () => {
+  it('adds the column to a v59 index, its rows with no thread', async () => {
+    const path = tempStorePath('ac-assistant-v59-')
+    await (await LocalStore.open(path)).close()
+    const a = agent()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE assistant_subsession DROP COLUMN replyThread; PRAGMA user_version = 59')
+    old
+      .prepare(
+        `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+         VALUES (?, ?, 'sid-parent-1', 'parent', 'done', 1000)`
+      )
+      .run(a, childKey(a, '1'))
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).not.toHaveProperty('replyThread')
+      await upgraded.assistantSubsessions.setReplyThread(a, childKey(a, '1'), '200.1')
+      expect(await upgraded.assistantSubsessions.get(a, childKey(a, '1'))).toMatchObject({ replyThread: '200.1' })
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
 describe.skipIf(usingPostgresStore())('the v50 → v51 round column on SQLite', () => {
   it('adds the column to a v50 index, its rows in their first round', async () => {
     const path = tempStorePath('ac-assistant-v50-')
