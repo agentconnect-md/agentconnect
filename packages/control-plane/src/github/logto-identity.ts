@@ -749,17 +749,16 @@ function firstString(...candidates: unknown[]): string | null {
   return null
 }
 
-/**
- * Where a linked account lives at its provider. Built from the connector's
- * stored `rawData`, a snapshot from sign-in — a renamed workspace yields a
- * stale link, so nothing may depend on one resolving. Google has no per-person
- * public profile, so it points at the page its owner can actually act on.
- */
+// Provider profile links use the sign-in snapshot and may become stale after a rename.
 function providerProfileUrl(target: string, raw: Record<string, unknown>, slack: SlackIdentity | null): string | null {
   if (target === 'github') {
     const userInfo = (raw.userInfo ?? {}) as { login?: unknown }
     const login = firstString(userInfo.login, raw.login)
     return login ? `https://github.com/${encodeURIComponent(login)}` : null
+  }
+  if (target === 'gitlab') {
+    const profile = firstString(raw.profile)
+    return profile && /^https?:\/\//i.test(profile) ? profile : null
   }
   if (target === 'slack') {
     return slack?.teamDomain ? `https://${slack.teamDomain}.slack.com/team/${encodeURIComponent(slack.userId)}` : null
