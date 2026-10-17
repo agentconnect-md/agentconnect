@@ -407,6 +407,63 @@ describe('follow-ups in Activity', () => {
     expect(actions(hidden)).toEqual([])
   })
 
+  it('names what a follow-up watches between its meta and done-when lines, with its latest wake', async () => {
+    const url = 'https://gitlab.example.test/example-org/example-repo/-/merge_requests/7'
+    mocks.subsessions = [
+      {
+        ...FOLLOW_UP,
+        followUp: {
+          ...FOLLOW_UP.followUp!,
+          watch: { url, target: 'example-org/example-repo!7', state: 'watching', reason: null },
+          recentChecks: [
+            {
+              at: '2026-10-15T09:05:00.000Z',
+              observation: 'It merged.',
+              reported: true,
+              startedBy: 'wake',
+              events: ['merged']
+            }
+          ]
+        }
+      }
+    ]
+    const host = await mount(false)
+    const row = taskRow(host, 'sid-follow')
+    const watch = row.querySelector<HTMLElement>('[data-follow-up-watch]')!
+    expect(watch.textContent).toBe('Watching example-org/example-repo!7 · woken Oct 15, 9:05 AM (merged)')
+    expect(watch.querySelector('a')?.getAttribute('href')).toBe(url)
+    expect(watch.querySelector('a')?.getAttribute('target')).toBe('_blank')
+    const lines = [...row.querySelectorAll('[data-meta-line], [data-follow-up-watch], [data-preview-line]')]
+    expect(lines.map((el) => el.getAttribute('data-follow-up-watch') ?? el.tagName)).toEqual([
+      'DIV',
+      'watching',
+      'BUTTON'
+    ])
+    await click(row.querySelector('[data-preview-line]'))
+    expect(row.querySelector('[data-follow-up-check-trigger]')?.textContent).toBe('Woken: merged')
+  })
+
+  it('shows the object a follow-up form would watch', async () => {
+    mocks.drafts = [
+      {
+        ...FOLLOW_UP_FORM,
+        proposal: {
+          ...FOLLOW_UP_FORM.proposal!,
+          followUp: {
+            ...FOLLOW_UP_FORM.proposal!.followUp!,
+            watch: 'https://github.com/example-org/example-repo/issues/4'
+          }
+        }
+      }
+    ]
+    const host = await mount(true)
+    const row = host.querySelector('[data-assistant-draft="proposal-2"]')!
+    await click(row.querySelector('[data-preview-line]'))
+    expect(row.querySelector('[data-proposed-watch]')?.textContent).toBe(
+      'Watches https://github.com/example-org/example-repo/issues/4'
+    )
+  })
+
   it('names a follow-up taken in a DM by its person, with no channel sigil', async () => {
     mocks.subsessions = [{ ...FOLLOW_UP, parent: { ...SUPPORT, sessionId: 'sid-dm', channelName: '@Alice' } }]
     const host = await mount(false)
@@ -860,6 +917,22 @@ describe('the Activity view on a phone and in Chinese', () => {
   it('reads in Chinese with the zh-CN messages', async () => {
     mocks.permissions = [PERMISSION]
     mocks.drafts = [DRAFT, PROPOSAL]
+    mocks.subsessions = ROWS.map((row) =>
+      row === FOLLOW_UP
+        ? {
+            ...row,
+            followUp: {
+              ...row.followUp!,
+              watch: {
+                url: 'https://github.com/example-org/example-repo/pull/12',
+                target: null,
+                state: 'ended',
+                reason: 'not_found'
+              }
+            }
+          }
+        : row
+    )
     const host = await mount(true, (node) => (
       <NextIntlClientProvider locale="zh-CN" messages={chinese} timeZone="UTC">
         {node}
@@ -872,6 +945,9 @@ describe('the Activity view on a phone and in Chinese', () => {
     expect(meta(taskRow(host, 'sid-child'))).toMatch(/^#support · 运行中 · /)
     expect(meta(taskRow(host, 'sid-follow'))).toContain('下次检查：')
     expect(button(taskRow(host, 'sid-follow'), '结束')).toBeTruthy()
+    expect(taskRow(host, 'sid-follow').querySelector('[data-follow-up-watch]')?.textContent).toBe(
+      '已不再关注：没有这个拉取请求、合并请求或 issue'
+    )
     expect(host.querySelector('[data-finished-toggle]')?.textContent).toBe('2 个已结束')
   })
 })

@@ -414,13 +414,29 @@ describe('the assistant Activity routes', () => {
       ownerIdentity: `user:${DEFAULT_OWNER_ID}`
     })
     const control = new ActivitySpy()
-    const CHECKS = [{ at: '2026-10-09T09:00:00.000Z', observation: 'The build is still running.', reported: false }]
+    const CHECKS = [
+      {
+        at: '2026-10-09T09:00:00.000Z',
+        observation: 'The build is still running.',
+        reported: false,
+        startedBy: 'wake' as const,
+        events: ['checks' as const]
+      }
+    ]
+    // What it watches is shown, like its title, only where its conversation may be seen (assistant-mode.md §5.14).
+    const WATCH = {
+      url: 'https://github.com/example-org/example-repo/pull/12',
+      target: 'example-org/example-repo#12',
+      state: 'watching' as const,
+      reason: null
+    }
     const followUp = (title: string) => ({
       title,
       doneWhen: 'The release is published',
       status: 'waiting' as const,
       nextCheck: '2026-10-10T09:00:00.000Z',
-      recentChecks: CHECKS
+      recentChecks: CHECKS,
+      watch: WATCH
     })
     control.subsessions = [
       {
@@ -462,7 +478,8 @@ describe('the assistant Activity routes', () => {
           status: 'waiting',
           nextCheck: '2026-10-10T09:00:00.000Z',
           doneWhen: 'The release is published',
-          recentChecks: CHECKS
+          recentChecks: CHECKS,
+          watch: WATCH
         }
       }),
       // Its conversation is not the member's to see: its state and next check only.
@@ -1150,7 +1167,12 @@ describe('a webchat conversation’s proposals', () => {
     const editor = await makeUser(`proposals-form-editor-${randomUUID()}`, 'collaborator')
     const { mine } = await seedWebchat(owner)
     const control = new ActivitySpy()
-    const form = { title: 'The release date', doneWhen: 'A date is posted.', nextCheck: '2026-10-20T01:00:00.000Z' }
+    const form = {
+      title: 'The release date',
+      doneWhen: 'A date is posted.',
+      nextCheck: '2026-10-20T01:00:00.000Z',
+      watch: 'https://github.com/example-org/example-repo/issues/4'
+    }
     const base = proposalIn('proposal-1', 'webchat', 'conv-mine')
     control.conversationDrafts = [{ ...base, text: form.title, proposal: { ...base.proposal!, followUp: form } }]
     const listed = await proposals(app(control, owner), mine)
