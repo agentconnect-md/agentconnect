@@ -15,7 +15,13 @@ import {
   recordShapeRefusal,
   replacePeopleEntries
 } from '../../organization-knowledge/record.js'
-import type { OrganizationKnowledgeRecord } from '../../persistence/ports.js'
+import type {
+  OrganizationKnowledgeRecord,
+  OrganizationRecordRepo,
+  OrganizationRecordWriteInput,
+  OrganizationRecordWriteResult
+} from '../../persistence/ports.js'
+import { OptedOutError } from '../../persistence/repositories/organization-record.repo.js'
 import {
   ErrorDto,
   IdParam,
@@ -39,6 +45,22 @@ const error = (reply: FastifyReply, statusCode: 400 | 403 | 404 | 409 | 503, mes
   })
 
 const STALE = 'People changed since it was loaded; refresh and try again'
+
+/** A People write, its opt-out refusal answered as a conflict; undefined once that answer was sent. */
+async function writePeople(
+  reply: FastifyReply,
+  record: OrganizationRecordRepo,
+  orgId: OrgId,
+  input: OrganizationRecordWriteInput
+): Promise<OrganizationRecordWriteResult | undefined> {
+  try {
+    return await record.write(orgId, 'people', input)
+  } catch (err) {
+    if (!(err instanceof OptedOutError)) throw err
+    await error(reply, 409, err.message)
+    return undefined
+  }
+}
 
 /** The agent ids among `ids` that are agents of the organization, each once. */
 async function organizationAgents(deps: HttpDeps, orgId: OrgId, ids: readonly string[]): Promise<string[]> {
@@ -222,13 +244,14 @@ export function organizationRecordRoutes(deps: HttpDeps) {
         const text = replacePeopleEntries(got.row.content, own, { key: block.key, text: req.body.text })
         const refusal = recordShapeRefusal('people', text)
         if (refusal) return error(reply, 400, refusal)
-        const written = await got.record.write(orgOf(req), 'people', {
+        const written = await writePeople(reply, got.record, orgOf(req), {
           baseRevision: req.body.expectedRevision,
           content: text,
           provenance: { source: 'manual', createdByUserId: userId },
           optOut: { mark: [], lift: own.filter((key) => got.optOut.has(key)) },
           now: new Date()
         })
+        if (!written) return
         if (written.outcome !== 'written') return error(reply, 409, STALE)
         return { revision: written.entry.currentRevision }
       }
@@ -255,13 +278,14 @@ export function organizationRecordRoutes(deps: HttpDeps) {
         const own = await ownKeys(userId, peopleKeys(got.row.content))
         const text = replacePeopleEntries(got.row.content, own)
         const cleared = peopleKeys(got.row.content).some((key) => own.includes(key))
-        const written = await got.record.write(orgOf(req), 'people', {
+        const written = await writePeople(reply, got.record, orgOf(req), {
           baseRevision: got.row.currentRevision,
           content: cleared ? text : got.row.content,
           provenance: { source: 'manual', createdByUserId: userId },
           optOut: { mark: own, lift: [] },
           now: new Date()
         })
+        if (!written) return
         if (written.outcome !== 'written') return error(reply, 409, STALE)
         return { revision: written.entry.currentRevision, cleared }
       }
@@ -294,13 +318,14 @@ export function organizationRecordRoutes(deps: HttpDeps) {
         const text = replacePeopleEntries(got.row.content, [], { key, text: req.body.text })
         const refusal = recordShapeRefusal('people', text)
         if (refusal) return error(reply, 400, refusal)
-        const written = await got.record.write(orgOf(req), 'people', {
+        const written = await writePeople(reply, got.record, orgOf(req), {
           baseRevision: req.body.expectedRevision,
           content: text,
           provenance: { source: 'manual', ...(req.principal ? { createdByUserId: req.principal.userId } : {}) },
           optOut: { mark: [], lift: [] },
           now: new Date()
         })
+        if (!written) return
         if (written.outcome !== 'written') return error(reply, 409, STALE)
         await audit(req, 'edit', got.row, key)
         return { revision: written.entry.currentRevision }
@@ -328,13 +353,14 @@ export function organizationRecordRoutes(deps: HttpDeps) {
         if (!isMemberIdentityKey(key)) return error(reply, 400, 'not a People key')
         const keys = key.startsWith('user:') ? await ownKeys(key.slice(5), peopleKeys(got.row.content)) : [key]
         const cleared = peopleKeys(got.row.content).some((k) => keys.includes(k))
-        const written = await got.record.write(orgOf(req), 'people', {
+        const written = await writePeople(reply, got.record, orgOf(req), {
           baseRevision: got.row.currentRevision,
           content: cleared ? replacePeopleEntries(got.row.content, keys) : got.row.content,
           provenance: { source: 'manual', ...(req.principal ? { createdByUserId: req.principal.userId } : {}) },
           optOut: { mark: keys, lift: [] },
           now: new Date()
         })
+        if (!written) return
         if (written.outcome !== 'written') return error(reply, 409, STALE)
         await audit(req, 'clear', got.row, key)
         return { revision: written.entry.currentRevision, cleared }

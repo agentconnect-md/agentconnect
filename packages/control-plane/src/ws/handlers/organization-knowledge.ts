@@ -8,7 +8,7 @@ import {
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import type { DaemonView } from '../../ports.js'
-import { recordKindOfFile } from '../../persistence/repositories/organization-record.repo.js'
+import { OptedOutError, recordKindOfFile } from '../../persistence/repositories/organization-record.repo.js'
 import type { Handler } from './index.js'
 
 async function featureDaemon(
@@ -173,6 +173,13 @@ async function recordAgent(
   return { agent, record: deps.organizationRecord }
 }
 
+const NOT_A_READER = 'People is not visible to this agent; an owner chooses which agents read it'
+
+/** Whether an agent reads an entry: every agent under `all`, the listed ones under `selected` (§15.1). */
+function readsEntry(entry: { visibility: string; readers: string[] }, agentId: string): boolean {
+  return entry.visibility === 'all' || entry.readers.includes(agentId)
+}
+
 /** One record entry for an assistant-mode agent's memory tools, created with the record when the organization has none. */
 export const handleKnowledgeRecordRead: Handler = async (frame, conn, deps) => {
   if (!isFrame('knowledge/record/read')(frame)) return
@@ -183,6 +190,10 @@ export const handleKnowledgeRecordRead: Handler = async (frame, conn, deps) => {
   })
   if (!read) {
     conn.sendError(frame.id, 'INTERNAL', 'the organization record could not be created', true)
+    return
+  }
+  if (!readsEntry(read.entry, String(got.agent.id))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', NOT_A_READER, false)
     return
   }
   conn.replyTo(frame, 'knowledge/record/ok', {
@@ -204,13 +215,28 @@ export const handleKnowledgeRecordWrite: Handler = async (frame, conn, deps) => 
     conn.sendError(frame.id, 'BAD_PAYLOAD', shape.refusal, false)
     return
   }
-  const written = await got.record.write(got.agent.orgId, recordKindOfFile(file), {
-    baseRevision,
-    content,
-    provenance: { source: 'agent', sourceAgentId: String(got.agent.id), writerKind },
-    optOut,
-    now: new Date(deps.clock.now())
+  // An agent People is not visible to neither reads it nor writes it, so no conflict answer carries its text either.
+  const current = await got.record.read(got.agent.orgId, recordKindOfFile(file), {
+    sourceAgentId: String(got.agent.id)
   })
+  if (current && !readsEntry(current.entry, String(got.agent.id))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', NOT_A_READER, false)
+    return
+  }
+  let written: Awaited<ReturnType<typeof got.record.write>>
+  try {
+    written = await got.record.write(got.agent.orgId, recordKindOfFile(file), {
+      baseRevision,
+      content,
+      provenance: { source: 'agent', sourceAgentId: String(got.agent.id), writerKind },
+      optOut,
+      now: new Date(deps.clock.now())
+    })
+  } catch (err) {
+    if (!(err instanceof OptedOutError)) throw err
+    conn.sendError(frame.id, 'SCOPE_DENIED', `${err.message}. Nothing was saved.`, false)
+    return
+  }
   if (written.outcome === 'missing') {
     conn.sendError(frame.id, 'INTERNAL', 'the organization record could not be created', true)
     return

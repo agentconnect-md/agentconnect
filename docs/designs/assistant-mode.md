@@ -3055,6 +3055,10 @@ smallest choice made for it:
   of someone who removed their entry is refused, as is an owner's edit of that card; only the
   person's own write lifts it. A person's own card is one entry: writing it under one of their
   keys drops their entries under their other keys.
+- **People's readers hold on the record frames too**: an agent People is not visible to is refused
+  its read and its write, so no conflict answer carries People's text to it. A People write that
+  adds or changes the entry of someone opted out is refused under the record's lock, unless the
+  same write lifts that key, so a removal landing between a writer's read and its write wins.
 - **Audit**: owner edits and clears of People are `memory_change` events with frame type
   `knowledge/people`, carrying the entry id, the key or the count removed, and no content.
 - **"Running since"** is the later of the research session's start and the last research

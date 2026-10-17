@@ -1,6 +1,10 @@
 // The organization record (assistant-mode.md §5.16): three knowledge entries per organization, research's claim and People's opt-out.
 import { createHash } from 'node:crypto'
-import type { KnowledgeRecordFile, KnowledgeRecordWriterKind } from '@agentconnect.md/protocol'
+import {
+  parseMembersDirectory,
+  type KnowledgeRecordFile,
+  type KnowledgeRecordWriterKind
+} from '@agentconnect.md/protocol'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { OrgId } from '../../domain/ids.js'
 import type {
@@ -150,6 +154,25 @@ async function recordEntry(db: Tx | PrismaLike, orgId: string, kind: Organizatio
   return row ? toKnowledge(row) : null
 }
 
+/** A People write that adds or changes the entry of someone who removed theirs; nothing was written. */
+export class OptedOutError extends Error {
+  constructor(readonly keys: string[]) {
+    super(
+      `People keeps out ${keys.map((key) => `\`${key}\``).join(', ')}: they removed their entry, and only they write it again`
+    )
+    this.name = 'OptedOutError'
+  }
+}
+
+/** The keys whose entry a People write adds or changes. */
+function changedEntryKeys(before: string, after: string): string[] {
+  const text = (entry: { heading: string; lines: string[] }) => [entry.heading, ...entry.lines].join('\n').trim()
+  const old = new Map(parseMembersDirectory(before).entries.map((entry) => [entry.key, text(entry)]))
+  return parseMembersDirectory(after).entries.flatMap((entry) =>
+    entry.key && old.get(entry.key) !== text(entry) ? [entry.key] : []
+  )
+}
+
 export class PgOrganizationRecordRepo implements OrganizationRecordRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -188,6 +211,13 @@ export class PgOrganizationRecordRepo implements OrganizationRecordRepo {
           data: input.optOut.mark.map((key) => ({ orgId, key, clearedOn: today(input.now) })),
           skipDuplicates: true
         })
+      // A removal can land between a writer's read and its write, so the stored marks are checked here, under the lock.
+      if (kind === 'people') {
+        const lifted = new Set(input.optOut.lift)
+        const marked = new Set(await optOutKeys(tx, orgId))
+        const keys = changedEntryKeys(entry.content, input.content).filter((key) => marked.has(key) && !lifted.has(key))
+        if (keys.length) throw new OptedOutError(keys)
+      }
       const revision = entry.currentRevision + 1
       if (input.content !== entry.content) {
         await tx.organizationKnowledge.update({ where: { id: entry.id }, data: { currentRevision: revision } })

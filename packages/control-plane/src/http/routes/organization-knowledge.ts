@@ -16,6 +16,7 @@ import { ProtocolError } from '../../domain/errors.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import { packageSkillBundle, SkillBundleValidationError } from '../../organization-knowledge/skill-bundle.js'
 import { organizationSuggestionSnapshotToken } from '../../organization-knowledge/suggestion-snapshot.js'
+import { OptedOutError } from '../../persistence/repositories/organization-record.repo.js'
 import {
   changedPeopleKeys,
   isRecordKind,
@@ -249,13 +250,19 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
             message: 'a person who removed their entry stays out of People until they write it themselves'
           })
       }
-      const written = await record.write(orgOf(req), kind, {
-        baseRevision: expectedRevision,
-        content,
-        provenance: { source: 'manual', ...(ctxOf(req).userId ? { createdByUserId: ctxOf(req).userId } : {}) },
-        optOut: { mark: removed, lift: [] },
-        now: new Date()
-      })
+      let written: Awaited<ReturnType<typeof record.write>>
+      try {
+        written = await record.write(orgOf(req), kind, {
+          baseRevision: expectedRevision,
+          content,
+          provenance: { source: 'manual', ...(ctxOf(req).userId ? { createdByUserId: ctxOf(req).userId } : {}) },
+          optOut: { mark: removed, lift: [] },
+          now: new Date()
+        })
+      } catch (err) {
+        if (!(err instanceof OptedOutError)) throw err
+        return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message })
+      }
       if (written.outcome !== 'written')
         return reply.code(409).send({
           error: 'Conflict',

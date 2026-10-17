@@ -123,6 +123,56 @@ describe('the organization record over the daemon connection', () => {
     })
   })
 
+  it('refuses People to an agent its readers leave out, and a pending write of someone who opted out meanwhile', async () => {
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, FEATURES)
+    const agentId = await seedAgent(true)
+    const ask = async (type: 'knowledge/record/read' | 'knowledge/record/write', payload: object) =>
+      settle(stub, stub.inject(type, payload, { orgId: DEFAULT_ORG_ID }))
+    const people = await ask('knowledge/record/read', { agentId, file: 'members.md' })
+    const base = (people.payload as { revision: number }).revision
+
+    // A removal that changes only the marks leaves the revision where a pending writer read it.
+    const bob = '## Bob (@bob on Slack) `slack:T0EXAMPLE:U0BOB`\nRole: on-call lead (#ops, 2026-10-03)'
+    const removal = await ask('knowledge/record/write', {
+      agentId,
+      file: 'members.md',
+      baseRevision: base,
+      content: '# People',
+      writerKind: 'person',
+      optOut: { mark: ['slack:T0EXAMPLE:U0BOB'], lift: [] }
+    })
+    expect(removal.payload).toMatchObject({ revision: base })
+    const pending = await ask('knowledge/record/write', {
+      agentId,
+      file: 'members.md',
+      baseRevision: base,
+      content: `# People\n\n${bob}\n`,
+      writerKind: 'conversation'
+    })
+    if (!isFrame('error')(pending)) throw new Error('expected a refusal')
+    expect(pending.payload.message).toMatch(/slack:T0EXAMPLE:U0BOB/)
+
+    await prisma.organizationKnowledge.updateMany({
+      where: { orgId: DEFAULT_ORG_ID, kind: 'people' },
+      data: { visibility: 'selected', readers: [], readersFollowAssistantMode: false }
+    })
+    for (const reply of [
+      await ask('knowledge/record/read', { agentId, file: 'members.md' }),
+      await ask('knowledge/record/write', {
+        agentId,
+        file: 'members.md',
+        baseRevision: 1,
+        content: '# People',
+        writerKind: 'conversation'
+      })
+    ]) {
+      if (!isFrame('error')(reply)) throw new Error('expected a refusal')
+      expect(reply.payload.code).toBe('SCOPE_DENIED')
+    }
+    expect((await ask('knowledge/record/read', { agentId, file: 'channels.md' })).type).toBe('knowledge/record/ok')
+  })
+
   it('refuses an agent outside assistant mode', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = await ready(h, FEATURES)
