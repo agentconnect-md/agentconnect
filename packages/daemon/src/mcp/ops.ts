@@ -29,7 +29,7 @@ import type { InterceptedPost } from '../assistant/drafts.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
-import { isFirstLookCoordinate, isCheckCoordinate } from '../session/subsession-coordinate.js'
+import { isFirstLookCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
 import { firstLookReadRefusal } from '../assistant/first-look.js'
 import { ToolArgumentError } from './ops/args.js'
 import { describeToolArgumentFailure } from './ops/argument-error.js'
@@ -403,6 +403,9 @@ export async function executeTool(
   // assistant-mode.md §5.12: a follow-up's check runs only the read tools it was offered, whatever name the runtime sends.
   if (isCheckCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
     throw new Error(`${name} is not available in a follow-up’s read-only check`)
+  // assistant-mode.md §5.15: organization research reads and writes memory only; nothing it calls posts, whatever name the runtime sends.
+  if (isResearchCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
+    throw new Error(`${name} is not available to organization research, which cannot post or act anywhere`)
   // assistant-mode.md §5.13: a first look reads only its own place, whatever the arguments name.
   const elsewhere = isFirstLookCoordinate(ctx.thread) ? firstLookReadRefusal(ctx, name, args) : undefined
   if (elsewhere) throw new Error(elsewhere)

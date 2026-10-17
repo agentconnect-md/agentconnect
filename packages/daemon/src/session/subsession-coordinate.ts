@@ -50,6 +50,32 @@ export function isTaskCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(TASK_COORDINATE_PREFIX)
 }
 
+// Organization research (assistant-mode.md §5.15) is a delegated task of its own segment: narrowed tools, the shared layer, its own host.
+const RESEARCH_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}research-`
+
+/** The coordinate of an agent's organization research task, minted at onboarding. */
+export function researchCoordinate(deliveryId: string): string {
+  return `${RESEARCH_COORDINATE_PREFIX}${deliveryId}`
+}
+
+/** Whether a session's thread segment is organization research's. */
+export function isResearchCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(RESEARCH_COORDINATE_PREFIX)
+}
+
+/** Whether a logical session key (`platform:channel:thread:agentId[:scope]`) names a research task's session. */
+export function isResearchSessionKey(key: string | null | undefined): boolean {
+  return typeof key === 'string' && key.includes(`:${RESEARCH_COORDINATE_PREFIX}`)
+}
+
+/** The research coordinate inside a task's session key, or undefined for any other key. */
+export function researchThreadOf(key: string): string | undefined {
+  return new RegExp(`:(${RESEARCH_COORDINATE_PREFIX}\\d+):`).exec(key)?.[1]
+}
+
+/** A `LIKE` pattern matching every research task's session key. */
+export const RESEARCH_SESSION_KEY_PATTERN = `%:${RESEARCH_COORDINATE_PREFIX}%`
+
 /** Whether a thread segment is a delegated sub-session's, the kind a parent can keep messaging across work rounds. */
 export function isDelegationCoordinate(thread: string | null | undefined): boolean {
   return isSubsessionCoordinate(thread) && !isCheckCoordinate(thread) && !isTaskCoordinate(thread)

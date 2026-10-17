@@ -18,6 +18,7 @@ import {
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
+  REPO_CANDIDATES_ALL_V1_FEATURE,
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
   isFrame,
   AGENT_EXISTS_FEATURE,
@@ -119,6 +120,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.providerKey ? [PROVIDER_CREDENTIALS_V1_FEATURE] : []),
       // multi-repository-workspaces.md, The selector: this CP answers `repo-candidates/request` from its installation rosters.
       ...(deps.repoCandidates ? [REPO_CANDIDATES_V1_FEATURE] : []),
+      // …and every grant's roster for organization research (assistant-mode.md §5.15).
+      ...(deps.repoCandidates ? [REPO_CANDIDATES_ALL_V1_FEATURE] : []),
       ...(deps.decision
         ? [DECISION_TOOLS_V1_FEATURE, DECISION_MODEL_SELECTION_V1_FEATURE, DECISION_CHAIN_V1_FEATURE]
         : []),

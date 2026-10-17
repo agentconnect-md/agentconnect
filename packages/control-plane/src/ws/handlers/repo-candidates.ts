@@ -24,7 +24,7 @@ export const handleRepoCandidates: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    const reply = await service.forAgent(agent)
+    const reply = await service.forAgent(agent, frame.payload.grants ?? 'decision')
     if (!(await authorized())) {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon no longer serves that agent', false)
       return

@@ -22,8 +22,10 @@ async function entries(
     provider: deps.memory,
     scope,
     store: deps.memoryEntryStore,
-    // Synthetic extraction/Dream bindings keep their constrained legacy writer.
-    ...(!ctx.memoryBinding ? { write: { source: 'tool' as const, canWrite: () => true } } : {}),
+    // Synthetic extraction/Dream bindings keep their constrained legacy writer; research's live shared layer keeps the checked one.
+    ...(!ctx.memoryBinding || ctx.memoryBinding.layer !== undefined
+      ? { write: { source: ctx.memoryBinding?.source ?? ('tool' as const), canWrite: () => true } }
+      : {}),
     canRead: () => true
   })
   return { service, scope }

@@ -57,7 +57,7 @@ const GH_TOKEN_CAPABILITIES: readonly GitCredCapability[] = ['contents', 'issues
 /** The credential plane: 'git' = contents-only (the credential helper), 'gh' =
  *  the widened GH_TOKEN set. Distinct capability sets are distinct tokens. */
 export type CredPlane = 'git' | 'gh' | 'glab'
-type CachePlane = CredPlane | 'gh-actions'
+type CachePlane = CredPlane | 'gh-actions' | 'gh-research'
 
 /** Cache key — NUL-joined so no owner/repo string can collide across fields
  *  (the GH_KEY precedent). GitHub is the EMPTY provider segment whether the request went out
@@ -228,6 +228,18 @@ export class GitCredentialCache {
    * has an enabled GitHub hook for the repo. Same cache/coalesce/degradation
    * discipline as {@link get}; the token never enters the agent environment.
    */
+  /** Organization research's GitHub read (assistant-mode.md §5.15): one repository's contents and pull requests, read-only, in a keyspace of its own; the daemon serves it and the runtime never sees it. */
+  async getResearchReadToken(agentId: string, repo: string): Promise<Entry> {
+    return this.getKeyed(keyOf(agentId, 'gh-research', repo), agentId, {
+      agentId,
+      reason: 'helper',
+      capabilities: ['contents', 'pull_requests'],
+      repoFullName: repo,
+      requestedAccess: 'read',
+      ...this.githubProvider()
+    })
+  }
+
   async getPostToken(agentId: string, repo: string, hookId: string): Promise<Entry> {
     const key = POST_KEY(agentId, repo)
     const forceRefresh = this.refreshPosts.has(key)

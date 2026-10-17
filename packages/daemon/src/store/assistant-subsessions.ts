@@ -1,5 +1,5 @@
 // The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
-import { SUBSESSION_COORDINATE_PREFIX } from '../session/subsession-coordinate.js'
+import { RESEARCH_SESSION_KEY_PATTERN, SUBSESSION_COORDINATE_PREFIX } from '../session/subsession-coordinate.js'
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 
@@ -378,6 +378,29 @@ export class AssistantSubsessionIndex {
       )
     ).rows as Row[]
     return rows.map(subsessionOf)
+  }
+
+  /** When the round of the agent's organization research that is running now began (assistant-mode.md §5.15); undefined when none runs. */
+  async researchRunningSince(agentId: string): Promise<number | undefined> {
+    const row = (
+      await this.db.query(
+        `SELECT childSessionKey, createdAt, round FROM assistant_subsession
+          WHERE agentId = ? AND kind = 'delegation' AND state = 'open' AND childSessionKey LIKE ?
+          ORDER BY createdAt DESC LIMIT 1`,
+        [agentId, RESEARCH_SESSION_KEY_PATTERN]
+      )
+    ).rows[0] as Row | undefined
+    if (!row) return undefined
+    const round = Number(row.round ?? 1)
+    if (round <= 1) return Number(row.createdAt)
+    // A later round began with the message that opened it.
+    const opened = (
+      await this.db.query(
+        'SELECT MIN(createdAt) AS at FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ? AND round = ?',
+        [agentId, String(row.childSessionKey), round]
+      )
+    ).rows[0] as Row | undefined
+    return opened?.at !== null && opened?.at !== undefined ? Number(opened.at) : Number(row.createdAt)
   }
 
   async get(agentId: string, childSessionKey: string): Promise<AssistantSubsession | undefined> {

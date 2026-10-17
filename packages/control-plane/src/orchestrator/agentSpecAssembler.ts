@@ -562,6 +562,8 @@ export function agentRecordToSpec(
     ...(a.memory !== null ? { memory: a.memory } : {}),
     // Value or null, so clearing replicates; stored routing keys ride unchanged, so a daemon that still requires one validates it.
     assistantMode: a.assistantMode ?? null,
+    // Only once set (assistant-mode.md §5.15): write-once, so a spec never starts carrying it at an unchanged revision.
+    ...(a.assistantOnboarding ? { assistantOnboarding: a.assistantOnboarding } : {}),
     // §24.4: pre-spawn host carriage. Present only when a GitLab consumer is, so a spec
     // with none stays byte-identical to what a pre-§24 control plane projected.
     ...(host !== undefined ? { gitlabHost: host } : {}),

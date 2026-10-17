@@ -36,6 +36,8 @@ import type {
   AgentIcon,
   AgentMemoryBinding,
   AssistantModePolicy,
+  AssistantOnboarding,
+  AssistantOnboardingHints,
   AgentModelSelection,
   AgentRepositorySelector,
   DecimalAmount,
@@ -873,6 +875,7 @@ export interface AgentRecord {
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
   assistantMode?: StoredAssistantModePolicy // assistant-mode.md §5.1; absent ⇒ never configured, off
+  assistantOnboarding?: AssistantOnboarding // assistant-mode.md §5.15: the first switch-on; absent ⇒ none recorded
   status: 'active' | 'inactive' | 'paused'
   /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `set`
    *  resolves through `setId`. Never branch on it directly. */
@@ -944,6 +947,8 @@ export interface AgentUpdateOpts {
    *  (`patch.memory` still names the target for the external-connection fence), throws `MemoryHomeRefusedError`,
    *  and on the forced return drops the agent's CP tree and change log in the same transaction. */
   memoryHome?: MemoryHomeUpdate
+  /** Research hints recorded if this edit is the agent's first switch-on of assistant mode (assistant-mode.md §5.15). */
+  assistantOnboardingHints?: AssistantOnboardingHints
 }
 
 export interface AgentMoveOpts {

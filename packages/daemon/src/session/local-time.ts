@@ -28,6 +28,18 @@ export function renderLocalNow(now: number, timeZone: string | undefined): strin
   return `<system-reminder>\nNow: ${stamp} (${where}).\n</system-reminder>`
 }
 
+/** A time of day such as `14:05` in the people's zone, `14:05 UTC` when it is unknown. */
+export function renderClock(at: number, timeZone: string | undefined): string {
+  const zone = knownTimeZone(timeZone)
+  const clock = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone ?? 'UTC',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).format(new Date(at))
+  return zone ? clock : `${clock} UTC`
+}
+
 /** Each person's last known zone, by who they are to the read rule; in memory, so after a restart a run falls through to its place's. */
 export class PersonTimeZones {
   private readonly zones = new Map<string, string>()

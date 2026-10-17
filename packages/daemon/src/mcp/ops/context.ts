@@ -240,6 +240,8 @@ export interface SessionContext {
     /** Constrain topic filenames beyond the store's own path rules. A dream keeps the
      *  lowercase-kebab shape its proposal format always enforced. */
     topicPattern?: RegExp
+    /** A live layer the binding pins (organization research's shared one, assistant-mode.md §5.15): its writes are the agent's revision-checked entry writes. */
+    layer?: 'shared'
   }
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
    *  platform-neutral `sendMessage` tool route to ANY connected platform,

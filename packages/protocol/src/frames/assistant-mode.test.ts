@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { AgentSpec } from './agent.js'
-import { AssistantModePolicy } from './assistant-mode.js'
+import {
+  ASSISTANT_ONBOARDING_HINTS_MAX,
+  AssistantModePolicy,
+  AssistantOnboarding,
+  AssistantOnboardingHints
+} from './assistant-mode.js'
 import { assistantModeDefinitionRefusals, assistantModeRuntimeAdmitted } from '../assistant-mode-admission.js'
 import {
   ASSISTANT_MODE_PERMISSION_MODES,
@@ -47,6 +52,24 @@ describe('AssistantModePolicy', () => {
     expect(AgentSpec.parse({ ...base, assistantMode: null }).assistantMode).toBeNull()
     expect(AgentSpec.parse(base).assistantMode).toBeUndefined()
     expect(AgentSpec.parse({ ...base, assistantMode: { enabled: true } }).assistantMode).toEqual({ enabled: true })
+  })
+
+  it('carries the onboarding record beside the policy, which stays strict (assistant-mode.md §5.15)', () => {
+    const assistantOnboarding = {
+      enabledByUserId: 'usr_1',
+      enabledAt: '2026-10-17T09:30:00.000Z',
+      hints: { organization: 'Example Org', workspaces: ['Example Workspace'], emailDomains: ['example.test'] }
+    }
+    const spec = AgentSpec.parse({ name: 'a', assistantMode: { enabled: true }, assistantOnboarding })
+    expect(spec.assistantOnboarding).toEqual(assistantOnboarding)
+    expect(AgentSpec.parse({ name: 'a' }).assistantOnboarding).toBeUndefined()
+    expect(AssistantOnboarding.parse({ enabledAt: '2026-10-17T09:30:00.000Z' })).toEqual({
+      enabledAt: '2026-10-17T09:30:00.000Z'
+    })
+    expect(AssistantOnboarding.safeParse({ enabledAt: 'yesterday' }).success).toBe(false)
+    const tooMany = Array.from({ length: ASSISTANT_ONBOARDING_HINTS_MAX + 1 }, (_, i) => `d${i}.example`)
+    expect(AssistantOnboardingHints.safeParse({ emailDomains: tooMany }).success).toBe(false)
+    expect(AssistantModePolicy.safeParse({ enabled: true, onboarding: assistantOnboarding }).success).toBe(false)
   })
 })
 
