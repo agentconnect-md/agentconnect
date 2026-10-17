@@ -31,6 +31,7 @@ import {
 
 const runFile = promisify(execFile)
 const STOP_TIMEOUT_MS = 10_000
+const SECRET_HEADER_FIELDS = ['authorization', 'x-api-key', 'api-key', 'x-goog-api-key']
 const IMAGE_LOCK_POLL_MS = 250
 // Twice the pull timeout; a reused pid reads as a live holder, so a waiter fails at this cap instead of racing it.
 const IMAGE_LOCK_WAIT_MS = 10 * 60_000
@@ -500,7 +501,14 @@ export class MicrosandboxManager {
       environment: {
         ...environment,
         ...(environment.secrets
-          ? { secrets: environment.secrets.map(({ env, placeholder, host }) => ({ env, placeholder, host })) }
+          ? {
+              secrets: environment.secrets.map(({ env, placeholder, host }) => ({
+                env,
+                placeholder,
+                host,
+                headerFields: SECRET_HEADER_FIELDS
+              }))
+            }
           : {}),
         // Keep ordinary bind identities stable when the public configuration changes from readOnly to mode.
         mounts: environment.mounts
@@ -536,7 +544,7 @@ export class MicrosandboxManager {
             (entry, host) => entry.allow(host),
             entry.env(secret.env).value(secret.readValue()).placeholder(secret.placeholder)
           )
-          .substituteInHeaders(true)
+          .substituteInHeaderFields(SECRET_HEADER_FIELDS)
           .substituteInQuery(false)
           .substituteInBody(false)
       )

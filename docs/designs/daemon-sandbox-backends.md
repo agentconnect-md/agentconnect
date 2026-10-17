@@ -307,7 +307,7 @@ composition point. Do not add speculative backend branches throughout ACP.
 The current microsandbox integration supports Linux with usable KVM. The startup
 probe is the cheap one of the [strategy table](#strategy-table-implemented-on-the-daemon):
 it opens `/dev/kvm` and, when the runtime store already holds the pinned
-`microsandbox@0.7.2` package, checks its msb and libkrunfw, then recovers the
+`microsandbox@0.7.8` package, checks its msb and libkrunfw, then recovers the
 state an earlier run left and collects the cached images no binding needs. It boots
 no VM; that rule is the availability probe's alone. Once it passes, a background task
 of the ready daemon, or a session that needs the image first, installs the package
@@ -338,6 +338,11 @@ standalone `chat` command refuses an agent that runs in microsandbox; use daemon
 sessions.
 The upstream SDK requires its derived Unix socket paths to fit Linux's 108-byte
 limit, so an unusually long daemon root can fail preflight.
+
+Upgrading from 0.7.2 migrates the SDK's local catalog. Rolling back only the
+daemon binary does not restore that catalog, and the older SDK cannot preserve
+scoped credential headers. Keep a consistent backup of stopped VM state and
+bindings before an upgrade that may need rollback.
 
 This implementation adds no new backend for Linux hosts without usable KVM. They can
 keep SRT, including fail-closed startup with `sandbox.host: false`. The
@@ -496,6 +501,14 @@ Keyring-only logins are not detected by file discovery. Credential formats witho
 a shared discovery descriptor retain the runtime probe's authentication result.
 
 ### API key protection
+
+Proxy substitution is limited to `Authorization`, `X-Api-Key`, `Api-Key` and
+`X-Goog-Api-Key` on the credential's allowed HTTPS hosts. Header names are
+case-insensitive; query strings, bodies and other headers cannot receive the
+host key. A provider requiring a different credential header is unsupported.
+The header policy is part of the retained VM specification: a VM created with
+the previous unrestricted header policy is replaced before its next launch,
+preserving its host-mounted workspace and HOME but recreating its VM disks.
 
 Claude Code and Codex file-based API logins use microsandbox's built-in TLS proxy.
 The daemon discovers Claude's saved `primaryApiKey` in its active global config

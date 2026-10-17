@@ -4,9 +4,12 @@
 import assert from 'node:assert/strict'
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import type { SecretEntry } from 'microsandbox/native'
 import { sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import type { SpawnedRuntime } from '../src/acp/spawn-driver.js'
 import { seedSessionHome, startExecutorFacet } from '../src/execution/executor-facet.js'
@@ -19,7 +22,7 @@ import { makeLogger } from '../src/log.js'
 import { localShimGitRunner } from '../src/execution/local-git.js'
 import { clusterProbeHostFactory } from '../src/acp/probe-host-factory.js'
 import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
-import { installMicrosandbox } from '../src/microsandbox/install.js'
+import { installedMicrosandbox, installMicrosandbox } from '../src/microsandbox/install.js'
 import { probeImageModels, VM_PROBE_ENVIRONMENT_ID } from '../src/microsandbox/model-probe.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
@@ -146,6 +149,9 @@ const manager = await installMicrosandbox({
   sockets,
   log: makeLogger('info')
 })
+const sdk = (await import(
+  pathToFileURL(createRequire(join(installedMicrosandbox(root)!, 'package.json')).resolve('microsandbox')).href
+)) as typeof import('microsandbox')
 // This machine's own VM as the daemon drives it (session-executors.md §11 step 4): the launcher in process, bound at this allocator's generation.
 const local = new LocalExecutor({
   launcher: microsandboxLauncher({ manager: () => manager }),
@@ -414,6 +420,19 @@ try {
   // Inside a VM the shim owns its filesystem namespace, so the reply names the image's roots and no per-session one (§5).
   assert.deepEqual(plane.rootsFor(SESSION_KEY), { runtimeRoot: DEFAULT_SHIM_RUNTIME_ROOT, missingHelpers: [] })
   step('hosted-vm-prepared-and-its-shim-bound-through-the-pipe', { ms: summary.hostedLaunchMs })
+
+  const secrets = (await sdk.Sandbox.list()).sandboxes.flatMap(
+    (sandbox) => (sandbox.config().network as { secrets?: { secrets: SecretEntry[] } }).secrets?.secrets ?? []
+  )
+  const apiKey = secrets.find((secret) => secret.envVar === 'AC_CLAUDE_API_KEY')
+  assert.ok(apiKey, 'the hosted VM has no protected API key')
+  assert.deepEqual(apiKey.substitution, {
+    headers: true,
+    headerFields: ['authorization', 'x-api-key', 'api-key', 'x-goog-api-key'],
+    query: false,
+    body: false
+  })
+  step('hosted-vm-persisted-credential-substitution-only-in-authentication-headers')
 
   // A REAL prepared launch, composed as the holder composes a placed session's: on the HOME its executor seeded (§7).
   const home = plane.homeFor(SUBJECT)!
