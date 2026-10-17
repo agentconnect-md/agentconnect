@@ -121,6 +121,8 @@ model Org {
   webchatMcpDelegations     WebchatMcpDelegation[]
   presetAgents              PresetAgent[]
   organizationKnowledge     OrganizationKnowledge[]
+  organizationRecord        OrganizationRecord?
+  peopleOptOuts             OrganizationPeopleOptOut[]
   managedSkills             ManagedSkill[]
   organizationSuggestions   OrganizationSuggestion[]
   externalScopes            ExternalScope[]
@@ -986,6 +988,7 @@ model Agent {
   memoryHistory         AgentMemoryHistory[]
   hostedHookRoutings    CodeHostDecisionRouting[]
   followUpWatches       FollowUpWatch[]
+  researchedRecords     OrganizationRecord[] @relation("OrganizationRecordResearch")
 
   @@unique([orgId, name]) // slug is unique within an org
   // Referenced by the composite assignment FK: a binding cannot name an agent in
@@ -3876,6 +3879,30 @@ model OrganizationEnvironmentAssignment {
 enum OrganizationArtifactSource {
   manual
   dream
+  agent // a record entry written by an assistant-mode agent (assistant-mode.md §5.16)
+  migration // a record entry moved from agents' memory once
+}
+
+// Which agents read a knowledge entry (organization-knowledge.md §15.1); `all` is every agent of the organization.
+enum OrganizationKnowledgeVisibility {
+  all
+  selected
+}
+
+// `entry` is an ordinary entry; the other three are the organization record, one each per organization (§15.2).
+enum OrganizationKnowledgeKind {
+  entry
+  organization
+  channels
+  people
+}
+
+// What kind of writer an agent's record write came from (§15.2).
+enum OrganizationKnowledgeWriterKind {
+  research
+  first_look   @map("first-look")
+  conversation
+  person
 }
 
 enum OrganizationSuggestionKind {
@@ -3894,15 +3921,20 @@ enum OrganizationSuggestionState {
   rejected
 }
 
+// One record entry per non-`entry` kind per organization: the partial unique index `organization_knowledge_record_kind_key` (migration-only; Prisma cannot express it).
 model OrganizationKnowledge {
-  id               String    @id @default(uuid()) @db.Uuid
-  orgId            String
-  title            String
-  currentRevision  Int       @default(1)
-  archivedAt       DateTime? @db.Timestamptz(6)
-  archivedByUserId String?
-  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+  id                         String                          @id @default(uuid()) @db.Uuid
+  orgId                      String
+  title                      String
+  currentRevision            Int                             @default(1)
+  archivedAt                 DateTime?                       @db.Timestamptz(6)
+  archivedByUserId           String?
+  createdAt                  DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt                  DateTime                        @updatedAt @db.Timestamptz(6)
+  kind                       OrganizationKnowledgeKind       @default(entry)
+  visibility                 OrganizationKnowledgeVisibility @default(all)
+  readers                    String[]                        @default([]) // agent ids under `selected`; empty under `all`
+  readersFollowAssistantMode Boolean                         @default(false) // People's readers follow assistant mode until a hand edit
 
   org       Org                             @relation(fields: [orgId], references: [id], onDelete: Cascade)
   revisions OrganizationKnowledgeRevision[]
@@ -3926,12 +3958,39 @@ model OrganizationKnowledgeRevision {
   createdByUserId   String?
   reviewedByUserId  String?
   createdAt         DateTime                   @default(now()) @db.Timestamptz(6)
+  writerKind        OrganizationKnowledgeWriterKind? // set on `source: agent`
 
   knowledge OrganizationKnowledge @relation(fields: [knowledgeId], references: [id], onDelete: Cascade)
 
   @@id([knowledgeId, revision])
   @@index([createdAt])
   @@map("organization_knowledge_revision")
+}
+
+// The organization record's own row (assistant-mode.md §5.16): which agent claimed research, and when a moved record was last researched.
+model OrganizationRecord {
+  orgId             String    @id
+  researchAgentId   String?   @db.Uuid
+  researchClaimedAt DateTime? @db.Timestamptz(6)
+  researchedAt      DateTime? @db.Timestamptz(6) // set by the one-time move; later rounds show as research revisions
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+
+  org           Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  researchAgent Agent? @relation("OrganizationRecordResearch", fields: [researchAgentId], references: [id], onDelete: SetNull)
+
+  @@map("organization_record")
+}
+
+// People's opt-out, one per organization (§5.16): a key nothing writes an entry for until its person writes their own.
+model OrganizationPeopleOptOut {
+  orgId     String
+  key       String
+  clearedOn DateTime @db.Date
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, key])
+  @@map("organization_people_opt_out")
 }
 
 model ManagedSkill {

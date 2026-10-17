@@ -2782,7 +2782,9 @@ is unchanged. Live tests had shown what that decision costs: a second assistant-
 researched the organization again and kept a copy of its own, which could differ from the first's.
 The decisions below are the owner's and are recorded as taken; what is marked _recommended_ is
 this revision's filling-in, for the owner to confirm, and what is _undecided_ is in §9 (Q30, Q32,
-Q33). Nothing of this section is implemented yet; the checklist at its end splits the work.
+Q33). The checklist at its end splits the work; its first change, the Control Plane's, shipped on
+2026-10-18 ("As shipped, change 1", after the checklist), and the daemon's and the console's are
+to come.
 
 **Why.** Facts about the organization are the organization's, not one agent's. An organization
 runs one record of what it does, where its people talk and who works on what, every agent of the
@@ -3057,6 +3059,46 @@ third needs the first.
      the server's 403 authoritative.
 
 The product documentation follows the third change, once the feature is complete end to end.
+
+**As shipped, change 1** (2026-10-18: the Control Plane). What the design left open, and the
+smallest choice made for it:
+
+- **Research's claim** is a row per organization, `organization_record`, holding the claiming
+  agent, when it claimed, and the moved record's last research day. The first switch-on that
+  writes an agent's onboarding record claims it when no agent holds it, in the agent's row-locked
+  write, and writes `research: true` or `false` into that onboarding record; a later switch-on of
+  the same agent claims nothing. The claiming agent's deletion frees the claim, so the next
+  agent's first switch-on researches rather than pointing to an agent that is gone.
+- **The record's entries** are titled About, Channels and People and start as their title line
+  alone (`# About`, `# Channels`, `# People`). They are created by the first switch-on, by the
+  first record read of an agent already in the mode when this shipped, or by the move. People
+  starts read by every agent of the organization then in assistant mode, following the mode.
+  Their title does not change on an edit, they carry no summary or tags, and archiving one is
+  refused: an owner clears it instead.
+- **A Control Plane shape refusal** of an agent's write is an error frame naming the failing
+  line, not a conflict; the daemon has already checked the same shape.
+- **People's opt-out holds for owners too.** An owner's edit that would add or change the entry
+  of someone who removed their entry is refused, as is an owner's edit of that card; only the
+  person's own write lifts it. A person's own card is one entry: writing it under one of their
+  keys drops their entries under their other keys.
+- **People's readers hold on the record frames too**: an agent People is not visible to is refused
+  its read and its write, so no conflict answer carries People's text to it. A People write that
+  adds or changes the entry of someone opted out is refused under the record's lock, unless the
+  same write lifts that key, so a removal landing between a writer's read and its write wins.
+- **Audit**: owner edits and clears of People are `memory_change` events with frame type
+  `knowledge/people`, carrying the entry id, the key or the count removed, and no content.
+- **"Running since"** is the later of the research session's start and the last research
+  revision, since no round's start is recorded on the Control Plane.
+- **The move** runs at every boot. A copy an older daemon writes after a boot is moved by the
+  next one, and the record, when it holds more than its title line, counts as one more copy,
+  the newest of which is the base. A copy changed since the move read it is left for the next
+  run. Channels' place-file links are dropped as the lines are merged.
+- **Deferred to change 3**: the retirement of the Memory page's own-entry and directory routes
+  and of `memory/member/clear`, since the console calls them until it moves to the Knowledge
+  page.
+- **No daemon store version change**; the Control Plane's migration adds three enums, two enum
+  values, four columns on `organization_knowledge`, one on its revisions, and the
+  `organization_record` and `organization_people_opt_out` tables, and changes no existing row.
 
 ### 5.17 People profiles
 
@@ -4215,3 +4257,11 @@ organization has bound, readable with the agent's workspace or an explicit autho
 project's feedback watch and webhook then carry its merge-request, issue, note and pipeline
 events to the relay, which sends the wake-only ones without holding a delivery back, and a check of
 the follow-up reads the watched project through the broker on a read-only lease.
+
+**Seventy-first revision (2026-10-18)**: the organization record's first change ships, the Control
+Plane's (issue #2810; §5.16 "As shipped, change 1"). Knowledge entries carry agent visibility and a
+kind; the three record entries, research's claim and People's opt-out live in the Control Plane;
+`knowledge/record/read` and `knowledge/record/write` and `withOutsiders` on the knowledge reads
+ship behind `knowledge-record-v1`; the switch-on claims research once per organization and moves
+People's readers with the mode; and assistant-mode agents' copies of the three files are moved into
+the record at boot.

@@ -256,6 +256,8 @@ export interface HttpDeps {
     agentSkillSourceStatus?: import('../persistence/ports.js').AgentSkillSourceStatusRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */
     organizationKnowledge?: OrganizationKnowledgeRepo
+    /** The organization record's three entries, its research claim and People's opt-out (assistant-mode.md §5.16). */
+    organizationRecord?: import('../persistence/ports.js').OrganizationRecordRepo
     /** Organization-owned variables/secrets + their per-agent bindings (metadata and
      *  binding CRUD only; secret VALUES go through `organizationEnvironmentSecret`). */
     organizationEnvironment: OrganizationEnvironmentRepo

@@ -50,6 +50,7 @@ import { mcpProviderRoutes } from './routes/mcp-providers.js'
 import { mcpProviderOauthPublicRoutes, mcpProviderOauthRoutes } from './routes/mcp-provider-oauth.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
 import { organizationKnowledgeRoutes } from './routes/organization-knowledge.js'
+import { organizationRecordRoutes } from './routes/organization-record.js'
 import { organizationEnvironmentRoutes } from './routes/organization-environment.js'
 import { connectorRoutes } from './routes/connectors.js'
 import { memoryConnectionRoutes } from './routes/memory-connections.js'
@@ -375,6 +376,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(mcpProviderOauthRoutes(deps))
           await scope.register(skillSourceRoutes(deps))
           await scope.register(organizationKnowledgeRoutes(deps))
+          await scope.register(organizationRecordRoutes(deps))
           await scope.register(organizationEnvironmentRoutes(deps))
           await scope.register(connectorRoutes(deps))
           await scope.register(memoryConnectionRoutes(deps))

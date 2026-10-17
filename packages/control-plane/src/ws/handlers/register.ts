@@ -37,6 +37,7 @@ import {
   CODEHOST_REVIEW_V1_FEATURE,
   CRON_REPORT_ACK_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  KNOWLEDGE_RECORD_FEATURE,
   AGENT_SKILL_STATUS_V1_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
@@ -153,6 +154,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // high-availability.md: this CP ACKs a terminal cron outcome, so the daemon keeps it until then.
       CRON_REPORT_ACK_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
+      // assistant-mode.md §5.16: this CP serves `knowledge/record/*` and honours `withOutsiders` on the knowledge reads.
+      ...(deps.organizationRecord ? [KNOWLEDGE_RECORD_FEATURE] : []),
       // source-cache.md §11: this CP stores `agent/skill-status`; a daemon sends none without it.
       ...(deps.agentSkillSourceStatus ? [AGENT_SKILL_STATUS_V1_FEATURE] : []),
       AGENT_EXISTS_FEATURE,

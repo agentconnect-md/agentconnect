@@ -78,6 +78,8 @@ import {
 import {
   handleKnowledgeSearch,
   handleKnowledgeList,
+  handleKnowledgeRecordRead,
+  handleKnowledgeRecordWrite,
   handleOrgSkills,
   handleManagedSkillRead,
   handleOrganizationSuggestionsSync
@@ -148,6 +150,8 @@ export class FrameRouter {
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,
       'knowledge/search': handleKnowledgeSearch,
       'knowledge/list': handleKnowledgeList,
+      'knowledge/record/read': handleKnowledgeRecordRead,
+      'knowledge/record/write': handleKnowledgeRecordWrite,
       'skills/org': handleOrgSkills,
       'knowledge/suggestions/sync': handleOrganizationSuggestionsSync,
       'managed-skill/read': handleManagedSkillRead,

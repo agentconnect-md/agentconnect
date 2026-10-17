@@ -89,13 +89,72 @@ export const OrganizationSuggestionsSyncOk = z
   .strict()
 export type OrganizationSuggestionsSyncOk = z.infer<typeof OrganizationSuggestionsSyncOk>
 
+/** Both sides read and write the organization record (organization-knowledge.md §15): the record frames and `withOutsiders` are sent only when the peer advertises it. */
+export const KNOWLEDGE_RECORD_FEATURE = 'knowledge-record-v1'
+
+/** The three record entries' file names, as an assistant-mode agent's memory tools name them. */
+export const KnowledgeRecordFile = z.enum(['organization.md', 'channels.md', 'members.md'])
+export type KnowledgeRecordFile = z.infer<typeof KnowledgeRecordFile>
+
+/** What kind of writer a record write comes from, kept on the revision. */
+export const KnowledgeRecordWriterKind = z.enum(['research', 'first-look', 'conversation', 'person'])
+export type KnowledgeRecordWriterKind = z.infer<typeof KnowledgeRecordWriterKind>
+
+/** A record body is capped well under the 256 KiB frame limit. */
+export const KNOWLEDGE_RECORD_MAX_BYTES = 128 * 1024
+const RecordOptOutKeys = z.array(z.string().min(1).max(512)).max(4096)
+
+/** D→C: one record entry, its revision and the opt-out keys. */
+export const KnowledgeRecordReadReq = z.object({ agentId: z.string().uuid(), file: KnowledgeRecordFile }).strict()
+export type KnowledgeRecordReadReq = z.infer<typeof KnowledgeRecordReadReq>
+
+/** D→C: a revision-checked write of one record entry by an agent; opt-out marks land before it, lifts after. */
+export const KnowledgeRecordWriteReq = z
+  .object({
+    agentId: z.string().uuid(),
+    file: KnowledgeRecordFile,
+    baseRevision: z.number().int().positive(),
+    content: z.string().max(KNOWLEDGE_RECORD_MAX_BYTES),
+    writerKind: KnowledgeRecordWriterKind,
+    optOut: z
+      .object({ mark: RecordOptOutKeys.max(64).default([]), lift: RecordOptOutKeys.max(64).default([]) })
+      .strict()
+      .default({ mark: [], lift: [] })
+  })
+  .strict()
+export type KnowledgeRecordWriteReq = z.infer<typeof KnowledgeRecordWriteReq>
+
+/** C→D: a read's entry with its opt-out keys, or a write's new revision. */
+export const KnowledgeRecordOk = z
+  .object({
+    id: z.string().uuid(),
+    revision: z.number().int().positive(),
+    content: z.string().max(KNOWLEDGE_RECORD_MAX_BYTES).optional(),
+    optOut: RecordOptOutKeys.optional()
+  })
+  .strict()
+export type KnowledgeRecordOk = z.infer<typeof KnowledgeRecordOk>
+
+/** C→D: the write's base revision is stale; the current entry, to re-read and merge. */
+export const KnowledgeRecordConflict = z
+  .object({
+    id: z.string().uuid(),
+    revision: z.number().int().positive(),
+    content: z.string().max(KNOWLEDGE_RECORD_MAX_BYTES),
+    optOut: RecordOptOutKeys
+  })
+  .strict()
+export type KnowledgeRecordConflict = z.infer<typeof KnowledgeRecordConflict>
+
 export const KnowledgeSearchReq = z
   .object({
     requesterAgentId: z.string().uuid(),
     query: z.string().trim().min(1).max(4096),
     limit: z.number().int().min(1).max(10).default(5),
     maxBytes: z.number().int().min(1).max(32_768).default(8192),
-    tags: z.array(z.string().trim().min(1).max(64)).max(10).optional()
+    tags: z.array(z.string().trim().min(1).max(64)).max(10).optional(),
+    /** The conversation holds people from outside, or its audience is not known yet: People is left out (§15.3). Sent only under `knowledge-record-v1`. */
+    withOutsiders: z.boolean().optional()
   })
   .strict()
 export type KnowledgeSearchReq = z.infer<typeof KnowledgeSearchReq>
@@ -125,7 +184,9 @@ export const KnowledgeListReq = z
     requesterAgentId: z.string().uuid(),
     limit: z.number().int().min(1).max(20).default(10),
     maxBytes: z.number().int().min(1).max(32_768).default(8192),
-    tags: z.array(z.string().trim().min(1).max(64)).max(10).optional()
+    tags: z.array(z.string().trim().min(1).max(64)).max(10).optional(),
+    /** As on `knowledge/search`: People is left out. */
+    withOutsiders: z.boolean().optional()
   })
   .strict()
 export type KnowledgeListReq = z.infer<typeof KnowledgeListReq>

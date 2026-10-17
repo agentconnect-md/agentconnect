@@ -1,11 +1,14 @@
 import {
   isFrame,
+  KNOWLEDGE_RECORD_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
-  ORGANIZATION_SUGGESTION_REVIEW_FEATURE
+  ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
+  parseOrganizationFile
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import type { DaemonView } from '../../ports.js'
+import { OptedOutError, recordKindOfFile } from '../../persistence/repositories/organization-record.repo.js'
 import type { Handler } from './index.js'
 
 async function featureDaemon(
@@ -72,7 +75,8 @@ export const handleKnowledgeSearch: Handler = async (frame, conn, deps) => {
   const rows = await repo.searchKnowledge(requester.orgId, {
     query: frame.payload.query,
     ...(frame.payload.tags !== undefined ? { tags: frame.payload.tags } : {}),
-    limit: frame.payload.limit
+    limit: frame.payload.limit,
+    reader: { agentId: String(requester.id), withOutsiders: frame.payload.withOutsiders === true }
   })
   let remaining = frame.payload.maxBytes
   const items = []
@@ -112,7 +116,8 @@ export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
     return
   }
   const tags = frame.payload.tags
-  const rows = (await repo.listKnowledge(requester.orgId, false))
+  const reader = { agentId: String(requester.id), withOutsiders: frame.payload.withOutsiders === true }
+  const rows = (await repo.listKnowledge(requester.orgId, false, reader))
     .filter((row) => tags === undefined || tags.every((t) => row.tags.includes(t)))
     .slice(0, frame.payload.limit)
   let remaining = frame.payload.maxBytes
@@ -133,6 +138,119 @@ export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
     })
   }
   conn.replyTo(frame, 'knowledge/list/ok', { items })
+}
+
+/** The record's agent: served by this connection, advertising the record, and in assistant mode (§15.2); null once refused. */
+async function recordAgent(
+  frame: { id: string; orgId?: string | undefined; payload: { agentId: string } },
+  conn: Parameters<Handler>[1],
+  deps: Parameters<Handler>[2]
+) {
+  // eslint-disable-next-line no-restricted-syntax -- the authenticated connection's own daemon row
+  const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
+  if (!daemon?.capabilities.features.includes(KNOWLEDGE_RECORD_FEATURE)) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'daemon did not advertise the organization record', false)
+    return null
+  }
+  if (!deps.organizationRecord) {
+    conn.sendError(frame.id, 'INTERNAL', 'the organization record is unavailable', true)
+    return null
+  }
+  const agent = await servingRequester(frame.payload.agentId, frame.orgId, daemon, conn, deps)
+  if (!agent) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not served by this daemon', false)
+    return null
+  }
+  if (agent.assistantMode?.enabled !== true) {
+    conn.sendError(
+      frame.id,
+      'SCOPE_DENIED',
+      'only an assistant-mode agent reads and writes the organization record',
+      false
+    )
+    return null
+  }
+  return { agent, record: deps.organizationRecord }
+}
+
+const NOT_A_READER = 'People is not visible to this agent; an owner chooses which agents read it'
+
+/** Whether an agent reads an entry: every agent under `all`, the listed ones under `selected` (§15.1). */
+function readsEntry(entry: { visibility: string; readers: string[] }, agentId: string): boolean {
+  return entry.visibility === 'all' || entry.readers.includes(agentId)
+}
+
+/** One record entry for an assistant-mode agent's memory tools, created with the record when the organization has none. */
+export const handleKnowledgeRecordRead: Handler = async (frame, conn, deps) => {
+  if (!isFrame('knowledge/record/read')(frame)) return
+  const got = await recordAgent(frame, conn, deps)
+  if (!got) return
+  const read = await got.record.read(got.agent.orgId, recordKindOfFile(frame.payload.file), {
+    sourceAgentId: String(got.agent.id)
+  })
+  if (!read) {
+    conn.sendError(frame.id, 'INTERNAL', 'the organization record could not be created', true)
+    return
+  }
+  if (!readsEntry(read.entry, String(got.agent.id))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', NOT_A_READER, false)
+    return
+  }
+  conn.replyTo(frame, 'knowledge/record/ok', {
+    id: read.entry.id,
+    revision: read.entry.currentRevision,
+    content: read.entry.content,
+    optOut: read.optOut
+  })
+}
+
+/** A revision-checked write of one record entry; the daemon ran every person rule, so the Control Plane checks the shape again and the revision. */
+export const handleKnowledgeRecordWrite: Handler = async (frame, conn, deps) => {
+  if (!isFrame('knowledge/record/write')(frame)) return
+  const got = await recordAgent(frame, conn, deps)
+  if (!got) return
+  const { file, content, baseRevision, writerKind, optOut } = frame.payload
+  const shape = parseOrganizationFile(file, content)
+  if (!shape.ok) {
+    conn.sendError(frame.id, 'BAD_PAYLOAD', shape.refusal, false)
+    return
+  }
+  // An agent People is not visible to neither reads it nor writes it, so no conflict answer carries its text either.
+  const current = await got.record.read(got.agent.orgId, recordKindOfFile(file), {
+    sourceAgentId: String(got.agent.id)
+  })
+  if (current && !readsEntry(current.entry, String(got.agent.id))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', NOT_A_READER, false)
+    return
+  }
+  let written: Awaited<ReturnType<typeof got.record.write>>
+  try {
+    written = await got.record.write(got.agent.orgId, recordKindOfFile(file), {
+      baseRevision,
+      content,
+      provenance: { source: 'agent', sourceAgentId: String(got.agent.id), writerKind },
+      optOut,
+      now: new Date(deps.clock.now())
+    })
+  } catch (err) {
+    if (!(err instanceof OptedOutError)) throw err
+    conn.sendError(frame.id, 'SCOPE_DENIED', `${err.message}. Nothing was saved.`, false)
+    return
+  }
+  if (written.outcome === 'missing') {
+    conn.sendError(frame.id, 'INTERNAL', 'the organization record could not be created', true)
+    return
+  }
+  if (written.outcome === 'conflict') {
+    conn.replyTo(frame, 'knowledge/record/conflict', {
+      id: written.entry.id,
+      revision: written.entry.currentRevision,
+      content: written.entry.content,
+      optOut: written.optOut
+    })
+    return
+  }
+  conn.replyTo(frame, 'knowledge/record/ok', { id: written.entry.id, revision: written.entry.currentRevision })
 }
 
 /** List or search accepted organization skills (metadata only) the requester's

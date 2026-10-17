@@ -114,7 +114,11 @@ describe('handleKnowledgeSearch', () => {
       deps
     )
 
-    expect(searchKnowledge).toHaveBeenCalledWith(ORG, { query: 'unicode', limit: 5 })
+    expect(searchKnowledge).toHaveBeenCalledWith(ORG, {
+      query: 'unicode',
+      limit: 5,
+      reader: { agentId: AGENT, withOutsiders: false }
+    })
     expect(connection.replyTo.mock.calls[0]![1]).toBe('knowledge/search/ok')
     expect(connection.replyTo.mock.calls[0]![2]).toEqual({
       items: [
@@ -178,7 +182,7 @@ describe('handleKnowledgeList', () => {
       deps
     )
 
-    expect(listKnowledge).toHaveBeenCalledWith(ORG, false)
+    expect(listKnowledge).toHaveBeenCalledWith(ORG, false, { agentId: AGENT, withOutsiders: false })
     expect(connection.replyTo.mock.calls[0]![1]).toBe('knowledge/list/ok')
     expect(connection.replyTo.mock.calls[0]![2]).toEqual({
       items: [
