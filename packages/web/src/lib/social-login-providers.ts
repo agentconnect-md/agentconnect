@@ -25,14 +25,14 @@
 
 /** Every target this console can render. Order is display order. */
 export const SOCIAL_LOGIN_CATALOG = [
-  { target: 'github', name: 'GitHub' },
-  { target: 'gitlab', name: 'GitLab' },
   { target: 'google', name: 'Google' },
   { target: 'slack', name: 'Slack' },
-  { target: 'telegram', name: 'Telegram' },
-  { target: 'discord', name: 'Discord' },
+  { target: 'github', name: 'GitHub' },
+  { target: 'gitlab', name: 'GitLab' },
   { target: 'lark', name: 'Lark' },
-  { target: 'feishu', name: 'Feishu' }
+  { target: 'feishu', name: 'Feishu' },
+  { target: 'discord', name: 'Discord' },
+  { target: 'telegram', name: 'Telegram' }
 ] as const
 
 export type SocialLoginProvider = (typeof SOCIAL_LOGIN_CATALOG)[number]
@@ -58,9 +58,7 @@ export function parseEnabledTargets(raw: string | undefined): Set<string> | null
   return entries.length > 0 ? new Set(entries) : new Set(DEFAULT_SOCIAL_LOGIN_TARGETS)
 }
 
-/** Catalog entries this deployment offers. Non-regional providers keep catalog
- * order; Lark and Feishu keep their configured relative order as the regional
- * preference consumed by the combined login button. */
+/** Catalog entries this deployment offers, in catalog order; Lark and Feishu swap within their slots to the configured regional preference. */
 export function selectEnabledProviders(raw: string | undefined): readonly SocialLoginProvider[] {
   const enabled = parseEnabledTargets(raw)
   if (!enabled) return SOCIAL_LOGIN_CATALOG
@@ -75,7 +73,7 @@ export function selectEnabledProviders(raw: string | undefined): readonly Social
   const regionalProviders = [...enabled]
     .map((target) => selected.find((provider) => provider.target === target))
     .filter(isRegionalProvider)
-  return [...selected.filter((provider) => !isRegionalProvider(provider)), ...regionalProviders]
+  return selected.map((provider) => (isRegionalProvider(provider) ? regionalProviders.shift()! : provider))
 }
 
 /** The providers to render. Reads the runtime config the server inlined. */
