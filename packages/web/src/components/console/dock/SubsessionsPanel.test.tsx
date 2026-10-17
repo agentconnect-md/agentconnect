@@ -125,10 +125,12 @@ const page = (subsessions: AssistantSubsessionDto[], nextCursor: string | null =
 
 type PanelProps = Parameters<typeof SubsessionsPanel>[0]
 
+// Finished rows are drawn unless a case asks for the Tasks tab's default, which hides them behind its toggle.
 const panel = (props: Partial<PanelProps> = {}) => (
   <SubsessionsPanel
     agentId="agent-a"
     sessionId="session-1"
+    showFinished
     onVerdictChange={(verdict) => verdicts.push(verdict)}
     {...props}
   />
@@ -166,10 +168,13 @@ async function click(el: Element | null | undefined) {
 const text = () => container?.textContent ?? ''
 const rows = () => Array.from(container?.querySelectorAll<HTMLElement>('[data-subsession-row]') ?? [])
 const buttons = (label: string) =>
-  Array.from(container?.querySelectorAll<HTMLButtonElement>('button') ?? []).filter((b) =>
-    b.textContent?.includes(label)
-  )
+  Array.from(container?.querySelectorAll<HTMLButtonElement>('.dsbtn') ?? []).filter((b) => b.textContent === label)
 const last = () => verdicts.at(-1)
+const rowOf = (sessionId: string) =>
+  rows().find((r) => r.querySelector(`a[href="/acme/sessions/${sessionId}"]`) !== null)
+const headings = () => Array.from(container?.querySelectorAll('h3') ?? []).map((h) => h.textContent)
+const followUpRows = () =>
+  Array.from(container?.querySelectorAll<HTMLElement>('[data-task-group="follow-ups"] [data-subsession-row]') ?? [])
 const labelled = (label: string, scope: ParentNode | undefined = container) =>
   scope?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
 
@@ -214,7 +219,30 @@ describe('SubsessionsPanel', () => {
     ])
     expect(text()).toContain('Untitled task')
     expect(rows()[0]?.querySelector('time')?.getAttribute('dateTime')).toBe('2026-10-09T09:00:00.000Z')
-    expect(last()).toEqual({ settled: true, count: 3, running: 1, failed: false })
+    expect(rows()[0]?.querySelector('time')?.textContent).toMatch(/^started .+ ago$/)
+    expect(last()).toEqual({ settled: true, count: 3, running: 1, finished: 2, failed: false })
+  })
+
+  it('keeps "Show more" reachable when the first page holds only open rows', async () => {
+    const open = (i: number) => row({ sessionId: `o${i}` })
+    wire.server = Array.from({ length: SUBSESSIONS_PAGE + 1 }, (_, i) => open(SUBSESSIONS_PAGE + 1 - i))
+    await render({ showFinished: false })
+    expect(last()).toMatchObject({ finished: 0 })
+    await click(buttons('Show more')[0])
+    expect(rows()).toHaveLength(SUBSESSIONS_PAGE + 1)
+    expect(buttons('Show more')).toHaveLength(0)
+  })
+
+  it('draws only open rows by default, and still counts the finished ones for the toggle', async () => {
+    wire.pages = [page([row({ sessionId: 'child-2', state: 'done', canStop: false }), row()])]
+    await render({ showFinished: false })
+    expect(rows().map((r) => r.dataset.subsessionRow)).toEqual(['open'])
+    expect(headings()).toEqual(['Tasks1'])
+    expect(last()).toEqual({ settled: true, count: 2, running: 1, finished: 1, failed: false })
+    await rerender({ showFinished: true })
+    expect(rows().map((r) => r.dataset.subsessionRow)).toEqual(['open', 'done'])
+    expect(rows()[1]?.className).toContain('opacity-60')
+    expect(headings()).toEqual(['Tasks2'])
   })
 
   it('links a task only where the reader may open it', async () => {
@@ -305,7 +333,9 @@ describe('SubsessionsPanel', () => {
     await render()
     expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE, running: 0 })
     await click(buttons('Show more')[0])
-    expect(rows().at(-1)?.dataset.subsessionRow).toBe('open')
+    // An open row leads its group wherever its page put it.
+    expect(rows()[0]).toBe(rowOf('c1'))
+    expect(rowOf('c1')?.dataset.subsessionRow).toBe('open')
     expect(buttons('Stop')).toHaveLength(1)
     expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE + 1, running: 1 })
 
@@ -313,8 +343,8 @@ describe('SubsessionsPanel', () => {
     wire.server[SUBSESSIONS_PAGE] = { ...wire.server[SUBSESSIONS_PAGE]!, state: 'failed', canStop: false }
     await click(buttons('Stop')[0])
     expect(wire.stops).toEqual([{ agentId: 'agent-a', sessionId: 'c1' }])
-    expect(rows().at(-1)?.dataset.subsessionRow).toBe('failed')
-    expect(rows().at(-1)?.querySelector('[data-subsession-state]')?.textContent).toBe('Failed')
+    expect(rowOf('c1')?.dataset.subsessionRow).toBe('failed')
+    expect(rowOf('c1')?.querySelector('[data-subsession-state]')?.textContent).toBe('Failed')
     expect(buttons('Stop')).toHaveLength(0)
     expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE + 1, running: 0 })
 
@@ -324,7 +354,7 @@ describe('SubsessionsPanel', () => {
     expect(last()).toMatchObject({ running: 1 })
     wire.server[SUBSESSIONS_PAGE] = { ...wire.server[SUBSESSIONS_PAGE]!, state: 'done', canStop: false }
     await rerender({ refreshTick: 2 })
-    expect(rows().at(-1)?.querySelector('[data-subsession-state]')?.textContent).toBe('Reported')
+    expect(rowOf('c1')?.querySelector('[data-subsession-state]')?.textContent).toBe('Reported')
     expect(buttons('Stop')).toHaveLength(0)
     expect(last()).toMatchObject({ count: SUBSESSIONS_PAGE + 1, running: 0 })
     // One request covers the 21 rows on screen, within the route's page cap.
@@ -333,7 +363,7 @@ describe('SubsessionsPanel', () => {
 
   it('reports an empty conversation as nothing to show, so its group stays out of the tab', async () => {
     await render()
-    expect(last()).toEqual({ settled: true, count: 0, running: 0, failed: false })
+    expect(last()).toEqual({ settled: true, count: 0, running: 0, finished: 0, failed: false })
     expect(subsessionsTabShown(last()!)).toBe(false)
     // Reported on the edge: a re-render with the same rows says nothing new.
     const heard = verdicts.length
@@ -344,8 +374,8 @@ describe('SubsessionsPanel', () => {
   it('says a daemon too old for the list should be upgraded, and keeps its group to say so', async () => {
     wire.failure = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
     await render()
-    expect(text()).toContain('Upgrade this agent’s daemon to see its delegated tasks here.')
-    expect(last()).toEqual({ settled: true, count: 0, running: 0, failed: true })
+    expect(text()).toContain('Upgrade this agent’s daemon to see its tasks and follow-ups here.')
+    expect(last()).toEqual({ settled: true, count: 0, running: 0, finished: 0, failed: true })
     expect(subsessionsTabShown(last()!)).toBe(true)
   })
 
@@ -355,8 +385,8 @@ describe('SubsessionsPanel', () => {
     wire.failure = { status: 503, code: 'DAEMON_OFFLINE' }
     await rerender({ refreshTick: 1 })
     expect(rows()).toHaveLength(1)
-    expect(text()).toContain('Delegated tasks are unavailable right now.')
-    expect(last()).toEqual({ settled: true, count: 1, running: 1, failed: false })
+    expect(text()).toContain('Tasks and follow-ups are unavailable right now.')
+    expect(last()).toEqual({ settled: true, count: 1, running: 1, finished: 0, failed: false })
   })
 
   // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
@@ -381,32 +411,25 @@ describe('SubsessionsPanel', () => {
       ])
     ]
     await render()
-    expect(rows().map((r) => r.dataset.followUp)).toEqual([
-      'waiting',
-      'checking',
-      'paused',
-      'done',
-      'stopped',
-      undefined
-    ])
-    expect(rows().map((r) => r.querySelector('[data-subsession-state]')?.textContent)).toEqual([
-      'Waiting · next check Oct 16, 2026, 9:00 AM',
+    expect(followUpRows().map((r) => r.dataset.followUp)).toEqual(['waiting', 'checking', 'paused', 'done', 'stopped'])
+    expect(followUpRows().map((r) => r.querySelector('[data-subsession-state]')?.textContent)).toEqual([
+      'Next check Oct 16, 9:00 AM',
       'Checking',
       'Paused',
       'Done',
-      'Stopped',
-      'Reported'
+      'Stopped'
     ])
-    expect(rows()[0]?.textContent).toContain('Follow-up')
-    expect(rows()[0]?.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/fu-waiting')
-    // Weeks of waiting are not elapsed time, and not a running task for the tab's badge or the poll.
-    expect(container?.querySelector('[data-subsession-elapsed]')).toBeNull()
-    expect(container?.querySelector('[data-tasks-census]')?.textContent).toBe(
-      '1 running · 2 waiting · 1 reported · 2 ended'
-    )
-    expect(last()).toEqual({ settled: true, count: 6, running: 1, failed: false })
+    // The meta line carries the last check, and the kind is the group's, not the row's.
+    expect(followUpRows()[0]?.textContent).toContain('last Oct 15, 9:00 AM')
+    expect(followUpRows()[0]?.textContent).not.toContain('Follow-up')
+    expect(followUpRows()[0]?.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
+    expect(followUpRows()[1]?.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('running')
+    expect(followUpRows()[0]?.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/fu-waiting')
+    expect(headings()).toEqual(['Tasks1', 'Follow-ups5'])
+    // Weeks of waiting are not a running task for the tab's badge or the poll.
+    expect(last()).toEqual({ settled: true, count: 6, running: 1, finished: 3, failed: false })
     // Every open follow-up the reader may stop can be ended; an ended one cannot.
-    expect(buttons('End follow-up')).toHaveLength(3)
+    expect(buttons('End')).toHaveLength(3)
     expect(buttons('Stop')).toHaveLength(0)
   })
 
@@ -451,7 +474,7 @@ describe('SubsessionsPanel', () => {
   it('ends a follow-up only after a confirmation, and says it ended', async () => {
     wire.pages = [page([followUp('waiting')]), page([followUp('stopped', { sessionId: 'fu-waiting', canStop: false })])]
     await render()
-    await click(buttons('End follow-up')[0])
+    await click(buttons('End')[0])
     expect(wire.stops).toEqual([])
     const confirm = container?.querySelector('[role="group"]')
     expect(confirm?.textContent).toContain('End this follow-up? The agent stops checking.')
@@ -459,13 +482,13 @@ describe('SubsessionsPanel', () => {
     expect(container?.querySelector('[role="group"]')).toBeNull()
     expect(wire.stops).toEqual([])
 
-    await click(buttons('End follow-up')[0])
+    await click(buttons('End')[0])
     await click(container?.querySelector('[role="group"]')?.querySelector('button'))
     expect(wire.stops).toEqual([{ agentId: 'agent-a', sessionId: 'fu-waiting' }])
     expect(container?.querySelector('[role="group"]')).toBeNull()
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Follow-up ended.')
     expect(rows()[0]?.querySelector('[data-subsession-state]')?.textContent).toBe('Stopped')
-    expect(buttons('End follow-up')).toHaveLength(0)
+    expect(buttons('End')).toHaveLength(0)
   })
 
   it.each([
@@ -476,7 +499,7 @@ describe('SubsessionsPanel', () => {
     if (answer) wire.stopAnswer = answer
     wire.stopFailure = failure
     await render()
-    await click(buttons('End follow-up')[0])
+    await click(buttons('End')[0])
     await click(container?.querySelector('[role="group"]')?.querySelector('button'))
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe(notice)
   })
@@ -487,8 +510,8 @@ describe('SubsessionsPanel', () => {
     wire.pages = [page([unchecked('waiting', 'item-1'), unchecked('waiting')]), page([unchecked('stopped', 'item-1')])]
     await render()
     // Without an id from its daemon, a follow-up with no session has nothing to end it by.
-    expect(buttons('End follow-up')).toHaveLength(1)
-    await click(buttons('End follow-up')[0])
+    expect(buttons('End')).toHaveLength(1)
+    await click(buttons('End')[0])
     await click(container?.querySelector('[role="group"]')?.querySelector('button'))
     expect(wire.followUpStops).toEqual([{ agentId: 'agent-a', followUpId: 'item-1', parentSessionId: 'session-1' }])
     expect(wire.stops).toEqual([])

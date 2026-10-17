@@ -149,11 +149,6 @@ export const consoleKeys = {
   /** One webchat conversation's requests, as its owner reads them. */
   sessionPermissionRequests: (orgId: string | null | undefined, sessionId: string) =>
     consoleKey(orgId, 'session-permission-requests', sessionId),
-  /** The assistant-mode Activity view's sections, each its own read so a collapsed one costs nothing. */
-  assistantItems: (orgId: string | null | undefined, agentId: string, section: 'open' | 'closed') =>
-    consoleKey(orgId, 'assistant-items', agentId, section),
-  assistantItem: (orgId: string | null | undefined, agentId: string, itemId: string) =>
-    consoleKey(orgId, 'assistant-item', agentId, itemId),
   assistantSubsessions: (orgId: string | null | undefined, agentId: string) =>
     consoleKey(orgId, 'assistant-subsessions', agentId),
   /** One task's row, for its own page. */

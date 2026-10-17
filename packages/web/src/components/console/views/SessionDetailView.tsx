@@ -6489,7 +6489,7 @@ export default function SessionDetailView() {
             />
           ) : null}
         </DockPanel>
-        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once either group has something to show. */}
+        {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once any group has something to show. */}
         <DockPanel active={dockTabKey === 'tasks'}>
           {filesAgentId && tasksSessionId ? (
             <TasksPanel

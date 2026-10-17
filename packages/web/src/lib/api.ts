@@ -3986,32 +3986,6 @@ export async function decideSessionPermissionRequest(
 
 // ── Assistant-mode Activity (assistant-mode.md §1.7, §5.11): read from the agent's daemon, kept nowhere else ──
 
-export interface AssistantPlaceDto {
-  platform: string
-  channel: string
-}
-
-export type AssistantItemStatus = 'active' | 'waiting' | 'done' | 'dropped'
-
-export interface AssistantItemDto {
-  id: string
-  title: string
-  status: AssistantItemStatus
-  doneWhen: string | null
-  /** When the follow-up's next check is due (assistant-mode.md §5.12). */
-  nextCheck: string | null
-  origin: AssistantPlaceDto
-  places: AssistantPlaceDto[]
-  createdAt: string
-  updatedAt: string
-}
-
-export interface AssistantItemDetailDto extends AssistantItemDto {
-  summary: string
-  /** Newest first. */
-  observations: { text: string; at: string }[]
-}
-
 /** A follow-up's state (assistant-mode.md §5.12); `paused` stopped after five failed checks until it is messaged. */
 export type AssistantFollowUpStatus = 'waiting' | 'checking' | 'paused' | 'done' | 'stopped'
 
@@ -4052,8 +4026,6 @@ export interface AssistantSubsessionsPageDto {
   truncated: boolean
   /** The next page of one conversation's background work; null on its last page and for the agent-wide list. */
   nextCursor: string | null
-  /** True from a daemon that serves follow-ups, which then lists no items. */
-  followUps?: boolean
 }
 
 /** The follow-up a proposal's follow-up form takes once approved, in place of running a task (assistant-mode.md §5.13). */
@@ -4121,21 +4093,6 @@ export interface AssistantDraftOutcomeDto {
 }
 
 const assistantBase = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/assistant`
-
-export async function fetchAssistantItems(
-  agentId: string,
-  section: 'open' | 'closed'
-): Promise<{ items: AssistantItemDto[]; truncated: boolean }> {
-  return apiGet(`${assistantBase(agentId)}/items?section=${section}`)
-}
-
-export async function fetchAssistantItem(agentId: string, itemId: string): Promise<AssistantItemDetailDto> {
-  return apiGet(`${assistantBase(agentId)}/items/${encodeURIComponent(itemId)}`)
-}
-
-export async function deleteAssistantItem(agentId: string, itemId: string): Promise<void> {
-  await apiDelete(`${assistantBase(agentId)}/items/${encodeURIComponent(itemId)}`)
-}
 
 /** The agent's background work, or with `parentSessionId` only what that conversation started, newest first, a page at a time. */
 export async function fetchAssistantSubsessions(

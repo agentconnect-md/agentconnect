@@ -2956,11 +2956,7 @@ function AgentDetail() {
 
       {/* Activity tab — what the agent follows, runs and waits on, read from its daemon. */}
       {tab === 'activity' && (
-        <AssistantActivityPanel
-          agentId={da.id}
-          canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
-          assistant={activity === 'assistant'}
-        />
+        <AssistantActivityPanel agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
       )}
 
       {/* One review/check settings surface, rendered as a bottom sheet on mobile

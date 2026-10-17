@@ -1,34 +1,20 @@
 'use client'
 
-// The Tasks tab's Delegated group (assistant-mode.md §1.3, §5.6, §5.12): the delegated tasks, follow-ups and approved proposals of this conversation, read from the agent's daemon through the CP and kept nowhere else.
+// The Tasks tab's Tasks and Follow-ups groups (assistant-mode.md §1.3, §5.6, §5.12): this conversation's delegated tasks, approved proposals and follow-ups, read from the agent's daemon and kept nowhere else.
 // Each row links to its own page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
-import { useFormatter, useTranslations } from 'next-intl'
-import { Spinner } from '@/components/marks'
+import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { useDockRefresh } from '@/components/console/dock/auto-refresh'
 import {
   ApiError,
   fetchAssistantSubsessions,
-  type AssistantFollowUpStatus,
   type AssistantSubsessionDto,
   type AssistantSubsessionsPageDto
 } from '@/lib/api'
-import { useOrgs } from '@/lib/org-context'
-import { ConfirmStrip } from '@/components/console/ConfirmStrip'
-import {
-  FollowUpChecks,
-  FollowUpChecksToggle,
-  followUpKindKey,
-  followUpOf,
-  stopTask,
-  taskRunning,
-  taskStopKey,
-  useFollowUpStatusText
-} from '@/components/console/follow-up'
-import { TaskGroupHeading, formatTaskElapsed } from './task-group'
+import { followUpOf, taskRunning } from '@/components/console/follow-up'
+import { BackgroundTaskRow, TaskGroup, taskFinished, useTaskStops } from '@/components/console/task-list'
 
 /** Rows one read asks for; "Show more" pages on by the cursor the last one returned. */
 export const SUBSESSIONS_PAGE = 20
@@ -41,29 +27,35 @@ const POLL_MS = 5_000
 const IDLE_POLL_MS = 20_000
 // A hidden panel still reads, slowly: its verdict is what puts the tab in the strip once the conversation opens its first one.
 const HIDDEN_POLL_MS = 60_000
-/** How often a running row's elapsed time redraws; arithmetic, no request. */
-const TICK_MS = 1_000
+/** How often a running row's start time redraws; arithmetic, no request. */
+const TICK_MS = 15_000
 
-/** What the Tasks panel needs from this group. */
+/** What the Tasks panel needs from these groups. */
 export interface SubsessionsPanelVerdict {
   /** The first read of this conversation has answered. */
   settled: boolean
-  /** Rows on screen; 0 drops the group. */
+  /** Rows read, finished ones included; 0 drops both groups. */
   count: number
-  /** Running rows on screen, for the badge. */
+  /** Running rows, for the badge. */
   running: number
-  /** The read failed with nothing to show, so the group stays to say why. */
+  /** Rows that reported, failed or ended, which wait behind the finished toggle. */
+  finished: number
+  /** The read failed with nothing to show, so the groups stay to say why. */
   failed: boolean
 }
 
-export const SUBSESSIONS_UNSETTLED: SubsessionsPanelVerdict = { settled: false, count: 0, running: 0, failed: false }
+export const SUBSESSIONS_UNSETTLED: SubsessionsPanelVerdict = {
+  settled: false,
+  count: 0,
+  running: 0,
+  finished: 0,
+  failed: false
+}
 
-/** Shown once the conversation has one, or when the read failed and the group has to say why. */
+/** Shown once the conversation has one, or when the read failed and the groups have to say why. */
 export function subsessionsTabShown(verdict: SubsessionsPanelVerdict): boolean {
   return verdict.settled && (verdict.failed || verdict.count > 0)
 }
-
-type StopState = 'busy' | 'stopped' | 'not_running' | 'failed' | 'upgrade'
 
 interface ListState {
   scope: string
@@ -111,24 +103,27 @@ export function SubsessionsPanel({
   active = true,
   turnActive = false,
   refreshTick = 0,
+  showFinished = false,
   onVerdictChange
 }: {
   agentId: string
   /** The conversation's own session: only its tasks are listed. */
   sessionId: string
-  /** Whether the Tasks tab is the selected one; a hidden group reads slowly. */
+  /** Whether the Tasks tab is the selected one; a hidden panel reads slowly. */
   active?: boolean
   /** A turn streaming in this conversation; its falling edge is where a delegation lands. */
   turnActive?: boolean
   /** Bumped by the tab's refresh action. */
   refreshTick?: number
+  /** The finished toggle is open, so finished rows are drawn dimmed in their groups. */
+  showFinished?: boolean
   onVerdictChange?: (verdict: SubsessionsPanelVerdict) => void
 }) {
   const t = useTranslations('Sessions.detail.subsessionsPanel')
+  const tl = useTranslations('Common.taskList')
   const scope = `${agentId}\n${sessionId}`
   const [ownTick, setOwnTick] = useState(0)
   const [list, setList] = useState<ListState | null>(null)
-  const [stops, setStops] = useState<{ scope: string; byId: Record<string, StopState> }>({ scope, byId: {} })
   const [moreState, setMore] = useState({ scope, loading: false, failed: false })
   const more = moreState.scope === scope ? moreState : { scope, loading: false, failed: false }
   const revision = refreshTick + ownTick
@@ -164,7 +159,9 @@ export function SubsessionsPanel({
   const running = rows.filter(taskRunning).length
   const settled = current !== null
   const failed = current?.error != null && rows.length === 0
-  const stopById = stops.scope === scope ? stops.byId : {}
+  const finished = rows.filter(taskFinished).length
+  const reread = useCallback(() => setOwnTick((tick) => tick + 1), [])
+  const { stopOf, stop } = useTaskStops(agentId, scope, reread)
   const [now, setNow] = useState(() => Date.now())
 
   // The activation edge reads once, so a tab opened after a quiet minute is not stale.
@@ -180,10 +177,10 @@ export function SubsessionsPanel({
     whileHidden: true,
     pollWhileHidden: true,
     intervalMs: !active ? HIDDEN_POLL_MS : running > 0 ? POLL_MS : IDLE_POLL_MS,
-    onRefresh: () => setOwnTick((tick) => tick + 1)
+    onRefresh: reread
   })
 
-  // Elapsed redraws from `startedAt` alone while one runs on screen.
+  // "started 4m ago" redraws from `startedAt` alone while one runs on screen.
   useEffect(() => {
     if (!active || running === 0) return
     const timer = setInterval(() => setNow(Date.now()), TICK_MS)
@@ -193,11 +190,11 @@ export function SubsessionsPanel({
   // Reported on the edge, so a poll that finds the same rows does not re-render the whole session page.
   const reported = useRef<string | null>(null)
   useEffect(() => {
-    const key = `${settled}:${rows.length}:${running}:${failed}`
+    const key = `${settled}:${rows.length}:${running}:${finished}:${failed}`
     if (reported.current === key) return
     reported.current = key
-    onVerdictChange?.({ settled, count: rows.length, running, failed })
-  }, [failed, onVerdictChange, rows.length, running, settled])
+    onVerdictChange?.({ settled, count: rows.length, running, finished, failed })
+  }, [failed, finished, onVerdictChange, rows.length, running, settled])
 
   const loadMore = useCallback(async () => {
     const cursor = current?.cursor
@@ -220,274 +217,53 @@ export function SubsessionsPanel({
     }
   }, [agentId, current?.cursor, more.loading, scope, sessionId])
 
-  const stop = useCallback(
-    async (row: AssistantSubsessionDto) => {
-      const id = taskStopKey(row)
-      if (!id) return
-      const mark = (state: StopState) =>
-        setStops((prev) => ({ scope, byId: { ...(prev.scope === scope ? prev.byId : {}), [id]: state } }))
-      mark('busy')
-      try {
-        mark((await stopTask(agentId, row)).result)
-      } catch (e) {
-        mark(e instanceof ApiError && e.code === 'DAEMON_FEATURE_MISSING' ? 'upgrade' : 'failed')
-      }
-      setOwnTick((tick) => tick + 1)
-    },
-    [agentId, scope]
-  )
-
   // The dock's own placeholder speaks until the first read answers; an empty conversation has no group at all.
-  if (!settled || !subsessionsTabShown({ settled, count: rows.length, running, failed })) return null
+  if (!settled || !subsessionsTabShown({ settled, count: rows.length, running, finished, failed })) return null
 
-  return (
-    <section
-      data-subsessions-panel=""
-      data-task-group="delegated"
-      aria-label={t('group')}
-      className="flex flex-none flex-col gap-[6px]"
-    >
-      <TaskGroupHeading
-        title={t('group')}
-        hint={t('groupHint')}
-        census={rows.length > 0 ? censusText(rows, t) : undefined}
-      />
-      <div className="flex flex-none flex-col gap-[6px]">
-        {current?.error ? (
-          <PanelNotice
-            text={t(noticeKey(current.error.status, current.error.code))}
-            warn={current.error.status !== 503}
-          />
-        ) : null}
-        {rows.map((row, i) => {
-          const stopKey = taskStopKey(row)
-          return (
-            <SubsessionRow
-              key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
-              row={row}
-              now={now}
-              stop={stopKey ? stopById[stopKey] : undefined}
-              onStop={stop}
-            />
-          )
-        })}
-        {current?.cursor ? (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button variant="ghost" size="xs" disabled={more.loading} onClick={() => void loadMore()}>
-              {t('more')}
-            </Button>
-            {more.failed ? (
-              <span role="alert" className="font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
-                {t('moreFailed')}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    </section>
+  // Open rows lead each group; finished ones follow, dimmed, once the toggle is open.
+  const shown = [...rows.filter((row) => !taskFinished(row)), ...(showFinished ? rows.filter(taskFinished) : [])]
+  const followUps = shown.filter((row) => followUpOf(row) !== null)
+  const tasks = shown.filter((row) => followUpOf(row) === null)
+  const drawRow = (row: AssistantSubsessionDto, i: number) => (
+    <BackgroundTaskRow
+      key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
+      row={row}
+      now={now}
+      stop={stopOf(row)}
+      onStop={stop}
+      dim={taskFinished(row)}
+    />
   )
-}
 
-/** The group's census, counted off the rows on screen. */
-function censusText(
-  rows: AssistantSubsessionDto[],
-  t: ReturnType<typeof useTranslations<'Sessions.detail.subsessionsPanel'>>
-): string {
-  const running = rows.filter(taskRunning).length
-  const failed = rows.filter((row) => row.state === 'failed').length
-  const waiting = rows.filter((row) => followUpOf(row) && row.state === 'open' && !taskRunning(row)).length
-  const ended = rows.filter((row) => followUpOf(row) && row.state === 'done').length
-  const reported = rows.length - running - waiting - ended - failed
-  const parts = [t('census.running', { count: running })]
-  if (waiting > 0) parts.push(t('census.waiting', { count: waiting }))
-  if (reported > 0) parts.push(t('census.reported', { count: reported }))
-  if (ended > 0) parts.push(t('census.ended', { count: ended }))
-  if (failed > 0) parts.push(t('census.failed', { count: failed }))
-  return parts.join(' · ')
-}
-
-const ACCENT: Record<AssistantSubsessionDto['state'], string> = {
-  open: 'var(--status-info)',
-  done: 'var(--status-online)',
-  failed: 'var(--red-600)'
-}
-
-// Every side named, as on the Tasks rows, so which left colour wins never depends on emit order.
-const BORDER: Record<AssistantSubsessionDto['state'], string> = {
-  open: 'border-l-(--status-info)',
-  done: 'border-l-(--status-online)',
-  failed: 'border-l-(--red-600)'
-}
-
-const FOLLOW_UP_ICON: Record<AssistantFollowUpStatus, { name: string; color: string }> = {
-  waiting: { name: 'clock', color: 'var(--status-info)' },
-  checking: { name: 'clock', color: 'var(--status-info)' },
-  paused: { name: 'circle-pause', color: 'var(--status-paused)' },
-  done: { name: 'circle-check', color: 'var(--status-online)' },
-  stopped: { name: 'circle-slash', color: 'var(--text-tertiary)' }
-}
-
-const FOLLOW_UP_BORDER: Record<AssistantFollowUpStatus, string> = {
-  waiting: 'border-l-(--status-info)',
-  checking: 'border-l-(--status-info)',
-  paused: 'border-l-(--status-paused)',
-  done: 'border-l-(--status-online)',
-  stopped: 'border-l-(--border-strong)'
-}
-
-const STOP_RESULT: Record<Exclude<StopState, 'busy'>, 'stopped' | 'notRunning' | 'stopFailed' | 'upgradeDaemon'> = {
-  stopped: 'stopped',
-  not_running: 'notRunning',
-  failed: 'stopFailed',
-  upgrade: 'upgradeDaemon'
-}
-
-const END_RESULT: Record<Exclude<StopState, 'busy' | 'upgrade'>, 'ended' | 'alreadyEnded' | 'endFailed'> = {
-  stopped: 'ended',
-  not_running: 'alreadyEnded',
-  failed: 'endFailed'
-}
-
-// No turn to stop on a row that has not reported: a background process its turn started may still be running.
-const stopNotice = (stop: Exclude<StopState, 'busy'>, state: AssistantSubsessionDto['state']) =>
-  stop === 'not_running' && state === 'open' ? 'notRunningBackground' : STOP_RESULT[stop]
-
-function SubsessionRow({
-  row,
-  now,
-  stop,
-  onStop
-}: {
-  row: AssistantSubsessionDto
-  now: number
-  stop: StopState | undefined
-  onStop: (row: AssistantSubsessionDto) => Promise<void>
-}) {
-  const t = useTranslations('Sessions.detail.subsessionsPanel')
-  const tf = useTranslations('Common.followUp')
-  const format = useFormatter()
-  const { orgPath } = useOrgs()
-  const statusText = useFollowUpStatusText()
-  const [expanded, setExpanded] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const followUp = followUpOf(row)
-  const runningNow = taskRunning(row)
-  // A follow-up whose first check has not run is ended by its own id.
-  const stoppable = row.state === 'open' && row.canStop && taskStopKey(row) !== null
-  const icon = followUp ? FOLLOW_UP_ICON[followUp.status] : null
-  // Ending a follow-up is asked once more; stopping a turn is not.
-  const askStop = () => {
-    if (followUp) setConfirming(true)
-    else void onStop(row)
-  }
   return (
-    <div
-      data-subsession-row={row.state}
-      data-follow-up={followUp?.status}
-      className={`flex flex-none flex-col gap-[5px] rounded-md border-y border-r border-l-2 border-y-(--border-subtle) border-r-(--border-subtle) bg-(--surface-card) px-[10px] py-2 ${followUp ? FOLLOW_UP_BORDER[followUp.status] : BORDER[row.state]}`}
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        {runningNow ? (
-          <span className="flex flex-none items-center">
-            <Spinner size={12} />
-          </span>
-        ) : icon ? (
-          <Icon name={icon.name} size={13} color={icon.color} className="flex-none" />
-        ) : (
-          <Icon
-            name={row.state === 'failed' ? 'circle-x' : 'circle-check'}
-            size={13}
-            color={ACCENT[row.state]}
-            className="flex-none"
-          />
-        )}
-        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">
-          {row.sessionId ? (
-            <Link
-              className="lnk"
-              href={orgPath(`/sessions/${encodeURIComponent(row.sessionId)}`)}
-              title={row.title ?? undefined}
-            >
-              {row.title ?? t('untitled')}
-            </Link>
-          ) : row.visible && followUp ? (
-            <span title={row.title ?? undefined}>{row.title ?? t('untitled')}</span>
-          ) : row.visible ? (
-            <span className="font-normal text-(--text-secondary)">{t('starting')}</span>
-          ) : (
-            <span className="inline-flex items-center gap-[6px] font-normal text-(--text-tertiary)">
-              <Icon name="lock" size={12} />
-              {t('hidden')}
-            </span>
-          )}
-        </span>
-        {followUp && row.visible ? (
-          <FollowUpChecksToggle expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
-        ) : null}
-        {stoppable ? (
-          <Button
-            variant="secondary"
-            size="xs"
-            className="flex-none"
-            disabled={stop === 'busy' || confirming}
-            onClick={askStop}
-          >
-            <Icon name="square" size={11} />
-            {followUp ? tf('end') : t('stop')}
-          </Button>
-        ) : null}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-2 pl-[21px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-        {followUp ? (
-          <>
-            <span>{tf(followUpKindKey(followUp))}</span>
-            <span aria-hidden="true">·</span>
-            <span data-subsession-state="">{statusText(followUp)}</span>
-          </>
-        ) : (
-          <>
-            <span data-subsession-state="">{t(`state.${row.state}`)}</span>
-            <span aria-hidden="true">·</span>
-            <time dateTime={row.startedAt}>
-              {t('started', {
-                time: format.dateTime(new Date(row.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
-              })}
-            </time>
-          </>
-        )}
-        {runningNow && !followUp ? (
-          <>
-            <span aria-hidden="true">·</span>
-            <span data-subsession-elapsed="" className="mono text-[11px]">
-              {formatTaskElapsed(row.startedAt, now)}
-            </span>
-          </>
-        ) : null}
-      </div>
-      {followUp && expanded ? (
-        <div className="pl-[21px]">
-          <FollowUpChecks followUp={followUp} />
-        </div>
-      ) : null}
-      {confirming && stoppable ? (
-        <ConfirmStrip
-          prompt={tf('endConfirm')}
-          confirm={tf('end')}
-          keep={tf('keep')}
-          busy={stop === 'busy'}
-          onConfirm={() => void onStop(row).then(() => setConfirming(false))}
-          onKeep={() => setConfirming(false)}
+    <div data-subsessions-panel="" className="flex flex-none flex-col gap-3">
+      {current?.error ? (
+        <PanelNotice
+          text={t(noticeKey(current.error.status, current.error.code))}
+          warn={current.error.status !== 503}
         />
       ) : null}
-      {stop && stop !== 'busy' ? (
-        <div
-          role="status"
-          data-subsession-stop={stop}
-          className={`pl-[21px] font-sans text-[11.5px] font-normal leading-normal ${
-            stop === 'failed' || stop === 'upgrade' ? 'text-(--status-error)' : 'text-(--text-secondary)'
-          }`}
-        >
-          {followUp && stop !== 'upgrade' ? tf(END_RESULT[stop]) : t(stopNotice(stop, row.state))}
+      {tasks.length > 0 ? (
+        <TaskGroup id="tasks" title={tl('groups.tasks')} count={tasks.length}>
+          {tasks.map(drawRow)}
+        </TaskGroup>
+      ) : null}
+      {followUps.length > 0 ? (
+        <TaskGroup id="follow-ups" title={tl('groups.followUps')} count={followUps.length}>
+          {followUps.map(drawRow)}
+        </TaskGroup>
+      ) : null}
+      {/* Pages run by start time, so an older page can hold open work: "Show more" stays whenever a cursor does. */}
+      {current?.cursor ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="ghost" size="xs" disabled={more.loading} onClick={() => void loadMore()}>
+            {t('more')}
+          </Button>
+          {more.failed ? (
+            <span role="alert" className="font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
+              {t('moreFailed')}
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -496,7 +272,7 @@ function SubsessionRow({
 
 function PanelNotice({ text, warn = false }: { text: string; warn?: boolean }) {
   return (
-    <div className="flex items-start gap-2 px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
+    <div className="flex items-start gap-2 px-[2px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
       <Icon
         name={warn ? 'triangle-alert' : 'split'}
         size={14}

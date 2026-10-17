@@ -215,6 +215,40 @@
         "firstCheck": "首次检查：{time}",
         "noCheck": "收到消息前不检查"
       }
+    },
+    "taskList": {
+      "groups": {
+        "tasks": "任务",
+        "followUps": "跟进",
+        "subagents": "子 Agent",
+        "commands": "后台命令"
+      },
+      "finished": "{count} 个已结束",
+      "state": {
+        "open": "运行中",
+        "done": "已回报",
+        "failed": "失败"
+      },
+      "runtimeState": {
+        "running": "运行中",
+        "done": "已完成",
+        "failed": "失败"
+      },
+      "started": "{time}开始",
+      "lastCheck": "上次 {time}",
+      "expires": "{time} 过期",
+      "untitled": "未命名的任务",
+      "starting": "启动中…",
+      "hidden": "你无权查看",
+      "webchat": "Webchat",
+      "conversation": "对话",
+      "stop": "停止",
+      "end": "结束",
+      "stopped": "已停止。",
+      "notRunning": "没有正在运行的回合。",
+      "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
+      "stopFailed": "停止失败，请重试。",
+      "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
     }
   },
   "Profile": {
@@ -839,52 +873,19 @@
         "lastCheck": "上次检查：{error}"
       },
       "tasksPanel": {
-        "noBackgroundTasks": "这一轮没有",
-        "noTasksInSession": "没有后台命令或 subagent，Agent 运行的所有工作均已在其回合内完成。",
+        "idle": "后台没有正在运行的工作。",
         "unnamedTask": "未命名的后台命令",
         "unnamedSubagent": "未命名的 subagent",
-        "subagent": "子 Agent",
-        "subagentTitle": "Runtime 内部子 Agent 调用",
-        "olderTasksHidden": "更早的未显示，Daemon 只保留有限历史记录。",
-        "groupTurn": "这一轮里的",
-        "groupTurnHint": "（runtime 上报）",
-        "census": {
-          "running": "{count} 个运行中",
-          "done": "{count} 个已完成",
-          "failed": "{count} 个失败"
-        },
-        "upgradeDaemon": "此 Agent 的 Daemon 版本无法报告这一轮的任务。更新 Agent 后即可在这里查看。",
-        "oldDaemon": "此 Agent 的 Daemon 版本无法报告这一轮的任务。",
-        "notReadable": "无法读取此会话的任务。",
-        "unavailable": "暂时无法读取这一轮的任务，所属 Daemon 可能已离线。"
+        "olderTasksHidden": "更早的未显示。",
+        "upgradeDaemon": "更新此 Agent 后，才能在这里查看它的子 Agent 和后台命令。",
+        "oldDaemon": "此 Agent 的 Daemon 无法报告子 Agent 和后台命令。",
+        "notReadable": "无法读取此会话的子 Agent 和后台命令。",
+        "unavailable": "暂时无法读取子 Agent 和后台命令，Agent 的 Daemon 可能已离线。"
       },
       "subsessionsPanel": {
-        "group": "委派出去的",
-        "groupHint": "（AgentConnect 管）",
-        "census": {
-          "running": "{count} 个运行中",
-          "waiting": "{count} 个等待中",
-          "reported": "{count} 个已回报",
-          "ended": "{count} 个已结束",
-          "failed": "{count} 个失败"
-        },
-        "state": {
-          "open": "运行中",
-          "done": "已回报",
-          "failed": "失败"
-        },
-        "untitled": "未命名的任务",
-        "starting": "启动中…",
-        "hidden": "你无权查看",
-        "started": "开始于 {time}",
-        "stop": "停止",
-        "stopped": "已停止。",
-        "notRunning": "没有正在运行的回合。",
-        "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
-        "stopFailed": "停止失败，请重试。",
-        "upgradeDaemon": "升级此 Agent 的 Daemon 后才能在这里查看委派的任务。",
-        "notReadable": "无法读取此会话委派的任务。",
-        "unavailable": "暂时无法读取委派的任务。",
+        "upgradeDaemon": "升级此 Agent 的 Daemon 后，才能在这里查看任务和跟进。",
+        "notReadable": "无法读取此对话的任务和跟进。",
+        "unavailable": "暂时无法读取任务和跟进。",
         "more": "显示更多",
         "moreFailed": "加载失败，请重试。"
       },
@@ -3182,55 +3183,14 @@
         "unavailable": "暂时无法读取动态。",
         "upgradeDaemon": "升级此 Agent 的 Daemon 后才能查看动态。",
         "more": "只显示最近的部分。",
-        "keep": "保留",
         "webchat": "Webchat",
         "dmWith": "与 {name} 的私信",
-        "items": {
-          "title": "事项",
-          "empty": "没有进行中的事项。",
-          "closed": "已完成和已放弃",
-          "closedEmpty": "暂无。",
-          "expand": "显示观察记录",
-          "collapse": "隐藏观察记录",
-          "status": {
-            "active": "进行中",
-            "waiting": "等待中",
-            "done": "已完成",
-            "dropped": "已放弃"
-          },
-          "doneWhen": "完成标准：{text}",
-          "nextCheck": "下次检查：{time}",
-          "updated": "更新于 {time}",
-          "noObservations": "暂无观察记录。",
-          "delete": "删除",
-          "deleteConfirm": "删除此事项？Agent 将不再跟进它。",
-          "deleteFailed": "删除事项失败。"
-        },
-        "subsessions": {
-          "title": "任务",
-          "empty": "还没有任务。",
-          "state": {
-            "open": "运行中",
-            "done": "已回报",
-            "failed": "失败"
-          },
-          "untitled": "未命名的任务",
-          "starting": "启动中…",
-          "hidden": "你无权查看",
-          "from": "来自 {name}",
-          "started": "开始于 {time}",
-          "conversation": "一个会话"
-        },
         "drafts": {
-          "title": "等待批准",
-          "empty": "没有等待批准的内容。",
-          "to": "发往 {target}",
+          "to": "发往 {target} 的消息",
           "inThread": "在话题中",
           "external": "外部",
-          "approver": "审批人：{name}",
           "expires": "{time} 过期",
           "noApprover": "无人可审批",
-          "inConversation": "可以继续该对话的人",
           "approve": "批准",
           "discard": "丢弃",
           "cancel": "取消",
@@ -3255,13 +3215,11 @@
             "why": "原因：{why}",
             "details": "原因和详情",
             "item": "事项：{title}",
-            "runsIn": "在 {place} 中执行",
             "deny": "拒绝",
             "approveConfirm": "现在执行？结果会回报到 {place}。",
             "approveConfirmHere": "现在执行？结果会回报到此对话。",
             "denyConfirm": "拒绝这项提议？不会执行任何操作。",
             "dismiss": "关闭",
-            "followUpIn": "在 {place} 中跟进",
             "takeConfirm": "在 {place} 中接下这个跟进？它会为你跟进，不会执行其他操作。",
             "takeConfirmHere": "在此对话中接下这个跟进？它会为你跟进，不会执行其他操作。",
             "outcome": {
@@ -3279,12 +3237,17 @@
               "notTaken": "无法接下这个跟进：{reason}。",
               "deniedFollowUp": "已拒绝，没有接下跟进。",
               "seeFollowUp": "在所属对话的任务中查看"
-            }
-          }
+            },
+            "kindTask": "建议的任务",
+            "kindFollowUp": "建议的跟进"
+          },
+          "kind": "草稿",
+          "approves": "由 {name} 审批",
+          "inConversationApproves": "可以继续该对话的人都能审批",
+          "someone": "某人"
         },
         "permissions": {
           "badge": "权限",
-          "expires": "若无人处理，将于 {time} 拒绝并停止",
           "allow": "允许",
           "deny": "拒绝",
           "decideFailed": "操作失败，请重试。",
@@ -3293,7 +3256,9 @@
             "denied": "已拒绝。",
             "gone": "已不在等待批准。"
           }
-        }
+        },
+        "waiting": "等你处理",
+        "empty": "没有正在运行或等待处理的事。"
       },
       "dreamSchedule": {
         "runOnSchedule": "按计划运行（否则只有在你触发时才运行梦境）",
