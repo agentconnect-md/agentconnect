@@ -293,7 +293,6 @@ import { InternalInvocationAuth } from './http/mcp/internal-invocation-auth.js'
 import { webchatMcpDescriptorUrl } from './http/oauth/base.js'
 import { defaultWebchatMcpMetrics } from './observability/webchat-mcp.js'
 import { pingDb } from './persistence/prisma.js'
-import { OrganizationRecordMove } from './organization-knowledge/record-move.js'
 import { runWithSharedTx, withSharedTxRouting } from './persistence/ambient-tx.js'
 import { verifySlackBot, verifySlackAppToken } from './http/slack-identity.js'
 import { verifyTelegramBot } from './http/telegram-identity.js'
@@ -2324,8 +2323,6 @@ export function buildContainer(
   const presetBackfill = config.PRESET_AGENTS_ENABLED ? new PresetAgentBackfill(prisma, http.log) : undefined
 
   // The memory-home rollout flip (memory-evolution.md §3.2.1): one idempotent pass per boot, armed by startBackground().
-  // assistant-mode.md §5.16: assistant-mode agents' copies of the organization files move into the record once.
-  const organizationRecordMove = new OrganizationRecordMove({ prisma, log: http.log })
   const setMemoryHome = new SetMemoryHomeReconciler({
     agents: repos.agent,
     memberSets: repos.memberSet,
@@ -3207,7 +3204,6 @@ export function buildContainer(
       // failed boot resumes on the next one. Never blocks listen.
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
       void setMemoryHome.run().catch((err) => http.log.error({ err }, 'set-memory-home: pass failed'))
-      void organizationRecordMove.run().catch((err) => http.log.error({ err }, 'organization-record-move: pass failed'))
     },
     async shutdown() {
       fileTransferBucket?.gate.stop()

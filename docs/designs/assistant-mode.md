@@ -2819,7 +2819,7 @@ first entry **About**; this design keeps "the organization record" as its term f
 
 - Every knowledge entry carries `visibility: all | selected` and, when `selected`, `readers`, a
   list of agent ids. `all` is every agent of the organization. Existing entries default to `all`
-  (Migration, below). The visibility is for agents, not people: every member still reads the
+  when the column is added. The visibility is for agents, not people: every member still reads the
   whole Library, as the knowledge design says, and owners alone still edit it.
 - `findKnowledge` and `listKnowledge` return only the entries the calling agent may read. The
   Control Plane filters by the requesting agent, which the daemon binds from the session context
@@ -2891,7 +2891,7 @@ where the write lands.
   day each was cleared, never in the entry's text. A record read returns the marked keys with the
   entry, so the daemon's rules check them as they check the marker today, and a write carries the
   keys it marks or lifts (§5.17: a removal marks before the write lands, a person's own write
-  lifts after). The one-time move unions every agent's marker (Migration).
+  lifts after).
 - **The shape parser moves to the protocol package**, so the Control Plane checks a console edit
   as the daemon checks a tool write; `members.md`'s grammar is already there
   (`members-directory.ts`).
@@ -2908,9 +2908,8 @@ on; later agents read what exists. _Recommended_ mechanism: the row-locked write
 switches an agent's mode on also claims the organization's research when no agent has claimed it,
 creates the three record entries when the organization has none (each with its title line and
 nothing else) and adds the agent to People's readers, in one transaction. The onboarding record on
-the agent row carries the outcome as `research: boolean`, which rides the spec beside its hints;
-an older daemon drops the field unread and researches as it does today, which the one-time move
-below absorbs. A daemon that reads `research: false` greets the person as it does today, but the
+the agent row carries the outcome as `research: boolean`, which rides the spec beside its hints.
+A daemon that reads `research: false` greets the person as it does today, but the
 hello says the organization record exists, names the agent that researched it and when, and that
 this agent has read it; it opens no research task, and "research again" in that DM is pointed to
 the agent that holds the research task. The claiming agent keeps everything §5.15 gives research:
@@ -2976,25 +2975,9 @@ Memory tab lists only the agent's own memory and does not mention the organizati
 Your memory shows the person layer alone, and the directory's people no longer appear under the
 shared layer.
 
-**Migration** (_decided_, the mechanism _recommended_).
-
-- Existing knowledge entries default to `all` when the column is added.
-- An organization whose assistant-mode agents already hold the three files in memory gets them
-  moved into knowledge once, with the memory copies removed. Assistant mode keeps memory in the
-  Control Plane (§4.1), so the Control Plane does the move itself at boot, per organization with
-  at least one assistant-mode agent whose shared layer holds any of the three names, with no
-  daemon involved. With several copies, each file is merged mechanically within its shape: the
-  copy written last is the base; About takes the other copies' lines whose text it lacks
-  into the same section, the summary kept at ten lines by dropping the oldest-dated extras;
-  Channels unions lines by `#name`, the newest date winning; People unions entries by key and
-  lines by field and text, each entry kept at ten lines the same way. The opt-out markers are
-  unioned, the earliest day kept. The new entries start at revision 1 with source `migration`;
-  the files' change history stays in the memory change log and is not moved. The copies and
-  their index lines are then deleted from each agent's shared layer.
-- The research status of a moved record is taken from the agents' onboarding records: the agent
-  that first switched the mode on, and the day of the last write to its `organization.md`.
-- The move is idempotent and runs again for copies a daemon without `knowledge-record-v1` writes
-  during the rollout, so a mixed fleet converges.
+**No migration of memory copies** (the product owner, 2026-10-18): nothing of this was released,
+so copies of the three files in agents' memory are not moved into the record; existing knowledge
+entries default to `all` when the column is added.
 
 **Not chosen** (considered 2026-10-17, the first time this section was written, and still not
 chosen): the agent publishing ordinary knowledge entries itself, and an auto-accept rule for
@@ -3028,10 +3011,10 @@ third needs the first.
      `knowledge/record/write` → `knowledge/record/ok` or `knowledge/record/conflict`;
      `withOutsiders` on `knowledge/search` and `knowledge/list`. The Control Plane proves
      placement and assistant mode on each.
-   - The one-time move at boot, idempotent, with the merge rules above; the retirement of the
-     Memory page's own-entry and directory routes and of `memory/member/clear`.
+   - The retirement of the Memory page's own-entry and directory routes and of
+     `memory/member/clear`.
 2. **Daemon: write routing, the People audience rule, injection and `findKnowledge` filtering,
-   the switch-on hook and the one-time move.**
+   the switch-on hook.**
    - For an assistant-mode agent, the three names in the shared layer resolve to the record
      through the new frames when the Control Plane advertises `knowledge-record-v1`, and to the
      shared layer's store otherwise; the revision-checked merge, the shape check, §5.17's person
@@ -3064,14 +3047,14 @@ The product documentation follows the third change, once the feature is complete
 smallest choice made for it:
 
 - **Research's claim** is a row per organization, `organization_record`, holding the claiming
-  agent, when it claimed, and the moved record's last research day. The first switch-on that
+  agent and when it claimed. The first switch-on that
   writes an agent's onboarding record claims it when no agent holds it, in the agent's row-locked
   write, and writes `research: true` or `false` into that onboarding record; a later switch-on of
   the same agent claims nothing. The claiming agent's deletion frees the claim, so the next
   agent's first switch-on researches rather than pointing to an agent that is gone.
 - **The record's entries** are titled About, Channels and People and start as their title line
-  alone (`# About`, `# Channels`, `# People`). They are created by the first switch-on, by the
-  first record read of an agent already in the mode when this shipped, or by the move. People
+  alone (`# About`, `# Channels`, `# People`). They are created by the first switch-on, or by
+  the first record read of an agent already in the mode when this shipped. People
   starts read by every agent of the organization then in assistant mode, following the mode.
   Their title does not change on an edit, they carry no summary or tags, and archiving one is
   refused: an owner clears it instead.
@@ -3089,10 +3072,10 @@ smallest choice made for it:
   `knowledge/people`, carrying the entry id, the key or the count removed, and no content.
 - **"Running since"** is the later of the research session's start and the last research
   revision, since no round's start is recorded on the Control Plane.
-- **The move** runs at every boot. A copy an older daemon writes after a boot is moved by the
-  next one, and the record, when it holds more than its title line, counts as one more copy,
-  the newest of which is the base. A copy changed since the move read it is left for the next
-  run. Channels' place-file links are dropped as the lines are merged.
+- **No move.** A boot-time move of agents' memory copies into the record shipped with this change
+  and was removed before it ran anywhere (the product owner: nothing was released, so nothing is
+  migrated). With it went the record row's research day; research's day is the last research
+  revision.
 - **Deferred to change 3**: the retirement of the Memory page's own-entry and directory routes
   and of `memory/member/clear`, since the console calls them until it moves to the Knowledge
   page.
