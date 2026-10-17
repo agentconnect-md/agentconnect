@@ -71,6 +71,19 @@ function fakeResult(overrides: Partial<CollaborationGameResult> = {}): Collabora
 }
 
 describe('collaboration game Promptfoo provider (§12)', () => {
+  it('dispatches relay cases and preserves their metadata', async () => {
+    const runRelayGame = vi.fn(async () => fakeResult())
+    const provider = new CollaborationGameProvider({ config: { artifactRoot: scratch() } }, { runRelayGame })
+    const response = await provider.callApi(
+      JSON.stringify({ kind: 'game', id: 'relay-test', game: 'relay', variant: 'conflict', seed: 13 })
+    )
+    expect(response.error).toBeUndefined()
+    expect(runRelayGame).toHaveBeenCalledWith(
+      expect.objectContaining({ seed: 13, variant: 'conflict', subject: { kind: 'scripted' } })
+    )
+    expect(response.metadata).toMatchObject({ game: 'relay', scenario: 'cross-platform', variant: 'conflict' })
+  })
+
   it('runs one complete scripted game per invocation and reports evidence locations', async () => {
     const runGame = vi.fn(async (_options: Parameters<typeof runSameRoomCounting>[0]) => fakeResult())
     const provider = new CollaborationGameProvider({ config: { artifactRoot: scratch() } }, { runGame })

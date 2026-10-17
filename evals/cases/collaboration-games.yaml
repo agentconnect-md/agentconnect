@@ -88,3 +88,55 @@
     - type: javascript
       value: file://assertions/game-result.ts
       metric: game
+
+- description: Cross-platform relay · clean feedback · evidence loop
+  metadata:
+    game: relay
+    scenario: cross-platform
+    variant: clean
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-clean-v1", "game": "relay", "scenario": "cross-platform", "variant": "clean", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Cross-platform relay · stale feedback · evidence loop
+  metadata:
+    game: relay
+    scenario: cross-platform
+    variant: stale
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-stale-v1", "game": "relay", "scenario": "cross-platform", "variant": "stale", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Cross-platform relay · duplicate feedback · evidence loop
+  metadata:
+    game: relay
+    scenario: cross-platform
+    variant: duplicate
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-duplicate-v1", "game": "relay", "scenario": "cross-platform", "variant": "duplicate", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Cross-platform relay · conflict feedback · evidence loop
+  metadata:
+    game: relay
+    scenario: cross-platform
+    variant: conflict
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-conflict-v1", "game": "relay", "scenario": "cross-platform", "variant": "conflict", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
