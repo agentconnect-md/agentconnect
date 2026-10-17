@@ -2163,15 +2163,14 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
 
 ### 5.15 Organization research and the organization files
 
-**Status:** Partly shipped. The organization files' shapes and a first look that writes memory
-itself shipped on 2026-10-17 ("As shipped" below); organization research, `members.md`'s entry
-rules and the other writers are proposed. What is marked _decided_ is the product owner's, settled
+**Status:** Partly shipped. The organization files' shapes, a first look that writes memory
+itself and organization research shipped on 2026-10-17 (the two "As shipped" blocks below);
+`members.md`'s entry rules and the other writers are proposed. What is marked _decided_ is the product owner's, settled
 while reviewing this proposal on 2026-10-17: the organization files live in the agent's memory
 (§5.16); there is no home session; a first look and organization research write memory themselves;
 and research is a delegated task of the conversation that switched the mode on. Everything else is
 a recommendation for the owner to confirm, and what is marked _undecided_ is listed in §9
-(Q22–Q31). Research adds agent-facing tools, the code-host reads, so it waits for the owner's OK
-before any daemon work.
+(Q22–Q31). The owner asked for research, the code-host reads included, to be built as written.
 
 **Why.**
 
@@ -2309,7 +2308,8 @@ report. So the task writes what it learned, and the long session only speaks:
   `recordCheck` 268 characters (244 before) with its 391-byte schema. The memory writes it now gets
   are unchanged: `writeMemory` 1,609 characters, `createMemoryEntry` 478 and `updateMemoryEntry` 399. Each is within Claude Code's 2,048-character cap.
 - **Not yet:** `members.md`'s entry rules (who an entry may be about, the opt-out marker, a person's
-  own entry), the memory guidance an internal public channel's session gets, and research.
+  own entry) and the memory guidance an internal public channel's session gets. Research shipped
+  later the same day ("As shipped" after "Budget").
 
 **Organization research** (recommended).
 
@@ -2481,7 +2481,102 @@ guards:
 not against `dailyCheckBudget`; one task per agent, with rounds. A round that fails is reported as
 any task's failure is (§5.7), in the DM.
 
-**Web access** (verified 2026-10-17 from the code; no runtime was run).
+**As shipped** (2026-10-17: organization research).
+
+- **The record.** The agent update that first switches the mode on writes `assistantOnboarding`
+  on the agent row in the same row-locked write: who made the edit, when, and the hints. The
+  hints are the organization's name as the editor's membership shows it, its bots' workspace
+  names, and up to ten email domains its members use, public mail providers' left out; never an
+  address. It is written once: switching off and on again writes nothing, and an agent already in
+  the mode when this shipped has none. The spec carries it as a top-level optional field beside
+  `assistantMode`, only once it is set, so it always lands with a new revision; the daemon's
+  revision digest leaves it out, and an older daemon drops it unread. No feature gate is needed.
+- **Who is greeted.** The daemon asks the approval route for the editor's DM by console user,
+  else for the responsible user's, on an integration that can open a DM (Slack today). With
+  neither, or with no such integration, the agent takes no research and nothing new shows (§9
+  Q24). A Control Plane that cannot be asked, or a Slack connection not yet up, is tried again on
+  the next minute sweep. A switch-on older than a day greets nobody, so a daemon that takes the
+  agent over later starts no onboarding of its own. One row per agent in the daemon store
+  (`assistant_onboarding`) makes it run once, whichever member of a group serves the agent.
+- **Hello first.** The hello is the daemon's report into the DM's long session, opening it as its
+  first message would; the DM's kind decides that it appends, since a DM nobody spoke in is not
+  listed yet. Its receipt is fixed per agent, so a re-send after a restart lands once. The research
+  task opens only once that session has no turn left to run, so the hello is said before any
+  research; the message names the task's id for `messageTask` and asks the session never to show
+  it to people.
+- **The task** runs on `subsession:research-<id>`, a delegated task's coordinate in every other
+  respect: its index row names the DM's long session as its owner, it counts against
+  `maxConcurrentSubsessions` (over the cap it waits for the next sweep), its round's last output
+  is the report the daemon sends, and "research again" is that session's `messageTask`. Its input
+  names no `replyToSession` call, on the first round or a later one, since its tools hold no
+  `sendMessage`. Its session is titled "Organization research".
+- **Its tools** are narrowed at dispatch to the memory reads and writes, `findKnowledge`,
+  `listKnowledge`, `listChannels`, and the two code-host reads below where a code host is in
+  reach; the bridge refuses any other name the runtime sends. It gets no Apps tools, no
+  evaluation tools and no user-configured MCP server, any of which could post or act for the
+  agent. Claude's `ExitPlanMode` and `AskUserQuestion` are disallowed, as on a check.
+- **Memory.** The bridge binds its memory tools to the live shared layer
+  (`{ scope: { agentId }, layer: 'shared' }`), so a `layer` argument is refused, its writes are
+  the revision-checked entry writes with the shapes check above, and each write reports the shared
+  layer. The write source stays `tool`: the history source is a value the Control Plane validates,
+  and research's writes are a model's tool writes. Its session starts from the shared layer's
+  index and is never captured.
+- **Its host.** A host of its own, keyed by its session, so it never shares the agent's host,
+  which holds the tool credentials. It launches as a dream host does, without them: no managed
+  git credential, no `gh` or `glab` wrapper, no materialized config file and no runtime secret. It
+  keeps its runtime's own tools under the agent's permission mode: OpenCode's daemon-authored
+  `read-only` agent, which denies every tool, is not applied. On a local launch it starts in an
+  empty directory of its own under the agent's directory and prepares no checkout; on the pool,
+  a microsandbox or an executor, the session's own preparation stands. Its workspace isolation is
+  always shared.
+- **The prompt** is the one above, with the files' shapes, the sources its tools reach and the
+  hints filled by the daemon; one without a code-host read says so under what it could not read.
+- **The second round.** At onboarding the daemon records the first looks running then. Within a
+  day, once none of them still runs and research's own round has ended, it messages the task
+  once, as the owning session would, to read what they wrote; with no first look running at
+  onboarding there is none.
+- **The prelude line** rides every turn of a non-task session of the agent while a research round
+  is open, right after the local time and in its zone: "Organization research is running since
+  14:05; what memory holds about the organization may be incomplete", with a line asking it to say
+  so when it matters.
+- **Code-host reads.** `listCodeHostRepositories` names the workspace repository, the authorized
+  ones from the spec, and the rosters of every installation grant (the selector's repository
+  candidates with a new `grants: 'all'`, behind `repo-candidates-all-v1`), at most 200, cached
+  five minutes; it names no numeric id. `readCodeHostRepository({ repository, part })` reads only
+  a listed repository. On GitHub the daemon serves it with a single-repository read token from
+  `gitcred/grant` (`contents` and `pull_requests`, `requestedAccess: 'read'`), in a cache keyspace
+  of its own so the `gh` wrapper's token for the same repository is never shared; the mint is the
+  authorization check. GitLab and Gitea read the workspace repository alone in this version, with
+  the broker's effect lease; their other repositories are listed as not readable. `overview` is the
+  description, topics, default branch, privacy and the README's first 8 KB; `owners` the first
+  CODEOWNERS found, up to 16 KB, and reviews counted per top-level path over at most 30 changes
+  merged in the last 90 days, authors and bots left out; `releases` the last 20 releases, drafts
+  left out, else the last 20 tags. Any answer but a success or a not-found fails the read.
+- **Tool sizes.** `listCodeHostRepositories` 313 characters with a 76-byte schema;
+  `readCodeHostRepository` 400 characters with a 346-byte schema, within Claude Code's
+  2,048-character cap and Codex's 5,000-byte schema cap.
+- **Not yet:** `members.md`'s entry rules apply to research's writes once they land (§5.17);
+  periodic rounds (§9 Q25); a GitHub host other than github.com.
+
+**Web access** (verified live on 2026-10-17; the table after this one is the code reading that
+preceded it).
+
+The live runtime matrix's `web` probe (`AC_RUNTIME_MATRIX_ONLY=web`) launches each runtime as
+research's host does: the daemon's launch composition with no tool credentials, an empty working
+directory, and the mode switching assistant mode on picks. It asks the runtime to open
+`https://example.com` with its own web tool and reply with the page's heading. Each was run once
+on a self-hosted macOS daemon without a sandbox.
+
+| Runtime     | Mode                                 | Result                                                                                       |
+| ----------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Claude Code | `auto`                               | works: its `Fetch` tool returned the page, with no permission request                        |
+| Codex       | `agent` (its auto)                   | works: its own web tool returned the page, with no permission request                        |
+| OpenCode    | its default (no auto mode is mapped) | works: its own web tool returned the page, with no permission request (no `read-only` agent) |
+
+Not run: the SRT sandbox, a microsandbox VM and the managed pool, whose networks are described
+below. Claude Code ran on a Sonnet model (`AC_RUNTIME_MATRIX_WEB_MODEL`), since the account's
+default model needed usage credits. A runtime that has no web tool, or whose call is refused,
+still researches without the web and says so under "what it could not read".
 
 |                     | Claude Code                                                                                                                                         | Codex                                                                                                                                                                                | OpenCode                                                                                                             |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -2520,8 +2615,8 @@ does, from a fixed set or by its own choice, and how many.
    person-scoped reads and writes, to come.
 3. Research: the onboarding message and the research-marked delegated task, its shared-layer
    binding and credential-less launch, the code-host bridge reads and the read grant's
-   `pull_requests: read`, the prelude line, and the second round after first looks. Each
-   runtime's web tools are verified under the mode first (§9 Q29).
+   `pull_requests: read`, the prelude line, and the second round after first looks, shipped
+   (2026-10-17), with each runtime's web tools checked live under the mode ("Web access").
 
 Step 3 needs step 2; nothing new reaches the console beyond what the Tasks tab, Activity and the
 Memory page already show.
@@ -2862,15 +2957,16 @@ subject's control is what that move would have to carry over.
 22. **The new names** (§5.15): the research marker on a delegated task, and
     `listCodeHostRepositories` and `readCodeHostRepository`, change agent-facing tools. The first
     look's tool filter gained the memory writes when §5.15's first part shipped (2026-10-17).
-    `sendMessage` is unchanged. The owner confirms or changes them before the daemon's pull
-    request, and each description and schema is measured against the runtimes' caps, as
-    `propose`'s were (§5.13).
+    `sendMessage` is unchanged. Shipped as written on 2026-10-17, at the owner's request: the
+    marker is the `subsession:research-` coordinate, and the two reads measure 313 and 400
+    characters with 76- and 346-byte schemas (§5.15 "As shipped").
 23. **First looks asked for in the onboarding DM** (§5.15), _undecided_: whether the person who
     switched the mode on may ask there for first looks of the places the agent was already in,
     which posts an introduction in each, and whether research's report should offer it.
 24. **Research with nobody to report to** (§5.15): an agent switched on through the API by a
     principal with no DM, and no responsible user with one, takes no research. Whether to run it
-    anyway with its report waiting in Activity, or to leave it until such a DM exists.
+    anyway with its report waiting in Activity, or to leave it until such a DM exists. As shipped
+    it takes none, records why, and is not tried again; a DM that appears later starts nothing.
 25. **Periodic organization research** (§5.15), _undecided_: whether the task gets a round on a
     rhythm, or only when its DM asks.
 26. **People profiles** (§5.17): two tiers, work facts only, the subject's own control, identity
@@ -2881,10 +2977,11 @@ subject's control is what that move would have to carry over.
     they confirm. The owner confirms the bounds, and that nobody else may run one.
 28. **Domain files** (§5.15), _undecided_: whether research writes files such as an engineering
     file when its sources hold enough, from a fixed set or by its own choice, and how many.
-29. **Web tools per runtime** (§5.15): research as a delegated task is judged by the agent's
-    permission mode, not by a check's refusal, so what remains is a live test per runtime that the
-    web tools run under that mode, and under a credential-less launch, where OpenCode's
-    daemon-authored `read-only` agent denies every tool today.
+29. **Web tools per runtime** (§5.15): settled 2026-10-17 by a live run. Claude Code under `auto`,
+    Codex under `agent` and OpenCode under its default each opened a public page with its own web
+    tool and no permission request, launched without the agent's tool credentials; research does
+    not apply OpenCode's `read-only` agent. The sandboxed launches and the managed pool were not
+    run (§5.15 "Web access").
 30. **Organization knowledge** (§5.16). Decided 2026-10-17: v1 keeps `organization.md`,
     `channels.md` and `members.md` in the agent's memory and leaves organization knowledge
     unchanged. Later, if several assistant-mode agents need one source or people want the files on
@@ -2892,7 +2989,11 @@ subject's control is what that move would have to carry over.
     is a note for then, not a plan.
 31. **The code-host read for research** (§5.15 "Code hosts"): bridge reads whose target is an
     argument checked against the agent's authorization, and `pull_requests: read` added to the
-    single-repository read grant for who reviews which area. The owner confirms both.
+    single-repository read grant for who reviews which area. Shipped 2026-10-17: the daemon asks
+    `gitcred/grant` for `contents` and `pull_requests` with `requestedAccess: 'read'`, which every
+    repository tier already allows, so no Control Plane change was needed; the mint is the check.
+    Whether every installation accepted `pull_requests: read` was not verified against a live
+    installation; one that has not makes `owners` fail and research says so.
 
 ---
 
@@ -3538,3 +3639,20 @@ memory itself ship, the first part of §5.15's rollout step 2 (issue #2810; §2,
   revision-checked entry writes. Its report keeps "In flight", "Where I could help" and "Not
   covered", after one line on what the place is for, and the long session's handling drops step 1.
 - **Not yet:** `members.md`'s entry rules and organization research, in their own changes.
+
+**Sixty-second revision (2026-10-17)**: organization research ships, §5.15's rollout step 3 (issue
+#2810; §5.15, §9 Q22, Q24, Q29, Q31). The sixty-first is `members.md`'s entry rules.
+
+- **Onboarding.** The first switch-on is recorded once on the agent row, with research's hints, and
+  rides the spec. The daemon greets the person who switched the mode on in their DM, else the
+  responsible user, else nobody; research opens as that DM's delegated task once the hello's turn
+  has ended, and gets one round of the daemon's own after the first looks running then report.
+- **The task.** Its own coordinate, tools narrowed at dispatch to memory, knowledge, the channel
+  listing and the code-host reads, memory bound to the live shared layer, a host of its own
+  launched without the agent's tool credentials and without OpenCode's `read-only` agent, and no
+  capture. Every place turn carries one line while a round runs.
+- **Code-host reads.** `listCodeHostRepositories` and `readCodeHostRepository`, research's alone,
+  read a listed repository's overview, owners or releases with a daemon-held read credential;
+  GitLab and Gitea read the workspace repository only.
+- **Verified live.** Claude Code, Codex and OpenCode each opened a public page under the mode with
+  no permission request (§5.15 "Web access", §9 Q29).

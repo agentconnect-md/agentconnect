@@ -56,6 +56,7 @@ import {
   type SendMessageScenario
 } from './send-message-probe.js'
 import { FEATURES, type FeatureId } from './support-matrix.js'
+import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol'
 
 const IS_CI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
 const TURN_TIMEOUT = 180_000
@@ -197,6 +198,7 @@ function providerUnavailable(error: unknown): boolean {
     'authentication required',
     'authenticate first',
     'credit usage limit',
+    'requires usage credits',
     'weekly limit',
     'usage limit',
     'quota',
@@ -284,6 +286,83 @@ async function runSandboxProbe(target: RuntimeTarget, root: string, token: strin
     try {
       if (sessionId && host.deleteSupported())
         await withTimeout(host.deleteSession(sessionId), `${target.id}/sandbox session delete`)
+    } finally {
+      await host.stop().catch(() => {})
+    }
+  }
+}
+
+const WEB_PAGE = 'https://example.com'
+const WEB_PROMPT =
+  `Use your own web tool to open ${WEB_PAGE} and reply with the exact text of its main heading and nothing else. ` +
+  'If you have no tool that can open a web page, reply NO_WEB_TOOL.'
+
+/** Organization research's web reach (assistant-mode.md §9 Q29): a credential-less launch in an empty directory, under the runtime's auto mode, fetching one public page. */
+async function runWebProbe(target: RuntimeTarget, root: string): Promise<Outcome> {
+  const scopeDir = join(root, 'research-agent')
+  const cwd = join(scopeDir, 'research')
+  mkdirSync(cwd, { recursive: true })
+  const composed = composeRuntimeLaunch({
+    runtimeId: target.id,
+    runtime: target.runtime,
+    provider: 'managed',
+    scopeDir,
+    cwd,
+    runInSandbox: false,
+    daemonRoot: root,
+    hostEnv: process.env,
+    stateSourceEnv: process.env
+  })
+  const updates: any[] = []
+  let asked = 0
+  const host = new AcpHost(composed.runtime, {
+    runtimeId: target.id,
+    suppressChildStderr: !DEBUG_CHILD,
+    onUpdate: (_sessionId, update) => updates.push(update),
+    onPermission: async (_sessionId, params) => {
+      asked += 1
+      return selectAllowOption(params)
+    },
+    env: composed.launch.env,
+    inheritProcessEnv: composed.launch.inheritProcessEnv
+  })
+  let sessionId: string | undefined
+  try {
+    await withTimeout(host.start(), `${target.id}/web start`)
+    sessionId = await withTimeout(host.newSession(cwd), `${target.id}/web session`)
+    // A model the provider account can run, when its default cannot (AC_RUNTIME_MATRIX_WEB_MODEL, a substring of an offered id).
+    const wanted = process.env.AC_RUNTIME_MATRIX_WEB_MODEL?.trim()
+    const model = wanted ? host.modelOptions()?.models.find((id) => id.includes(wanted)) : undefined
+    if (model) await host.setSessionModel(sessionId, model)
+    // The mode switching assistant mode on picks (§1.8); a runtime with none mapped keeps its own default.
+    const offered = host.permissionModeOptions(sessionId)?.modes ?? []
+    const mode = autoOrFullAccessPermissionMode(target.entry.aliasOf ?? target.id, offered)
+    if (mode) await host.setSessionPermissionMode(sessionId, mode)
+    const current = host.permissionModeOptions(sessionId)?.current ?? 'default'
+    await withTimeout(host.prompt(sessionId, [{ type: 'text', text: WEB_PROMPT }]), `${target.id}/web prompt`)
+    const reply = textChunks(updates).join('').trim()
+    const calls = updates.filter(
+      (update) =>
+        update?.sessionUpdate === 'tool_call' &&
+        /fetch|web|search|http|browse|curl|open/i.test(`${update.kind ?? ''} ${update.title ?? ''}`)
+    )
+    const failed = updates.filter(
+      (update) => update?.sessionUpdate === 'tool_call_update' && update.status === 'failed'
+    ).length
+    const titles = [...new Set(calls.map((call) => `${call.kind ?? '?'}:${String(call.title ?? '').slice(0, 40)}`))]
+    const detail = `mode ${current}; ${calls.length} web call(s) [${titles.join(', ')}]; ${asked} permission request(s); ${failed} failed; reply ${JSON.stringify(reply.slice(0, 80))}`
+    if (/Example Domain/i.test(reply))
+      return {
+        status: asked === 0 ? 'ok' : 'degrade',
+        detail: `${asked === 0 ? 'works' : 'asks for permission'}: ${detail}`
+      }
+    if (reply.includes('NO_WEB_TOOL') || calls.length === 0)
+      return { status: 'degrade', detail: `tool absent: ${detail}` }
+    return { status: 'degrade', detail: `denied: ${detail}` }
+  } finally {
+    try {
+      if (sessionId && host.deleteSupported())
+        await withTimeout(host.deleteSession(sessionId), `${target.id}/web delete`)
     } finally {
       await host.stop().catch(() => {})
     }
@@ -659,7 +738,8 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
 /** Probes that run without the shared host session, for `AC_RUNTIME_MATRIX_ONLY` reruns. */
 const ISOLATED_PROBES = {
   sandbox: (target: RuntimeTarget, root: string, token: string) => runSandboxProbe(target, root, token),
-  vm: (target: RuntimeTarget, _root: string, token: string) => runVmProbe(target, token)
+  vm: (target: RuntimeTarget, _root: string, token: string) => runVmProbe(target, token),
+  web: (target: RuntimeTarget, root: string) => runWebProbe(target, root)
 } satisfies Partial<Record<FeatureId, (target: RuntimeTarget, root: string, token: string) => Promise<Outcome>>>
 type IsolatedFeature = keyof typeof ISOLATED_PROBES
 
@@ -765,7 +845,8 @@ const SHORT: Record<FeatureId, string> = {
   vm: 'vm',
   mcp: 'mcp',
   skills: 'skills',
-  sendMessage: 'send'
+  sendMessage: 'send',
+  web: 'web'
 }
 const CELL: Record<Status, string> = { ok: '✓', degrade: '·', na: '~', unavailable: 'U', fail: '✗' }
 
@@ -900,7 +981,7 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
           const outcome = result.features[feature]
           if (outcome?.status === 'fail')
             console.info(`[runtime-matrix] FAIL ${result.id}/${feature}: ${outcome.detail}`)
-          else if (DEBUG_CHILD && outcome && outcome.status !== 'ok')
+          else if (outcome && ((DEBUG_CHILD && outcome.status !== 'ok') || feature === 'web'))
             console.info(`[runtime-matrix] ${outcome.status} ${result.id}/${feature}: ${outcome.detail}`)
         }
       }
