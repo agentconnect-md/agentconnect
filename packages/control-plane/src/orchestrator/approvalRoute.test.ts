@@ -4,6 +4,7 @@ import type { FeishuIdentity, LinkedChatIdentity, SlackIdentity } from '../githu
 import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
 import { buildCpPlatformRegistry } from '../platforms/registry.js'
 import { createSlackCpProvider } from '../platforms/slack/provider.js'
+import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
 import type {
   AgentRecord,
   BotRecord,
@@ -21,7 +22,11 @@ const ORG = 'org-1'
 const TEAM_A = 'T0AAA'
 const TEAM_B = 'T0BBB'
 
-const PLATFORMS = buildCpPlatformRegistry([createSlackCpProvider({}), createFeishuCpProvider({})])
+const PLATFORMS = buildCpPlatformRegistry([
+  createSlackCpProvider({}),
+  createFeishuCpProvider({}),
+  createGoogleChatCpProvider()
+])
 
 interface World {
   agent?: Partial<AgentRecord>
@@ -368,6 +373,27 @@ describe('resolveApprovalRoute — the derived responsible user', () => {
 })
 
 describe('resolveApprovalRoute — verify form', () => {
+  it('matches Google Chat actors only to linked Agent editors', async () => {
+    const d = deps({
+      integrations: [{ id: INTEGRATION_A, botId: 'google-bot', platform: 'googlechat' }],
+      bots: { 'google-bot': { platform: 'googlechat', revokedAt: null } },
+      members: [
+        { userId: 'u-editor', displayName: 'Editor' },
+        { userId: 'u-viewer', role: 'viewer' }
+      ]
+    })
+    d.identity = {
+      chatIdentitiesFor: async (sub) => [
+        { platform: 'googlechat', tenant: 'global', memberId: sub === 'sub:u-editor' ? 'users/123' : 'users/456' }
+      ]
+    }
+    const check = (userId: string) =>
+      resolveApprovalRoute(routeReq({ verify: { integrationId: INTEGRATION_A, userId } }), d)
+    expect(await check('users/123')).toMatchObject({ allowed: true, displayName: 'Editor' })
+    expect(await check('users/456')).toMatchObject({ allowed: false, linked: true })
+    expect(await check('users/789')).toMatchObject({ allowed: false, linked: false })
+  })
+
   const verifyReq = (consoleUserId = 'u-owner', userId = 'U0OWNER', teamId = TEAM_A) =>
     routeReq({ verify: { integrationId: INTEGRATION_A, teamId, userId, consoleUserId } })
 

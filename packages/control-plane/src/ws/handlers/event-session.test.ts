@@ -10,6 +10,7 @@ import { createSlackCpProvider } from '../../platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
 import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
+import { createGoogleChatCpProvider } from '../../platforms/googlechat/provider.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -24,6 +25,7 @@ function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
     platforms: buildCpPlatformRegistry([
       createSlackCpProvider({}),
+      createGoogleChatCpProvider(),
       createFeishuCpProvider({}),
       createTelegramCpProvider({
         verifyBot: async () => ({ status: 'invalid' }),
@@ -76,12 +78,12 @@ function recorded(session: Partial<SessionMetaRecord> = {}): SessionMilestoneRes
 }
 
 describe('handleEventSession', () => {
-  it.each(['telegram', 'discord'] as const)(
+  it.each(['telegram', 'discord', 'googlechat'] as const)(
     'validates %s bot realms and quarantines older local milestones',
     async (platform) => {
       const recordMilestone = vi.fn().mockResolvedValue(recorded())
-      const realmKey = platform === 'telegram' ? 'bot42' : 'bot100000000000000001'
-      const channel = platform === 'telegram' ? '-10042' : '100000000000000004'
+      const realmKey = { telegram: 'bot42', discord: 'bot100000000000000001', googlechat: '123456789012' }[platform]
+      const channel = { telegram: '-10042', discord: '100000000000000004', googlechat: 'spaces/AAAAAAAAAAA' }[platform]
       const deps = scopedDeps({
         session: { recordMilestone },
         integration: {
@@ -94,7 +96,9 @@ describe('handleEventSession', () => {
             status: 'active'
           })
         },
-        bot: { get: async () => ({ id: BOT_ID, orgId: ORG_ID, platform, revokedAt: null }) },
+        bot: {
+          get: async () => ({ id: BOT_ID, orgId: ORG_ID, platform, revokedAt: null, externalAppId: '123456789012' })
+        },
         events: { publish: vi.fn() }
       })
       const frame = eventSessionFrame()

@@ -1821,11 +1821,6 @@ export function buildContainer(
     // Lazy over `http.log` (assigned below; only ever called at resolve time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
-  const googleChatSessionAccess = new GoogleChatSessionAccessService({
-    bots: repos.bot,
-    users: repos.user,
-    ...(logtoIdentity ? { identity: logtoIdentity } : {})
-  })
   const configuredSocialProviders =
     opts.deploymentConfig?.values.auth.mode === 'oidc' ? opts.deploymentConfig.values.auth.socialProviders : []
   const botSessionAccessDeps = {
@@ -1834,6 +1829,11 @@ export function buildContainer(
     clock,
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
+  const googleChatSessionAccess = new GoogleChatSessionAccessService({
+    ...botSessionAccessDeps,
+    users: repos.user,
+    configured: configuredSocialProviders.includes('google')
+  })
   const telegramSessionAccess = createTelegramSessionAccess({
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('telegram')

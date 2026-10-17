@@ -4618,6 +4618,14 @@
           "unavailable": "请先为本部署配置 Discord 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
           "degraded": "Discord 对话来源解析失败，新的会话已隐藏。"
+        },
+        "googlechat": {
+          "name": "Google Chat",
+          "label": "遵循 Google Chat 权限",
+          "details": "空间和私聊按当前成员身份授权，由对话中的 Chat 应用检查；仅收到邀请不算成员。\n请先在个人资料中关联 Google 账号。此前学到的 Agent 记忆不会被删除。\n缺少可信来源的历史会话先隐藏，等待新的可信活动补齐来源。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
+          "unavailable": "请先为本部署配置 Google 登录，再开启权限同步。",
+          "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
+          "degraded": "Google Chat 对话来源解析失败，新的会话已隐藏。"
         }
       }
     },

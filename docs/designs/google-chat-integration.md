@@ -48,9 +48,9 @@ adapters remain a separate discussion.
 
 Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
 cards other than the welcome, elicitation and approval cards, dialogs, app-home surfaces,
-Google-native commands other than `/help` (§11.4), shared bots, Google identity
-linking, and synchronization of Google membership into Console session permissions are outside the first
-version. An elicitation the card cannot render (URL mode, an over-long option
+Google-native commands other than `/help` (§11.4) and shared bots are outside the first
+version. Google identity linking is described in §10.6 and permission sync in §12.
+An elicitation the card cannot render (URL mode, an over-long option
 list) fails explicitly and never invents an answer or approval. Serving many Workspace customers from one
 published app, and the identity link that comes with it, are designed in §10.
 
@@ -714,13 +714,10 @@ addresses or display names. Shared text commands retain their current caller
 authorization. Keep Console continuation disabled until Google identity and
 authorization support is designed.
 
-Follow [session visibility](session-visibility.md): DMs are private to the verified
-originator, with no organization-owner bypass. A viewer who signed in to the
-console with Google, or linked it on their profile, opens their own DM transcripts
-(§10.6); without that link the private owner tuple matches no human Console
-identity, so the transcripts stay inaccessible there. Space sessions follow AgentConnect's normal
-organization visibility; Google Space membership does not become a Console ACL.
-Explain both consequences during setup, especially for restricted Google Spaces.
+When permission sync is enabled (§12), Spaces and DMs require current Google Chat
+membership, with no organization-owner bypass. Without sync, new conversations
+follow the ordinary organization visibility rules. Historical private DMs retain
+their recorded owner and remain readable through the linked Google identity (§10.6).
 
 Permission requests follow the rule every chat surface shares
 ([product-conventions.md](../product-conventions.md), "What people can do in chat"):
@@ -1115,9 +1112,8 @@ viewer with a verified sign-in, once for each Google Chat app the organization
 holds, revoked or not. It reads the Google account id through the sync the
 sign-in and claim paths use, served under the identity lease the Slack and
 Feishu identities share rather than fresh, so the recorded id also follows an
-unlink; an identity provider failure adds nothing. The policy predicates are unchanged, no Google API is
-called, and no scope is resolved. Space sessions keep their organization
-visibility; Google membership still does not become a console ACL.
+unlink; an identity provider failure adds nothing. This preserves historical DM
+ownership. Permission sync adds membership-backed conversation scopes (§12).
 
 ### 10.7 Cards and the welcome message
 
@@ -1429,3 +1425,43 @@ rendered in the add-on form only:
 Not yet verified:
 
 - Whether `chat.space` ever disagrees with the payload's Space.
+
+## 12. Permission sync
+
+Organization owners enable **Google Chat** under **Settings → Session access**.
+The switch requires Google sign-in and the identity provider's Management API.
+Members use their existing Google sign-in or link Google in **Profile → Sign-in
+methods**; no additional user Chat scope or domain-wide delegation is needed.
+
+The daemon binds each real Space or DM to its app's project number and Space
+resource name. The Control Plane validates the integration, owning agent,
+organization and project before recording the bot-backed conversation scope.
+The existing session resolver applies it to lists, details, transcripts, search
+and session-scoped usage. Message content remains on the data plane.
+
+The installed app's `chat.bot` credential calls
+[`spaces.members.get`](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.members/get)
+for the viewer's linked `users/{id}`. Only a matching human membership in
+`JOINED` state grants access. Invitations, departures and missing memberships
+grant nothing; malformed replies and provider failures fail closed. Membership
+that the app cannot verify, including through an unsupported group lookup,
+stays hidden. Missing identity offers the Google link in Profile; app permission
+failures point to Integrations. Owner roles never bypass membership checks.
+
+Successful verdicts last at most two minutes plus the shared access snapshot
+lease. Scope and credential revisions key the verdict cache, and unlink uses
+the existing identity invalidation fence. The app's project survives key rotation.
+Enabling sync also restricts chat approvals and settings to linked Agent editors,
+under the same chat-authority rules as the other synced platforms.
+
+Upgrade the Control Plane before the daemons. Migrations mark historical
+organization-visible conversations and inherited children as pending candidates;
+sync fences them until trusted activity supplies their bot-backed scope. Known
+daemon conversations retain their runtime and gain the audience binding in
+place. Synthetic coordinates, console launches and explicit private audiences
+are preserved. Historical private DMs keep their linked-owner access (§10.6).
+
+With sync off, new conversations follow organization visibility. Turning it off
+after use hides previously synced sessions; turning it back on restores access
+checks. Agent memory learned before sync is not erased. Provider login and a
+real Chat round trip must be verified separately after deployment.

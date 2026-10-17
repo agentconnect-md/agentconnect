@@ -1,51 +1,50 @@
-// Google Chat's half of Session visibility: the console user whose Google account sent a DM opens it (google-chat-integration.md §10.6).
+// Google identities own historical DMs; current conversation access follows Chat membership.
 import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
-import type { BotRepo, UserRepo } from '../persistence/ports.js'
+import type { UserRepo } from '../persistence/ports.js'
+import { BotSessionAccessService, type BotSessionAccessDeps } from '../platforms/bot-session-access.js'
+import { checkGoogleChatMembership } from '../platforms/googlechat/session-access.js'
 import { type GoogleAccountIdentity, syncGoogleAccountId } from './google-account-id.js'
-import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
+import type { SessionAccessViewer } from './session-access-plugin.js'
 
 /** The private owner a DM from this Google account records under this Chat app: `<platform>:<project number>:users/<id>` (session-visibility.md §2). */
 export function googleChatOwnerIdentity(projectNumber: string, googleAccountId: string): string {
   return `${GOOGLE_CHAT_PLATFORM}:${projectNumber}:users/${googleAccountId}`
 }
 
-/** Ownership is proven by identity equality alone, so no Google API is called and no scope is resolved. */
-export class GoogleChatSessionAccessService implements SessionAccessPlugin {
-  readonly provider = GOOGLE_CHAT_PLATFORM
-
+export class GoogleChatSessionAccessService extends BotSessionAccessService {
   constructor(
-    private readonly deps: {
-      bots: Pick<BotRepo, 'listForOrg'>
+    private readonly googleDeps: BotSessionAccessDeps & {
       users: Pick<UserRepo, 'getGoogleAccountId' | 'setGoogleAccountId'>
       identity?: GoogleAccountIdentity
-    }
-  ) {}
-
-  get available(): boolean {
-    return this.deps.identity !== undefined
+    },
+    fetchImpl: typeof fetch = fetch
+  ) {
+    super(
+      GOOGLE_CHAT_PLATFORM,
+      googleDeps,
+      (_token, bot) => bot.externalAppId,
+      ({ token, resource, member }, signal) =>
+        checkGoogleChatMembership(token, resource, member, signal, fetchImpl, () => new Date(googleDeps.clock.now()))
+    )
   }
 
   async addViewerIdentities({ request, orgId, userId, identitySet }: SessionAccessViewer): Promise<void> {
     const subject = request.oidcSubject
-    if (!subject || !this.deps.identity) return
+    if (!subject || !this.googleDeps.identity) return
     // Every Chat app of the org, revoked or not: a DM owner's middle segment is its app's project number, fixed at ingest.
     const projects = new Set(
-      (await this.deps.bots.listForOrg(orgId)).flatMap((bot) =>
+      (await this.googleDeps.bots.listForOrg(orgId)).flatMap((bot) =>
         bot.platform === GOOGLE_CHAT_PLATFORM && bot.externalAppId ? [bot.externalAppId] : []
       )
     )
     if (projects.size === 0) return
     // Served under the identity lease the Slack and Feishu identities share, so an unlink also clears the recorded id.
     const accountId = await syncGoogleAccountId(
-      { identity: this.deps.identity, users: this.deps.users },
+      { identity: this.googleDeps.identity, users: this.googleDeps.users },
       { userId, oidcSubject: subject }
     )
-    if (!accountId) return
+    if (!accountId || !/^[1-9]\d*$/.test(accountId)) return
+    identitySet.add(`${GOOGLE_CHAT_PLATFORM}:global:users/${accountId}`)
     for (const project of projects) identitySet.add(googleChatOwnerIdentity(project, accountId))
-  }
-
-  /** Google Chat binds no conversation audience: a DM matches its owner in the identity set and a Space follows organization visibility. */
-  async resolve(): Promise<SessionAccessResult> {
-    return { allowedScopes: [], degraded: false, accessIssues: [] }
   }
 }

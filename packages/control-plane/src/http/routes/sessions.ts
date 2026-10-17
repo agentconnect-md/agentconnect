@@ -686,7 +686,8 @@ export function sessionRoutes(deps: HttpDeps) {
       github: 'GitHub',
       feishu: 'Feishu/Lark',
       telegram: 'Telegram',
-      discord: 'Discord'
+      discord: 'Discord',
+      googlechat: 'Google Chat'
     } as const
     type ExternalAccessProvider = keyof typeof accessProviders
     const externalAccessAvailable = (provider: ExternalAccessProvider) =>
@@ -710,7 +711,7 @@ export function sessionRoutes(deps: HttpDeps) {
 
     const registerExternalAccessRoutes = (provider: ExternalAccessProvider) => {
       const label = accessProviders[provider]
-      const operationLabel = provider === 'feishu' ? 'FeishuLark' : label
+      const operationLabel = label.replace(/[^A-Za-z]/g, '')
       r.get(
         `/session-access/${provider}`,
         {

@@ -250,12 +250,14 @@ describe('LogtoIdentityService.chatIdentitiesFor', () => {
       'sub-1': {
         identities: {
           ...slack.identities,
+          google: { userId: '100000000000000000001' },
           lark: { details: { rawData: { data: { union_id: 'on_lark', tenant_key: 'tenant_lark' } } } }
         }
       }
     })
     await expect(svcOf(fetchImpl).chatIdentitiesFor('sub-1')).resolves.toEqual([
       { platform: 'slack', tenant: 'T0EXAMPLE1', memberId: 'U0EXAMPLE1' },
+      { platform: 'googlechat', tenant: 'global', memberId: 'users/100000000000000000001' },
       { platform: 'feishu', tenant: 'lark', memberId: 'on_lark' }
     ])
   })

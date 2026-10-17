@@ -208,15 +208,16 @@ describe('conversation audience', () => {
     ).toBeUndefined()
   })
 
-  it('binds every Feishu conversation through the tenant anchor', async () => {
-    const feishu = conversationAudienceFor('feishu')!
-    expect(feishu.applies({ isDm: true })).toBe(true)
+  it.each(['feishu', 'googlechat'])('binds every %s conversation through the tenant anchor', async (platform) => {
+    const audience = conversationAudienceFor(platform)!
+    const realm = platform === 'googlechat' ? '123456789012' : 'lark:c1'
+    expect(audience.applies({ isDm: true })).toBe(true)
     expect(
-      await feishu.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => 'lark:c1' }, 'i4', {
+      await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => realm }, 'i4', {
         id: 'i4',
-        platform: 'feishu'
+        platform
       })
-    ).toBe('lark:c1')
+    ).toBe(realm)
   })
 
   it('binds nothing elsewhere — local classification rules alone', () => {

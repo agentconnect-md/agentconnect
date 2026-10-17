@@ -10,6 +10,7 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { classifySession } from '../../domain/session-visibility.js'
+import { systemClock } from '../../domain/clock.js'
 import type { HttpDeps } from '../deps.js'
 import { GoogleChatSessionAccessService } from '../googlechat-session-access.js'
 import type { SessionAccessPlugin, SessionAccessViewer } from '../session-access-plugin.js'
@@ -237,9 +238,15 @@ describe('session routes × viewer identity', () => {
     }
     const googleChat = (account: string) =>
       new GoogleChatSessionAccessService({
-        bots: { listForOrg: async () => [{ platform: 'googlechat', externalAppId: '123456789012' }] as never },
+        bots: {
+          listForOrg: async () => [{ platform: 'googlechat', externalAppId: '123456789012' }] as never,
+          getUnscoped: async () => null
+        },
+        botSecrets: { get: async () => null },
+        clock: systemClock,
+        configured: true,
         users: { getGoogleAccountId: async () => account, setGoogleAccountId: async () => {} },
-        identity: { googleAccountIdFor: async () => account }
+        identity: { googleAccountIdFor: async () => account, chatIdentitiesFor: async () => [] }
       })
     const owner = await appAs(fakeDeps({ session, plugins: [googleChat('100000000000000000001')] }).deps, {
       userId: 'u-1',

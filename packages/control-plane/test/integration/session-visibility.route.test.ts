@@ -358,66 +358,70 @@ describe('session visibility — external conversation audiences', () => {
     expect(response.json()).toMatchObject({ feishuRegion: 'lark' })
   })
 
-  it('lets only owners change sync and withholds hidden-session diagnostics from other members', async () => {
-    const owner = await makeUser(`sv-slack-owner-${randomUUID()}`, 'owner')
-    const collaborator = await makeUser(`sv-slack-collab-${randomUUID()}`, 'collaborator')
-    const daemonId = await seedDaemon(prisma, randomUUID())
-    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
-    const repo = new PgSessionRepo(prisma)
-    await repo.recordMilestone({
-      sessionId: SessionId(`s-slack-hidden-${randomUUID()}`),
-      agentId,
-      phase: 'start',
-      platform: 'slack',
-      channel: 'C_UNRESOLVED',
-      at: new Date(),
-      classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
-      externalCandidate: { provider: 'slack', resolution: 'pending' }
-    })
+  it.each(['slack', 'googlechat'])(
+    '%s lets only owners change sync and withholds hidden-session diagnostics from other members',
+    async (provider) => {
+      const owner = await makeUser(`sv-slack-owner-${randomUUID()}`, 'owner')
+      const collaborator = await makeUser(`sv-slack-collab-${randomUUID()}`, 'collaborator')
+      const daemonId = await seedDaemon(prisma, randomUUID())
+      const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+      const repo = new PgSessionRepo(prisma)
+      await repo.recordMilestone({
+        sessionId: SessionId(`s-slack-hidden-${randomUUID()}`),
+        agentId,
+        phase: 'start',
+        platform: provider,
+        channel: 'C_UNRESOLVED',
+        at: new Date(),
+        classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+        externalCandidate: { provider, resolution: 'pending' }
+      })
 
-    const collaboratorApp = appAs(collaborator)
-    const read = (await collaboratorApp.app.inject({ method: 'GET', url: `${ORG}/session-access/slack` })).json()
-    expect(read).not.toHaveProperty('hiddenSessions')
-    expect(
-      (
-        await collaboratorApp.app.inject({
-          method: 'PUT',
-          url: `${ORG}/session-access/slack`,
-          payload: { enabled: true }
-        })
-      ).statusCode
-    ).toBe(403)
+      const collaboratorApp = appAs(collaborator)
+      const read = (
+        await collaboratorApp.app.inject({ method: 'GET', url: `${ORG}/session-access/${provider}` })
+      ).json()
+      expect(read).not.toHaveProperty('hiddenSessions')
+      expect(
+        (
+          await collaboratorApp.app.inject({
+            method: 'PUT',
+            url: `${ORG}/session-access/${provider}`,
+            payload: { enabled: true }
+          })
+        ).statusCode
+      ).toBe(403)
 
-    const unavailable = await appAs(owner).app.inject({
-      method: 'PUT',
-      url: `${ORG}/session-access/slack`,
-      payload: { enabled: true }
-    })
-    expect(unavailable.statusCode).toBe(409)
+      const unavailable = await appAs(owner).app.inject({
+        method: 'PUT',
+        url: `${ORG}/session-access/${provider}`,
+        payload: { enabled: true }
+      })
+      expect(unavailable.statusCode).toBe(409)
 
-    const ownerResponse = await appAs(owner, {
-      sessionAccessPlugins: [
-        { provider: 'slack', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
-      ]
-    }).app.inject({
-      method: 'PUT',
-      url: `${ORG}/session-access/slack`,
-      payload: { enabled: true }
-    })
-    expect(ownerResponse.statusCode).toBe(200)
-    // The pre-existing candidate stays hidden and is reported, but enabling
-    // marks it legacy: unrecoverable history is not a fault state.
-    expect(ownerResponse.json()).toMatchObject({ enabled: true, state: 'enabled', hiddenSessions: 1 })
-
-    const stillHidden = (
-      await appAs(owner, {
+      const ownerResponse = await appAs(owner, {
         sessionAccessPlugins: [
-          { provider: 'slack', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+          { provider, available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
         ]
-      }).app.inject({ method: 'GET', url: `${ORG}/session-access/slack` })
-    ).json()
-    expect(stillHidden).toMatchObject({ state: 'enabled', hiddenSessions: 1 })
-  })
+      }).app.inject({
+        method: 'PUT',
+        url: `${ORG}/session-access/${provider}`,
+        payload: { enabled: true }
+      })
+      expect(ownerResponse.statusCode).toBe(200)
+      // Enabling marks unresolved history as legacy, so it stays hidden without degrading the policy.
+      expect(ownerResponse.json()).toMatchObject({ enabled: true, state: 'enabled', hiddenSessions: 1 })
+
+      const stillHidden = (
+        await appAs(owner, {
+          sessionAccessPlugins: [
+            { provider, available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+          ]
+        }).app.inject({ method: 'GET', url: `${ORG}/session-access/${provider}` })
+      ).json()
+      expect(stillHidden).toMatchObject({ state: 'enabled', hiddenSessions: 1 })
+    }
+  )
 
   it('degrades only when a candidate goes unresolved after enablement', async () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
@@ -950,7 +954,7 @@ describe('session visibility — external conversation audiences', () => {
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('enabled')
   })
 
-  it.each(['slack', 'telegram', 'discord'] as const)(
+  it.each(['slack', 'telegram', 'discord', 'googlechat'] as const)(
     '%s stops showing previously synced sessions when turned off',
     async (provider) => {
       const daemonId = await seedDaemon(prisma, randomUUID())

@@ -292,6 +292,9 @@ export function createGoogleChatCpProvider(
   const fetchImpl: typeof fetch = (input, init) => (deps.fetch ?? fetch)(input, init)
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
+    chatMemberTenant: (bot) => (bot.revokedAt ? null : 'global'),
+    legacySessionAudience: (channel) => /^spaces\/[A-Za-z0-9_-]+$/.test(channel),
+    sessionAudienceRealm: (bot) => bot.externalAppId,
 
     installRoutes: (scope) =>
       scope === 'org' ? (deps.installRoutes?.org ?? []) : (deps.installRoutes?.publicCallback ?? []),

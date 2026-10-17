@@ -56,7 +56,15 @@ export interface UnverifiedConversationNotice {
   action?: SessionAccessNotificationAction
 }
 
-const BOT_PLATFORM_NAMES: Record<string, string> = { telegram: 'Telegram', discord: 'Discord' }
+const BOT_PLATFORM_NAMES: Record<string, string> = { telegram: 'Telegram', discord: 'Discord', googlechat: 'Google' }
+const BOT_AUTHORIZATION_MESSAGES: Record<string, string> = {
+  telegram:
+    'The Telegram chat bot must be an administrator to verify group membership. Ask a group administrator to check its role and credentials.',
+  discord:
+    'The Discord bot cannot verify conversation access. Ask a server administrator to check its channel access and credentials.',
+  googlechat:
+    'The Google Chat app cannot verify space membership. Ask an administrator to check the app’s space access and credentials.'
+}
 
 function botAccessNotice(
   issue: SessionAccessIssue,
@@ -70,16 +78,15 @@ function botAccessNotice(
       retry: false,
       action: {
         label: `Link ${name}`,
-        href: orgPath(`/profile?reauthorize=${issue.provider}#sign-in-methods`),
+        href: orgPath(
+          `/profile?reauthorize=${issue.provider === 'googlechat' ? 'google' : issue.provider}#sign-in-methods`
+        ),
         external: false
       }
     }
   if (issue.reason === 'app_authorization')
     return {
-      message:
-        issue.provider === 'telegram'
-          ? 'The Telegram chat bot must be an administrator to verify group membership. Ask a group administrator to check its role and credentials.'
-          : 'The Discord bot cannot verify conversation access. Ask a server administrator to check its channel access and credentials.',
+      message: BOT_AUTHORIZATION_MESSAGES[issue.provider]!,
       retry: false,
       action: { label: 'Open Integrations', href: orgPath(`/integrations?platform=${issue.provider}`), external: false }
     }

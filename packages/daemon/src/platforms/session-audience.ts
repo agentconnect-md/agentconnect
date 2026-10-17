@@ -52,6 +52,14 @@ const AUDIENCES = new Map<string, ConversationAudience>([
     }
   ],
   [
+    'googlechat',
+    {
+      platform: 'googlechat',
+      applies: () => true,
+      realmKey: async (host, _integrationId, integration) => (integration ? host.tenantScope(integration) : undefined)
+    }
+  ],
+  [
     'discord',
     {
       platform: 'discord',

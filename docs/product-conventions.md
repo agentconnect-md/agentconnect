@@ -69,11 +69,11 @@ before it:
 
 Who counts as "people" depends on whether the product can tell who someone is:
 
-- **A platform whose permissions are synced with the console** (Slack or Feishu/Lark with the
+- **A platform whose permissions are synced with the console** (Slack, Feishu/Lark, Telegram, Discord or Google Chat with the
   organization's session access sync on): only people whose console permissions allow the
   action, that is, the agent's editors, recognized by the account they linked under Sign-in
   methods in their console Profile: their Slack account in the app's workspace, or their
-  Feishu/Lark account in the app's region. Anyone else, a guest or an editor who has not linked
+  Feishu/Lark account in the app's region, or their Telegram, Discord or Google account. Anyone else, a guest or an editor who has not linked
   included, is refused privately, and the card stays as it is. A refused approval says only an
   Agent editor can answer it, and someone linked to no console account is told how to link one;
   it gives no console link, since the console shows that conversation only to the same people. A
@@ -82,7 +82,7 @@ Who counts as "people" depends on whether the product can tell who someone is:
   permission request's card also goes to an Agent editor in a direct message unless the person
   who asked is one, so a request never waits on a conversation with no editor in it; the first
   answer decides. Today that direct message is sent through the agent's Slack integration: on
-  Feishu/Lark, an agent without one leaves the request to an editor in the conversation or in the
+  other platforms, an agent without one leaves the request to an editor in the conversation or in the
   console. When who someone is cannot be checked, because the Control Plane cannot
   be reached, the agent has more than 200 editors, or a Feishu/Lark click does not say who made
   it, the action is refused, and a refused approval says to try again in a moment. Switching the
@@ -1795,6 +1795,14 @@ not joined the channel. Private channels and group DMs require current conversat
 membership. Guests and Slack Connect users also require current conversation membership,
 including for a channel that is public to full members of the installing workspace. The
 organization-owner role never bypasses these provider checks.
+
+When Google Chat session access sync is enabled, Spaces and DMs require a linked
+Google account and current human membership in that conversation. An invitation,
+matching email address or organization-owner role grants no access. The installed
+Chat app checks membership using its existing credential; unavailable checks keep
+the conversation hidden. Without sync, new Google Chat conversations are visible
+to the organization. Turning sync off hides previously synced sessions until it
+is enabled again; historical private DMs retain their recorded owner.
 
 Whether a conversation (or GitHub repository) is public is itself a cached provider
 observation with an accepted conversion window (session-access-cold-visit.md §2.1): after

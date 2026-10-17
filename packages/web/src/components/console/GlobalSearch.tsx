@@ -152,10 +152,16 @@ export function GlobalSearch({
   const feishuAccess = useSWR(accessKey('feishu'), accessFetcher)
   const telegramAccess = useSWR(accessKey('telegram'), accessFetcher)
   const discordAccess = useSWR(accessKey('discord'), accessFetcher)
+  const googlechatAccess = useSWR(accessKey('googlechat'), accessFetcher)
   // Hide only when every provider is unavailable and disabled; pending or failed reads keep the entry.
-  const sessionAccessRenders = [slackAccess, githubAccess, feishuAccess, telegramAccess, discordAccess].some(
-    ({ data }) => data === undefined || data.available || data.enabled
-  )
+  const sessionAccessRenders = [
+    slackAccess,
+    githubAccess,
+    feishuAccess,
+    telegramAccess,
+    discordAccess,
+    googlechatAccess
+  ].some(({ data }) => data === undefined || data.available || data.enabled)
 
   const groups = useMemo<SearchGroup[]>(() => {
     // `hit('')` matches everything, so an empty query yields every entity. That's

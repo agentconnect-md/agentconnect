@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, SCHEMA_VERSION } from '../src/store/local-store.js'
 
-describe('Telegram/Discord audience upgrade', () => {
+describe('chat audience upgrade', () => {
   it('preserves known conversations and inherited audiences without claiming synthetic or console sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-audience-'))
     const path = join(dir, 'store.sqlite')
@@ -17,7 +17,12 @@ describe('Telegram/Discord audience upgrade', () => {
         ['child', 'telegram', 'a2a:parent', 'session-telegram', false],
         ['synthetic', 'discord', 'cron:example', null, false],
         ['console', 'telegram', '123', null, false],
-        ['direct', 'telegram', '-10043', 'session-discord', true]
+        ['direct', 'telegram', '-10043', 'session-discord', true],
+        ['googlechat', 'googlechat', 'spaces/AAAAAAAAAAA', null, false],
+        ['google-child', 'googlechat', 'a2a:parent', 'session-googlechat', false],
+        ['google-direct', 'googlechat', 'spaces/BBBBBBBBBBB', 'session-googlechat', true],
+        ['google-console', 'googlechat', 'spaces/CCCCCCCCCCC', null, false],
+        ['google-synthetic', 'googlechat', 'cron:example', null, false]
       ] as const) {
         await store.upsertSession({
           key,
@@ -36,8 +41,8 @@ describe('Telegram/Discord audience upgrade', () => {
         await store.setSessionClassification(key, {
           conversationKind: 'channel',
           sourceBindingKind: 'local',
-          tenantScope: platform === 'telegram' ? 'bot42' : 'mint:old',
-          ...(key === 'console' ? { launchCorrelationId: 'launch-1' } : {}),
+          tenantScope: { telegram: 'bot42', discord: 'mint:old', googlechat: '123456789012' }[platform],
+          ...(key.endsWith('console') ? { launchCorrelationId: 'launch-1' } : {}),
           ...(direct ? { directDestination: true } : {})
         })
       }
@@ -69,8 +74,16 @@ describe('Telegram/Discord audience upgrade', () => {
         externalProvider: 'telegram',
         externalResourceKey: '-10043'
       })
-      for (const key of ['synthetic', 'console'])
+      for (const key of ['synthetic', 'console', 'google-synthetic', 'google-console'])
         expect(await store.getSession(key)).toMatchObject({ externalProvider: null, sourceBindingKind: 'local' })
+      for (const key of ['googlechat', 'google-child', 'google-direct'])
+        expect(await store.getSession(key)).toMatchObject({
+          acpSessionId: `acp-${key}`,
+          externalProvider: 'googlechat',
+          externalRealmKey: '123456789012',
+          externalResourceKey: key === 'google-direct' ? 'spaces/BBBBBBBBBBB' : 'spaces/AAAAAAAAAAA',
+          sourceBindingKind: 'external'
+        })
       await store.setSessionClassification('discord', {
         externalRealmKey: 'bot100000000000000001',
         externalIntegrationId: 'integration-1'
