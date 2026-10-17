@@ -78,6 +78,7 @@ export function AssistantModePanel({
   askEveryTime: boolean
 }) {
   const t = useTranslations('Agents.detail.assistantMode')
+  const tCommon = useTranslations('Common')
   const { updateAgent, members } = useConsoleData()
   const [admission, setAdmission] = useState<AssistantModeAdmission | null>(null)
   const [open, setOpen] = useState(false)
@@ -167,6 +168,9 @@ export function AssistantModePanel({
         <div className="flex min-w-0 flex-col gap-[3px]">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-sans text-[14px] font-semibold leading-normal">{t('title')}</span>
+            <span className="badge bg-(--status-info-soft) text-(--status-info)" data-assistant-mode-beta>
+              {tCommon('beta')}
+            </span>
             <span className="badge bg-(--surface-active) text-(--text-secondary)">{enabled ? t('on') : t('off')}</span>
             {locked ? (
               <span
@@ -236,6 +240,9 @@ export function AssistantModePanel({
               }}
             />
             {t('enable')}
+            <span className="badge bg-(--status-info-soft) text-(--status-info)" data-assistant-mode-beta>
+              {tCommon('beta')}
+            </span>
           </label>
 
           <div className="flex flex-col gap-2">

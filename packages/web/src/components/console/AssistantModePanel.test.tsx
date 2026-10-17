@@ -144,6 +144,17 @@ describe('AssistantModePanel', () => {
     expect(toggle?.disabled).toBe(true)
   })
 
+  it('marks the mode Beta beside the card title and beside the switch, and nowhere else', async () => {
+    const host = await mount()
+    const badges = () => [...host.querySelectorAll('[data-assistant-mode-beta]')].map((b) => b.textContent)
+    expect(badges()).toEqual(['Beta'])
+    await clickButton(host, 'Edit')
+    expect(badges()).toEqual(['Beta', 'Beta'])
+    expect(host.querySelector('label [data-assistant-mode-beta]')?.parentElement?.textContent).toContain(
+      'Turn on assistant mode'
+    )
+  })
+
   it('turns on with the switch alone and saves the policy', async () => {
     const host = await mount()
     await clickButton(host, 'Edit')

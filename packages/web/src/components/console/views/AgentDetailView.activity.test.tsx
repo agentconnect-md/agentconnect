@@ -162,7 +162,6 @@ afterEach(async () => {
 
 describe('the agent page’s Activity tab', () => {
   it('appears last for an assistant-mode agent, and opens the panel', async () => {
-    mocks.flags = new Set(['assistant-mode'])
     mocks.assistantMode = { enabled: true }
     mocks.query = 'tab=activity'
     const scope = await render()
@@ -198,7 +197,6 @@ describe('the agent page’s Activity tab', () => {
   })
 
   it('hands a viewer the panel read-only', async () => {
-    mocks.flags = new Set(['assistant-mode'])
     mocks.assistantMode = { enabled: true }
     mocks.query = 'tab=activity'
     mocks.canEdit = false
@@ -206,17 +204,8 @@ describe('the agent page’s Activity tab', () => {
     expect(scope.querySelector('[data-activity-panel]')?.getAttribute('data-can-edit')).toBe('false')
   })
 
-  it('stays for an agent already in assistant mode with the flag off', async () => {
-    mocks.assistantMode = { enabled: true }
-    mocks.query = 'tab=activity'
-    const scope = await render()
-    expect(tabs(scope).at(-1)).toEqual(['Activity', '/agents/agent-1?tab=activity'])
-    expect(scope.querySelector('[data-activity-panel]')?.getAttribute('data-activity-panel')).toBe('agent-1')
-  })
-
-  it('is hidden for an agent outside assistant mode whose daemon serves only assistant mode’s, flag or not', async () => {
+  it('is hidden for an agent outside assistant mode whose daemon serves only assistant mode’s', async () => {
     mocks.features = ['assistant-activity-v1', 'assistant-subsession-panel-v1']
-    mocks.flags = new Set(['assistant-mode'])
     mocks.query = 'tab=activity'
     for (const mode of [undefined, { enabled: false }]) {
       mocks.assistantMode = mode
@@ -244,7 +233,6 @@ describe('the assistant mode switch', () => {
   }
 
   it('sits on the Configuration tab, not the Memory tab', async () => {
-    mocks.flags = new Set(['assistant-mode'])
     mocks.assistantMode = { enabled: true }
     expect(await panel()).toBe('true')
     await act(async () => root!.unmount())
@@ -256,23 +244,17 @@ describe('the assistant mode switch', () => {
     expect(memory.querySelector('[data-assistant-mode-panel]')).toBeNull()
   })
 
-  it('stays on an agent already in assistant mode with the flag off, so it can be switched off', async () => {
-    mocks.assistantMode = { enabled: true }
-    expect(await panel()).toBe('true')
-  })
-
-  it('is not offered to switch an agent on with the flag off', async () => {
-    for (const mode of [undefined, { enabled: false }]) {
+  it('is offered whether the agent is on or off, so it can be switched either way', async () => {
+    for (const [mode, shown] of [
+      [undefined, 'false'],
+      [{ enabled: false }, 'false'],
+      [{ enabled: true }, 'true']
+    ] as const) {
       mocks.assistantMode = mode
-      expect(await panel()).toBeUndefined()
+      expect(await panel()).toBe(shown)
       await act(async () => root!.unmount())
       host?.remove()
       root = undefined
     }
-  })
-
-  it('is offered to switch an agent on with the flag on', async () => {
-    mocks.flags = new Set(['assistant-mode'])
-    expect(await panel()).toBe('false')
   })
 })

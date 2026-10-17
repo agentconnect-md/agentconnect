@@ -36,6 +36,7 @@ vi.mock('@/lib/org-context', () => ({
 }))
 vi.mock('@/components/console/PlaygroundProvider', () => ({ usePlayground: () => ({ openPlayground: vi.fn() }) }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
+vi.mock('@/components/console/AssistantModePanel', () => ({ AssistantModePanel: () => null }))
 vi.mock('@/lib/use-session-list', () => ({ useSessionList: () => ({ sessions: [], total: 0, isLoading: false }) }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({ runtimes: [] }), acpRuntime: () => null }))
 vi.mock('@/lib/data-context', () => ({

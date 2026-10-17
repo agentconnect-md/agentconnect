@@ -74,9 +74,9 @@
       "typeLabel": "输入标签，按 Enter 添加",
       "limitReached": "已达到标签上限，请移除一个后再添加。"
     },
+    "beta": "Beta",
     "language": {
-      "label": "语言",
-      "beta": "Beta"
+      "label": "语言"
     },
     "visibility": {
       "label": "可见范围",
