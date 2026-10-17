@@ -68,6 +68,7 @@ import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpServic
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
 import type { SessionPullRequestFeedbackService } from '../codehost/session-pull-request-feedback.service.js'
+import type { FollowUpWatchService } from '../codehost/follow-up-watch.service.js'
 import type { CodeHostFeedbackService } from '../codehost/feedback.service.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 
@@ -128,6 +129,8 @@ export interface DaemonWsDeps {
   httpBotDaemonOffline?: (daemonId: string) => Promise<void>
   /** Persists exact-session PR capture obligations and drains durable PR feedback after daemon readiness. */
   pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
+  /** Event wake's subscriptions (assistant-mode.md §5.14); absent ⇒ `assistant/follow-up-watch` is refused and not advertised. */
+  followUpWatch?: Pick<FollowUpWatchService, 'apply' | 'kick'>
   codeHostFeedback?: Pick<CodeHostFeedbackService, 'outputPublished'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */
   events: SessionEventSink

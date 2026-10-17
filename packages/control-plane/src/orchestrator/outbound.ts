@@ -171,6 +171,8 @@ import {
   SessionVisibilityOk,
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
+  AssistantFollowUpWake,
+  AssistantFollowUpWakeResult,
   CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
 
@@ -700,6 +702,22 @@ export class ControlSender {
     const c = this.must(daemonId)
     return c.conn.request<SessionPullRequestFeedbackResult>(
       'session/pull-request-feedback',
+      req,
+      { epoch: c.sessionEpoch, agentId: req.agentId },
+      undefined,
+      orgId
+    )
+  }
+
+  /** Make a follow-up's check due from body-free event kinds, or tell it its watch ended (assistant-mode.md §5.14). */
+  async followUpWake(
+    daemonId: string,
+    orgId: string,
+    req: AssistantFollowUpWake
+  ): Promise<AssistantFollowUpWakeResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<AssistantFollowUpWakeResult>(
+      'assistant/follow-up-wake',
       req,
       { epoch: c.sessionEpoch, agentId: req.agentId },
       undefined,

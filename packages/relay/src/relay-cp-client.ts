@@ -14,6 +14,8 @@
  */
 import {
   CODEHOST_FEEDBACK_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE,
+  type RcFollowUpWatch,
   type RcCodeHostFeedback,
   type RcCodeHostFeedbackResult,
   type RcCodeHostFeedbackWatch,
@@ -150,6 +152,8 @@ export interface RelayCpClientDeps {
   onParticipantAssign?: (a: RcParticipantAssign) => void
   /** Feedback subscriptions and hook rules carry signing keys; never log their payloads. */
   onFeedbackWatch?: (watch: RcCodeHostFeedbackWatch) => void
+  /** Called on a CP `rc/follow-up-watch` EVT: one object a follow-up watches, or no longer does. */
+  onFollowUpWatch?: (watch: RcFollowUpWatch) => void
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
@@ -461,6 +465,19 @@ export class RelayCpClient {
     return rep.payload.accepted
   }
 
+  /** Send one wake-only object event; false when the CP takes none, and a failure costs only the follow-up's time. */
+  async reportFollowUpEvent(signal: RcPullRequestFeedback): Promise<boolean> {
+    if (this.state !== 'READY' || !this.transport || !this.serverFeatures.has(FOLLOW_UP_WATCH_FEATURE)) return false
+    const rep = await this.sendRequest(buildRelayCpFrame('rc/pull-request-feedback', signal), {
+      maxTries: 1,
+      ackTimeoutMs: ACK_TIMEOUT_MS
+    })
+    if (rep.type !== 'rc/pull-request-feedback/ok') {
+      throw new WireError('INTERNAL', `expected rc/pull-request-feedback/ok, got ${rep.type}`, false)
+    }
+    return rep.payload.accepted
+  }
+
   /** Emit `rc/set-channel-agent` (fire-and-forget) — the config modal picked a
    *  channel's default agent. Dropped if the CP link is down (the operator can retry). */
   emitSetChannelAgent(m: RcSetChannelAgent): void {
@@ -690,6 +707,8 @@ export class RelayCpClient {
           GITLAB_INSTANCE_V1_FEATURE,
           PULL_REQUEST_FEEDBACK_FEATURE,
           CODEHOST_FEEDBACK_FEATURE,
+          // Holds the objects follow-ups watch and sends their wake-only events (assistant-mode.md §5.14).
+          FOLLOW_UP_WATCH_FEATURE,
           GITEA_V1_FEATURE,
           // This relay arbitrates `decision` routes as human-only candidates and forwards their decisionId.
           DECISION_TRIGGER_V1_FEATURE,
@@ -799,6 +818,10 @@ export class RelayCpClient {
       }
       case 'rc/codehost-feedback-watch': {
         this.deps.onFeedbackWatch?.(frame.payload as RcCodeHostFeedbackWatch)
+        return
+      }
+      case 'rc/follow-up-watch': {
+        this.deps.onFollowUpWatch?.(frame.payload as RcFollowUpWatch)
         return
       }
       case 'rc/hook-assign': {

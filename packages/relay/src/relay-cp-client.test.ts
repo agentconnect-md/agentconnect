@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE,
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -207,6 +208,7 @@ describe('RelayCpClient', () => {
         GITLAB_INSTANCE_V1_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
         CODEHOST_FEEDBACK_FEATURE,
+        FOLLOW_UP_WATCH_FEATURE,
         GITEA_V1_FEATURE,
         DECISION_TRIGGER_V1_FEATURE,
         DECISION_ROUTING_V1_FEATURE,
@@ -527,6 +529,55 @@ describe('RelayCpClient', () => {
 
     transport.simulateClose(1012)
     await expect(client.reportPullRequestFeedback(signal)).rejects.toMatchObject({ retryable: true })
+  })
+
+  it('sends a wake-only event only to a CP that holds follow-up watches, and applies their EVTs', async () => {
+    const watches: unknown[] = []
+    const { client, transport } = makeClient()
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, [PULL_REQUEST_FEEDBACK_FEATURE])
+    const signal = {
+      deliveryKey: 'delivery-merged-1',
+      installationId: '1234567',
+      repoId: '987654321',
+      repoFullName: 'example-org/example-repo',
+      pullNumber: 77,
+      subject: 'pull',
+      event: 'merged',
+      wakeOnly: true
+    } as const
+    await expect(client.reportFollowUpEvent(signal)).resolves.toBe(false)
+    expect(transport.lastReq('rc/pull-request-feedback')).toBeUndefined()
+
+    const watching = makeClient({ onFollowUpWatch: (watch) => watches.push(watch) })
+    watching.client.start()
+    await flush()
+    await completeHandshake(watching.transport, 15, undefined, [PULL_REQUEST_FEEDBACK_FEATURE, FOLLOW_UP_WATCH_FEATURE])
+    const pending = watching.client.reportFollowUpEvent(signal)
+    await flush()
+    const request = watching.transport.lastReq('rc/pull-request-feedback')!
+    expect(request.payload).toMatchObject({ event: 'merged', wakeOnly: true })
+    watching.transport.inject(
+      buildRelayCpFrame(
+        'rc/pull-request-feedback/ok',
+        { deliveryKey: signal.deliveryKey, accepted: true },
+        { corr: request.id }
+      )
+    )
+    await expect(pending).resolves.toBe(true)
+
+    const watch = {
+      provider: 'github',
+      installationId: '1234567',
+      repoId: '987654321',
+      subject: 'pull',
+      number: 77,
+      watched: true
+    } as const
+    watching.transport.inject(buildRelayCpFrame('rc/follow-up-watch', watch))
+    await flush()
+    expect(watches).toEqual([watch])
   })
 
   it('sends rc/bot-revoked evidence only to a CP that advertises credential checks', async () => {

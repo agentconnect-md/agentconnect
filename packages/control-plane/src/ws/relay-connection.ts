@@ -52,6 +52,7 @@ import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
   CODEHOST_FEEDBACK_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   RELAY_CP_SCHEMAS
 } from '@agentconnect.md/protocol'
@@ -323,6 +324,8 @@ export class RelayConnection implements RelayChannel {
       serverFeatures: [
         CODEHOST_FEEDBACK_FEATURE,
         PULL_REQUEST_FEEDBACK_FEATURE,
+        // Takes wake-only object events and holds the objects follow-ups watch (assistant-mode.md §5.14).
+        FOLLOW_UP_WATCH_FEATURE,
         BOT_CREDENTIAL_CHECK_FEATURE,
         BOT_TENANT_FEATURE,
         // Frames its MCP, hook and memory replays as snapshots, so the relay prunes instead of clearing.

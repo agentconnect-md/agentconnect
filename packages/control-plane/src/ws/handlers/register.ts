@@ -11,6 +11,7 @@
  * snapshot (CP wins all conflicts) — reconnect is convergence, not replay.
  */
 import {
+  FOLLOW_UP_WATCH_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
@@ -179,12 +180,15 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       MEMORY_CAPTURE_FENCE_V1_FEATURE,
       // session-executors.md §6: this CP serves `executor/candidates` and relays `executor/prepare`; a holder must not send either before seeing this.
       SESSION_EXECUTORS_V1_FEATURE,
+      // assistant-mode.md §5.14: this CP takes follow-up watches and sends their wakes.
+      ...(deps.followUpWatch ? [FOLLOW_UP_WATCH_FEATURE] : []),
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : [])
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)
   deps.pullRequestFeedback?.kick()
+  deps.followUpWatch?.kick()
   void deps.httpBotDaemonReady?.(conn.daemonId).catch(() => {})
 
   // Converge the per-session memory-capture gates (session-visibility.md §5.1).

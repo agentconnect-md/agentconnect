@@ -30,7 +30,8 @@ import {
   codeHostHookMetadataOf,
   WORKSPACE_SESSION_READ_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
-  AGENT_MODEL_PROVIDER_FEATURE
+  AGENT_MODEL_PROVIDER_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -74,6 +75,8 @@ import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
 import { SessionPullRequestFeedbackService } from './codehost/session-pull-request-feedback.service.js'
+import { FollowUpWatchService } from './codehost/follow-up-watch.service.js'
+import { githubFollowUpWatchProvider } from './github/follow-up-watch.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubHookRunSubject } from './github/hook-run-subject.js'
@@ -101,6 +104,7 @@ import {
   PgAssignmentRepo,
   PgSessionRepo,
   PgSessionPullRequestFeedbackRepo,
+  PgFollowUpWatchRepo,
   PgSessionUsageRepo,
   PgAgentApiEntryRepo,
   PgWebchatConversationRepo,
@@ -476,6 +480,7 @@ export function buildContainer(
     assignment: new PgAssignmentRepo(prisma),
     session: new PgSessionRepo(prisma),
     sessionPullRequestFeedback: new PgSessionPullRequestFeedbackRepo(prisma),
+    followUpWatch: new PgFollowUpWatchRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     agentApiEntry: new PgAgentApiEntryRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
@@ -1571,15 +1576,17 @@ export function buildContainer(
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })
       : undefined
+  // The organization a signed GitHub delivery belongs to: its live, unsuspended installation's.
+  const githubSignalOrg = async (signal: { installationId: string }) => {
+    const installation = await repos.githubInstallation.getByInstallationId(BigInt(signal.installationId))
+    return installation && !installation.revokedAt && !installation.suspendedAt ? installation.orgId : null
+  }
   const sessionPullRequestFeedback = new SessionPullRequestFeedbackService({
     clock,
     feedback: repos.sessionPullRequestFeedback,
     sessions: repos.session,
     agents: repos.agent,
-    sourceOf: async (signal) => {
-      const installation = await repos.githubInstallation.getByInstallationId(BigInt(signal.installationId))
-      return installation && !installation.revokedAt && !installation.suspendedAt ? installation.orgId : null
-    },
+    sourceOf: githubSignalOrg,
     validate: async (item, agent) => {
       if (item.provider && item.provider !== 'github') return codeHostFeedback.validate(item, agent)
       if (!item.installationId) return false
@@ -1630,6 +1637,31 @@ export function buildContainer(
     readBranch: (agent, session) => readSessionBranch(agent, session, 'session'),
     queue: sessionPullRequestFeedback,
     broadcast: (watch) => relayControl.feedbackWatch(watch)
+  })
+  // Event wake (assistant-mode.md §5.14): the feedback lane's second consumer, holding one wake per watch.
+  const followUpWatch = new FollowUpWatchService({
+    clock,
+    watches: repos.followUpWatch,
+    agents: repos.agent,
+    providers: github ? [githubFollowUpWatchProvider(github)] : [],
+    opener: async (object) =>
+      (
+        await repos.sessionPullRequestFeedback.owner(
+          object.orgId,
+          object.provider,
+          object.bindingId,
+          object.repoId,
+          object.number
+        )
+      )?.agentId ?? null,
+    placement: placementResolver,
+    daemon: (daemonId) => connReg.get(daemonId),
+    send: (daemonId, request, orgId) => sender.followUpWake(daemonId, orgId, request),
+    broadcast: (watch) => relayControl.followUpWatch(watch),
+    log: {
+      debug: (obj, message) => http.log.debug(obj, message),
+      warn: (obj, message) => http.log.warn(obj, message)
+    }
   })
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({
@@ -2589,6 +2621,7 @@ export function buildContainer(
     },
     httpBotDaemonOffline: (daemonId) => httpBot.daemonOffline(daemonId),
     pullRequestFeedback: sessionPullRequestFeedback,
+    followUpWatch,
     codeHostFeedback,
     events,
     usageWriter,
@@ -2787,7 +2820,28 @@ export function buildContainer(
       })
     },
     onCodeHostFeedback: (signal) => codeHostFeedback.receive(signal),
-    onPullRequestFeedback: async (signal) => (await sessionPullRequestFeedback?.enqueue(signal)) ?? false,
+    onPullRequestFeedback: async (signal) => {
+      const orgId = await githubSignalOrg(signal)
+      if (!orgId) return false
+      // A wake-only event resumes no session; the lane's own feedback is unchanged.
+      if (!signal.wakeOnly) await sessionPullRequestFeedback.enqueueForOrg(orgId, signal)
+      if (signal.event) {
+        await followUpWatch.receive({
+          object: {
+            orgId,
+            provider: 'github',
+            bindingId: '',
+            repoId: BigInt(signal.repoId),
+            subject: signal.subject ?? 'pull',
+            number: signal.pullNumber
+          },
+          deliveryKey: signal.deliveryKey,
+          kind: signal.event,
+          feedback: !signal.wakeOnly
+        })
+      }
+      return true
+    },
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
     // rules to the fresh connection (its table is a memory copy). All fire-and-forget,
@@ -2814,6 +2868,13 @@ export function buildContainer(
       trackRelayRegistrationTask(
         httpBot.reconcileAll().catch((err) => http.log.error({ err }, 'relay: HTTP-bot reconcile on register failed'))
       )
+      if (ch.features?.includes(FOLLOW_UP_WATCH_FEATURE)) {
+        trackRelayRegistrationTask(
+          replaySnapshot(ch, 'follow-up-watch', relayControl, () =>
+            followUpWatch.replayTo((watch) => ch.send('rc/follow-up-watch', watch))
+          ).catch((err) => http.log.error({ err }, 'relay: follow-up watch replay failed'))
+        )
+      }
       trackRelayRegistrationTask(
         replaySnapshot(ch, 'hook', relayControl, (withhold) => hookService.replayTo(ch, withhold)).catch((err) =>
           http.log.error({ err }, 'relay: hook-rule replay on register failed')
@@ -3106,6 +3167,7 @@ export function buildContainer(
       dutyRecompute.start()
       sessionAccessWarmer.start()
       sessionPullRequestFeedback?.start()
+      followUpWatch.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
@@ -3137,6 +3199,7 @@ export function buildContainer(
       orgMetrics.stop()
       sessionAccessWarmer.stop()
       sessionPullRequestFeedback?.stop()
+      followUpWatch.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
       await Promise.allSettled([
@@ -3146,6 +3209,7 @@ export function buildContainer(
         sessionAccessWarmer.settle(),
         dutyRecompute.settle(),
         ...(sessionPullRequestFeedback ? [sessionPullRequestFeedback.settle()] : []),
+        followUpWatch.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()

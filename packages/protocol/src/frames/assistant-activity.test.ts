@@ -30,7 +30,7 @@ const item = {
 
 describe('assistant/activity frames', () => {
   it('registers exactly the read and write pairs', () => {
-    expect(FRAME_TYPES.filter((t) => t.startsWith('assistant/'))).toEqual([
+    expect(FRAME_TYPES.filter((t) => t.startsWith('assistant/activity/'))).toEqual([
       'assistant/activity/read',
       'assistant/activity/read/result',
       'assistant/activity/write',

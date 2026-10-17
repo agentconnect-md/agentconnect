@@ -51,6 +51,8 @@ import type {
   CodeHostReviewOpState,
   CodeHostReviewState,
   CodeHostProvider,
+  FollowUpEventKind,
+  FollowUpWatchSubject,
   HookKind,
   PullRequestFeedbackSignal,
   SessionStayedHomeReason,
@@ -1755,6 +1757,74 @@ export interface SessionPullRequestFeedbackRepo {
   defer(item: PullRequestWakeRecord, owner: string, nextAttemptAt: Date): Promise<void>
   /** Drop unowned rows and delivery receipts older than the cutoff; returns the unowned rows removed. */
   deleteExpired(unmatchedBefore: Date): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// FollowUpWatchRepo — event wake subscriptions (assistant-mode.md §5.14)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** One watched object's identity, as the lane keys a pull request. */
+export interface FollowUpWatchObject {
+  orgId: OrgId
+  provider: CodeHostProvider
+  bindingId: string
+  repoId: bigint
+  subject: FollowUpWatchSubject
+  number: number
+}
+
+/** A follow-up's watch: the object, how it was reached, and its one pending wake. */
+export interface FollowUpWatchRecord extends FollowUpWatchObject {
+  agentId: AgentId
+  followUpId: string
+  installationId: bigint | null
+  host: string
+  repoPath: string
+  wakeSeq: number
+  pendingSince: Date | null
+  pendingStateSince: Date | null
+  pendingLatestAt: Date | null
+  pendingKinds: FollowUpEventKind[]
+  dueAt: Date | null
+  endedReason: 'access_lost' | null
+  lastWakeAt: Date | null
+  lastWakeKinds: FollowUpEventKind[]
+}
+
+/** The pending-wake fields one fold writes. */
+export type FollowUpPendingWake = Pick<
+  FollowUpWatchRecord,
+  'pendingSince' | 'pendingStateSince' | 'pendingLatestAt' | 'pendingKinds' | 'dueAt'
+>
+
+export interface FollowUpWatchRepo {
+  listForAgent(agentId: AgentId): Promise<FollowUpWatchRecord[]>
+  /** Create or move one watch; a moved watch drops its pending wake and ended state. */
+  put(
+    input: FollowUpWatchObject &
+      Pick<FollowUpWatchRecord, 'agentId' | 'followUpId' | 'installationId' | 'host' | 'repoPath'>
+  ): Promise<void>
+  /** Delete these watches and return the ones that existed. */
+  remove(agentId: AgentId, followUpIds: string[]): Promise<FollowUpWatchRecord[]>
+  /** The live watches of one object, ended ones excluded. */
+  forObject(object: FollowUpWatchObject): Promise<FollowUpWatchRecord[]>
+  /** Whether any watch of any agent still names this object, ended ones included. */
+  watched(object: FollowUpWatchObject): Promise<boolean>
+  /** Record one delivery on one object; false when it was already received. */
+  receive(object: FollowUpWatchObject, deliveryKey: string, at: Date): Promise<boolean>
+  /** Apply a fold computed from `row`, only while `row.wakeSeq` is current; false means re-read and retry. */
+  fold(row: FollowUpWatchRecord, pending: FollowUpPendingWake): Promise<boolean>
+  /** Cross-process lease on the next due wake or ended notice. */
+  claimNext(owner: string, now: Date, until: Date): Promise<FollowUpWatchRecord | null>
+  /** Clear a delivered wake unless a later event folded into it meanwhile. */
+  complete(row: FollowUpWatchRecord, owner: string, at: Date): Promise<void>
+  defer(row: FollowUpWatchRecord, owner: string, nextAttemptAt: Date): Promise<void>
+  /** End a watch for lost access: its pending wake gives way to a notice due now. */
+  end(row: FollowUpWatchRecord, reason: 'access_lost', at: Date): Promise<void>
+  /** Every distinct object watched through `provider`, with the installation that reaches it, for a relay replay. */
+  objects(provider: CodeHostProvider): Promise<Array<FollowUpWatchObject & { installationId: bigint | null }>>
+  /** Drop delivery receipts older than the cutoff. */
+  deleteExpiredReceipts(before: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

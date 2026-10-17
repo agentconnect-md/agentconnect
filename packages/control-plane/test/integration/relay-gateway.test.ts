@@ -17,6 +17,9 @@ import { decodeJwt } from 'jose'
 import {
   AGENT_CHAT_KEY_REFUSAL,
   BOT_CREDENTIAL_CHECK_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE,
+  PULL_REQUEST_FEEDBACK_FEATURE,
+  RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -1184,6 +1187,108 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       await vi.waitFor(() => expect(frames.some((f) => f.type === 'rc/verify/ok')).toBe(true))
       expect(await prisma.githubInstallation.count()).toBe(0)
       ws.close()
+    })
+
+    // Event wake (assistant-mode.md §5.14): the lane's second consumer.
+    describe('follow-up watches', () => {
+      async function seedWatch(): Promise<void> {
+        await prisma.githubInstallation.create({
+          data: {
+            orgId: DEFAULT_ORG_ID,
+            installationId: INSTALLATION,
+            accountLogin: 'acme',
+            accountType: 'Organization',
+            repositorySelection: 'all'
+          }
+        })
+        await prisma.daemon.create({ data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
+        await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+        await prisma.followUpWatch.create({
+          data: {
+            agentId: AGENT,
+            followUpId: 'item-1',
+            orgId: DEFAULT_ORG_ID,
+            provider: 'github',
+            installationId: INSTALLATION,
+            host: 'github.com',
+            repoId: 456n,
+            subject: 'pull',
+            number: 12,
+            repoPath: 'acme/infra'
+          }
+        })
+      }
+
+      const signal = (deliveryKey: string, event: string, wakeOnly: boolean) => ({
+        deliveryKey,
+        installationId: String(INSTALLATION),
+        repoId: '456',
+        repoFullName: 'acme/infra',
+        pullNumber: 12,
+        subject: 'pull',
+        event,
+        ...(wakeOnly ? { wakeOnly: true } : {})
+      })
+
+      it('replays the watched objects to a relay that holds them, and folds a wake-only event without the lane', async () => {
+        await seedWatch()
+        const { base } = await start(GH_ENV, installationFetch(200))
+        const ws = await dial(`${base}/api/v1/relays/ws`, RELAY_CP_SUBPROTOCOL)
+        const frames: Array<{ type: string; payload: unknown }> = []
+        ws.on('message', (data: Buffer) =>
+          frames.push(JSON.parse(data.toString()) as { type: string; payload: unknown })
+        )
+        sendFrame(ws, 'rc/auth', { method: 'token', credential: RELAY_TOKEN })
+        await vi.waitFor(() => expect(frames.some((f) => f.type === 'rc/auth/ok')).toBe(true))
+        sendFrame(ws, 'rc/register', {
+          name: 'pod-watch',
+          daemonUrl: 'wss://pod-watch.example.com',
+          features: [PULL_REQUEST_FEEDBACK_FEATURE, FOLLOW_UP_WATCH_FEATURE, RELAY_PROJECTION_SNAPSHOT_V1_FEATURE]
+        })
+        await vi.waitFor(() =>
+          expect(
+            frames.some(
+              (f) => f.type === 'rc/snapshot-end' && (f.payload as { kind: string }).kind === 'follow-up-watch'
+            )
+          ).toBe(true)
+        )
+        expect(frames.filter((f) => f.type === 'rc/follow-up-watch').map((f) => f.payload)).toEqual([
+          {
+            provider: 'github',
+            installationId: String(INSTALLATION),
+            repoId: '456',
+            subject: 'pull',
+            number: 12,
+            watched: true
+          }
+        ])
+
+        sendFrame(ws, 'rc/pull-request-feedback', signal('delivery-merged', 'merged', true))
+        await vi.waitFor(() => expect(frames.some((f) => f.type === 'rc/pull-request-feedback/ok')).toBe(true))
+        expect(frames.find((f) => f.type === 'rc/pull-request-feedback/ok')!.payload).toMatchObject({ accepted: true })
+        expect(await prisma.followUpWatch.findFirst()).toMatchObject({ pendingKinds: ['merged'] })
+        expect(await prisma.sessionPullRequest.count()).toBe(0)
+
+        // A feedback signal still reaches the lane as before, and also folds into the watch.
+        sendFrame(ws, 'rc/pull-request-feedback', signal('delivery-review', 'changes_requested', false))
+        await vi.waitFor(async () => expect(await prisma.sessionPullRequest.count()).toBe(1))
+        await vi.waitFor(async () =>
+          expect(await prisma.followUpWatch.findFirst()).toMatchObject({
+            pendingKinds: ['merged', 'changes_requested']
+          })
+        )
+        ws.close()
+      })
+
+      it('sends a relay without the feature no watched object', async () => {
+        await seedWatch()
+        const { base } = await start(GH_ENV, installationFetch(200))
+        const { ws, frames } = await openRecordingRelay(base, 'pod-old')
+        sendFrame(ws, 'rc/verify', { kind: 'daemon-key', credential: 'nope' })
+        await vi.waitFor(() => expect(frames.some((f) => f.type === 'rc/verify/ok')).toBe(true))
+        expect(frames.some((f) => f.type === 'rc/follow-up-watch')).toBe(false)
+        ws.close()
+      })
     })
   })
 })

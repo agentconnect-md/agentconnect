@@ -22,6 +22,7 @@ import {
 } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { PullRequestFeedbackSignal } from './session.js'
+import { FollowUpEventKind, FollowUpWatchSubject, RcFollowUpWatch } from './follow-up-watch.js'
 import { ChatCallerRole } from './agent.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
@@ -116,7 +117,14 @@ export const RcRegistered = z.object({
 })
 export type RcRegistered = z.infer<typeof RcRegistered>
 
-export const RcPullRequestFeedback = PullRequestFeedbackSignal
+// `event` names what happened; a `wakeOnly` signal wakes follow-ups alone and resumes no session, and an issue's always is one.
+export const RcPullRequestFeedback = PullRequestFeedbackSignal.extend({
+  subject: FollowUpWatchSubject.optional(),
+  event: FollowUpEventKind.optional(),
+  wakeOnly: z.literal(true).optional()
+}).refine((signal) => signal.subject !== 'issue' || signal.wakeOnly === true, {
+  message: 'an issue signal wakes follow-ups only'
+})
 export type RcPullRequestFeedback = z.infer<typeof RcPullRequestFeedback>
 
 export const RcPullRequestFeedbackResult = z.object({
@@ -1328,7 +1336,7 @@ export const RELAY_PROJECTION_SNAPSHOT_V1_FEATURE = 'relay-projection-snapshot-v
 export const RC_SNAPSHOT_MAX_WITHHELD = 1_000
 
 /** The relay projections a CP replays in full after the relay (re)registers. */
-export const RcSnapshotKind = z.enum(['mcp', 'hook', 'memory'])
+export const RcSnapshotKind = z.enum(['mcp', 'hook', 'memory', 'follow-up-watch'])
 export type RcSnapshotKind = z.infer<typeof RcSnapshotKind>
 
 /** C→R EVT: a full replay of one projection starts; the relay keeps serving its current copy meanwhile. */
@@ -1365,6 +1373,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/codehost-feedback/ok': RcCodeHostFeedbackResult,
   'rc/pull-request-feedback': RcPullRequestFeedback,
   'rc/pull-request-feedback/ok': RcPullRequestFeedbackResult,
+  'rc/follow-up-watch': RcFollowUpWatch,
   'rc/hook-assign': RcHookAssign,
   'rc/hook-remove': RcHookRemove,
   'rc/run-report': RcRunReport,
@@ -1426,6 +1435,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/codehost-feedback-watch', RELAY_CP_SCHEMAS['rc/codehost-feedback-watch']),
   frameSchema('rc/pull-request-feedback', RELAY_CP_SCHEMAS['rc/pull-request-feedback']),
   frameSchema('rc/pull-request-feedback/ok', RELAY_CP_SCHEMAS['rc/pull-request-feedback/ok']),
+  frameSchema('rc/follow-up-watch', RELAY_CP_SCHEMAS['rc/follow-up-watch']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),
   frameSchema('rc/hook-remove', RELAY_CP_SCHEMAS['rc/hook-remove']),
   frameSchema('rc/run-report', RELAY_CP_SCHEMAS['rc/run-report']),

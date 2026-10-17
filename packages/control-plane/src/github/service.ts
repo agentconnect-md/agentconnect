@@ -986,6 +986,74 @@ export class GithubService {
     return { repoId: ref.repoId, repoFullName: ref.fullName, installationId: installation.installationId }
   }
 
+  /** Event wake's subscribe-time check (assistant-mode.md §5.14): the id-first rule hook rows use, then one read of the object. */
+  async resolveWatchedObject(
+    agent: AgentRecord,
+    repoPath: string,
+    subject: 'pull' | 'issue',
+    number: number
+  ): Promise<
+    | { installationId: bigint; repoId: bigint; repoFullName: string; subject: 'pull' | 'issue' }
+    | 'no_access'
+    | 'not_found'
+    | 'unavailable'
+  > {
+    const [owner, repo] = repoPath.split('/')
+    if (!owner || !repo) return 'not_found'
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    if (!installation || installation.orgId !== agent.orgId || installation.suspendedAt) return 'no_access'
+    const refused = (e: unknown) => {
+      if (e instanceof GitCredDeniedError || e instanceof GithubApiError)
+        return e.retryable ? 'unavailable' : 'no_access'
+      throw e
+    }
+    let resolved: ResolvedAgentRepoAuthorization
+    try {
+      const ref = await this.repoRefFor(installation, owner, repo)
+      if (!ref) return 'no_access'
+      resolved = await this.resolveAgentRepoAuthorization(agent, ref.repoId, ref.fullName)
+    } catch (e) {
+      return refused(e)
+    }
+    try {
+      const cred = await this.tokens.mintLevels(
+        installation.installationId,
+        resolved.repoFullName,
+        subject === 'pull' ? { pull_requests: 'read' } : { issues: 'read' },
+        resolved.repoId
+      )
+      const object = await githubRequest<{ pull_request?: unknown }>(
+        `/repos/${resolved.repoFullName}/${subject === 'pull' ? 'pulls' : 'issues'}/${number}`,
+        { auth: cred.token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
+      )
+      return {
+        installationId: installation.installationId,
+        repoId: resolved.repoId,
+        repoFullName: resolved.repoFullName,
+        // An issue URL that names a pull request watches the pull request.
+        subject: subject === 'issue' && object.pull_request !== undefined ? 'pull' : subject
+      }
+    } catch (e) {
+      if (e instanceof GithubApiError && (e.status === 404 || e.status === 410)) return 'not_found'
+      return refused(e)
+    }
+  }
+
+  /** Event wake's event-time check, from tables alone: a live installation and the agent's workspace, repository row or installation grant. */
+  async coversWatchedRepo(agent: AgentRecord, installationId: bigint, repoId: bigint): Promise<boolean> {
+    const installation = await this.deps.installations.getByInstallationId(installationId)
+    if (!installation || installation.orgId !== agent.orgId || installation.revokedAt || installation.suspendedAt) {
+      return false
+    }
+    const workspace = agent.workspace
+    if (workspace.mode === 'git' && workspace.credential?.provider === 'github' && agent.workspaceRepoId === repoId) {
+      return true
+    }
+    const rows = (await this.deps.repoAuths?.listForAgent(agent.id)) ?? []
+    if (rows.some((row) => row.provider === 'github' && row.repoId === repoId && isHonoredRepoGrant(row))) return true
+    return (await this.installationGrantsOf(agent)).some((grant) => grant.installationId === installationId)
+  }
+
   /** Whether the console may arm auto-merge for this agent's PR — the GET projection's per-caller
    *  capability flag, Postgres-only (no GitHub call): a read/comment tier renders a disabled control. */
   async canArmAutoMerge(agent: AgentRecord, repoId: bigint, repoFullName: string): Promise<boolean> {

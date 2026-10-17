@@ -6,6 +6,12 @@ import {
   MemoryEntriesReadResult
 } from './frames/memory-entries.js'
 import { z } from 'zod'
+import {
+  AssistantFollowUpWatchReq,
+  AssistantFollowUpWatchResult,
+  AssistantFollowUpWake,
+  AssistantFollowUpWakeResult
+} from './frames/follow-up-watch.js'
 
 import { AuthReq, AuthOk } from './frames/auth.js'
 import { RegisterReq, RegisterOk, RelayRosterUpdate, CapabilitiesUpdate } from './frames/register.js'
@@ -558,6 +564,11 @@ export const FRAME_SCHEMAS = {
   'assistant/activity/read/result': AssistantActivityReadResult,
   'assistant/activity/write': AssistantActivityWriteReq,
   'assistant/activity/write/result': AssistantActivityWriteResult,
+  // ── event wake (assistant-mode.md §5.14): the daemon's watches, and the CP's body-free wake.
+  'assistant/follow-up-watch': AssistantFollowUpWatchReq,
+  'assistant/follow-up-watch/result': AssistantFollowUpWatchResult,
+  'assistant/follow-up-wake': AssistantFollowUpWake,
+  'assistant/follow-up-wake/result': AssistantFollowUpWakeResult,
   // ── merge-when-ready: arm/read the EDGE's in-memory watcher. Nothing is stored on either side.
   'automerge/set': AutoMergeSetReq,
   'automerge/set/result': AutoMergeState,
@@ -901,6 +912,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('assistant/activity/read/result', FRAME_SCHEMAS['assistant/activity/read/result']),
   frame('assistant/activity/write', FRAME_SCHEMAS['assistant/activity/write']),
   frame('assistant/activity/write/result', FRAME_SCHEMAS['assistant/activity/write/result']),
+  frame('assistant/follow-up-watch', FRAME_SCHEMAS['assistant/follow-up-watch']),
+  frame('assistant/follow-up-watch/result', FRAME_SCHEMAS['assistant/follow-up-watch/result']),
+  frame('assistant/follow-up-wake', FRAME_SCHEMAS['assistant/follow-up-wake']),
+  frame('assistant/follow-up-wake/result', FRAME_SCHEMAS['assistant/follow-up-wake/result']),
   frame('automerge/set', FRAME_SCHEMAS['automerge/set']),
   frame('automerge/set/result', FRAME_SCHEMAS['automerge/set/result']),
   frame('automerge/state', FRAME_SCHEMAS['automerge/state']),

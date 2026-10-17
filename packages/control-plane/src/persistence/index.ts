@@ -45,6 +45,7 @@ export { PgGithubRepoIdentityStore } from './repositories/github-repo-identity.r
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'
 export { PgSessionRepo } from './repositories/session.repo.js'
 export { PgSessionPullRequestFeedbackRepo } from './repositories/session-pull-request-feedback.repo.js'
+export { PgFollowUpWatchRepo } from './repositories/follow-up-watch.repo.js'
 export { PgSessionUsageRepo } from './repositories/session-usage.repo.js'
 export { PgAgentApiEntryRepo } from './repositories/agent-api-entry.repo.js'
 export { PgWebchatConversationRepo } from './repositories/webchat-conversation.repo.js'
