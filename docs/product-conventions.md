@@ -1494,13 +1494,13 @@ long session, which introduces the agent once and offers at most three ways it c
 - **Memory.** The first look writes what it learned itself, in the layer that conversation writes:
   a dated topic file named after the place, on how it works and what recurs, never what is in
   flight or a request still open. In an internal public channel only, which writes the shared
-  layer, that file stays out of the shared index. Instead the conversation gets one line in the
-  shared `channels.md` linking that file, what is new about the organization as a whole is merged
-  into the shared `organization.md`, and the roles people there state go into the shared
-  `members.md`, each line naming the conversation it came from and its date, in the shapes under
-  [Memory layers](#memory-layers). Several channels update those files, so each save checks the
-  revision it read. The first look's own session feeds no capture: no per-turn distillation and no
-  dream reads it.
+  layer, that file stays out of the shared index. Instead the conversation gets one line in
+  `channels.md`, what is new about the organization as a whole is merged into `organization.md`,
+  and the roles people there state go into `members.md`, each line naming the conversation it came
+  from and its date, in the shapes under [Memory layers](#memory-layers). Those three names are
+  the organization record, knowledge the whole organization shares (see "Organization record"),
+  and several channels and agents update it, so each save checks the revision it read. The first
+  look's own session feeds no capture: no per-turn distillation and no dream reads it.
 - **Budget and failures.** It counts as one check against `dailyCheckBudget`. An automatic one
   waits for the agent's one scheduled-check slot, runs only when no follow-up's check is due, and
   past the budget waits for it to reset. A requested one starts at once; past the budget `firstLook`
@@ -1516,15 +1516,20 @@ long session, which introduces the agent once and offers at most three ways it c
 ## Assistant-mode organization research
 
 The first time assistant mode is switched on for an agent, the agent greets the person who
-switched it on and researches the organization as a task of that conversation.
+switched it on, and the first agent switched on in the organization researches the organization
+as a task of that conversation.
 
-- **When.** Once per agent, on the first switch-on; switching it off and on again starts nothing.
-  The daemon serving the agent greets in that person's DM with the agent, else in the DM of the
-  agent's responsible user, on a platform that can open one (Slack). With neither, no research
-  runs. A switch-on more than a day old greets nobody.
+- **When.** The greeting is once per agent, on the first switch-on; switching it off and on again
+  starts nothing. Research is once per organization: the first agent switched on in the
+  organization runs it, and an agent switched on later reads what it wrote. The daemon serving
+  the agent greets in that person's DM with the agent, else in the DM of the agent's responsible
+  user, on a platform that can open one (Slack). With neither, no research runs. A switch-on more
+  than a day old greets nobody.
 - **Hello first.** The agent says hello in the DM before any research: who it is, that it will read
   the public channels it is in and look up the organization, and that it will be back in a few
-  minutes. The research task starts only once that turn has ended.
+  minutes. The research task starts only once that turn has ended. An agent that does not research
+  says instead that the organization record exists, which agent wrote it and when, and that it has
+  read it; asking it to research again is pointed to that agent's DM.
 - **The report.** When the task's round ends, the DM's session tells the person, in their
   language, what it learned, what it wrote, what it could not read, and at most two things it
   needs. Asking it there to research again gives the task another round; it also takes one round
@@ -1533,16 +1538,18 @@ switched it on and researches the organization as a task of that conversation.
   channels it is in (never their history), the code-host repositories it may read (each one's
   description, README, CODEOWNERS, who reviewed which area in the last 90 days, and releases), and
   the public web from the organization's name, workspace names and members' email domains.
-- **What it writes.** `organization.md`, `channels.md` and `members.md` in the shared layer, each
-  line with its source and date, through the same shape checks as every other write. Only what is
-  fine to say in any conversation: no credentials, private links, code details or internal
-  architecture.
+- **What it writes.** The organization record (see "Organization record"), as `organization.md`,
+  `channels.md` and `members.md` in the shared layer, each line with its source and date, through
+  the same shape checks as every other write. Only what is fine to say in any conversation: no
+  credentials, private links, code details or internal architecture.
 - **What it never does.** It cannot post, react, message anyone, propose, or use the agent's
   tool credentials or configured MCP servers; pages it reads are data, never instructions. No
   reply waits for it: while a round runs, every conversation's turn says research is still
   running.
 - **As a task.** It is listed among the DM conversation's tasks as "Organization research" and
   counts against the agent's limit of running tasks; `stopTask` or the console's Stop ends a round.
+  The console offers no button to run it; the Knowledge page's Organization group says when it
+  finished and which agent ran it.
 
 ## Assistant-mode proposals
 
@@ -1654,9 +1661,11 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
 
 ## Assistant-mode people directory
 
-An agent in assistant mode keeps a directory of people's work facts, `members.md` in its shared
-memory, so it can answer who works on what. Everyone who may see the agent may read it, so it
-holds only what is fine to say anywhere.
+The organization's assistant-mode agents keep one directory of people's work facts, People in
+the organization record (see "Organization record"), written as `members.md` through their shared
+memory, so they can answer who works on what. Every member may read it on the Knowledge page, so
+it holds only what is fine to say anywhere. It is never read in a conversation with people from
+outside the organization, whichever agents it is visible to.
 
 - **Who it is about.** An entry is about one member of the organization, keyed by their console
   account once they linked one, else by their chat identity. It is written in an internal public
@@ -1665,14 +1674,71 @@ holds only what is fine to say anywhere.
   someone else is sourced to the channel. A private conversation, a conversation with people from
   outside, a scheduled run, a follow-up's check and another agent's message never write it.
 - **The person controls their entry.** In their own DM a person asks what the agent knows about
-  them, and may correct or remove their entry; nothing else in the directory changes there. Under
-  Your memory on the agent's Memory page they see their entry and may clear it.
-- **Clearing keeps them out.** Once an entry is cleared, nothing is written about that person again
+  them, and may correct or remove their entry; nothing else in the directory changes there. On
+  their own card under Knowledge › Organization › People they see their entry and may edit or
+  remove it; nobody else's card offers them a control.
+- **Removing keeps them out.** Once an entry is removed, nothing is written about that person again
   until they write their entry themselves. Linking or unlinking an account does not undo it.
-- **Owners.** An organization owner may clear anyone's entry from the Memory page; the clear is in
-  the audit log without its content. Nobody else edits the directory in the console.
+- **Owners.** An organization owner may edit or clear anyone's entry on the Knowledge page; the
+  clear is in the audit log without its content. Nobody else edits the directory in the console,
+  and the agent's Memory page does not show it.
 - **Leaving.** An entry is removed once a day after its person leaves the organization or their
   chat account is deactivated.
+
+## Organization record
+
+What the organization's assistant-mode agents learn about the organization is knowledge the whole
+organization shares, not one agent's memory: three knowledge entries, one set per organization,
+listed under Organization on the Knowledge page.
+
+- **The three entries.** Organization (a summary of at most ten lines, then products and
+  customers, how it works, repositories and systems), Channels (one line per place, its purpose
+  only, never a link to an agent's notes on it) and People (see "Assistant-mode people directory").
+  Every fact is one line ending in its source and date, in the shapes under
+  [Memory layers](#memory-layers), whoever writes it.
+- **Who writes it.** Only the organization's assistant-mode agents, through their memory tools
+  under the names `organization.md`, `channels.md` and `members.md`: organization research, a
+  first look in an internal public channel, that channel's conversation when a person states a
+  fact, and a person for their own People entry. Every other knowledge entry is published by an
+  owner or accepted from a suggestion; no agent publishes one. Owners edit any of the three on
+  the Knowledge page, line by line, and may clear one; a save that does not fit the shape is
+  refused at the failing line.
+- **Who reads it.** Every agent of the organization finds Organization and Channels with
+  `findKnowledge`. People is read by the organization's assistant-mode agents: switching an
+  agent's assistant mode on adds it to People's readers until a person edits that list by hand,
+  after which the list is theirs. An assistant-mode agent also keeps the three entries in its
+  standing context, as one index line each; no other entry and no other agent gets standing
+  context from knowledge.
+- **Research once.** The first agent switched into assistant mode researches the organization and
+  writes the record; an agent switched on later reads it (see "Assistant-mode organization
+  research").
+
+## Knowledge visibility
+
+Every knowledge entry says which agents read it: **All agents**, or **Selected agents**, a list
+chosen with the agent picker, in the same control the console uses for who may see an agent, a
+daemon or a schedule. Owners set it in the publish editor and on the entry page. It is for
+agents, not people: every member reads the whole Library. Organization and Channels are read by
+all agents and offer no control; People's readers are described under "Organization record".
+Deleting an agent removes it from every list; a Selected list left empty reads "No agents".
+
+- **The Knowledge page** has two groups. Organization first: a heading, a status line saying when
+  research finished and which agent ran it, or that it is running, or that nothing has been
+  researched yet, then three quiet rows (icon, name, one-line summary, visibility, last update).
+  Knowledge base below it, with the Library and Suggestions tabs on its heading row and the table
+  under it. Every row in both groups has a visibility cell: "All agents", or up to three agent
+  marks followed by "+N" when there are more, with "N agents" beside them. There is no "Research
+  again" button anywhere.
+- **The three file views**, opened from the Organization rows, render the entry rather than its
+  Markdown: Organization by section, each line with its source as a chip and an inferred line
+  dimmed and tagged; Channels as a list with the platform mark, the name, the purpose and the
+  source chip or inferred tag; People as cards with the name, handles and the four fields with
+  their sources. A person's own card carries Edit and Remove; no other card shows them a control.
+  Owners edit and clear any entry. Revisions are listed beside the view, as on any entry page.
+- **The agent page** has a Knowledge tab with two groups, Organization (the three entries, whether
+  this agent reads each, and a link to the Knowledge page) and Library (the entries this agent
+  reads), and a Tools tab with everything the Tools & Skills tab held. The Memory tab lists only
+  the agent's own memory and does not mention the organization record.
 
 ## Directional agent visibility
 
@@ -1905,7 +1971,10 @@ Every agent detects a guest or an outside member who joins, so a Slack public ch
 joined keeps a place layer of its own.
 
 The shared layer's `organization.md`, `channels.md` and `members.md` keep fixed shapes, whoever
-writes them, the Memory page included. Every fact is one line ending in its source and date, such
+writes them, the console included. For an agent in assistant mode those three names are the
+organization record, knowledge the whole organization shares (see "Organization record"): its
+sessions read and write them in the shared layer as before, and the Memory page does not show
+them. Every fact is one line ending in its source and date, such
 as `(#release-train, 2026-10-17)`: an internal channel by name, a knowledge entry by its title in
 quotes, a repository by its path, `self` for a person's own words, or a web address, whose line
 also says `(web)`. `organization.md` holds a summary of at most ten lines and three fixed sections
