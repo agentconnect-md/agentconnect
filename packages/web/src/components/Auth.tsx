@@ -6,7 +6,7 @@ import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { LogoMark, Wordmark } from '@/components/marks'
 import SocialLoginButtons from '@/components/SocialLoginButtons'
 import { isAuthConfigured, login } from '@/lib/auth'
-import { socialLoginProviders, type SocialLoginTarget } from '@/lib/social-login-providers'
+import type { SocialLoginProvider, SocialLoginTarget } from '@/lib/social-login-providers'
 
 function BrandPanel() {
   const t = useTranslations('Auth.login')
@@ -41,11 +41,10 @@ function BrandPanel() {
   )
 }
 
-export default function Auth() {
+export default function Auth({ providers }: { providers: readonly SocialLoginProvider[] }) {
   const router = useRouter()
   const t = useTranslations('Auth.login')
-  // With an OIDC issuer configured, the SSO buttons start a real redirect; with
-  // auth disabled (the OSS default) they just enter the app.
+  // Configured SSO starts sign-in; no-auth deployments enter the app directly.
   const authOn = isAuthConfigured()
   const sso = (provider: SocialLoginTarget) => (authOn ? void login(provider) : router.push('/'))
 
@@ -58,7 +57,7 @@ export default function Auth() {
             <h1 className="atitle">{t('title')}</h1>
             <p className="asub">{t('subtitle')}</p>
             <div className="mt-[26px] flex flex-col gap-[10px]">
-              <SocialLoginButtons providers={socialLoginProviders()} onContinue={sso} />
+              <SocialLoginButtons providers={providers} onContinue={sso} />
             </div>
             <p className="mt-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
               {t('ssoOnly')}
