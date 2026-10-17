@@ -698,8 +698,8 @@ importers:
         specifier: ^6.0.2
         version: 6.0.2(react@19.3.0)
       '@logto/browser':
-        specifier: ^3.1.0
-        version: 3.1.0
+        specifier: ^3.1.1
+        version: 3.1.1
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -1990,11 +1990,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@logto/browser@3.1.0':
-    resolution: {integrity: sha512-Ux4EaTK19svxh4emFFpdzsBD6D7fF2R6EY8F/9az6BE5kEZIiLVR+EUUzebnILHB2fPkHDSQyGk6sasPkm6jqw==}
+  '@logto/browser@3.1.1':
+    resolution: {integrity: sha512-IvA4nCmBNPgZEZ2ox8z2k4f2+EHSrCNyno6isQ/qb0h4QCeLT7iuZ4wYqMafRAlGqrE7c1PY5FOausuCRzvNdg==}
 
-  '@logto/client@3.2.0':
-    resolution: {integrity: sha512-z9WzXHXAifqrWq3co512nfsNHBCskuwVeQ3CER4HUFqTjt7dvjCXDpSJSy1AmjeevdRGv1D0OTv4zPcff0yfCw==}
+  '@logto/client@3.2.1':
+    resolution: {integrity: sha512-bOIiPmKqfpuNwONnY3K/pGWpXRf9DtJPx4YsDfD9oDcfd5PEKEJfbop5g18FTX4nZZKulihf4etKnK5T3GhYeA==}
 
   '@logto/js@6.1.2':
     resolution: {integrity: sha512-YB/TfixPGI0Spbs8LXiKuASOKFUE9VmlTkXiPfgg3UXQsIPTU71KjKxEXZRePu3xdPNhsZ6WtnRfRvvcpP+KGQ==}
@@ -10877,13 +10877,13 @@ snapshots:
   '@libsql/win32-x64-msvc@0.5.29':
     optional: true
 
-  '@logto/browser@3.1.0':
+  '@logto/browser@3.1.1':
     dependencies:
-      '@logto/client': 3.2.0
+      '@logto/client': 3.2.1
       '@silverhand/essentials': 2.9.3
       js-base64: 3.9.4
 
-  '@logto/client@3.2.0':
+  '@logto/client@3.2.1':
     dependencies:
       '@logto/js': 6.1.2
       '@silverhand/essentials': 2.9.3
