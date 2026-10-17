@@ -671,6 +671,7 @@ export function buildHttpApp(
     sessionAccessPlugins: [
       { provider: 'slack', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },
       { provider: 'github', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },
+      { provider: 'gitlab', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },
       {
         provider: 'feishu',
         available: false,

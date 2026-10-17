@@ -2583,11 +2583,14 @@ A public project with its repository enabled is visible to organization members.
 Other repositories require an active, unexpired direct or inherited Reporter-or-
 higher membership. Disabled repositories remain hidden. This conservative check
 does not grant access through internal-project nonmembership or custom Guest
-roles. Allowed verdicts last at most two minutes, denied membership thirty
-seconds, and missing-identity diagnostics five seconds. Each read also checks the
-project binding and connection state before accepting a cached verdict. Missing
-credentials and failed provider requests hide affected sessions; organization
-owners have no bypass.
+roles. The provider caches allowed verdicts for two minutes, denied membership
+for thirty seconds, and missing-identity diagnostics for five seconds. The shared
+read snapshot can add up to one minute, so membership revocation or a public-to-
+private conversion can take up to three minutes to affect visibility. Each
+provider sweep checks the project binding and connection state before accepting
+a cached verdict. Missing credentials and failed provider requests hide affected
+sessions after the existing read snapshot expires; organization owners have no
+bypass.
 
 Upgrade the Control Plane and relay, then all participating daemons before
 enabling sync: older peers cannot consume the GitLab audience wire member.
