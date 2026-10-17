@@ -87,6 +87,8 @@ export interface AssistantTasksHost {
     summary?: string
     asker: string
   }): Promise<AssistantItem>
+  /** Watch a taken follow-up's object (assistant-mode.md §5.14); why it is not watched, or undefined when it is or will be. */
+  watchFollowUp?(agentId: string, itemId: string, url: string): Promise<string | undefined>
   draining(): boolean
 }
 
@@ -284,7 +286,11 @@ export class AssistantTasks {
       await ledger.settleFollowUp(draft.id, 'failed', reason, this.host.now())
       return { kind: 'failed', reason }
     }
-    await ledger.settleFollowUp(draft.id, 'succeeded', null, this.host.now())
+    // The approver confirmed the follow-up, not the watch: a refused one is said on the card, kept in the record's failure field.
+    const unwatched = form.watch
+      ? await this.host.watchFollowUp?.(draft.agentId, itemId, form.watch).catch(() => undefined)
+      : undefined
+    await ledger.settleFollowUp(draft.id, 'succeeded', unwatched ?? null, this.host.now())
     this.host.log.info(`assistant proposal ${draft.id}: took follow-up ${itemId}`)
     return { kind: 'taken', itemId, parentSessionId: parent.sessionId }
   }

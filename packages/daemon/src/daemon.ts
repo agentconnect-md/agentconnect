@@ -106,6 +106,8 @@ import {
   RUNTIME_PROBE_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
+  FOLLOW_UP_WAKE_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -380,6 +382,7 @@ import {
   type FirstLookFacts,
   type CheckParent
 } from './assistant/follow-up-checks.js'
+import { FollowUpWatches, watchTarget } from './assistant/follow-up-watches.js'
 import {
   FIRST_LOOK_MAX_MESSAGES,
   FIRST_LOOK_MAX_PROPOSALS,
@@ -4367,6 +4370,16 @@ export class Daemon {
         firstLook: (ctx) => this.requestFirstLook(ctx),
         // The place's long session offers a first look's suggestions as cards, on its report's round (§5.13).
         proposeAfterFirstLook: (ctx, input) => this.proposeAfterFirstLook(ctx, input),
+        // Its watches (§5.14), offered only toward a Control Plane that takes them.
+        watches: () =>
+          this.followUpWatches.offered()
+            ? {
+                check: (url) => void watchTarget(url),
+                set: (agentId, itemId, url) => this.followUpWatches.set(agentId, itemId, url),
+                clear: (agentId, itemId) => this.followUpWatches.clear(agentId, itemId),
+                end: (agentId, itemId) => this.followUpWatches.end(agentId, itemId)
+              }
+            : undefined,
         // A follow-up of the session's place, owned by its long session, else by the session taking it (§5.12).
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
@@ -4787,7 +4800,7 @@ export class Daemon {
         const narrowed = check || research
         // A first look (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
         if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
-        else if (check) tools = checkTools(tools)
+        else if (check) tools = checkTools(tools, { watch: this.followUpWatches.offered() })
         else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
@@ -8008,6 +8021,8 @@ export class Daemon {
       CODEHOST_REVIEW_V1_FEATURE,
       PULL_REQUEST_FEEDBACK_FEATURE,
       CODEHOST_FEEDBACK_FEATURE,
+      // assistant-mode.md §5.14: this daemon records follow-ups' event wakes and sends their watches. Static.
+      FOLLOW_UP_WAKE_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
@@ -8829,6 +8844,10 @@ export class Daemon {
         this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
       takeFollowUp: (input) => this.followUpChecks.take(input),
+      watchFollowUp: async (agentId, itemId, url) => {
+        const outcome = await this.followUpWatches.set(agentId, itemId, url)
+        return outcome.kind === 'refused' ? outcome.reason : undefined
+      },
       draining: () => this.draining
     })
     return this.assistantTaskService
@@ -9296,6 +9315,30 @@ export class Daemon {
     return (await this.collab.deliverDaemonReport(report)).admitted
   }
 
+  /** What follow-ups watch (assistant-mode.md §5.14), built on first use: only toward a Control Plane that takes watches. */
+  private followUpWatchService?: FollowUpWatches
+  private get followUpWatches(): FollowUpWatches {
+    this.followUpWatchService ??= new FollowUpWatches({
+      items: this.store.assistantItems,
+      port: {
+        request: async (agentId, req) => {
+          const cp = this.cpClient
+          if (cp?.supportsServerFeature?.(FOLLOW_UP_WATCH_FEATURE) !== true) return undefined
+          return await cp.followUpWatch(
+            { agentId, ...req },
+            this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+          )
+        },
+        link: () => {
+          const cp = this.cpClient
+          return cp?.supportsServerFeature?.(FOLLOW_UP_WATCH_FEATURE) === true ? cp.registration() : undefined
+        }
+      },
+      log: { warn: (m) => this.log.warn(m) }
+    })
+    return this.followUpWatchService
+  }
+
   /** Assistant-mode follow-ups (assistant-mode.md §5.12), built on first use over the live store. */
   private followUpCheckService?: FollowUpChecks
   private get followUpChecks(): FollowUpChecks {
@@ -9305,6 +9348,9 @@ export class Daemon {
       agents: () => this.agents.values(),
       // Only the duty holder checks, never for a paused or draining agent; a missed check is not replayed.
       mayCheck: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
+      // A paused agent's wakes are still recorded, and its watches kept, by its duty holder (§5.14).
+      holdsDuty: (agentId) => this.servesAgent(agentId) && !this.drainingAgents.has(agentId),
+      watches: this.followUpWatches,
       draining: () => this.draining,
       items: this.store.assistantItems,
       checks: this.store.assistantChecks,
@@ -9411,11 +9457,14 @@ export class Daemon {
     // Static descriptor, dynamic authority: the call resolves the current daemon-private turn and fails closed elsewhere.
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]
     // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
-    tools = [...tools, ...followUpToolsFor(agent)]
+    tools = [...tools, ...followUpToolsFor(agent, { watch: this.followUpWatches.offered() })]
     // A first look on request (§5.13), only to a place's long session where one could run, with `propose` for its report round where the place has cards.
     tools = [
       ...tools,
-      ...firstLookToolsFor(agent, at, { cards: integrationId !== undefined && this.hasCardSurface(integrationId) })
+      ...firstLookToolsFor(agent, at, {
+        cards: integrationId !== undefined && this.hasCardSurface(integrationId),
+        watch: this.followUpWatches.offered()
+      })
     ]
     // Its reminders (§5.9), in a platform conversation of the session's own only.
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
@@ -26627,6 +26676,7 @@ export class Daemon {
       decideAssistantDraft: (input) => this.drafts.decideFromConsole(input),
       pendingSubsessionApprovals: (agentId) => this.permissions.pendingSubsessionApprovals(agentId),
       stopAssistantFollowUp: (agentId, item, actor) => this.followUpChecks.stop(agentId, item, actor),
+      assistantFollowUpWake: (req) => this.followUpChecks.wake(req.agentId, req),
       cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,

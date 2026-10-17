@@ -8,10 +8,16 @@ import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.j
 import {
   askerIdentity,
   FOLLOW_UP_TOOL,
+  FOLLOW_UP_WATCH_TOOL,
   followUpToolsFor,
   PROPOSE_TOOL,
-  RECORD_CHECK_TOOL
+  PROPOSE_WATCH_TOOL,
+  RECORD_CHECK_TOOL,
+  RECORD_CHECK_WATCH_TOOL,
+  type FollowUpWatchToolPort,
+  type WatchOutcomeView
 } from '../src/mcp/ops/assistant-items.js'
+import { watchTarget } from '../src/assistant/follow-up-watches.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { LocalStore } from '../src/store/local-store.js'
@@ -45,7 +51,7 @@ afterEach(async () => {
 })
 
 /** A real store behind the deps; the asker is whoever the test says started the turn, and a check runs while `checking` holds. */
-async function setup(options: { enabled?: boolean } = {}) {
+async function setup(options: { enabled?: boolean; watches?: FollowUpWatchToolPort } = {}) {
   store = await openTestStore()
   const s = store
   let asker: string | undefined = ALICE
@@ -54,6 +60,7 @@ async function setup(options: { enabled?: boolean } = {}) {
   const deps = {
     assistantItems: {
       ledgerFor: () => (options.enabled === false ? undefined : s.assistantItems),
+      watches: () => options.watches,
       askerFor: async () => asker,
       take: async (
         ctx: SessionContext,
@@ -360,5 +367,103 @@ describe('the daemon offers followUp by the agent’s switch', () => {
     } finally {
       await daemon.stop()
     }
+  })
+})
+
+describe('a follow-up’s watch (assistant-mode.md §5.14)', () => {
+  const PR = 'https://github.com/example-org/example-repo/pull/12'
+
+  /** A watch port that answers `outcome` and records each call. */
+  function port(outcome: WatchOutcomeView = { kind: 'watching', target: 'example-org/example-repo#12' }) {
+    const calls: string[] = []
+    const watches: FollowUpWatchToolPort = {
+      check: (url) => void watchTarget(url),
+      set: async (_agentId, itemId, url) => {
+        calls.push(`set ${itemId} ${url}`)
+        return outcome
+      },
+      clear: async (_agentId, itemId) => {
+        calls.push(`clear ${itemId}`)
+        return { kind: 'none' }
+      },
+      end: async (_agentId, itemId) => {
+        calls.push(`end ${itemId}`)
+      }
+    }
+    return { watches, calls }
+  }
+
+  it('offers `watch` only toward a Control Plane that takes it, within every runtime’s limits', () => {
+    const on = { assistantMode: { enabled: true } }
+    expect(followUpToolsFor(on, { watch: true })).toEqual([FOLLOW_UP_WATCH_TOOL])
+    expect(followUpToolsFor(on, { watch: false })).toEqual([FOLLOW_UP_TOOL])
+    for (const [plain, watched] of [
+      [FOLLOW_UP_TOOL, FOLLOW_UP_WATCH_TOOL],
+      [RECORD_CHECK_TOOL, RECORD_CHECK_WATCH_TOOL],
+      [PROPOSE_TOOL, PROPOSE_WATCH_TOOL]
+    ] as const) {
+      // The tool's own description is untouched; only one property is added.
+      expect(watched.description).toBe(plain.description)
+      expect(watched.description.length).toBeLessThanOrEqual(2_048)
+      expect(Buffer.byteLength(JSON.stringify(watched.inputSchema))).toBeLessThanOrEqual(5_000)
+      expect(watched.inputSchema).not.toHaveProperty('oneOf')
+    }
+    expect(JSON.stringify(FOLLOW_UP_WATCH_TOOL.inputSchema)).toContain('its events then wake a check early')
+    expect(JSON.stringify(RECORD_CHECK_WATCH_TOOL.inputSchema)).toContain('or an empty string to stop watching')
+    expect(JSON.stringify(PROPOSE_WATCH_TOOL.inputSchema)).toContain('its events then wake a check early')
+  })
+
+  it('takes the follow-up, then watches what it names, and says a refused watch back', async () => {
+    const watching = port()
+    const { call, s } = await setup({ watches: watching.watches })
+    const taken = await call(ALICE_DM, 'followUp', { title: 'PR #12', doneWhen: 'It merged', watch: PR })
+    const [item] = await s.assistantItems.list(AGENT)
+    expect(watching.calls).toEqual([`set ${item!.id} ${PR}`])
+    expect(taken.watch).toBe('Watching example-org/example-repo#12: its events wake a check early.')
+
+    const refusing = port({ kind: 'refused', reason: 'your code-host access does not cover it' })
+    const second = await setup({ watches: refusing.watches })
+    const result = await second.call(ALICE_DM, 'followUp', { title: 'PR #13', doneWhen: 'It merged', watch: PR })
+    // The person confirmed the follow-up, not the watch: it is taken either way.
+    expect(await second.s.assistantItems.list(AGENT)).toHaveLength(1)
+    expect(result.watch).toBe(
+      'Not watched: your code-host access does not cover it. It is checked by time only; tell the person why.'
+    )
+  })
+
+  it('refuses a URL that names no pull request, merge request or issue, and `watch` where none is taken, before taking anything', async () => {
+    const { call, s } = await setup({ watches: port().watches })
+    await expect(
+      call(ALICE_DM, 'followUp', {
+        title: 'Build',
+        doneWhen: 'Green',
+        watch: 'https://github.com/example-org/example-repo/actions/runs/5'
+      })
+    ).rejects.toThrow('argument watch must be the URL of one pull request, merge request or issue')
+    const none = await setup()
+    await expect(none.call(ALICE_DM, 'followUp', { title: 'PR', doneWhen: 'Merged', watch: PR })).rejects.toThrow(
+      'watching is not available here'
+    )
+    expect(await s.assistantItems.list(AGENT)).toEqual([])
+    expect(await none.s.assistantItems.list(AGENT)).toEqual([])
+  })
+
+  it('moves the watch with a new URL, stops it with an empty one, and ends it with `done`', async () => {
+    const watching = port()
+    const { call, s, check } = await setup({ watches: watching.watches })
+    await call(ALICE_DM, 'followUp', { title: 'Issue #7', doneWhen: 'Its fix merged' })
+    const [item] = await s.assistantItems.list(AGENT)
+    check(item!.id)
+    const moved = await call(CHECK, 'recordCheck', { observation: 'Fixed by #12.', watch: PR })
+    expect(moved.watch).toBe('Watching example-org/example-repo#12: its events wake a check early.')
+    await call(CHECK, 'recordCheck', { observation: 'Still open.', watch: '' })
+    await s.assistantItems.setWatch(AGENT, item!.id, {
+      url: PR,
+      target: 'example-org/example-repo#12',
+      state: 'watching',
+      reason: null
+    })
+    await call(CHECK, 'recordCheck', { observation: 'Merged.', done: true })
+    expect(watching.calls).toEqual([`set ${item!.id} ${PR}`, `clear ${item!.id}`, `end ${item!.id}`])
   })
 })

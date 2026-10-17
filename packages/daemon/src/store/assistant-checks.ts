@@ -1,4 +1,5 @@
-// A follow-up's check state and check log (assistant-mode.md §5.12): which next check was taken, the failure streak and its backoff, the check in flight, and messages waiting for it.
+// A follow-up's check state and check log (assistant-mode.md §5.12): which next check was taken, the failure streak and its backoff, the check in flight, messages and an event wake (§5.14) waiting for it.
+import { FollowUpEventKind } from '@agentconnect.md/protocol'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 
 /** After this many failed checks in a row a follow-up is checked no more until it is messaged. */
@@ -39,8 +40,22 @@ export interface AssistantCheckState {
   runningInput: string | null
   /** JSON of messages from the owning session waiting for the running check to end. */
   pendingMessages: string | null
+  /** The last wake applied, so a retried one starts no second check. */
+  wakeId: number
+  /** A wake waiting for a check: due from this time, with the events it folds and when the latest arrived. */
+  wakeAt: number | null
+  wakeKinds: FollowUpEventKind[]
+  wakeLatestAt: number | null
+  /** When the latest check a wake started began, which spaces woken checks apart. */
+  lastWokenAt: number | null
+  /** The events the running check took. */
+  runningWake: FollowUpEventKind[]
   updatedAt: number
 }
+
+/** What started a check: its scheduled time, a message, or events on what it watches (§5.14). */
+export const ASSISTANT_CHECK_STARTS = ['time', 'message', 'wake'] as const
+export type AssistantCheckStart = (typeof ASSISTANT_CHECK_STARTS)[number]
 
 /** A follow-up whose scheduled check is due and not yet taken. */
 export interface AssistantCheckDue {
@@ -56,7 +71,14 @@ export interface AssistantCheck {
   endedAt: number | null
   observation: string | null
   reported: boolean
+  /** What started it; null on a check logged before this was kept. */
+  startedBy: AssistantCheckStart | null
+  /** The events it took from a wake, whatever started it. */
+  events: FollowUpEventKind[]
 }
+
+/** How a recorded wake landed: applied before, answered by the check running since before its events, or waiting for a check. */
+export type AssistantWakeOutcome = 'duplicate' | 'answered' | 'recorded'
 
 export const ASSISTANT_CHECK_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_check_state (
@@ -75,6 +97,12 @@ export const ASSISTANT_CHECK_SCHEMA = `
         runningSince INTEGER,
         runningInput TEXT,
         pendingMessages TEXT,
+        wakeId INTEGER NOT NULL DEFAULT 0,
+        wakeAt INTEGER,
+        wakeKinds TEXT,
+        wakeLatestAt INTEGER,
+        lastWokenAt INTEGER,
+        runningWake TEXT,
         updatedAt INTEGER NOT NULL,
         PRIMARY KEY (agentId, itemId)
       );
@@ -87,6 +115,8 @@ export const ASSISTANT_CHECK_SCHEMA = `
         observation TEXT,
         reported INTEGER NOT NULL DEFAULT 0,
         historyRead INTEGER NOT NULL DEFAULT 0,
+        startedBy TEXT,
+        events TEXT,
         PRIMARY KEY (agentId, itemId, checkNo)
       );
       CREATE INDEX IF NOT EXISTS assistant_check_by_agent ON assistant_check (agentId, startedAt);
@@ -102,6 +132,19 @@ type Row = Record<string, unknown>
 
 const num = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value))
 const str = (value: unknown): string | null => (value === null || value === undefined ? null : String(value))
+
+/** A stored comma list of event kinds, unknown ones dropped. */
+export function eventsOf(value: unknown): FollowUpEventKind[] {
+  if (typeof value !== 'string' || value === '') return []
+  return value.split(',').filter((kind): kind is FollowUpEventKind => FollowUpEventKind.safeParse(kind).success)
+}
+
+/** Two event lists as one, in arrival order, each once. */
+export function mergeEvents(a: readonly FollowUpEventKind[], b: readonly FollowUpEventKind[]): FollowUpEventKind[] {
+  return [...new Set([...a, ...b])]
+}
+
+const eventsText = (kinds: readonly FollowUpEventKind[]): string | null => (kinds.length === 0 ? null : kinds.join(','))
 
 function stateOf(row: Row): AssistantCheckState {
   return {
@@ -120,6 +163,12 @@ function stateOf(row: Row): AssistantCheckState {
     runningSince: num(row.runningSince),
     runningInput: str(row.runningInput),
     pendingMessages: str(row.pendingMessages),
+    wakeId: Number(row.wakeId ?? 0),
+    wakeAt: num(row.wakeAt),
+    wakeKinds: eventsOf(row.wakeKinds),
+    wakeLatestAt: num(row.wakeLatestAt),
+    lastWokenAt: num(row.lastWokenAt),
+    runningWake: eventsOf(row.runningWake),
     updatedAt: Number(row.updatedAt)
   }
 }
@@ -127,7 +176,7 @@ function stateOf(row: Row): AssistantCheckState {
 // Every running field, cleared when a check ends.
 const CLEAR_RUNNING =
   'runningKey = NULL, runningNextCheck = NULL, runningObservationVersion = NULL, runningReport = NULL, ' +
-  'runningCheck = NULL, runningSince = NULL, runningInput = NULL'
+  'runningCheck = NULL, runningSince = NULL, runningInput = NULL, runningWake = NULL'
 
 export class AssistantCheckLedger {
   constructor(private readonly db: AssistantCheckDatabase) {}
@@ -148,6 +197,63 @@ export class AssistantCheckLedger {
       )
     ).rows as Row[]
     return rows.map((row) => ({ itemId: String(row.itemId), nextCheck: Number(row.nextCheck) }))
+  }
+
+  /** Open follow-ups a wake made due (§5.14): past any backoff, not stopped, none running, and no woken check of theirs started after `spacedBefore`. */
+  async wokenDue(
+    agentId: string,
+    now: number,
+    limit: number,
+    staleBefore: number,
+    spacedBefore: number
+  ): Promise<string[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT p.itemId FROM assistant_check_state p
+           JOIN assistant_item i ON i.agentId = p.agentId AND i.id = p.itemId
+          WHERE p.agentId = ? AND i.status IN ('active', 'waiting') AND i.firstLook IS NULL
+            AND p.wakeAt IS NOT NULL AND p.wakeAt <= ?
+            AND (p.retryAt IS NULL OR p.retryAt <= ?) AND p.stopped = 0
+            AND (p.runningKey IS NULL OR p.runningSince < ?)
+            AND (p.lastWokenAt IS NULL OR p.lastWokenAt <= ?)
+          ORDER BY p.wakeAt, p.itemId LIMIT ?`,
+        [agentId, now, now, staleBefore, spacedBefore, limit]
+      )
+    ).rows as Row[]
+    return rows.map((row) => String(row.itemId))
+  }
+
+  /** Record one wake: once per `wakeId`, dropped when the check running since before its latest event answers it, else folded into the waiting one. */
+  async recordWake(
+    agentId: string,
+    itemId: string,
+    wake: { wakeId: number; kinds: FollowUpEventKind[]; latestAt: number; now: number; staleBefore: number }
+  ): Promise<AssistantWakeOutcome> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await ensure(this.db, agentId, itemId, wake.now)
+      const state = await this.get(agentId, itemId)
+      if (!state || wake.wakeId <= state.wakeId) return 'duplicate'
+      const running = state.runningKey !== null && state.runningSince !== null && state.runningSince >= wake.staleBefore
+      const answered = running && wake.latestAt < state.runningSince!
+      const kinds = answered ? state.wakeKinds : mergeEvents(state.wakeKinds, wake.kinds)
+      const latest = answered ? state.wakeLatestAt : Math.max(state.wakeLatestAt ?? 0, wake.latestAt)
+      const { changes } = await this.db.query(
+        `UPDATE assistant_check_state SET wakeId = ?, wakeAt = ?, wakeKinds = ?, wakeLatestAt = ?, updatedAt = ?
+         WHERE agentId = ? AND itemId = ? AND wakeId = ?`,
+        [
+          wake.wakeId,
+          answered ? state.wakeAt : (state.wakeAt ?? wake.now),
+          eventsText(kinds),
+          latest,
+          wake.now,
+          agentId,
+          itemId,
+          state.wakeId
+        ]
+      )
+      if (changes > 0) return answered ? 'answered' : 'recorded'
+    }
+    throw new Error('the wake could not be recorded')
   }
 
   /** Open follow-ups with messages waiting, no check running and past any backoff, oldest first. */
@@ -207,8 +313,10 @@ export class AssistantCheckLedger {
       /** A check started before this no longer counts as running. */
       staleBefore: number
       exclusive: boolean
+      /** What starts it unless messages wait, which always do: by default its time, else a message; `wake` starts only while a wake waits. */
+      startedBy?: AssistantCheckStart
     }
-  ): Promise<{ checkNo: number; messages: string | null } | undefined> {
+  ): Promise<{ checkNo: number; messages: string | null; events: FollowUpEventKind[] } | undefined> {
     return await this.db.transaction(async (tx) => {
       await ensure(tx, agentId, itemId, run.now)
       const prior = stateOf(
@@ -226,9 +334,15 @@ export class AssistantCheckLedger {
         ? ` AND NOT EXISTS (SELECT 1 FROM assistant_check_state o WHERE o.agentId = ? AND o.itemId <> ?
               AND o.runningKey IS NOT NULL AND o.runningSince >= ?)`
         : ''
+      // Every check takes a waiting wake along (§5.14); one a wake starts also spaces the next woken one.
+      const requested = run.startedBy ?? (run.nextCheck !== null ? 'time' : 'message')
+      const woken = requested === 'wake'
+      if (woken && prior.wakeAt === null) return undefined
       const { changes } = await tx.query(
         `UPDATE assistant_check_state SET runningKey = ?, runningNextCheck = ?, runningObservationVersion = ?,
            runningReport = NULL, runningCheck = ?, runningSince = ?, runningInput = ?, pendingMessages = NULL,
+           runningWake = wakeKinds, wakeAt = NULL, wakeKinds = NULL, wakeLatestAt = NULL,
+           lastWokenAt = ${woken ? '?' : 'lastWokenAt'},
            updatedAt = ?, failures = CASE WHEN stopped = 1 THEN 0 ELSE failures END, stopped = 0,
            stoppedNextCheck = NULL
          WHERE agentId = ? AND itemId = ? AND (runningKey IS NULL OR runningSince IS NULL OR runningSince < ?)${exclusive}`,
@@ -239,6 +353,7 @@ export class AssistantCheckLedger {
           checkNo,
           run.now,
           run.input,
+          ...(woken ? [run.now] : []),
           run.now,
           agentId,
           itemId,
@@ -247,6 +362,7 @@ export class AssistantCheckLedger {
         ]
       )
       if (changes === 0) return undefined
+      const startedBy: AssistantCheckStart = prior.pendingMessages !== null ? 'message' : requested
       // A stale check this one replaces ends in the log without having recorded anything.
       if (prior.runningCheck !== null)
         await tx.query(
@@ -254,16 +370,29 @@ export class AssistantCheckLedger {
           [run.now, agentId, itemId, prior.runningCheck]
         )
       await tx.query(
-        'INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, ?, ?, 0)',
-        [agentId, itemId, checkNo, run.now]
+        `INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported, startedBy, events)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+        [agentId, itemId, checkNo, run.now, startedBy, eventsText(prior.wakeKinds)]
       )
       // Pruning stops at the budget window, so the daily budget still sees every check it must count.
       await tx.query(
         'DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo <= ? AND startedAt < ?',
         [agentId, itemId, checkNo - ASSISTANT_CHECKS_KEPT, run.now - CHECK_BUDGET_WINDOW_MS]
       )
-      return { checkNo, messages: prior.pendingMessages }
+      return { checkNo, messages: prior.pendingMessages, events: prior.wakeKinds }
     })
+  }
+
+  /** Put back the wake a check took that did not run to its end, in front of any that arrived meanwhile; it is due at once. */
+  async restoreWake(agentId: string, itemId: string, events: readonly FollowUpEventKind[], now: number): Promise<void> {
+    if (events.length === 0) return
+    const state = await this.get(agentId, itemId)
+    if (!state) return
+    await this.db.query(
+      `UPDATE assistant_check_state SET wakeAt = COALESCE(wakeAt, ?), wakeKinds = ?, wakeLatestAt = COALESCE(wakeLatestAt, ?),
+         updatedAt = ? WHERE agentId = ? AND itemId = ?`,
+      [now, eventsText(mergeEvents(events, state.wakeKinds)), now, now, agentId, itemId]
+    )
   }
 
   /** Replace the messages waiting for the next check. */
@@ -390,7 +519,7 @@ export class AssistantCheckLedger {
   async checks(agentId: string, itemId: string, limit: number): Promise<AssistantCheck[]> {
     const rows = (
       await this.db.query(
-        `SELECT itemId, checkNo, startedAt, endedAt, observation, reported FROM assistant_check
+        `SELECT itemId, checkNo, startedAt, endedAt, observation, reported, startedBy, events FROM assistant_check
           WHERE agentId = ? AND itemId = ? ORDER BY checkNo DESC LIMIT ?`,
         [agentId, itemId, limit]
       )
@@ -401,7 +530,9 @@ export class AssistantCheckLedger {
       startedAt: Number(row.startedAt),
       endedAt: num(row.endedAt),
       observation: str(row.observation),
-      reported: Number(row.reported) === 1
+      reported: Number(row.reported) === 1,
+      startedBy: ASSISTANT_CHECK_STARTS.find((start) => start === row.startedBy) ?? null,
+      events: eventsOf(row.events)
     }))
   }
 

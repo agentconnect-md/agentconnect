@@ -328,10 +328,27 @@ async function followUpOf(
     // A first look waits for the scheduled-check slot, not a time it set (assistant-mode.md §5.13).
     nextCheck: open && item.nextCheck !== null && !item.firstLook ? iso(item.nextCheck) : null,
     ...(item.firstLook ? { firstLook: true } : {}),
+    // What it watches and what started each check (assistant-mode.md §5.14).
+    ...(item.watch
+      ? {
+          watch: {
+            url: item.watch.url,
+            target: item.watch.target,
+            state: item.watch.state,
+            reason: item.watch.reason
+          }
+        }
+      : {}),
     recentChecks: checks
       .filter((check) => check.endedAt !== null && check.observation !== null)
       .slice(0, ASSISTANT_ACTIVITY_CHECKS_MAX)
-      .map((check) => ({ at: iso(check.startedAt), observation: check.observation!, reported: check.reported }))
+      .map((check) => ({
+        at: iso(check.startedAt),
+        observation: check.observation!,
+        reported: check.reported,
+        ...(check.startedBy ? { startedBy: check.startedBy } : {}),
+        ...(check.events.length > 0 ? { events: check.events } : {})
+      }))
   }
 }
 
@@ -409,7 +426,8 @@ function draftOf(
                   followUp: {
                     title: proposal.followUp.title,
                     doneWhen: proposal.followUp.doneWhen,
-                    nextCheck: proposal.followUp.nextCheck === null ? null : iso(proposal.followUp.nextCheck)
+                    nextCheck: proposal.followUp.nextCheck === null ? null : iso(proposal.followUp.nextCheck),
+                    ...(proposal.followUp.watch ? { watch: proposal.followUp.watch } : {})
                   }
                 }
               : {})

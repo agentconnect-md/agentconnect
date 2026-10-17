@@ -5,7 +5,7 @@ import { firstLookPlaceRefusal } from '../../assistant/first-look.js'
 import { isAppendCoordinate } from '../../session/append-coordinate.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs } from './args.js'
-import { PROPOSE_TOOL, type AssistantItemDeps } from './assistant-items.js'
+import { PROPOSE_TOOL, PROPOSE_WATCH_TOOL, type AssistantItemDeps } from './assistant-items.js'
 import type { ToolHandler } from './context.js'
 
 export const FIRST_LOOK_ARGS = z.object({})
@@ -25,13 +25,13 @@ export const FIRST_LOOK_TOOL: ToolDescriptor = {
 export function firstLookToolsFor(
   agent: Pick<Agent, 'assistantMode' | 'integrations'>,
   at: { channel: string; thread: string; integrationId?: string | undefined; isDm: boolean },
-  opts: { cards?: boolean } = {}
+  opts: { cards?: boolean; watch?: boolean } = {}
 ): ToolDescriptor[] {
   if (!isAppendCoordinate(at.thread)) return []
   const int = agent.integrations.find((candidate) => candidate.id === at.integrationId)
   if (!int) return []
   if (firstLookPlaceRefusal(agent, int, { channel: at.channel, isDm: at.isDm }) !== undefined) return []
-  return opts.cards ? [FIRST_LOOK_TOOL, PROPOSE_TOOL] : [FIRST_LOOK_TOOL]
+  return opts.cards ? [FIRST_LOOK_TOOL, opts.watch ? PROPOSE_WATCH_TOOL : PROPOSE_TOOL] : [FIRST_LOOK_TOOL]
 }
 
 export const firstLook: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {

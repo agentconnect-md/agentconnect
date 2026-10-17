@@ -1804,8 +1804,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
 
 **Status:** Being built. The product owner approved the design on 2026-10-17, the `watch` field
 included; what is marked _decided_ was settled on 2026-10-16. The Control Plane and relay for GitHub
-ship first (sixty-seventh revision; "As shipped" at the end of this section) and stay inert until a
-daemon subscribes; the daemon, GitLab and the console follow, in that order.
+(sixty-seventh revision) and the daemon (sixty-eighth) ship, so a follow-up can watch a GitHub pull
+request or issue ("As shipped" at the end of this section); GitLab and the console follow.
 
 **Why.** A follow-up such as "tell me when PR #12 merges" or "watch the release build" is woken only
 by time (§5.12). Every timed check spends one of the agent's `dailyCheckBudget` checks whether or not
@@ -2216,6 +2216,42 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   repository rows and its installation grants, and calls GitHub for none of them.
 - **Storage.** `follow_up_watch`, keyed by agent and follow-up and removed with the agent, and
   `follow_up_watch_delivery` for the receipts.
+
+**As shipped, step 2: the daemon.** Choices the text above leaves open:
+
+- **Store version 61.** A follow-up keeps its watch's URL, its label once taken, and a state:
+  `pending` until a Control Plane answers, `watching`, `refused` or `ended`, with the reason. The
+  check state keeps the last applied `wakeId`, the waiting wake (due time, events, latest event)
+  and when the latest woken check began; the check log keeps what started each check (`time`,
+  `message` or `wake`) and the events it took; a proposal's follow-up form keeps its URL.
+- **The tools.** `watch` is a property of the tools only toward a Control Plane advertising
+  `follow-up-watch-v1`; elsewhere the plain tools are offered and a `watch` argument is refused. A
+  URL that names no pull request, merge request or issue refuses the call before anything is
+  written. `followUp` takes the follow-up first and then asks for the watch, and its result says
+  what is watched, that it waits for the connection, or why not. A watch's URL joins a proposal's
+  hash only when present, so a record written before it still verifies; a refused watch of an
+  approved follow-up form is said on the card from the record's failure field.
+- **Subscriptions.** A set, a change, a stop and an end are sent as they happen; an answer that
+  never arrives leaves the watch `pending`. The duty holder sends each agent's full set once per
+  Control Plane link, from its check sweep, paused or not, so a pending watch, a lost removal or a
+  restored store converges there. A refused watch is left out of the full set, so the Control Plane
+  holds none for it.
+- **A wake.** The duty holder records it, paused or not; a draining member, or one that does not
+  hold the duty, answers `not_holder`, and a follow-up that is not open, not watching, or a first
+  look answers `not_found`. A wake whose events all arrived before the running check began is
+  answered by that check; any other waits for a check. Every check takes the waiting wake along,
+  and one that does not finish puts it back, due at once; a failed one's retry or, once checks
+  stop, a message takes it.
+- **The sweep** starts waiting messages first, then a woken check, then a scheduled one, in the one
+  scheduled-check slot. A woken check runs only while a fifth of the day's budget is left and no
+  woken check of the follow-up began in the last 15 minutes. It passes no scheduled next check
+  over, so that check stays due.
+- **The prompt** names the watch and its URL, or why it is not watched or no longer is, and the
+  events that woke the check, which it is told to treat as the reason to look rather than as what
+  it finds.
+- **Activity** carries a follow-up's watch, and what started each recent check with the events it
+  took; the console shows them in step 4. A proposal's follow-up form carries its URL, and its
+  Slack card shows the object it would watch.
 
 ### 5.15 Organization research and the organization files
 
@@ -3852,3 +3888,10 @@ their wake-only events without holding a delivery back; the Control Plane folds 
 lane's feedback, into one pending wake per watch under "Two watchers", and holds it until a daemon
 advertising `follow-up-wake-v1` accepts it. No daemon subscribes yet, so nothing changes for people
 until step 2.
+
+**Sixty-eighth revision (2026-10-17)**: event wake's daemon ships, §5.14's rollout step 2 (issue
+#2810; §5.14 "As shipped, step 2"). `followUp`, the follow-up form of `propose` and `recordCheck`
+take `watch` toward a Control Plane that takes watches; the daemon advertises
+`follow-up-wake-v1`, keeps each watch and its outcome in store version 61, sends an agent's full
+set once per link, records wakes once per `wakeId`, and starts a woken check in the one
+scheduled-check slot, spaced 15 minutes apart and only while a fifth of the day's budget is left.

@@ -10,7 +10,9 @@ import {
   elicitFormBlockId,
   elicitFormBlockIndex,
   encodePermValue,
-  encodeSlackStatusOverflowValue
+  encodeSlackStatusOverflowValue,
+  followUpWatchLabel,
+  parseFollowUpWatchUrl
 } from '@agentconnect.md/protocol'
 export {
   ELICIT_ACTION_PREFIX,
@@ -697,7 +699,7 @@ export interface AssistantDraftCardView {
   proposal?: {
     sentence: string
     why: string
-    followUp?: { title: string; doneWhen: string; nextCheck: number | null }
+    followUp?: { title: string; doneWhen: string; nextCheck: number | null; watch?: string | null }
   }
   target: {
     platform: string
@@ -808,12 +810,25 @@ function proposalBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A follow-up form's sentence of what it will do, and its first check as a date in the reader's own time zone. */
-function followUpProposalBody(followUp: { doneWhen: string; nextCheck: number | null }): unknown[] {
+/** A follow-up form's sentence of what it will do, what it watches, and its first check as a date in the reader's own time zone. */
+function followUpProposalBody(followUp: {
+  doneWhen: string
+  nextCheck: number | null
+  watch?: string | null
+}): unknown[] {
   const doneWhen = followUp.doneWhen.trim()
   const at = followUp.nextCheck
+  const watched = followUp.watch ? parseFollowUpWatchUrl(followUp.watch) : undefined
   return [
     ...(doneWhen ? [{ type: 'markdown', text: clampTo(doneWhen, 2_000) }] : []),
+    ...(watched && 'target' in watched
+      ? [
+          {
+            type: 'context',
+            elements: [{ type: 'mrkdwn', text: escapeMrkdwnLabel(`Watches ${followUpWatchLabel(watched.target)}`) }]
+          }
+        ]
+      : []),
     // Slack's date token renders in the reader's own time zone, which a markdown block does not.
     ...(at === null
       ? []
