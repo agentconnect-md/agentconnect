@@ -200,7 +200,6 @@
       "nextCheck": "Next check {time}",
       "showChecks": "Show checks",
       "hideChecks": "Hide checks",
-      "doneWhen": "Done when: {text}",
       "noChecks": "No checks yet.",
       "reported": "Reported",
       "notReported": "Not reported",

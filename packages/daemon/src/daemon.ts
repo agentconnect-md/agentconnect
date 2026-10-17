@@ -1246,9 +1246,14 @@ function liveSdkLease(l: {
   return l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running'
 }
 
-/** An agent's delivery whose coordinates may not bind its conversation's audience: neither observed on the platform there nor opening its place's long session. */
+/** An agent's delivery whose coordinates may not bind its conversation's audience: not observed on the platform there, not opening its place's long session, not a first look of a place without one. */
 function postlessCall(callMeta: CallMeta | undefined): boolean {
-  return callMeta !== undefined && callMeta.platformOrigin !== true && callMeta.opensPlace !== true
+  return (
+    callMeta !== undefined &&
+    callMeta.platformOrigin !== true &&
+    callMeta.opensPlace !== true &&
+    callMeta.placeAudience !== true
+  )
 }
 
 /** The store row a memory dream executes under. */
@@ -9434,9 +9439,8 @@ export class Daemon {
     place: AssistantPlace,
     opts: { open?: boolean; isDm?: boolean } = {}
   ): Promise<CheckParent | undefined> {
-    const rec =
-      (await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)) ??
-      (opts.open ? await this.openingPlaceSession(agentId, place, opts.isDm) : undefined)
+    const placed = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
+    const rec = placed ?? (opts.open ? await this.openingPlaceSession(agentId, place, opts.isDm) : undefined)
     if (!rec?.thread) return undefined
     const sessionId = await this.store.ensureOutwardSessionId(rec.key, agentId, this.clock.now())
     const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
@@ -9449,6 +9453,7 @@ export class Daemon {
       thread: rec.thread,
       transportScope: rec.transportScope ?? null,
       ...(integrationId !== undefined ? { integrationId } : {}),
+      ...(placed ? {} : { opening: true as const }),
       inherited: {
         originCodeHostReplyTarget: codeHostReplySnapshot(rec, undefined),
         ...(externalOrigin ? { externalOrigin } : {}),
@@ -9496,9 +9501,7 @@ export class Daemon {
     if (!agent || !int || !integrationId) return { refused: 'the agent no longer reaches this place' }
     const refusal = firstLookPlaceRefusal(agent, int, { channel })
     if (refusal && refusal !== 'external') return { refused: FIRST_LOOK_REFUSAL_REASONS[refusal] }
-    const info = await this.gatewayForIntegration(integrationId)
-      ?.getChannelInfo(channel)
-      .catch(() => undefined)
+    const info = await this.placeInfo(integrationId, channel)
     const name = info?.name?.trim()
     // The place's own tools, as its long session is offered them; any appending coordinate names that session.
     const thread =
@@ -9642,11 +9645,19 @@ export class Daemon {
 
   /** A first look's title, by its place's name where the platform gives one. */
   private async firstLookTitle(integrationId: string, channel: string): Promise<string> {
+    const name = (await this.placeInfo(integrationId, channel))?.name?.trim()
+    return name ? `First look at ${name}` : 'First look'
+  }
+
+  /** A first look's place as the platform describes it, its channel name kept so the place's sessions carry it: an HTTP bot's join lists no channels to learn it from. */
+  private async placeInfo(integrationId: string, channel: string) {
     const info = await this.gatewayForIntegration(integrationId)
       ?.getChannelInfo(channel)
       .catch(() => undefined)
     const name = info?.name?.trim()
-    return name ? `First look at ${name}` : 'First look'
+    if (name && info?.isIm !== true && !(info && 'isMpim' in info && info.isMpim === true))
+      await this.store.setDisplayName(channel, name, this.clock.now()).catch(() => undefined)
+    return info
   }
 
   /** `firstLook` (assistant-mode.md §5.13): only from its place's long session, where a first look could run. */
@@ -22645,11 +22656,8 @@ export class Daemon {
       ...(tenantScope ? { tenantScope } : {}),
       ...(launchCorrelationId ? { launchCorrelationId } : {}),
       sourceBindingKind: externalSource ? 'external' : 'local',
-      // A platform-observed child (a self-post channel root, or a peer woken by a mention in
-      // that very conversation) lives in a conversation of its own, so its parent link is
-      // lineage: the CP must classify it here rather than inherit an audience it was never
-      // posted to. Only the true case is written — absent keeps ordinary inheritance.
-      ...(callMeta?.platformOrigin === true ? { directDestination: true } : {}),
+      // A child living in a conversation of its own, or one with no parent session yet to inherit from, is classified by the CP from its own place.
+      ...(callMeta?.platformOrigin === true || callMeta?.placeAudience === true ? { directDestination: true } : {}),
       ...(externalSource ?? {})
     })
     // An external-source binding (Slack/Feishu channel) no longer marks the

@@ -549,4 +549,82 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     expect(report.msg.turnBody?.prompt ?? report.msg.text ?? '').not.toContain('organization.md')
     await daemon.stop()
   })
+
+  it('shows the running first look to the channel’s people, and names the channel on both of its sessions', async () => {
+    const { daemon, d, behavior, registered, dispatched, settled } = await boot({
+      seeded: false,
+      channel: { id: 'C1', name: 'release', is_private: false, is_ext_shared: false },
+      teamId: 'T0EXAMPLE'
+    })
+    const core = d.agents.get('bot-a').integrations[0].core
+    core.mode = 'shared'
+    core.bindRules = []
+    const scope: string = d.transportScopeForIntegrationIds(['int-bot-a'])
+    // What the first look's session carries while it runs, before any long session of the place exists.
+    let running: { classification: unknown; placeSession: unknown; listed: unknown } | undefined
+    behavior.look = async (ctx) => {
+      const key = sessionKey('slack', 'C1', ctx.thread, 'bot-a', scope)
+      const look = await d.store.getSession(key)
+      running = {
+        classification: await d.store.getSessionClassificationByKey(key),
+        placeSession: await d.store.placeSession('bot-a', 'slack', 'C1', scope),
+        listed: await d.sessionMetadataOutbox.sessionListProjection(look.sessionId, 'bot-a')
+      }
+    }
+    await d.handleRelaySlackAction({
+      agentId: 'bot-a',
+      integrationId: 'int-bot-a',
+      sessionKey: 'slack:C1',
+      msgId: 'm-join',
+      botId: 'bot-1',
+      userId: 'U0OWNER',
+      payload: { kind: 'bot-joined', channelId: 'C1', inviter: 'U0OWNER' }
+    })
+    const place = { platform: 'slack', channel: 'C1', transportScope: scope }
+    await vi.waitFor(
+      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place)).toBeDefined(),
+      WAIT
+    )
+    await d.followUpChecks.sweep()
+    await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
+    await settled()
+
+    // With no long session to inherit from, it is reported as the channel's own, bound to the channel's people.
+    expect(running?.placeSession).toBeUndefined()
+    expect(running?.classification).toMatchObject({
+      conversationKind: 'channel',
+      sourceBindingKind: 'external',
+      directDestination: true,
+      externalProvider: 'slack',
+      externalRealmKey: 'T0EXAMPLE',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-bot-a'
+    })
+    expect(running?.listed).toMatchObject({ channelName: 'release' })
+    // The long session its report opened carries the channel's name too.
+    const opened = await d.store.placeSession('bot-a', 'slack', 'C1', scope)
+    expect(await d.sessionMetadataOutbox.sessionListProjection(opened.sessionId, 'bot-a')).toMatchObject({
+      channelName: 'release'
+    })
+    // Its first look stays the long session's child.
+    const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
+    const look = await d.store.getSession(sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope))
+    expect(look.originSessionId).toBe(opened.sessionId)
+    await daemon.stop()
+  })
+
+  it('lets a first look inherit from the place’s long session where one exists', async () => {
+    const { daemon, d, registered, look, scope } = await boot({
+      channel: { id: 'C1', name: 'release', is_private: false, is_ext_shared: false },
+      teamId: 'T0EXAMPLE'
+    })
+    await look()
+    const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
+    const classification = await d.store.getSessionClassificationByKey(
+      sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope)
+    )
+    expect(classification).not.toHaveProperty('directDestination')
+    expect(classification).not.toHaveProperty('externalIntegrationId')
+    await daemon.stop()
+  })
 })

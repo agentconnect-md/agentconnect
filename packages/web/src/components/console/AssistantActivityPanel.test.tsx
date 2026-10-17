@@ -389,13 +389,15 @@ describe('follow-ups in Activity', () => {
     expect(row.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
     expect(meta(row)).toBe('#support · Next check Oct 16, 9:00 AM · last Oct 15, 9:00 AM')
     const line = row.querySelector('[data-preview-line]')!
-    expect(line.textContent).toBe('Done when: The release is published')
+    // The sentence alone, quieter than a message's preview.
+    expect(line.textContent).toBe('The release is published')
+    expect(line.className).toContain('text-(--text-tertiary)')
     expect(line.getAttribute('aria-expanded')).toBe('false')
     expect(row.querySelector('[data-follow-up-checks]')).toBeNull()
     await click(line)
     const checks = row.querySelector('[data-follow-up-checks]')!
     // The done-when line is already on screen, so the checks do not repeat it.
-    expect(checks.textContent).not.toContain('Done when')
+    expect(checks.textContent).not.toContain('The release is published')
     expect(checks.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('Still a draft.')
 
     const hidden = group(host, 'follow-ups')!.querySelectorAll<HTMLElement>('[data-subsession-row]')[1]!
@@ -409,6 +411,16 @@ describe('follow-ups in Activity', () => {
     mocks.subsessions = [{ ...FOLLOW_UP, parent: { ...SUPPORT, sessionId: 'sid-dm', channelName: '@Alice' } }]
     const host = await mount(false)
     expect(meta(taskRow(host, 'sid-follow'))).toMatch(/^@Alice · /)
+  })
+
+  it('never presents the conversation’s title as its place, keeping the mark and a neutral label', async () => {
+    mocks.subsessions = [{ ...FOLLOW_UP, parent: { ...SUPPORT, title: 'Planning the 2.6 release', channelName: null } }]
+    const host = await mount(false)
+    const line = taskRow(host, 'sid-follow').querySelector('[data-meta-line]')!
+    expect(meta(taskRow(host, 'sid-follow'))).toMatch(/^Conversation · /)
+    expect(line.textContent).not.toContain('Planning the 2.6 release')
+    // The platform's mark still leads the line.
+    expect(line.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
   })
 
   // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
@@ -708,7 +720,8 @@ describe('Waiting for you', () => {
     const proposed = row.querySelector('[data-proposed-follow-up]')!
     expect(proposed.textContent).toContain('Takes this follow-up')
     expect(proposed.textContent).toContain('The 2.6 release date')
-    expect(proposed.textContent).toContain('Done when: A date is posted.')
+    expect(proposed.textContent).toContain('A date is posted.')
+    expect(proposed.textContent).not.toContain('Done when')
     expect(proposed.textContent).toContain('First check')
     await click(button(row, 'Approve'))
     expect(row.querySelector('[role="group"]')?.textContent).toContain(

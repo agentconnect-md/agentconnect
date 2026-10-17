@@ -27,6 +27,8 @@ import { NoConnection } from '../../src/orchestrator/outbound.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { ProtocolError } from '../../src/domain/errors.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 
@@ -158,12 +160,13 @@ class ActivitySpy {
   }
 }
 
-function app(control: ActivitySpy, userId?: string): HttpApp {
+function app(control: ActivitySpy, userId?: string, deps?: Parameters<typeof buildHttpApp>[4]): HttpApp {
   const running = buildHttpApp(
     prisma,
     userId ? { DEFAULT_OWNER_ID: userId } : undefined,
     LIVE,
-    control as unknown as ControlSender
+    control as unknown as ControlSender,
+    deps
   )
   opened.push(running)
   return running
@@ -1318,5 +1321,88 @@ describe('the Activity of an agent outside assistant mode', () => {
       expect(res.statusCode).toBe(404)
     expect(control.reads).toEqual([])
     expect(control.writes).toEqual([])
+  })
+})
+
+describe('a first look of a channel the bot just joined', () => {
+  // assistant-mode.md §5.13: the place's long session is opened only by the first look's report, so while it runs it has no row.
+  it('is shown to the channel’s members while it runs, and to no one else', async () => {
+    await seedAssistant({ features: [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE] })
+    const member = await makeUser(`first-look-member-${randomUUID()}`, 'collaborator')
+    const outsider = await makeUser(`first-look-outsider-${randomUUID()}`, 'collaborator')
+    const repo = new PgSessionRepo(prisma)
+    await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    const [place, look, waiting] = [randomUUID(), randomUUID(), randomUUID()]
+    const reported = (sessionId: string, own: boolean) =>
+      repo.recordMilestone({
+        sessionId: SessionId(sessionId),
+        parentSessionId: SessionId(place),
+        agentId: AgentId(AGENT),
+        phase: 'start',
+        platform: 'slack',
+        channel: 'C0EXAMPLE',
+        thread: `${SUBSESSION_COORDINATE_PREFIX}check-look-1`,
+        at: new Date(),
+        // Reported as the channel's own, as the daemon does with no long session to inherit from; else waiting to inherit.
+        ...(own
+          ? {
+              classification: { visibility: 'org' as const, ownerIdentity: null, source: 'default' as const },
+              externalCandidate: {
+                provider: 'slack',
+                resolution: 'settled' as const,
+                scope: {
+                  realmKey: 'T0EXAMPLE',
+                  resourceKind: 'conversation',
+                  resourceKey: 'C0EXAMPLE',
+                  credentialKind: 'bot',
+                  credentialId: randomUUID()
+                }
+              }
+            }
+          : { classification: { inherit: true as const } })
+      })
+    expect((await reported(look, true)).session).toMatchObject({ visibility: 'external', visibilitySource: 'default' })
+    expect((await reported(waiting, false)).session).toMatchObject({ visibilitySource: 'inherited_pending' })
+    const control = new ActivitySpy()
+    const row = (sessionId: string) => ({
+      sessionId,
+      parentSessionId: place,
+      state: 'open' as const,
+      createdAt: '2026-10-09T09:00:00.000Z',
+      kind: 'follow-up' as const,
+      followUp: {
+        title: 'First look at release',
+        doneWhen: null,
+        status: 'checking' as const,
+        nextCheck: null,
+        recentChecks: [],
+        firstLook: true
+      }
+    })
+    control.subsessions = [row(look), row(waiting)]
+    // The channel's membership, as the platform answers it for each viewer.
+    const members = (inChannel: boolean) => ({
+      sessionAccessPlugins: [
+        {
+          provider: 'slack',
+          available: true,
+          resolve: async (scopes: readonly { id: string; aclRevision: bigint }[]) => ({
+            allowedScopes: inChannel ? [...scopes] : [],
+            degraded: false
+          })
+        }
+      ]
+    })
+    const listed = async (userId: string, inChannel: boolean) =>
+      (await get(app(control, userId, members(inChannel)), '/subsessions')).json().subsessions
+    expect(await listed(member, true)).toEqual([
+      expect.objectContaining({ sessionId: look, visible: true, title: 'First look at release', parent: null }),
+      // A row that waits on a parent with no row is hidden from everyone until that parent lands.
+      expect.objectContaining({ sessionId: null, visible: false })
+    ])
+    expect(await listed(outsider, false)).toEqual([
+      expect.objectContaining({ sessionId: null, visible: false, title: null }),
+      expect.objectContaining({ sessionId: null, visible: false })
+    ])
   })
 })
