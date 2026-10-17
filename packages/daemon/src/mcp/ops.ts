@@ -125,6 +125,13 @@ import {
   type CodeHostEffectDeps
 } from './ops/code-host.js'
 import {
+  listCodeHostRepositories,
+  LIST_CODE_HOST_REPOSITORIES_ARGS,
+  readCodeHostRepository,
+  READ_CODE_HOST_REPOSITORY_ARGS,
+  type CodeHostResearchDeps
+} from './ops/code-host-research.js'
+import {
   getCurrentChannel,
   getChannelHistory,
   GET_CHANNEL_HISTORY_ARGS,
@@ -199,6 +206,7 @@ export interface OpsDeps
     DecisionDeps,
     GithubReviewDeps,
     CodeHostEffectDeps,
+    CodeHostResearchDeps,
     MemoryOpsDeps,
     ShareFileDeps,
     PlatformReadDeps,
@@ -286,6 +294,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['updateCodeHostMergeRequest', updateCodeHostMergeRequest],
   ['inspectCodeHostPipelines', inspectCodeHostPipelines],
   ['controlCodeHostPipeline', controlCodeHostPipeline],
+  ['listCodeHostRepositories', listCodeHostRepositories],
+  ['readCodeHostRepository', readCodeHostRepository],
   ['listKnownUsers', listKnownUsers],
   ['listChannels', listChannels],
   ['listChannelMembers', listChannelMembers],
@@ -355,6 +365,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['updateCodeHostMergeRequest', UPDATE_CODE_HOST_MERGE_REQUEST_ARGS],
   ['inspectCodeHostPipelines', INSPECT_CODE_HOST_PIPELINES_ARGS],
   ['controlCodeHostPipeline', CONTROL_CODE_HOST_PIPELINE_ARGS],
+  ['listCodeHostRepositories', LIST_CODE_HOST_REPOSITORIES_ARGS],
+  ['readCodeHostRepository', READ_CODE_HOST_REPOSITORY_ARGS],
   ['listKnownUsers', LIST_KNOWN_USERS_ARGS],
   ['listChannels', LIST_CHANNELS_ARGS],
   ['listChannelMembers', LIST_CHANNEL_MEMBERS_ARGS],

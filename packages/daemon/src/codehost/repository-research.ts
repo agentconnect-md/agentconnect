@@ -20,6 +20,22 @@ const JSON_MAX_BYTES = 2 * 1024 * 1024
 /** Changes whose reviewers and files are read at once. */
 const CHANGE_READS_AT_ONCE = 4
 
+/** The most repositories a listing names; past it the listing says it is partial. */
+export const RESEARCH_REPOSITORIES_MAX = 200
+/** How long a listing is reused before the Control Plane is asked again. */
+export const RESEARCH_REPOSITORIES_CACHE_MS = 5 * 60_000
+
+/** One repository research may read, and how it is in reach; `repoId` is the daemon's, never shown. */
+export interface ResearchRepository {
+  provider: string
+  repository: string
+  repoId?: string
+  source: 'workspace' | 'authorized' | 'installation'
+  description?: string
+  /** GitLab and Gitea read only the workspace repository in this version. */
+  readable: boolean
+}
+
 export type RepositoryPart = 'overview' | 'owners' | 'releases'
 export const REPOSITORY_PARTS: readonly RepositoryPart[] = ['overview', 'owners', 'releases']
 

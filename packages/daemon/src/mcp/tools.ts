@@ -15,6 +15,7 @@ import { RECALL_TOOL } from './recall-tool.js'
 import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from './ops/assistant-subsessions.js'
+import { CODE_HOST_RESEARCH_TOOLS } from './ops/code-host-research.js'
 import { FIRST_LOOK_TOOL } from './ops/first-look.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
 import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
@@ -1111,6 +1112,7 @@ export const ALL_TOOL_NAMES = [
       ...COLLABORATION_TOOLS,
       ...GITHUB_REVIEW_TOOLS,
       ...CODE_HOST_EFFECT_TOOLS,
+      ...CODE_HOST_RESEARCH_TOOLS,
       RECALL_TOOL,
       FOLLOW_UP_TOOL,
       FIRST_LOOK_TOOL,

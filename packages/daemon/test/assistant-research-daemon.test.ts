@@ -225,6 +225,51 @@ describe('the research task’s session', () => {
     }
   })
 
+  it('is offered the code-host reads once a repository is in reach, and reads only the repositories it lists', async () => {
+    const { daemon, d } = await boot(scaffold(), ALICE)
+    try {
+      const agent = d.agents.get('bot-a')
+      const scope = d.transportScopeForIntegrationIds([INTEGRATION])
+      const thread = researchCoordinate('9')
+      const register = () => {
+        const [server] = d.sessions.deps.mcpServersFor({
+          agent,
+          platform: 'slack',
+          channel: 'D_FAKE',
+          thread,
+          deliveryThread: thread,
+          integrationId: INTEGRATION,
+          transportScope: scope,
+          isDm: false,
+          sessionKey: sessionKey('slack', 'D_FAKE', thread, 'bot-a', scope)
+        }) as { env: { name: string; value: string }[] }[]
+        return d.mcp.sessions.get(server!.env.find((entry) => entry.name === 'AC_MCP_TOKEN')!.value) as SessionContext
+      }
+      expect(register().tools.map((tool) => tool.name)).not.toContain('listCodeHostRepositories')
+      agent.workspace = {
+        ...agent.workspace,
+        additionalRepos: [
+          { repoFullName: 'example-org/example-repo', repoId: '42', provider: 'github', materialize: 'always' }
+        ]
+      }
+      const ctx = register()
+      expect(ctx.tools.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining(['listCodeHostRepositories', 'readCodeHostRepository'])
+      )
+      const deps = { ...(d.mcp.deps as OpsDeps), canRun: () => true }
+      expect(await executeTool(ctx, 'listCodeHostRepositories', {}, deps)).toEqual({
+        repositories: [
+          { provider: 'github', repository: 'example-org/example-repo', source: 'authorized', readable: true }
+        ]
+      })
+      await expect(
+        executeTool(ctx, 'readCodeHostRepository', { repository: 'example-org/other-repo', part: 'overview' }, deps)
+      ).rejects.toThrow('is not one listCodeHostRepositories lists')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('launches without the agent’s tool credentials, and on OpenCode keeps its tools under the agent’s mode', async () => {
     const root = scaffold(undefined, 'opencode')
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, probeRuntimes: async () => [] })

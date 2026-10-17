@@ -71,6 +71,7 @@ import {
   MEMORY_PLACE_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
+  REPO_CANDIDATES_ALL_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
   REPO_SELECTOR_V1_FEATURE,
   supportsRepositorySelector,
@@ -921,6 +922,20 @@ import {
   isTaskCoordinate,
   researchThreadOf
 } from './session/subsession-coordinate.js'
+import {
+  GITHUB_API_BASE,
+  RESEARCH_REPOSITORIES_CACHE_MS,
+  RESEARCH_REPOSITORIES_MAX,
+  githubReadHeaders,
+  githubReads,
+  giteaReads,
+  gitlabReads,
+  readRepositoryPart,
+  repositoryReadClient,
+  type RepositoryPart,
+  type ResearchRepository
+} from './codehost/repository-research.js'
+import { CODE_HOST_RESEARCH_TOOLS } from './mcp/ops/code-host-research.js'
 import {
   OrganizationResearch,
   RESEARCH_CODE_HOST_TOOLS,
@@ -4309,6 +4324,16 @@ export class Daemon {
       submitCodeReview: (req) => this.codeReviews.submit(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
+      codeHostResearch: {
+        list: async (ctx) => {
+          const { repositories, partial } = await this.researchRepositories(ctx.agentId)
+          return {
+            repositories: repositories.map(({ repoId: _id, ...shown }) => shown),
+            ...(partial ? { partial: true } : {})
+          }
+        },
+        read: (ctx, input) => this.readResearchRepository(ctx.agentId, input)
+      },
       memory: this.memory,
       memoryEntryStore: this.store,
       assistantItems: {
@@ -8646,8 +8671,115 @@ export class Daemon {
 
   /** The bridge tools research may be offered beyond a session's own: its code-host reads, where a code host is in reach (§5.15 "Code hosts"). */
   private researchBridgeTools(agent: Agent, tools: ToolDescriptor[]): ToolDescriptor[] {
-    void agent
-    return tools
+    const workspace = agent.workspace as { additionalRepos?: unknown[]; additionalInstallations?: unknown[] }
+    const inReach =
+      this.researchWorkspaceRepository(agent) !== undefined ||
+      (workspace.additionalRepos?.length ?? 0) > 0 ||
+      (workspace.additionalInstallations?.length ?? 0) > 0
+    return inReach ? [...tools, ...CODE_HOST_RESEARCH_TOOLS] : tools
+  }
+
+  /** The agent's workspace repository as research names it: GitHub by its `owner/repo`, GitLab and Gitea by their path and numeric id. */
+  private researchWorkspaceRepository(agent: Agent): ResearchRepository | undefined {
+    const provider = this.workspaces.managedCredentialProvider(agent)
+    if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo || provider === undefined) return undefined
+    if (provider === 'github') {
+      const label = gitRepoLabel(agent.workspace.gitRepo)
+      return label ? { provider, repository: label, source: 'workspace', readable: true } : undefined
+    }
+    const managed = this.managedWorkspaceRepo(agent.id)
+    return managed?.repoPath
+      ? { provider, repository: managed.repoPath, repoId: managed.repoId, source: 'workspace', readable: true }
+      : undefined
+  }
+
+  private readonly researchRepositoryCache = new Map<
+    string,
+    { expiresAt: number; listing: { repositories: ResearchRepository[]; partial: boolean } }
+  >()
+
+  /** What research may read (§5.15 "Code hosts"): the workspace repository, the authorized ones and the installation grants' rosters, within the agent's own access; GitLab and Gitea read the workspace's alone. */
+  private async researchRepositories(
+    agentId: string
+  ): Promise<{ repositories: ResearchRepository[]; partial: boolean }> {
+    const now = this.clock.now()
+    const cached = this.researchRepositoryCache.get(agentId)
+    if (cached && cached.expiresAt > now) return cached.listing
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error('this agent is not served here; nothing was read')
+    const repositories: ResearchRepository[] = []
+    const seen = new Set<string>()
+    const add = (repository: ResearchRepository) => {
+      const key = `${repository.provider}\u0000${repository.repository.toLowerCase()}`
+      if (seen.has(key) || repositories.length >= RESEARCH_REPOSITORIES_MAX) return
+      seen.add(key)
+      repositories.push(repository)
+    }
+    const workspace = this.researchWorkspaceRepository(agent)
+    if (workspace) add(workspace)
+    const ws = agent.workspace as {
+      additionalRepos?: { repoFullName: string; provider: string }[]
+      additionalInstallations?: unknown[]
+    }
+    for (const row of ws.additionalRepos ?? [])
+      add({
+        provider: row.provider,
+        repository: row.repoFullName,
+        source: 'authorized',
+        readable: row.provider === 'github'
+      })
+    let partial = false
+    const client = this.cpClient
+    if ((ws.additionalInstallations?.length ?? 0) > 0) {
+      if (client?.supportsServerFeature(REPO_CANDIDATES_ALL_V1_FEATURE)) {
+        const reply = await client.repoCandidates({ agentId, grants: 'all' })
+        for (const candidate of reply.candidates)
+          add({
+            provider: candidate.provider,
+            repository: candidate.repoFullName,
+            source: 'installation',
+            ...(candidate.description ? { description: candidate.description } : {}),
+            readable: candidate.provider === 'github'
+          })
+        partial = reply.partial
+      } else partial = true
+    }
+    const listing = { repositories, partial: partial || repositories.length >= RESEARCH_REPOSITORIES_MAX }
+    this.researchRepositoryCache.set(agentId, { expiresAt: now + RESEARCH_REPOSITORIES_CACHE_MS, listing })
+    return listing
+  }
+
+  /** One part of one listed repository, read with a daemon-held read credential the runtime never sees. */
+  private async readResearchRepository(
+    agentId: string,
+    input: { repository: string; part: RepositoryPart }
+  ): Promise<unknown> {
+    const { repositories } = await this.researchRepositories(agentId)
+    const entry = repositories.find((r) => r.repository.toLowerCase() === input.repository.toLowerCase())
+    if (!entry) throw new Error(`${input.repository} is not one listCodeHostRepositories lists; nothing was read`)
+    if (!entry.readable)
+      throw new Error(`on ${entry.provider}, only the workspace repository can be read here; nothing was read`)
+    let reads
+    if (entry.provider === 'github') {
+      const { token } = await this.gitCreds.getResearchReadToken(agentId, entry.repository)
+      reads = githubReads(
+        repositoryReadClient({ base: GITHUB_API_BASE, headers: githubReadHeaders(token) }),
+        entry.repository
+      )
+    } else if (entry.provider === 'gitlab' && entry.repoId) {
+      const { token } = await this.gitCreds.getGitlabEffectToken(agentId, entry.repoId)
+      reads = gitlabReads(
+        repositoryReadClient({ base: this.gitlabApiBase(agentId), headers: { 'private-token': token } }),
+        entry.repoId
+      )
+    } else if (entry.provider === 'gitea' && entry.repoId) {
+      const { token } = await this.gitCreds.getGiteaEffectToken(agentId, entry.repoId)
+      reads = giteaReads(
+        repositoryReadClient({ base: this.giteaApiBase(agentId), headers: { authorization: `token ${token}` } }),
+        entry.repository
+      )
+    } else throw new Error(`${entry.provider} repositories cannot be read here; nothing was read`)
+    return await readRepositoryPart(reads, entry.repository, input.part, this.clock.now())
   }
 
   /** Where a proposal for a follow-up of this place runs and is carded (§5.10): the place itself, and its card's own place where it is confirmed internal. */
