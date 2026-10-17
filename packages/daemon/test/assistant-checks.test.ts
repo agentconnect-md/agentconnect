@@ -839,6 +839,18 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     expect(await s.assistantChecks.wokenDue(a, 3_000, 10, 0, 3_000)).toEqual([it1.id])
   })
 
+  it('counts a new subscription’s wakes afresh, so watching again loses none of its events', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, undefined, 'waiting')
+    const on = (subscription: number, wakeId: number, at: number) => ({ ...wake(wakeId, ['merged'], at), subscription })
+    expect(await s.assistantChecks.recordWake(a, it1.id, on(7, 5, 1_000))).toBe('recorded')
+    // Stopped and watched again: the Control Plane's new subscription counts from 1.
+    expect(await s.assistantChecks.recordWake(a, it1.id, on(9, 1, 2_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.id, on(9, 1, 2_000))).toBe('duplicate')
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ wakeId: 1, wakeSubscription: 9 })
+  })
+
   it('drops a wake the check running since before its events answers, and keeps one with a later event', async () => {
     const s = await open()
     const a = agent()

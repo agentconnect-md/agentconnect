@@ -1163,6 +1163,7 @@ export class FollowUpChecks {
     }
     const outcome = await this.host.checks.recordWake(agentId, item.id, {
       wakeId: req.wakeId,
+      ...(req.subscription !== undefined ? { subscription: req.subscription } : {}),
       kinds: req.kinds,
       latestAt: Date.parse(req.latestAt!),
       now,

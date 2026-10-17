@@ -22,6 +22,7 @@ async function setup() {
   const requests: Array<Pick<AssistantFollowUpWatchReq, 'mode' | 'watches'>> = []
   const cp: {
     link: number | undefined
+    fullGate?: Promise<void>
     answer: (req: Pick<AssistantFollowUpWatchReq, 'mode' | 'watches'>) => AssistantFollowUpWatchResult | undefined
   } = {
     link: 1,
@@ -47,6 +48,7 @@ async function setup() {
       request: async (_agentId, req) => {
         requests.push(req)
         if (cp.link === undefined) throw new Error('control plane unreachable')
+        if (req.mode === 'full' && cp.fullGate) await cp.fullGate
         return cp.answer(req)
       },
       link: () => cp.link
@@ -111,6 +113,26 @@ describe('a follow-up’s watch', () => {
     cp.link = 2
     await watches.sync(AGENT)
     expect(requests).toHaveLength(2)
+  })
+
+  it('lets a full set’s late answer overwrite no change made after it', async () => {
+    const { s, cp, watches, requests, item } = await setup()
+    const one = await item('one')
+    await s.assistantItems.setWatch(AGENT, one.id, { url: PR, target: null, state: 'pending', reason: null })
+    let release!: () => void
+    cp.fullGate = new Promise<void>((resolve) => (release = resolve))
+    const slow = watches.sync(AGENT)
+    // The move is asked for while the full set's answer is still on its way, and waits behind it.
+    const moved = watches.set(AGENT, one.id, ISSUE)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(requests.map((req) => req.mode)).toEqual(['full'])
+    release()
+    await Promise.all([slow, moved])
+    expect(requests.map((req) => req.mode)).toEqual(['full', 'set'])
+    expect((await s.assistantItems.get(AGENT, one.id))?.watch).toMatchObject({
+      url: ISSUE,
+      target: 'example-org/example-repo#7'
+    })
   })
 
   it('stops watching an open follow-up, and drops an ended one’s subscription', async () => {

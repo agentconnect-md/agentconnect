@@ -2206,8 +2206,10 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   redelivery folds into nothing for every watch of the object. The wake sequence grows with each
   folded event; a wake that raced a later event is sent again under the higher id.
 - **A refused move ends the old watch.** `set` replaces: the follow-up is watched by what the answer
-  names, or by nothing. A move takes a new generation, and every fold, delivery, end and removal
-  begun on the old object must match it, so none of them reaches the watch that replaced it.
+  names, or by nothing. A watch taken or moved gets a new, random generation, and every fold,
+  delivery, end and removal begun on an older one must match it, so none of them reaches the watch
+  that replaced it, even one removed and taken again. A wake carries its generation as its
+  `subscription`.
 - **The provider half** is a provider list given to the follow-up watch service, as the feedback
   lane's providers are, rather than a member of `codehost/provider.ts`, whose members take the HTTP
   layer's dependencies. GitHub reads the object once with a pull-request or issue read token minted
@@ -2235,10 +2237,12 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   never arrives leaves the watch `pending`. The duty holder sends each agent's full set once per
   Control Plane link, from its check sweep, paused or not, so a pending watch, a lost removal or a
   restored store converges there. A refused watch is left out of the full set, so the Control Plane
-  holds none for it.
+  holds none for it. An agent's sets, removals and full sets go one at a time, so a full set's late
+  answer never overwrites a change made after it.
 - **A wake.** The duty holder records it, paused or not; a draining member, or one that does not
   hold the duty, answers `not_holder`, and a follow-up that is not open, not watching, or a first
-  look answers `not_found`. A wake whose events all arrived before the running check began is
+  look answers `not_found`. `wakeId`s count within a `subscription`, so a follow-up watched
+  again after a stop takes its new subscription's first wakes. A wake whose events all arrived before the running check began is
   answered by that check; any other waits for a check. Every check takes the waiting wake along,
   and one that does not finish puts it back, due at once; a failed one's retry or, once checks
   stop, a message takes it.

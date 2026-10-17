@@ -2046,6 +2046,7 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       await addColumn(db, store.postgres, 'assistant_item', column, 'TEXT')
     for (const [column, type] of [
       ['wakeId', 'INTEGER NOT NULL DEFAULT 0'],
+      ['wakeSubscription', 'INTEGER'],
       ['wakeAt', 'INTEGER'],
       ['wakeKinds', 'TEXT'],
       ['wakeLatestAt', 'INTEGER'],

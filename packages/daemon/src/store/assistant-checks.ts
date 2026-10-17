@@ -40,8 +40,9 @@ export interface AssistantCheckState {
   runningInput: string | null
   /** JSON of messages from the owning session waiting for the running check to end. */
   pendingMessages: string | null
-  /** The last wake applied, so a retried one starts no second check. */
+  /** The last wake applied, so a retried one starts no second check, and the subscription it counts within. */
   wakeId: number
+  wakeSubscription: number | null
   /** A wake waiting for a check: due from this time, with the events it folds and when the latest arrived. */
   wakeAt: number | null
   wakeKinds: FollowUpEventKind[]
@@ -98,6 +99,7 @@ export const ASSISTANT_CHECK_SCHEMA = `
         runningInput TEXT,
         pendingMessages TEXT,
         wakeId INTEGER NOT NULL DEFAULT 0,
+        wakeSubscription INTEGER,
         wakeAt INTEGER,
         wakeKinds TEXT,
         wakeLatestAt INTEGER,
@@ -164,6 +166,7 @@ function stateOf(row: Row): AssistantCheckState {
     runningInput: str(row.runningInput),
     pendingMessages: str(row.pendingMessages),
     wakeId: Number(row.wakeId ?? 0),
+    wakeSubscription: num(row.wakeSubscription),
     wakeAt: num(row.wakeAt),
     wakeKinds: eventsOf(row.wakeKinds),
     wakeLatestAt: num(row.wakeLatestAt),
@@ -227,21 +230,33 @@ export class AssistantCheckLedger {
   async recordWake(
     agentId: string,
     itemId: string,
-    wake: { wakeId: number; kinds: FollowUpEventKind[]; latestAt: number; now: number; staleBefore: number }
+    wake: {
+      wakeId: number
+      /** A wake from a new subscription counts afresh, whatever the last one applied. */
+      subscription?: number
+      kinds: FollowUpEventKind[]
+      latestAt: number
+      now: number
+      staleBefore: number
+    }
   ): Promise<AssistantWakeOutcome> {
     for (let attempt = 0; attempt < 5; attempt++) {
       await ensure(this.db, agentId, itemId, wake.now)
       const state = await this.get(agentId, itemId)
-      if (!state || wake.wakeId <= state.wakeId) return 'duplicate'
+      if (!state) return 'duplicate'
+      const fresh = wake.subscription !== undefined && wake.subscription !== state.wakeSubscription
+      if (!fresh && wake.wakeId <= state.wakeId) return 'duplicate'
       const running = state.runningKey !== null && state.runningSince !== null && state.runningSince >= wake.staleBefore
       const answered = running && wake.latestAt < state.runningSince!
       const kinds = answered ? state.wakeKinds : mergeEvents(state.wakeKinds, wake.kinds)
       const latest = answered ? state.wakeLatestAt : Math.max(state.wakeLatestAt ?? 0, wake.latestAt)
       const { changes } = await this.db.query(
-        `UPDATE assistant_check_state SET wakeId = ?, wakeAt = ?, wakeKinds = ?, wakeLatestAt = ?, updatedAt = ?
+        `UPDATE assistant_check_state SET wakeId = ?, wakeSubscription = ?, wakeAt = ?, wakeKinds = ?, wakeLatestAt = ?,
+           updatedAt = ?
          WHERE agentId = ? AND itemId = ? AND wakeId = ?`,
         [
           wake.wakeId,
+          wake.subscription ?? state.wakeSubscription,
           answered ? state.wakeAt : (state.wakeAt ?? wake.now),
           eventsText(kinds),
           latest,

@@ -339,10 +339,18 @@ export class FollowUpWatchService {
       return defer()
     }
     const wake: AssistantFollowUpWake = ended
-      ? { agentId: agent.id, followUpId: row.followUpId, wakeId: row.wakeSeq + 1, kinds: [], ended }
+      ? {
+          agentId: agent.id,
+          followUpId: row.followUpId,
+          subscription: row.generation,
+          wakeId: row.wakeSeq + 1,
+          kinds: [],
+          ended
+        }
       : {
           agentId: agent.id,
           followUpId: row.followUpId,
+          subscription: row.generation,
           wakeId: row.wakeSeq,
           kinds: row.pendingKinds,
           latestAt: (row.pendingLatestAt ?? new Date(this.deps.clock.now())).toISOString()

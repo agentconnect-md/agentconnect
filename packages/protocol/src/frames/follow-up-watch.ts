@@ -147,6 +147,8 @@ export const AssistantFollowUpWake = z
   .object({
     agentId: z.string().uuid(),
     followUpId: FollowUpId,
+    // The subscription's identity: its wakeIds count from a new start whenever it changes.
+    subscription: z.number().int().positive().optional(),
     wakeId: z.number().int().positive(),
     kinds: z.array(FollowUpEventKind).max(FollowUpEventKind.options.length),
     latestAt: z.string().datetime().optional(),
