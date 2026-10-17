@@ -38,6 +38,7 @@ export interface KnowledgeDeps {
     limit: number
     maxBytes: number
     tags?: string[]
+    withOutsiders?: boolean
   }) => Promise<KnowledgeSearchOk>
   /** Browse recent org knowledge (query-less); requester identity bound from the
    * trusted session context. */
@@ -46,7 +47,10 @@ export interface KnowledgeDeps {
     limit: number
     maxBytes: number
     tags?: string[]
+    withOutsiders?: boolean
   }) => Promise<KnowledgeSearchOk>
+  /** Whether the session's conversation may hold people from outside the organization, which leaves People out; absent where the Control Plane cannot honour it. */
+  outsiders?: (ctx: SessionContext) => Promise<boolean>
   /** List or search accepted org skills (metadata only); requester identity bound
    * from the trusted session context. `query` present ⇒ filter, absent ⇒ list. */
   orgSkills?: (req: { requesterAgentId: string; query?: string; limit: number }) => Promise<OrgSkillsOk>
@@ -64,7 +68,8 @@ export async function findKnowledge(
     query,
     limit,
     maxBytes: 8192,
-    ...(tags?.length ? { tags } : {})
+    ...(tags?.length ? { tags } : {}),
+    ...((await deps.outsiders?.(ctx)) ? { withOutsiders: true } : {})
   })
   return { items: result.items }
 }
@@ -80,7 +85,8 @@ export async function listKnowledge(
     requesterAgentId: ctx.agentId,
     limit,
     maxBytes: 8192,
-    ...(tags?.length ? { tags } : {})
+    ...(tags?.length ? { tags } : {}),
+    ...((await deps.outsiders?.(ctx)) ? { withOutsiders: true } : {})
   })
   return { items: result.items }
 }

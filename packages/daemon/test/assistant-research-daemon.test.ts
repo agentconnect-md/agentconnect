@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { KNOWLEDGE_RECORD_FEATURE } from '@agentconnect.md/protocol'
 import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
@@ -86,8 +87,11 @@ async function boot(root: string, target: Record<string, unknown> | undefined) {
     requestId: req.requestId,
     ...(target ? { target } : {})
   }))
-  // The Control Plane answers every feature and the approval route; anything else it is asked does nothing.
-  const answers: Record<string | symbol, unknown> = { supportsServerFeature: () => true, approvalRoute: route }
+  // The Control Plane answers every feature but the organization record, and the approval route.
+  const answers: Record<string | symbol, unknown> = {
+    supportsServerFeature: (feature: string) => feature !== KNOWLEDGE_RECORD_FEATURE,
+    approvalRoute: route
+  }
   d.cpClient = new Proxy(answers, { get: (target, name) => (name in target ? target[name] : () => undefined) })
   // Slack's socket connects in the background; the DM can be opened only once it has.
   await vi.waitFor(() => expect(d.draftCardPort(INTEGRATION)).toBeDefined(), WAIT)
@@ -194,7 +198,11 @@ describe('the research task’s session', () => {
       )
       for (const posting of ['sendMessage', 'followUp', 'firstLook', 'listTasks', 'addReaction'])
         expect(names).not.toContain(posting)
-      expect(ctx.memoryBinding).toEqual({ source: 'tool', scope: { agentId: 'bot-a' }, layer: 'shared' })
+      expect(ctx.memoryBinding).toEqual({
+        source: 'tool',
+        scope: { agentId: 'bot-a', withOutsiders: false, recordWriter: 'research' },
+        layer: 'shared'
+      })
       // As if its turn were live: the stop gate is the turn engine's, not this test's.
       const deps = { ...(d.mcp.deps as OpsDeps), canRun: () => true }
       // The bridge refuses any other name the runtime sends.
@@ -205,10 +213,14 @@ describe('the research task’s session', () => {
       const written = (await executeTool(
         ctx,
         'createMemoryEntry',
-        { label: 'organization.md', text: '# Organization\n' },
+        { label: 'research-notes.md', text: '# Notes\n' },
         deps
       )) as Record<string, unknown>
       expect(written).toMatchObject({ layer: 'shared' })
+      // The organization files are the record's alone: a Control Plane that does not keep it refuses them.
+      await expect(
+        executeTool(ctx, 'createMemoryEntry', { label: 'organization.md', text: '# Organization\n' }, deps)
+      ).rejects.toThrow('the organization record is not available right now')
       await expect(
         executeTool(ctx, 'createMemoryEntry', { label: 'x.md', text: 'x', layer: 'here' }, deps)
       ).rejects.toThrow('argument layer is not available')
@@ -220,7 +232,7 @@ describe('the research task’s session', () => {
           INTEGRATION,
           undefined
         )
-      ).toEqual({ agentId: 'bot-a' })
+      ).toEqual({ agentId: 'bot-a', withOutsiders: false })
       // It never shares the agent's host, which holds the tool credentials.
       expect(d.hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
       expect(d.hostKeyFor('bot-a', sessionKey('slack', 'D_FAKE', 'append:1', 'bot-a', scope))).toBe(

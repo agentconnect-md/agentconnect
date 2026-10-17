@@ -404,7 +404,7 @@ describe('the organization research line (assistant-mode.md §5.15)', () => {
     })
     const turn = await sm.handle('bot-a', room('U0ALICE', '400.2'))
     expect(researchOf(turn.blocks)).toEqual([
-      '<system-reminder>\nOrganization research is running since 03:20; what memory holds about the organization ' +
+      '<system-reminder>\nOrganization research is running since 03:20; what is known about the organization ' +
         'may be incomplete. Answer from what is known and say plainly that research is still running when it ' +
         'matters.\n</system-reminder>'
     ])

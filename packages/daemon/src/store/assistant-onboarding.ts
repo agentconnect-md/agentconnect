@@ -170,6 +170,16 @@ export class AssistantOnboardingLedger {
     return changes > 0
   }
 
+  /** An agent that reads the record another agent researched has said hello: nothing is left for it to run. */
+  async settleReader(agentId: string, now: number): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_onboarding SET state = 'skipped', secondRound = 'none', reason = ?, updatedAt = ?
+        WHERE agentId = ? AND state = 'greeting'`,
+      ['reads the organization record another agent researched', now, agentId]
+    )
+    return changes > 0
+  }
+
   /** After a definite refusal, the next sweep's second round is a new submission, from `attempt` on. */
   async nextSecondRoundAttempt(agentId: string, attempt: number, now: number): Promise<boolean> {
     const { changes } = await this.db.query(

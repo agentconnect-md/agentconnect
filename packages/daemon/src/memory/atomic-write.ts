@@ -83,7 +83,7 @@ export async function atomicMutateMemoryFileHoldingLock(
     if (inventory.length > 2048 || inventory.reduce((sum, file) => sum + file.size, 0) > 16 * 1024 * 1024)
       throw new MemoryTooLargeError('memory tree exceeds the transaction preparation budget')
     for (const file of inventory) {
-      if (file.name === MEMORY_INDEX || file.name === topic) continue
+      if (file.name === MEMORY_INDEX || file.name === topic || fs.recordTopic?.(file.name)) continue
       const value = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
       if (!value) throw new MemoryConflictError('memory tree changed while preparing its index')
       const entry = memoryIndexEntry(file.name, parseMemoryFrontmatter(value.content).header)

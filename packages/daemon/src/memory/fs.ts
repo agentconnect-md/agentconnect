@@ -129,6 +129,8 @@ export interface MemoryFs {
   readonly rmIfMatch?: ((rel: string, ifMatchMtime: string) => Promise<void>) | undefined
   /** Best-effort: set a file's mtime (kept for files a store swap left byte-for-byte unchanged). */
   utimes(rel: string, mtime: string): Promise<void>
+  /** A topic served from the organization record rather than this store, which the generated index leaves out (assistant-mode.md §5.16). */
+  readonly recordTopic?: ((name: string) => boolean) | undefined
 }
 
 /** Split a root-relative path into plain components; `''` is the root itself. */

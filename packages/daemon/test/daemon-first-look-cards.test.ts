@@ -329,11 +329,20 @@ describe('a first look’s report round on a platform with cards', () => {
   })
 
   it('in a public internal channel, the first look keeps the organization files itself and its long session only speaks', async () => {
-    const { daemon, behavior, dispatched, deps, look, modes, lookSessions } = await boot({
+    const { daemon, d, behavior, dispatched, deps, look, modes, lookSessions } = await boot({
       channel: { id: 'C1', name: 'release-train', is_private: false, is_ext_shared: false }
     })
+    // The organization record the Control Plane keeps, in memory: one revision per entry.
+    const record = new Map<string, { revision: number; content: string; optOut: string[] }>()
+    d.organizationRecords.set('bot-a', {
+      read: async (file: string) => record.get(file) ?? { revision: 1, content: '', optOut: [] },
+      write: async (file: string, write: { baseRevision: number; content: string }) => {
+        record.set(file, { revision: write.baseRevision + 1, content: write.content, optOut: [] })
+        return { revision: write.baseRevision + 1 }
+      }
+    })
     const outcomes: unknown[] = []
-    // The task's own memory writes land in the shared layer, each checked against its file's shape.
+    // The task's own memory writes land in the organization record, each checked against its file's shape.
     behavior.look = async (ctx) => {
       for (const text of [
         '#release-train: release decisions\n',
@@ -350,6 +359,7 @@ describe('a first look’s report round on a platform with cards', () => {
       expect.stringContaining('INVALID_ARGUMENT: channels.md line 1 "#release-train: release decisions" does not end'),
       expect.objectContaining({ state: 'completed', layer: 'shared' })
     ])
+    expect(record.get('channels.md')?.content).toBe('#release-train: release decisions (#release-train, 2026-10-17)\n')
     const textOf = (msg: NormalizedMessage) => msg.turnBody?.prompt ?? msg.text ?? ''
     const task = textOf(dispatched.find((c) => textOf(c.msg).includes(LOOK_OPENING))!.msg)
     expect(task).toContain('- channels.md: one line for this place, linking the file above:')

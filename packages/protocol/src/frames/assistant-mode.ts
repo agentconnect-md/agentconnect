@@ -35,6 +35,10 @@ export const AssistantOnboarding = z.object({
   enabledAt: z.string().datetime(),
   hints: AssistantOnboardingHints.optional(),
   /** Whether this agent researches the organization (§5.16): true for the first switch-on in the organization; absent on a record older than the field. */
-  research: z.boolean().optional()
+  research: z.boolean().optional(),
+  /** With `research: false`: the agent that holds the organization's research, and when it claimed it. */
+  researchedBy: z
+    .object({ agentId: z.string().min(1).max(256), name: z.string().min(1).max(200), at: z.string().datetime() })
+    .optional()
 })
 export type AssistantOnboarding = z.infer<typeof AssistantOnboarding>

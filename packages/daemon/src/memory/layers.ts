@@ -49,6 +49,8 @@ export interface ResolvedMemoryLayer {
 export interface PlaceAudience {
   layer: MemoryLayer
   external: boolean
+  /** Whether `external` is an answer rather than a default: a platform that described the place, a DM, or no conversation at all. */
+  confirmed?: boolean
 }
 
 export interface MemoryLayerDeps {
@@ -80,6 +82,11 @@ export interface MemoryLayerDeps {
   linked?(agentId: string, platformIdentity: string, identity: string): Promise<void>
   now(): number
   log?(message: string): void
+}
+
+/** Whether People is withheld here (assistant-mode.md §5.16): people from outside, or an audience not confirmed yet. */
+export function withholdsPeople(audience: PlaceAudience): boolean {
+  return audience.external || audience.confirmed !== true
 }
 
 /** An id that can stand in an identity: no whitespace, no separator. */
@@ -120,18 +127,23 @@ export class MemoryLayers {
 
   /** Its layer, and whether it is known to hold people from outside: shared with another organization, or a known guest. */
   async audienceOf(place: MemoryPlace): Promise<PlaceAudience> {
-    if (place.platform === 'webchat') return { layer: 'person', external: false }
+    if (place.platform === 'webchat') return { layer: 'person', external: false, confirmed: true }
     // A code-host review or an internal pass is no conversation: what it learns is the organization's.
-    if (!this.deps.chatPlatform(place.platform)) return { layer: 'shared', external: false }
+    if (!this.deps.chatPlatform(place.platform)) return { layer: 'shared', external: false, confirmed: true }
     const integrationId = this.deps.integrationFor(place.agentId, place.platform, place.transportScope)
     const known = this.deps.external(place.agentId, integrationId, place.channel)
     const rowKind = kindFromRows(place.platform, place.kinds)
-    if (rowKind === 'dm') return { layer: 'person', external: known }
-    if (rowKind === 'group_dm') return { layer: 'place', external: known }
+    // A DM never turns external (assistant-mode.md §5.3); a group DM's members are not described, so only a known guest settles it.
+    if (rowKind === 'dm') return { layer: 'person', external: known, confirmed: true }
+    if (rowKind === 'group_dm') return { layer: 'place', external: known, confirmed: known }
     const described = await this.deps
       .describe({ platform: place.platform, channel: place.channel }, rowKind, integrationId)
       .catch(() => ({ platform: place.platform, channel: place.channel }) as SourcePlace)
-    return { layer: layerOfPlace(described, known), external: known || described.external === true }
+    return {
+      layer: layerOfPlace(described, known),
+      external: known || described.external === true,
+      confirmed: known || described.external !== undefined
+    }
   }
 
   /** The layer and its scope; a 1:1 DM whose person cannot be told keeps a place layer of its own. */

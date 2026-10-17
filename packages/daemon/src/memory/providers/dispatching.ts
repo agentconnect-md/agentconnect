@@ -39,6 +39,8 @@ export interface MemoryProviderDeps {
   extract?: MemoryExtractor
   externalBindingFor?: (agentId: string) => ExternalMemoryBinding | undefined
   externalDeps?: ExternalMemoryRuntimeDeps
+  /** The organization record of an assistant-mode agent whose Control Plane keeps it (assistant-mode.md §5.16). */
+  organizationRecordFor?: (agentId: string) => import('../organization-record.js').OrganizationRecordPort | undefined
 }
 
 /**
@@ -68,7 +70,8 @@ export class DispatchingMemoryProvider implements MemoryProvider {
     this.managed = new ManagedMemoryProvider(
       deps.memoryHomePortsFor,
       deps.autoDistillFor ?? (() => false),
-      deps.extract
+      deps.extract,
+      deps.organizationRecordFor
     )
     this.native = new NativeMemoryProvider()
     this.none = new NoMemoryProvider()
