@@ -62,7 +62,7 @@ export async function atomicWriteMemoryFileHoldingLock(
 export async function atomicMutateMemoryFileHoldingLock(
   fs: MemoryFs,
   topic: string,
-  prepare: (current: MemoryFsFile | null) => string | null,
+  prepare: (current: MemoryFsFile | null) => string | null | Promise<string | null>,
   source: MemoryWriteSource,
   sourceTurnId?: string
 ): Promise<{ content: string | null; receipt: MemoryTransactionReceipt }> {
@@ -74,7 +74,7 @@ export async function atomicMutateMemoryFileHoldingLock(
   if (snapshot.operation !== 'snapshot')
     throw new MemoryHomeUnavailableError('connection', 'unexpected memory snapshot reply')
   const current = await fs.readFile(`${MEMORY_DIRNAME}/${topic}`)
-  const content = prepare(current)
+  const content = await prepare(current)
   if (content === null && !current) throw new MemoryConflictError('memory file is absent')
   const replacements = [{ path: topic, content, previous: current?.content ?? null }]
   if (topic !== MEMORY_INDEX) {

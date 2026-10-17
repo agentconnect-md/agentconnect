@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { membersOwnEntryGuidance } from '../src/memory/members-directory.js'
 import { describe, expect, it } from 'vitest'
 import {
   buildStandingContext,
@@ -218,5 +219,15 @@ describe('buildStandingContext with a platform standing block', () => {
   it('leaves the context byte-identical when the delivery carried none', () => {
     expect(buildStandingContext({ ...BASE, platformStanding: '' })).toEqual(buildStandingContext(BASE))
     expect(buildStandingContext({ ...BASE, platformStanding: '  \n' })).toEqual(buildStandingContext(BASE))
+  })
+})
+
+describe('buildStandingContext with memory guidance', () => {
+  it('re-asserts a person directory entry guidance on resume, and adds nothing without one', () => {
+    const memoryGuidance = membersOwnEntryGuidance('slack:T0EXAMPLE:U0ALICE')
+    const context = buildStandingContext({ ...BASE, memoryGuidance })
+    expect(context.resumeSystemContext).toContain('`slack:T0EXAMPLE:U0ALICE`')
+    expect(context.sessionContext).toContain(memoryGuidance)
+    expect(buildStandingContext({ ...BASE, memoryGuidance: '' })).toEqual(buildStandingContext(BASE))
   })
 })

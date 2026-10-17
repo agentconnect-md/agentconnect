@@ -11,7 +11,9 @@ import {
   requiredStringAllowEmpty
 } from './args.js'
 import type { MemoryProvider, MemoryScope } from '../../memory/provider.js'
-import { MEMORY_LAYER_CHOICES, type MemoryLayerChoice } from '../../memory/types.js'
+import { MEMBERS_DIRECTORY_FILE } from '../../memory/members-directory.js'
+import { memoryRefToTopic } from '../../memory/frontmatter.js'
+import { MEMORY_LAYER_CHOICES, type MemoryLayerChoice, type MemoryWriteGuard } from '../../memory/types.js'
 import type { MemoryWriteSource } from '../../memory/store.js'
 import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
 import { MEMORY_LAYER_NOTES } from '../../memory/entries/tools.js'
@@ -25,7 +27,20 @@ export interface MemoryOpsDeps {
   memory: MemoryProvider
   /** One memory tool call's scope: the session's layers or the one `layer` names, rejecting one this turn may not use. */
   memoryScope?: (ctx: SessionContext, call: MemoryToolCall) => MemoryScope | Promise<MemoryScope>
+  /** The people directory's rules for a write landing in this scope; undefined where the directory does not live there. */
+  membersGuard?: (ctx: SessionContext, scope: MemoryScope) => Promise<MembersGuard | undefined>
 }
+
+/** The checks a write of the people directory passes (assistant-mode.md §5.17), and what it changes once it lands. */
+export interface MembersGuard {
+  /** Runs inside the entry write's lock with the topic's text before and after; it throws to refuse. */
+  guard: MemoryWriteGuard
+  /** The marker changes an admitted write implies, applied after it landed. */
+  landed(): Promise<void>
+}
+
+/** Refusal of a whole-file write of the people directory: only revision-checked entry writes pass its rules. */
+export const MEMBERS_FILE_ENTRY_TOOLS_ONLY = `${MEMBERS_DIRECTORY_FILE} in shared memory is changed only with the entry tools: find it with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. Nothing was saved.`
 
 /** What a memory tool call asks of the layers: whether it reads or writes, and the layer it names. */
 export interface MemoryToolCall {
@@ -254,6 +269,8 @@ export async function writeMemory(
     // Exactly one mode: full write (`content`) or an edit, which needs both `oldString` and `newString`.
     const path = parsed.path ?? 'MEMORY.md'
     enforceBindingPolicy(ctx, path)
+    if (memoryRefToTopic(path) === MEMBERS_DIRECTORY_FILE && (await deps.membersGuard?.(ctx, scope)))
+      throw new Error(MEMBERS_FILE_ENTRY_TOOLS_ONLY)
     const { oldString, newString, content } = parsed
     const editMode = oldString !== undefined || newString !== undefined
     if (editMode) {

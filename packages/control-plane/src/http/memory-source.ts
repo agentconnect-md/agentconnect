@@ -2,6 +2,8 @@
 import type {
   MemoryChannelClearOk,
   MemoryChannelClearReq,
+  MemoryMemberClearOk,
+  MemoryMemberClearReq,
   MemoryChannelsPage,
   MemoryChannelsReq,
   MemoryListPage,
@@ -12,7 +14,8 @@ import type {
 import { AgentMemoryConsoleReader } from '../agent-memory/console-reader.js'
 import { memoryHomedInControlPlane } from '../agent-memory/home.js'
 import { MemoryHomeUnavailableError } from '../agent-memory/unavailable.js'
-import { AgentId } from '../domain/ids.js'
+import { clearMembersInTables } from '../agent-memory/members-directory.js'
+import { AgentId, OrgId } from '../domain/ids.js'
 import type { AgentRecord } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 
@@ -23,13 +26,15 @@ export interface MemorySource {
   list(req: MemoryListReq): Promise<MemoryListPage>
   read(req: MemoryReadReq): Promise<MemoryReadContent>
   clearChannel(req: MemoryChannelClearReq): Promise<MemoryChannelClearOk>
+  /** Remove people's directory entries and mark them opted out; the answer carries no content. */
+  clearMembers(req: MemoryMemberClearReq): Promise<MemoryMemberClearOk>
 }
 
 /** The source of one agent's console memory; null when its home is a daemon and none serves it. */
 export function makeMemorySources(deps: HttpDeps): (agent: AgentRecord) => MemorySource | null {
   const table = new AgentMemoryConsoleReader(deps.repos.agentMemoryFile, deps.repos.agentMemoryHistory)
   return (agent) => {
-    if (memoryHomedInControlPlane(agent.memory)) return controlPlaneSource(table, agent)
+    if (memoryHomedInControlPlane(agent.memory)) return controlPlaneSource(table, deps, agent)
     const daemonId = agent.daemonId
     if (!daemonId) return null
     return {
@@ -38,12 +43,13 @@ export function makeMemorySources(deps: HttpDeps): (agent: AgentRecord) => Memor
       channels: (req) => deps.control.memoryChannels(daemonId, req),
       list: (req) => deps.control.memoryList(daemonId, req),
       read: (req) => deps.control.memoryRead(daemonId, req),
-      clearChannel: (req) => deps.control.memoryChannelClear(daemonId, req)
+      clearChannel: (req) => deps.control.memoryChannelClear(daemonId, req),
+      clearMembers: (req) => deps.control.memoryMemberClear(daemonId, req)
     }
   }
 }
 
-function controlPlaneSource(table: AgentMemoryConsoleReader, agent: AgentRecord): MemorySource {
+function controlPlaneSource(table: AgentMemoryConsoleReader, deps: HttpDeps, agent: AgentRecord): MemorySource {
   const id = AgentId(agent.id)
   // The table is half-filled until the daemon reports the copy done; the daemon refuses it with this reason too.
   const settled = () => {
@@ -71,6 +77,18 @@ function controlPlaneSource(table: AgentMemoryConsoleReader, agent: AgentRecord)
     async clearChannel(req) {
       settled()
       return { agentId: agent.id, channelKey: req.channelKey, cleared: await table.clearPlace(id, req.channelKey) }
+    },
+    async clearMembers(req) {
+      settled()
+      const cleared = await clearMembersInTables(
+        deps.repos.agentMemoryFile,
+        id,
+        OrgId(agent.orgId),
+        req.keys,
+        req.mark,
+        new Date()
+      )
+      return { agentId: agent.id, cleared }
     }
   }
 }

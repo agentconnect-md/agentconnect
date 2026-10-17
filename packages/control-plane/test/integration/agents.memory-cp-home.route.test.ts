@@ -300,3 +300,77 @@ describe('a daemon memory home', () => {
     expect(daemon.calls).toEqual(['memoryList', 'memoryChannels'])
   })
 })
+
+// assistant-mode.md §5.17: the people directory in a Control-Plane home is read and cleared from the CP's tables.
+describe('the people directory in a Control-Plane memory home', () => {
+  const directory = (inside: string) =>
+    [
+      '# Members',
+      '',
+      `## Inside \`user:${inside}\``,
+      'Role: release manager (self, 2026-10-02)',
+      '',
+      '## Bob (@bob on Slack) `slack:T0EXAMPLE:U0BOB`',
+      'Works on: billing (#release-train, 2026-10-15)',
+      ''
+    ].join('\n')
+  const fileText = async (path: string) =>
+    Buffer.from((await files.read(AgentId(AGENT), path, 0, 1024 * 1024))?.slice ?? []).toString('utf8')
+
+  it('shows a person only their own entry, and lets them clear it, which keeps them out', async () => {
+    const { inside, outside } = await world()
+    await put('memory/members.md', directory(inside))
+    const daemon = new OfflineDaemon()
+
+    const mine = await get(as(inside, daemon), `${MEMORY}/mine/member`)
+    expect(mine.body).toEqual({
+      entries: [
+        { key: `user:${inside}`, text: `## Inside \`user:${inside}\`\nRole: release manager (self, 2026-10-02)` }
+      ],
+      clearable: true
+    })
+    expect((await get(as(outside, daemon), `${MEMORY}/mine/member`)).body).toEqual({ entries: [], clearable: true })
+
+    const res = await as(inside, daemon).app.inject({ method: 'DELETE', url: `${MEMORY}/mine/member` })
+    expect(res.json()).toEqual({ cleared: true })
+    expect(await fileText('memory/members.md')).not.toContain('Inside')
+    expect(await fileText('memory/members.md')).toContain('`slack:T0EXAMPLE:U0BOB`')
+    expect(JSON.parse(await fileText('people/.directory-opt-out.json')).keys).toHaveProperty(`user:${inside}`)
+    expect(daemon.calls).toEqual([])
+  })
+
+  it('lists entries by name to everyone and lets only an owner clear one, audited without content', async () => {
+    const { inside } = await world()
+    await put('memory/members.md', directory(inside))
+    const daemon = new OfflineDaemon()
+    const url = `${MEMORY}/members/${encodeURIComponent('slack:T0EXAMPLE:U0BOB')}`
+
+    expect((await get(as(inside, daemon), `${MEMORY}/members`)).body).toEqual({
+      entries: [
+        { key: `user:${inside}`, name: 'Inside' },
+        { key: 'slack:T0EXAMPLE:U0BOB', name: 'Bob (@bob on Slack)' }
+      ],
+      clearable: false
+    })
+    expect((await as(inside, daemon).app.inject({ method: 'DELETE', url })).statusCode).toBe(403)
+
+    const owner = as(DEFAULT_OWNER_ID, daemon)
+    expect((await get(owner, `${MEMORY}/members`)).body.clearable).toBe(true)
+    const res = await owner.app.inject({ method: 'DELETE', url })
+    expect(res.json()).toEqual({ cleared: true })
+    expect(await fileText('memory/members.md')).not.toContain('Bob')
+    const audit = await prisma.auditEvent.findMany({ where: { kind: 'memory_change' } })
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({
+      agentId: AGENT,
+      actorUserId: DEFAULT_OWNER_ID,
+      frameType: 'memory/member/clear',
+      details: { operation: 'clear', layer: 'shared', file: 'members.md', key: 'slack:T0EXAMPLE:U0BOB', cleared: true }
+    })
+    expect(JSON.stringify([audit[0]!.message, audit[0]!.details])).not.toContain('billing')
+    expect(
+      (await owner.app.inject({ method: 'DELETE', url: `${MEMORY}/members/${encodeURIComponent('Bob')}` })).statusCode
+    ).toBe(400)
+    expect(daemon.calls).toEqual([])
+  })
+})

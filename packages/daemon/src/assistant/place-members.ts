@@ -119,7 +119,7 @@ export class PlaceMembers {
 
 /** One message a turn answers, as far as the read rule needs it. */
 export interface TurnMessage {
-  msg: Pick<NormalizedMessage, 'source' | 'sender' | 'platform' | 'headless'>
+  msg: Pick<NormalizedMessage, 'source' | 'sender' | 'platform' | 'headless' | 'mentionedUsers'>
   /** The bot it arrived on. */
   integrationId?: string
   /** It came from the console: webchat, or a console continuation of a chat session. */

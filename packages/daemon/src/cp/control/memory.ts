@@ -5,6 +5,7 @@ import type {
   MemoryEntriesReadResult,
   AnyFrame,
   MemoryChannelClearReq,
+  MemoryMemberClearReq,
   MemoryChannelsReq,
   MemoryHistoryReq,
   MemoryListReq,
@@ -50,6 +51,14 @@ export const memoryChannelClear: ControlHandler<MemoryControlDeps> = (frame: Any
     .clearChannel(frame.payload as MemoryChannelClearReq)
     .then((ok) => wire.reply(frame, 'memory/channel/clear/ok', ok))
     .catch((err) => memoryError(wire, frame.id, 'memory/channel/clear', err))
+}
+
+export const memoryMemberClear: ControlHandler<MemoryControlDeps> = (frame: AnyFrame, deps, wire) => {
+  // Removes people's directory entries and marks them opted out; the reply says only whether one was there.
+  deps.memoryReader
+    .clearMembers(frame.payload as MemoryMemberClearReq)
+    .then((ok) => wire.reply(frame, 'memory/member/clear/ok', ok))
+    .catch((err) => memoryError(wire, frame.id, 'memory/member/clear', err))
 }
 
 export const memoryList: ControlHandler<MemoryControlDeps> = (frame: AnyFrame, deps, wire) => {

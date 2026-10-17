@@ -3137,7 +3137,14 @@
         "clearLayer": "清空这一层",
         "clearLayerTitle": "清空这一层记忆？",
         "clearLayerBody": "Agent 为 {name} 保存的所有文件及其历史都会被删除，内容不会向你展示。此操作无法撤销。",
-        "clearingLayer": "正在清空…"
+        "clearingLayer": "正在清空…",
+        "yourDirectoryEntry": "你在人员目录中的条目",
+        "directoryPeople": "人员目录",
+        "clearEntry": "清除条目",
+        "clearYourEntryTitle": "清除你的条目？",
+        "clearYourEntryBody": "你的条目会从 members.md 中删除。在你自己重新写入之前，Agent 不会再在其中记录关于你的内容。",
+        "clearEntryTitle": "清除这个条目？",
+        "clearEntryBody": "{name} 的条目会从 members.md 中删除。在此人自己重新写入之前，Agent 不会再在其中记录关于此人的内容。"
       },
       "assistantMode": {
         "title": "助理模式",

@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto'
 import type {
   MemoryChannelClearReq,
   MemoryChannelClearOk,
+  MemoryMemberClearReq,
+  MemoryMemberClearOk,
   MemoryChannelsReq,
   MemoryChannelsPage,
   MemoryListReq,
@@ -64,6 +66,9 @@ import {
 } from '../memory/store.js'
 import type { MemoryHomePorts } from '../memory/home.js'
 import { organizationFileRefusal } from '../memory/organization-files.js'
+import { MEMBERS_DIRECTORY_FILE, clearMembers } from '../memory/members-directory.js'
+import { memoryRefToTopic } from '../memory/frontmatter.js'
+import { MEMBERS_CONSOLE_EDIT_REFUSED } from './memory-entries.js'
 import type { MemoryAdminSurface, MemoryScope } from '../memory/provider.js'
 
 /** Unknown-agent violation → `BAD_PAYLOAD` on the wire (path escapes surface as
@@ -87,6 +92,7 @@ export {
 export interface MemoryReader {
   channels(req: MemoryChannelsReq): Promise<MemoryChannelsPage>
   clearChannel(req: MemoryChannelClearReq): Promise<MemoryChannelClearOk>
+  clearMembers(req: MemoryMemberClearReq): Promise<MemoryMemberClearOk>
   list(req: MemoryListReq): Promise<MemoryListPage>
   read(req: MemoryReadReq): Promise<MemoryReadContent>
   write(req: MemoryWriteReq): Promise<MemoryWriteOk>
@@ -218,6 +224,13 @@ export function createMemoryReader(
       return { agentId: req.agentId, channelKey: req.channelKey, cleared }
     },
 
+    // The people directory's entries leave with no content in the reply, and their people are marked opted out.
+    async clearMembers(req) {
+      const ports = portsFor(req.agentId)
+      const cleared = await clearMembers(ports.live, ports.historyFor(ports.live), req.keys, req.mark, new Date())
+      return { agentId: req.agentId, cleared }
+    },
+
     async list(req) {
       const surface = requireFileSurface(req.agentId)
       const files = await surface.list(scopeFor(req.agentId, req.channelKey, req.personUserId))
@@ -269,7 +282,9 @@ export function createMemoryReader(
 
     async write(req) {
       const surface = requireFileSurface(req.agentId)
-      // The shared layer's organization files keep their shapes on the Memory page too (assistant-mode.md §5.15).
+      // The console only clears people's directory entries; the shared layer's organization files keep their shapes (assistant-mode.md §5.15).
+      if (!req.channelKey && memoryRefToTopic(req.path) === MEMBERS_DIRECTORY_FILE)
+        throw new MemoryViolationError(MEMBERS_CONSOLE_EDIT_REFUSED)
       const refusal = req.channelKey ? undefined : organizationFileRefusal(req.path, req.content)
       if (refusal !== undefined) throw new MemoryViolationError(refusal)
       const { size, mtime } = await surface.write(

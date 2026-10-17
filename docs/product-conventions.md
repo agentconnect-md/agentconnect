@@ -1652,6 +1652,28 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   when it is denied unless answered, with the runtime's own choices. An answer here is the same
   decision as the card's, and one answered elsewhere first says it is no longer waiting.
 
+## Assistant-mode people directory
+
+An agent in assistant mode keeps a directory of people's work facts, `members.md` in its shared
+memory, so it can answer who works on what. Everyone who may see the agent may read it, so it
+holds only what is fine to say anywhere.
+
+- **Who it is about.** An entry is about one member of the organization, keyed by their console
+  account once they linked one, else by their chat identity. It is written in an internal public
+  channel only on a turn a person typed, and only about someone who sent a message of that turn or
+  was mentioned in one. A fact someone states of themselves is sourced to them; anything said about
+  someone else is sourced to the channel. A private conversation, a conversation with people from
+  outside, a scheduled run, a follow-up's check and another agent's message never write it.
+- **The person controls their entry.** In their own DM a person asks what the agent knows about
+  them, and may correct or remove their entry; nothing else in the directory changes there. Under
+  Your memory on the agent's Memory page they see their entry and may clear it.
+- **Clearing keeps them out.** Once an entry is cleared, nothing is written about that person again
+  until they write their entry themselves. Linking or unlinking an account does not undo it.
+- **Owners.** An organization owner may clear anyone's entry from the Memory page; the clear is in
+  the audit log without its content. Nobody else edits the directory in the console.
+- **Leaving.** An entry is removed once a day after its person leaves the organization or their
+  chat account is deactivated.
+
 ## Directional agent visibility
 
 Agent-to-agent visibility is the intersection of two independently configured directions.

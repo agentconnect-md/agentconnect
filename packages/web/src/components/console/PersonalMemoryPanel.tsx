@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
 import { fetchMyAgentMemoryFull, listMyAgentMemory, type MemoryFileEntry } from '@/lib/api'
 import { Spinner } from '@/components/marks'
+import { MyDirectoryEntry } from '@/components/console/DirectoryEntries'
 import {
   FileBrowserLayout,
   FileBrowserPreviewHeader,
@@ -65,68 +66,71 @@ export function PersonalMemoryPanel({ agentId }: { agentId: string }) {
   )
 
   return (
-    <FileBrowserShell title={t('yourMemory')}>
-      {listing.state === 'loading' ? (
-        <div className="flex items-center justify-center py-10">
-          <Spinner size={24} />
-        </div>
-      ) : listing.state === 'unavailable' ? (
-        notice(t('yourMemoryUnavailable'))
-      ) : listing.files.length === 0 ? (
-        notice(t('yourMemoryEmpty'))
-      ) : (
-        <FileBrowserLayout
-          resetKey={agentId}
-          tree={(openPreview) =>
-            listing.files.map((file) => (
-              <FileBrowserRow
-                key={file.name}
-                icon="file-text"
-                name={file.name}
-                selected={opened?.name === file.name}
-                trailing={
-                  <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                    {formatFileMtime(file.mtime)}
-                  </span>
-                }
-                onClick={() => {
-                  open(file)
-                  openPreview()
-                }}
-              />
-            ))
-          }
-          preview={
-            opened
-              ? (onBack) => (
-                  <>
-                    <FileBrowserPreviewHeader
-                      icon="file-text"
-                      name={opened.name}
-                      meta={
-                        opened.content !== null
-                          ? formatFileSize(new TextEncoder().encode(opened.content).length)
-                          : undefined
-                      }
-                      onBack={onBack}
-                    />
-                    {opened.failed ? (
-                      notice(t('yourMemoryUnavailable'))
-                    ) : opened.content === null ? (
-                      <div className="flex flex-1 items-center justify-center py-10">
-                        <Spinner size={24} />
-                      </div>
-                    ) : (
-                      <div className="max-h-[520px] overflow-auto px-[18px] py-4">
-                        <MarkdownView content={opened.content} />
-                      </div>
-                    )}
-                  </>
-                )
-              : null
-          }
-        />
-      )}
-    </FileBrowserShell>
+    <>
+      <MyDirectoryEntry agentId={agentId} />
+      <FileBrowserShell title={t('yourMemory')}>
+        {listing.state === 'loading' ? (
+          <div className="flex items-center justify-center py-10">
+            <Spinner size={24} />
+          </div>
+        ) : listing.state === 'unavailable' ? (
+          notice(t('yourMemoryUnavailable'))
+        ) : listing.files.length === 0 ? (
+          notice(t('yourMemoryEmpty'))
+        ) : (
+          <FileBrowserLayout
+            resetKey={agentId}
+            tree={(openPreview) =>
+              listing.files.map((file) => (
+                <FileBrowserRow
+                  key={file.name}
+                  icon="file-text"
+                  name={file.name}
+                  selected={opened?.name === file.name}
+                  trailing={
+                    <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      {formatFileMtime(file.mtime)}
+                    </span>
+                  }
+                  onClick={() => {
+                    open(file)
+                    openPreview()
+                  }}
+                />
+              ))
+            }
+            preview={
+              opened
+                ? (onBack) => (
+                    <>
+                      <FileBrowserPreviewHeader
+                        icon="file-text"
+                        name={opened.name}
+                        meta={
+                          opened.content !== null
+                            ? formatFileSize(new TextEncoder().encode(opened.content).length)
+                            : undefined
+                        }
+                        onBack={onBack}
+                      />
+                      {opened.failed ? (
+                        notice(t('yourMemoryUnavailable'))
+                      ) : opened.content === null ? (
+                        <div className="flex flex-1 items-center justify-center py-10">
+                          <Spinner size={24} />
+                        </div>
+                      ) : (
+                        <div className="max-h-[520px] overflow-auto px-[18px] py-4">
+                          <MarkdownView content={opened.content} />
+                        </div>
+                      )}
+                    </>
+                  )
+                : null
+            }
+          />
+        )}
+      </FileBrowserShell>
+    </>
   )
 }

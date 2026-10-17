@@ -50,6 +50,7 @@ import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { PersonalMemoryPanel } from '@/components/console/PersonalMemoryPanel'
+import { DirectoryOwnerEntries } from '@/components/console/DirectoryEntries'
 import { placeLayerLabel } from '@/components/console/memory-place-label'
 
 // The layer picker's value for the signed-in user's own memory; a place layer's key never contains a colon.
@@ -815,6 +816,13 @@ export function MemoryPanel({
               }}
             />
           )}
+          {/* The people directory lives in the shared layer; an owner clears one person's entry from here. */}
+          {assistantMode && layer === '' ? (
+            <DirectoryOwnerEntries
+              key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}`}
+              agentId={agentId}
+            />
+          ) : null}
           {/* Dreaming is managed-only and is secondary to the live memory
               content, so it sits below the browser. Only render it when the
               persisted policy is on; otherwise its trigger would be noise. */}

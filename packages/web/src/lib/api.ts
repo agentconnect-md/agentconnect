@@ -3089,6 +3089,41 @@ export async function clearAgentMemoryChannel(agentId: string, channelKey: strin
   )
 }
 
+/** The signed-in user's own entries in the agent's people directory, members.md in shared memory. */
+export interface MyDirectoryEntriesDto {
+  entries: { key: string; text: string }[]
+  /** The user may clear their entries. */
+  clearable: boolean
+}
+/** The people directory's entries by heading, never their lines. */
+export interface DirectoryEntriesDto {
+  entries: { key: string; name: string }[]
+  /** The user may clear any entry: an organization owner. */
+  clearable: boolean
+}
+
+/** The signed-in user's own entries in the agent's people directory. */
+export async function fetchMyAgentDirectoryEntry(agentId: string): Promise<MyDirectoryEntriesDto> {
+  return apiGet<MyDirectoryEntriesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/member`)
+}
+
+/** Clear the signed-in user's own directory entries; the agent writes none about them again until they do. */
+export async function clearMyAgentDirectoryEntry(agentId: string): Promise<{ cleared: boolean }> {
+  return apiDelete<{ cleared: boolean }>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/member`)
+}
+
+/** The people directory's entries, for an owner's per-entry clear. */
+export async function fetchAgentDirectoryEntries(agentId: string): Promise<DirectoryEntriesDto> {
+  return apiGet<DirectoryEntriesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/members`)
+}
+
+/** Clear one person's directory entry, an organization owner's action. */
+export async function clearAgentDirectoryEntry(agentId: string, key: string): Promise<{ cleared: boolean }> {
+  return apiDelete<{ cleared: boolean }>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/members/${encodeURIComponent(key)}`
+  )
+}
+
 /** List the files of the signed-in user's own memory layer for this agent. */
 export async function listMyAgentMemory(agentId: string): Promise<MemoryFilesDto> {
   return apiGet<MemoryFilesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/files`)

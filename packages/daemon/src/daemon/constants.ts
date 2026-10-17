@@ -92,3 +92,8 @@ export const MAX_DRAIN_TEXT_CHARS = 16_000
  *  or the host is reclaimed. 20 is a display depth, not a durability promise — the panel is a
  *  live view, and the retained records are strictly outside the liveness set (see `settled`). */
 export const MAX_SETTLED_TASKS_PER_SESSION = 20
+
+/** How often the people directory drops the entries of people who left (assistant-mode.md §5.17 "Leaving"). */
+export const MEMBERS_SWEEP_INTERVAL_MS = 24 * 60 * 60_000
+/** The most entries one agent's sweep looks up in a pass, so a large directory spreads over days. */
+export const MEMBERS_SWEEP_MAX_LOOKUPS = 500

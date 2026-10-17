@@ -55,6 +55,7 @@ export {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   MEMORY_PERSON_LAYER_FEATURE,
   MEMORY_PLACE_CLEAR_FEATURE,
+  MEMORY_MEMBER_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   RESERVED_RESTART_CODE,
   RUNTIME_COMMANDS_FEATURE,
@@ -143,6 +144,7 @@ export * from './frames/automerge.js'
 export * from './frames/sandbox-keepalive.js'
 export * from './frames/memory.js'
 export { memoryChannelKey, memoryPersonKey } from './memory-layer-key.js'
+export * from './members-directory.js'
 export * from './frames/memory-store.js'
 export * from './frames/organization-knowledge.js'
 export * from './frames/telemetry.js'

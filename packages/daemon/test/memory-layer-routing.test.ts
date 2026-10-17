@@ -1,13 +1,13 @@
 // Every agent's capture, memory tools and dreams follow the conversation's layer (unified-memory-interface.md §6).
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IntegrationChannel, MemoryEntryMutationReceipt } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
-import type { MemoryToolCall } from '../src/mcp/ops/memory.js'
+import { MEMBERS_FILE_ENTRY_TOOLS_ONLY, type MemoryToolCall } from '../src/mcp/ops/memory.js'
 import { MEMORY_LAYER_NOTES } from '../src/memory/entries/tools.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
@@ -556,5 +556,129 @@ describe('a memory write names the layer it landed in', () => {
       note: MEMORY_LAYER_NOTES.person
     })
     expect(landed(`${PERSON_DIR}/tz.md`)).toBe(false)
+  })
+})
+
+// assistant-mode.md §5.17: the people directory is written through the same tools, under its person rules.
+describe('the people directory, members.md in the shared layer', () => {
+  const cleanup: (() => Promise<unknown>)[] = []
+  afterEach(async () => {
+    for (const close of cleanup.splice(0).reverse()) await close()
+  })
+  const key = (uid: string) => `slack:${TENANT}:${uid}`
+  const head = '---\nname: members\ndescription: who works on what\n---\n# Members\n'
+  const entry = (name: string, uid: string, line: string) =>
+    `## ${name} (@${name.toLowerCase()} on Slack) \`${key(uid)}\`\n${line}\n`
+
+  async function tree() {
+    const dir = await mkdtemp(join(tmpdir(), 'memory-members-'))
+    cleanup.push(() => rm(dir, { recursive: true, force: true }))
+    const db = await openTestStore(join(dir, 'state.sqlite'))
+    cleanup.push(() => db.close())
+    return { dir, db }
+  }
+
+  // The daemon's own scope and directory rules over a real managed tree, with U1–U3 full members of the workspace.
+  async function session(place: Place, at: { dir: string; db: unknown }) {
+    const w = world(place)
+    const home = localMemoryHome(new LocalMemoryFs(join(at.dir, 'agent')))
+    w.daemon.memoryHomePortsFor = () => home
+    w.daemon.store.getDisplayNames = async () => new Map([[w.ctx.channel, 'release-train']])
+    const members = new Set(['U1', 'U2', 'U3'])
+    w.daemon.placeMembers = {
+      isFullMember: async (_int: string, uid: string) => members.has(uid),
+      consoleVerdict: async () => ({ asker: 'unidentifiable' })
+    }
+    const deps = {
+      memory: new ManagedMemoryProvider(() => home),
+      memoryEntryStore: at.db,
+      memoryScope: (ctx: SessionContext, call: MemoryToolCall) => w.daemon.memoryToolScope(ctx, call),
+      membersGuard: (ctx: SessionContext, scope: unknown) => w.daemon.membersGuard(ctx, scope)
+    } as unknown as OpsDeps
+    const run = async (name: string, args: Record<string, unknown>) =>
+      (await executeTool(w.ctx, name, args, deps)) as Record<string, unknown>
+    const read = () => readFile(join(at.dir, 'agent', 'memory', 'members.md'), 'utf8').catch(() => null)
+    return { ...w, run, read }
+  }
+  const TYPED_WITH_BOB = { ...TYPED, mentionedUsers: ['U2'] }
+
+  it('writes what a person states of themselves and of someone they mention, on their turn', async () => {
+    const at = await tree()
+    const s = await session({ snapshot: PUBLIC }, at)
+    s.turn(TYPED_WITH_BOB)
+    const text = [
+      head,
+      entry('Alice', 'U1', 'Role: release manager (self, 2026-10-17)'),
+      entry('Bob', 'U2', 'Works on: billing (#release-train, 2026-10-17)')
+    ].join('\n')
+    expect(await s.run('createMemoryEntry', { label: 'members', text })).toMatchObject({
+      state: 'completed',
+      layer: 'shared'
+    })
+    expect(await s.read()).toContain('Role: release manager (self, 2026-10-17)')
+  })
+
+  it('refuses an entry about someone not on the turn, a round no person typed, and a whole-file write', async () => {
+    const at = await tree()
+    const s = await session({ snapshot: PUBLIC }, at)
+    s.turn(TYPED)
+    const carol = [head, entry('Carol', 'U3', 'Works on: docs (#release-train, 2026-10-17)')].join('\n')
+    await expect(s.run('createMemoryEntry', { label: 'members', text: carol })).rejects.toThrow('not on this turn')
+    s.turn(ROUNDS.report)
+    const alice = [head, entry('Alice', 'U1', 'Role: x (self, 2026-10-17)')].join('\n')
+    await expect(s.run('createMemoryEntry', { label: 'members', text: alice })).rejects.toThrow('a turn a person typed')
+    s.turn(TYPED)
+    await expect(s.run('writeMemory', { path: 'members.md', content: alice })).rejects.toThrow(
+      MEMBERS_FILE_ENTRY_TOOLS_ONLY
+    )
+    expect(await s.read()).toBeNull()
+    // Any other shared file is untouched by the directory's rules.
+    expect(await s.run('createMemoryEntry', { label: 'deploys', text: '- Fridays' })).toMatchObject({
+      state: 'completed'
+    })
+  })
+
+  it('lets a person change only their own entry from their DM, and forgetting them keeps them out', async () => {
+    const at = await tree()
+    const channel = await session({ snapshot: PUBLIC }, at)
+    channel.turn(TYPED_WITH_BOB)
+    const bob = entry('Bob', 'U2', 'Works on: billing (#release-train, 2026-10-01)')
+    const both = [head, entry('Alice', 'U1', 'Role: x (self, 2026-10-01)'), bob].join('\n')
+    await channel.run('createMemoryEntry', { label: 'members', text: both })
+    const dm = await session({ channel: 'D1', conversationKind: 'dm', triggeredBy: 'U1' }, at)
+    dm.turn({ ...TYPED, isDm: true })
+    const shared = (await dm.run('listMemoryEntries', { layer: 'shared' })) as {
+      entries: { ref: string; revision: string; label: string }[]
+    }
+    const { ref, revision } = shared.entries.find((e) => e.label === 'members')!
+    // Bob's entry is not theirs to change.
+    await expect(
+      dm.run('updateMemoryEntry', { ref, revision, text: both.replace('billing', 'payments'), layer: 'shared' })
+    ).rejects.toThrow('only your own entry')
+    // "Forget me": their entry goes, and they are marked out by the key they are known by.
+    const withoutAlice = [head, bob].join('\n')
+    await dm.run('updateMemoryEntry', { ref, revision, text: withoutAlice, layer: 'shared' })
+    const marker = JSON.parse(await readFile(join(at.dir, 'agent', 'people', '.directory-opt-out.json'), 'utf8'))
+    expect(Object.keys(marker.keys)).toEqual([key('U1')])
+    // A channel can no longer write about them, even on their own turn.
+    channel.turn(TYPED)
+    const listed = (await channel.run('listMemoryEntries', {})) as {
+      entries: { ref: string; revision: string; label: string }[]
+    }
+    const members = listed.entries.find((e) => e.label === 'members')!
+    await expect(
+      channel.run('updateMemoryEntry', {
+        ref: members.ref,
+        revision: members.revision,
+        text: [withoutAlice, entry('Alice', 'U1', 'Role: x (self, 2026-10-17)')].join('\n')
+      })
+    ).rejects.toThrow('cleared their entry')
+  })
+
+  it('takes a first look as a builder, with no turn to be on', async () => {
+    const s = world({ snapshot: PUBLIC })
+    expect(await s.daemon.membersWriter({ ...s.ctx, thread: firstLookCoordinate('d-1') })).toEqual({
+      kind: 'builder'
+    })
   })
 })

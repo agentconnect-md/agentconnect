@@ -24,7 +24,7 @@ export interface FeishuRawEvent {
 
 export interface FeishuMention {
   key?: string
-  id?: { open_id?: string }
+  id?: { open_id?: string; union_id?: string }
   name?: string
 }
 
@@ -246,6 +246,14 @@ export function normalizeFeishuMessage(
     mentionedBots: (message.mentions ?? [])
       .map((mention) => mention?.id?.open_id)
       .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    // A person is known by union_id here, as the sender is.
+    mentionedUsers: [
+      ...new Set(
+        (message.mentions ?? [])
+          .map((mention) => mention?.id?.union_id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      )
+    ].slice(0, 100),
     ...(attachments.length ? { attachments } : {}),
     isDm
   }

@@ -24,6 +24,7 @@ import {
 import { normalizeMemoryHeader, stampMemoryHeader } from '../frontmatter.js'
 import type { MemoryTextCheck } from '../organization-files.js'
 import { MemoryEntriesError } from './contract.js'
+import type { MemoryWriteGuard } from '../types.js'
 import { memoryDigest } from './service.js'
 
 // A revision is required by a conditional home and optional on a last-write-wins one, where it is checked when given.
@@ -38,7 +39,7 @@ export async function mutateManagedMemoryEntry(
   fs: MemoryFs,
   topic: string,
   mutation: ManagedEntryMutation,
-  context: { source: MemoryWriteSource; sourceTurnId?: string; check?: MemoryTextCheck },
+  context: { source: MemoryWriteSource; sourceTurnId?: string; check?: MemoryTextCheck; guard?: MemoryWriteGuard },
   now: () => Date = () => new Date()
 ) {
   if (!MemoryTransactionPath.safeParse(topic).success || topic === MEMORY_INDEX)
@@ -50,7 +51,7 @@ export async function mutateManagedMemoryEntry(
       const result = await atomicMutateMemoryFileHoldingLock(
         fs,
         topic,
-        (current) => prepareEntryMutation(current, mutation, topic, now, context.check),
+        (current) => prepareEntryMutation(current, mutation, topic, now, context.check, context.guard),
         context.source,
         context.sourceTurnId
       )
@@ -71,14 +72,15 @@ export async function mutateManagedMemoryEntry(
   })
 }
 
-// The precondition and the stored text, the same for every home: null is an explicit delete; `check` sees the final text.
-function prepareEntryMutation(
+// The precondition and the stored text, the same for every home: null is an explicit delete; `check` sees the final text, then the guard both texts.
+async function prepareEntryMutation(
   current: MemoryFsFile | null,
   mutation: ManagedEntryMutation,
   topic: string,
   now: () => Date,
-  check?: MemoryTextCheck
-): string | null {
+  check?: MemoryTextCheck,
+  guard?: MemoryWriteGuard
+): Promise<string | null> {
   if (mutation.operation === 'create') {
     if (current) throw new MemoryEntriesError('CONFLICT', 'memory entry already exists', memoryDigest(current.content))
   } else {
@@ -90,7 +92,10 @@ function prepareEntryMutation(
         memoryDigest(current.content)
       )
   }
-  if (mutation.operation === 'delete') return null
+  if (mutation.operation === 'delete') {
+    await guard?.(topic, current?.content ?? null, null)
+    return null
+  }
   let text = mutation.text
   if (mutation.operation === 'update' && mutation.edit) {
     const { oldText, newText } = mutation.edit
@@ -104,6 +109,7 @@ function prepareEntryMutation(
   const content = stampMemoryHeader(topic, normalizeMemoryHeader(text), now().toISOString())
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES)
     throw new MemoryTooLargeError('memory entry exceeds its byte limit')
+  await guard?.(topic, current?.content ?? null, content)
   return content
 }
 
@@ -117,7 +123,7 @@ export async function mutateManagedMemoryEntryOnFilesystem(
   fs: MemoryFs,
   topic: string,
   mutation: ManagedEntryMutation,
-  context: { source: MemoryWriteSource; check?: MemoryTextCheck },
+  context: { source: MemoryWriteSource; check?: MemoryTextCheck; guard?: MemoryWriteGuard },
   history: MemoryHistorySink,
   now: () => Date = () => new Date()
 ): Promise<{ content: string | null; receipt: MemoryTransactionReceipt; revision: string | undefined }> {
@@ -131,7 +137,7 @@ export async function mutateManagedMemoryEntryOnFilesystem(
     let dispatched = false
     try {
       const current = await fs.readFile(path)
-      const content = prepareEntryMutation(current, mutation, topic, now, context.check)
+      const content = await prepareEntryMutation(current, mutation, topic, now, context.check, context.guard)
       if (content === null && !fs.rmIfMatch)
         throw new MemoryEntriesError('UNSUPPORTED', 'this memory home cannot delete an entry conditionally')
       let file: MemoryTransactionReceipt['files'][number]

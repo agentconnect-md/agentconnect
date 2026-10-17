@@ -96,6 +96,9 @@ export interface MemoryNeighborsResult {
   backlinks: { name: string; topic: string; description?: string; exists: boolean }[]
 }
 
+/** A check a managed entry write passes inside its lock, with the topic's text before and after; it throws to refuse. */
+export type MemoryWriteGuard = (topic: string, before: string | null, after: string | null) => Promise<void>
+
 export interface FileMemoryAdmin {
   shape: 'files'
   list(scope: MemoryScope): Promise<MemoryEntry[]>
@@ -160,11 +163,12 @@ export interface MemoryProvider {
   readonly kind: MemoryProviderKind
 
   // Additive read contract; native and none keep their own lifecycle and expose no entries.
-  /** `check` refuses a managed write's final text before it is stored (the organization files' shapes); record backends ignore it. */
+  /** `check` refuses a managed write's final text before it is stored (the organization files' shapes); `guard` then sees the text before and after (the people directory's rules); record backends ignore both. */
   entryView?(
     scope: MemoryScope,
     writeSource?: MemoryWriteSource,
-    check?: MemoryTextCheck
+    check?: MemoryTextCheck,
+    guard?: MemoryWriteGuard
   ): Promise<MemoryEntriesView | null>
 
   /** Env delta for the runtime child: `managed`/`none`/`external` turn its own memory off, `native` adds nothing (see `memoryProviderFor`). */

@@ -35,6 +35,7 @@ import type {
   MemoryNeighborsResult,
   MemoryReadResult,
   MemoryScope,
+  MemoryWriteGuard,
   MemoryWriteResult,
   RecallPolicy,
   TurnRecord
@@ -103,14 +104,21 @@ export class ManagedMemoryProvider implements MemoryProvider {
     return disabledRuntimeMemoryEnv(runtime, effectiveEnv, runtimeId)
   }
 
-  entryView(scope: MemoryScope, writeSource?: MemoryWriteSource, check?: MemoryTextCheck) {
+  entryView(scope: MemoryScope, writeSource?: MemoryWriteSource, check?: MemoryTextCheck, guard?: MemoryWriteGuard) {
     // A staged draft logs to the sidecar inside it; a live root pages the home's own change log.
     const historyFor = (root: MemoryFs) =>
       scope.root ? sidecarMemoryHistory(root) : this.portsFor(scope.agentId).historyFor(root)
     return managedMemoryEntries(
       this.readRoots(scope),
       scope.agentId,
-      writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId, ...(check ? { check } : {}) } : undefined,
+      writeSource
+        ? {
+            source: writeSource,
+            sourceTurnId: scope.sourceTurnId,
+            ...(check ? { check } : {}),
+            ...(guard ? { guard } : {})
+          }
+        : undefined,
       historyFor,
       () => this.landed(scope)
     )

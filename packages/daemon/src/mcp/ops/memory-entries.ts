@@ -19,6 +19,8 @@ async function entries(
   const layer = layerArgument(args)
   const scope = await memoryScopeFor(ctx, deps, { mode, ...(layer ? { layer } : {}) })
   const check = memoryWriteCheck(ctx, deps, scope)
+  // The people directory's rules ride the write itself, inside its lock (assistant-mode.md §5.17).
+  const members = mode === 'write' ? await deps.membersGuard?.(ctx, scope) : undefined
   const service = await createMemoryEntryService({
     provider: deps.memory,
     scope,
@@ -29,13 +31,14 @@ async function entries(
           write: {
             source: ctx.memoryBinding?.source ?? ('tool' as const),
             canWrite: () => true,
-            ...(check ? { check } : {})
+            ...(check ? { check } : {}),
+            ...(members ? { guard: members.guard } : {})
           }
         }
       : {}),
     canRead: () => true
   })
-  return { service, scope }
+  return { service, scope, members }
 }
 async function call<T>(
   ctx: SessionContext,
@@ -46,8 +49,10 @@ async function call<T>(
 ) {
   const { layer: _layer, ...request } = args
   try {
-    const { service, scope } = await entries(ctx, deps, mode, args)
-    return await action(service, request, scope)
+    const { service, scope, members } = await entries(ctx, deps, mode, args)
+    const result = await action(service, request, scope)
+    await members?.landed()
+    return result
   } catch (error) {
     if (error instanceof MemoryEntriesError)
       throw new MemoryEntriesError(error.code, `${error.code}: ${error.message}`, error.currentRevision)
