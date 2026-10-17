@@ -1241,7 +1241,9 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   daemon's, through the existing durable `reporting` outbox, once no queued input, input being
   admitted, or background wake remains. A clean end is `[task finished]` with the round's last
   final output, which replaces the separate `[inferred reply]` for tasks; a failure or stop is
-  `[task ended]`. Both name the `messageTask` call that continues the task, unless the report
+  `[task ended]`. Both name the task by its title, or "A task" before it has one, never by its
+  key, since people read them in the console; both name the `messageTask` call that continues
+  the task, with its `taskId`, in the part the console folds, unless the report
   lands in a later session of the place (after `!new`), which cannot continue it and is told so
   instead; a report persisted before the rename, naming `messageSubsession`, is rewritten the
   same way. A report that lands in its owning session is a `report` session message (§9.8) under

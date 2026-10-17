@@ -351,9 +351,9 @@ describe('a due next check wakes one check', () => {
 
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate, source: 'agent' })
-    expect(modelText(report!.msg)).toContain(
-      `The check of follow-up ${item.taskKey} ("Watch the release build") found a change`
-    )
+    expect(modelText(report!.msg)).toContain('The check of the follow-up "Watch the release build" found a change')
+    // People read the report in the console, so it never names the follow-up by its key.
+    expect(modelText(report!.msg)).not.toContain(item.taskKey)
     expect(modelText(report!.msg).endsWith(`The release is out.\n\n${ANSWER_LANGUAGE}`)).toBe(true)
     expect(report!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
     // The check is asked for its people's language, and the conversation's runtime is told to answer in it.
@@ -632,9 +632,10 @@ describe('failures back off and stop', () => {
     expect(await checkState(d, item.id)).toMatchObject({ failures: CHECK_MAX_FAILURES, stopped: true })
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain(
-      `Checks of follow-up ${item.taskKey} ("Watch the release build") stopped after 5 failed attempts in a row. ` +
-        'They resume once it is messaged with messageTask.'
+      'Checks of the follow-up "Watch the release build" stopped after 5 failed attempts in a row. ' +
+        'They resume once it is messaged with messageTask, by the taskId listTasks shows for it.'
     )
+    expect(modelText(reports()[0]!.msg)).not.toContain(item.taskKey)
     expect(modelText(reports()[0]!.msg)).toContain(`Tell the people here.\n\n${ANSWER_LANGUAGE}`)
 
     // A new next check does not resume it.

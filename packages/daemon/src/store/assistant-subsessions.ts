@@ -24,6 +24,8 @@ export interface AssistantSubsession {
   reportAttempts?: number
   /** The current work round (send-message-guide.md §8.4); read back only past the first. */
   round?: number
+  /** The platform thread of the turn that last asked it for work, where its round's report replies. */
+  replyThread?: string
 }
 
 /** One parent message admitted into a sub-session, by its submission id, with the receipt a replay of it gets. */
@@ -47,6 +49,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         endReport TEXT,
         reportAttempts INTEGER NOT NULL DEFAULT 0,
         round INTEGER NOT NULL DEFAULT 1,
+        replyThread TEXT,
         PRIMARY KEY (agentId, childSessionKey)
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_by_parent
@@ -96,7 +99,8 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(row.kind === 'follow-up' ? { kind: 'follow-up' as const } : {}),
     ...(row.endReport != null ? { endReport: String(row.endReport) } : {}),
     ...(Number(row.reportAttempts ?? 0) > 0 ? { reportAttempts: Number(row.reportAttempts) } : {}),
-    ...(Number(row.round ?? 1) > 1 ? { round: Number(row.round) } : {})
+    ...(Number(row.round ?? 1) > 1 ? { round: Number(row.round) } : {}),
+    ...(row.replyThread != null ? { replyThread: String(row.replyThread) } : {})
   }
 }
 
@@ -119,9 +123,16 @@ export class AssistantSubsessionIndex {
   async open(input: OpenInput): Promise<boolean> {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
-         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
-       VALUES (?, ?, ?, ?, 'open', ?)`,
-      [input.agentId, input.childSessionKey, input.parentSessionId, input.parentSessionKey, input.now ?? Date.now()]
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread)
+       VALUES (?, ?, ?, ?, 'open', ?, ?)`,
+      [
+        input.agentId,
+        input.childSessionKey,
+        input.parentSessionId,
+        input.parentSessionKey,
+        input.now ?? Date.now(),
+        input.replyThread ?? null
+      ]
     )
     return changes > 0
   }
@@ -160,8 +171,8 @@ export class AssistantSubsessionIndex {
   ): Promise<boolean> {
     const { changes } = await db.query(
       `INSERT OR IGNORE INTO assistant_subsession
-         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
-       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER)
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread)
+       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER), CAST(? AS TEXT)
         WHERE ${RUNNING_DELEGATIONS} < ?`,
       [
         input.agentId,
@@ -169,6 +180,7 @@ export class AssistantSubsessionIndex {
         input.parentSessionId,
         input.parentSessionKey,
         input.now ?? Date.now(),
+        input.replyThread ?? null,
         input.agentId,
         cap.startedSince,
         cap.limit
@@ -195,6 +207,14 @@ export class AssistantSubsessionIndex {
       const row = await this.get(agentId, childSessionKey)
       return row && (row.round ?? 1) === round && (row.state === 'done' || row.state === 'failed') ? 'limit' : 'changed'
     })
+  }
+
+  /** Record the thread of the turn that asked for this round's work; null when no turn's thread is known. */
+  async setReplyThread(agentId: string, childSessionKey: string, replyThread: string | null): Promise<void> {
+    await this.db.query(
+      `UPDATE assistant_subsession SET replyThread = ? WHERE agentId = ? AND childSessionKey = ? AND kind = 'delegation'`,
+      [replyThread, agentId, childSessionKey]
+    )
   }
 
   /** Index a follow-up under the session that owns it, idle until its first check; false when it was already indexed. */

@@ -1,6 +1,7 @@
 // Agent-to-agent collaboration (A2A wake/reply/status): every delivery is DIRECT, never a visible post, and its CAS and admission orderings are load-bearing.
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
+import { subsessionLabel } from '../permissions/subsession-approval.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
   isDelegationCoordinate,
@@ -152,7 +153,7 @@ export interface DaemonReport {
   ownerSessionKey?: string | undefined
   /** A task's round report is a session message (send-message-guide.md §9.3) under this id, when it lands in its owner. */
   messageId?: string | undefined
-  /** A follow-up's report replies in this thread of an appending place, else (null) where its latest turn replied. */
+  /** A follow-up's or task's report replies in this thread of an appending place, else (null) where its latest turn replied. */
   replyThread?: string | null | undefined
   /** The coordinate a place with no session yet opens its long session at, as its first message would (a first look's, assistant-mode.md §5.13). */
   opens?: string | undefined
@@ -211,6 +212,10 @@ function subsessionEndReportOf(json: string | undefined): SubsessionEndReport | 
   }
 }
 
+/** A task row's reply thread, when the asking turn has one. */
+const replyThreadOf = (thread: string | undefined): { replyThread?: string } =>
+  thread !== undefined ? { replyThread: thread } : {}
+
 /** Closes every daemon-authored report, whose own framing is English, so the parent answers in its people's language. */
 export const REPORT_ANSWER_LANGUAGE =
   'Speak to the people here in the language they use, even when this report is in another.'
@@ -233,21 +238,27 @@ const withoutContinueHint = (text: string): string =>
 const answers = (link: { messageId?: string }, inReplyTo: string | undefined): boolean =>
   link.messageId === undefined || inReplyTo === undefined || link.messageId === inReplyTo
 
+/** A task as people know it, by its label, else a neutral name; its key stays in the folded continue hint. */
+const taskName = (label: string | null | undefined, kind: 'Task' | 'Approved proposal'): string =>
+  label ? `${kind} "${label.replace(/\s+/g, ' ').trim()}"` : kind === 'Task' ? 'A task' : 'An approved proposal'
+
 /** The one report a task's work round ends with (send-message-guide.md §8.5). */
 export function subsessionRoundReport(
   key: string,
   end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>,
-  output?: string
+  output?: string,
+  label?: string | null
 ): { text: string; shown: ShownInput } {
   const hint = continueHint(key)
+  const task = taskName(label, 'Task')
   if (end.outcome === 'completed' && output) {
-    const frame = `[task finished] Task ${key} finished this round of work. Its final output, delivered on its behalf:`
+    const frame = `[task finished] ${task} finished this round of work. Its final output, delivered on its behalf:`
     return { text: `${frame}\n\n${output}\n\n${hint}`, shown: { text: output, notes: [frame, hint] } }
   }
   const status =
     end.outcome === 'completed'
-      ? `[task finished] Task ${key} finished this round of work without a final output; any reply it sent before this is its result.`
-      : `[task ended] Task ${key} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported.`
+      ? `[task finished] ${task} finished this round of work without a final output; any reply it sent before this is its result.`
+      : `[task ended] ${task} stopped before finishing (${endReason(end)}). Anything it sent before this is all it reported.`
   return { text: `${status} ${hint}`, shown: { text: status, notes: [hint] } }
 }
 
@@ -261,11 +272,11 @@ function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
 }
 
 /** The one short report an approved proposal that ended without its own gets in its owning session; a follow-up's check settles on its own path. */
-export function subsessionEndReport(key: string, end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
+export function subsessionEndReport(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>, label?: string | null): string {
   const tail = 'It sent no result; delegate a task if the work is still needed.'
-  if (end.outcome === 'completed')
-    return `[approved proposal ended] Approved proposal ${key} ended without reporting back. ${tail}`
-  return `[approved proposal ended] Approved proposal ${key} stopped before finishing (${endReason(end)}). ${tail}`
+  const task = taskName(label, 'Approved proposal')
+  if (end.outcome === 'completed') return `[approved proposal ended] ${task} ended without reporting back. ${tail}`
+  return `[approved proposal ended] ${task} stopped before finishing (${endReason(end)}). ${tail}`
 }
 
 /** Records one delivery verdict as an evaluation event and hands it back. */
@@ -335,6 +346,8 @@ export interface CollabCoreHost {
   activeGateEntries(): ReadonlyMap<string, QueueEntry>
   /** A sub-session was opened from the parent session's live turn, whose people it then reads for (assistant-mode.md §5.5). */
   noteSubsessionOpened?(childKey: string, parentKey: string): void
+  /** The platform thread a session's live turn replies in; absent with no live turn. */
+  activeTurnThread?(sessionKey: string): string | undefined
   /** assistant-mode.md §5.12: a message to a follow-up from its place's current long session; anything else names nothing. */
   messageFollowUp?(req: ContinueSubsessionReq, taskKey: string, callerKey: string): Promise<MessageAgentResult>
   /** Background SDK tasks a child may still legitimately be waiting on. */
@@ -671,7 +684,7 @@ export class CollabCoordinator {
         }
         // The claim: whoever moves the row out of `open` is the one report, kept on the row until it is admitted.
         const report: SubsessionEndReport = {
-          text: subsessionEndReport(key, end),
+          text: subsessionEndReport(end, await this.taskLabel(key)),
           hopCount: end.hopCount ?? 0,
           caller: {
             platform: end.msg.platform,
@@ -711,7 +724,12 @@ export class CollabCoordinator {
         this.subsessionFinalOutputs.delete(key)
         const output = stashed && (stashed.round === undefined || stashed.round === round) ? stashed.text : undefined
         const report: SubsessionEndReport = {
-          ...subsessionRoundReport(key, end, end.outcome === 'completed' ? output : undefined),
+          ...subsessionRoundReport(
+            key,
+            end,
+            end.outcome === 'completed' ? output : undefined,
+            await this.taskLabel(key)
+          ),
           hopCount: end.hopCount ?? 0,
           caller: {
             platform: end.msg.platform,
@@ -729,6 +747,11 @@ export class CollabCoordinator {
     } catch (err) {
       this.host.log().warn(`sub-session ${key}: could not settle its round: ${formatErr(err)}`)
     }
+  }
+
+  /** A task's label as its cards and listTasks name it: its session's title; null when it has none. */
+  private async taskLabel(key: string): Promise<string | null> {
+    return subsessionLabel((await this.host.store().getSession(key))?.title, undefined)
   }
 
   /** The session asked another agent for a reply that has neither arrived nor failed. */
@@ -784,7 +807,8 @@ export class CollabCoordinator {
         reportId: (report.round ?? 1) > 1 ? `subsession-end:${key}:${report.round}` : `subsession-end:${key}`,
         hopCount: report.hopCount,
         ownerSessionKey: row.parentSessionKey,
-        ...(report.messageId !== undefined ? { messageId: report.messageId } : {})
+        ...(report.messageId !== undefined ? { messageId: report.messageId } : {}),
+        ...(row.replyThread !== undefined ? { replyThread: row.replyThread } : {})
       })
       if (result.admitted) {
         // send-message-guide.md §9.5: the round's report, not the task's own replies, answers what its owner sent it.
@@ -890,11 +914,11 @@ export class CollabCoordinator {
         const ended = { outcome: 'interrupted' as const, reason: 'no longer running' }
         const round = current.round ?? 1
         if (!isDelegationCoordinate(caller.thread)) {
-          const text = subsessionEndReport(key, ended)
+          const text = subsessionEndReport(ended, await this.taskLabel(key))
           return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
         }
         const report: SubsessionEndReport = {
-          ...subsessionRoundReport(key, ended),
+          ...subsessionRoundReport(key, ended, undefined, await this.taskLabel(key)),
           hopCount: 0,
           caller,
           ...(round > 1 ? { round } : {}),
@@ -1508,7 +1532,9 @@ export class CollabCoordinator {
           childSessionKey: targetSession,
           parentSessionId: originSessionId,
           parentSessionKey: callerKey,
-          now
+          now,
+          // Its round's report replies where the delegating turn did.
+          ...replyThreadOf(this.host.activeTurnThread?.(callerKey))
         },
         { limit, startedSince: now - SUBSESSION_START_GRACE_MS }
       )
@@ -2362,6 +2388,8 @@ export class CollabCoordinator {
     })
     if ('refusal' in decided) return { round: 0, receipt: decided.refusal }
     const { round, reopenedFrom } = decided
+    // The round's report replies where the turn asking for it does; the daemon's own message has none, so it lands at the top.
+    await index.setReplyThread(agentId, key, this.host.activeTurnThread?.(callerKey) ?? null)
     let accepted: { accepted: boolean; reason?: string }
     try {
       accepted = await this.dispatchSubsessionInput(req, { ...at, round, inbound })

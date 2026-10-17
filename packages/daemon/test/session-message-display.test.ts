@@ -35,22 +35,32 @@ describe('session message display', () => {
   })
 
   it('shows a finished task’s output alone, its framing and continue call folded', () => {
-    const report = subsessionRoundReport('task-key', { outcome: 'completed' }, '40 files, 15,393 lines.')
+    const report = subsessionRoundReport('task-key', { outcome: 'completed' }, '40 files, 15,393 lines.', 'Count lines')
     expect(report.text).toContain('Its final output, delivered on its behalf:\n\n40 files, 15,393 lines.\n\n')
     expect(report.shown).toEqual({
       text: '40 files, 15,393 lines.',
       notes: [
-        '[task finished] Task task-key finished this round of work. Its final output, delivered on its behalf:',
+        '[task finished] Task "Count lines" finished this round of work. Its final output, delivered on its behalf:',
         expect.stringContaining('"action":"messageTask","taskId":"task-key"')
       ]
     })
   })
 
-  it('shows a stopped task’s status, its continue call folded', () => {
-    const report = subsessionRoundReport('task-key', { outcome: 'failed' })
+  it('shows a stopped task’s status by its title, its key only in the folded continue call', () => {
+    const report = subsessionRoundReport('task-key', { outcome: 'failed' }, undefined, 'Organization research')
     expect(report.shown.text).toBe(
-      '[task ended] Task task-key stopped before finishing (error). Anything it sent before this is all it reported.'
+      '[task ended] Task "Organization research" stopped before finishing (error). Anything it sent before this is all it reported.'
     )
+    expect(report.shown.text).not.toContain('task-key')
+    expect(report.shown.notes![0]).toContain('"taskId":"task-key"')
     expect(report.text).toBe(`${report.shown.text} ${report.shown.notes![0]}`)
+  })
+
+  it('names a task with no title neutrally, never by its key', () => {
+    for (const end of [{ outcome: 'failed' as const }, { outcome: 'completed' as const }]) {
+      const report = subsessionRoundReport('task-key', end, undefined, null)
+      expect(report.shown.text).toMatch(/^\[task (ended|finished)\] A task /)
+      expect(report.shown.text).not.toContain('task-key')
+    }
   })
 })

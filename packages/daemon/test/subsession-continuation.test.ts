@@ -285,7 +285,7 @@ const childReply = async (d: any, caller: { scope: string }, thread: string, tex
 const rowOf = async (d: any, key: string) => await d.store.assistantSubsessions.get('bot-a', key)
 const subInputs = <T extends { msg: NormalizedMessage }>(dispatched: T[]): T[] =>
   dispatched.filter((c) => isSubsessionCoordinate(c.msg.thread) && c.msg.parentReport !== true)
-const finished = (key: string) => `[task finished] Task ${key} finished this round of work`
+const finished = (label: string) => `[task finished] Task "${label}" finished this round of work`
 
 /** Start one task through the tool and let its first round finish. */
 async function startAndFinish(h: Awaited<ReturnType<typeof boot>>, caller: { scope: string; coordinate: string }) {
@@ -298,11 +298,53 @@ async function startAndFinish(h: Awaited<ReturnType<typeof boot>>, caller: { sco
 }
 
 describe('messageTask continues an existing task of this session', () => {
+  // A DM's request asked in a thread under a person's message: the task's report replies in that thread, as its acknowledgement did.
+  it('reports each round in the thread of the turn that asked for it, and at the top when no turn asked', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const asking = (thread: string) =>
+      h.d.activeTurnShare.set(caller.key, {
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        headless: false,
+        synthetic: false
+      })
+    asking('200.1')
+    const created = await send(h.d, caller, { action: 'delegateTask', message: 'investigate the flaky test' })
+    const child: string = created.taskId
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
+    await h.settled()
+    expect(h.reports()[0]!.msg).toMatchObject({ thread: '200.1', sessionThread: caller.coordinate })
+
+    asking('300.1')
+    expect(
+      (await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'run it again' })).wake
+    ).toMatchObject({
+      delivered: true
+    })
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
+    await h.settled()
+    expect(h.reports()[1]!.msg).toMatchObject({ thread: '300.1', sessionThread: caller.coordinate })
+    expect(await rowOf(h.d, child)).toMatchObject({ round: 2, replyThread: '300.1' })
+
+    // The daemon's own message (research's second round) has no asking turn, so its report lands at the top.
+    h.d.activeTurnShare.delete(caller.key)
+    expect((await h.d.collab.continueSubsession(continuation(caller, child, 'once more'))).delivered).toBe(true)
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(3), WAIT)
+    await h.settled()
+    expect(h.reports()[2]!.msg.thread).toBeUndefined()
+    expect(h.reports()[2]!.msg.sessionThread).toBe(caller.coordinate)
+    await h.daemon.stop()
+  })
+
   it('sends into the same task by its taskId and opens a new round after the first finished', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     const child = await startAndFinish(h, caller)
-    expect(h.reports().map((c) => modelText(c.msg))).toEqual([expect.stringContaining(finished(child))])
+    expect(h.reports().map((c) => modelText(c.msg))).toEqual([
+      expect.stringContaining(finished('investigate the flaky test'))
+    ])
     const firstSession = (await h.d.store.getSession(child))?.acpSessionId
 
     const res = await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'also Windows' })
@@ -348,10 +390,10 @@ describe('messageTask continues an existing task of this session', () => {
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
     // Each round reports once, under a delivery id of its own.
     const [first, second] = h.reports()
-    expect(modelText(second!.msg)).toContain(finished(child))
+    expect(modelText(second!.msg)).toContain(finished('investigate the flaky test'))
     // A report with no output shows its status alone; the continue call and language note fold beneath it.
     expect(second!.msg.text).toBe(
-      `${finished(child)} without a final output; any reply it sent before this is its result.`
+      `${finished('investigate the flaky test')} without a final output; any reply it sent before this is its result.`
     )
     expect(second!.msg.turnBody?.sessionMessage).toMatchObject({
       kind: 'report',
@@ -473,7 +515,7 @@ describe('a work round, its slot and its outcome', () => {
         /^\[Message msg-[^\]]+\] Reply from bot-a .* to your message msg-[^:]+:\nHalfway: the failure is isolated\.$/
       ),
       expect.stringMatching(/\nShould I keep the old format\?$/),
-      expect.stringContaining(finished(child))
+      expect.stringContaining(finished('repair the parser'))
     ])
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
     await h.daemon.stop()
@@ -653,7 +695,11 @@ describe('a work round, its slot and its outcome', () => {
     releasePeer()
     await vi.waitFor(() => expect(reportedFromWake).toMatchObject({ delivered: true }), WAIT)
     await vi.waitFor(() => expect(h.reports().some((c) => modelText(c.msg).endsWith('\nPEER-RESULT'))).toBe(true), WAIT)
-    await vi.waitFor(() => expect(h.reports().some((c) => modelText(c.msg).includes(finished(child)))).toBe(true), WAIT)
+    await vi.waitFor(
+      () =>
+        expect(h.reports().some((c) => modelText(c.msg).includes(finished('ask bot-b about the schema')))).toBe(true),
+      WAIT
+    )
     await h.settled()
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
     await h.daemon.stop()
@@ -711,7 +757,13 @@ describe('a work round, its slot and its outcome', () => {
       })
     ).toMatchObject({ delivered: true, childSessionId: child })
     await vi.waitFor(() => expect(told(h.rt.hosts, 'REMOTE-RESULT')).toBe(1), WAIT)
-    await vi.waitFor(() => expect(h.reports().some((c) => modelText(c.msg).includes(finished(child)))).toBe(true), WAIT)
+    await vi.waitFor(
+      () =>
+        expect(h.reports().some((c) => modelText(c.msg).includes(finished('ask bot-remote about the schema')))).toBe(
+          true
+        ),
+      WAIT
+    )
     await h.settled()
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
     await h.daemon.stop()
@@ -731,7 +783,7 @@ describe('a work round, its slot and its outcome', () => {
     expect(h.rt.subPrompts).toHaveLength(1)
     expect(modelText(h.reports()[0]!.msg)).toMatch(/^\[Message msg-[^\]]+\] Report from your task \(session [^)]+\):\n/)
     expect(modelText(h.reports()[0]!.msg)).toContain(
-      `\n[task ended] Task ${child} stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
+      `\n[task ended] Task "long task" stopped before finishing (stop). Anything it sent before this is all it reported. To give it more work in the same context, call sendMessage with {"action":"messageTask","taskId":"${child}","message":"..."}.\n\n${REPORT_ANSWER_LANGUAGE}`
     )
     await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'failed' }), WAIT)
     // The child refuses replies of the stopped round, and runs again only when asked.

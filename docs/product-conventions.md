@@ -1301,7 +1301,8 @@ delegating is for work that spans turns, may run a long time, or that people sho
 see and stop. Ordinary conversation stays in the main conversation. The conversation says the
 work has started; the task runs in a context of its own, never the conversation's long session;
 none of its replies is posted anywhere, and it reports back into the conversation that delegated
-it, which then speaks for it. One that stops without reporting is reported as ended, at the latest
+it, which then speaks for it, in the thread the request for that work came from. A report names the
+task by its title, never by its key. One that stops without reporting is reported as ended, at the latest
 about ten minutes after nothing is left running for it, and then no longer counts toward the
 agent's concurrent tasks. It takes that conversation's visibility and owner, and its visibility
 cannot be changed on its own; making the conversation private still makes it private. A task
@@ -1628,7 +1629,8 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
 - **Tasks** are listed for everyone who can view the agent, running ones first, each
   with its state and start; delegated tasks, follow-ups and approved proposals are listed together. Its title, a
   link to its session and the conversation that started it appear only to someone who may view
-  that conversation. A follow-up is listed under its conversation's current long session, with its
+  that conversation. A first look that runs before its conversation's long session exists names
+  that conversation by its own place, unlinked. A follow-up is listed under its conversation's current long session, with its
   status (waiting, checking, paused after five failed checks until it is messaged, done or stopped)
   and next check; what counts as done and its newest checks (when, what it saw, and whether it was
   reported) appear only where its title does. Stopping a follow-up here ends it, before its first

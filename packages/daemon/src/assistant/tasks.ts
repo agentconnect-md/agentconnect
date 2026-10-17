@@ -101,8 +101,8 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
   const proposal = draft.proposal!
   const origin =
     item.firstLook !== null
-      ? `You proposed this after your first look at this place (${item.taskKey})`
-      : `A check of your follow-up ${item.taskKey} proposed this`
+      ? 'You proposed this after your first look at this place'
+      : 'A check of one of your follow-ups proposed this'
   return [
     `[approved proposal] ${origin}, and ${by.name ?? 'an approver'} ` +
       'approved it. Carry it out now in this background session, with your normal tools and permissions. Nothing ' +

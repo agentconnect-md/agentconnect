@@ -508,7 +508,9 @@ describe('an approved proposal runs once', () => {
     expect(modelText(task!.msg)).toContain(TASK_OPENING)
     expect(modelText(task!.msg)).toContain(`Work: ${TASK}`)
     expect(task!.msg.initialSessionTitle).toMatch(/^Approved proposal: /)
-    expect(modelText(task!.msg)).toContain(`A check of your follow-up ${item.taskKey} proposed this`)
+    expect(modelText(task!.msg)).toContain('A check of one of your follow-ups proposed this')
+    // The task's page shows this prompt, so it never names the follow-up by its key.
+    expect(modelText(task!.msg)).not.toContain(item.taskKey)
     expect(modelText(task!.msg)).toContain(`Do exactly this work, nothing more. ${TASK_LANGUAGE}`)
     expect(task!.callMeta).toMatchObject({
       callFrom: 'bot-a',

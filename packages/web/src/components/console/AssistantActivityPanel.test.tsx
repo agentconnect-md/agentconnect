@@ -430,6 +430,45 @@ describe('follow-ups in Activity', () => {
     expect(meta(taskRow(host, 'sid-follow'))).toBe('#support · First look · Waiting · last Oct 15, 9:00 AM')
   })
 
+  // Its place's long session opens only once it reports, so while it runs its own session names the place.
+  it('names a running first look’s place from its own session, then by its conversation once it reports', async () => {
+    const look: AssistantSubsessionDto = {
+      ...FOLLOW_UP,
+      title: 'First look at release',
+      followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], firstLook: true }
+    }
+    mocks.subsessions = [{ ...look, parent: null, place: { platform: 'slack', channelName: 'release' } }]
+    const running = await mount(false)
+    const line = taskRow(running, 'sid-follow').querySelector('[data-meta-line]')!
+    expect(meta(taskRow(running, 'sid-follow'))).toBe('#release · First look · Checking')
+    expect(line.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
+    // No conversation to open yet, so the place is not a link.
+    expect(line.querySelector('[data-task-place]')).not.toBeNull()
+    expect(line.querySelector('a')).toBeNull()
+
+    await act(async () => root?.unmount())
+    running.remove()
+    mocks.subsessions = [{ ...look, parent: { ...SUPPORT, sessionId: 'sid-place', channelName: 'release' } }]
+    const reported = await mount(false)
+    const link = taskRow(reported, 'sid-follow').querySelector<HTMLAnchorElement>('[data-meta-line] a')!
+    expect(meta(taskRow(reported, 'sid-follow'))).toBe('#release · First look · Checking')
+    expect(link.getAttribute('href')).toContain('/sessions/sid-place')
+  })
+
+  it('never names a running first look’s place by its title when its channel has no name', async () => {
+    mocks.subsessions = [
+      {
+        ...FOLLOW_UP,
+        title: 'First look at release',
+        parent: null,
+        place: { platform: 'slack', channelName: null },
+        followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], firstLook: true }
+      }
+    ]
+    const host = await mount(false)
+    expect(meta(taskRow(host, 'sid-follow'))).toBe('Conversation · First look · Checking')
+  })
+
   it('ends a follow-up after a confirmation, and reads the tasks again', async () => {
     const host = await mount(false)
     const row = taskRow(host, 'sid-follow')

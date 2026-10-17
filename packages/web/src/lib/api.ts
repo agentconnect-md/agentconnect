@@ -4015,6 +4015,8 @@ export interface AssistantSubsessionDto {
   /** The viewer may stop its current turn, or end a follow-up. */
   canStop: boolean
   parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
+  /** Where it runs, from its own session, while its conversation has no session yet (a first look before it reports). */
+  place?: { platform: string | null; channelName: string | null }
   /** Absent from a daemon without `follow-up-tasks-v1`. */
   kind?: 'delegated' | 'follow-up' | 'approved-proposal'
   /** Present on a follow-up. */
