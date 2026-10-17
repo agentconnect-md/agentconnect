@@ -49,7 +49,14 @@ type Entry = AssistantFollowUpWatchResult['results'][number]
 
 /** The stored watch an answer leaves: taken, refused, or waiting for a Control Plane that can say. */
 function watchFrom(url: string, entry: Entry | undefined): AssistantItemWatch {
-  if (entry?.watched) return { url, target: followUpWatchLabel(entry.watched), state: 'watching', reason: null }
+  if (entry?.watched)
+    return {
+      url,
+      target: followUpWatchLabel(entry.watched),
+      state: 'watching',
+      reason: null,
+      repoId: entry.watched.repoId ?? null
+    }
   if (entry?.refused && entry.refused !== 'unavailable')
     return { url, target: null, state: 'refused', reason: entry.refused }
   return { url, target: null, state: 'pending', reason: null }

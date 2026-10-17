@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { FollowUpEventKind, FollowUpWatchSubject } from './follow-up-watch.js'
 
 export const CODEHOST_FEEDBACK_FEATURE = 'codehost-feedback-v1'
 
@@ -15,7 +16,9 @@ export const RcCodeHostFeedbackWatch = z.object({
       bindingId: z.string().uuid(),
       host: z.string().url(),
       signingKey: z.string().min(1),
-      nextSigningKey: z.string().min(1).optional()
+      nextSigningKey: z.string().min(1).optional(),
+      // Follow-ups watch objects here (assistant-mode.md §5.14), so the relay also sends their wake-only events.
+      followUps: z.literal(true).optional()
     })
     .optional()
 })
@@ -37,9 +40,17 @@ export const RcCodeHostFeedback = z
       .optional(),
     actorId: RepoId.optional(),
     actorUsername: z.string().min(1).max(255).optional(),
-    kind: z.enum(['comment', 'ci'])
+    // `event` is any other change on an object, sent wake-only (assistant-mode.md §5.14).
+    kind: z.enum(['comment', 'ci', 'event']),
+    // What happened and on which kind of object; a `wakeOnly` signal wakes follow-ups alone.
+    subject: FollowUpWatchSubject.optional(),
+    event: FollowUpEventKind.optional(),
+    wakeOnly: z.literal(true).optional()
   })
   .refine((value) => (value.kind === 'ci' ? value.headSha !== undefined : value.pullNumber !== undefined))
+  .refine((value) => value.wakeOnly === true || (value.kind !== 'event' && value.subject !== 'issue'), {
+    message: 'an issue or other object event wakes follow-ups only'
+  })
 export type RcCodeHostFeedback = z.infer<typeof RcCodeHostFeedback>
 
 export const RcCodeHostFeedbackResult = z.object({

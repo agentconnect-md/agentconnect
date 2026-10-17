@@ -133,6 +133,19 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
     return (await this.db.followUpWatch.count({ where: objectKey(object) })) > 0
   }
 
+  async watchedRepos(orgId: OrgId, provider: CodeHostProvider): Promise<bigint[]> {
+    const rows = await this.db.followUpWatch.findMany({
+      where: { orgId, provider, endedReason: null },
+      distinct: ['repoId'],
+      select: { repoId: true }
+    })
+    return rows.map((row) => row.repoId)
+  }
+
+  async agentWatchesRepo(agentId: AgentId, provider: CodeHostProvider, repoId: bigint): Promise<boolean> {
+    return (await this.db.followUpWatch.count({ where: { agentId, provider, repoId, endedReason: null } })) > 0
+  }
+
   async receive(object: FollowUpWatchObject, deliveryKey: string, at: Date): Promise<boolean> {
     const created = await this.db.followUpWatchDelivery.createMany({
       data: [{ ...objectKey(object), deliveryKey, receivedAt: at }],

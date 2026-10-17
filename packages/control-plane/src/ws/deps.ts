@@ -130,7 +130,7 @@ export interface DaemonWsDeps {
   /** Persists exact-session PR capture obligations and drains durable PR feedback after daemon readiness. */
   pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
   /** Event wake's subscriptions (assistant-mode.md §5.14); absent ⇒ `assistant/follow-up-watch` is refused and not advertised. */
-  followUpWatch?: Pick<FollowUpWatchService, 'apply' | 'kick'>
+  followUpWatch?: Pick<FollowUpWatchService, 'apply' | 'kick' | 'agentWatches'>
   codeHostFeedback?: Pick<CodeHostFeedbackService, 'outputPublished'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */
   events: SessionEventSink

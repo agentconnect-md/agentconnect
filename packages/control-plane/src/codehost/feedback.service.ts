@@ -11,6 +11,13 @@ import { OrgId } from '../domain/ids.js'
 import type { AgentRecord, AgentRepo, PullRequestWakeRecord, SessionMetaRecord } from '../persistence/ports.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import type { FeedbackCapture, SessionPullRequestFeedbackService } from './session-pull-request-feedback.service.js'
+import type { FollowUpObjectEvent } from './follow-up-watch.service.js'
+
+/** Event wake's half of a project (assistant-mode.md §5.14): late-bound, since its service is built after this one. */
+export interface FeedbackFollowUps {
+  receive(event: FollowUpObjectEvent): Promise<void>
+  repositoryWatched(orgId: OrgId, provider: RcCodeHostFeedback['provider'], repoId: bigint): Promise<boolean>
+}
 
 export interface FeedbackPull {
   number: number
@@ -57,6 +64,7 @@ export class CodeHostFeedbackService {
       readBranch(agent: AgentRecord, session: SessionMetaRecord): Promise<string | null>
       queue: SessionPullRequestFeedbackService
       broadcast(watch: RcCodeHostFeedbackWatch): void
+      followUps?: () => FeedbackFollowUps | undefined
     }
   ) {
     this.providers = new Map(deps.providers.map((provider) => [provider.provider, provider]))
@@ -68,17 +76,21 @@ export class CodeHostFeedbackService {
 
   private async watch(provider: FeedbackProvider, orgId: string, repoId: bigint): Promise<RcCodeHostFeedbackWatch> {
     const repo = await provider.repository(orgId, repoId)
+    // A project follow-ups watch is watched too, and its relays then send its wake-only events.
+    const followUps =
+      (await this.deps.followUps?.()?.repositoryWatched(OrgId(orgId), provider.provider, repoId)) ?? false
     return {
       provider: provider.provider,
       repoId: String(repoId),
-      ...(repo?.signingKey && (await this.wants(provider.provider, orgId, repoId))
+      ...(repo?.signingKey && (followUps || (await this.wants(provider.provider, orgId, repoId)))
         ? {
             watch: {
               orgId,
               bindingId: repo.bindingId,
               host: repo.host,
               signingKey: repo.signingKey,
-              ...(repo.nextSigningKey ? { nextSigningKey: repo.nextSigningKey } : {})
+              ...(repo.nextSigningKey ? { nextSigningKey: repo.nextSigningKey } : {}),
+              ...(followUps ? { followUps: true as const } : {})
             }
           }
         : {})
@@ -150,8 +162,32 @@ export class CodeHostFeedbackService {
     if (!repo || repo.bindingId !== signal.bindingId || repo.host !== signal.host)
       return { accepted: true, authorAgentIds: [] }
     if (signal.kind === 'comment' && !(await repo.admits(signal))) return { accepted: true, authorAgentIds: [] }
-    const authors = await this.enqueue(repo, signal.provider, signal, undefined)
+    // A wake-only event resumes no session; the lane's own feedback is unchanged and then folds into the watches too.
+    if (signal.wakeOnly) {
+      if (signal.pullNumber !== undefined) await this.fold(repo, signal, signal.pullNumber, false)
+      return { accepted: true, authorAgentIds: [] }
+    }
+    const { authors, pulls } = await this.enqueue(repo, signal.provider, signal, undefined)
+    for (const pull of pulls) await this.fold(repo, signal, pull, true)
     return { accepted: true, authorAgentIds: authors }
+  }
+
+  private async fold(repo: FeedbackRepository, signal: RcCodeHostFeedback, number: number, feedback: boolean) {
+    const followUps = this.deps.followUps?.()
+    if (!followUps || !signal.event) return
+    await followUps.receive({
+      object: {
+        orgId: OrgId(repo.orgId),
+        provider: signal.provider,
+        bindingId: repo.bindingId,
+        repoId: repo.repoId,
+        subject: signal.subject ?? 'pull',
+        number
+      },
+      deliveryKey: signal.deliveryKey,
+      kind: signal.event,
+      feedback
+    })
   }
 
   // The publication ledger already authenticated this result; platform bot webhooks never impersonate its reviewer.
@@ -205,11 +241,13 @@ export class CodeHostFeedbackService {
     signal: Pick<RcCodeHostFeedback, 'deliveryKey' | 'pullNumber' | 'headSha'>,
     sourceAgentId: string | undefined,
     sourceSessionId?: string
-  ): Promise<string[]> {
+  ): Promise<{ authors: string[]; pulls: number[] }> {
     const pulls = await repo.pulls({ number: signal.pullNumber })
     const authors = new Set<string>()
+    const numbers: number[] = []
     for (const pull of pulls) {
       if (pull.sourceRepoId !== repo.repoId || (signal.headSha && pull.headSha !== signal.headSha)) continue
+      numbers.push(pull.number)
       const owner = await this.deps.queue.enqueueForOrg(OrgId(repo.orgId), {
         provider,
         bindingId: repo.bindingId,
@@ -224,6 +262,6 @@ export class CodeHostFeedbackService {
       })
       if (owner) authors.add(owner)
     }
-    return [...authors]
+    return { authors: [...authors], pulls: numbers }
   }
 }

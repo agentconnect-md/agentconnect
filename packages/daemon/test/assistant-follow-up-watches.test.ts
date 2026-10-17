@@ -87,7 +87,8 @@ describe('a follow-up’s watch', () => {
       url: ISSUE,
       target: null,
       state: 'pending',
-      reason: null
+      reason: null,
+      repoId: null
     })
   })
 

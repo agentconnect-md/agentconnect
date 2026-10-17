@@ -22,6 +22,8 @@ export interface AssistantItemWatch {
   state: AssistantWatchState
   /** The refusal or end reason the Control Plane gave; null while watched. */
   reason: string | null
+  /** The repository's numeric id once taken, which a check's code-host reads aim at; null before. */
+  repoId?: string | null
 }
 
 /** A place (§5.2) in the coordinate a session row wears; an absent transport scope reads back as null. */
@@ -149,6 +151,7 @@ export const ASSISTANT_ITEM_SCHEMA = `
         watchTarget TEXT,
         watchState TEXT,
         watchReason TEXT,
+        watchRepoId TEXT,
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -203,6 +206,7 @@ interface ItemRow {
   watchTarget: string | null
   watchState: string | null
   watchReason: string | null
+  watchRepoId: string | null
   summary: string
   observationVersion: number
   version: number
@@ -242,6 +246,7 @@ const ITEM_COLUMNS = [
   'watchTarget',
   'watchState',
   'watchReason',
+  'watchRepoId',
   'summary',
   'observationVersion',
   'version',
@@ -420,9 +425,19 @@ export class AssistantItemLedger {
       if (!ASSISTANT_WATCH_STATES.includes(watch.state)) throw new Error('assistant item watch state is not supported')
     }
     const { changes } = await this.db.query(
-      `UPDATE assistant_item SET watchUrl = ?, watchTarget = ?, watchState = ?, watchReason = ?, updatedAt = ?
+      `UPDATE assistant_item SET watchUrl = ?, watchTarget = ?, watchState = ?, watchReason = ?, watchRepoId = ?,
+         updatedAt = ?
        WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting') AND firstLook IS NULL`,
-      [watch?.url ?? null, watch?.target ?? null, watch?.state ?? null, watch?.reason ?? null, now, agentId, itemId]
+      [
+        watch?.url ?? null,
+        watch?.target ?? null,
+        watch?.state ?? null,
+        watch?.reason ?? null,
+        watch?.repoId ?? null,
+        now,
+        agentId,
+        itemId
+      ]
     )
     return changes > 0
   }
@@ -580,7 +595,13 @@ async function touchItem(tx: StoreTx, agentId: string, itemId: string, now: numb
 const watchOf = (row: ItemRow): AssistantItemWatch | null => {
   const state = ASSISTANT_WATCH_STATES.find((candidate) => candidate === row.watchState)
   return row.watchUrl && state
-    ? { url: row.watchUrl, target: row.watchTarget ?? null, state, reason: row.watchReason ?? null }
+    ? {
+        url: row.watchUrl,
+        target: row.watchTarget ?? null,
+        state,
+        reason: row.watchReason ?? null,
+        repoId: row.watchRepoId ?? null
+      }
     : null
 }
 

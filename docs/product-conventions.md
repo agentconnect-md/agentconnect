@@ -1268,8 +1268,9 @@ check then, never an action. Before restating it lists its conversation's tasks,
 follow-up there already covers the request it offers to send that one the change instead of taking
 a second. The person who confirmed a follow-up is its asker.
 
-A follow-up may also watch one pull request or issue, named by its URL when it is taken or later by
-one of its checks; today that is one on GitHub. A change on it then wakes the follow-up early (see
+A follow-up may also watch one pull request, merge request or issue, named by its URL when it is
+taken or later by one of its checks: one on GitHub, or one in a GitLab project the organization has
+bound. A change on it then wakes the follow-up early (see
 "Assistant-mode follow-up checks"). The watch must be readable with the agent's own code-host
 access. The follow-up is taken whether or not the watch is, and when it cannot be watched the agent
 says why. A follow-up that ends stops watching.

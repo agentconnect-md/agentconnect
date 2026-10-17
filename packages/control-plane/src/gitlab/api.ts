@@ -34,6 +34,18 @@ export async function gitlabFeedbackPulls(
   return pulls.filter((pull) => pull.state === 'opened' && String(pull.target_project_id) === String(projectId))
 }
 
+/** Read one merge request or issue a follow-up would watch (assistant-mode.md §5.14); a missing one throws a 404. */
+export async function gitlabWatchedObject(
+  token: string,
+  projectId: bigint,
+  subject: 'pull' | 'issue',
+  iid: number,
+  client: GitlabApiClient
+): Promise<{ iid: number }> {
+  const kind = subject === 'pull' ? 'merge_requests' : 'issues'
+  return await gitlabRequest<{ iid: number }>(`/projects/${projectId}/${kind}/${iid}`, { auth: token, client })
+}
+
 export type GitlabErrorCode = 'AUTH_REQUIRED' | 'RATE_LIMITED' | 'NOT_FOUND' | 'INTERNAL'
 
 /** GitLab call failure, pre-mapped for route/service handling. */

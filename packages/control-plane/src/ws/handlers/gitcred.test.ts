@@ -340,13 +340,33 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
     // No hook named ⇒ no hook read at all; the workspace binding is the only authorization asked for.
     expect(hookGet).not.toHaveBeenCalled()
-    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, false)
+    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, false, false)
     expect(conn.replyTo).toHaveBeenCalledWith(
       frame,
       'gitcred/grant',
       expect.objectContaining({ provider: 'gitlab', access: 'write', ttlSec: 900 })
     )
     expect(conn.sendError).not.toHaveBeenCalled()
+  })
+
+  it('passes a follow-up watch on the project to the broker grant, for its checks’ reads (assistant-mode.md §5.14)', async () => {
+    const grantForBrokerEffect = vi.fn(async () => ({ access: 'read' as const }))
+    const agentWatches = vi.fn(async () => true)
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: vi.fn() },
+      github: {},
+      gitlabGitcred: { grantForBrokerEffect },
+      followUpWatch: { agentWatches }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'gitlab', purpose: 'gitlab_effect', externalRepoId: '4455667' }),
+      conn,
+      deps
+    )
+    expect(agentWatches).toHaveBeenCalledWith(PLACED_AGENT.id, 'gitlab', 4455667n)
+    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, false, true)
   })
 
   it('passes hook authorization to the broker grant when the request names an enabled gitlab hook', async () => {
@@ -376,7 +396,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
     await handleGitCredRequest(frame, conn, deps)
 
-    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, true)
+    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 4455667n, true, false)
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', expect.objectContaining({ access: 'comment' }))
   })
 

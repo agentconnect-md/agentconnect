@@ -99,7 +99,18 @@ export const FollowUpWatchRefusal = z.enum(['no_access', 'not_found', 'unsupport
 export type FollowUpWatchRefusal = z.infer<typeof FollowUpWatchRefusal>
 
 /** A taken watch, as the CP resolved it: the canonical path for display, never a numeric id. */
-export const FollowUpWatched = FollowUpWatchTarget.pick({ provider: true, repoPath: true, subject: true, number: true })
+export const FollowUpWatched = FollowUpWatchTarget.pick({
+  provider: true,
+  repoPath: true,
+  subject: true,
+  number: true
+}).extend({
+  // The repository's numeric id, which a check's code-host reads aim at (§5.14).
+  repoId: z
+    .string()
+    .regex(/^[1-9]\d*$/)
+    .optional()
+})
 export type FollowUpWatched = z.infer<typeof FollowUpWatched>
 
 /** How a watched object is named to people: `owner/repo#12`, or a GitLab merge request's `group/project!3`. */
