@@ -1,3 +1,5 @@
+import { cache } from 'react'
+
 // Runtime public config injection.
 //
 // Next inlines `NEXT_PUBLIC_*` at build time, which would pin a prebuilt image to
@@ -113,14 +115,14 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
   return { config: env, topology }
 }
 
-async function resolve(): Promise<Record<string, string>> {
+// Share one resolved snapshot between server-rendered content and the browser's inline config.
+export const resolvePublicEnv = cache(async (): Promise<Record<string, string>> => {
   const env: Record<string, string> = {}
   for (const k of KEYS) {
     const v = process.env[k] ?? process.env[`NEXT_PUBLIC_${k}`] ?? ''
     if (v) env[k] = v
   }
-  // The Control Plane already calls this value PUBLIC_RELAY_URL. Accept that name
-  // for shared local env files while keeping the Web runtime key parallel to CP_URL.
+  // Accept the Control Plane's PUBLIC_RELAY_URL name in shared local env files.
   const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
   if (relayUrl) env.RELAY_URL = relayUrl
 
@@ -143,12 +145,11 @@ async function resolve(): Promise<Record<string, string>> {
     if (persisted) Object.assign(env, persisted.topology)
   }
   return env
-}
+})
 
 /** Inline <script> that publishes the runtime public config to the browser. */
 export async function PublicEnvScript() {
-  // Escape `<` as well as JSON syntax so a deployment-controlled value cannot
-  // terminate the inline script with a literal `</script>` sequence.
-  const json = JSON.stringify(await resolve()).replaceAll('<', '\\u003c')
+  // Escape `<` so a configured value cannot terminate the inline script.
+  const json = JSON.stringify(await resolvePublicEnv()).replaceAll('<', '\\u003c')
   return <script dangerouslySetInnerHTML={{ __html: `window.__AC_ENV=${json}` }} />
 }
