@@ -1438,6 +1438,11 @@ You are taking a first look at {place}, a {kind} you were just added to. Read it
 what you learned to memory, and report back. You cannot post or react: only your memory writes
 and your report leave this task.
 
+This session runs under a read-only or plan permission mode, which restricts your native
+shell and file tools only. writeMemory, createMemoryEntry, updateMemoryEntry and recordCheck
+are AgentConnect tools and this task's outputs, not edits the mode forbids: call them
+directly, since no one is here to approve a plan.
+
 Read, newest first, until you have the last {days} days or {maxMessages} messages, whichever
 is less: the description, topic, pinned messages and bookmarks; every top-level message; the
 replies of any thread with 3+ replies or an unanswered question. Stop early once new messages
@@ -1707,6 +1712,12 @@ under the introduction works. For a first look, `propose` changes in four ways:
   private channel, group chat or channel, as the platform tells, and `{tools}` names the AgentConnect
   tools the place's long session is offered, the agent's MCP servers and "your runtime's own tools".
   `{reach}` is "I read every message" where a plain message starts a turn, else "@-mention me".
+  Its second paragraph says the runtime's read-only mode restricts native tools only, and names the
+  memory writes the task may make and `recordCheck` as outputs that mode leaves alone, as a check's
+  last rule and distillation's and dreams' prompts already do. The task still runs in that mode
+  (§5.12), so its native shell and file tools stay read-only. Without the paragraph, a first look
+  that also had the organization files to write sometimes read plan mode's reminder as forbidding
+  every write, and ended with no memory written and no report handed back.
 - **A join.** It rides the genuine-join detection the agent's "Introduce on channel join" already
   uses: Slack's own `member_joined_channel` re-lists the bot's channels, and a channel new to the
   durable record kept since the first listing is a join; that first listing, and a listing with
@@ -3726,3 +3737,17 @@ any entry, audited without content. The deeper pass waits for a later change.
   GitLab and Gitea read the workspace repository only.
 - **Verified live.** Claude Code, Codex and OpenCode each opened a public page under the mode with
   no permission request (§5.15 "Web access", §9 Q29).
+
+**Sixty-third revision (2026-10-17)**: a first look's writes under the read-only mode (issue #2810;
+§5.13).
+
+- **Found on test.** A requested first look in an internal public channel failed twice, "nothing
+  recorded": the model read Claude Code's plan-mode reminder as forbidding every write, so it wrote
+  no memory and never called `recordCheck`. An earlier first look in the same channel had written
+  memory, so the refusal was intermittent.
+- **The fix.** The task's prompt now says, in its second paragraph, that the read-only mode
+  restricts native tools only, and names its memory writes and `recordCheck` as outputs the mode
+  leaves alone, as a check's prompt, distillation and dreams already do. The task keeps the
+  read-only mode (§5.12). Disallowing the native write tools in place of the mode was not chosen:
+  each runtime would need its own way to do it, and a first look would leave the one read-only
+  mode that checks, distillation and dreams share.
