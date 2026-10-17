@@ -61,6 +61,9 @@ type RoundTurn = (ctx: SessionContext, say: (text: string) => void) => Promise<v
 async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>; teamId?: string } = {}) {
   const behavior: { round: RoundTurn; look?: (ctx: SessionContext) => Promise<void> } = { round: async () => {} }
   const registered: SessionContext[] = []
+  // The permission modes the host was given, and the first looks' runtime sessions.
+  const modes: [sessionId: string, mode: string][] = []
+  const lookSessions: string[] = []
   // The daemon's tool deps, known once it has started.
   const ops: { deps?: any } = {}
   const hostFactory = (_agent: unknown, update: (sid: string, u: unknown) => void) =>
@@ -69,10 +72,14 @@ async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>;
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-${randomUUID()}`),
       permissionModeOptions: vi.fn(() => ({ current: undefined, modes: ['default', 'plan'] })),
-      setSessionPermissionMode: vi.fn(async () => true),
+      setSessionPermissionMode: vi.fn(async (sessionId: string, mode: string) => {
+        modes.push([sessionId, mode])
+        return true
+      }),
       prompt: vi.fn(async (sessionId: string, blocks: unknown[]) => {
         const text = JSON.stringify(blocks)
         if (text.includes(LOOK_OPENING)) {
+          lookSessions.push(sessionId)
           const ctx = [...registered].reverse().find((c) => isFirstLookCoordinate(c.thread))!
           await behavior.look?.(ctx)
           await executeTool(
@@ -186,7 +193,23 @@ async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>;
     await settled()
   }
   const cards = () => posts.filter((p) => p.blocks !== undefined && JSON.stringify(p.blocks).includes('ac_perm'))
-  return { daemon, d, behavior, registered, dispatched, posts, updates, cards, settled, deps, scope, key, look }
+  return {
+    daemon,
+    d,
+    behavior,
+    registered,
+    dispatched,
+    posts,
+    updates,
+    cards,
+    settled,
+    deps,
+    scope,
+    key,
+    look,
+    modes,
+    lookSessions
+  }
 }
 
 const TASK = {
@@ -306,7 +329,7 @@ describe('a first look’s report round on a platform with cards', () => {
   })
 
   it('in a public internal channel, the first look keeps the organization files itself and its long session only speaks', async () => {
-    const { daemon, behavior, dispatched, deps, look } = await boot({
+    const { daemon, behavior, dispatched, deps, look, modes, lookSessions } = await boot({
       channel: { id: 'C1', name: 'release-train', is_private: false, is_ext_shared: false }
     })
     const outcomes: unknown[] = []
@@ -332,6 +355,12 @@ describe('a first look’s report round on a platform with cards', () => {
     expect(task).toContain('- channels.md: one line for this place, linking the file above:')
     expect(task).toContain('- organization.md: only what this place shows about the organization as a whole')
     expect(task).toContain('updateMemoryEntry and that revision')
+    // It still runs in the runtime's read-only mode, told that its memory writes and recordCheck are not edits it forbids.
+    expect(lookSessions).toHaveLength(1)
+    expect(modes).toContainEqual([lookSessions[0], 'plan'])
+    expect(task.replace(/\\n|\s+/g, ' ')).toContain(
+      'writeMemory, createMemoryEntry, updateMemoryEntry and recordCheck are AgentConnect tools and this task'
+    )
     const report = textOf(dispatched.find((c) => c.msg.parentReport === true)!.msg)
     expect(report).toContain('When a first look reports back (it has already written what it learned to memory):')
     for (const write of ['channels.md', 'organization.md', 'MemoryEntry']) expect(report).not.toContain(write)
