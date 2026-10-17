@@ -131,6 +131,19 @@ export async function checkMembersWrite(
   }
 
   const optedOut = await lookups.optedOut().catch(() => refuse('the record of who opted out cannot be read now.'))
+  // A marked platform identity also marks the console account it is now linked to, so linking alone undoes no clear.
+  const linkedMarks = new Map<string, string[]>()
+  for (const marked of optedOut.keys()) {
+    if (marked.startsWith('user:')) continue
+    const linked = await lookups.consoleKey(marked)
+    if (linked) linkedMarks.set(linked, [...(linkedMarks.get(linked) ?? []), marked])
+  }
+  // Every marked key that is this person's: the key itself, the console account it is linked to, and that account's other marks.
+  const marksOf = (key: string, consoleKey: string | undefined): string[] => {
+    const account = consoleKey ?? (key.startsWith('user:') ? key : undefined)
+    const keys = [key, ...(account ? [account, ...(linkedMarks.get(account) ?? [])] : [])]
+    return [...new Set(keys)].filter((k) => optedOut.has(k))
+  }
   for (const [, entry] of changed) {
     const key = entry.key
     if (!key)
@@ -149,7 +162,7 @@ export async function checkMembersWrite(
     if (consoleKey && consoleKey !== key)
       invalid(`${named(entry)} belongs to someone who linked a console account; key it \`${consoleKey}\` instead.`)
     if (!(await lookups.member(key))) refuse(`${named(entry)} is not about a member of the organization.`)
-    if (!own && (optedOut.has(key) || (consoleKey !== undefined && optedOut.has(consoleKey))))
+    if (!own && marksOf(key, consoleKey).length > 0)
       refuse(
         `the person of ${named(entry)} cleared their entry, so nothing is written about them until they write it themselves.`
       )
@@ -179,7 +192,9 @@ export async function checkMembersWrite(
         if (source !== undefined && source.toLowerCase() !== 'self')
           invalid(`"${line}" must be sourced self: here you write only what the person says of themselves.`)
       }
-      if (optedOut.has(key)) effects.lift.push(key)
+      // Writing their entry again lifts every mark they carry, linked identities included, so relinking keeps it.
+      const lifted = [...marksOf(key, consoleKey), ...[...own].filter((k) => optedOut.has(k))]
+      effects.lift.push(...new Set(lifted))
     }
   }
   // Removing one's own entry, leaving none, is "forget me": every key they are known by is marked.

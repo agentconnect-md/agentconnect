@@ -2860,8 +2860,10 @@ is not built.
 - **The marker.** `people/.directory-opt-out.json` in the agent's memory tree, beside the person
   layers and outside every store, so no memory tool, listing or dream reaches it, and the home's
   migration copies it. It maps keys to the day they were cleared. A person's removal records it
-  before the write lands, so a failed write leaves them out, never in. Their own write of their
-  entry lifts it on the key they wrote, once the write has landed.
+  before the write lands, so a failed write leaves them out, never in. A mark on a platform
+  identity also counts for the console account it is linked to, so linking alone undoes no clear.
+  Their own write of their entry lifts every mark they carry, linked identities included, once
+  the write has landed, so the next relink keeps it.
 - **Linking.** When a person's DM or console conversation next resolves to their console key after
   they linked an account, the directory follows: a marker on either key marks both and drops
   both entries; else a platform-keyed entry moves to the console key, or goes if one is there.

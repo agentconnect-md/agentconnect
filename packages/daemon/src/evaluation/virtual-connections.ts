@@ -464,6 +464,11 @@ export class VirtualSlackConnection implements PlatformConnection {
     return profile !== undefined && profile.isBot !== true
   }
 
+  // A simulated workspace deactivates no one.
+  async memberGone(): Promise<boolean> {
+    return false
+  }
+
   async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
     const info = this.world.channelInfo(channel)
     if (!info) throw new Error('channel_not_found')

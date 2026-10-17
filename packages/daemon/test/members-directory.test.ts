@@ -162,6 +162,24 @@ describe('an entry written on a conversation turn', () => {
   })
 })
 
+describe('an opt-out across linked identities', () => {
+  it('keeps out a person who cleared their platform entry and then linked a console account', async () => {
+    const carol = file(entry('Carol', CAROL, 'Role: designer (self, 2026-10-17)'))
+    const linked = { [ALICE]: CAROL }
+    for (const writer of [conversation([ALICE, CAROL]), { kind: 'builder' } as const])
+      expect(await refusal(checkMembersWrite(null, carol, writer, lookups({ linked, optedOut: [ALICE] })))).toContain(
+        'cleared their entry'
+      )
+  })
+
+  it('refuses a heading written with a tab like any other, so its person is checked', async () => {
+    const tabbed = file(`##\tAlice (@alice on Slack) \`${ALICE}\`\nRole: x (self, 2026-10-17)`)
+    expect(
+      await refusal(checkMembersWrite(null, tabbed, { kind: 'own', keys: [BOB] }, lookups({ optedOut: [ALICE] })))
+    ).toContain('only your own entry')
+  })
+})
+
 describe('a first look or research', () => {
   it('writes anyone who is a member and did not opt out, with no turn to be on', async () => {
     const after = file(entry('Bob', BOB, 'Role: billing owner (#release-train, 2026-10-17)'))
@@ -197,6 +215,10 @@ describe("a person's own conversation", () => {
       optOut: [],
       lift: [CAROL]
     })
+    // Every mark they carry lifts, a linked identity's included, so the next relink keeps the entry.
+    expect(
+      await checkMembersWrite(null, mine, own, lookups({ optedOut: [CAROL, ALICE], linked: { [ALICE]: CAROL } }))
+    ).toEqual({ optOut: [], lift: [CAROL, ALICE] })
     // Moving an older platform-keyed entry onto the console key keeps them in.
     const old = file(entry('Carol', ALICE, 'Role: designer (self, 2026-10-01)'))
     expect(await checkMembersWrite(old, mine, own, lookups())).toEqual({ optOut: [], lift: [] })
@@ -247,6 +269,15 @@ describe('the opt-out marker and the directory file', () => {
     )
     await relinkMembers(fs, history, ALICE, CAROL, now)
     expect(await readMemoryFileIfPresent(fs, 'members.md')).not.toContain('Role: old')
+  })
+
+  it('keeps an entry its person wrote again once every mark they carried lifted', async () => {
+    const { fs, history } = tree()
+    await updateMembersOptOut(fs, { add: [ALICE, CAROL] }, now)
+    await updateMembersOptOut(fs, { remove: [CAROL, ALICE] }, now)
+    await seed(fs, history, file(entry('Alice', CAROL, 'Role: x (self, 2026-10-17)')))
+    await relinkMembers(fs, history, ALICE, CAROL, now)
+    expect(await membersKeys(fs)).toEqual([CAROL])
   })
 
   it('carries an opt-out across linking to both keys and drops their entries', async () => {

@@ -34,6 +34,13 @@ describe('the people directory grammar', () => {
     expect(renderMembersDirectory(directory)).toBe(FILE)
   })
 
+  it('reads a heading written with other whitespace, as the shape check accepts it, and keeps it on a rewrite', () => {
+    const text = '##\tCarol (@carol on Slack) `user:carol`\nRole: x (self, 2026-10-17)\n'
+    expect(parseMembersDirectory(text).entries.map((e) => e.key)).toEqual(['user:carol'])
+    expect(renderMembersDirectory(parseMembersDirectory(text))).toBe(text)
+    expect(parseMembersDirectory('### Not an entry\n').entries).toEqual([])
+  })
+
   it('accepts a console key or a platform key whose tenant may hold a colon, and nothing else', () => {
     expect(isMemberIdentityKey('user:abc')).toBe(true)
     expect(isMemberIdentityKey('feishu:feishu:cli_a:ou_1')).toBe(true)

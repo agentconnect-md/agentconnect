@@ -12,7 +12,8 @@ const IDENTITY_KEY = /^(?:user:[^\s:`]+|[a-z][a-z0-9_-]*:[^\s`]+:[^\s:`]+)$/
 /** The key an entry's heading carries in backticks at its end. */
 const KEY_AT_END = /`([^`\s]+)`\s*$/
 
-const HEADING = /^## (.*)$/
+// Whatever whitespace the shape check accepts after the marker, kept so a rewrite leaves the line as written.
+const HEADING = /^(##\s+)(.*)$/
 
 /** Whether a string is an identity key an entry may be keyed by. */
 export function isMemberIdentityKey(key: string): boolean {
@@ -24,6 +25,8 @@ export interface MembersDirectoryEntry {
   heading: string
   key?: string
   lines: string[]
+  /** The heading's marker as written, `## ` unless it was other whitespace. */
+  marker?: string
 }
 
 /** The directory as lines: whatever precedes the first entry (its header and title), then the entries. */
@@ -50,10 +53,16 @@ export function parseMembersDirectory(text: string): MembersDirectory {
   const entries: MembersDirectoryEntry[] = []
   for (; at < lines.length; at++) {
     const line = lines[at]!
-    const heading = HEADING.exec(line)?.[1]
-    if (heading !== undefined) {
+    const match = HEADING.exec(line)
+    if (match) {
+      const heading = match[2]!
       const key = membersEntryKey(heading)
-      entries.push({ heading, ...(key ? { key } : {}), lines: [] })
+      entries.push({
+        heading,
+        ...(key ? { key } : {}),
+        ...(match[1] !== '## ' ? { marker: match[1]! } : {}),
+        lines: []
+      })
     } else if (entries.length > 0) entries[entries.length - 1]!.lines.push(line)
     else preamble.push(line)
   }
@@ -62,7 +71,10 @@ export function parseMembersDirectory(text: string): MembersDirectory {
 
 /** The file's text again, from its parts. */
 export function renderMembersDirectory(directory: MembersDirectory): string {
-  return [...directory.preamble, ...directory.entries.flatMap((e) => [`## ${e.heading}`, ...e.lines])].join('\n')
+  return [
+    ...directory.preamble,
+    ...directory.entries.flatMap((e) => [`${e.marker ?? '## '}${e.heading}`, ...e.lines])
+  ].join('\n')
 }
 
 /** The text without the entries keyed by any of `keys`, and which of those keys had one. */
