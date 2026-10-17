@@ -8,8 +8,11 @@ import {
   createOrganizationKnowledge,
   creatorLabel,
   updateOrganizationKnowledge,
+  type KnowledgeSource,
+  type KnowledgeWriterKind,
   type OrganizationKnowledgeDto
 } from '@/lib/api'
+import { AgentVisibilityField, type AgentVisibilityValue } from '@/components/console/VisibilityField'
 import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -35,19 +38,35 @@ export function TagChips({ values, max }: { values: string[]; max?: number }) {
   )
 }
 
+const WRITER_KEYS = {
+  research: 'research',
+  'first-look': 'firstLook',
+  conversation: 'conversation',
+  person: 'person'
+} as const
+
 export interface KnowledgeProvenance {
-  source: 'manual' | 'dream'
+  source: KnowledgeSource
+  writerKind?: KnowledgeWriterKind | null
   sourceAgentId: string | null
   createdByUserId: string | null
   reviewedByUserId: string | null
 }
 
-/** "Published by Ada" for a manual revision, "Proposed by dreamer · reviewed by Ada" for a Dream one. */
+/** "Published by Ada" for a manual revision, "Proposed by dreamer · reviewed by Ada" for a Dream one, "Written by Atlas" for the record. */
 export function useProvenanceLabel(): (value: KnowledgeProvenance) => string {
   const t = useTranslations('Knowledge')
   const { agents } = useConsoleData()
   const { me } = useProfile()
   return (value) => {
+    if (value.source === 'migration') return t('movedFromMemory')
+    if (value.source === 'agent') {
+      const writer = agents.find((candidate) => candidate.id === value.sourceAgentId)
+      const name = writer ? agentLabel(writer) : t('removedAgent')
+      return value.writerKind
+        ? t('writtenByKind', { name, kind: t(`writers.${WRITER_KEYS[value.writerKind]}`) })
+        : t('writtenBy', { name })
+    }
     if (value.source !== 'dream') return t('publishedBy', { name: creatorLabel(value.createdByUserId, me) })
     const agent = agents.find((candidate) => candidate.id === value.sourceAgentId)
     const proposed = t('proposedBy', { name: agent ? agentLabel(agent) : t('removedAgent') })
@@ -113,6 +132,8 @@ export function KnowledgeEditor({
   const [summary, setSummary] = useState(restored?.summary ?? initial.summary)
   const [tags, setTags] = useState(restored?.tags ?? initial.tags)
   const [content, setContent] = useState(restored?.content ?? initial.content)
+  // Which agents read a new entry; an existing entry's readers change on its page.
+  const [readers, setReaders] = useState<AgentVisibilityValue>({ visibility: 'all', readers: [] })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const ready = !!title.trim() && !!content.trim()
@@ -140,7 +161,12 @@ export function KnowledgeEditor({
     }
     try {
       if (record) await updateOrganizationKnowledge(record.id, { ...input, expectedRevision: record.currentRevision })
-      else await createOrganizationKnowledge(input)
+      else
+        await createOrganizationKnowledge({
+          ...input,
+          visibility: readers.visibility,
+          ...(readers.visibility === 'selected' ? { readers: readers.readers } : {})
+        })
       writeDraft(key, null)
       await onSaved()
       onClose()
@@ -201,6 +227,11 @@ export function KnowledgeEditor({
               onChange={(event) => setContent(event.target.value)}
             />
           </label>
+          {!record && (
+            <div className="desktop:col-span-2">
+              <AgentVisibilityField value={readers} onChange={setReaders} disabled={busy} />
+            </div>
+          )}
           {error && <div className="font-sans text-[12px] text-(--status-error) desktop:col-span-2">{error}</div>}
         </div>
         <div className="modalfoot">

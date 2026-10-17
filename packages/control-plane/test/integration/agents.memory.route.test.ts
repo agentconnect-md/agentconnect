@@ -47,12 +47,7 @@ import type {
   CanonicalMemoryRecord
 } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import {
-  MEMORY_MEMBER_CLEAR_FEATURE,
-  MEMORY_PERSON_LAYER_FEATURE,
-  type MemoryMemberClearOk,
-  type MemoryMemberClearReq
-} from '@agentconnect.md/protocol'
+import { MEMORY_PERSON_LAYER_FEATURE } from '@agentconnect.md/protocol'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 
 /** A place layer every member sees: the daemon names its conversation and an org-visible session is there. */
@@ -937,81 +932,5 @@ describe("GET /agents/:id/memory/mine/* (the caller's own layer)", () => {
     const res = await as(viewer, s).app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/mine/files` })
     expect(res.statusCode).toBe(503)
     expect(s.listCalls).toEqual([])
-  })
-})
-
-// assistant-mode.md §5.17: on a daemon home the directory is read through the shared layer and cleared by the daemon.
-describe('the people directory on a daemon memory home', () => {
-  async function member(sub: string, role: 'collaborator' | 'viewer'): Promise<string> {
-    const users = new PgUserRepo(prisma)
-    const email = `${sub}@example.test`
-    const { userId } = await users.provisionOidcUser({ oidcSubject: sub, email, emailVerified: true })
-    await users.addMemberByEmail(DEFAULT_ORG_ID, email, role)
-    return userId
-  }
-  const placed = async (features: string[]) => {
-    await seedDaemon(prisma, DAEMON, { capabilities: { ...DEFAULT_DAEMON_CAPABILITIES, features } })
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-  }
-  class DirectoryControl extends SpyControl {
-    clearCalls: MemoryMemberClearReq[] = []
-    async memoryMemberClear(_daemonId: string, req: MemoryMemberClearReq): Promise<MemoryMemberClearOk> {
-      this.clearCalls.push(req)
-      return { agentId: req.agentId, cleared: true }
-    }
-  }
-  const holding = (text: string) =>
-    new DirectoryControl(
-      { agentId: AGENT, exists: false, entries: [] },
-      {
-        agentId: AGENT,
-        path: 'members.md',
-        exists: true,
-        size: Buffer.byteLength(text),
-        mtime: '2026-10-17T00:00:00.000Z',
-        content: text,
-        offset: 0,
-        nextOffset: Buffer.byteLength(text),
-        truncated: false
-      },
-      { agentId: AGENT, path: 'MEMORY.md', size: 0, mtime: '2026-07-07T00:00:00.000Z' },
-      { agentId: AGENT, path: 'MEMORY.md', events: [] }
-    )
-  const as = (userId: string, s: SpyControl) => {
-    running = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, LIVE, s as unknown as ControlSender)
-    return running
-  }
-
-  it("reads the caller's own entry from the shared layer and has the daemon clear it, marking them out", async () => {
-    await placed([MEMORY_MEMBER_CLEAR_FEATURE])
-    const viewer = await member('directory-viewer', 'viewer')
-    const s = holding(
-      `# Members\n\n## Viewer \`user:${viewer}\`\nRole: tester (self, 2026-10-17)\n\n## Bob \`user:someone-else\`\nRole: x (self, 2026-10-17)\n`
-    )
-    const read = await as(viewer, s).app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/mine/member` })
-    expect(read.json()).toEqual({
-      entries: [{ key: `user:${viewer}`, text: `## Viewer \`user:${viewer}\`\nRole: tester (self, 2026-10-17)` }],
-      clearable: true
-    })
-    expect(s.readCalls[0]!.req).toMatchObject({ agentId: AGENT, path: 'members.md' })
-    expect(s.readCalls[0]!.req.personUserId).toBeUndefined()
-    const cleared = await as(viewer, s).app.inject({
-      method: 'DELETE',
-      url: `${ORG}/agents/${AGENT}/memory/mine/member`
-    })
-    expect(cleared.json()).toEqual({ cleared: true })
-    expect(s.clearCalls).toEqual([{ agentId: AGENT, keys: [`user:${viewer}`], mark: [`user:${viewer}`] }])
-  })
-
-  it('refuses a clear toward a daemon too old to do it, and offers none', async () => {
-    await placed([])
-    const viewer = await member('directory-old-daemon', 'viewer')
-    const s = holding(`# Members\n\n## Viewer \`user:${viewer}\`\nRole: tester (self, 2026-10-17)\n`)
-    expect(
-      (await as(viewer, s).app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/mine/member` })).json()
-    ).toMatchObject({ clearable: false })
-    const res = await as(viewer, s).app.inject({ method: 'DELETE', url: `${ORG}/agents/${AGENT}/memory/mine/member` })
-    expect(res.statusCode).toBe(409)
-    expect(s.clearCalls).toEqual([])
   })
 })

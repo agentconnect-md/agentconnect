@@ -2,11 +2,12 @@
 // Sharing stores explicit selections; organization owners also have access without joining that selection.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Icon } from '@/components/ui'
+import { AgentIconView } from '@/components/marks'
 import { useConsoleData } from '@/lib/data-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
-import { memberDisplayName, type MemberDto } from '@/lib/api'
+import { memberDisplayName, type KnowledgeVisibility, type MemberDto } from '@/lib/api'
 import { initialsFrom } from '@/lib/auth'
-import type { ResourceVisibility } from '@/lib/data'
+import { agentLabel, type Agent, type ResourceVisibility } from '@/lib/data'
 import { useTranslations } from 'next-intl'
 
 export interface SharingValue {
@@ -92,7 +93,15 @@ export function VisibilityField({
 
 // ── desktop: two tiles ───────────────────────────────────────────────────────
 
-function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: (v: ResourceVisibility) => void }) {
+function VisibilityTiles({
+  restricted,
+  onPick,
+  labels
+}: {
+  restricted: boolean
+  onPick: (v: ResourceVisibility) => void
+  labels?: { everyone: string; everyoneDescription: string; selected: string; selectedDescription: string }
+}) {
   const t = useTranslations('Common.visibility')
   const tile = (v: ResourceVisibility, icon: string, title: string, desc: string) => {
     const on = restricted ? v === 'restricted' : v === 'org'
@@ -114,8 +123,13 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
   return (
     // 280px is the narrowest tile that keeps the longest description on one line beside its icon and radio.
     <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-[10px]">
-      {tile('org', 'globe', t('everyone'), t('everyoneDescription'))}
-      {tile('restricted', 'lock', t('selected'), t('selectedDescription'))}
+      {tile('org', 'globe', labels?.everyone ?? t('everyone'), labels?.everyoneDescription ?? t('everyoneDescription'))}
+      {tile(
+        'restricted',
+        'lock',
+        labels?.selected ?? t('selected'),
+        labels?.selectedDescription ?? t('selectedDescription')
+      )}
     </div>
   )
 }
@@ -248,7 +262,15 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
 
 // ── mobile: pills ────────────────────────────────────────────────────────────
 
-function VisibilityPills({ restricted, onPick }: { restricted: boolean; onPick: (v: ResourceVisibility) => void }) {
+function VisibilityPills({
+  restricted,
+  onPick,
+  labels
+}: {
+  restricted: boolean
+  onPick: (v: ResourceVisibility) => void
+  labels?: { everyone: string; selected: string }
+}) {
   const t = useTranslations('Common.visibility')
   const pill = (v: ResourceVisibility, label: string) => {
     const on = restricted ? v === 'restricted' : v === 'org'
@@ -268,8 +290,8 @@ function VisibilityPills({ restricted, onPick }: { restricted: boolean; onPick: 
   }
   return (
     <div className="flex flex-wrap gap-2">
-      {pill('org', t('everyone'))}
-      {pill('restricted', t('selected'))}
+      {pill('org', labels?.everyone ?? t('everyone'))}
+      {pill('restricted', labels?.selected ?? t('selected'))}
     </div>
   )
 }
@@ -380,6 +402,147 @@ export function RestrictedLock({ show, title, size = 13 }: { show: boolean; titl
   return (
     <span title={title} className="inline-flex flex-none">
       <Icon name="lock" size={size} color="var(--text-tertiary)" />
+    </span>
+  )
+}
+
+// ── which agents read a knowledge entry (organization-knowledge.md §15.1) ─────
+
+export interface AgentVisibilityValue {
+  visibility: KnowledgeVisibility
+  readers: string[]
+}
+
+/** The same field with All agents and Selected agents, and the agents to choose from; a selection may be empty. */
+export function AgentVisibilityField({
+  value,
+  onChange,
+  disabled
+}: {
+  value: AgentVisibilityValue
+  onChange: (next: AgentVisibilityValue) => void
+  disabled?: boolean
+}) {
+  const t = useTranslations('Common.visibility')
+  const isMobile = useIsMobile()
+  const selected = value.visibility === 'selected'
+  const pick = (visibility: ResourceVisibility) => {
+    if (!disabled) onChange({ ...value, visibility: visibility === 'restricted' ? 'selected' : 'all' })
+  }
+  const toggle = (agentId: string) => {
+    if (disabled) return
+    const has = value.readers.includes(agentId)
+    onChange({ ...value, readers: has ? value.readers.filter((id) => id !== agentId) : [...value.readers, agentId] })
+  }
+  const labels = {
+    everyone: t('allAgents'),
+    everyoneDescription: t('allAgentsDescription'),
+    selected: t('selectedAgents'),
+    selectedDescription: t('selectedAgentsDescription')
+  }
+  return (
+    <div className="fld mt-[14px]">
+      <span className="fldlbl">{t('agentsLabel')}</span>
+      {isMobile ? (
+        <VisibilityPills restricted={selected} onPick={pick} labels={labels} />
+      ) : (
+        <VisibilityTiles restricted={selected} onPick={pick} labels={labels} />
+      )}
+      {selected && <AgentReaders selected={value.readers} onToggle={toggle} />}
+    </div>
+  )
+}
+
+function AgentMark({ agent, size }: { agent: Agent; size: number }) {
+  return (
+    <span
+      className="inline-flex flex-none overflow-hidden rounded-[5px]"
+      style={{ width: size, height: size }}
+      title={agentLabel(agent)}
+    >
+      <AgentIconView icon={agent.icon} runtime={agent.runtime} size={size} />
+    </span>
+  )
+}
+
+/** The agents to choose from, each a toggle; one responsive tree, chips wrapping on a phone. */
+function AgentReaders({ selected, onToggle }: { selected: string[]; onToggle: (agentId: string) => void }) {
+  const t = useTranslations('Common.visibility')
+  const { agents } = useConsoleData()
+  const [q, setQ] = useState('')
+  const query = q.trim().toLowerCase()
+  const shown = agents.filter((agent) => !query || agentLabel(agent).toLowerCase().includes(query))
+  return (
+    <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-card)">
+      <div className="flex items-center gap-[6px] border-b border-(--border-subtle) px-[11px] py-2">
+        <Icon name="search" size={14} color="var(--text-tertiary)" className="flex-none" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={t('searchAgents')}
+          className="min-w-[110px] flex-1 border-0 bg-transparent py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none"
+        />
+      </div>
+      <div className="max-h-[180px] overflow-auto py-1">
+        {shown.map((agent) => {
+          const on = selected.includes(agent.id)
+          return (
+            <button
+              key={agent.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onToggle(agent.id)}
+              className="flex w-full cursor-pointer items-center gap-[10px] border-0 bg-transparent px-3 py-[6px] text-left hover:bg-(--surface-hover)"
+            >
+              <AgentMark agent={agent} size={22} />
+              <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+                {agentLabel(agent)}
+              </span>
+              <Icon name={on ? 'check' : 'plus'} size={14} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+            </button>
+          )
+        })}
+        {shown.length === 0 && (
+          <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {agents.length === 0 ? t('noAgentsYet') : t('noAgentsMatch', { query: q })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** A row's visibility cell: All agents, or up to three agent marks with +N and the count, or No agents. */
+export function AgentVisibilityCell({ visibility, readers }: AgentVisibilityValue) {
+  const t = useTranslations('Common.visibility')
+  const { agents } = useConsoleData()
+  if (visibility === 'all')
+    return (
+      <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+        <Icon name="globe" size={13} color="var(--text-tertiary)" />
+        {t('allAgents')}
+      </span>
+    )
+  const readable = readers.map((id) => agents.find((agent) => agent.id === id)).filter((a): a is Agent => !!a)
+  if (readable.length === 0)
+    return (
+      <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{t('noAgents')}</span>
+    )
+  const shown = readable.slice(0, 3)
+  const extra = readable.length - shown.length
+  return (
+    <span className="inline-flex min-w-0 items-center gap-[6px]" title={readable.map(agentLabel).join(', ')}>
+      <span className="inline-flex flex-none items-center gap-[3px]">
+        {shown.map((agent) => (
+          <AgentMark key={agent.id} agent={agent} size={18} />
+        ))}
+        {extra > 0 && (
+          <span className="font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">+{extra}</span>
+        )}
+      </span>
+      <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+        {t('agentCount', { count: readable.length })}
+      </span>
     </span>
   )
 }

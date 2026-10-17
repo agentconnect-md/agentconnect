@@ -23,6 +23,12 @@
       "import": "./dist/code-host.js",
       "default": "./dist/code-host.js"
     },
+    "./organization-files": {
+      "development": "./src/organization-files.ts",
+      "types": "./dist/organization-files.d.ts",
+      "import": "./dist/organization-files.js",
+      "default": "./dist/organization-files.js"
+    },
     "./decimal-amount": {
       "development": "./src/decimal-amount.ts",
       "types": "./dist/decimal-amount.d.ts",

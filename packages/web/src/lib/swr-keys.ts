@@ -33,6 +33,11 @@ export const consoleKeys = {
     consoleKey(orgId, 'organization-knowledge', includeArchived ? 'include-archived' : 'active'),
   organizationKnowledgeEntry: (orgId: string | null | undefined, id: string) =>
     consoleKey(orgId, 'organization-knowledge-entry', id),
+  /** The Handbook: research's status and the organization record's three entries. */
+  organizationRecord: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-record'),
+  /** The caller's own People cards. */
+  myPeopleEntries: (orgId: string | null | undefined, peopleId: string, revision: string) =>
+    consoleKey(orgId, 'my-people-entries', peopleId, revision),
   /** The current revision is part of the key, so a revision published from the page refreshes an open history in place. */
   organizationKnowledgeRevisions: (orgId: string | null | undefined, id: string, currentRevision: string) =>
     consoleKey(orgId, 'organization-knowledge-revisions', id, currentRevision),

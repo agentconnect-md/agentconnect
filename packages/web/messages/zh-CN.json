@@ -94,7 +94,17 @@
       "everyoneSelected": "已选择所有成员",
       "noMembersMatch": "没有成员匹配“{query}”",
       "canAccess": "{members} 可以访问此受限资源。",
-      "restrictedResource": "指定成员及组织所有者可以访问此资源。"
+      "restrictedResource": "指定成员及组织所有者可以访问此资源。",
+      "agentsLabel": "Agent",
+      "allAgents": "所有 Agent",
+      "allAgentsDescription": "组织内的每个 Agent 都能查阅。",
+      "selectedAgents": "指定 Agent",
+      "selectedAgentsDescription": "只有这里选中的 Agent 能查阅。",
+      "searchAgents": "搜索 Agent…",
+      "noAgents": "没有 Agent",
+      "agentCount": "{count} 个 Agent",
+      "noAgentsYet": "此组织还没有 Agent",
+      "noAgentsMatch": "没有 Agent 匹配“{query}”"
     },
     "actions": {
       "save": "保存",
@@ -2809,8 +2819,9 @@
         "configuration": "配置",
         "workspace": "工作区",
         "memory": "记忆",
-        "tools": "工具与技能",
-        "activity": "动态"
+        "tools": "工具",
+        "activity": "动态",
+        "knowledge": "知识"
       },
       "actions": {
         "playground": "试用",
@@ -3350,6 +3361,15 @@
         "boolean": "布尔值",
         "choice": "选项",
         "score": "评分"
+      },
+      "knowledge": {
+        "handbook": "手册",
+        "library": "知识库",
+        "reads": "可查阅",
+        "doesNotRead": "不可查阅",
+        "openKnowledge": "打开知识",
+        "noRecord": "还没有组织记录",
+        "emptyLibrary": "此 Agent 不能查阅任何知识库条目"
       }
     }
   },
@@ -4120,7 +4140,8 @@
       "title": "标题",
       "tags": "标签",
       "revision": "版本",
-      "updated": "更新时间"
+      "updated": "更新时间",
+      "visibility": "Agent"
     },
     "revision": "版本 {value}",
     "archived": "已归档",
@@ -4290,6 +4311,69 @@
           "fieldInteger": "{label} 必须是整数。"
         }
       }
+    },
+    "movedFromMemory": "从 Agent 记忆迁入",
+    "writtenBy": "写入者：{name}",
+    "writtenByKind": "写入者：{name} · {kind}",
+    "visibility": {
+      "title": "哪些 Agent 可以查阅",
+      "change": "修改",
+      "close": "关闭",
+      "cancel": "取消",
+      "save": "保存",
+      "saving": "正在保存…"
+    },
+    "handbook": {
+      "title": "手册",
+      "names": {
+        "organization": "关于",
+        "channels": "频道",
+        "people": "人员"
+      },
+      "noRecord": "有 Agent 开启助理模式后才会写入。",
+      "notResearched": "尚未调研",
+      "researched": "{day} 调研",
+      "researchedBy": "{day} 由 {name} 调研",
+      "running": "调研进行中，开始于 {since}",
+      "unreadable": "格式不符，请打开修正",
+      "emptyAbout": "暂无记录",
+      "emptyChannels": "暂无频道记录",
+      "emptyPeople": "暂无人员记录",
+      "places": "{count} 个频道",
+      "people": "{count} 人",
+      "summary": "概述",
+      "self": "本人",
+      "inferred": "推断",
+      "you": "你",
+      "fields": {
+        "role": "角色",
+        "worksOn": "负责",
+        "knowsAbout": "熟悉",
+        "askAbout": "可咨询"
+      },
+      "edit": "编辑",
+      "remove": "移除",
+      "clear": "清空",
+      "close": "关闭",
+      "cancel": "取消",
+      "save": "保存",
+      "saving": "正在保存…",
+      "editTitle": "编辑{name}",
+      "editYourCard": "编辑你的卡片",
+      "editCard": "编辑卡片",
+      "clearTitle": "清空{name}？",
+      "clearBody": "所有内容行都会被移除，标题保留。之前的版本仍在历史中。",
+      "clearPeopleBody": "所有卡片都会被移除，卡片上的人在自己写回卡片之前不会再被记录。",
+      "removeYourCardTitle": "移除你的卡片？",
+      "removeYourCardBody": "在你自己写回卡片之前，Agent 不会再在这里记录关于你的内容。",
+      "clearCardTitle": "清空这张卡片？",
+      "clearCardBody": "在此人自己写回卡片之前，Agent 不会再在这里记录关于此人的内容。"
+    },
+    "writers": {
+      "research": "组织调研",
+      "firstLook": "初看",
+      "conversation": "对话",
+      "person": "本人条目"
     }
   },
   "Usage": {

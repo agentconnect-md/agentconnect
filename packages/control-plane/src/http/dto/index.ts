@@ -3819,27 +3819,6 @@ export const MemoryChannelDto = z.object({
 export const MemoryChannelsDto = z.object({ channels: z.array(MemoryChannelDto) })
 /** `DELETE /agents/:id/memory/channels/:channelKey` — whether there was a layer to clear; never its content. */
 export const MemoryChannelClearDto = z.object({ cleared: z.boolean() })
-/** `GET /agents/:id/memory/mine/member` — the caller's own entries in the people directory, `members.md` of the shared layer. */
-export const MyDirectoryEntriesDto = z.object({
-  entries: z.array(
-    z.object({
-      /** The identity the entry is keyed by: the caller's console account or a chat identity they linked. */
-      key: z.string(),
-      /** The entry as Markdown, its heading first. */
-      text: z.string()
-    })
-  ),
-  /** The caller may clear their entries here. */
-  clearable: z.boolean()
-})
-/** `GET /agents/:id/memory/members` — the people directory's entries by heading, never their lines. */
-export const DirectoryEntriesDto = z.object({
-  entries: z.array(z.object({ key: z.string(), name: z.string() })),
-  /** The caller may clear any entry: an organization owner, toward a memory home that can. */
-  clearable: z.boolean()
-})
-/** A directory clear's answer: whether any entry was there; never its content. */
-export const DirectoryClearDto = z.object({ cleared: z.boolean() })
 /** Query for reading one memory file: `path` (defaults to the MEMORY.md index) + slice. */
 export const MemoryFileQueryDto = z.object({
   channelKey: MemoryChannelKeyQuery,

@@ -186,8 +186,9 @@ import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/prot
 import { CODE_HOST_PROJECTION, codeHostRecord } from '@/lib/code-hosts'
 import { githubHookScope, githubHookScopeKey } from '@/lib/github-hook-scope'
 import { EscapeLayer } from '@/components/console/Scrim'
+import { AgentKnowledgePanel } from '@/components/console/AgentKnowledgePanel'
 
-type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools' | 'activity'
+type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'knowledge' | 'tools' | 'activity'
 const HOOK_REFRESH_MS = 30_000
 
 // The tile SET is derived from the owning daemon's advertised adapters (below)
@@ -317,7 +318,12 @@ function AgentDetail() {
   const rawTab = params.get('tab')
   // Integrations is the default landing tab (no `?tab=`); every other tab is `?tab=<id>`.
   const requestedTab: DetailTab =
-    rawTab === 'config' || rawTab === 'workspace' || rawTab === 'memory' || rawTab === 'tools' || rawTab === 'activity'
+    rawTab === 'config' ||
+    rawTab === 'workspace' ||
+    rawTab === 'memory' ||
+    rawTab === 'knowledge' ||
+    rawTab === 'tools' ||
+    rawTab === 'activity'
       ? rawTab
       : 'integrations'
   const {
@@ -1268,6 +1274,7 @@ function AgentDetail() {
             ['config', t('tabs.configuration')],
             ['workspace', t('tabs.workspace')],
             ['memory', t('tabs.memory')],
+            ['knowledge', t('tabs.knowledge')],
             ['tools', t('tabs.tools')],
             ...(activityShown ? [['activity', t('tabs.activity')]] : [])
           ] as [DetailTab, string][]
@@ -2893,8 +2900,10 @@ function AgentDetail() {
         />
       )}
 
-      {/* Tools & Skills tab — leads with the daemon runtime's MCP servers (Tools),
-          then the workspace-indexed knowledge below it. */}
+      {/* Knowledge tab: the Handbook entries and the Library entries this agent reads (assistant-mode.md §5.16). */}
+      {tab === 'knowledge' && <AgentKnowledgePanel agentId={da.id} />}
+
+      {/* Tools tab: the daemon runtime's MCP servers, skills and decisions, then what the workspace loads. */}
       {tab === 'tools' && (
         <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0">
           <AgentToolsCard

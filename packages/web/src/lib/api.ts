@@ -3090,41 +3090,6 @@ export async function clearAgentMemoryChannel(agentId: string, channelKey: strin
   )
 }
 
-/** The signed-in user's own entries in the agent's people directory, members.md in shared memory. */
-export interface MyDirectoryEntriesDto {
-  entries: { key: string; text: string }[]
-  /** The user may clear their entries. */
-  clearable: boolean
-}
-/** The people directory's entries by heading, never their lines. */
-export interface DirectoryEntriesDto {
-  entries: { key: string; name: string }[]
-  /** The user may clear any entry: an organization owner. */
-  clearable: boolean
-}
-
-/** The signed-in user's own entries in the agent's people directory. */
-export async function fetchMyAgentDirectoryEntry(agentId: string): Promise<MyDirectoryEntriesDto> {
-  return apiGet<MyDirectoryEntriesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/member`)
-}
-
-/** Clear the signed-in user's own directory entries; the agent writes none about them again until they do. */
-export async function clearMyAgentDirectoryEntry(agentId: string): Promise<{ cleared: boolean }> {
-  return apiDelete<{ cleared: boolean }>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/member`)
-}
-
-/** The people directory's entries, for an owner's per-entry clear. */
-export async function fetchAgentDirectoryEntries(agentId: string): Promise<DirectoryEntriesDto> {
-  return apiGet<DirectoryEntriesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/members`)
-}
-
-/** Clear one person's directory entry, an organization owner's action. */
-export async function clearAgentDirectoryEntry(agentId: string, key: string): Promise<{ cleared: boolean }> {
-  return apiDelete<{ cleared: boolean }>(
-    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/members/${encodeURIComponent(key)}`
-  )
-}
-
 /** List the files of the signed-in user's own memory layer for this agent. */
 export async function listMyAgentMemory(agentId: string): Promise<MemoryFilesDto> {
   return apiGet<MemoryFilesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/mine/files`)
@@ -7010,6 +6975,12 @@ export async function runCronNow(id: string): Promise<void> {
 
 // ── organization knowledge + managed skills ─────────────────────────────────
 
+/** `entry` is an ordinary entry; the other three are the organization record, the Handbook (assistant-mode.md §5.16). */
+export type KnowledgeKind = 'entry' | 'organization' | 'channels' | 'people'
+export type KnowledgeVisibility = 'all' | 'selected'
+export type KnowledgeSource = 'manual' | 'dream' | 'agent' | 'migration'
+export type KnowledgeWriterKind = 'research' | 'first-look' | 'conversation' | 'person'
+
 export interface OrganizationKnowledgeDto {
   id: string
   title: string
@@ -7018,7 +6989,12 @@ export interface OrganizationKnowledgeDto {
   tags: string[]
   currentRevision: number
   digest: string
-  source: 'manual' | 'dream'
+  source: KnowledgeSource
+  writerKind: KnowledgeWriterKind | null
+  kind: KnowledgeKind
+  visibility: KnowledgeVisibility
+  /** Agent ids that read the entry under `selected`. */
+  readers: string[]
   sourceAgentId: string | null
   sourceDreamId: string | null
   sourceSessionIds: string[]
@@ -7038,13 +7014,27 @@ export interface OrganizationKnowledgeRevisionDto {
   summary: string | null
   tags: string[]
   digest: string
-  source: 'manual' | 'dream'
+  source: KnowledgeSource
+  writerKind: KnowledgeWriterKind | null
   sourceAgentId: string | null
   sourceDreamId: string | null
   sourceSessionIds: string[]
   createdByUserId: string | null
   reviewedByUserId: string | null
   createdAt: string
+}
+
+/** The Handbook: research's status and the record's three entries. */
+export interface OrganizationRecordDto {
+  research: { agentId: string | null; researchedAt: string | null; runningSince: string | null }
+  entries: OrganizationKnowledgeDto[]
+}
+
+/** The caller's own People entries and the keys they may write theirs under. */
+export interface MyPeopleEntriesDto {
+  revision: number
+  entries: { key: string; text: string }[]
+  keys: string[]
 }
 
 export interface ManagedSkillDto {
@@ -7147,6 +7137,8 @@ export function createOrganizationKnowledge(input: {
   content: string
   summary?: string
   tags?: string[]
+  visibility?: KnowledgeVisibility
+  readers?: string[]
 }): Promise<OrganizationKnowledgeDto> {
   return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge`, input)
 }
@@ -7160,6 +7152,47 @@ export function updateOrganizationKnowledge(
 
 export function setOrganizationKnowledgeArchived(id: string, archived: boolean): Promise<OrganizationKnowledgeDto> {
   return apiPost<OrganizationKnowledgeDto>(`${orgBase()}/knowledge/${encodeURIComponent(id)}/archive`, { archived })
+}
+
+export function getOrganizationRecord(): Promise<OrganizationRecordDto> {
+  return apiGet<OrganizationRecordDto>(`${orgBase()}/knowledge/organization`)
+}
+
+/** Which agents read an entry; owners only, and About and Channels refuse it. */
+export function setKnowledgeVisibility(
+  id: string,
+  input: { visibility: KnowledgeVisibility; readers: string[] }
+): Promise<{ visibility: KnowledgeVisibility; readers: string[]; canManage: boolean }> {
+  return apiPut(`${orgBase()}/knowledge/${encodeURIComponent(id)}/visibility`, input)
+}
+
+export function fetchMyPeopleEntries(peopleId: string): Promise<MyPeopleEntriesDto> {
+  return apiGet<MyPeopleEntriesDto>(`${orgBase()}/knowledge/${encodeURIComponent(peopleId)}/people/mine`)
+}
+
+export function writeMyPeopleEntry(
+  peopleId: string,
+  input: { text: string; expectedRevision: number }
+): Promise<{ revision: number }> {
+  return apiPut(`${orgBase()}/knowledge/${encodeURIComponent(peopleId)}/people/mine`, input)
+}
+
+/** Remove the caller's own entry, which keeps them out of People until they write it again. */
+export function removeMyPeopleEntry(peopleId: string): Promise<{ revision: number; cleared?: boolean }> {
+  return apiDelete(`${orgBase()}/knowledge/${encodeURIComponent(peopleId)}/people/mine`)
+}
+
+export function updatePeopleEntry(
+  peopleId: string,
+  key: string,
+  input: { text: string; expectedRevision: number }
+): Promise<{ revision: number }> {
+  return apiPut(`${orgBase()}/knowledge/${encodeURIComponent(peopleId)}/people/${encodeURIComponent(key)}`, input)
+}
+
+/** An owner's clear of one person's entry, which keeps them out as their own removal does. */
+export function clearPeopleEntry(peopleId: string, key: string): Promise<{ revision: number; cleared?: boolean }> {
+  return apiDelete(`${orgBase()}/knowledge/${encodeURIComponent(peopleId)}/people/${encodeURIComponent(key)}`)
 }
 
 export function listManagedSkills(includeArchived = false, orgId?: string): Promise<ManagedSkillDto[]> {

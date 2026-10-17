@@ -1,53 +1,157 @@
 'use client'
 
-// One knowledge entry: current revision, history, owner actions; older revisions render in place (organization-knowledge.md §2).
+// One knowledge entry: current revision, history, owner actions and its readers; the record's entries render as file views (organization-knowledge.md §2, §15.5).
 
 import { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useParams } from 'next/navigation'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
+import { parseOrganizationFile } from '@agentconnect.md/protocol/organization-files'
 import {
   ApiError,
+  clearPeopleEntry,
+  fetchMyPeopleEntries,
   fmtDate,
   getOrganizationKnowledge,
   listOrganizationKnowledgeRevisions,
-  setOrganizationKnowledgeArchived
+  removeMyPeopleEntry,
+  setKnowledgeVisibility,
+  setOrganizationKnowledgeArchived,
+  updateOrganizationKnowledge,
+  updatePeopleEntry,
+  writeMyPeopleEntry,
+  type OrganizationKnowledgeDto
 } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useOrgs } from '@/lib/org-context'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { NotFound } from '@/components/console/NotFound'
 import { KnowledgeEditor, TagChips, useProvenanceLabel } from '@/components/console/knowledge'
+import {
+  AboutView,
+  ChannelsView,
+  PeopleView,
+  RecordTextEditor,
+  isRecordKind,
+  recordFile,
+  useRecordName,
+  type PeopleActions,
+  type RecordKind
+} from '@/components/console/handbook'
+import {
+  AgentVisibilityCell,
+  AgentVisibilityField,
+  type AgentVisibilityValue
+} from '@/components/console/VisibilityField'
+import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
+import { Scrim } from '@/components/console/Scrim'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
 
+/** A record entry's text as its file view, or its Markdown when the text no longer fits the shape. */
+function RecordBody({ kind, content, people }: { kind: RecordKind; content: string; people?: PeopleActions }) {
+  if (!parseOrganizationFile(recordFile(kind), content).ok) return <MarkdownView content={content} />
+  if (kind === 'organization') return <AboutView content={content} />
+  if (kind === 'channels') return <ChannelsView content={content} />
+  return <PeopleView content={content} actions={people} />
+}
+
+/** Which agents read an entry, an owner's choice; About and Channels are every agent's and never open it. */
+function VisibilityEditor({
+  record,
+  onClose,
+  onSaved
+}: {
+  record: OrganizationKnowledgeDto
+  onClose: () => void
+  onSaved: () => Promise<void>
+}) {
+  const t = useTranslations('Knowledge.visibility')
+  const [value, setValue] = useState<AgentVisibilityValue>({ visibility: record.visibility, readers: record.readers })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await setKnowledgeVisibility(record.id, value)
+      await onSaved()
+      onClose()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setBusy(false)
+    }
+  }
+  return (
+    <Scrim onEscape={busy ? undefined : onClose} onClick={busy ? undefined : onClose}>
+      <div className="modal max-w-[620px]" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="modalhead">
+          <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
+          <button type="button" className="iconbtn" onClick={onClose} aria-label={t('close')}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modalbody">
+          <AgentVisibilityField value={value} onChange={setValue} disabled={busy} />
+          {error && <div className="mt-2 font-sans text-[12px] text-(--status-error)">{error}</div>}
+        </div>
+        <div className="modalfoot">
+          <div className="flex-1" />
+          <Button variant="ghost" onClick={onClose}>
+            {t('cancel')}
+          </Button>
+          <Button variant="primary" disabled={busy} onClick={() => void save()}>
+            {busy ? t('saving') : t('save')}
+          </Button>
+        </div>
+      </div>
+    </Scrim>
+  )
+}
+
+type PeopleEdit = { key: string; text: string; own: boolean }
+type Confirm = { kind: 'clear-record' } | { kind: 'remove-card'; key: string; own: boolean }
+
 export default function KnowledgeDetailView() {
   const t = useTranslations('Knowledge')
+  const th = useTranslations('Knowledge.handbook')
   const { id } = useParams<{ id: string }>()
   const { activeOrg, myRole, orgPath } = useOrgs()
   const canManage = myRole === 'owner'
   const provenance = useProvenanceLabel()
+  const recordName = useRecordName()
   const entry = useSWR(consoleKeys.organizationKnowledgeEntry(activeOrg?.id, id), ([, , , entryId]) =>
     getOrganizationKnowledge(entryId)
   )
   const record = entry.data
+  const kind = record && isRecordKind(record.kind) ? record.kind : null
   const history = useSWR(
     record
       ? consoleKeys.organizationKnowledgeRevisions(activeOrg?.id, record.id, String(record.currentRevision))
       : null,
     ([, , , entryId]) => listOrganizationKnowledgeRevisions(entryId)
   )
+  // The caller's own People cards, the ones that carry Edit and Remove for them.
+  const mine = useSWR(
+    record && kind === 'people'
+      ? consoleKeys.myPeopleEntries(activeOrg?.id, record.id, String(record.currentRevision))
+      : null,
+    ([, , , peopleId]) => fetchMyPeopleEntries(peopleId)
+  )
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
+  const [editingVisibility, setEditingVisibility] = useState(false)
+  const [peopleEdit, setPeopleEdit] = useState<PeopleEdit | null>(null)
+  const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // The mobile push bar reads the title from this slot.
   const { register: registerCrumb } = useCrumbSlot()
-  const title = record?.title ?? ''
+  const title = record ? (kind ? recordName(kind) : record.title) : ''
   useEffect(() => {
     if (!title) return
     registerCrumb({ id, title, status: '', statusLabel: '' })
@@ -97,20 +201,41 @@ export default function KnowledgeDetailView() {
       : null
   const revisionLabel = t('revision', { value: record.currentRevision })
   const historyError = history.error instanceof Error ? history.error.message : null
+  // About and Channels are read by every agent; People's readers and every other entry's are an owner's choice.
+  const visibilityFixed = kind === 'organization' || kind === 'channels'
 
-  const toggleArchive = async () => {
+  const run = async (action: () => Promise<unknown>) => {
     if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await setOrganizationKnowledgeArchived(record.id, !record.archivedAt)
+      await action()
       await entry.mutate()
+      setConfirm(null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)
     }
   }
+  const saveRecord = async (content: string) => {
+    await updateOrganizationKnowledge(record.id, {
+      title: record.title,
+      content,
+      tags: [],
+      expectedRevision: record.currentRevision
+    })
+    await entry.mutate()
+  }
+  const people: PeopleActions | undefined =
+    kind === 'people' && isCurrent
+      ? {
+          ownKeys: mine.data?.keys ?? [],
+          owner: canManage,
+          onEdit: (key, text, own) => setPeopleEdit({ key, text, own }),
+          onRemove: (key, own) => setConfirm({ kind: 'remove-card', key, own })
+        }
+      : undefined
 
   return (
     <div className="wrap max-desktop:p-4">
@@ -118,31 +243,64 @@ export default function KnowledgeDetailView() {
       <div className="flex items-start gap-4">
         <div className="hidden min-w-0 flex-1 desktop:block">
           <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-            <h1 className="ptitle truncate">{record.title}</h1>
+            <h1 className="ptitle truncate">{title}</h1>
             <span className="badge bg-(--surface-active) text-(--text-secondary)">{revisionLabel}</span>
             {record.archivedAt && (
               <span className="badge bg-(--surface-sunken) text-(--text-disabled)">{t('archived')}</span>
             )}
           </div>
-          {meta?.summary && <p className="psub">{meta.summary}</p>}
+          {!kind && meta?.summary && <p className="psub">{meta.summary}</p>}
         </div>
         {canManage && (
-          <div className="flex flex-none items-center gap-2">
-            {!record.archivedAt && (
-              <Button variant="secondary" size="sm" disabled={busy} onClick={() => setEditing(true)}>
-                <Icon name="pencil" size={14} />
-                {t('detail.newRevision')}
-              </Button>
+          <div className="flex flex-none flex-wrap items-center gap-2">
+            {kind ? (
+              <>
+                <Button variant="secondary" size="sm" disabled={busy} onClick={() => setEditing(true)}>
+                  <Icon name="pencil" size={14} />
+                  {th('edit')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setConfirm({ kind: 'clear-record' })}
+                >
+                  <Icon name="eraser" size={14} />
+                  {th('clear')}
+                </Button>
+              </>
+            ) : (
+              <>
+                {!record.archivedAt && (
+                  <Button variant="secondary" size="sm" disabled={busy} onClick={() => setEditing(true)}>
+                    <Icon name="pencil" size={14} />
+                    {t('detail.newRevision')}
+                  </Button>
+                )}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void run(() => setOrganizationKnowledgeArchived(record.id, !record.archivedAt))}
+                >
+                  <Icon name={record.archivedAt ? 'archive-restore' : 'archive'} size={14} />
+                  {record.archivedAt ? t('detail.restore') : t('detail.archive')}
+                </Button>
+              </>
             )}
-            <Button variant="secondary" size="sm" disabled={busy} onClick={() => void toggleArchive()}>
-              <Icon name={record.archivedAt ? 'archive-restore' : 'archive'} size={14} />
-              {record.archivedAt ? t('detail.restore') : t('detail.archive')}
-            </Button>
           </div>
         )}
       </div>
       <div className="mt-[9px] mb-5 flex flex-wrap items-center gap-x-3 gap-y-2 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
         <span className="desktop:hidden">{revisionLabel}</span>
+        <span className="inline-flex items-center gap-2">
+          <AgentVisibilityCell visibility={record.visibility} readers={record.readers} />
+          {canManage && !visibilityFixed && (
+            <button type="button" className="lnk text-[12px]" onClick={() => setEditingVisibility(true)}>
+              {t('visibility.change')}
+            </button>
+          )}
+        </span>
         {meta && (
           <>
             <span>{provenance(meta.source)}</span>
@@ -169,7 +327,11 @@ export default function KnowledgeDetailView() {
           )}
           <div className="px-5 py-4">
             {shown ? (
-              <MarkdownView content={shown.content} />
+              kind ? (
+                <RecordBody kind={kind} content={shown.content} {...(people ? { people } : {})} />
+              ) : (
+                <MarkdownView content={shown.content} />
+              )
             ) : historyError ? (
               <div className="font-sans text-[12px] text-(--status-error)">{historyError}</div>
             ) : (
@@ -225,14 +387,74 @@ export default function KnowledgeDetailView() {
           )}
         </div>
       </div>
-      {editing && (
-        <KnowledgeEditor
+      {editing &&
+        (kind ? (
+          <RecordTextEditor
+            title={th('editTitle', { name: title })}
+            initial={record.content}
+            onClose={() => setEditing(false)}
+            onSave={saveRecord}
+          />
+        ) : (
+          <KnowledgeEditor
+            record={record}
+            onClose={() => setEditing(false)}
+            onSaved={async () => {
+              await entry.mutate()
+            }}
+          />
+        ))}
+      {editingVisibility && (
+        <VisibilityEditor
           record={record}
-          onClose={() => setEditing(false)}
+          onClose={() => setEditingVisibility(false)}
           onSaved={async () => {
             await entry.mutate()
           }}
         />
+      )}
+      {peopleEdit && (
+        <RecordTextEditor
+          title={peopleEdit.own ? th('editYourCard') : th('editCard')}
+          initial={peopleEdit.text}
+          onClose={() => setPeopleEdit(null)}
+          onSave={async (text) => {
+            const body = { text, expectedRevision: record.currentRevision }
+            if (peopleEdit.own) await writeMyPeopleEntry(record.id, body)
+            else await updatePeopleEntry(record.id, peopleEdit.key, body)
+            await Promise.all([entry.mutate(), mine.mutate()])
+          }}
+        />
+      )}
+      {confirm && (
+        <ConfirmationDialog
+          title={
+            confirm.kind === 'clear-record'
+              ? th('clearTitle', { name: title })
+              : confirm.own
+                ? th('removeYourCardTitle')
+                : th('clearCardTitle')
+          }
+          confirmLabel={confirm.kind === 'remove-card' && confirm.own ? th('remove') : th('clear')}
+          destructive
+          busy={busy}
+          error={error}
+          onClose={() => setConfirm(null)}
+          onConfirm={() =>
+            void run(async () => {
+              if (confirm.kind === 'clear-record') await saveRecord(`# ${record.title}\n`)
+              else if (confirm.own) await removeMyPeopleEntry(record.id)
+              else await clearPeopleEntry(record.id, confirm.key)
+              await mine.mutate()
+            })
+          }
+        >
+          {confirm.kind === 'clear-record'
+            ? th(kind === 'people' ? 'clearPeopleBody' : 'clearBody')
+            : confirm.own
+              ? th('removeYourCardBody')
+              : th('clearCardBody')}
+        </ConfirmationDialog>
       )}
     </div>
   )
