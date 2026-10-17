@@ -1513,10 +1513,7 @@ export const KnowledgeVisibilityDto = z.object({
 export const OrganizationRecordDto = z.object({
   research: z.object({
     agentId: z.string().nullable().describe('The agent that researched the organization, or holds its research.'),
-    researchedAt: z
-      .string()
-      .nullable()
-      .describe("When research last wrote the record, or the moved record's last research."),
+    researchedAt: z.string().nullable().describe('When research last wrote the record.'),
     runningSince: z.string().nullable().describe('Set while a research round is running.')
   }),
   entries: z.array(OrganizationKnowledgeDto).describe('About, Channels and People, once the record exists.')

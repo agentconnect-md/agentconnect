@@ -3967,12 +3967,11 @@ model OrganizationKnowledgeRevision {
   @@map("organization_knowledge_revision")
 }
 
-// The organization record's own row (assistant-mode.md §5.16): which agent claimed research, and when a moved record was last researched.
+// The organization record's own row (assistant-mode.md §5.16): which agent claimed research, and when.
 model OrganizationRecord {
   orgId             String    @id
   researchAgentId   String?   @db.Uuid
   researchClaimedAt DateTime? @db.Timestamptz(6)
-  researchedAt      DateTime? @db.Timestamptz(6) // set by the one-time move; later rounds show as research revisions
   createdAt         DateTime  @default(now()) @db.Timestamptz(6)
 
   org           Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)

@@ -588,8 +588,7 @@ daemon converges without waiting for an unrelated agent edit or restart.
   placed on the daemon; the switch-on transaction claiming research once under
   concurrency, creating the record once and adding the agent to People's
   readers, and leaving a hand-edited list alone; agent deletion pruning
-  `readers`; a dream update targeting a record entry dropped; the one-time move
-  from one and from several copies, idempotent, with the opt-out union; the
+  `readers`; a dream update targeting a record entry dropped; the
   console's two groups, the visibility cell and field, the three file views,
   the own card's Edit and Remove and no control on another's card, owner edits
   refused at the failing line, and the agent page's Knowledge and Tools tabs.
@@ -740,19 +739,8 @@ organization's entry of that kind. No frame exceeds the 256 KiB limit: each file
 is capped by its shape (`organization.md` at 16 KB) or by the existing knowledge
 body limit.
 
-### 15.7 Migration
+### 15.7 No migration
 
-Existing entries default to `all`. An organization whose assistant-mode agents
-already hold the three files in memory gets them moved into knowledge once, with
-the memory copies removed. Assistant mode keeps memory in the Control Plane, so
-the Control Plane does the move at boot with no daemon: per organization with at
-least one assistant-mode agent whose shared layer holds any of the three names,
-it merges the copies mechanically within each shape (the copy written last as
-the base; About taking the other copies' missing lines into the same
-section with the summary kept at ten lines; Channels unioned by `#name`, newest
-date winning; People unioned by key, then by field and text, each entry kept at
-ten lines), unions the opt-out markers with the earliest day kept, creates the
-entries at revision 1 with `source: migration`, sets the research status from
-the onboarding records, and deletes the copies and their index lines. The
-files' change history stays in the memory change log. The move is idempotent and
-runs again for copies an older daemon writes during the rollout (§13).
+Existing entries default to `all`. Copies of the three files in assistant-mode
+agents' memory are not moved into the record: nothing of the record was
+released.

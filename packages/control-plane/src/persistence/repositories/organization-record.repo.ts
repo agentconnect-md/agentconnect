@@ -65,7 +65,7 @@ export async function assistantModeAgentIds(tx: Tx | PrismaLike, orgId: string):
 export async function ensureOrganizationRecord(
   tx: Tx,
   orgId: string,
-  provenance: { source: 'agent' | 'migration'; sourceAgentId?: string }
+  provenance: { source: 'agent'; sourceAgentId?: string }
 ): Promise<void> {
   await tx.organizationRecord.upsert({ where: { orgId }, create: { orgId }, update: {} })
   const present = new Set(
@@ -261,10 +261,7 @@ export class PgOrganizationRecordRepo implements OrganizationRecordRepo {
         })
       : null
     const agentId = row?.researchAgentId ?? researched?.sourceAgentId ?? null
-    const researchedAt =
-      researched && (!row?.researchedAt || researched.createdAt > row.researchedAt)
-        ? researched.createdAt
-        : (row?.researchedAt ?? null)
+    const researchedAt = researched?.createdAt ?? null
     // A research round is running while the claiming agent's research session is mid-turn (§5.15 "As shipped").
     const running = row?.researchAgentId
       ? await this.db.sessionMeta.findFirst({
