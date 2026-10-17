@@ -49,7 +49,14 @@ type Entry = AssistantFollowUpWatchResult['results'][number]
 
 /** The stored watch an answer leaves: taken, refused, or waiting for a Control Plane that can say. */
 function watchFrom(url: string, entry: Entry | undefined): AssistantItemWatch {
-  if (entry?.watched) return { url, target: followUpWatchLabel(entry.watched), state: 'watching', reason: null }
+  if (entry?.watched)
+    return {
+      url,
+      target: followUpWatchLabel(entry.watched),
+      state: 'watching',
+      reason: null,
+      repoId: entry.watched.repoId ?? null
+    }
   if (entry?.refused && entry.refused !== 'unavailable')
     return { url, target: null, state: 'refused', reason: entry.refused }
   return { url, target: null, state: 'pending', reason: null }
@@ -101,6 +108,8 @@ export class FollowUpWatches {
         answer?.results.find((entry) => entry.followUpId === itemId)
       )
       if (!(await this.host.items.setWatch(agentId, itemId, watch))) return { kind: 'none' }
+      // A pending watch is retried with the next sweep's full set, not left for the next link.
+      if (watch.state === 'pending') this.synced.delete(agentId)
       return outcomeOf(watch)
     })
   }
@@ -141,11 +150,17 @@ export class FollowUpWatches {
       watches: targets.map((item) => ({ followUpId: item.id, target: item.target }))
     })
     if (!answer) return
+    let pending = false
     for (const item of targets) {
-      const entry = answer.results.find((result) => result.followUpId === item.id)
-      await this.host.items.setWatch(agentId, item.id, watchFrom(item.url, entry))
+      const watch = watchFrom(
+        item.url,
+        answer.results.find((result) => result.followUpId === item.id)
+      )
+      await this.host.items.setWatch(agentId, item.id, watch)
+      pending ||= watch.state === 'pending'
     }
-    this.synced.set(agentId, link)
+    // One the Control Plane could not confirm is sent again with the next sweep.
+    if (!pending) this.synced.set(agentId, link)
   }
 
   private async ask(

@@ -7,6 +7,7 @@ import { HookTable } from './hook-table.js'
 import { HookRateLimiter } from './rate-limit.js'
 import { registerGitlabIngress } from './gitlab-ingress.js'
 import { registerGiteaIngress } from './gitea/ingress.js'
+import { gitlabWakeSignals } from './codehost-feedback.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const BINDING = '22222222-2222-4222-8222-222222222222'
@@ -215,5 +216,115 @@ describe.each(['gitlab', 'gitea'] as const)('%s feedback ingress', (provider) =>
     } finally {
       await h.app.close()
     }
+  })
+})
+
+describe('a watched GitLab project’s wake-only events (assistant-mode.md §5.14)', () => {
+  const watch = {
+    provider: 'gitlab' as const,
+    repoId: '123',
+    watch: {
+      orgId: 'example-org',
+      bindingId: BINDING,
+      host: 'https://gitlab.example.test',
+      signingKey: `whsec_${KEY.toString('base64')}`,
+      followUps: true as const
+    }
+  }
+  const mr = (action: string, extra: Record<string, unknown> = {}) => ({
+    object_kind: 'merge_request',
+    project: { id: 123 },
+    object_attributes: { iid: 12, action, ...extra }
+  })
+  const kinds = (payload: unknown) =>
+    gitlabWakeSignals(watch, 'delivery', payload as never).map((signal) => [
+      signal.subject,
+      signal.event,
+      signal.pullNumber
+    ])
+
+  it('maps merge-request and issue changes, issue notes and a finished pipeline that did not fail', () => {
+    expect(kinds(mr('merge'))).toEqual([['pull', 'merged', 12]])
+    expect(kinds(mr('close'))).toEqual([['pull', 'closed', 12]])
+    expect(kinds(mr('reopen'))).toEqual([['pull', 'reopened', 12]])
+    expect(kinds(mr('approved'))).toEqual([['pull', 'approved', 12]])
+    expect(kinds(mr('update', { oldrev: SHA }))).toEqual([['pull', 'commits', 12]])
+    expect(kinds(mr('update'))).toEqual([])
+    expect(
+      kinds({ object_kind: 'issue', project: { id: 123 }, object_attributes: { iid: 7, action: 'close' } })
+    ).toEqual([['issue', 'closed', 7]])
+    expect(
+      kinds({
+        object_kind: 'note',
+        project: { id: 123 },
+        user: { id: 7 },
+        object_attributes: { noteable_type: 'Issue', action: 'create', note: 'Fixed by !12', system: false },
+        issue: { iid: 7 }
+      })
+    ).toEqual([['issue', 'comment', 7]])
+    const pipeline = (status: string) => ({
+      object_kind: 'pipeline',
+      project: { id: 123 },
+      object_attributes: { status, sha: SHA },
+      merge_request: { iid: 12 }
+    })
+    expect(kinds(pipeline('success'))).toEqual([['pull', 'checks', 12]])
+    // A failed pipeline is the lane's feedback, sent as before.
+    expect(kinds(pipeline('failed'))).toEqual([])
+    expect(gitlabWakeSignals(watch, 'delivery', mr('merge') as never)[0]).toMatchObject({
+      kind: 'event',
+      wakeOnly: true
+    })
+  })
+
+  function ingress(followUps: boolean) {
+    const clock = new FakeClock(1_780_000_000_000)
+    const table = new HookTable()
+    table.feedbackWatch({ ...watch, watch: { ...watch.watch, ...(followUps ? {} : { followUps: undefined }) } })
+    const reportFollowUpEvent = vi.fn(async () => true)
+    const reportFeedback = vi.fn(async () => ({ accepted: true, authorAgentIds: [] }))
+    const app = Fastify()
+    registerGitlabIngress(app, {
+      clock,
+      table,
+      reportFeedback,
+      reportFollowUpEvent,
+      daemons: () => undefined,
+      report: vi.fn(),
+      authorizeMembership: vi.fn(async () => true),
+      authzLimiter: new HookRateLimiter(clock),
+      limiter: new HookRateLimiter(clock),
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    } as never)
+    const post = (payload: unknown) => {
+      const body = JSON.stringify(payload)
+      const timestamp = String(clock.now() / 1000)
+      return app.inject({
+        method: 'POST',
+        url: '/webhooks/gitlab',
+        payload: body,
+        headers: {
+          'content-type': 'application/json',
+          'webhook-id': 'delivery-1',
+          'webhook-timestamp': timestamp,
+          'webhook-signature': `v1,${createHmac('sha256', KEY).update(`delivery-1.${timestamp}.${body}`).digest('base64')}`
+        }
+      })
+    }
+    return { post, reportFollowUpEvent, reportFeedback }
+  }
+
+  it('sends them only for a project follow-ups watch, without holding the delivery back', async () => {
+    const watched = ingress(true)
+    const res = await watched.post(mr('merge'))
+    expect(res.statusCode).toBeLessThan(300)
+    expect(watched.reportFollowUpEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'merged', pullNumber: 12, wakeOnly: true })
+    )
+    expect(watched.reportFeedback).not.toHaveBeenCalled()
+
+    const unwatched = ingress(false)
+    await unwatched.post(mr('merge'))
+    expect(unwatched.reportFollowUpEvent).not.toHaveBeenCalled()
   })
 })

@@ -1814,6 +1814,10 @@ export interface FollowUpWatchRepo {
   forObject(object: FollowUpWatchObject): Promise<FollowUpWatchRecord[]>
   /** Whether any watch of any agent still names this object, ended ones included. */
   watched(object: FollowUpWatchObject): Promise<boolean>
+  /** The repositories of this provider an organization's live watches name. */
+  watchedRepos(orgId: OrgId, provider: CodeHostProvider): Promise<bigint[]>
+  /** Whether this agent has a live watch on an object of this repository. */
+  agentWatchesRepo(agentId: AgentId, provider: CodeHostProvider, repoId: bigint): Promise<boolean>
   /** Record one delivery on one object; false when it was already received. */
   receive(object: FollowUpWatchObject, deliveryKey: string, at: Date): Promise<boolean>
   /** Apply a fold computed from `row`, only while `row.wakeSeq` is current; false means re-read and retry. */

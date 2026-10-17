@@ -16,7 +16,7 @@ import {
   type RcFollowUpWatch
 } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
-import type { AgentId } from '../domain/ids.js'
+import type { AgentId, OrgId } from '../domain/ids.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type {
   AgentRecord,
@@ -121,6 +121,8 @@ export interface FollowUpWatchServiceDeps {
   send: (daemonId: string, request: AssistantFollowUpWake, orgId: string) => Promise<AssistantFollowUpWakeResult>
   /** Tell every relay that holds watches that an object is, or is no longer, watched. */
   broadcast: (watch: RcFollowUpWatch) => void
+  /** A repository of a host whose relays match no objects gained or lost a watch: its feedback watch and webhook converge. */
+  repositoryChanged?: (object: FollowUpWatchObject) => void
   log: {
     debug(obj: unknown, msg: string): void
     warn(obj: unknown, msg: string): void
@@ -194,7 +196,8 @@ export class FollowUpWatchService {
                 provider: target!.provider,
                 repoPath: outcome.repoPath,
                 subject: outcome.subject,
-                number: outcome.number
+                number: outcome.number,
+                repoId: outcome.repoId.toString()
               }
             }
       )
@@ -246,8 +249,20 @@ export class FollowUpWatchService {
   }
 
   private relay(object: FollowUpWatchObject & { installationId: bigint | null }, watched: boolean): void {
-    const frame = this.providers.get(object.provider)?.relayWatch?.(object, watched)
+    const provider = this.providers.get(object.provider)
+    if (!provider?.relayWatch) return this.deps.repositoryChanged?.(object)
+    const frame = provider.relayWatch(object, watched)
     if (frame) this.deps.broadcast(frame)
+  }
+
+  /** Whether the agent watches an object of this repository, which lets a check's code-host reads aim there. */
+  async agentWatches(agentId: AgentId, provider: CodeHostProvider, repoId: bigint): Promise<boolean> {
+    return await this.deps.watches.agentWatchesRepo(agentId, provider, repoId)
+  }
+
+  /** Whether an organization's live watches name this repository. */
+  async repositoryWatched(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<boolean> {
+    return (await this.deps.watches.watchedRepos(orgId, provider)).includes(repoId)
   }
 
   /** Replay every watched object this provider's relays match, for one relay that just registered. */

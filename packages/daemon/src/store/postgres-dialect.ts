@@ -282,6 +282,7 @@ export const canonicalColumns = [
   'watchTarget',
   'watchState',
   'watchReason',
+  'watchRepoId',
   'wakeId',
   'wakeSubscription',
   'wakeAt',

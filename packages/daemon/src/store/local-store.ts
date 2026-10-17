@@ -1309,7 +1309,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 61
+export const SCHEMA_VERSION = 62
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2057,7 +2057,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     await addColumn(db, store.postgres, 'assistant_check', 'startedBy', 'TEXT')
     await addColumn(db, store.postgres, 'assistant_check', 'events', 'TEXT')
     await addColumn(db, store.postgres, 'assistant_draft', 'followUpWatch', 'TEXT')
-  }
+  },
+  // v62 keeps a watched object's repository id, which a check's code-host reads aim at (assistant-mode.md §5.14).
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'watchRepoId', 'TEXT')
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */

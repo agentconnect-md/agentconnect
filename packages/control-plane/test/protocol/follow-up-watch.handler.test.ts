@@ -117,7 +117,7 @@ describe('assistant/follow-up-watch over the daemon WS edge', () => {
       results: [
         {
           followUpId: 'item-1',
-          watched: { provider: 'github', repoPath: TARGET.repoPath, subject: 'pull', number: 12 }
+          watched: { provider: 'github', repoPath: TARGET.repoPath, subject: 'pull', number: 12, repoId: '456' }
         }
       ]
     })

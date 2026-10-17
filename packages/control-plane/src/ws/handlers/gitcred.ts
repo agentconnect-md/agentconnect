@@ -214,7 +214,9 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
           }
           hookAuthorized = true
         }
-        const grant = await deps.gitlabGitcred!.grantForBrokerEffect(agent, projectId, hookAuthorized)
+        const watchAuthorized =
+          !hookAuthorized && ((await deps.followUpWatch?.agentWatches(agent.id, 'gitlab', projectId)) ?? false)
+        const grant = await deps.gitlabGitcred!.grantForBrokerEffect(agent, projectId, hookAuthorized, watchAuthorized)
         conn.replyTo(frame, 'gitcred/grant', grant)
         return
       }

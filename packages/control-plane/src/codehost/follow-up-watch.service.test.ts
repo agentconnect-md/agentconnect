@@ -111,6 +111,14 @@ class MemoryWatches implements FollowUpWatchRepo {
   async watched(o: FollowUpWatchObject) {
     return this.rows.some((row) => sameObject(row, o))
   }
+  async watchedRepos(orgId: string, provider: string) {
+    return [
+      ...new Set(this.rows.filter((row) => row.orgId === orgId && row.provider === provider).map((r) => r.repoId))
+    ]
+  }
+  async agentWatchesRepo(agentId: string, provider: string, repoId: bigint) {
+    return this.rows.some((row) => row.agentId === agentId && row.provider === provider && row.repoId === repoId)
+  }
   async receive(o: FollowUpWatchObject, deliveryKey: string) {
     const key = `${o.number}:${deliveryKey}`
     if (this.receipts.has(key)) return false
@@ -278,7 +286,13 @@ describe('FollowUpWatchService', () => {
     expect(first.results).toEqual([
       {
         followUpId: 'f1',
-        watched: { provider: 'github', repoPath: 'example-org/example-repo', subject: 'pull', number: 12 }
+        watched: {
+          provider: 'github',
+          repoPath: 'example-org/example-repo',
+          subject: 'pull',
+          number: 12,
+          repoId: '456'
+        }
       }
     ])
     expect(h.relayed).toEqual([expect.objectContaining({ repoId: String(REPO_ID), number: 12, watched: true })])

@@ -87,7 +87,8 @@ describe('a follow-up’s watch', () => {
       url: ISSUE,
       target: null,
       state: 'pending',
-      reason: null
+      reason: null,
+      repoId: null
     })
   })
 
@@ -133,6 +134,19 @@ describe('a follow-up’s watch', () => {
       url: ISSUE,
       target: 'example-org/example-repo#7'
     })
+  })
+
+  it('sends the full set again on the next sweep while a watch waits for an answer', async () => {
+    const { s, cp, watches, requests, item } = await setup()
+    const one = await item('one')
+    await s.assistantItems.setWatch(AGENT, one.id, { url: PR, target: null, state: 'pending', reason: null })
+    cp.answer = (req) => ({
+      results: req.watches.map((watch) => ({ followUpId: watch.followUpId, refused: 'unavailable' as const }))
+    })
+    await watches.sync(AGENT)
+    await watches.sync(AGENT)
+    expect(requests.map((req) => req.mode)).toEqual(['full', 'full'])
+    expect((await s.assistantItems.get(AGENT, one.id))?.watch?.state).toBe('pending')
   })
 
   it('stops watching an open follow-up, and drops an ended one’s subscription', async () => {

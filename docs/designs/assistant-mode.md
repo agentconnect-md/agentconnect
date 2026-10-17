@@ -1814,8 +1814,9 @@ under the introduction works. For a first look, `propose` changes in four ways:
 
 **Status:** Being built. The product owner approved the design on 2026-10-17, the `watch` field
 included; what is marked _decided_ was settled on 2026-10-16. The Control Plane and relay for GitHub
-(sixty-seventh revision) and the daemon (sixty-eighth) ship, so a follow-up can watch a GitHub pull
-request or issue ("As shipped" at the end of this section); GitLab and the console follow.
+(sixty-seventh revision), the daemon (sixty-eighth) and GitLab (seventieth) ship, so a follow-up can
+watch a GitHub pull request or issue or a GitLab merge request or issue ("As shipped" at the end of
+this section); the console follows.
 
 **Why.** A follow-up such as "tell me when PR #12 merges" or "watch the release build" is woken only
 by time (§5.12). Every timed check spends one of the agent's `dailyCheckBudget` checks whether or not
@@ -2266,6 +2267,31 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
 - **Activity** carries a follow-up's watch, and what started each recent check with the events it
   took; the console shows them in step 4. A proposal's follow-up form carries its URL, and its
   Slack card shows the object it would watch.
+
+**As shipped, step 3: GitLab.** Choices the text above leaves open:
+
+- **Taking a watch.** The URL's host must be the deployment's GitLab instance and its path a project
+  the organization has bound, else the answer is `unsupported`; the agent's workspace project or an
+  explicit authorization on it, else `no_access`. The object is read once with the binding's read
+  credential. The answer carries the project's numeric id, which the daemon keeps (store version
+  62).
+- **Ingress.** A project with a live watch joins the project's feedback watch, flagged
+  `followUps`, and its webhook union adds merge-request, issue, note and pipeline events. A set or
+  a removal re-sends that project's feedback watch and converges its webhook at once; narrowing
+  otherwise waits for the reconciler. The relay sends a flagged project's wake-only events through
+  `rc/codehost-feedback`, with kind `event` for a change of state, without holding the delivery
+  back: a merge request merged, closed, reopened, approved or given new commits, an issue closed or
+  reopened, a note on an issue, and a pipeline of a merge request that succeeded or was cancelled. A
+  failed pipeline and a note on a merge request stay the lane's feedback, and also reach the watches of the merge request they name, a fork's or a closed one included. A pipeline that names no merge request wakes nothing.
+- **Admission** is the lane's: a note by a bound service account is left out, for an issue's watch
+  too.
+- **Retries.** A watch is stored with the instance's host, as its URL names it, so a full set
+  re-sending it unchanged reads nothing. A watch still `pending` after an answer is sent again with
+  the duty holder's next sweep rather than at the next link.
+- **Reads.** A check of a follow-up watching a GitLab object aims the broker's read tools at the
+  watched project, by the id the daemon kept. The Control Plane leases the broker a read-only
+  credential for it while the agent has a live watch there; a workspace or a hook lease is
+  unchanged.
 
 ### 5.15 Organization research and the organization files
 
@@ -4225,7 +4251,14 @@ the Library with a visibility cell on every row and three file views, the agent 
 a Knowledge tab and a Tools tab, and the Memory tab stops mentioning the record. Existing copies
 in memory are moved once and removed. §5.16 ends in the three-change implementation checklist.
 
-**Seventieth revision (2026-10-18)**: the organization record's first change ships, the Control
+**Seventieth revision (2026-10-17)**: event wake reaches GitLab, §5.14's rollout step 3 (issue #2810;
+§5.14 "As shipped, step 3"). A follow-up may watch a merge request or issue of a project the
+organization has bound, readable with the agent's workspace or an explicit authorization. The
+project's feedback watch and webhook then carry its merge-request, issue, note and pipeline
+events to the relay, which sends the wake-only ones without holding a delivery back, and a check of
+the follow-up reads the watched project through the broker on a read-only lease.
+
+**Seventy-first revision (2026-10-18)**: the organization record's first change ships, the Control
 Plane's (issue #2810; §5.16 "As shipped, change 1"). Knowledge entries carry agent visibility and a
 kind; the three record entries, research's claim and People's opt-out live in the Control Plane;
 `knowledge/record/read` and `knowledge/record/write` and `withOutsiders` on the knowledge reads
