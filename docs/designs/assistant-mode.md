@@ -2730,8 +2730,8 @@ could keep, so this section says what one may hold, who sees it, and how its sub
   internal and public, or a repository the agent may not read. The entry's person must be a member
   (the lookup of §5.3) and not opted out (below); on a conversation's turn they must also be on
   it, a sender or someone a message mentions, so the model cannot write about someone who is not
-  there. A first look's and research's writes are checked for membership and the marker alone,
-  since no turn carries their people. A shape cannot see an opinion phrased as a fact. That
+  there. A first look and research, which no turn carries people for, write only about the
+  people whose messages their round read, by the places they read them in. A shape cannot see an opinion phrased as a fact. That
   residual is accepted, and the prompt and the person's own view of their entry guard it. The
   entry's shape is checked since 2026-10-17 (§5.15 "As shipped"), and the rules on its person since
   the sixty-first revision ("As shipped", below).
@@ -2837,10 +2837,9 @@ is not built.
   shape requires: `user:<console user id>` once they linked an account, else
   `<platform>:<tenant>:<member id>`. A platform key whose person linked a console account is
   refused with the console key to use. The model learns keys from what the daemon shows it: a
-  first look's prompt names its place's key prefix, which the member ids it reads complete; a
-  refusal on a conversation turn lists the turn's people by key; and a person's own conversation
-  names their key in its standing rules. Research keeps the keys it finds and adds no new person,
-  since only a conversation they are in can tell their key.
+  builder round's history reads show each person's key as `senderKey`; a refusal lists the
+  turn's or the round's people by key; and a person's own conversation names their key in its
+  standing rules.
 - **Where the rules run.** Inside the revision-checked entry write itself, under its lock, with the
   file's text before and after, so a concurrent write cannot slip past them. `writeMemory` refuses
   `members.md` in the shared layer, so only entry writes change it. On a conversation turn, a turn
@@ -2849,10 +2848,19 @@ is not built.
   who has not opted out, and who sent or was mentioned in a message of the turn. A line it adds is
   sourced `self` only when its person sent a message of the turn, else by the place's name. A
   removal needs its person on the turn too. Mentions come from `mentionedUsers`, a new optional
-  field of the normalized message that Slack, Discord and Lark/Feishu fill. A first look writes with
-  no turn to be on and is checked for membership and the marker alone; organization research joins
-  it. A distillation, a dream, a report round, a check, a schedule, another agent's message, a
+  field of the normalized message that Slack, Discord and Lark/Feishu fill. A builder writes with
+  no turn to be on (below). A distillation, a dream, a report round, a check, a schedule, another agent's message, a
   private place and a place with outsiders are refused. Every refusal ends "Nothing was saved."
+- **A builder** (sixty-third revision) is a first look of an internal public channel, or
+  organization research. An entry it adds must be about someone whose messages its round read,
+  and every line it adds is sourced by a place where it read them; an entry already there also
+  keeps taking the code-host and knowledge sources it had. `self` is never a builder's source.
+  Its round is its session and the turn it is on: each history read of an internal public channel
+  records the people who typed there, by every key they are known by, and shows each one's key as
+  `senderKey`; a bot's or an agent's message, and a private, group or external place, record no
+  one. A refusal lists the round's people and where it read them. A first look of any other place
+  is refused like that place. Research reads no conversation (§5.15 "What it reads"), so it adds
+  no new person; people enter through their places' first looks and conversations.
 - **A person's own conversation.** Their DM or console conversation of an assistant-mode agent gets
   one standing line naming their key, re-asserted on resume. Writing with `layer: "shared"` on
   their own turn, it changes their entry alone, sourced `self`, under their console key when they
@@ -3726,3 +3734,11 @@ any entry, audited without content. The deeper pass waits for a later change.
   GitLab and Gitea read the workspace repository only.
 - **Verified live.** Claude Code, Codex and OpenCode each opened a public page under the mode with
   no permission request (§5.15 "Web access", §9 Q29).
+
+**Sixty-third revision (2026-10-17)**: a directory builder adds the people its round read (issue
+#2810; §5.17). The product owner decided that a first look or organization research may create
+entries for the people whose messages that round read. The daemon records, per round, each person
+who typed in an internal public channel the round's history reads returned, by key and place, and
+shows their key in the results; a builder's new entry must be one of them and each line it adds is
+sourced by a place it read them in. A first look of a private, group or external place is no
+longer a builder. Research reads no conversation, so it still adds no new person.

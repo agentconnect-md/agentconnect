@@ -1245,6 +1245,33 @@ describe('executeTool: read tools', () => {
     expect(res.members).toEqual([{ id: 'U1', name: 'alice', isBot: false }])
   })
 
+  it("names each person's directory key on a builder round, and no bot's", async () => {
+    const getChannelHistory = vi.fn(async () => ({
+      messages: [
+        { sender: 'U1', ts: '100.5', text: 'hello', isBot: false },
+        { sender: 'B1', ts: '100.6', text: 'beep', isBot: true }
+      ],
+      hasMore: false
+    }))
+    const getThreadReplies = vi.fn(async () => [
+      { sender: 'U1', ts: '100.5', text: 'root', isBot: false, chrome: false, attachments: [] },
+      { sender: 'B1', ts: '100.7', text: 'reply', isBot: true, chrome: false, attachments: [] }
+    ])
+    const directoryReads = vi.fn(async () => new Map([['U1', 'slack:T0EXAMPLE:U1']]))
+    const d = { ...deps(fakeGateway({ getChannelHistory, getThreadReplies })).deps, directoryReads }
+    const history = (await executeTool(ctx, 'getChannelHistory', {}, d)) as { messages: Record<string, unknown>[] }
+    expect(history.messages.map((m) => m.senderKey)).toEqual(['slack:T0EXAMPLE:U1', undefined])
+    expect(directoryReads).toHaveBeenCalledWith(ctx, expect.objectContaining({ channel: 'C_CURRENT', senders: ['U1'] }))
+    const thread = (await executeTool(ctx, 'getThreadHistory', { thread: '100.5' }, d)) as {
+      messages: Record<string, unknown>[]
+    }
+    expect(thread.messages.map((m) => m.senderKey)).toEqual(['slack:T0EXAMPLE:U1', undefined])
+    // Off a builder round the hook answers nothing, and the rows are as before.
+    directoryReads.mockResolvedValueOnce(undefined as never)
+    const plain = (await executeTool(ctx, 'getChannelHistory', {}, d)) as { messages: Record<string, unknown>[] }
+    expect(plain.messages.every((m) => m.senderKey === undefined)).toBe(true)
+  })
+
   it('reads one channel-history page and forwards Slack pagination arguments', async () => {
     const link = 'https://workspace.example.test/archives/C_CURRENT/p1005'
     const getChannelHistory = vi.fn(async () => ({

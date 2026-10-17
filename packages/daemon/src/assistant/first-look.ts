@@ -123,14 +123,10 @@ export interface FirstLookPrompt {
   requested: boolean
   /** The place writes the shared layer (an internal public channel), so its first look also keeps the organization files (§5.15). */
   shared?: boolean
-  /** What a person's directory key starts with here, their member id following (§5.17); absent when it cannot be told. */
-  memberKey?: string
 }
 
 // Only a place that writes the shared layer keeps the organization files (§5.15); each save checks the revision it read.
-const sharedFiles = (
-  memberKey: string | undefined
-) => `2. Three shared files every conversation reads. Give each a description header when you
+const SHARED_FILES = `2. Three shared files every conversation reads. Give each a description header when you
    create it, so MEMORY.md lists it:
    - ${CHANNELS_FILE}: one line for this place, linking the file above: "#name: what it is for —
      [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]]
@@ -147,15 +143,13 @@ const sharedFiles = (
    Every fact is one line ending in its source and date, "(#name, YYYY-MM-DD)" for what you read
    here, with "(inferred)" after it for anything inferred. ${ORGANIZATION_FILE} opens with a summary
    of at most ten lines, then only the sections "## Products and customers", "## How it works"
-   and "## Repositories and systems"; ${CHANNELS_FILE} holds one line per place; ${
-     memberKey
-       ? `a ${MEMBERS_FILE} entry
-   is "## Display name (@handle on Platform) \`${memberKey}<member id>\`", the id as
-   listChannelMembers or a mention gives it (a refusal names a linked person's other key), and at
-   most ten lines, each starting with "Role:", "Works on:", "Knows about:" or "Ask about:". Leave
-   an entry you are refused alone.`
-       : `write no ${MEMBERS_FILE} entry from this place, since its people's keys cannot be told.`
-   } A save that does not fit is refused with the line that failed: fix that line and save again.
+   and "## Repositories and systems"; ${CHANNELS_FILE} holds one line per place; a ${MEMBERS_FILE} entry
+   is "## Display name (@handle on Platform) \`key\`" and at most ten lines, each starting with
+   "Role:", "Works on:", "Knows about:" or "Ask about:". Add an entry only for someone whose
+   messages you read here, keyed exactly as the history's senderKey shows it, and source each of
+   its lines by this place; where no message shows a senderKey, write no entry. Leave an entry
+   you are refused alone. A save that does not fit is refused with the line that failed: fix that
+   line and save again.
    Other places update these files too, so never rewrite them with writeMemory: find each with
    listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
    updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
@@ -184,7 +178,7 @@ Then write to memory, without a layer argument:
    opinions of people; how requests are made, where decisions are recorded, links people keep
    using, other bots and what they post. And what recurs: things that happened at least twice
    on a rhythm, and when.
-${input.shared ? sharedFiles(input.memberKey) : ''}Write nothing in flight, no request still open wherever it appears, and nothing you would
+${input.shared ? SHARED_FILES : ''}Write nothing in flight, no request still open wherever it appears, and nothing you would
 not say in every conversation that reads this memory.
 
 Then report, in the place's main language: one line on what this place is for, then these

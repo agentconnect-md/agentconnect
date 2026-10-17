@@ -86,6 +86,11 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
     platform: string,
     integrationId?: string
   ) => Promise<{ id: string; name?: string }[]>
+  /** A directory builder's history read (assistant-mode.md §5.17): records its human senders and answers each one's key, or undefined where the round builds nothing. */
+  directoryReads?: (
+    ctx: SessionContext,
+    read: { platform: string; integrationId: string | undefined; channel: string; senders: readonly string[] }
+  ) => Promise<ReadonlyMap<string, string> | undefined>
   /** A first look's history bound (assistant-mode.md §5.13): the oldest time it may read, and how many more rows its check may take, at most `want`. */
   firstLookHistory?: {
     since(): number
@@ -351,6 +356,25 @@ async function firstLookRows<T extends { ts: string }>(
   return { rows: kept.slice(0, granted), ended: ended || capped, capped }
 }
 
+/** On a builder round, each row a person typed carries the key their directory entry takes. */
+async function withSenderKeys<T extends { sender: string }>(
+  ctx: SessionContext,
+  deps: PlatformReadDeps,
+  read: { platform: string; integrationId: string | undefined; channel: string },
+  rows: readonly T[],
+  typed: (row: T) => boolean
+): Promise<(T & { senderKey?: string })[]> {
+  const people = rows.filter(typed)
+  const keys = people.length
+    ? await deps.directoryReads?.(ctx, { ...read, senders: people.map((r) => r.sender) })
+    : undefined
+  if (!keys?.size) return [...rows]
+  return rows.map((row) => {
+    const senderKey = typed(row) ? keys.get(row.sender) : undefined
+    return senderKey ? { ...row, senderKey } : row
+  })
+}
+
 const FIRST_LOOK_CAPPED = `This first look has read its ${FIRST_LOOK_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
 const FIRST_LOOK_WINDOW_END = `Older messages are past this first look's ${FIRST_LOOK_DAYS} days.`
 
@@ -379,11 +403,13 @@ export async function getChannelHistory(
     ...(parsed.latest ? { latest: parsed.latest } : {})
   })
   const bounded = await firstLookRows(ctx, deps, page.messages)
+  const read = { platform, integrationId: parsed.integrationId, channel }
+  const messages = await withSenderKeys(ctx, deps, read, bounded?.rows ?? page.messages, (row) => !row.isBot)
   if (bounded)
     return {
       platform,
       channel,
-      messages: bounded.rows,
+      messages,
       hasMore: !bounded.ended && page.hasMore,
       ...(!bounded.ended && page.nextCursor ? { nextCursor: page.nextCursor } : {}),
       ...(bounded.ended ? { note: bounded.capped ? FIRST_LOOK_CAPPED : FIRST_LOOK_WINDOW_END } : {})
@@ -391,7 +417,7 @@ export async function getChannelHistory(
   return {
     platform,
     channel,
-    messages: page.messages,
+    messages,
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
   }
@@ -453,12 +479,22 @@ export async function getThreadHistory(
   })
   const shown = messages.filter((m) => !m.chrome)
   const bounded = await firstLookRows(ctx, deps, shown)
+  const keyed = await withSenderKeys(
+    ctx,
+    deps,
+    { platform, integrationId: parsed.integrationId, channel },
+    bounded?.rows ?? shown,
+    (m) => !m.isBot && !m.agentAuthorId
+  )
   return {
     platform,
     channel,
     thread: parsed.thread,
     truncated: readState.truncated || (bounded?.capped ?? false),
-    messages: (bounded?.rows ?? shown).map(projectThreadMessage),
+    messages: keyed.map((m) => ({
+      ...(projectThreadMessage(m) as object),
+      ...(m.senderKey ? { senderKey: m.senderKey } : {})
+    })),
     ...(bounded?.capped ? { note: FIRST_LOOK_CAPPED } : {})
   }
 }

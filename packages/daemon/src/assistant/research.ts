@@ -103,8 +103,8 @@ something; where two internal sources disagree, keep the newer.
   ten lines, each starting with "Role:", "Works on:", "Knows about:" or "Ask about:". Work
   facts only, as people state them and as CODEOWNERS and reviews show. Never opinions or
   evaluations of a person, judgments of their work, or anything personal. Add to the entries
-  already there, keeping each heading's key; add no new person, whose key only a conversation
-  they are in can tell, and leave an entry you are refused alone.
+  already there, keeping each heading's key; add no new person, since an entry starts only from
+  messages its writer read and you read none, and leave an entry you are refused alone.
 A save that does not fit is refused with the line that failed: fix that line and save again.
 Other conversations update these files too, so never rewrite them with writeMemory: find
 each with listMemoryEntries, read its text and revision with getMemoryEntry, then save it

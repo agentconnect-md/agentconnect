@@ -830,6 +830,7 @@ import {
 import { MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
 import {
   MEMBERS_DIRECTORY_FILE,
+  DirectorySeen,
   checkMembersWrite,
   clearMembers,
   membersKeys,
@@ -844,6 +845,7 @@ import type { MembersGuard } from './mcp/ops/memory.js'
 import {
   MemoryLayers,
   memoryLayerFolder,
+  personId,
   typedByPerson,
   type MemoryLayerChoice,
   type MemoryPlace,
@@ -4622,6 +4624,8 @@ export class Daemon {
       },
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
+      // A builder round's history reads name their senders' keys and feed the directory's seen people (assistant-mode.md §5.17).
+      directoryReads: (ctx, read) => this.noteDirectoryReads(ctx, read),
       // A first look's reads stop at its window and its message cap (assistant-mode.md §5.13).
       firstLookHistory: {
         since: () => this.clock.now() - FIRST_LOOK_WINDOW_MS,
@@ -8328,14 +8332,67 @@ export class Daemon {
     return ports.live
   }
 
-  /** Whether this session builds the directory with no person behind its rounds: a first look, or organization research. */
-  private directoryBuilder(ctx: SessionContext): boolean {
-    return isFirstLookCoordinate(ctx.thread) || isResearchCoordinate(ctx.thread)
+  /** A session that builds the directory with no person behind its rounds: research, or a first look of an internal public channel; a first look anywhere else is refused. */
+  private async directoryBuilder(ctx: SessionContext): Promise<'builder' | 'refused' | undefined> {
+    if (isResearchCoordinate(ctx.thread)) return 'builder'
+    if (!isFirstLookCoordinate(ctx.thread)) return undefined
+    const audience = await this.conversationAudience(ctx, this.sessionKeyOf(ctx))
+    return audience.layer === 'shared' && !audience.external ? 'builder' : 'refused'
+  }
+
+  /** The round a builder's reads and writes share: its session and the turn it is on; none outside a turn. */
+  private directoryRound(ctx: SessionContext): string | undefined {
+    const live = this.liveTurn(ctx)
+    return live ? `${this.sessionKeyOf(ctx)}\u001f${live.msg.msgId}` : undefined
+  }
+
+  /** A builder round's history read: the people typing there, by key, when the place is an internal public channel; undefined anywhere else. */
+  private async noteDirectoryReads(
+    ctx: SessionContext,
+    read: { platform: string; integrationId: string | undefined; channel: string; senders: readonly string[] }
+  ): Promise<ReadonlyMap<string, string> | undefined> {
+    if (!isFirstLookCoordinate(ctx.thread) && !isResearchCoordinate(ctx.thread)) return undefined
+    const round = this.directoryRound(ctx)
+    const integrationId = read.integrationId ?? ctx.integrationId
+    if (!round || !integrationId) return undefined
+    // The session's own bot keeps its own trusted scope; another bot's is derived from it.
+    const ownBot = read.integrationId === undefined || read.integrationId === ctx.integrationId
+    const place = this.memoryPlaceOf(ctx.agentId, {
+      platform: read.platform,
+      channel: read.channel,
+      transportScope: ownBot ? (ctx.transportScope ?? null) : this.transportScopeForIntegrationIds([integrationId])
+    })
+    const audience = await this.memoryLayers.audienceOf(place).catch(() => undefined)
+    if (audience?.layer !== 'shared' || audience.external) return undefined
+    const name =
+      (await this.store.getDisplayNames([read.channel])).get(read.channel)?.replace(/^[#@]/, '') ??
+      (
+        await this.gatewayForIntegration(integrationId)
+          ?.getChannelInfo(read.channel)
+          .catch(() => undefined)
+      )?.name
+    if (!name) return undefined
+    const shown = new Map<string, string>()
+    for (const sender of new Set(read.senders)) {
+      if (!personId(sender)) continue
+      const keys = await this.memoryLayers.memberKeys(ctx.agentId, read.platform, integrationId, sender)
+      if (keys.length === 0) continue
+      this.directorySeen.record(round, keys, name)
+      // The key an entry takes: the console account when linked, which `memberKeys` lists last.
+      shown.set(sender, keys[keys.length - 1]!)
+    }
+    return shown
   }
 
   /** Who is writing the directory on this call, from the session's trusted facts only. */
   private async membersWriter(ctx: SessionContext): Promise<MembersWriter> {
-    if (this.directoryBuilder(ctx)) return { kind: 'builder' }
+    const builder = await this.directoryBuilder(ctx)
+    if (builder === 'builder') return { kind: 'builder', seen: this.directorySeen.of(this.directoryRound(ctx)) }
+    if (builder === 'refused')
+      return {
+        kind: 'refused',
+        reason: "a private place feeds no one's entry; facts about people's work come from internal public channels."
+      }
     if (ctx.memoryBinding)
       return {
         kind: 'refused',
@@ -9437,8 +9494,6 @@ export class Daemon {
       ?.getChannelInfo(channel)
       .catch(() => undefined)
     const name = info?.name?.trim()
-    // A person's directory key on this bot, their member id following (assistant-mode.md §5.17).
-    const tenant = await this.tenantScopeForIntegration(int).catch(() => undefined)
     // The place's own tools, as its long session is offered them; any appending coordinate names that session.
     const thread =
       (await this.store.placeSession(agentId, platform, channel, transportScope))?.thread ??
@@ -9469,10 +9524,12 @@ export class Daemon {
       // Only a place that writes the shared layer adds to the organization's file; an unknown layer adds nothing.
       shared:
         refusal !== 'external' &&
-        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared',
-      ...(tenant && !/\s/.test(tenant) ? { memberKey: `${platform}:${tenant}:` } : {})
+        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared'
     }
   }
+
+  /** Whom each directory builder round read messages from (assistant-mode.md §5.17). */
+  private readonly directorySeen = new DirectorySeen()
 
   /** Bot joins waiting for their place's row before a first look (assistant-mode.md §5.13). */
   private readonly pendingFirstLooks = new PendingFirstLooks()

@@ -674,11 +674,38 @@ describe('the people directory, members.md in the shared layer', () => {
       })
     ).rejects.toThrow('cleared their entry')
   })
+})
 
-  it('takes a first look as a builder, with no turn to be on', async () => {
-    const s = world({ snapshot: PUBLIC })
-    expect(await s.daemon.membersWriter({ ...s.ctx, thread: firstLookCoordinate('d-1') })).toEqual({
-      kind: 'builder'
-    })
+// assistant-mode.md §5.17: a builder writes about the people whose messages its round read, in internal public channels only.
+describe("a directory builder's round", () => {
+  const LOOK = firstLookCoordinate('d-1')
+  const CHECK = { ...ROUNDS.check, msgId: 'check-1' }
+  function builder(place: Place) {
+    const w = world(place)
+    const ctx = { ...w.ctx, thread: LOOK, integrationId: 'int-1' } as SessionContext
+    const key = sessionKey('slack', w.ctx.channel, LOOK, AGENT)
+    w.daemon.activeGateEntries.set(key, { msg: CHECK, integrationId: 'int-1' })
+    w.daemon.store.getDisplayNames = async () => new Map([[w.ctx.channel, 'release-train']])
+    const read = (senders: string[]) =>
+      w.daemon.noteDirectoryReads(ctx, { platform: 'slack', integrationId: 'int-1', channel: w.ctx.channel, senders })
+    return { ...w, ctx, key, read }
+  }
+
+  it('records the people typing in an internal public channel, by key, for the round that read them', async () => {
+    const b = builder({ snapshot: PUBLIC, lookup: { isPrivate: false } })
+    const shown = await b.read(['U1', AGENT_UUID, 'U1'])
+    expect([...shown]).toEqual([['U1', `slack:${TENANT}:U1`]])
+    const writer = await b.daemon.membersWriter(b.ctx)
+    expect(writer.kind).toBe('builder')
+    expect([...writer.seen]).toEqual([[`slack:${TENANT}:U1`, new Set(['release-train'])]])
+    // A later round starts with nobody read.
+    b.daemon.activeGateEntries.set(b.key, { msg: { ...CHECK, msgId: 'check-2' }, integrationId: 'int-1' })
+    expect([...(await b.daemon.membersWriter(b.ctx)).seen]).toEqual([])
+  })
+
+  it('records nobody read in a private place, and refuses a first look there', async () => {
+    const b = builder({ snapshot: { isPrivate: true }, lookup: { isPrivate: true } })
+    expect(await b.read(['U1'])).toBeUndefined()
+    expect(await b.daemon.membersWriter(b.ctx)).toMatchObject({ kind: 'refused' })
   })
 })

@@ -119,7 +119,6 @@ export type FirstLookFacts =
       external: boolean
       cards?: boolean
       shared?: boolean
-      memberKey?: string
     }
   | { refused: string }
 

@@ -24,8 +24,8 @@ export { MEMBERS_DIRECTORY_FILE }
 
 /** Who is writing the directory, from trusted session facts only. */
 export type MembersWriter =
-  /** A first look or organization research: no person is behind the round, so membership and the marker decide. */
-  | { kind: 'builder' }
+  /** A first look of an internal public channel, or organization research: it writes about the people whose messages its round read, by the places it read them in. */
+  | { kind: 'builder'; seen: ReadonlyMap<string, ReadonlySet<string>> }
   /** An internal public channel's long session on a turn a person typed: the keys of who sent it and who it mentions. */
   | { kind: 'conversation'; senders: ReadonlySet<string>; mentioned: ReadonlySet<string>; place?: string }
   /** A person's own DM or console conversation: their entry only, keyed `keys[0]`, in their own words. */
@@ -161,6 +161,7 @@ export async function checkMembersWrite(
     const consoleKey = await lookups.consoleKey(key)
     if (consoleKey && consoleKey !== key)
       invalid(`${named(entry)} belongs to someone who linked a console account; key it \`${consoleKey}\` instead.`)
+    if (writer.kind === 'builder') builderLines(entry, key, was.get(key), writer)
     if (!(await lookups.member(key))) refuse(`${named(entry)} is not about a member of the organization.`)
     if (!own && marksOf(key, consoleKey).length > 0)
       refuse(
@@ -201,6 +202,70 @@ export async function checkMembersWrite(
   if (writer.kind === 'own' && removed.length > 0 && ![...now.values()].some((e) => e.key && own?.has(e.key)))
     effects.optOut.push(...writer.keys)
   return effects
+}
+
+/** A builder writes about someone only where its round read their messages, each new line sourced by such a place; an older entry keeps its other sources. */
+function builderLines(
+  entry: MembersDirectoryEntry,
+  key: string,
+  old: MembersDirectoryEntry | undefined,
+  writer: Extract<MembersWriter, { kind: 'builder' }>
+): void {
+  const places = writer.seen.get(key)
+  if (!old && !places)
+    refuse(`${named(entry)} is about someone whose messages this round did not read. ${seenKeys(writer)}`)
+  const where = [...(places ?? [])].map((p) => `#${p}`).join(', ')
+  for (const line of newLines(old, entry)) {
+    const source = lineSource(line)
+    if (source === undefined) continue
+    if (source.toLowerCase() === 'self')
+      invalid(
+        `"${line}" is sourced self, but its person said nothing to you here; source it by the place you read it in.`
+      )
+    const seenHere = places !== undefined && [...places].some((p) => placeName(p) === placeName(source))
+    if (source.startsWith('#') ? !seenHere : !old)
+      invalid(
+        places
+          ? `"${line}" must be sourced by a place where this round read their messages: ${where}.`
+          : `"${line}" must be sourced by a place where this round read their messages, and it read none of theirs. ${seenKeys(writer)}`
+      )
+  }
+}
+
+/** The people a builder's refusal offers, so the model can key an entry it may write. */
+function seenKeys(writer: Extract<MembersWriter, { kind: 'builder' }>): string {
+  const keys = [...writer.seen]
+    .slice(0, 20)
+    .map(([k, places]) => `\`${k}\` (${[...places].map((p) => `#${p}`).join(', ')})`)
+  if (keys.length === 0) return "This round read no one's messages, so it adds no one."
+  return `This round read messages from: ${keys.join(', ')}${writer.seen.size > 20 ? ` and ${writer.seen.size - 20} more` : ''}.`
+}
+
+const MAX_SEEN_ROUNDS = 64
+const MAX_SEEN_KEYS = 5000
+
+/** The people each builder round read messages from, with the places it read them in; kept in memory, so a restart forgets a round. */
+export class DirectorySeen {
+  private readonly rounds = new Map<string, Map<string, Set<string>>>()
+
+  /** Note a person, by every key they are known by, as read in one place during a round. */
+  record(round: string, keys: readonly string[], place: string): void {
+    let seen = this.rounds.get(round)
+    if (!seen) {
+      seen = new Map()
+      this.rounds.set(round, seen)
+      if (this.rounds.size > MAX_SEEN_ROUNDS) this.rounds.delete(this.rounds.keys().next().value!)
+    }
+    for (const key of keys) {
+      if (!seen.has(key) && seen.size >= MAX_SEEN_KEYS) continue
+      seen.set(key, (seen.get(key) ?? new Set()).add(place))
+    }
+  }
+
+  /** Whom a round has read so far. */
+  of(round: string | undefined): ReadonlyMap<string, ReadonlySet<string>> {
+    return (round !== undefined && this.rounds.get(round)) || new Map()
+  }
 }
 
 /** Whether the key's person sent or was mentioned on the turn, directly or through the console account it is linked to. */
