@@ -239,6 +239,13 @@ export class SessionManager {
         integrationId?: string,
         rec?: SessionRecord
       ) => MemoryScope | Promise<MemoryScope>
+      /** This conversation's own memory guidance beside the index, such as a person's directory entry in their DM; '' for none. */
+      memoryGuidanceFor?: (
+        agentId: string,
+        msg: NormalizedMessage,
+        integrationId?: string,
+        rec?: SessionRecord
+      ) => Promise<string>
       /** Fail-open recall diagnostics. Must never include query/record/plugin body text. */
       onMemoryRecallError?: (agentId: string, error: unknown) => void
       /** The agent's memory home was out of reach at session start: the session opened without standing context, and this is the warning. */
@@ -599,6 +606,7 @@ export class SessionManager {
     // home, a suspended sandbox — starts the session with no standing context and a warning; the memory tools answer
     // the same error, and the post-turn distillation waits in the capture outbox. Anything else still fails the turn.
     let memoryIndex = ''
+    let memoryGuidance = ''
     if (memoryEnabled) {
       try {
         const scope = await abortable(memScope, signal)
@@ -608,6 +616,8 @@ export class SessionManager {
         if (!(err instanceof MemoryHomeUnavailableError)) throw err
         this.deps.onMemoryHomeUnavailable?.(agentId, err)
       }
+      // A standing rule that needs no memory home; a failed lookup leaves only the common rules.
+      memoryGuidance = (await this.deps.memoryGuidanceFor?.(agentId, msg, integrationId, rec).catch(() => '')) ?? ''
     }
     // The channel's human display name, if the daemon has resolved one (Slack bulk refresh /
     // ChannelNameResolver, cached in `display_names`). Stored bare for a group/channel,
@@ -665,6 +675,7 @@ export class SessionManager {
           workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
           onDemandClones: await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
           memoryIndex,
+          ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.

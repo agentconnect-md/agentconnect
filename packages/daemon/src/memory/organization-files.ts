@@ -40,6 +40,8 @@ export interface MemberEntry {
   line: number
   name: string
   handles: string[]
+  /** The person's identity key the heading ends in, in backticks; the person rules require it (§5.17). */
+  key?: string
   facts: (FactLine & { field: MemberField })[]
 }
 
@@ -184,15 +186,15 @@ function parseMembers(text: string): MemberEntry[] {
   for (const { line, content } of untitled(bodyLines(text))) {
     if (content.trim() === '') continue
     if (HEADING.test(content)) {
-      const heading = /^##\s+(\S.*?)\s+\(([^()]+)\)\s*$/.exec(content)
+      const heading = /^##\s+(\S.*?)\s+\(([^()]+)\)(?:\s+`([^`\s]+)`)?\s*$/.exec(content)
       const handles = heading?.[2]!.split(',').map((h) => h.trim())
       if (!heading || !handles || handles.some((h) => h === ''))
         throw lineError(
           line,
           content,
-          'is not an entry\'s heading, "## <display name> (<handles>)", e.g. "## Alice (@alice on Slack)"'
+          'is not an entry\'s heading, "## <display name> (<handles>) `<key>`", e.g. "## Alice (@alice on Slack) `slack:T0EXAMPLE:U0ALICE`"'
         )
-      entry = { line, name: heading[1]!, handles, facts: [] }
+      entry = { line, name: heading[1]!, handles, ...(heading[3] ? { key: heading[3] } : {}), facts: [] }
       entries.push(entry)
       count = 0
       continue

@@ -199,9 +199,14 @@ describe('the prompts', () => {
   })
 
   it('in a place that writes the shared layer, also keeps the organization files in their shapes', () => {
-    const prompt = firstLookPrompt({ ...facts, requested: false, shared: true })
+    const prompt = firstLookPrompt({ ...facts, requested: false, shared: true, memberKey: 'slack:T0EXAMPLE:' })
     expect(prompt).toContain(
       '1. A topic file named after the place, dated, with "index: false" in its header so MEMORY.md leaves it out.'
+    )
+    // An entry is keyed by its person's identity, which a member id here completes (assistant-mode.md §5.17).
+    expect(flat(prompt)).toContain('"## Display name (@handle on Platform) `slack:T0EXAMPLE:<member id>`"')
+    expect(flat(firstLookPrompt({ ...facts, requested: false, shared: true }))).toContain(
+      "write no members.md entry from this place, since its people's keys cannot be told."
     )
     // The place's file is out of the index, so its line in channels.md is how later sessions there find it.
     expect(flat(prompt)).toContain(

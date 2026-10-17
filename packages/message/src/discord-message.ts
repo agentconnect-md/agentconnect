@@ -140,6 +140,7 @@ export function normalizeDiscordMessage(
     },
     text: humanizeDiscordText(message.content, message.mentionUserNames),
     mentionedBots: message.mentionUserIds,
+    mentionedUsers: [...new Set(message.mentionUserIds)].slice(0, 100),
     ...(attachments.length ? { attachments } : {}),
     isDm,
     // §6.5 emission flip: the generic coordinate only — `discordTopLevel` retired.

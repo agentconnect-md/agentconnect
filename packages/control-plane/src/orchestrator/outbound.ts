@@ -112,6 +112,8 @@ import {
   MemoryChannelsReq,
   MemoryChannelClearReq,
   MemoryChannelClearOk,
+  MemoryMemberClearReq,
+  MemoryMemberClearOk,
   MemoryChannelsPage,
   MemoryListReq,
   MemoryListPage,
@@ -783,6 +785,12 @@ export class ControlSender {
   async memoryChannelClear(daemonId: string, req: MemoryChannelClearReq): Promise<MemoryChannelClearOk> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryChannelClearOk>('memory/channel/clear', req, { epoch: c.sessionEpoch })
+  }
+
+  /** Remove people's directory entries on the owning daemon and mark them opted out; the reply carries no content. */
+  async memoryMemberClear(daemonId: string, req: MemoryMemberClearReq): Promise<MemoryMemberClearOk> {
+    const c = this.must(daemonId)
+    return c.conn.request<MemoryMemberClearOk>('memory/member/clear', req, { epoch: c.sessionEpoch })
   }
 
   /**

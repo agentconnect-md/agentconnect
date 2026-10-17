@@ -510,6 +510,8 @@ type SlackUserResult = {
   /** The member's IANA zone, and its offset in seconds east of UTC. */
   tz?: string
   tz_offset?: number
+  /** The account was deactivated. */
+  deleted?: boolean
 }
 
 /** The subset of a Block Kit `block_actions` payload we read: the interacted element
@@ -2840,6 +2842,17 @@ export class SlackConnection implements PlatformConnection {
     } catch (err) {
       this.deps.log?.debug(`slack: users.info failed for a workspace-member check: ${(err as Error).message}`)
       return false
+    }
+  }
+
+  /** Whether Slack reports the account deactivated (`deleted`) or unknown; rejects when it cannot tell (assistant-mode.md §5.17). */
+  async memberGone(user: string): Promise<boolean> {
+    try {
+      const res = await this.inStandingLookupSlot(() => this.app.client.users.info({ user }))
+      return res.user?.deleted === true
+    } catch (err) {
+      if ((err as { data?: { error?: string } }).data?.error === 'user_not_found') return true
+      throw err
     }
   }
 

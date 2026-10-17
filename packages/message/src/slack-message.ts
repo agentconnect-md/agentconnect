@@ -190,6 +190,8 @@ export function normalizeSlackMessage(
     },
     text,
     mentionedBots,
+    // Slack writes every mention as `<@id>`, so the people it names are the same ids; a bot among them is never a member.
+    mentionedUsers: [...new Set(mentionedBots)].slice(0, 100),
     ...(attachments.length ? { attachments } : {}),
     isDm: message.channel_type === 'im',
     // `app_mention` payloads omit channel_type. Do not guess from the channel

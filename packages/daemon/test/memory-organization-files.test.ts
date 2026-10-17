@@ -185,7 +185,7 @@ describe('the organization files’ shapes', () => {
       'is outside any entry'
     )
     expect(organizationFileRefusal('members.md', '## Alice\nRole: release manager (self, 2026-10-02)\n')).toContain(
-      'line 1 "## Alice" is not an entry\'s heading, "## <display name> (<handles>)"'
+      'line 1 "## Alice" is not an entry\'s heading, "## <display name> (<handles>) `<key>`"'
     )
     const eleven = Array.from({ length: 11 }, (_, i) => `Works on: project ${i + 1} (#general, 2026-10-15)`).join('\n')
     expect(organizationFileRefusal('members.md', `## Alice (@alice on Slack)\n${eleven}\n`)).toContain(
@@ -336,8 +336,9 @@ describe('the Memory page gets the same refusal', () => {
     await expect(
       reader.write({ agentId: 'agent', path: 'members.md', content: 'Alice runs releases\n' })
     ).rejects.toThrow(MemoryViolationError)
-    await expect(reader.write({ agentId: 'agent', path: 'members.md', content: MEMBERS })).resolves.toMatchObject({
-      path: 'members.md'
-    })
+    // The people directory itself is changed in the console only by clearing an entry (assistant-mode.md §5.17).
+    await expect(reader.write({ agentId: 'agent', path: 'members.md', content: MEMBERS })).rejects.toThrow(
+      'members.md is changed in the console only by clearing an entry'
+    )
   })
 })

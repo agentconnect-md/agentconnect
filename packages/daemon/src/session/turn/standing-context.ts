@@ -85,6 +85,8 @@ export type StandingContextInput = {
   onDemandClones?: OnDemandCloneContext
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
+  /** What this conversation may do with memory beyond the common rules, such as a person's own directory entry; '' for none. */
+  memoryGuidance?: string
   /** Whether the host carries standing context on the system-prompt meta channel. */
   usesMeta: boolean
   /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
@@ -378,6 +380,8 @@ export function buildSessionMessagesBlock(input: {
 /** Build standing instructions for native session metadata when supported, or the first prompt block otherwise. */
 export function buildStandingContext(input: StandingContextInput): StandingContext {
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
+  // A rule, not memory content: re-asserted on resume with the other standing rules.
+  const memoryGuidance = input.memoryGuidance?.trim() ?? ''
   const agentMeta = buildAgentMeta(input)
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
@@ -386,7 +390,15 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     ? buildTaskReportingAppend(input.originSessionId)
     : ''
   const assemble = (meta: string) => {
-    const resume = [meta, workspaceRootsAppend, platformAppend, COLLAB_APPEND, taskReportingAppend, NO_RESPONSE_RULE]
+    const resume = [
+      meta,
+      workspaceRootsAppend,
+      platformAppend,
+      COLLAB_APPEND,
+      taskReportingAppend,
+      NO_RESPONSE_RULE,
+      memoryGuidance
+    ]
       .filter(Boolean)
       .join('\n\n')
     return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }

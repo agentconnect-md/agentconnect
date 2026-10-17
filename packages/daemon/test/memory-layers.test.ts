@@ -193,6 +193,23 @@ describe('the person layer', () => {
     expect((await mem.read(consoleScope, 'later.md')).content).toBe('')
   })
 
+  it("tells the directory once that a person's platform identity now resolves to their console account", async () => {
+    const { fs } = tree()
+    const linked = vi.fn(async () => {})
+    const { layers: base } = layers({ fs, linked: { U1: 'user-1' } })
+    const l = new MemoryLayers({ ...(base as unknown as { deps: MemoryLayerDeps }).deps, linked })
+    const dm = place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' })
+    await l.resolve(dm)
+    await l.resolve(dm)
+    expect(linked).toHaveBeenCalledTimes(1)
+    expect(linked).toHaveBeenCalledWith(AGENT, `slack:${TENANT}:U1`, 'user:user-1')
+    // An unlinked person has nothing to carry over.
+    const { layers: plain } = layers({ fs })
+    const quiet = new MemoryLayers({ ...(plain as unknown as { deps: MemoryLayerDeps }).deps, linked })
+    await quiet.resolve(place({ channel: 'D2', kinds: ['dm'], speaker: 'U2' }))
+    expect(linked).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the console-keyed folder when both exist, and leaves the other unread', async () => {
     const { fs, mem } = tree()
     const platformScope = { agentId: AGENT, personKey: memoryPersonKey(`slack:${TENANT}:U1`) }

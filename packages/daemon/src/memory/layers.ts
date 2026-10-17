@@ -76,6 +76,8 @@ export interface MemoryLayerDeps {
   memoryTree(agentId: string): MemoryFs | undefined
   /** The conversation's display name as this daemon last saw it, recorded with its place layer. */
   placeName?(place: MemoryPlace): Promise<string | undefined>
+  /** A person's platform identity now resolves to their console account: what is kept under the one follows to the other. */
+  linked?(agentId: string, platformIdentity: string, identity: string): Promise<void>
   now(): number
   log?(message: string): void
 }
@@ -179,6 +181,25 @@ export class MemoryLayers {
     return { agentId, personKey: await this.settle(agentId, person) }
   }
 
+  /** The keys a DM's or console conversation's person is known by, theirs first: the console account when linked, else the platform identity. */
+  async personKeys(place: MemoryPlace): Promise<string[]> {
+    const person = await this.personOfPlace(place)
+    return person ? [...new Set([person.identity, ...(person.platformIdentity ? [person.platformIdentity] : [])])] : []
+  }
+
+  /** The keys a chat member is known by: their platform identity, and their console account's when they linked one. */
+  async memberKeys(agentId: string, platform: string, integrationId: string, uid: string): Promise<string[]> {
+    const person = await this.memberIdentity(agentId, platform, integrationId, uid)
+    return person ? [...new Set([person.platformIdentity, person.identity])] : []
+  }
+
+  /** The console key a chat member linked, from the same cache their layer uses. */
+  async linkedConsoleKey(agentId: string, integrationId: string, uid: string): Promise<string | undefined> {
+    if (!personId(uid)) return undefined
+    const consoleUserId = await this.linkedConsoleUser(agentId, integrationId, uid)
+    return usableId(consoleUserId) ? `user:${consoleUserId}` : undefined
+  }
+
   /** The person a DM or a console conversation belongs to, from what a person did there and never from an automation. */
   private async personOfPlace(
     place: MemoryPlace
@@ -272,6 +293,8 @@ export class MemoryLayers {
           break
         }
       }
+      if (person.platformIdentity && person.platformIdentity !== person.identity)
+        await this.deps.linked?.(agentId, person.platformIdentity, person.identity)
       this.adopted.add(memo)
     } catch {
       // The home is out of reach: nothing moved, and the next resolution tries again.

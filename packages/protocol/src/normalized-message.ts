@@ -133,6 +133,8 @@ export const NormalizedPlatformMessageSchema = z.object({
   }),
   text: z.string(),
   mentionedBots: z.array(z.string()),
+  /** Platform ids of the people a message mentions, where the platform marks mentions; absent means unknown. */
+  mentionedUsers: z.array(z.string().min(1).max(256)).max(100).optional(),
   /** An EXTRA dedup dimension for two arrivals that describe the SAME platform message.
    *
    * A streamed agent reply is posted once and then closed by an edit, and both events

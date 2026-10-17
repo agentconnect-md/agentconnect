@@ -2687,7 +2687,8 @@ if several assistant-mode agents need one source, or people want these files on 
 **Status:** Proposed (2026-10-17). The product owner decided on 2026-10-17 that the agent may keep
 profiles of people, and asked for them to be designed. The directory lives in the agent's memory
 (_decided_ the same day, §5.16). Everything else below is a recommendation for the owner to
-confirm.
+confirm. The person rules, the opt-out, a person's own entry, linking, leaving and the console
+shipped in the sixty-first revision ("As shipped", at the end of this section).
 
 **Why.** "Who should I ask about the billing service?" is a question people ask a colleague who
 has been around, and an agent in many channels sees who answers what. Without a record it answers
@@ -2723,7 +2724,7 @@ could keep, so this section says what one may hold, who sees it, and how its sub
 - **The prompt** carries both lists wherever an entry is written: the first look's prompt,
   research's prompt, and the memory guidance an internal public channel's session gets.
 - **The write** keeps the entry's shape. An entry is a heading with the person's display name and
-  handles, then at most ten lines in four fields, each ending in its source and date: `Role:`,
+  handles, ending in their identity key in backticks (Identity, below), then at most ten lines in four fields, each ending in its source and date: `Role:`,
   `Works on:`, `Knows about:` and `Ask about:`. The daemon refuses another field, a line with no
   source, an entry over ten lines, and a source it cannot confirm: a channel it does not know as
   internal and public, or a repository the agent may not read. The entry's person must be a member
@@ -2732,11 +2733,11 @@ could keep, so this section says what one may hold, who sees it, and how its sub
   there. A first look's and research's writes are checked for membership and the marker alone,
   since no turn carries their people. A shape cannot see an opinion phrased as a fact. That
   residual is accepted, and the prompt and the person's own view of their entry guard it. The
-  entry's shape is checked since 2026-10-17 (§5.15 "As shipped"); the rules on its person are not
-  yet.
+  entry's shape is checked since 2026-10-17 (§5.15 "As shipped"), and the rules on its person since
+  the sixty-first revision ("As shipped", below).
 
 ```text
-## Alice (@alice on Slack, @alice-gh on GitHub)
+## Alice (@alice on Slack, @alice-gh on GitHub) `user:user-alice`
 Role: release manager (self, 2026-10-02)
 Works on: the 2.5 release train (#release-train, 2026-10-15)
 Knows about: the billing service (example-org/example-repo CODEOWNERS, 2026-10-17)
@@ -2827,6 +2828,61 @@ a person for their own entry. It keeps one index line, as #3074 gives the others
 listed in the index one by one, which would grow it without bound. Its changes are in the file's
 history on the Memory page. If the directory later moves to organization knowledge (§5.16), its
 subject's control is what that move would have to carry over.
+
+**As shipped** (sixty-first revision). The person rules, the opt-out, a person's own entry, linking,
+leaving and the console. The entry's shape is checked on its own (§5.15 "Shapes"); the deeper pass
+is not built.
+
+- **The key.** Each heading ends in its person's identity key in backticks, after the handles the
+  shape requires: `user:<console user id>` once they linked an account, else
+  `<platform>:<tenant>:<member id>`. A platform key whose person linked a console account is
+  refused with the console key to use. The model learns keys from what the daemon shows it: a
+  first look's prompt names its place's key prefix, which the member ids it reads complete; a
+  refusal on a conversation turn lists the turn's people by key; and a person's own conversation
+  names their key in its standing rules. Research keeps the keys it finds and adds no new person,
+  since only a conversation they are in can tell their key.
+- **Where the rules run.** Inside the revision-checked entry write itself, under its lock, with the
+  file's text before and after, so a concurrent write cannot slip past them. `writeMemory` refuses
+  `members.md` in the shared layer, so only entry writes change it. On a conversation turn, a turn
+  a person typed in an internal public channel, an entry added or changed must be keyed by a full
+  member of the bot's workspace, or by someone who linked an organization member's console account,
+  who has not opted out, and who sent or was mentioned in a message of the turn. A line it adds is
+  sourced `self` only when its person sent a message of the turn, else by the place's name. A
+  removal needs its person on the turn too. Mentions come from `mentionedUsers`, a new optional
+  field of the normalized message that Slack, Discord and Lark/Feishu fill. A first look writes with
+  no turn to be on and is checked for membership and the marker alone; organization research joins
+  it. A distillation, a dream, a report round, a check, a schedule, another agent's message, a
+  private place and a place with outsiders are refused. Every refusal ends "Nothing was saved."
+- **A person's own conversation.** Their DM or console conversation of an assistant-mode agent gets
+  one standing line naming their key, re-asserted on resume. Writing with `layer: "shared"` on
+  their own turn, it changes their entry alone, sourced `self`, under their console key when they
+  have one. Removing it, leaving none, marks every key it knows them by.
+- **The marker.** `people/.directory-opt-out.json` in the agent's memory tree, beside the person
+  layers and outside every store, so no memory tool, listing or dream reaches it, and the home's
+  migration copies it. It maps keys to the day they were cleared. A person's removal records it
+  before the write lands, so a failed write leaves them out, never in. Their own write of their
+  entry lifts it on the key they wrote, once the write has landed.
+- **Linking.** When a person's DM or console conversation next resolves to their console key after
+  they linked an account, the directory follows: a marker on either key marks both and drops
+  both entries; else a platform-keyed entry moves to the console key, or goes if one is there.
+  Unlinking changes nothing.
+- **Leaving.** A daily sweep on the daemon that holds each assistant-mode agent, at most 500 lookups
+  a pass: an entry goes when the Control Plane no longer knows its console key as a member, or the
+  platform says the account was deactivated or is gone (Slack). A lookup that cannot be answered
+  removes nothing. A push from the Control Plane's member removal was not chosen: the sweep is
+  smaller, needs no new Control Plane path, and also covers a deactivated account.
+- **The console.** Your memory shows the caller's own entries above their layer, with Clear
+  (`GET` and `DELETE /agents/:id/memory/mine/member`); the Control Plane matches the caller's console
+  key and each chat identity they linked. An organization owner sees the directory's people under
+  the shared layer, each with Clear (`GET /agents/:id/memory/members`,
+  `DELETE /agents/:id/memory/members/:key`), recorded in the audit log as `memory_change` with
+  frame type `memory/member/clear`, without content. Both clears mark the keys they remove. A
+  Control-Plane home is read and cleared in the Control Plane's tables with no daemon; a daemon home
+  through `memory/member/clear`, offered only toward a daemon advertising `memory-member-clear-v1`.
+  Any other console edit of `members.md` is refused.
+- **Not covered yet.** A cleared entry's earlier lines stay in `members.md`'s change history on the
+  Memory page. A clear marks the chat identities the directory or the Control Plane can name at
+  that moment; one linked later is covered for as long as it stays linked.
 
 ---
 
@@ -3641,6 +3697,16 @@ memory itself ship, the first part of §5.15's rollout step 2 (issue #2810; §2,
   revision-checked entry writes. Its report keeps "In flight", "Where I could help" and "Not
   covered", after one line on what the place is for, and the long session's handling drops step 1.
 - **Not yet:** `members.md`'s entry rules and organization research, in their own changes.
+
+**Sixty-first revision (2026-10-17)**: §5.17 ships the people directory's person rules, the opt-out,
+a person's own entry, linking, leaving and the console (issue #2810; §5.17 "As shipped"). An entry's
+heading ends in its person's identity key. The rules run inside the revision-checked entry write: a
+conversation writes only about a member on its turn, who did not opt out, sourced `self` for a
+sender and by the place's name otherwise; a person's own conversation changes only their entry;
+a first look checks membership and the marker alone. Clearing an entry, in a DM or the console,
+marks its person out in a marker beside the person layers, which linking carries to both keys and
+only the person's own write lifts. A daily sweep drops the entries of people who left. Owners clear
+any entry, audited without content. The deeper pass waits for a later change.
 
 **Sixty-second revision (2026-10-17)**: organization research ships, §5.15's rollout step 3 (issue
 #2810; §5.15, §9 Q22, Q24, Q29, Q31). The sixty-first is `members.md`'s entry rules.

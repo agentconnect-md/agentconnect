@@ -12,7 +12,9 @@ vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => false }))
 
 vi.mock('@/lib/api', () => ({
   listMyAgentMemory: vi.fn(),
-  fetchMyAgentMemoryFull: vi.fn()
+  fetchMyAgentMemoryFull: vi.fn(),
+  fetchMyAgentDirectoryEntry: vi.fn(async () => ({ entries: [], clearable: false })),
+  clearMyAgentDirectoryEntry: vi.fn()
 }))
 
 import { fetchMyAgentMemoryFull, listMyAgentMemory } from '@/lib/api'

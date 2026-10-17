@@ -99,11 +99,12 @@ something; where two internal sources disagree, keep the newer.
   its system). Merge into what is there; at most 16 KB.
 - channels.md: one line per channel, "#name: what it is for (source, date)"; add which
   repository a channel's release talk maps to, marked (inferred).
-- members.md: one entry per person, "## Display name (@handle on Platform)" and at most ten
-  lines, each starting with "Role:", "Works on:", "Knows about:" or "Ask about:". Work facts
-  only, as people state them and as CODEOWNERS and reviews show. Never opinions or
-  evaluations of a person, judgments of their work, or anything personal. Skip anyone whose
-  entry says they opted out.
+- members.md: one entry per person, "## Display name (@handle on Platform) \`key\`" and at most
+  ten lines, each starting with "Role:", "Works on:", "Knows about:" or "Ask about:". Work
+  facts only, as people state them and as CODEOWNERS and reviews show. Never opinions or
+  evaluations of a person, judgments of their work, or anything personal. Add to the entries
+  already there, keeping each heading's key; add no new person, whose key only a conversation
+  they are in can tell, and leave an entry you are refused alone.
 A save that does not fit is refused with the line that failed: fix that line and save again.
 Other conversations update these files too, so never rewrite them with writeMemory: find
 each with listMemoryEntries, read its text and revision with getMemoryEntry, then save it

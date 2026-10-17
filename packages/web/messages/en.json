@@ -3137,7 +3137,14 @@
         "clearLayer": "Clear this layer",
         "clearLayerTitle": "Clear this memory layer?",
         "clearLayerBody": "Every file the agent keeps for {name} is deleted, with its history, and none of it is shown to you. This can’t be undone.",
-        "clearingLayer": "Clearing…"
+        "clearingLayer": "Clearing…",
+        "yourDirectoryEntry": "Your entry in the people directory",
+        "directoryPeople": "People directory",
+        "clearEntry": "Clear entry",
+        "clearYourEntryTitle": "Clear your entry?",
+        "clearYourEntryBody": "Your entry is removed from members.md, and the agent writes nothing about you there again until you write your entry yourself.",
+        "clearEntryTitle": "Clear this entry?",
+        "clearEntryBody": "{name}'s entry is removed from members.md, and the agent writes nothing about them there again until they write their entry themselves."
       },
       "assistantMode": {
         "title": "Assistant mode",

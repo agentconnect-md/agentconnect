@@ -59,6 +59,8 @@ vi.mock('@/lib/api', () => {
     updateAgentMemory: vi.fn(),
     fetchAgentMemoryChannels: vi.fn(async () => ({ channels: [] })),
     clearAgentMemoryChannel: vi.fn(async () => ({ cleared: true })),
+    fetchAgentDirectoryEntries: vi.fn(async () => ({ entries: [], clearable: false })),
+    clearAgentDirectoryEntry: vi.fn(async () => ({ cleared: true })),
     wakeAgent: vi.fn(() => Promise.resolve({ state: mocks.wake })),
     // Pulled in by the workspace read model the sandbox code constant lives beside; never called from here.
     fetchWorkspaceFiles: vi.fn(),

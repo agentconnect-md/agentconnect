@@ -12,6 +12,14 @@ import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { MemoryEntriesError } from '../memory/entries/contract.js'
 import { MemoryHomeUnavailableError } from '../memory/fs.js'
 import { organizationFileRefusal } from '../memory/organization-files.js'
+import { MEMBERS_DIRECTORY_FILE } from '../memory/members-directory.js'
+
+/** The console changes the people directory only by clearing an entry (assistant-mode.md §5.17). */
+export const MEMBERS_CONSOLE_EDIT_REFUSED = `${MEMBERS_DIRECTORY_FILE} is changed in the console only by clearing an entry`
+
+const consoleMembersGuard = async (topic: string): Promise<void> => {
+  if (topic === MEMBERS_DIRECTORY_FILE) throw new MemoryEntriesError('FORBIDDEN', MEMBERS_CONSOLE_EDIT_REFUSED)
+}
 
 export function createMemoryEntriesReader(
   provider: MemoryProvider,
@@ -75,7 +83,7 @@ export function createMemoryEntriesWriter(
         write: {
           source: 'console',
           canWrite: () => canWrite(req.agentId),
-          ...(req.channelKey ? {} : { check: organizationFileRefusal })
+          ...(req.channelKey ? {} : { check: organizationFileRefusal, guard: consoleMembersGuard })
         }
       })
       const result = await entries[req.operation](req.request)

@@ -69,6 +69,7 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   MEMORY_PERSON_LAYER_FEATURE,
   MEMORY_PLACE_CLEAR_FEATURE,
+  MEMORY_MEMBER_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   REPO_CANDIDATES_ALL_V1_FEATURE,
@@ -828,6 +829,19 @@ import {
 } from './memory/provider.js'
 import { MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
 import {
+  MEMBERS_DIRECTORY_FILE,
+  checkMembersWrite,
+  clearMembers,
+  membersKeys,
+  membersOwnEntryGuidance,
+  readMembersOptOut,
+  relinkMembers,
+  updateMembersOptOut,
+  type MembersLookups,
+  type MembersWriter
+} from './memory/members-directory.js'
+import type { MembersGuard } from './mcp/ops/memory.js'
+import {
   MemoryLayers,
   memoryLayerFolder,
   typedByPerson,
@@ -1167,6 +1181,8 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
+  MEMBERS_SWEEP_INTERVAL_MS,
+  MEMBERS_SWEEP_MAX_LOOKUPS,
   SESSION_RETENTION_SWEEP_INTERVAL_MS,
   UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
 } from './daemon/constants.js'
@@ -2104,6 +2120,8 @@ export class Daemon {
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
+  // Last pass dropping the directory entries of people who left (assistant-mode.md §5.17).
+  private lastMembersSweepAt = 0
   // Last session-retention GC pass (#485); rides the idle sweep at its own cadence.
   private lastSessionRetentionSweepAt = 0
   // Last look for Running pods no launch here tracks, and the one still in flight, off the sweep's critical path.
@@ -4417,6 +4435,7 @@ export class Daemon {
       },
       // Resolved from trusted session coordinates at call time, so a place that changes audience applies at once.
       memoryScope: (ctx, call) => this.memoryToolScope(ctx, call),
+      membersGuard: (ctx, scope) => this.membersGuard(ctx, scope),
       resolveAttachment: async (ctx, name) => {
         const found = await this.store.transcriptAttachmentByName(
           {
@@ -4643,6 +4662,7 @@ export class Daemon {
                 )
               )
             ).scope,
+      memoryGuidanceFor: (agentId, msg, integrationId, rec) => this.memoryGuidanceFor(agentId, msg, integrationId, rec),
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
@@ -7935,6 +7955,7 @@ export class Daemon {
       ORGANIZATION_KNOWLEDGE_FEATURE,
       MEMORY_PERSON_LAYER_FEATURE,
       MEMORY_PLACE_CLEAR_FEATURE,
+      MEMORY_MEMBER_CLEAR_FEATURE,
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
@@ -8179,6 +8200,10 @@ export class Daemon {
       }
     },
     placeName: async (place) => (await this.store.getDisplayNames([place.channel])).get(place.channel),
+    linked: async (agentId, from, to) => {
+      const ports = this.memoryHomePortsFor(agentId)
+      if (ports) await relinkMembers(ports.live, ports.historyFor(ports.live), from, to, new Date(this.clock.now()))
+    },
     now: () => this.clock.now(),
     log: (message) => this.log.info(message)
   })
@@ -8269,6 +8294,200 @@ export class Daemon {
   private memoryPlaceExternal(agentId: string, integrationId: string | undefined, channel: string): boolean {
     const int = integrationId ? this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId) : undefined
     return int === undefined || conversationTrustLevel(int, channel) === 'external'
+  }
+
+  /** The people directory's rules for a write into this scope (assistant-mode.md §5.17); only managed memory's shared layer holds it. */
+  private async membersGuard(ctx: SessionContext, scope: MemoryScope): Promise<MembersGuard | undefined> {
+    if ((this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed') !== 'managed') return undefined
+    if (scope.personKey || (scope.channelKey && !scope.sharedPlace)) return undefined
+    const lookups = this.membersLookups(ctx.agentId)
+    let lift: string[] = []
+    return {
+      guard: async (topic, before, after) => {
+        if (topic !== MEMBERS_DIRECTORY_FILE) return
+        const effects = await checkMembersWrite(before, after, await this.membersWriter(ctx), lookups)
+        // Opting out is recorded before the write lands, so a failed write leaves the person out, never in.
+        if (effects.optOut.length)
+          await updateMembersOptOut(this.membersTree(ctx.agentId), { add: effects.optOut }, new Date(this.clock.now()))
+        lift = effects.lift
+      },
+      landed: async () => {
+        if (!lift.length) return
+        await updateMembersOptOut(this.membersTree(ctx.agentId), { remove: lift }, new Date(this.clock.now())).catch(
+          (err) =>
+            this.log.warn(`memory: agent "${ctx.agentId}" kept an opt-out its person wrote over (${formatErr(err)})`)
+        )
+      }
+    }
+  }
+
+  /** The agent's live memory tree, where the directory and its opt-out marker are. */
+  private membersTree(agentId: string): MemoryFs {
+    const ports = this.memoryHomePortsFor(agentId)
+    if (!ports) throw new Error(`unknown agent ${agentId}`)
+    return ports.live
+  }
+
+  /** Whether this session builds the directory with no person behind its rounds: a first look, or organization research. */
+  private directoryBuilder(ctx: SessionContext): boolean {
+    return isFirstLookCoordinate(ctx.thread) || isResearchCoordinate(ctx.thread)
+  }
+
+  /** Who is writing the directory on this call, from the session's trusted facts only. */
+  private async membersWriter(ctx: SessionContext): Promise<MembersWriter> {
+    if (this.directoryBuilder(ctx)) return { kind: 'builder' }
+    if (ctx.memoryBinding)
+      return {
+        kind: 'refused',
+        reason: 'a distillation or a dream never writes it; it is written on the turn a person states a fact.'
+      }
+    const key = this.sessionKeyOf(ctx)
+    const live = this.activeGateEntries.get(key)
+    if (!live || !this.personTypedTurn(key))
+      return {
+        kind: 'refused',
+        reason:
+          "it is written only on a turn a person typed, never on a report round, a check, a schedule or another agent's message."
+      }
+    const audience = await this.conversationAudience(ctx, key)
+    if (audience.external)
+      return { kind: 'refused', reason: 'this conversation includes people from outside the organization.' }
+    if (audience.layer === 'person') {
+      const place = this.memoryPlaceOf(ctx.agentId, ctx, await this.store.getSession(key), live.msg)
+      const keys = await this.memoryLayers.personKeys(place)
+      return keys.length
+        ? { kind: 'own', keys }
+        : { kind: 'refused', reason: "this conversation's person cannot be told." }
+    }
+    if (audience.layer !== 'shared')
+      return {
+        kind: 'refused',
+        reason: "a private place feeds no one's entry; facts about people's work come from internal public channels."
+      }
+    const senders = new Set<string>()
+    const mentioned = new Set<string>()
+    for (const m of [this.turnMessageOf(live), ...(live.foldedMessages ?? [])]) {
+      if (!typedByPerson(m.msg)) continue
+      if (m.console) {
+        senders.add(`user:${m.msg.sender.id}`)
+        continue
+      }
+      const bot = m.integrationId ?? live.integrationId ?? ctx.integrationId
+      if (!bot) continue
+      for (const k of await this.memoryLayers.memberKeys(ctx.agentId, m.msg.platform, bot, m.msg.sender.id))
+        senders.add(k)
+      for (const uid of m.msg.mentionedUsers ?? [])
+        for (const k of await this.memoryLayers.memberKeys(ctx.agentId, m.msg.platform, bot, uid)) mentioned.add(k)
+    }
+    const name = (await this.store.getDisplayNames([ctx.channel])).get(ctx.channel)?.replace(/^[#@]/, '')
+    return { kind: 'conversation', senders, mentioned, ...(name ? { place: name } : {}) }
+  }
+
+  /** The live answers the directory's rules need for one agent; each fails closed. */
+  private membersLookups(agentId: string): MembersLookups {
+    return {
+      member: async (key) => {
+        if (key.startsWith('user:')) {
+          const verdict = await this.placeMembers
+            .consoleVerdict(agentId, { kind: 'console', userId: key.slice(5) }, [])
+            .catch(() => undefined)
+          return verdict?.asker === 'linked'
+        }
+        const at = await this.integrationOfKey(agentId, key)
+        if (!at) return false
+        if (await this.placeMembers.isFullMember(at.integrationId, at.uid)) return true
+        // Where the platform cannot tell a full member, one who linked an organization member's console account counts.
+        const verdict = await this.placeMembers
+          .consoleVerdict(
+            agentId,
+            { kind: 'member', platform: at.platform, integrationId: at.integrationId, userId: at.uid },
+            []
+          )
+          .catch(() => undefined)
+        return verdict?.asker === 'linked'
+      },
+      consoleKey: async (key) => {
+        if (key.startsWith('user:')) return undefined
+        const at = await this.integrationOfKey(agentId, key)
+        return at ? await this.memoryLayers.linkedConsoleKey(agentId, at.integrationId, at.uid) : undefined
+      },
+      optedOut: () => readMembersOptOut(this.membersTree(agentId))
+    }
+  }
+
+  /** The agent's bot a platform identity key belongs to, by its platform and tenant, and its member id. */
+  private async integrationOfKey(
+    agentId: string,
+    key: string
+  ): Promise<{ integrationId: string; platform: string; uid: string } | undefined> {
+    const first = key.indexOf(':')
+    const last = key.lastIndexOf(':')
+    if (first < 0 || last <= first) return undefined
+    const platform = key.slice(0, first)
+    const tenant = key.slice(first + 1, last)
+    for (const int of this.agents.get(agentId)?.integrations ?? []) {
+      if (int.platform === platform && (await this.tenantScopeForIntegration(int)) === tenant)
+        return { integrationId: int.id, platform, uid: key.slice(last + 1) }
+    }
+    return undefined
+  }
+
+  /** A person's own DM or console conversation of an assistant-mode agent learns how to show, correct and clear their directory entry. */
+  private async memoryGuidanceFor(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId: string | undefined,
+    rec: SessionRecord | undefined
+  ): Promise<string> {
+    const agent = this.agents.get(agentId)
+    if (!assistantModeOn(agent) || (agent?.memory?.provider ?? 'managed') !== 'managed') return ''
+    const place = this.memoryPlaceOf(
+      agentId,
+      {
+        platform: msg.platform,
+        channel: msg.channel,
+        transportScope: this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
+      },
+      rec,
+      msg
+    )
+    if ((await this.memoryLayers.layerOf(place)) !== 'person') return ''
+    const [key] = await this.memoryLayers.personKeys(place)
+    return key ? membersOwnEntryGuidance(key) : ''
+  }
+
+  /** Once a day, the directory drops the entries of people the organization or the platform says are gone (§5.17 "Leaving"). */
+  private async sweepMembersDirectory(): Promise<void> {
+    const now = new Date(this.clock.now())
+    for (const agent of this.agents.values()) {
+      if (!assistantModeOn(agent) || (agent.memory?.provider ?? 'managed') !== 'managed') continue
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agent.id)) continue
+      try {
+        const ports = this.memoryHomePortsFor(agent.id)
+        if (!ports) continue
+        const gone: string[] = []
+        for (const key of (await membersKeys(ports.live)).slice(0, MEMBERS_SWEEP_MAX_LOOKUPS))
+          if (await this.memberGone(agent.id, key)) gone.push(key)
+        if (gone.length && (await clearMembers(ports.live, ports.historyFor(ports.live), gone, [], now)))
+          this.log.info(`memory: agent "${agent.id}" dropped ${gone.length} directory entries of people who left`)
+      } catch (err) {
+        this.log.warn(`memory: agent "${agent.id}" directory sweep failed (${formatErr(err)})`)
+      }
+    }
+  }
+
+  /** Whether a key's person is gone: the console says they are no member, or the platform says the account was deactivated; unknown is not gone. */
+  private async memberGone(agentId: string, key: string): Promise<boolean> {
+    if (key.startsWith('user:')) {
+      const verdict = await this.placeMembers
+        .consoleVerdict(agentId, { kind: 'console', userId: key.slice(5) }, [])
+        .catch(() => undefined)
+      return verdict?.asker === 'unidentifiable'
+    }
+    const at = await this.integrationOfKey(agentId, key)
+    if (!at) return false
+    const gw = this.gatewayForIntegration(at.integrationId) as Partial<Pick<MessageGateway, 'memberGone'>> | undefined
+    return (await gw?.memberGone?.(at.uid).catch(() => false)) === true
   }
 
   /** The console user a chat member linked, through the Control Plane mapping the read rule uses; rejects when it cannot be asked. */
@@ -9218,6 +9437,8 @@ export class Daemon {
       ?.getChannelInfo(channel)
       .catch(() => undefined)
     const name = info?.name?.trim()
+    // A person's directory key on this bot, their member id following (assistant-mode.md §5.17).
+    const tenant = await this.tenantScopeForIntegration(int).catch(() => undefined)
     // The place's own tools, as its long session is offered them; any appending coordinate names that session.
     const thread =
       (await this.store.placeSession(agentId, platform, channel, transportScope))?.thread ??
@@ -9248,7 +9469,8 @@ export class Daemon {
       // Only a place that writes the shared layer adds to the organization's file; an unknown layer adds nothing.
       shared:
         refusal !== 'external' &&
-        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared'
+        (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared',
+      ...(tenant && !/\s/.test(tenant) ? { memberKey: `${platform}:${tenant}:` } : {})
     }
   }
 
@@ -24785,6 +25007,10 @@ export class Daemon {
     if (now - this.lastProbeRootSweepAt >= PROBE_ROOT_SWEEP_INTERVAL_MS) {
       this.lastProbeRootSweepAt = now
       sweepStaleProbeRoots({ log: this.log })
+    }
+    if (now - this.lastMembersSweepAt >= MEMBERS_SWEEP_INTERVAL_MS) {
+      this.lastMembersSweepAt = now
+      void this.sweepMembersDirectory()
     }
     // send-message-routing-rework.md §3.2/§8.6: a paired delivery whose internal wake
     // never arrived expires TRANSCRIPT-ONLY and is reported as an operational delivery
