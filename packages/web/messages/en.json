@@ -74,9 +74,9 @@
       "typeLabel": "type a label, Enter adds it",
       "limitReached": "Label limit reached — remove one to add another."
     },
+    "beta": "Beta",
     "language": {
-      "label": "Language",
-      "beta": "Beta"
+      "label": "Language"
     },
     "visibility": {
       "label": "Visibility",

@@ -14,10 +14,8 @@ and asks before it acts.
 tool set for AI tools. That design gives an agent tools to administer the platform; this one
 describes how an agent behaves.
 
-**Console:** the switch sits in the assistant mode panel on the agent's Configuration tab, offered
-behind the `assistant-mode` flag (`features.assistantMode` in the chart, off by default) until it
-changes behavior. The flag gates only switching the mode on: an
-agent already switched on keeps the switch, Activity, the Tasks tab and proposals.
+**Console:** the switch sits in the assistant mode panel on the agent's Configuration tab and is
+offered to every agent; the panel's title and the switch are labelled Beta (sixty-sixth revision).
 
 **Builds on:** [resource-visibility.md](resource-visibility.md) §14 (per-conversation triggers
 and their defaults), [session-visibility.md](session-visibility.md) (session visibility, the
@@ -2157,8 +2155,7 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
 - **Features, no flags or settings.** A relay that advertises `follow-up-watch-v1` is sent the watched
   objects. The Control Plane advertises the same feature to daemons, and a daemon lists `watch` only
   toward one that does; the daemon advertises `follow-up-wake-v1`, without which the Control Plane
-  accepts no subscription from it and sends it no wake. The assistant-mode flag already gates the
-  mode, and nothing else is added.
+  accepts no subscription from it and sends it no wake. Nothing else is added.
 - **Order.** Control Plane and relay first, inert until a daemon subscribes; then the daemon, which
   turns it on; then the console.
 - **Pull requests.**
@@ -3796,3 +3793,9 @@ Activity row's wording (issue #2810; §5.13).
   never shows a session's title as a place: with no name known, the platform's mark and
   "Conversation" stand in. A follow-up's done-when line shows the sentence alone, in the meta
   line's tone.
+
+**Sixty-sixth revision (2026-10-17)**: the switch is offered everywhere, labelled Beta (issue
+#2810). The console's `assistant-mode` flag and the chart's `features.assistantMode` are removed,
+so every agent's Configuration tab offers the switch, as it did with the flag on. A Beta badge sits
+beside the panel's title and beside the switch, and nowhere else. The Control Plane and daemon are
+unchanged.

@@ -1388,7 +1388,6 @@ describe('the Tasks tab’s Delegated group', () => {
     parent: { sessionId: 'session-1', title: 'Deploy the thing', platform: 'slack', channelName: 'ops' }
   }
   const assistant = () => {
-    window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
     wire.assistantMode = true
   }
   // An untracked runtime has no group of its own, so the tab is there only for what the conversation delegated.
@@ -1452,8 +1451,7 @@ describe('the Tasks tab’s Delegated group', () => {
     expect(container?.querySelector('[data-dock-tab="tasks"]')).not.toBeNull()
   })
 
-  it('reads nothing and draws no group for an agent outside assistant mode whose daemon lists only assistant mode’s, flag or not', async () => {
-    window.__AC_ENV = { FEATURE_FLAGS: 'assistant-mode' }
+  it('reads nothing and draws no group for an agent outside assistant mode whose daemon lists only assistant mode’s', async () => {
     wire.assistantMode = false
     untracked()
     wire.subsessions = [child]

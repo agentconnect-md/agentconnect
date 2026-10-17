@@ -93,7 +93,6 @@ import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { AssistantModePanel } from '@/components/console/AssistantModePanel'
 import { AssistantActivityPanel } from '@/components/console/AssistantActivityPanel'
 import { activityScope } from '@/lib/agent-activity'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
@@ -1722,26 +1721,23 @@ function AgentDetail() {
               </div>
             </div>
 
-            {/* The flag offers switching the mode on; an agent already on keeps the panel, so it can be switched off. */}
-            {(featureFlagEnabled('assistant-mode') || da.assistantMode?.enabled) && (
-              <div className="order-5 min-w-0">
-                <AssistantModePanel
-                  agentId={id}
-                  canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
-                  assistantMode={da.assistantMode}
-                  runtime={da.runtime}
-                  memoryProvider={da.memoryProvider}
-                  placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
-                  permissionMode={da.permissionMode}
-                  askEveryTime={
-                    (da.permissionMode ||
-                      capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
-                        ?.defaultPermissionMode ||
-                      permissionModeDefault(da.runtime)) === 'default'
-                  }
-                />
-              </div>
-            )}
+            <div className="order-5 min-w-0">
+              <AssistantModePanel
+                agentId={id}
+                canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
+                assistantMode={da.assistantMode}
+                runtime={da.runtime}
+                memoryProvider={da.memoryProvider}
+                placement={`${da.placementKind ?? 'daemon'}:${da.setId ?? da.daemon}`}
+                permissionMode={da.permissionMode}
+                askEveryTime={
+                  (da.permissionMode ||
+                    capabilitySource?.runtimeModels.find((r) => r.runtime === da.runtime)?.modelCatalog
+                      ?.defaultPermissionMode ||
+                    permissionModeDefault(da.runtime)) === 'default'
+                }
+              />
+            </div>
 
             {/* Variables + Secrets: shared editable cards, each with its own inline add/edit affordances. */}
             <div className="order-6 min-w-0">

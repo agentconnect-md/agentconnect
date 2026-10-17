@@ -966,9 +966,7 @@ on or off changes no conversation's trigger, so one set Off stays Off, and one n
 answers an addressed message once with the sign (see "Per-conversation trigger"). The switch, its
 limits and the agent's responsible user (see "Assistant-mode drafts") are in the assistant mode
 panel on the agent's Configuration tab; the panel names that person and offers no choice of them.
-The console's `assistant-mode` flag decides only whether the mode can be switched on: an agent
-already in assistant mode keeps the switch, so it can be switched off, and keeps its Activity tab,
-its sessions' Tasks tab and proposals in the console whatever the flag says.
+The mode is labelled Beta in two places only: beside the panel's title and beside the switch.
 
 Turning the mode on also sets the agent's permission mode, so tasks nobody is watching
 does not stop to wait for approval: a mode that asks for approval or only reads, or no mode at
