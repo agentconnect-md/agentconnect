@@ -81,6 +81,8 @@ interface KnowledgeDraft {
   summary: string
   tags: string
   content: string
+  /** A new entry's audience, kept so a restored draft does not widen it. */
+  audience?: AgentVisibilityValue
 }
 
 const draftKey = (orgId: string, recordId: string | null) => `ac.knowledge-draft:${orgId}:${recordId ?? 'new'}`
@@ -133,15 +135,18 @@ export function KnowledgeEditor({
   const [tags, setTags] = useState(restored?.tags ?? initial.tags)
   const [content, setContent] = useState(restored?.content ?? initial.content)
   // Which agents read a new entry; an existing entry's readers change on its page.
-  const [readers, setReaders] = useState<AgentVisibilityValue>({ visibility: 'all', readers: [] })
+  const [readers, setReaders] = useState<AgentVisibilityValue>(restored?.audience ?? { visibility: 'all', readers: [] })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const ready = !!title.trim() && !!content.trim()
 
   // Closing without publishing keeps the edits for the next open in this tab.
   const dismiss = () => {
-    const draft = { revision, title, summary, tags, content }
-    const edited = (['title', 'summary', 'tags', 'content'] as const).some((field) => draft[field] !== initial[field])
+    const audienceChanged = !record && (readers.visibility !== 'all' || readers.readers.length > 0)
+    const draft = { revision, title, summary, tags, content, ...(record ? {} : { audience: readers }) }
+    const edited =
+      audienceChanged ||
+      (['title', 'summary', 'tags', 'content'] as const).some((field) => draft[field] !== initial[field])
     writeDraft(key, edited ? draft : null)
     onClose()
   }

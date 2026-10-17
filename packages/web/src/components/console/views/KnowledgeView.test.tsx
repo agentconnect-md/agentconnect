@@ -459,6 +459,34 @@ describe('organization knowledge surface', () => {
     expect(editor()?.value).toBe('Half-written entry')
   })
 
+  it("keeps a closed draft's selected agents, so publishing it does not widen who reads it", async () => {
+    const fetchMock = withRecord((url, init) =>
+      url.includes('/knowledge') && init?.method === 'POST' ? json({ ...KNOWLEDGE, id: 'new' }) : json([])
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('No knowledge yet') === true)
+    const atlas = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button[aria-pressed]')].find((b) =>
+        b.textContent?.includes('Atlas')
+      )
+
+    await act(async () => button('Publish').click())
+    const tile = [...document.querySelectorAll<HTMLElement>('[role="dialog"] .ptile')].find((el) =>
+      el.textContent?.includes('Selected agents')
+    )!
+    await act(async () => tile.click())
+    await act(async () => atlas()!.click())
+    const scrim = document.querySelector<HTMLElement>('.scrim')!
+    await act(async () => {
+      scrim.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      scrim.click()
+    })
+
+    await act(async () => button('Publish').click())
+    expect(atlas()?.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('hides the review tab and the publish action from members who cannot manage knowledge', async () => {
     mocks.role = 'collaborator'
     const fetchMock = withRecord((url) => json(url.includes('/knowledge?') ? [{ ...KNOWLEDGE, canManage: false }] : []))
