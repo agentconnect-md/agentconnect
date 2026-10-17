@@ -5,7 +5,7 @@ import { hydrateRoot, type Root } from 'react-dom/client'
 import { renderToString } from 'react-dom/server'
 import { afterEach, expect, it, vi } from 'vitest'
 import LoginPage from './page'
-import { PublicEnvScript } from '@/lib/public-env'
+import * as publicEnv from '@/lib/public-env'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/i18n/actions', () => ({ setLocale: vi.fn() }))
@@ -18,7 +18,10 @@ let container: HTMLDivElement | undefined
 afterEach(async () => {
   if (root) await act(async () => root?.unmount())
   container?.remove()
+  root = undefined
+  container = undefined
   delete window.__AC_ENV
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
 })
@@ -47,7 +50,7 @@ it('renders the configured sign-in buttons before hydration and keeps the same D
     )
   )
 
-  const script = await PublicEnvScript()
+  const script = await publicEnv.PublicEnvScript()
   window.__AC_ENV = JSON.parse(script.props.dangerouslySetInnerHTML.__html.slice('window.__AC_ENV='.length))
   const page = await LoginPage()
   const browserWindow = window
@@ -80,4 +83,13 @@ it('renders the configured sign-in buttons before hydration and keeps the same D
 
   await act(async () => buttons[4]!.click())
   expect(container.querySelector('button[aria-label="Continue with Discord"]')).not.toBeNull()
+})
+
+it('retains the build-time provider fallback when the runtime snapshot has no provider setting', async () => {
+  // Next.js inlines direct NEXT_PUBLIC_* reads; the resolver's dynamic env lookup cannot see build-only values.
+  vi.spyOn(publicEnv, 'resolvePublicEnv').mockResolvedValueOnce({})
+  vi.stubEnv('NEXT_PUBLIC_SOCIAL_PROVIDERS', 'gitlab')
+  const html = renderToString(await LoginPage())
+  expect(html).toContain('Continue with GitLab')
+  expect(html).not.toContain('Continue with Google')
 })
