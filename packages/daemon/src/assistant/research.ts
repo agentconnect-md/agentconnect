@@ -23,6 +23,7 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import type { CheckParent } from './follow-up-checks.js'
+import { FIRST_LOOK_DAYS, FIRST_LOOK_MAX_MESSAGES } from './first-look.js'
 
 /** A switch-on older than this greets nobody, and the daemon's second round is given only within it. */
 export const ONBOARDING_WINDOW_MS = 24 * 60 * 60_000
@@ -31,10 +32,19 @@ export const RESEARCH_TASK_TITLE = 'Organization research'
 /** The code-host reads only research is offered (assistant-mode.md §5.15 "Code hosts"). */
 export const RESEARCH_CODE_HOST_TOOLS = new Set(['listCodeHostRepositories', 'readCodeHostRepository'])
 
-// What research reads besides memory: the organization's knowledge, the channel listing and its code hosts. Nothing posts.
-const RESEARCH_READ_TOOLS = new Set(['findKnowledge', 'listKnowledge', 'listChannels', ...RESEARCH_CODE_HOST_TOOLS])
+/** The channel reads research is offered: a bounded slice of each internal public channel the bot is in (assistant-mode.md §5.15). */
+export const RESEARCH_HISTORY_TOOLS = new Set(['getChannelHistory', 'getThreadHistory'])
 
-/** Research's tool set: memory reads and writes, knowledge, the channel listing and the code-host reads; no sendMessage, propose, platform tool or attachment. */
+// What research reads besides memory: knowledge, the channel listing and their history, and its code hosts. Nothing posts.
+const RESEARCH_READ_TOOLS = new Set([
+  'findKnowledge',
+  'listKnowledge',
+  'listChannels',
+  ...RESEARCH_HISTORY_TOOLS,
+  ...RESEARCH_CODE_HOST_TOOLS
+])
+
+/** Research's tool set: memory reads and writes, knowledge, the channel listing and history, and the code-host reads; no sendMessage, propose, other platform tool or attachment. */
 export function researchTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
   return tools.filter((tool) => RESEARCH_READ_TOOLS.has(tool.name) || MEMORY_TOOL_ACCESS_MODES[tool.name] !== undefined)
 }
@@ -47,6 +57,8 @@ export function researchSources(tools: readonly Pick<ToolDescriptor, 'name'>[]):
   ]
   if (has('findKnowledge') || has('listKnowledge')) sources.push('its knowledge (findKnowledge, listKnowledge)')
   if (has('listChannels')) sources.push('the names of the channels you are in (listChannels)')
+  if (has('getChannelHistory'))
+    sources.push('the recent messages of the internal public channels you are in (getChannelHistory, getThreadHistory)')
   return sources.join(', ')
 }
 
@@ -83,6 +95,10 @@ that every conversation reads. You cannot post anywhere. Your memory tools alrea
 the shared layer: never pass a layer.
 
 Start from what the organization already says about itself: ${input.sources}. ${codeHosts}
+Read each internal public channel you are in with getChannelHistory and getThreadHistory,
+passing its channel: newest first, at most the last ${FIRST_LOOK_DAYS} days or ${FIRST_LOOK_MAX_MESSAGES} messages of each, threads
+included, to learn who works on what and what each channel is for. A private, group or shared
+channel, or one you are not in, is refused, and you never join one.
 Then search the public web from these hints: ${input.hints}, preferring the organization's
 own site and docs. If you have no web tool, or a page will not load, say so under what you
 could not read.
@@ -98,13 +114,16 @@ something; where two internal sources disagree, keep the newer.
   live) and "## Repositories and systems" (each repository you could read, what it is for,
   its system). Merge into what is there; at most 16 KB.
 - channels.md: one line per channel, "#name: what it is for (source, date)"; add which
-  repository a channel's release talk maps to, marked (inferred).
+  repository a channel's release talk maps to, marked (inferred). Where a line's purpose was
+  guessed from the channel's name and you read the channel, replace it with what the channel
+  itself shows, sourced "(#name, date)", without (inferred).
 - members.md: one entry per person, "## Display name (@handle on Platform) \`key\`" and at most
   ten lines, each starting with "Role:", "Works on:", "Knows about:" or "Ask about:". Work
   facts only, as people state them and as CODEOWNERS and reviews show. Never opinions or
-  evaluations of a person, judgments of their work, or anything personal. Add to the entries
-  already there, keeping each heading's key; add no new person, since an entry starts only from
-  messages its writer read and you read none, and leave an entry you are refused alone.
+  evaluations of a person, judgments of their work, or anything personal. Add an entry only for
+  someone whose messages you read, keyed exactly as the history's senderKey shows it, each line
+  sourced by a channel you read them in; keep each heading's key; and leave an entry you are
+  refused alone.
 A save that does not fit is refused with the line that failed: fix that line and save again.
 Other conversations update these files too, so never rewrite them with writeMemory: find
 each with listMemoryEntries, read its text and revision with getMemoryEntry, then save it

@@ -2339,7 +2339,8 @@ report. So the task writes what it learned, and the long session only speaks:
   The daemon binds the research task's memory tools to the shared layer by its marker, as it binds
   a dream's to the staged store. The model passes no `layer`, so the rule #3077 set on that
   argument is untouched. Its reads are a turn no person is behind: memory, knowledge, the channel
-  listing, the code hosts and the web, and no channel's history.
+  listing and a bounded slice of the internal public channels the bot is in, the code hosts and
+  the web.
 - **Host and permissions.** It runs with the agent's permission mode, auto or full access under the
   mode (§1.8), as any delegated task does (_decided_: read-only is not needed). Recommended: the
   daemon launches it as it launches a dream host, without the agent's tool credentials and with a
@@ -2349,8 +2350,9 @@ report. So the task writes what it learned, and the long session only speaks:
   bridge: an ordinary delegated task keeps `sendMessage` and the platform writes, served with the
   daemon's credentials. So the daemon narrows the research task's tools at dispatch, as it narrows a
   check's by its coordinate: the memory reads and writes bound as above, `findKnowledge` and
-  `listKnowledge`, `listChannels`, and the two code-host reads. No `sendMessage` in any form, no
-  `propose`, no platform write and no read of a conversation. Its four-part report is the round's
+  `listKnowledge`, `listChannels`, the history of the internal public channels the bot is in, and
+  the two code-host reads. No `sendMessage` in any form, no `propose`, no reaction, no platform
+  write and no other conversation's read. Its four-part report is the round's
   last output, which the daemon reports to the owning session as it does for every delegated task
   (§5.6), so "you cannot post anywhere" holds at dispatch, not by the prompt alone.
 
@@ -2359,8 +2361,11 @@ report. So the task writes what it learned, and the long session only speaks:
 - The shared layer: the organization files and every topic file public channels wrote, their first
   looks' and ordinary conversation's alike.
 - The organization's knowledge in AgentConnect (`findKnowledge`, `listKnowledge`).
-- The names of the internal public channels the agent's bots are in: a listing, not their history,
-  which is each place's first look's to read.
+- The names of the internal public channels the agent's bots are in, and a bounded slice of their
+  history (sixty-third revision): the last 30 days or 500 messages of each channel per round,
+  threads included, to learn who works on what and to confirm what each channel is for. Only a
+  channel the bot is already in; research never joins one, and a private, group or shared channel
+  is refused. A place's first look still owns its place file and its introduction.
 - The code hosts the organization connected, within the agent's own access (Code hosts, below).
 - The public web: the organization's site, docs, blog and news. It starts from hints the daemon
   passes it: the organization's name in AgentConnect, its chat workspaces' names, the email domains
@@ -2511,7 +2516,9 @@ any task's failure is (§5.7), in the DM.
   names no `replyToSession` call, on the first round or a later one, since its tools hold no
   `sendMessage`. Its session is titled "Organization research".
 - **Its tools** are narrowed at dispatch to the memory reads and writes, `findKnowledge`,
-  `listKnowledge`, `listChannels`, and the two code-host reads below where a code host is in
+  `listKnowledge`, `listChannels`, `getChannelHistory` and `getThreadHistory` (a channel the bot's
+  own listing names and the shared layer's audience confirms, never joined, at most 500 messages
+  of each per round within 30 days), and the two code-host reads below where a code host is in
   reach; the bridge refuses any other name the runtime sends. It gets no Apps tools, no
   evaluation tools and no user-configured MCP server, any of which could post or act for the
   agent. Claude's `ExitPlanMode` and `AskUserQuestion` are disallowed, as on a check.
@@ -2859,8 +2866,9 @@ is not built.
   records the people who typed there, by every key they are known by, and shows each one's key as
   `senderKey`; a bot's or an agent's message, and a private, group or external place, record no
   one. A refusal lists the round's people and where it read them. A first look of any other place
-  is refused like that place. Research reads no conversation (§5.15 "What it reads"), so it adds
-  no new person; people enter through their places' first looks and conversations.
+  is refused like that place. Research reads a bounded slice of each internal public channel the
+  bot is in (§5.15 "What it reads"), so it adds the people of the channels the bot was in before
+  the mode was turned on, which no first look reads.
 - **A person's own conversation.** Their DM or console conversation of an assistant-mode agent gets
   one standing line naming their key, re-asserted on resume. Writing with `layer: "shared"` on
   their own turn, it changes their entry alone, sourced `self`, under their console key when they
@@ -3741,4 +3749,7 @@ entries for the people whose messages that round read. The daemon records, per r
 who typed in an internal public channel the round's history reads returned, by key and place, and
 shows their key in the results; a builder's new entry must be one of them and each line it adds is
 sourced by a place it read them in. A first look of a private, group or external place is no
-longer a builder. Research reads no conversation, so it still adds no new person.
+longer a builder. Research gains a bounded read of each internal public channel the bot is
+already in, at most 30 days or 500 messages per channel per round and never a join, so the
+channels the bot was in before the mode was turned on fill the directory too, and a `channels.md`
+purpose guessed from a channel's name is replaced by one the channel shows (§5.15).

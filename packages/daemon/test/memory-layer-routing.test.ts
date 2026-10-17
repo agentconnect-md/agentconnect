@@ -22,7 +22,7 @@ import {
 import { openTestStore } from './store-support.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { appendCoordinate } from '../src/session/append-coordinate.js'
-import { firstLookCoordinate } from '../src/session/subsession-coordinate.js'
+import { firstLookCoordinate, researchCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
@@ -701,6 +701,31 @@ describe("a directory builder's round", () => {
     // A later round starts with nobody read.
     b.daemon.activeGateEntries.set(b.key, { msg: { ...CHECK, msgId: 'check-2' }, integrationId: 'int-1' })
     expect([...(await b.daemon.membersWriter(b.ctx)).seen]).toEqual([])
+  })
+
+  it('lets research read an internal public channel the bot is in, never another, at most 500 messages each a round', async () => {
+    const w = world({ snapshot: PUBLIC, lookup: { isPrivate: false } })
+    const ctx = { ...w.ctx, thread: researchCoordinate('r-1'), integrationId: 'int-1' } as SessionContext
+    const read = (channel: string) => w.daemon.researchReadRefusal(ctx, { integrationId: 'int-1', channel })
+    expect(await read(w.ctx.channel)).toBeUndefined()
+    expect(await read('C-NOT-IN')).toContain('never joins one')
+    expect(
+      await world({ snapshot: { isPrivate: true }, lookup: { isPrivate: true } }).daemon.researchReadRefusal(ctx, {
+        integrationId: 'int-1',
+        channel: w.ctx.channel
+      })
+    ).toContain('internal public channels')
+    w.daemon.activeGateEntries.set(sessionKey('slack', w.ctx.channel, ctx.thread, AGENT), {
+      msg: { ...CHECK, msgId: 'round-1' },
+      integrationId: 'int-1'
+    })
+    const grant = (channel: string, want: number) => w.daemon.grantResearchHistory(ctx, { channel }, want)
+    expect([grant('C1', 300), grant('C1', 300), grant('C1', 10), grant('C2', 300)]).toEqual([300, 200, 0, 300])
+    w.daemon.activeGateEntries.set(sessionKey('slack', w.ctx.channel, ctx.thread, AGENT), {
+      msg: { ...CHECK, msgId: 'round-2' },
+      integrationId: 'int-1'
+    })
+    expect(grant('C1', 300)).toBe(300)
   })
 
   it('records nobody read in a private place, and refuses a first look there', async () => {

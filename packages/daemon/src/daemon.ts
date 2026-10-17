@@ -4626,6 +4626,12 @@ export class Daemon {
         this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
       // A builder round's history reads name their senders' keys and feed the directory's seen people (assistant-mode.md §5.17).
       directoryReads: (ctx, read) => this.noteDirectoryReads(ctx, read),
+      // Research reads only internal public channels its bot is in, each bounded per round (assistant-mode.md §5.15).
+      researchHistory: {
+        refusal: (ctx, read) => this.researchReadRefusal(ctx, read),
+        since: () => this.clock.now() - FIRST_LOOK_WINDOW_MS,
+        grant: (ctx, read, want) => this.grantResearchHistory(ctx, read, want)
+      },
       // A first look's reads stop at its window and its message cap (assistant-mode.md §5.13).
       firstLookHistory: {
         since: () => this.clock.now() - FIRST_LOOK_WINDOW_MS,
@@ -9526,6 +9532,50 @@ export class Daemon {
         refusal !== 'external' &&
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, item.origin)).catch(() => 'place')) === 'shared'
     }
+  }
+
+  /** Messages each research round has read per channel, by round, bot and channel (assistant-mode.md §5.15). */
+  private readonly researchReads = new Map<string, number>()
+
+  /** Why research may not read a channel: only an internal public one its bot already is in, never by joining. */
+  private async researchReadRefusal(
+    ctx: SessionContext,
+    read: { integrationId: string | undefined; channel: string }
+  ): Promise<string | undefined> {
+    const refused =
+      'research reads only the internal public channels the bot is already in, and never joins one. Nothing was read.'
+    const integrationId = read.integrationId ?? ctx.integrationId
+    const int = integrationId
+      ? this.agents.get(ctx.agentId)?.integrations.find((i) => i.id === integrationId)
+      : undefined
+    if (!int || !integrationId) return refused
+    // The bot's own membership listing names its channels; a channel absent from it is one it would have to join.
+    const listed = this.readPlaceSnapshot(integrationId, read.channel)
+    if (!listed || (listed.kind !== undefined && listed.kind !== 'channel')) return refused
+    const place = this.memoryPlaceOf(ctx.agentId, {
+      platform: int.platform,
+      channel: read.channel,
+      transportScope: this.transportScopeForIntegrationIds([integrationId])
+    })
+    const audience = await this.memoryLayers.audienceOf(place).catch(() => undefined)
+    return audience?.layer === 'shared' && !audience.external ? undefined : refused
+  }
+
+  /** How many of `want` more messages of one channel this research round may read, at most the first look's cap. */
+  private grantResearchHistory(
+    ctx: SessionContext,
+    read: { integrationId: string | undefined; channel: string },
+    want: number
+  ): number {
+    const round = this.directoryRound(ctx)
+    if (!round) return 0
+    const key = `${round}\u001f${read.integrationId ?? ctx.integrationId ?? ''}\u001f${read.channel}`
+    const taken = this.researchReads.get(key) ?? 0
+    const granted = Math.max(0, Math.min(want, FIRST_LOOK_MAX_MESSAGES - taken))
+    this.researchReads.delete(key)
+    this.researchReads.set(key, taken + granted)
+    if (this.researchReads.size > 4096) this.researchReads.delete(this.researchReads.keys().next().value!)
+    return granted
   }
 
   /** Whom each directory builder round read messages from (assistant-mode.md §5.17). */

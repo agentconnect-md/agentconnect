@@ -1,3 +1,4 @@
+import { researchCoordinate } from '../src/session/subsession-coordinate.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   executeTool,
@@ -1243,6 +1244,36 @@ describe('executeTool: read tools', () => {
     const res = (await executeTool(ctx, 'listChannelMembers', {}, d)) as Record<string, unknown>
     expect(gw.listMembers).toHaveBeenCalledWith('C_CURRENT')
     expect(res.members).toEqual([{ id: 'U1', name: 'alice', isBot: false }])
+  })
+
+  it('lets research read only a channel its hook admits, bounded per channel and round', async () => {
+    const getChannelHistory = vi.fn(async () => ({
+      messages: [
+        { sender: 'U1', ts: '100.3', text: 'a', isBot: false },
+        { sender: 'U1', ts: '100.2', text: 'b', isBot: false },
+        { sender: 'U1', ts: '100.1', text: 'c', isBot: false }
+      ],
+      hasMore: true,
+      nextCursor: 'more'
+    }))
+    const refusal = vi.fn(async (_ctx: unknown, read: { channel: string }) =>
+      read.channel === 'C_PUBLIC' ? undefined : 'research reads only the internal public channels the bot is already in'
+    )
+    const researchHistory = { refusal, since: () => 0, grant: vi.fn(() => 2) }
+    const research = { ...ctx, thread: researchCoordinate('d-1') }
+    const d = { ...deps(fakeGateway({ getChannelHistory })).deps, researchHistory }
+    await expect(executeTool(research, 'getChannelHistory', { channel: 'C_OTHER' }, d)).rejects.toThrow(
+      'internal public channels the bot is already in'
+    )
+    expect(getChannelHistory).not.toHaveBeenCalled()
+    const read = (await executeTool(research, 'getChannelHistory', { channel: 'C_PUBLIC' }, d)) as {
+      messages: unknown[]
+      hasMore: boolean
+      note?: string
+    }
+    expect(read.messages).toHaveLength(2)
+    expect(read).toMatchObject({ hasMore: false, note: expect.stringContaining('messages of this channel') })
+    expect(researchHistory.grant).toHaveBeenCalledWith(research, expect.objectContaining({ channel: 'C_PUBLIC' }), 3)
   })
 
   it("names each person's directory key on a builder round, and no bot's", async () => {
