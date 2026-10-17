@@ -1814,9 +1814,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
 
 **Status:** Being built. The product owner approved the design on 2026-10-17, the `watch` field
 included; what is marked _decided_ was settled on 2026-10-16. The Control Plane and relay for GitHub
-(sixty-seventh revision), the daemon (sixty-eighth) and GitLab (seventieth) ship, so a follow-up can
-watch a GitHub pull request or issue or a GitLab merge request or issue ("As shipped" at the end of
-this section); the console follows.
+(sixty-seventh revision), the daemon (sixty-eighth), GitLab (seventieth) and the console
+(seventy-second) ship, so a follow-up can watch a GitHub pull request or issue or a GitLab merge
+request or issue, and the console shows what it watches and its last wake ("As shipped" at the end
+of this section).
 
 **Why.** A follow-up such as "tell me when PR #12 merges" or "watch the release build" is woken only
 by time (§5.12). Every timed check spends one of the agent's `dailyCheckBudget` checks whether or not
@@ -2292,6 +2293,27 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   watched project, by the id the daemon kept. The Control Plane leases the broker a read-only
   credential for it while the agent has a live watch there; a workspace or a hook lease is
   unchanged.
+
+**As shipped, step 4: the console.** Choices the text above leaves open:
+
+- **The row's line** sits under the meta line in the Tasks tab and in Activity, above Activity's
+  done-when line, and is cut to one line like the meta line. It reads "Watching
+  example-org/example-repo#12", the label linked to the object in a new tab, while watched;
+  "Waiting to watch" and the URL without its scheme while `pending`; "Not watched: <reason>" when
+  refused and "No longer watched: <reason>" when ended. A reason the console does not know reads
+  "it can’t be watched". "· woken 14:05 (merged, CI finished)" follows while the latest check
+  was woken, whatever the watch's state.
+- **The task page** puts the same line under what counts as done, inside the checks box, rather
+  than a labelled field, since what counts as done carries no label either. The Tasks tab's and
+  Activity's opened checks do not repeat it.
+- **Each check** says "Scheduled", "On a message" or "Woken: merged, CI finished"; a check from a
+  daemon that does not say shows nothing more. The events are joined as a short list in the
+  viewer's language.
+- **A proposal's follow-up form** shows "Watches <url>" in Activity and in a webchat conversation's
+  proposal card.
+- **The Control Plane** passes the daemon's fields through its Activity route: the watch only where
+  the row is `visible`, like the title, and each check's `startedBy` and `events`; the webchat
+  proposals route carries the form's URL. It joins nothing.
 
 ### 5.15 Organization research and the organization files
 
@@ -4265,3 +4287,10 @@ kind; the three record entries, research's claim and People's opt-out live in th
 ship behind `knowledge-record-v1`; the switch-on claims research once per organization and moves
 People's readers with the mode; and assistant-mode agents' copies of the three files are moved into
 the record at boot.
+
+**Seventy-second revision (2026-10-18)**: event wake's console ships, §5.14's rollout step 4 (issue
+#2810; §5.14 "As shipped, step 4"). A follow-up's row in the Tasks tab and in Activity names what it
+watches, linked, and its latest check's wake, or why it is not or no longer watched; its own page
+shows the same under what counts as done, and each check says what started it. A proposal's
+follow-up form shows the URL it would watch. The Control Plane passes the daemon's fields through,
+the watch only where the follow-up's title is shown.

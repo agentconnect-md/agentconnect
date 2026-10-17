@@ -472,6 +472,62 @@ describe('SubsessionsPanel', () => {
     expect(rows()[2]?.querySelector('[data-follow-up-checks]')?.textContent).toBe('No checks yet.')
   })
 
+  it('says what a follow-up watches, its latest wake, and what started each check', async () => {
+    const url = 'https://github.com/example-org/example-repo/pull/12'
+    wire.pages = [
+      page([
+        followUp(
+          'waiting',
+          {},
+          {
+            watch: { url, target: 'example-org/example-repo#12', state: 'watching', reason: null },
+            recentChecks: [
+              {
+                at: '2026-10-15T09:05:00.000Z',
+                observation: 'It merged.',
+                reported: true,
+                startedBy: 'wake',
+                events: ['merged', 'checks']
+              },
+              { at: '2026-10-14T09:00:00.000Z', observation: 'Still open.', reported: false, startedBy: 'time' },
+              { at: '2026-10-13T09:00:00.000Z', observation: 'Asked to look.', reported: true, startedBy: 'message' }
+            ]
+          }
+        ),
+        followUp('paused', {}, { watch: { url, target: null, state: 'ended', reason: 'access_lost' } }),
+        followUp('checking', {}, { watch: { url, target: null, state: 'refused', reason: 'something_new' } }),
+        followUp('done', { canStop: false }, { watch: { url, target: null, state: 'pending', reason: null } }),
+        followUp(
+          'stopped',
+          { sessionId: null, title: null, visible: false, canStop: false, parent: null },
+          { doneWhen: null, recentChecks: [] }
+        )
+      ])
+    ]
+    await render()
+    const watching = rows()[0]?.querySelector<HTMLElement>('[data-follow-up-watch]')
+    expect(watching?.dataset.followUpWatch).toBe('watching')
+    expect(watching?.textContent).toBe(
+      'Watching example-org/example-repo#12 · woken Oct 15, 9:05 AM (merged, CI finished)'
+    )
+    expect(watching?.querySelector('a')?.getAttribute('href')).toBe(url)
+    expect(rows()[1]?.querySelector('[data-follow-up-watch]')?.textContent).toBe(
+      'No longer watched: the agent lost its code-host access to it'
+    )
+    // A reason this console does not know reads as a plain refusal.
+    expect(rows()[2]?.querySelector('[data-follow-up-watch]')?.textContent).toBe('Not watched: it can’t be watched')
+    expect(rows()[3]?.querySelector('[data-follow-up-watch]')?.textContent).toBe(
+      'Waiting to watch github.com/example-org/example-repo/pull/12'
+    )
+    expect(rows()[4]?.querySelector('[data-follow-up-watch]')).toBeNull()
+
+    await click(labelled('Show checks', rows()[0]))
+    const triggers = Array.from(rows()[0]?.querySelectorAll('[data-follow-up-check-trigger]') ?? [])
+    expect(triggers.map((el) => el.textContent)).toEqual(['Woken: merged, CI finished', 'Scheduled', 'On a message'])
+    // The row already names the watch, so its checks do not repeat it.
+    expect(rows()[0]?.querySelectorAll('[data-follow-up-watch]')).toHaveLength(1)
+  })
+
   it('ends a follow-up only after a confirmation, and says it ended', async () => {
     wire.pages = [page([followUp('waiting')]), page([followUp('stopped', { sessionId: 'fu-waiting', canStop: false })])]
     await render()

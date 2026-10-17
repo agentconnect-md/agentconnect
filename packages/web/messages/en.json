@@ -209,10 +209,44 @@
       "ended": "Follow-up ended.",
       "alreadyEnded": "It had already ended.",
       "endFailed": "Couldn’t end it. Try again.",
+      "startedBy": {
+        "time": "Scheduled",
+        "message": "On a message",
+        "wake": "Woken",
+        "wakeBy": "Woken: {events}"
+      },
+      "events": {
+        "merged": "merged",
+        "closed": "closed",
+        "reopened": "reopened",
+        "approved": "approved",
+        "changes_requested": "changes requested",
+        "checks": "CI finished",
+        "comment": "comment",
+        "review": "review",
+        "commits": "new commits"
+      },
+      "watch": {
+        "watching": "Watching <link>{target}</link>",
+        "pending": "Waiting to watch <link>{target}</link>",
+        "refused": "Not watched: {reason}",
+        "ended": "No longer watched: {reason}",
+        "woken": "woken {time}",
+        "wokenBy": "woken {time} ({events})",
+        "reason": {
+          "no_access": "the agent’s code-host access doesn’t cover it",
+          "not_found": "no such pull request, merge request or issue",
+          "unsupported": "events from that host don’t reach this deployment",
+          "limit": "the agent already watches as many objects as it may",
+          "access_lost": "the agent lost its code-host access to it",
+          "other": "it can’t be watched"
+        }
+      },
       "proposed": {
         "takes": "Takes this follow-up",
         "firstCheck": "First check {time}",
-        "noCheck": "No check until it is messaged"
+        "noCheck": "No check until it is messaged",
+        "watches": "Watches {url}"
       }
     },
     "taskList": {

@@ -209,10 +209,44 @@
       "ended": "跟进已结束。",
       "alreadyEnded": "它已经结束了。",
       "endFailed": "结束失败，请重试。",
+      "startedBy": {
+        "time": "按计划",
+        "message": "收到消息",
+        "wake": "被唤醒",
+        "wakeBy": "被唤醒：{events}"
+      },
+      "events": {
+        "merged": "已合并",
+        "closed": "已关闭",
+        "reopened": "已重新打开",
+        "approved": "已批准",
+        "changes_requested": "要求修改",
+        "checks": "CI 已完成",
+        "comment": "评论",
+        "review": "评审",
+        "commits": "新提交"
+      },
+      "watch": {
+        "watching": "正在关注 <link>{target}</link>",
+        "pending": "等待关注 <link>{target}</link>",
+        "refused": "未关注：{reason}",
+        "ended": "已不再关注：{reason}",
+        "woken": "{time} 被唤醒",
+        "wokenBy": "{time} 被唤醒（{events}）",
+        "reason": {
+          "no_access": "Agent 的代码托管访问权限不包括它",
+          "not_found": "没有这个拉取请求、合并请求或 issue",
+          "unsupported": "该主机的事件无法到达此部署",
+          "limit": "Agent 关注的对象已达上限",
+          "access_lost": "Agent 已失去对它的代码托管访问权限",
+          "other": "无法关注"
+        }
+      },
       "proposed": {
         "takes": "将接下这个跟进",
         "firstCheck": "首次检查：{time}",
-        "noCheck": "收到消息前不检查"
+        "noCheck": "收到消息前不检查",
+        "watches": "将关注 {url}"
       }
     },
     "taskList": {

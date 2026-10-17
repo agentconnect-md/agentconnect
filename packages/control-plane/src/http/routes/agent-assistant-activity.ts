@@ -18,7 +18,10 @@ import {
   ASSISTANT_TASK_HANDLE_FEATURE,
   AssistantDraftStatus,
   AssistantSubsessionCursor,
+  AssistantActivityCheck,
+  AssistantActivityFollowUp,
   AssistantActivityFollowUpStatus,
+  AssistantActivityProposalFollowUp,
   AssistantActivityTaskKind,
   AgentPermissionOption,
   FOLLOW_UP_TASKS_V1_FEATURE,
@@ -105,10 +108,12 @@ const FollowUpDto = z.object({
   /** The next scheduled check; null when it waits until it is messaged, or has ended. */
   nextCheck: z.string().nullable(),
   doneWhen: z.string().nullable(),
-  /** Its newest finished checks, newest first: when, what it saw, and whether its report reached the conversation. */
-  recentChecks: z.array(z.object({ at: z.string(), observation: z.string(), reported: z.boolean() })),
+  /** Its newest finished checks, newest first: when, what it saw, whether its report reached the conversation, and what started it. */
+  recentChecks: z.array(AssistantActivityCheck),
   /** A first look of its conversation, which reads the place once and ends after one check. */
-  firstLook: z.boolean().optional()
+  firstLook: z.boolean().optional(),
+  /** The one pull request, merge request or issue whose events wake it, where the row is `visible`. */
+  watch: AssistantActivityFollowUp.shape.watch
 })
 const SubsessionDto = z.object({
   /** The background work's session id, present only when the caller may open it. */
@@ -189,7 +194,7 @@ const ConversationProposalDto = z.object({
   /** The follow-up's title as the agent last saw it; null once it is gone. */
   itemTitle: z.string().nullable(),
   /** The follow-up form: what approval takes in place of running `task`, which is then its title. */
-  followUp: z.object({ title: z.string(), doneWhen: z.string(), nextCheck: z.string().nullable() }).optional(),
+  followUp: AssistantActivityProposalFollowUp.optional(),
   createdAt: z.string(),
   expiresAt: z.string()
 })
@@ -461,7 +466,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
                 nextCheck: followUp.nextCheck,
                 doneWhen: visible ? followUp.doneWhen : null,
                 recentChecks: visible ? followUp.recentChecks : [],
-                ...(followUp.firstLook ? { firstLook: true } : {})
+                ...(followUp.firstLook ? { firstLook: true } : {}),
+                // What it watches, like its title, only where its conversation may be seen.
+                ...(visible && followUp.watch ? { watch: followUp.watch } : {})
               }
             }
           : {})
@@ -605,7 +612,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s tasks',
-          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. Nothing is stored by this call.`,
+          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
