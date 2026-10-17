@@ -39,3 +39,40 @@ describe('SocialLoginButtons regional preference', () => {
     expect(onContinue).toHaveBeenCalledWith(target)
   })
 })
+
+describe('SocialLoginButtons more options', () => {
+  const labels = () =>
+    [...container.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent)
+
+  it('keeps GitHub, Google, Slack and Lark/Feishu up front and the rest behind More options', async () => {
+    const onContinue = vi.fn()
+    await act(async () => {
+      root.render(<SocialLoginButtons providers={selectEnabledProviders('*')} onContinue={onContinue} />)
+    })
+
+    expect(labels()).toEqual([
+      'Continue with GitHub',
+      'Continue with Google',
+      'Continue with Slack',
+      'Continue with Lark',
+      'Switch to Feishu',
+      'More sign-in options'
+    ])
+
+    const more = [...container.querySelectorAll('button')].find((b) => b.textContent === 'More sign-in options')
+    await act(async () => more?.click())
+    expect(labels()).toContain('Continue with Telegram')
+    expect(labels()).toContain('Continue with Discord')
+    expect(labels()).toContain('Fewer options')
+
+    await act(async () => more?.click())
+    expect(labels()).not.toContain('Continue with Telegram')
+  })
+
+  it('shows secondary providers directly when no primary one is enabled', async () => {
+    await act(async () => {
+      root.render(<SocialLoginButtons providers={selectEnabledProviders('telegram,discord')} onContinue={vi.fn()} />)
+    })
+    expect(labels()).toEqual(['Continue with Telegram', 'Continue with Discord'])
+  })
+})

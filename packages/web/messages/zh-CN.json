@@ -1076,7 +1076,9 @@
       "ssoOnly": "仅支持单点登录。AgentConnect 不会存储密码。",
       "firstTime": "首次使用？登录后将自动创建账户。",
       "continueWith": "使用 {provider} 继续",
-      "continueWithPrefix": "使用 "
+      "continueWithPrefix": "使用 ",
+      "moreOptions": "更多登录方式",
+      "fewerOptions": "收起"
     },
     "activation": {
       "storageBlocked": "此浏览器阻止了激活链接所需的临时存储，因此无法验证登录身份。请允许本站使用站点数据（或改用普通的非隐私窗口），然后重新打开链接。",
