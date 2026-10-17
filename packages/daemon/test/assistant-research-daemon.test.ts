@@ -87,7 +87,7 @@ async function boot(root: string, target: Record<string, unknown> | undefined) {
     requestId: req.requestId,
     ...(target ? { target } : {})
   }))
-  // The Control Plane answers every feature but the organization record, so memory stays in the shared layer, and the approval route.
+  // The Control Plane answers every feature but the organization record, and the approval route.
   const answers: Record<string | symbol, unknown> = {
     supportsServerFeature: (feature: string) => feature !== KNOWLEDGE_RECORD_FEATURE,
     approvalRoute: route
@@ -213,10 +213,14 @@ describe('the research task’s session', () => {
       const written = (await executeTool(
         ctx,
         'createMemoryEntry',
-        { label: 'organization.md', text: '# Organization\n' },
+        { label: 'research-notes.md', text: '# Notes\n' },
         deps
       )) as Record<string, unknown>
       expect(written).toMatchObject({ layer: 'shared' })
+      // The organization files are the record's alone: a Control Plane that does not keep it refuses them.
+      await expect(
+        executeTool(ctx, 'createMemoryEntry', { label: 'organization.md', text: '# Organization\n' }, deps)
+      ).rejects.toThrow('the organization record is not available right now')
       await expect(
         executeTool(ctx, 'createMemoryEntry', { label: 'x.md', text: 'x', layer: 'here' }, deps)
       ).rejects.toThrow('argument layer is not available')

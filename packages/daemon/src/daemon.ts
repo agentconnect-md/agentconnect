@@ -851,7 +851,11 @@ import {
   type MembersLookups,
   type MembersWriter
 } from './memory/members-directory.js'
-import { OrganizationRecordCache, type OrganizationRecordPort } from './memory/organization-record.js'
+import {
+  OrganizationRecordCache,
+  RecordUnavailableError,
+  type OrganizationRecordPort
+} from './memory/organization-record.js'
 import type { MembersGuard } from './mcp/ops/memory.js'
 import {
   MemoryLayers,
@@ -9728,13 +9732,13 @@ export class Daemon {
   private organizationRecordFor(agentId: string): OrganizationRecordPort | undefined {
     const agent = this.agents.get(agentId)
     if (!assistantModeOn(agent) || (agent?.memory?.provider ?? 'managed') !== 'managed') return undefined
-    if (this.cpClient?.supportsServerFeature?.(KNOWLEDGE_RECORD_FEATURE) !== true) return undefined
     let port = this.organizationRecords.get(agentId)
     if (!port) {
+      // The three names live only in the record: a Control Plane that does not keep it refuses them, never the shared layer.
       port = new OrganizationRecordCache(agentId, () => {
-        if (!this.cpClient)
-          throw new Error('the organization record cannot be reached: the control plane is not connected')
-        return this.cpClient
+        const client = this.cpClient
+        if (!client?.supportsServerFeature?.(KNOWLEDGE_RECORD_FEATURE)) throw new RecordUnavailableError()
+        return client
       })
       this.organizationRecords.set(agentId, port)
     }

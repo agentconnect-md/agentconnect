@@ -8,7 +8,12 @@ import { localMemoryHome } from '../src/memory/home.js'
 import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { createMemoryEntryService } from '../src/memory/entries/factory.js'
 import { organizationFileRefusal, type OrganizationFile } from '../src/memory/organization-files.js'
-import type { OrganizationRecordPort, RecordEntry, RecordWrite } from '../src/memory/organization-record.js'
+import {
+  RecordUnavailableError,
+  type OrganizationRecordPort,
+  type RecordEntry,
+  type RecordWrite
+} from '../src/memory/organization-record.js'
 import type { MemoryScope, MemoryWriteGuard } from '../src/memory/types.js'
 import { readerOnboardingMessage, researchRunningLine } from '../src/assistant/research.js'
 import { findKnowledge, listKnowledge } from '../src/mcp/ops/knowledge.js'
@@ -29,8 +34,10 @@ class FakeRecord implements OrganizationRecordPort {
   ])
   readonly writes: (RecordWrite & { file: OrganizationFile })[] = []
   peopleHidden = false
+  unavailable = false
 
   async read(file: OrganizationFile): Promise<RecordEntry> {
+    if (this.unavailable) throw new RecordUnavailableError()
     if (file === 'members.md' && this.peopleHidden)
       throw Object.assign(new Error('not visible'), { code: 'SCOPE_DENIED' })
     return this.entries.get(file)!
@@ -134,6 +141,20 @@ describe('the record-backed shared layer', () => {
       expect.arrayContaining(['organization', 'channels'])
     )
     await expect(hidden.provider.read(hidden.scope, 'members.md')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+
+  it('refuses the three names with one line, never the shared layer, when the record is not available', async () => {
+    const f = await fixture()
+    await f.fs.writeFile('memory/channels.md', '# Channels\n#old: a copy (#old, 2026-10-01)')
+    f.record.unavailable = true
+    expect((await f.api.list({ limit: 100 })).entries.map((e) => e.label)).not.toContain('channels')
+    await expect(f.provider.read(f.scope, 'channels.md')).rejects.toThrow(
+      'the organization record is not available right now'
+    )
+    await expect(f.api.create({ label: 'organization', text: '# About' })).rejects.toMatchObject({
+      code: 'UNAVAILABLE'
+    })
+    expect(await f.provider.standingContextAtSessionStart(f.scope)).not.toContain('channels.md')
   })
 
   it("sends the person rules' opt-out changes with the People write", async () => {

@@ -552,14 +552,10 @@ daemon converges without waiting for an unrelated agent edit or restart.
   advertises the feature; otherwise the route returns 503.
 - Managed-skill enablement requires the target daemon feature. Existing Git
   sources and agent-local Dream skills are unaffected.
-- A daemon without `knowledge-record-v1` keeps the organization record's three
-  files in each assistant-mode agent's memory, as before the revision; the
-  Control Plane's one-time move (§15.7) runs again for them, so a mixed fleet
-  converges once the daemon is upgraded. A new daemon on a Control Plane
-  without the feature does the same.
-- `assistantOnboarding.research` on the spec is an optional field; an older
-  daemon drops it unread and researches as before, and the move absorbs what
-  it writes.
+- The Control Plane is rolled out before the daemons. An assistant-mode
+  agent's memory tools reach the three record names only through
+  `knowledge-record-v1`; where the Control Plane does not advertise it, they
+  refuse them with one line and never fall back to the agent's memory.
 
 ## 14. Verification
 

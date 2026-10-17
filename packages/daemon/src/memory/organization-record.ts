@@ -50,6 +50,14 @@ export interface OrganizationRecordClient {
   ): Promise<{ ok: KnowledgeRecordOk } | { conflict: KnowledgeRecordConflict }>
 }
 
+/** The Control Plane does not keep the record right now (not connected, or not advertising it); nothing is read or written. */
+export class RecordUnavailableError extends MemoryEntriesError {
+  constructor() {
+    super('UNAVAILABLE', 'the organization record is not available right now')
+    this.name = 'RecordUnavailableError'
+  }
+}
+
 const CACHE_MS = 15_000
 
 /** One agent's port: reads are kept briefly so a turn's listing and reads cost one round trip per file. */
@@ -112,7 +120,7 @@ async function readable(
   try {
     return await record.read(file)
   } catch (err) {
-    if (file === MEMBERS_FILE && notVisible(err)) return undefined
+    if ((file === MEMBERS_FILE && notVisible(err)) || err instanceof RecordUnavailableError) return undefined
     throw err
   }
 }
@@ -185,8 +193,9 @@ export class RecordBackedMemoryFs implements MemoryFs {
     const file = this.recordFile(rel)
     if (!file) return this.inner.readFile(rel, encoding)
     if (file === MEMBERS_FILE && this.audience.withOutsiders) throw new MemoryEntriesError('FORBIDDEN', PEOPLE_WITHHELD)
-    const entry = await readable(this.record, file, false)
-    if (!entry) throw new MemoryEntriesError('FORBIDDEN', PEOPLE_NOT_VISIBLE)
+    const entry = await this.record.read(file).catch((err: unknown) => {
+      throw file === MEMBERS_FILE && notVisible(err) ? new MemoryEntriesError('FORBIDDEN', PEOPLE_NOT_VISIBLE) : err
+    })
     return { content: entry.content, size: Buffer.byteLength(entry.content), mtime: mtimeOf(entry.revision) }
   }
 

@@ -3102,13 +3102,14 @@ smallest choice made for it:
 
 **As shipped, change 2** (2026-10-18: the daemon).
 
-- **Where the names resolve.** For an agent in assistant mode with managed memory, toward a
-  Control Plane that advertises `knowledge-record-v1`, the shared layer is read through a view
-  that serves the three names from the record and everything else from the agent's own store.
-  Reads are kept 15 seconds per agent, so a turn's listing and reads cost one round trip per
-  entry; a write drops that entry's copy. A copy of one of the names an older daemon left in the
-  store is hidden. With the feature absent, nothing changes: the names stay files of the shared
-  layer.
+- **Where the names resolve.** For an agent in assistant mode with managed memory, the shared
+  layer is read through a view that serves the three names from the record and everything else
+  from the agent's own store; a file of one of those names in the store is hidden. Reads are kept
+  15 seconds per agent, so a turn's listing and reads cost one round trip per entry; a write
+  drops that entry's copy. The names never fall back to the shared layer: while the Control Plane
+  does not keep the record (not connected, or not advertising `knowledge-record-v1`), a read or a
+  write of one is refused with "the organization record is not available right now", and the
+  listing and the index leave them out.
 - **Writes.** `createMemoryEntry` and `updateMemoryEntry` keep the revision a model reads (the
   text's digest) and send the record's own revision underneath; a stale one is the tool's usual
   conflict, re-read and merged. The shapes check and §5.17's person and builder rules run before
