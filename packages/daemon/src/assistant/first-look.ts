@@ -14,6 +14,7 @@ import {
 } from '../router/routing-rule.js'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import { ASSISTANT_ITEM_LIMITS } from '../store/assistant-items.js'
+import { CHANNELS_FILE, MEMBERS_FILE, ORGANIZATION_FILE } from '../memory/organization-files.js'
 
 /** How far back a first look reads, and how many messages it reads in all. */
 export const FIRST_LOOK_DAYS = 30
@@ -23,10 +24,6 @@ export const FIRST_LOOK_WINDOW_MS = FIRST_LOOK_DAYS * 24 * 60 * 60_000
 export const FIRST_LOOK_JOIN_WAIT_MS = 10 * 60_000
 /** Proposals the round a first look's report arrives in may make (§5.13). */
 export const FIRST_LOOK_MAX_PROPOSALS = 3
-/** The one shared memory file every first look keeps current about the organization as a whole (§5.13). */
-export const ORGANIZATION_MEMORY_FILE = 'organization.md'
-/** The one shared memory file listing each internal public channel in a line, so the index holds one line for all (§5.13). */
-export const CHANNELS_MEMORY_FILE = 'channels.md'
 
 // The place's own reads (§5.13): history, thread replies, the conversation's details, members and profiles, reactions, bookmarks.
 const FIRST_LOOK_READ_TOOLS = new Set([
@@ -39,13 +36,16 @@ const FIRST_LOOK_READ_TOOLS = new Set([
   'listBookmarks'
 ])
 
-/** A first look's `recordCheck`: same name and handler as a check's, its only output being the whole report. */
+// Its memory writes (§5.15): the place's topic file, and the organization files where its layer is the shared one; never a delete.
+const FIRST_LOOK_WRITE_TOOLS = new Set(['writeMemory', 'createMemoryEntry', 'updateMemoryEntry'])
+
+/** A first look's `recordCheck`: same name and handler as a check's, its report going to the place's long session. */
 export const FIRST_LOOK_RECORD_CHECK_TOOL: ToolDescriptor = {
   name: 'recordCheck',
   description:
-    'Hand back this first look, once, when you have read enough. `observation` is one line on what you read; ' +
-    '`report` is your whole answer, in its sections; set `done: true`. It is your only output: nothing you write ' +
-    'anywhere else reaches the place.',
+    'Hand back this first look, once, after you have written what you learned to memory. `observation` is one ' +
+    'line on what you read; `report` is your answer, in its sections; set `done: true`. Besides memory it is your ' +
+    'only output: nothing else you write reaches the place.',
   inputSchema: obj(
     {
       observation: {
@@ -66,15 +66,16 @@ export const FIRST_LOOK_RECORD_CHECK_TOOL: ToolDescriptor = {
   )
 }
 
-/** A first look's tool set: its place's own reads, memory reads and `recordCheck`; no recall, search, knowledge or code-host reads. */
+/** A first look's tool set: its place's own reads, memory reads and writes, and `recordCheck`; no post, react, recall, search, knowledge or code-host reads. */
 export function firstLookTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
-  const reads = tools.filter(
+  const kept = tools.filter(
     (tool) =>
       FIRST_LOOK_READ_TOOLS.has(tool.name) ||
       MEMORY_TOOL_ACCESS_MODES[tool.name] === 'read' ||
+      FIRST_LOOK_WRITE_TOOLS.has(tool.name) ||
       isAttachmentReadTool(tool.name)
   )
-  return [...reads, FIRST_LOOK_RECORD_CHECK_TOOL]
+  return [...kept, FIRST_LOOK_RECORD_CHECK_TOOL]
 }
 
 /** A first look reads only its own place: an argument naming another platform, bot or conversation is refused. */
@@ -114,42 +115,72 @@ export function withinWindow<T extends { ts: string }>(
   return { kept, ended }
 }
 
-/** What a first look's prompt names: the place, what kind of conversation it is, and the place's own tools. */
+/** What a first look's prompt names: the place, what kind of conversation it is, the place's own tools, and whether it writes the shared layer. */
 export interface FirstLookPrompt {
   place: string
   kind: string
   tools: string
   requested: boolean
+  /** The place writes the shared layer (an internal public channel), so its first look also keeps the organization files (§5.15). */
+  shared?: boolean
 }
 
-/** The first look's task prompt (§5.13), with "you are in" for one someone asked for. */
+// Only a place that writes the shared layer keeps the organization files (§5.15); each save checks the revision it read.
+const SHARED_FILES = `2. Three shared files every conversation reads. Give each a description header when you
+   create it, so MEMORY.md lists it:
+   - ${CHANNELS_FILE}: one line for this place, linking the file above: "#name: what it is for —
+     [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]]
+     (#release-train, 2026-10-17)". This place's later sessions find its notes through that link.
+   - ${ORGANIZATION_FILE}: only what this place shows about the organization as a whole that the
+     file does not already say: what it builds or does, its products and customers, teams, stated
+     goals and priorities, key systems, and terms people use. Merge it into its sections, not as
+     a new block; write nothing when nothing is new.
+   - ${MEMBERS_FILE}: the roles people here state for themselves or others, one entry per person.
+     Work facts only: role, the areas and systems they own, expertise shown here, current
+     projects. Never opinions or evaluations of a person, judgments of their work, sensitive
+     personal attributes (health, family, religion, politics, ethnicity, sexuality, finances,
+     immigration status, where they live), absences or their reasons.
+   Every fact is one line ending in its source and date, "(#name, YYYY-MM-DD)" for what you read
+   here, with "(inferred)" after it for anything inferred. ${ORGANIZATION_FILE} opens with a summary
+   of at most ten lines, then only the sections "## Products and customers", "## How it works"
+   and "## Repositories and systems"; ${CHANNELS_FILE} holds one line per place; a ${MEMBERS_FILE} entry
+   is "## Display name (@handle on Platform)" and at most ten lines, each starting with "Role:",
+   "Works on:", "Knows about:" or "Ask about:". A save that does not fit is refused with the line
+   that failed: fix that line and save again.
+   Other places update these files too, so never rewrite them with writeMemory: find each with
+   listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
+   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
+   CONFLICT, read it again, merge, and save again.
+`
+
+/** The first look's task prompt (§5.13, §5.15), with "you are in" for one someone asked for; a place that writes the shared layer also keeps the organization files. */
 export function firstLookPrompt(input: FirstLookPrompt): string {
   const how = input.requested ? 'you are in' : 'you were just added to'
-  return `You are taking a first look at ${input.place}, a ${input.kind} ${how}. Read it and report
-back. You cannot post, react or change anything, and nothing you write here reaches the place.
+  const index = input.shared
+    ? 'with "index: false" in its header so MEMORY.md leaves it out'
+    : 'with a description header so MEMORY.md lists it'
+  return `You are taking a first look at ${input.place}, a ${input.kind} ${how}. Read it, write
+what you learned to memory, and report back. You cannot post or react: only your memory writes
+and your report leave this task.
 
 Read, newest first, until you have the last ${FIRST_LOOK_DAYS} days or ${FIRST_LOOK_MAX_MESSAGES} messages, whichever
 is less: the description, topic, pinned messages and bookmarks; every top-level message; the
 replies of any thread with 3+ replies or an unanswered question. Stop early once new messages
 stop changing your picture. Read only this place.
 
-Answer in these sections, in the place's main language. Link every claim to the message it
-rests on (its link, or its time where it has none), and mark anything inferred rather than
-read as (inferred).
+Then write to memory, without a layer argument:
+1. A topic file named after the place, dated, ${index}.
+   If an earlier first look wrote one, update it. It says how the place works: what it is
+   for, in two sentences; who owns or decides what, as people here say it: roles, never
+   opinions of people; how requests are made, where decisions are recorded, links people keep
+   using, other bots and what they post. And what recurs: things that happened at least twice
+   on a rhythm, and when.
+${input.shared ? SHARED_FILES : ''}Write nothing in flight, no request still open wherever it appears, and nothing you would
+not say in every conversation that reads this memory.
 
-## How this place works
-What it is for, in two sentences. Who owns or decides what, as people here say it: roles,
-never opinions of people. How requests are made, where decisions are recorded, links people
-keep using, other bots and what they post.
-
-## About the organization
-Only what this place shows about the organization as a whole: what it builds or does, its
-products, teams, stated goals and priorities, key systems, and terms people use. First read
-${ORGANIZATION_MEMORY_FILE} in shared memory, if it exists, and give only what is new or contradicts it.
-"Nothing new" is a fine answer.
-
-## Recurring
-Things that happened at least twice on a rhythm, and when.
+Then report, in the place's main language: one line on what this place is for, then these
+sections. Link every claim to the message it rests on (its link, or its time where it has
+none), and mark anything inferred rather than read as (inferred).
 
 ## In flight
 Unanswered questions, commitments with a date, threads waiting on someone: owner, date, link.
@@ -163,12 +194,11 @@ schedule of what came in since the last one. Offer only what the place's convers
 actually do with its tools: ${input.tools}.
 
 ## Not covered
-What you could not read or check.
+What you could not read, check or write.
 
 Stay under 1,500 words. Quote no more than a short phrase, record nothing about a person
 beyond their role here, and leave out credentials, private links and personal details.
-Hand it back with recordCheck: a one-line observation, this answer as its report, and done
-set. It is your only output.`
+Hand it back with recordCheck: a one-line observation, this report, and done set.`
 }
 
 // A follow-up wakes only at its next check or when messaged (§5.12), so one offered after a first look needs a schedule.
@@ -176,50 +206,23 @@ const FOLLOW_UP_SCHEDULE = `A follow-up runs only at its next check or when mess
    and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
    I'll look for releases announced since the last check and confirm their notes were posted").`
 
-const LEAVE_OUT = `Leave out "In flight", any request still open wherever it is listed,
-   and anything you would not say in every conversation that reads this layer.`
-
-// A place that writes its own layer keeps one topic file there, listed in that layer's index.
-const PLACE_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. ${LEAVE_OUT}`
-
-// Only a place that writes the shared layer adds to it (§5.13); its own file stays out of the index every session reads.
-const SHARED_STEP1 = `1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   with "index: false" in its header so MEMORY.md leaves it out. ${LEAVE_OUT}
-   Then update two shared files, each listed in MEMORY.md by its own description header:
-   - ${CHANNELS_MEMORY_FILE}: one line for this place by its channel name, linking the file above:
-     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —
-     [[release-train]]". This place's later sessions find its own notes through that link.
-   - ${ORGANIZATION_MEMORY_FILE}: unless "About the organization" has nothing new, merge it into the
-     existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
-     place it came from named by its channel name. Keep it short.
-   Other places update these two files too, so never rewrite them with writeMemory: find each
-   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
-   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
-   CONFLICT, read it again, merge, and save again.`
-
-/** What the long session is told to do with the report (§5.13); step 3 offers `propose` cards where the platform has them, else the text form; step 1 adds to the shared files only where the place writes the shared layer. */
-export function firstLookHandling(
-  reach: string,
-  opts: { external: boolean; cards?: boolean; organization?: boolean }
-): string {
+/** What the long session is told to do with the report (§5.13); the first look wrote memory itself (§5.15), and step 2 offers `propose` cards where the platform has them, else the text form. */
+export function firstLookHandling(reach: string, opts: { external: boolean; cards?: boolean }): string {
   if (opts.external)
     return `When a first look reports back:
-${PLACE_STEP1}
 This place is now shared with another organization, so post nothing about this first look in it.`
-  return `When a first look reports back:
-${opts.organization ? SHARED_STEP1 : PLACE_STEP1}
-2. Post one short introduction in the place: who you are, one line on what you saw, how to
+  return `When a first look reports back (it has already written what it learned to memory):
+1. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you (${reach}).
 ${
   opts.cards
-    ? `3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
+    ? `2. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
    follow-up only if someone is visibly waiting on it.`
-    : `3. In the same message, list each "Where I could help" item in one line, and an "In flight" item
+    : `2. In the same message, list each "Where I could help" item in one line, and an "In flight" item
    only if someone is visibly waiting on it; act on one when someone here asks for it.`
 }
    ${FOLLOW_UP_SCHEDULE}
-4. Ask at most one question, and only if the answer changes what you do. Then post nothing
+3. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
 In everything people read, name a channel by its name or link, never by its raw id.`
 }

@@ -59,7 +59,7 @@ type Post = { channel: string; thread?: string; text: string; blocks?: unknown[]
 type RoundTurn = (ctx: SessionContext, say: (text: string) => void) => Promise<void>
 
 async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>; teamId?: string } = {}) {
-  const behavior: { round: RoundTurn } = { round: async () => {} }
+  const behavior: { round: RoundTurn; look?: (ctx: SessionContext) => Promise<void> } = { round: async () => {} }
   const registered: SessionContext[] = []
   // The daemon's tool deps, known once it has started.
   const ops: { deps?: any } = {}
@@ -74,6 +74,7 @@ async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>;
         const text = JSON.stringify(blocks)
         if (text.includes(LOOK_OPENING)) {
           const ctx = [...registered].reverse().find((c) => isFirstLookCoordinate(c.thread))!
+          await behavior.look?.(ctx)
           await executeTool(
             ctx,
             'recordCheck',
@@ -304,16 +305,36 @@ describe('a first look’s report round on a platform with cards', () => {
     await daemon.stop()
   })
 
-  it('tells a public internal channel’s long session to merge what is new about the organization into its shared file', async () => {
-    const { daemon, dispatched, look } = await boot({
+  it('in a public internal channel, the first look keeps the organization files itself and its long session only speaks', async () => {
+    const { daemon, behavior, dispatched, deps, look } = await boot({
       channel: { id: 'C1', name: 'release-train', is_private: false, is_ext_shared: false }
     })
+    const outcomes: unknown[] = []
+    // The task's own memory writes land in the shared layer, each checked against its file's shape.
+    behavior.look = async (ctx) => {
+      for (const text of [
+        '#release-train: release decisions\n',
+        '#release-train: release decisions (#release-train, 2026-10-17)\n'
+      ])
+        outcomes.push(
+          await executeTool(ctx, 'createMemoryEntry', { label: 'channels', text }, deps).catch(
+            (error: Error) => error.message
+          )
+        )
+    }
     await look()
-    const report = dispatched.find((c) => c.msg.parentReport === true)!
-    const text = report.msg.turnBody?.prompt ?? report.msg.text ?? ''
-    expect(text).toContain('- channels.md: one line for this place by its channel name, linking the file above:')
-    expect(text).toContain('- organization.md: unless "About the organization" has nothing new')
-    expect(text).toContain('updateMemoryEntry and that revision')
+    expect(outcomes).toEqual([
+      expect.stringContaining('INVALID_ARGUMENT: channels.md line 1 "#release-train: release decisions" does not end'),
+      expect.objectContaining({ state: 'completed', layer: 'shared' })
+    ])
+    const textOf = (msg: NormalizedMessage) => msg.turnBody?.prompt ?? msg.text ?? ''
+    const task = textOf(dispatched.find((c) => textOf(c.msg).includes(LOOK_OPENING))!.msg)
+    expect(task).toContain('- channels.md: one line for this place, linking the file above:')
+    expect(task).toContain('- organization.md: only what this place shows about the organization as a whole')
+    expect(task).toContain('updateMemoryEntry and that revision')
+    const report = textOf(dispatched.find((c) => c.msg.parentReport === true)!.msg)
+    expect(report).toContain('When a first look reports back (it has already written what it learned to memory):')
+    for (const write of ['channels.md', 'organization.md', 'MemoryEntry']) expect(report).not.toContain(write)
     await daemon.stop()
   })
 
@@ -413,7 +434,7 @@ describe('a first look’s report round on a platform with cards', () => {
 })
 
 describe('a first look’s report round on a platform without cards', () => {
-  it('keeps the text form of step 3 and offers no propose', async () => {
+  it('keeps the text form of step 2 and offers no propose', async () => {
     const { daemon, d, behavior, registered, dispatched, deps, look } = await boot()
     d.hasCardSurface = () => false
     let refused = ''
@@ -426,7 +447,7 @@ describe('a first look’s report round on a platform without cards', () => {
     await look()
     const report = dispatched.find((c) => c.msg.parentReport === true)!
     const text = report.msg.turnBody?.prompt ?? report.msg.text ?? ''
-    expect(text).toContain('3. In the same message, list each "Where I could help" item in one line')
+    expect(text).toContain('2. In the same message, list each "Where I could help" item in one line')
     expect(text).not.toContain('with propose')
     const longSession = registered.find((c) => isAppendCoordinate(c.thread))!
     expect(longSession.tools.map((t) => t.name)).not.toContain('propose')

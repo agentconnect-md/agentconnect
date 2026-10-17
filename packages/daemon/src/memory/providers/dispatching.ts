@@ -3,6 +3,7 @@ import type { RuntimeDef } from '../../config/config-schema.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { MEMORY_TOOLS } from '../tools.js'
 import type { MemoryWriteSource } from '../store.js'
+import type { MemoryTextCheck } from '../organization-files.js'
 import type { MemoryHomePorts } from '../home.js'
 import {
   MemoryProviderUnavailableError,
@@ -97,9 +98,9 @@ export class DispatchingMemoryProvider implements MemoryProvider {
     throw new Error('DispatchingMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
   }
 
-  async entryView(scope: MemoryScope, writeSource?: MemoryWriteSource) {
+  async entryView(scope: MemoryScope, writeSource?: MemoryWriteSource, check?: MemoryTextCheck) {
     const provider = scope.root ? this.managed : this.forAgent(scope.agentId)
-    return (await provider.entryView?.(scope, writeSource)) ?? null
+    return (await provider.entryView?.(scope, writeSource, check)) ?? null
   }
 
   ensure(scope: MemoryScope, agentName: string): Promise<void> {

@@ -200,18 +200,25 @@ describe('a first look someone asks for', () => {
 
     const [look] = looks()
     const prompt = modelText(look!.msg)
-    expect(prompt).toContain('You are taking a first look at "fake", a channel you are in. Read it and report')
+    expect(prompt).toContain('You are taking a first look at "fake", a channel you are in. Read it, write')
     expect(prompt).toContain('the last 30 days or 500 messages, whichever')
-    expect(prompt).toContain(
-      'Hand it back with recordCheck: a one-line observation, this answer as its report, and done'
-    )
+    expect(prompt).toContain('Hand it back with recordCheck: a one-line observation, this report, and done set.')
     expect(prompt).toMatch(/actually do with its tools: .*sendMessage.*and your runtime’s own tools\./s)
     expect(look!.msg.initialSessionTitle).toBe('First look at fake')
-    // Only the place's own reads, memory reads and recordCheck.
+    // Only the place's own reads, memory reads and writes, and recordCheck.
     const tools = registered.find((c) => isFirstLookCoordinate(c.thread))!.tools.map((t) => t.name)
-    expect(tools).toContain('getChannelHistory')
-    expect(tools).toContain('recordCheck')
-    for (const absent of ['recall', 'sendMessage', 'listChannels', 'searchPublicMessages', 'propose', 'followUp'])
+    for (const present of ['getChannelHistory', 'writeMemory', 'createMemoryEntry', 'updateMemoryEntry', 'recordCheck'])
+      expect(tools).toContain(present)
+    for (const absent of [
+      'recall',
+      'sendMessage',
+      'addReaction',
+      'deleteMemoryEntry',
+      'listChannels',
+      'searchPublicMessages',
+      'propose',
+      'followUp'
+    ])
       expect(tools).not.toContain(absent)
 
     // The report reaches the place's top level, with the handling first.
@@ -223,7 +230,7 @@ describe('a first look someone asks for', () => {
     expect(text).toContain('[first look] Your first look at "fake" reported back.')
     expect(text).toContain('reach you (@-mention me).')
     // Slack has approval cards, so its suggestions are offered with propose (§5.13).
-    expect(text).toContain('3. Under it, offer each "Where I could help" item with propose.')
+    expect(text).toContain('2. Under it, offer each "Where I could help" item with propose.')
     expect(text).toContain(`Its report:\n\n${REPORT}`)
 
     // One check ends it as done; it is listed as a first look and takes no messages.

@@ -4726,7 +4726,7 @@ export class Daemon {
         // §5.15: organization research gets memory, knowledge, the channel listing and the code-host reads, nothing that posts.
         const research = isResearchCoordinate(thread)
         const narrowed = check || research
-        // A first look (§5.13) gets only its own place's reads, memory reads and recordCheck.
+        // A first look (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
         if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
         else if (check) tools = checkTools(tools)
         else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
@@ -9929,8 +9929,7 @@ export class Daemon {
     if (!output.trim()) return
     // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
     const rec = session ? await this.store.getSession(session.key) : undefined
-    // A first look's own session feeds no memory; only what its place's long session writes does (assistant-mode.md §5.13).
-    // Research writes the files itself and its turns read untrusted pages, so they are never captured either (§5.15).
+    // A first look's or research's own session feeds no capture; memory gets only what it writes explicitly (assistant-mode.md §5.15).
     if (isFirstLookCoordinate(rec?.thread) || isResearchCoordinate(rec?.thread)) return
     const placed = await this.memoryLayerOfSession(agentId, rec, msg)
     if (!placed) return

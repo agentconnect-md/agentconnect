@@ -15,6 +15,7 @@ import { MEMORY_LAYER_CHOICES, type MemoryLayerChoice } from '../../memory/types
 import type { MemoryWriteSource } from '../../memory/store.js'
 import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
 import { MEMORY_LAYER_NOTES } from '../../memory/entries/tools.js'
+import { organizationFileRefusal, type MemoryTextCheck } from '../../memory/organization-files.js'
 
 /** The memory-tool deps. */
 export interface MemoryOpsDeps {
@@ -122,12 +123,37 @@ export function writtenLayer(
   const pinned = ctx.memoryBinding?.layer
   if (pinned && !scope.root) return { layer: pinned, note: MEMORY_LAYER_NOTES[pinned] }
   if (ctx.memoryBinding || scope.root || !keepsLayers(ctx, deps)) return undefined
-  const layer: MemoryLayerChoice = scope.personKey
-    ? 'person'
-    : scope.channelKey && !scope.sharedPlace
-      ? 'here'
-      : 'shared'
+  const layer = layerOfScope(scope)
   return { layer, note: MEMORY_LAYER_NOTES[layer] }
+}
+
+function layerOfScope(scope: MemoryScope): MemoryLayerChoice {
+  return scope.personKey ? 'person' : scope.channelKey && !scope.sharedPlace ? 'here' : 'shared'
+}
+
+/** The layer a write lands in for the checks that depend on it; a bound session's is its binding's `layer`, else its scope's unless it is a staged store. */
+export function writeLayerOf(
+  ctx: SessionContext,
+  deps: MemoryOpsDeps,
+  scope: MemoryScope
+): MemoryLayerChoice | undefined {
+  if (ctx.memoryBinding?.layer) return ctx.memoryBinding.layer
+  if (scope.root || !keepsLayers(ctx, deps)) return undefined
+  return layerOfScope(scope)
+}
+
+/** What a write's final text must pass before it is stored: the organization files' shapes in the shared layer (assistant-mode.md §5.15). */
+export function memoryWriteCheck(
+  ctx: SessionContext,
+  deps: MemoryOpsDeps,
+  scope: MemoryScope
+): MemoryTextCheck | undefined {
+  return writeLayerOf(ctx, deps, scope) === 'shared' ? organizationFileRefusal : undefined
+}
+
+function refuseByCheck(check: MemoryTextCheck | undefined, path: string, text: string): void {
+  const refusal = check?.(path, text)
+  if (refusal !== undefined) throw new Error(refusal)
 }
 
 /** Only the file memory keeps layers; an external memory's records, or an answer it cannot get, name none. */
@@ -251,11 +277,13 @@ export async function writeMemory(
           'writeMemory: `oldString` occurs multiple times — include more surrounding context to make it unique'
         )
       const updated = current.replace(oldString, newString)
+      refuseByCheck(memoryWriteCheck(ctx, deps, scope), path, updated)
       const edited = await deps.memory.write(scope, path, updated, undefined, writeSource(ctx))
       recordBoundTopic(ctx, path)
       return { ...edited, ...writtenLayer(ctx, deps, scope) }
     }
     const full = parseArgs(requiredStringAllowEmpty('content'), content)
+    refuseByCheck(memoryWriteCheck(ctx, deps, scope), path, full)
     const written = await deps.memory.write(scope, path, full, undefined, writeSource(ctx))
     recordBoundTopic(ctx, path)
     return { ...written, ...writtenLayer(ctx, deps, scope) }

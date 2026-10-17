@@ -19,6 +19,7 @@ import { FIRST_LOOK_TOOL, firstLookToolsFor } from '../src/mcp/ops/first-look.js
 import { PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
 import type { RoutingRule } from '../src/router/routing-rule.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
+import { MEMBER_FIELDS, ORGANIZATION_SECTIONS } from '../src/memory/organization-files.js'
 
 const ON = { assistantMode: { enabled: true } }
 const OFF = { assistantMode: { enabled: false } }
@@ -89,7 +90,7 @@ describe('which places take a first look', () => {
 })
 
 describe('what a first look may read', () => {
-  it('keeps its place’s own reads, memory reads and its own recordCheck, and nothing else', () => {
+  it('keeps its place’s own reads, memory reads and writes and its own recordCheck, and nothing that posts or reacts', () => {
     const names = firstLookTools(
       [
         'getCurrentChannel',
@@ -101,13 +102,20 @@ describe('what a first look may read', () => {
         'listBookmarks',
         'readSlackFile',
         'readMemory',
+        'listMemoryEntries',
+        'getMemoryEntry',
         'recall',
         'listChannels',
         'searchPublicMessages',
         'findKnowledge',
         'readCodeHostDiscussions',
         'sendMessage',
-        'writeMemory'
+        'addReaction',
+        'propose',
+        'writeMemory',
+        'createMemoryEntry',
+        'updateMemoryEntry',
+        'deleteMemoryEntry'
       ].map(tool)
     )
     expect(names.map((t) => t.name)).toEqual([
@@ -120,6 +128,11 @@ describe('what a first look may read', () => {
       'listBookmarks',
       'readSlackFile',
       'readMemory',
+      'listMemoryEntries',
+      'getMemoryEntry',
+      'writeMemory',
+      'createMemoryEntry',
+      'updateMemoryEntry',
       'recordCheck'
     ])
     const recordCheck = names.at(-1)!
@@ -153,6 +166,7 @@ describe('what a first look may read', () => {
 
 describe('the prompts', () => {
   const facts = { place: '"releases"', kind: 'public channel', tools: 'sendMessage, followUp' }
+  const flat = (text: string) => text.replace(/\s+/g, ' ')
 
   it('fills the task prompt’s placeholders, and says "you are in" for one someone asked for', () => {
     const joined = firstLookPrompt({ ...facts, requested: false })
@@ -163,81 +177,97 @@ describe('the prompts', () => {
     expect(joined).toContain(
       'A check runs only on its schedule or when\nmessaged, never on a new message, so put one that must notice new messages as a check on a\nschedule of what came in since the last one.'
     )
-    expect(joined).toMatch(
-      /Hand it back with recordCheck: a one-line observation, this answer as its report, and done\nset\. It is your only output\.$/
-    )
+    expect(joined).toMatch(/Hand it back with recordCheck: a one-line observation, this report, and done set\.$/)
     expect(joined).not.toContain('{')
     expect(firstLookPrompt({ ...facts, requested: true })).toContain('a public channel you are in. Read it')
   })
 
-  it('asks after how the place works for what is new about the organization, read against its shared file', () => {
+  it('writes the place’s own topic file itself, and reports only what the long session acts on', () => {
     const prompt = firstLookPrompt({ ...facts, requested: false })
-    const section = prompt.split('## About the organization\n')[1]!.split('\n\n')[0]!
-    expect(prompt.indexOf('## How this place works')).toBeLessThan(prompt.indexOf('## About the organization'))
-    expect(prompt.indexOf('## About the organization')).toBeLessThan(prompt.indexOf('## Recurring'))
-    expect(section).toContain('what it builds or does, its\nproducts, teams, stated goals and priorities, key systems')
-    expect(section).toContain(
-      'First read\norganization.md in shared memory, if it exists, and give only what is new or contradicts it.'
+    expect(prompt).toContain('You cannot post or react: only your memory writes\nand your report leave this task.')
+    expect(prompt).toContain(
+      'Then write to memory, without a layer argument:\n1. A topic file named after the place, dated, with a description header so MEMORY.md lists it.'
     )
-    expect(section).toContain('"Nothing new" is a fine answer.')
+    expect(flat(prompt)).toContain('And what recurs: things that happened at least twice on a rhythm, and when.')
+    // An open request stays out of memory even when the place files it under another heading.
+    expect(flat(prompt)).toContain('Write nothing in flight, no request still open wherever it appears')
+    expect(flat(prompt)).toContain('one line on what this place is for, then these sections.')
+    expect(prompt.match(/^## .+$/gm)).toEqual(['## In flight', '## Where I could help', '## Not covered'])
+    // A private channel, a group chat or an external place writes only its own file.
+    for (const shared of ['organization.md', 'channels.md', 'members.md', 'index: false', 'updateMemoryEntry'])
+      expect(prompt).not.toContain(shared)
   })
 
-  it('keeps a shared place’s own file out of the index, and lists it and the organization in two shared files', () => {
-    const step1 = (handling: string) => handling.split('\n1. ')[1]!.split('\n2. ')[0]!
-    const shared = step1(firstLookHandling('@-mention me', { external: false, cards: true, organization: true }))
-    expect(shared).toContain('with "index: false" in its header so MEMORY.md leaves it out.')
-    expect(shared).not.toContain('plus one index line')
+  it('in a place that writes the shared layer, also keeps the organization files in their shapes', () => {
+    const prompt = firstLookPrompt({ ...facts, requested: false, shared: true })
+    expect(prompt).toContain(
+      '1. A topic file named after the place, dated, with "index: false" in its header so MEMORY.md leaves it out.'
+    )
     // The place's file is out of the index, so its line in channels.md is how later sessions there find it.
-    expect(shared).toContain(
-      '- channels.md: one line for this place by its channel name, linking the file above:\n     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —\n     [[release-train]]". This place\'s later sessions find its own notes through that link.'
+    expect(flat(prompt)).toContain(
+      '- channels.md: one line for this place, linking the file above: "#name: what it is for — [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]] (#release-train, 2026-10-17)".'
     )
-    expect(shared).toContain(
-      '- organization.md: unless "About the organization" has nothing new, merge it into the\n     existing sections, not as a new block'
+    expect(flat(prompt)).toContain('Merge it into its sections, not as a new block; write nothing when nothing is new.')
+    expect(flat(prompt)).toContain(
+      '- members.md: the roles people here state for themselves or others, one entry per person.'
     )
-    expect(shared).toContain('place it came from named by its channel name')
-    // Places merge into the same two files, so each save carries the revision it read, and a conflict is merged again.
-    expect(shared).toContain(
-      'never rewrite them with writeMemory: find each\n   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with\n   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On\n   CONFLICT, read it again, merge, and save again.'
+    expect(flat(prompt)).toContain(
+      'Never opinions or evaluations of a person, judgments of their work, sensitive personal attributes'
     )
-    // A private place's, a group chat's or an external place's content never reaches the shared layer.
-    for (const own of [
-      firstLookHandling('@-mention me', { external: false, cards: true }),
-      firstLookHandling('@-mention me', { external: true, organization: true })
-    ]) {
-      expect(step1(own)).toContain('plus one index line.')
-      for (const shared of ['organization.md', 'channels.md', 'index: false', 'updateMemoryEntry'])
-        expect(own).not.toContain(shared)
+    // The shapes the daemon checks, named as the check names them.
+    expect(flat(prompt)).toContain('Every fact is one line ending in its source and date, "(#name, YYYY-MM-DD)"')
+    for (const section of ORGANIZATION_SECTIONS) expect(flat(prompt)).toContain(`"## ${section}"`)
+    for (const field of MEMBER_FIELDS) expect(flat(prompt)).toContain(`"${field}:"`)
+    // Places merge into the same files, so each save carries the revision it read, and a conflict is merged again.
+    expect(flat(prompt)).toContain(
+      'never rewrite them with writeMemory: find each with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On CONFLICT, read it again, merge, and save again.'
+    )
+    expect(prompt.match(/^## .+$/gm)).toEqual(['## In flight', '## Where I could help', '## Not covered'])
+  })
+
+  it('tells the long session only to speak, since the first look wrote memory itself', () => {
+    for (const cards of [true, false]) {
+      const handling = firstLookHandling('@-mention me', { external: false, cards })
+      expect(handling).toContain(
+        'When a first look reports back (it has already written what it learned to memory):\n1. Post one short introduction'
+      )
+      for (const write of [
+        'Write "How this place works"',
+        'organization.md',
+        'channels.md',
+        'index: false',
+        'MemoryEntry'
+      ])
+        expect(handling).not.toContain(write)
     }
   })
 
-  it('tells the long session what to do, step 3 as text, and only step 1 once the place turned external', () => {
+  it('tells the long session what to do, step 2 as text, and nothing to post once the place turned external', () => {
     const handling = firstLookHandling('I read every message', { external: false })
     expect(handling).toContain('how to\n   reach you (I read every message).')
-    expect(handling).toContain('3. In the same message, list each "Where I could help" item in one line')
+    expect(handling).toContain('2. In the same message, list each "Where I could help" item in one line')
+    expect(handling).toContain('3. Ask at most one question')
     expect(handling).toContain('Then post nothing\n   more on your own.')
     expect(handling).not.toContain('propose')
-    // An open request is left out of memory even when the report lists it under another heading.
-    expect(handling).toContain('Leave out "In flight", any request still open wherever it is listed,')
     // What people read names a channel, never its raw platform id.
     expect(handling).toMatch(/\nIn everything people read, name a channel by its name or link, never by its raw id\.$/)
-    // Where the place has cards, step 3 offers the suggestions with propose, under the introduction.
+    // Where the place has cards, step 2 offers the suggestions with propose, under the introduction.
     const cards = firstLookHandling('@-mention me', { external: false, cards: true })
     expect(cards).toContain(
-      '3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a\n   follow-up only if someone is visibly waiting on it.'
+      '2. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a\n   follow-up only if someone is visibly waiting on it.'
     )
     expect(cards).not.toContain('In the same message')
     expect(firstLookHandling('@-mention me', { external: true, cards: true })).not.toContain('propose')
     const external = firstLookHandling('@-mention me', { external: true })
-    expect(external).toContain('1. Write "How this place works"')
-    expect(external).not.toContain('2. Post one short introduction')
+    expect(external).not.toContain('Post one short introduction')
     expect(external).not.toContain('raw id')
     expect(external).toContain('post nothing about this first look in it')
   })
 
-  it('tells step 3 in both forms that a follow-up needs a first check, and how to word an event-shaped one', () => {
+  it('tells step 2 in both forms that a follow-up needs a first check, and how to word an event-shaped one', () => {
     for (const cards of [true, false]) {
-      const step3 = firstLookHandling('@-mention me', { external: false, cards }).split('\n3. ')[1]!.split('\n4. ')[0]!
-      expect(step3).toContain(
+      const step2 = firstLookHandling('@-mention me', { external: false, cards }).split('\n2. ')[1]!.split('\n3. ')[0]!
+      expect(step2).toContain(
         'A follow-up runs only at its next check or when messaged, so give each one a first check,\n   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00'
       )
     }

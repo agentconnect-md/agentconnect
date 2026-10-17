@@ -3,7 +3,7 @@ import { MemoryEntriesError } from '../../memory/entries/contract.js'
 import type { MemoryEntries } from '../../memory/entries/service.js'
 import { DESCRIBE_MEMORY_ENTRIES_ARGS } from '../../memory/entries/tools.js'
 import type { MemoryOpsDeps } from './memory.js'
-import { layerArgument, memoryScopeFor, writtenLayer } from './memory.js'
+import { layerArgument, memoryScopeFor, memoryWriteCheck, writtenLayer } from './memory.js'
 import type { SessionContext } from './context.js'
 import type { MemoryScope } from '../../memory/types.js'
 import type { MemoryEntryMutationReceipt } from '@agentconnect.md/protocol'
@@ -18,13 +18,20 @@ async function entries(
   if (!deps.memoryEntryStore) throw new MemoryEntriesError('UNAVAILABLE', 'memory entry service is unavailable')
   const layer = layerArgument(args)
   const scope = await memoryScopeFor(ctx, deps, { mode, ...(layer ? { layer } : {}) })
+  const check = memoryWriteCheck(ctx, deps, scope)
   const service = await createMemoryEntryService({
     provider: deps.memory,
     scope,
     store: deps.memoryEntryStore,
     // Synthetic extraction/Dream bindings keep their constrained legacy writer; research's live shared layer keeps the checked one.
     ...(!ctx.memoryBinding || ctx.memoryBinding.layer !== undefined
-      ? { write: { source: ctx.memoryBinding?.source ?? ('tool' as const), canWrite: () => true } }
+      ? {
+          write: {
+            source: ctx.memoryBinding?.source ?? ('tool' as const),
+            canWrite: () => true,
+            ...(check ? { check } : {})
+          }
+        }
       : {}),
     canRead: () => true
   })

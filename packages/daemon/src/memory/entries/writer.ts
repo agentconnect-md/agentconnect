@@ -22,6 +22,7 @@ import {
   type MemoryWriteSource
 } from '../store.js'
 import { normalizeMemoryHeader, stampMemoryHeader } from '../frontmatter.js'
+import type { MemoryTextCheck } from '../organization-files.js'
 import { MemoryEntriesError } from './contract.js'
 import { memoryDigest } from './service.js'
 
@@ -37,7 +38,7 @@ export async function mutateManagedMemoryEntry(
   fs: MemoryFs,
   topic: string,
   mutation: ManagedEntryMutation,
-  context: { source: MemoryWriteSource; sourceTurnId?: string },
+  context: { source: MemoryWriteSource; sourceTurnId?: string; check?: MemoryTextCheck },
   now: () => Date = () => new Date()
 ) {
   if (!MemoryTransactionPath.safeParse(topic).success || topic === MEMORY_INDEX)
@@ -49,7 +50,7 @@ export async function mutateManagedMemoryEntry(
       const result = await atomicMutateMemoryFileHoldingLock(
         fs,
         topic,
-        (current) => prepareEntryMutation(current, mutation, topic, now),
+        (current) => prepareEntryMutation(current, mutation, topic, now, context.check),
         context.source,
         context.sourceTurnId
       )
@@ -70,12 +71,13 @@ export async function mutateManagedMemoryEntry(
   })
 }
 
-// The precondition and the stored text, the same for every home: null is an explicit delete.
+// The precondition and the stored text, the same for every home: null is an explicit delete; `check` sees the final text.
 function prepareEntryMutation(
   current: MemoryFsFile | null,
   mutation: ManagedEntryMutation,
   topic: string,
-  now: () => Date
+  now: () => Date,
+  check?: MemoryTextCheck
 ): string | null {
   if (mutation.operation === 'create') {
     if (current) throw new MemoryEntriesError('CONFLICT', 'memory entry already exists', memoryDigest(current.content))
@@ -97,6 +99,8 @@ function prepareEntryMutation(
     text = current!.content.replace(oldText, () => newText)
   }
   if (typeof text !== 'string') throw new MemoryEntriesError('INVALID_ARGUMENT', 'replacement text is required')
+  const refusal = check?.(topic, text)
+  if (refusal !== undefined) throw new MemoryEntriesError('INVALID_ARGUMENT', refusal)
   const content = stampMemoryHeader(topic, normalizeMemoryHeader(text), now().toISOString())
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES)
     throw new MemoryTooLargeError('memory entry exceeds its byte limit')
@@ -113,7 +117,7 @@ export async function mutateManagedMemoryEntryOnFilesystem(
   fs: MemoryFs,
   topic: string,
   mutation: ManagedEntryMutation,
-  context: { source: MemoryWriteSource },
+  context: { source: MemoryWriteSource; check?: MemoryTextCheck },
   history: MemoryHistorySink,
   now: () => Date = () => new Date()
 ): Promise<{ content: string | null; receipt: MemoryTransactionReceipt; revision: string | undefined }> {
@@ -127,7 +131,7 @@ export async function mutateManagedMemoryEntryOnFilesystem(
     let dispatched = false
     try {
       const current = await fs.readFile(path)
-      const content = prepareEntryMutation(current, mutation, topic, now)
+      const content = prepareEntryMutation(current, mutation, topic, now, context.check)
       if (content === null && !fs.rmIfMatch)
         throw new MemoryEntriesError('UNSUPPORTED', 'this memory home cannot delete an entry conditionally')
       let file: MemoryTransactionReceipt['files'][number]

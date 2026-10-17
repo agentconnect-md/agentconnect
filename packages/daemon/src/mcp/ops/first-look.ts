@@ -13,9 +13,9 @@ export const FIRST_LOOK_ARGS = z.object({})
 export const FIRST_LOOK_TOOL: ToolDescriptor = {
   name: 'firstLook',
   description:
-    'Take a first look at this conversation, only when someone here asks for one: a read-only task reads its last ' +
-    '30 days or 500 messages, whichever is less, and reports back here with what to do next: remember how the ' +
-    'place works, introduce yourself and offer at most three ways to help. It posts nothing itself and counts ' +
+    'Take a first look at this conversation, only when someone here asks for one: a task reads its last 30 days ' +
+    'or 500 messages, whichever is less, writes how the place works to memory, and reports back here with what ' +
+    'to do next: introduce yourself and offer at most three ways to help. It posts nothing itself and counts ' +
     'against the day’s check budget. One runs at a time. Tell the people here it started; never show them its ' +
     '`taskId`.',
   inputSchema: obj({})

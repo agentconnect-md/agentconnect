@@ -1,5 +1,5 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
-import type { MemoryScope } from '../../memory/types.js'
+import type { MemoryLayerChoice, MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type {
   PlatformCanvas,
@@ -240,8 +240,8 @@ export interface SessionContext {
     /** Constrain topic filenames beyond the store's own path rules. A dream keeps the
      *  lowercase-kebab shape its proposal format always enforced. */
     topicPattern?: RegExp
-    /** A live layer the binding pins (organization research's shared one, assistant-mode.md §5.15): its writes are the agent's revision-checked entry writes. */
-    layer?: 'shared'
+    /** The live layer this binding's store is (organization research's shared one, §5.15): its writes are revision-checked entry writes, and checks that depend on it see it. */
+    layer?: MemoryLayerChoice
   }
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
    *  platform-neutral `sendMessage` tool route to ANY connected platform,
