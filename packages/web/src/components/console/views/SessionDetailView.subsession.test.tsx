@@ -477,6 +477,34 @@ describe.each([
     expect(summary()?.querySelector('[data-follow-up-checks]')).toBeNull()
   })
 
+  // assistant-mode.md §5.14: what it watches sits under what counts as done, and each check says what started it.
+  it('names what it watches and what started each check', async () => {
+    const url = 'https://github.com/example-org/example-repo/pull/12'
+    wire.task = {
+      ...FOLLOW_UP,
+      followUp: {
+        ...FOLLOW_UP.followUp!,
+        watch: { url, target: 'example-org/example-repo#12', state: 'watching', reason: null },
+        recentChecks: [
+          {
+            at: '2026-10-15T09:00:00.000Z',
+            observation: 'Merged.',
+            reported: true,
+            startedBy: 'wake',
+            events: ['merged']
+          }
+        ]
+      }
+    }
+    await open(SLACK_CHECK, { parent: OWNER })
+    const checks = summary()?.querySelector('[data-follow-up-checks]')
+    expect(checks?.querySelector('[data-follow-up-watch]')?.textContent).toBe(
+      'Watching example-org/example-repo#12 · woken Oct 15, 9:00 AM (merged)'
+    )
+    expect(checks?.querySelector('[data-follow-up-watch] a')?.getAttribute('href')).toBe(url)
+    expect(checks?.querySelector('[data-follow-up-check-trigger]')?.textContent).toBe('Woken: merged')
+  })
+
   // assistant-mode.md §5.13: a first look's page names it as one.
   it('names a first look as one', async () => {
     wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true } }

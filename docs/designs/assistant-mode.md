@@ -1814,9 +1814,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
 
 **Status:** Being built. The product owner approved the design on 2026-10-17, the `watch` field
 included; what is marked _decided_ was settled on 2026-10-16. The Control Plane and relay for GitHub
-(sixty-seventh revision), the daemon (sixty-eighth) and GitLab (seventieth) ship, so a follow-up can
-watch a GitHub pull request or issue or a GitLab merge request or issue ("As shipped" at the end of
-this section); the console follows.
+(sixty-seventh revision), the daemon (sixty-eighth), GitLab (seventieth) and the console
+(seventy-second) ship, so a follow-up can watch a GitHub pull request or issue or a GitLab merge
+request or issue, and the console shows what it watches and its last wake ("As shipped" at the end
+of this section).
 
 **Why.** A follow-up such as "tell me when PR #12 merges" or "watch the release build" is woken only
 by time (§5.12). Every timed check spends one of the agent's `dailyCheckBudget` checks whether or not
@@ -2292,6 +2293,27 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   watched project, by the id the daemon kept. The Control Plane leases the broker a read-only
   credential for it while the agent has a live watch there; a workspace or a hook lease is
   unchanged.
+
+**As shipped, step 4: the console.** Choices the text above leaves open:
+
+- **The row's line** sits under the meta line in the Tasks tab and in Activity, above Activity's
+  done-when line, and is cut to one line like the meta line. It reads "Watching
+  example-org/example-repo#12", the label linked to the object in a new tab, while watched;
+  "Waiting to watch" and the URL without its scheme while `pending`; "Not watched: <reason>" when
+  refused and "No longer watched: <reason>" when ended. A reason the console does not know reads
+  "it can’t be watched". "· woken 14:05 (merged, CI finished)" follows while the latest check
+  was woken, whatever the watch's state.
+- **The task page** puts the same line under what counts as done, inside the checks box, rather
+  than a labelled field, since what counts as done carries no label either. The Tasks tab's and
+  Activity's opened checks do not repeat it.
+- **Each check** says "Scheduled", "On a message" or "Woken: merged, CI finished"; a check from a
+  daemon that does not say shows nothing more. The events are joined as a short list in the
+  viewer's language.
+- **A proposal's follow-up form** shows "Watches <url>" in Activity and in a webchat conversation's
+  proposal card.
+- **The Control Plane** passes the daemon's fields through its Activity route: the watch only where
+  the row is `visible`, like the title, and each check's `startedBy` and `events`; the webchat
+  proposals route carries the form's URL. It joins nothing.
 
 ### 5.15 Organization research and the organization files
 
@@ -2819,7 +2841,7 @@ first entry **About**; this design keeps "the organization record" as its term f
 
 - Every knowledge entry carries `visibility: all | selected` and, when `selected`, `readers`, a
   list of agent ids. `all` is every agent of the organization. Existing entries default to `all`
-  (Migration, below). The visibility is for agents, not people: every member still reads the
+  when the column is added. The visibility is for agents, not people: every member still reads the
   whole Library, as the knowledge design says, and owners alone still edit it.
 - `findKnowledge` and `listKnowledge` return only the entries the calling agent may read. The
   Control Plane filters by the requesting agent, which the daemon binds from the session context
@@ -2891,7 +2913,7 @@ where the write lands.
   day each was cleared, never in the entry's text. A record read returns the marked keys with the
   entry, so the daemon's rules check them as they check the marker today, and a write carries the
   keys it marks or lifts (§5.17: a removal marks before the write lands, a person's own write
-  lifts after). The one-time move unions every agent's marker (Migration).
+  lifts after).
 - **The shape parser moves to the protocol package**, so the Control Plane checks a console edit
   as the daemon checks a tool write; `members.md`'s grammar is already there
   (`members-directory.ts`).
@@ -2908,9 +2930,8 @@ on; later agents read what exists. _Recommended_ mechanism: the row-locked write
 switches an agent's mode on also claims the organization's research when no agent has claimed it,
 creates the three record entries when the organization has none (each with its title line and
 nothing else) and adds the agent to People's readers, in one transaction. The onboarding record on
-the agent row carries the outcome as `research: boolean`, which rides the spec beside its hints;
-an older daemon drops the field unread and researches as it does today, which the one-time move
-below absorbs. A daemon that reads `research: false` greets the person as it does today, but the
+the agent row carries the outcome as `research: boolean`, which rides the spec beside its hints.
+A daemon that reads `research: false` greets the person as it does today, but the
 hello says the organization record exists, names the agent that researched it and when, and that
 this agent has read it; it opens no research task, and "research again" in that DM is pointed to
 the agent that holds the research task. The claiming agent keeps everything §5.15 gives research:
@@ -2976,25 +2997,9 @@ Memory tab lists only the agent's own memory and does not mention the organizati
 Your memory shows the person layer alone, and the directory's people no longer appear under the
 shared layer.
 
-**Migration** (_decided_, the mechanism _recommended_).
-
-- Existing knowledge entries default to `all` when the column is added.
-- An organization whose assistant-mode agents already hold the three files in memory gets them
-  moved into knowledge once, with the memory copies removed. Assistant mode keeps memory in the
-  Control Plane (§4.1), so the Control Plane does the move itself at boot, per organization with
-  at least one assistant-mode agent whose shared layer holds any of the three names, with no
-  daemon involved. With several copies, each file is merged mechanically within its shape: the
-  copy written last is the base; About takes the other copies' lines whose text it lacks
-  into the same section, the summary kept at ten lines by dropping the oldest-dated extras;
-  Channels unions lines by `#name`, the newest date winning; People unions entries by key and
-  lines by field and text, each entry kept at ten lines the same way. The opt-out markers are
-  unioned, the earliest day kept. The new entries start at revision 1 with source `migration`;
-  the files' change history stays in the memory change log and is not moved. The copies and
-  their index lines are then deleted from each agent's shared layer.
-- The research status of a moved record is taken from the agents' onboarding records: the agent
-  that first switched the mode on, and the day of the last write to its `organization.md`.
-- The move is idempotent and runs again for copies a daemon without `knowledge-record-v1` writes
-  during the rollout, so a mixed fleet converges.
+**No migration of memory copies** (the product owner, 2026-10-18): nothing of this was released,
+so copies of the three files in agents' memory are not moved into the record; existing knowledge
+entries default to `all` when the column is added.
 
 **Not chosen** (considered 2026-10-17, the first time this section was written, and still not
 chosen): the agent publishing ordinary knowledge entries itself, and an auto-accept rule for
@@ -3028,10 +3033,10 @@ third needs the first.
      `knowledge/record/write` → `knowledge/record/ok` or `knowledge/record/conflict`;
      `withOutsiders` on `knowledge/search` and `knowledge/list`. The Control Plane proves
      placement and assistant mode on each.
-   - The one-time move at boot, idempotent, with the merge rules above; the retirement of the
-     Memory page's own-entry and directory routes and of `memory/member/clear`.
+   - The retirement of the Memory page's own-entry and directory routes and of
+     `memory/member/clear`.
 2. **Daemon: write routing, the People audience rule, injection and `findKnowledge` filtering,
-   the switch-on hook and the one-time move.**
+   the switch-on hook.**
    - For an assistant-mode agent, the three names in the shared layer resolve to the record
      through the new frames when the Control Plane advertises `knowledge-record-v1`, and to the
      shared layer's store otherwise; the revision-checked merge, the shape check, §5.17's person
@@ -3064,14 +3069,14 @@ The product documentation follows the third change, once the feature is complete
 smallest choice made for it:
 
 - **Research's claim** is a row per organization, `organization_record`, holding the claiming
-  agent, when it claimed, and the moved record's last research day. The first switch-on that
+  agent and when it claimed. The first switch-on that
   writes an agent's onboarding record claims it when no agent holds it, in the agent's row-locked
   write, and writes `research: true` or `false` into that onboarding record; a later switch-on of
   the same agent claims nothing. The claiming agent's deletion frees the claim, so the next
   agent's first switch-on researches rather than pointing to an agent that is gone.
 - **The record's entries** are titled About, Channels and People and start as their title line
-  alone (`# About`, `# Channels`, `# People`). They are created by the first switch-on, by the
-  first record read of an agent already in the mode when this shipped, or by the move. People
+  alone (`# About`, `# Channels`, `# People`). They are created by the first switch-on, or by
+  the first record read of an agent already in the mode when this shipped. People
   starts read by every agent of the organization then in assistant mode, following the mode.
   Their title does not change on an edit, they carry no summary or tags, and archiving one is
   refused: an owner clears it instead.
@@ -3089,10 +3094,10 @@ smallest choice made for it:
   `knowledge/people`, carrying the entry id, the key or the count removed, and no content.
 - **"Running since"** is the later of the research session's start and the last research
   revision, since no round's start is recorded on the Control Plane.
-- **The move** runs at every boot. A copy an older daemon writes after a boot is moved by the
-  next one, and the record, when it holds more than its title line, counts as one more copy,
-  the newest of which is the base. A copy changed since the move read it is left for the next
-  run. Channels' place-file links are dropped as the lines are merged.
+- **No move.** A boot-time move of agents' memory copies into the record shipped with this change
+  and was removed before it ran anywhere (the product owner: nothing was released, so nothing is
+  migrated). With it went the record row's research day; research's day is the last research
+  revision.
 - **Deferred to change 3**: the retirement of the Memory page's own-entry and directory routes
   and of `memory/member/clear`, since the console calls them until it moves to the Knowledge
   page.
@@ -4311,7 +4316,14 @@ ship behind `knowledge-record-v1`; the switch-on claims research once per organi
 People's readers with the mode; and assistant-mode agents' copies of the three files are moved into
 the record at boot.
 
-**Seventy-second revision (2026-10-18)**: the organization record's second change ships, the
+**Seventy-second revision (2026-10-18)**: event wake's console ships, §5.14's rollout step 4 (issue
+#2810; §5.14 "As shipped, step 4"). A follow-up's row in the Tasks tab and in Activity names what it
+watches, linked, and its latest check's wake, or why it is not or no longer watched; its own page
+shows the same under what counts as done, and each check says what started it. A proposal's
+follow-up form shows the URL it would watch. The Control Plane passes the daemon's fields through,
+the watch only where the follow-up's title is shown.
+
+**Seventy-third revision (2026-10-18)**: the organization record's second change ships, the
 daemon's (issue #2810; §5.16 "As shipped, change 2"). An assistant-mode agent's memory tools read
 and write `organization.md`, `channels.md` and `members.md` in the record through the record frames,
 with every shape and person rule kept and the opt-out sent with each write; People is left out of

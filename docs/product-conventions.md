@@ -1356,13 +1356,17 @@ current turn as the composer's stop does, mutes nothing and undoes nothing it al
 process its runtime started in the background may keep running. The task then reports to the
 conversation that it ended, its transcript names who stopped it, and the row says whether a turn
 was stopped or nothing was running. A follow-up's Stop ends it after a confirmation; one whose first
-check has not run has no session yet, and whoever may continue its conversation may end it. An
-agent whose daemon cannot list one conversation's tasks says to upgrade it.
+check has not run has no session yet, and whoever may continue its conversation may end it. A
+follow-up that watches a pull request, merge request or issue names it under its meta line, linked,
+with the time and events of its latest check when a change woke that check; one that cannot be
+watched, or no longer is, says why instead. It shows to the same people as its title, in Activity
+too. An agent whose daemon cannot list one conversation's tasks says to upgrade it.
 
 A task's own page, a follow-up's included, opens with a line naming the session it belongs to,
 "Belongs to <that session's title> · task", which links back to it. A follow-up's page then shows
-its status ("Waiting · next check <time>", Checking, Paused, Done or Stopped), what counts as done
-and its newest checks, which can be hidden; an agent whose daemon cannot read one task shows only
+its status ("Waiting · next check <time>", Checking, Paused, Done or Stopped), what counts as done,
+what it watches, and its newest checks, each saying what started it (its schedule, a message, or the
+changes that woke it), which can be hidden; an agent whose daemon cannot read one task shows only
 the line. The page is read-only: it shows the transcript, its tool calls included, with no
 composer and no composer stop, since nothing sent from there would reach it.
 
