@@ -1247,8 +1247,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
         // Gitea holds no deployment secret, so clearing the address clears the whole entry.
         next = { ...values, gitea: null };
       } else if (provider === 'gitlab') {
-        next = { ...values, gitlab: null };
-        secrets = { 'gitlab.clientSecret': null };
+        await json(await fetch(api + '/configure/gitlab', {
+          method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+          body: JSON.stringify({ application: null })
+        }));
+        await load();
+        message('GitLab configuration cleared. Its setup controls are available again.');
+        return;
       } else if (provider === 'slack') {
         const logto = values.logto
           ? {
