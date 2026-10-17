@@ -371,17 +371,10 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   )
 }
 
-/**
- * Brand mark for a social sign-in method — shared by the login page and the
- * Profile "Sign-in methods" card so a provider added to the catalog
- * cannot render correctly in one place and wrong in the other.
- *
- * `size` defaults to the login button's 18px mark and can be overridden by
- * denser surfaces such as the Profile card.
- */
+// Social sign-in brand marks shared by the login page and Profile's sign-in methods.
 export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; size?: number }) {
-  if (target === 'telegram') return <SiTelegram size={size} aria-hidden />
-  if (target === 'discord') return <SiDiscord size={size} aria-hidden />
+  if (target === 'telegram') return <SiTelegram size={size} color="#26A5E4" aria-hidden />
+  if (target === 'discord') return <SiDiscord size={size} color="#5865F2" aria-hidden />
   if (target === 'github') return <SiGithub size={size} aria-hidden />
   if (target === 'slack')
     return <IconifyIcon icon={slackIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
