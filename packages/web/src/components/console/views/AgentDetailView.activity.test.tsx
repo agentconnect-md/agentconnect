@@ -215,7 +215,8 @@ describe('the agent page’s Activity tab', () => {
         'Configuration',
         'Workspace',
         'Memory',
-        'Tools & Skills'
+        'Knowledge',
+        'Tools'
       ])
       expect(scope.querySelector('[data-activity-panel]')).toBeNull()
       await act(async () => root!.unmount())

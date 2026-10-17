@@ -51,7 +51,6 @@ import { integrationForget, integrationLeave, integrationRemove, integrationUpse
 import { mcpServerRemove, mcpServerUpsert } from './mcpserver.js'
 import {
   memoryChannelClear,
-  memoryMemberClear,
   memoryChannels,
   memoryHistory,
   memoryList,
@@ -217,7 +216,6 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['agent/wake', agentWake],
   ['memory/channels', memoryChannels],
   ['memory/channel/clear', memoryChannelClear],
-  ['memory/member/clear', memoryMemberClear],
   ['memory/entries/write/v1', memoryEntriesWrite],
   ['memory/entries/read/v1', memoryEntriesRead],
   ['memory/list', memoryList],

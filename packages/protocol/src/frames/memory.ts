@@ -98,25 +98,6 @@ export const MemoryChannelClearOk = z
   .strict()
 export type MemoryChannelClearOk = z.infer<typeof MemoryChannelClearOk>
 
-/** C→D REQ: remove the directory entries keyed by `keys` and mark `mark` opted out, returning no content (assistant-mode.md §5.17). */
-export const MemoryMemberClearReq = z
-  .object({
-    agentId: z.string().min(1),
-    keys: z.array(z.string().min(1).max(512)).min(1).max(16),
-    mark: z.array(z.string().min(1).max(512)).max(16)
-  })
-  .strict()
-export type MemoryMemberClearReq = z.infer<typeof MemoryMemberClearReq>
-
-/** D→C REP: whether any of those entries was there. */
-export const MemoryMemberClearOk = z
-  .object({
-    agentId: z.string(),
-    cleared: z.boolean()
-  })
-  .strict()
-export type MemoryMemberClearOk = z.infer<typeof MemoryMemberClearOk>
-
 /** D→C REP: the agent's channel memory folders (empty when none / not channel-scoped). */
 export const MemoryChannelsPage = z.object({
   agentId: z.string(),

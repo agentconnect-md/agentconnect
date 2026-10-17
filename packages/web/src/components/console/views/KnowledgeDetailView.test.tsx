@@ -25,7 +25,11 @@ vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: mocks.role, orgPath: (path: string) => path })
 }))
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ agents: [{ id: 'agent-1', name: 'dreamer', displayName: '' }] })
+  useConsoleData: () => ({
+    agents: [{ id: 'agent-1', name: 'dreamer', displayName: '', runtime: 'claude' }],
+    integrations: [{ platform: 'slack' }],
+    members: []
+  })
 }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: null, me: null }) }))
 vi.mock('@/components/console/Shell', () => ({ useCrumbSlot: () => ({ register: mocks.register }) }))
@@ -47,6 +51,10 @@ const ENTRY: OrganizationKnowledgeDto = {
   currentRevision: 2,
   digest: `sha256:${'c'.repeat(64)}`,
   source: 'manual',
+  writerKind: null,
+  kind: 'entry',
+  visibility: 'all',
+  readers: [],
   sourceAgentId: null,
   sourceDreamId: null,
   sourceSessionIds: [],
@@ -69,6 +77,7 @@ function revisionRows(current: number): OrganizationKnowledgeRevisionDto[] {
       tags: ['release'],
       digest: ENTRY.digest,
       source: 'manual',
+      writerKind: null,
       sourceAgentId: null,
       sourceDreamId: null,
       sourceSessionIds: [],
@@ -84,6 +93,7 @@ function revisionRows(current: number): OrganizationKnowledgeRevisionDto[] {
       tags: ['history'],
       digest: `sha256:${'f'.repeat(64)}`,
       source: 'dream',
+      writerKind: null,
       sourceAgentId: 'agent-1',
       sourceDreamId: 'dream-1',
       sourceSessionIds: ['session-1'],
@@ -261,5 +271,76 @@ describe('knowledge entry page', () => {
     await settleUntil(() => host.textContent?.includes('Knowledge not found') === true)
     expect(host.textContent).toContain(mocks.routeId)
     expect(button('Back to knowledge')).toBeDefined()
+  })
+
+  it('renders About by section with its sources, and offers no visibility change on it', async () => {
+    const about = {
+      ...ENTRY,
+      kind: 'organization' as const,
+      title: 'About',
+      content: [
+        '# About',
+        'Example Org builds release tooling (#general, 2026-10-17)',
+        '',
+        '## Repositories and systems',
+        '- example-org/example-repo holds billing (example-org/example-repo, 2026-10-16) (inferred)'
+      ].join('\n')
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/revisions') ? [] : about))
+    )
+    await render()
+    await settleUntil(() => host.textContent?.includes('Example Org builds release tooling') === true)
+    expect(host.textContent).toContain('Repositories and systems')
+    expect(host.textContent).toContain('#general')
+    expect(host.textContent).toContain('example-org/example-repo')
+    expect(host.textContent).toContain('inferred')
+    expect(host.textContent).toContain('All agents')
+    const labels = [...host.querySelectorAll('button')].map((b) => b.textContent ?? '')
+    expect(labels).not.toContain('Change')
+    expect(labels.some((label) => label.includes('Archive'))).toBe(false)
+    expect(labels.some((label) => label.includes('Clear'))).toBe(true)
+  })
+
+  it("puts Edit and Remove on the caller's own People card only, and writes it through its own route", async () => {
+    mocks.role = 'collaborator'
+    const people = {
+      ...ENTRY,
+      kind: 'people' as const,
+      title: 'People',
+      visibility: 'selected' as const,
+      readers: ['agent-1'],
+      content: [
+        '# People',
+        '## Me (@me on Slack) `user:me-1`',
+        'Role: designer (self, 2026-10-17)',
+        '## Bob (@bob on Slack) `slack:T0EXAMPLE:U0BOB`',
+        'Role: on-call lead (#ops, 2026-10-17)'
+      ].join('\n')
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/revisions')) return json([])
+      if (url.endsWith('/people/mine') && init?.method === 'PUT') return json({ revision: 3 })
+      if (url.endsWith('/people/mine')) return json({ revision: 2, entries: [], keys: ['user:me-1'] })
+      return json(people)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await render()
+    await settleUntil(() => host.querySelectorAll('[aria-label="Edit"]').length === 1)
+    expect(host.textContent).toContain('on-call lead')
+    expect(host.textContent).toContain('You')
+    expect(host.querySelectorAll('[aria-label="Remove"]')).toHaveLength(1)
+    expect(host.querySelectorAll('[aria-label="Clear"]')).toHaveLength(0)
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Edit"]')!.click())
+    const textarea = host.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!
+    expect(textarea.value).toContain('`user:me-1`')
+    await act(async () => dialogButton('Save').click())
+    await settleUntil(() => host.querySelector('[role="dialog"]') === null)
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    expect(String(put?.[0])).toContain('/people/mine')
+    expect(JSON.parse(String(put?.[1]?.body))).toMatchObject({ expectedRevision: 2 })
   })
 })

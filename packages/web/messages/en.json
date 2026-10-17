@@ -94,7 +94,17 @@
       "everyoneSelected": "Everyone is already selected",
       "noMembersMatch": "No members match “{query}”",
       "canAccess": "{members} can access this restricted resource.",
-      "restrictedResource": "Selected members and organization owners can access this resource."
+      "restrictedResource": "Selected members and organization owners can access this resource.",
+      "agentsLabel": "Agents",
+      "allAgents": "All agents",
+      "allAgentsDescription": "Every agent of the organization reads it.",
+      "selectedAgents": "Selected agents",
+      "selectedAgentsDescription": "Only the agents chosen here read it.",
+      "searchAgents": "Search agents…",
+      "noAgents": "No agents",
+      "agentCount": "{count, plural, one {# agent} other {# agents}}",
+      "noAgentsYet": "No agents in this organization yet",
+      "noAgentsMatch": "No agents match “{query}”"
     },
     "actions": {
       "save": "Save",
@@ -2809,8 +2819,9 @@
         "configuration": "Configuration",
         "workspace": "Workspace",
         "memory": "Memory",
-        "tools": "Tools & Skills",
-        "activity": "Activity"
+        "tools": "Tools",
+        "activity": "Activity",
+        "knowledge": "Knowledge"
       },
       "actions": {
         "playground": "Playground",
@@ -3350,6 +3361,15 @@
         "boolean": "Boolean",
         "choice": "Choice",
         "score": "Score"
+      },
+      "knowledge": {
+        "handbook": "Handbook",
+        "library": "Library",
+        "reads": "Reads it",
+        "doesNotRead": "Does not read it",
+        "openKnowledge": "Open Knowledge",
+        "noRecord": "No organization record yet",
+        "emptyLibrary": "This agent reads no Library entry"
       }
     }
   },
@@ -4120,7 +4140,8 @@
       "title": "Title",
       "tags": "Tags",
       "revision": "Revision",
-      "updated": "Updated"
+      "updated": "Updated",
+      "visibility": "Agents"
     },
     "revision": "rev {value}",
     "archived": "Archived",
@@ -4290,6 +4311,69 @@
           "fieldInteger": "{label} must be a whole number."
         }
       }
+    },
+    "movedFromMemory": "Moved from agents' memory",
+    "writtenBy": "Written by {name}",
+    "writtenByKind": "Written by {name} · {kind}",
+    "visibility": {
+      "title": "Which agents read it",
+      "change": "Change",
+      "close": "Close",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…"
+    },
+    "handbook": {
+      "title": "Handbook",
+      "names": {
+        "organization": "About",
+        "channels": "Channels",
+        "people": "People"
+      },
+      "noRecord": "Written once an agent is switched into assistant mode.",
+      "notResearched": "Not researched yet",
+      "researched": "Researched {day}",
+      "researchedBy": "Researched {day} by {name}",
+      "running": "Research running since {since}",
+      "unreadable": "Does not fit its shape; open it to fix",
+      "emptyAbout": "Nothing recorded yet",
+      "emptyChannels": "No channels recorded yet",
+      "emptyPeople": "No one recorded yet",
+      "places": "{count, plural, one {# place} other {# places}}",
+      "people": "{count, plural, one {# person} other {# people}}",
+      "summary": "Summary",
+      "self": "self",
+      "inferred": "inferred",
+      "you": "You",
+      "fields": {
+        "role": "Role",
+        "worksOn": "Works on",
+        "knowsAbout": "Knows about",
+        "askAbout": "Ask about"
+      },
+      "edit": "Edit",
+      "remove": "Remove",
+      "clear": "Clear",
+      "close": "Close",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…",
+      "editTitle": "Edit {name}",
+      "editYourCard": "Edit your card",
+      "editCard": "Edit card",
+      "clearTitle": "Clear {name}?",
+      "clearBody": "Every line is removed; the title stays. Earlier revisions stay in its history.",
+      "clearPeopleBody": "Every card is removed, and nobody on it is written about again until they write their own card.",
+      "removeYourCardTitle": "Remove your card?",
+      "removeYourCardBody": "Agents write nothing about you here again until you write your card yourself.",
+      "clearCardTitle": "Clear this card?",
+      "clearCardBody": "Agents write nothing about this person here again until they write their card themselves."
+    },
+    "writers": {
+      "research": "research",
+      "firstLook": "first look",
+      "conversation": "conversation",
+      "person": "own entry"
     }
   },
   "Usage": {

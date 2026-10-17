@@ -219,9 +219,6 @@ export const MEMORY_PERSON_LAYER_FEATURE = 'memory-person-layer-v1'
 /** Daemon deletes one place layer on `memory/channel/clear`; the CP offers clearing a layer only toward a daemon advertising it. */
 export const MEMORY_PLACE_CLEAR_FEATURE = 'memory-place-clear-v1'
 
-/** Daemon removes people's entries from the directory and marks them opted out on `memory/member/clear`; the CP offers clearing an entry only toward a daemon advertising it. */
-export const MEMORY_MEMBER_CLEAR_FEATURE = 'memory-member-clear-v1'
-
 /** Daemon and Control Plane support Organization Knowledge, Dream suggestions,
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'

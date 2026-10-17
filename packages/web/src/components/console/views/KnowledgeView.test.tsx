@@ -15,7 +15,16 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-test' }, myRole: mocks.role, orgPath: (path: string) => path })
 }))
-vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ agents: [] }) }))
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({
+    agents: [
+      { id: 'agent-atlas', name: 'atlas', displayName: 'Atlas', runtime: 'claude' },
+      { id: 'agent-beta', name: 'beta', runtime: 'codex' }
+    ],
+    integrations: [],
+    members: []
+  })
+}))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: null, me: null }) }))
 
 vi.mock('next/dynamic', () => ({
@@ -64,6 +73,10 @@ const KNOWLEDGE: OrganizationKnowledgeDto = {
   currentRevision: 2,
   digest: `sha256:${'c'.repeat(64)}`,
   source: 'manual',
+  writerKind: null,
+  kind: 'entry',
+  visibility: 'all',
+  readers: [],
   sourceAgentId: null,
   sourceDreamId: null,
   sourceSessionIds: [],
@@ -107,6 +120,18 @@ function hasButton(label: string): boolean {
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+const NO_RECORD = { research: { agentId: null, researchedAt: null, runningSince: null }, entries: [] }
+
+/** Every view fetch answers the Handbook as an organization with no record unless a test says otherwise. */
+function withRecord(
+  answer: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  record: unknown = NO_RECORD
+) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).includes('/knowledge/organization') ? json(record) : answer(String(input), init)
+  )
 }
 
 function reviewBody(fetchMock: ReturnType<typeof vi.fn>): unknown {
@@ -323,7 +348,7 @@ describe('organization suggestion review row', () => {
 
 describe('organization knowledge surface', () => {
   it('shows the empty library above external memory without loading managed skills', async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => json([]))
+    const fetchMock = withRecord(() => json([]))
     vi.stubGlobal('fetch', fetchMock)
     await renderView()
     await settleUntil(() => host.textContent?.includes('No knowledge yet') === true)
@@ -340,8 +365,7 @@ describe('organization knowledge surface', () => {
   })
 
   it('lists entries as rows that open the entry page and counts pending suggestions on the tab', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
+    const fetchMock = withRecord((url) => {
       if (url.includes('/knowledge-suggestions')) return json([BASE, { ...BASE, id: 'second' }])
       if (url.includes('/knowledge?')) return json([KNOWLEDGE])
       return json([])
@@ -367,8 +391,7 @@ describe('organization knowledge surface', () => {
     mocks.tab = 'tab=suggestions'
     const second = { ...BASE, id: 'second', title: 'Rollback checklist', summary: null }
     let pendingRows = [BASE, second]
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
+    const fetchMock = withRecord((url, init) => {
       if (url.endsWith('/content')) return json(KNOWLEDGE_BODY)
       if (url.endsWith('/review')) {
         pendingRows = pendingRows.filter((row) => !url.includes(row.id))
@@ -405,7 +428,7 @@ describe('organization knowledge surface', () => {
   it('keeps the editor open across a drag that ends on the backdrop, and restores its draft after a close', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => json([]))
+      withRecord(() => json([]))
     )
     await renderView()
     await settleUntil(() => host.textContent?.includes('No knowledge yet') === true)
@@ -436,11 +459,37 @@ describe('organization knowledge surface', () => {
     expect(editor()?.value).toBe('Half-written entry')
   })
 
+  it("keeps a closed draft's selected agents, so publishing it does not widen who reads it", async () => {
+    const fetchMock = withRecord((url, init) =>
+      url.includes('/knowledge') && init?.method === 'POST' ? json({ ...KNOWLEDGE, id: 'new' }) : json([])
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('No knowledge yet') === true)
+    const atlas = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button[aria-pressed]')].find((b) =>
+        b.textContent?.includes('Atlas')
+      )
+
+    await act(async () => button('Publish').click())
+    const tile = [...document.querySelectorAll<HTMLElement>('[role="dialog"] .ptile')].find((el) =>
+      el.textContent?.includes('Selected agents')
+    )!
+    await act(async () => tile.click())
+    await act(async () => atlas()!.click())
+    const scrim = document.querySelector<HTMLElement>('.scrim')!
+    await act(async () => {
+      scrim.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      scrim.click()
+    })
+
+    await act(async () => button('Publish').click())
+    expect(atlas()?.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('hides the review tab and the publish action from members who cannot manage knowledge', async () => {
     mocks.role = 'collaborator'
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
-      json(String(input).includes('/knowledge?') ? [{ ...KNOWLEDGE, canManage: false }] : [])
-    )
+    const fetchMock = withRecord((url) => json(url.includes('/knowledge?') ? [{ ...KNOWLEDGE, canManage: false }] : []))
     vi.stubGlobal('fetch', fetchMock)
     await renderView()
     await settleUntil(() => host.textContent?.includes('Release policy') === true)
@@ -448,5 +497,51 @@ describe('organization knowledge surface', () => {
     expect(host.textContent).not.toContain('Suggestions')
     expect(buttons().some((b) => b.textContent?.includes('Publish'))).toBe(false)
     expect(fetchMock.mock.calls.every(([input]) => !String(input).includes('/knowledge-suggestions'))).toBe(true)
+  })
+
+  it('shows the Handbook above the Library, with its status line and a visibility cell on every row', async () => {
+    const entry = (
+      kind: 'organization' | 'channels' | 'people',
+      title: string,
+      content: string,
+      readers?: string[]
+    ) => ({
+      ...KNOWLEDGE,
+      id: `${kind}-id`,
+      kind,
+      title,
+      content,
+      visibility: readers ? 'selected' : 'all',
+      readers: readers ?? []
+    })
+    const record = {
+      research: { agentId: 'agent-atlas', researchedAt: '2026-10-17T09:00:00.000Z', runningSince: null },
+      entries: [
+        entry('organization', 'About', '# About\nExample Org builds release tooling (#general, 2026-10-17)'),
+        entry('channels', 'Channels', '# Channels\n#release: release trains (#release, 2026-10-17)'),
+        entry('people', 'People', '# People', ['agent-atlas', 'agent-beta'])
+      ]
+    }
+    const selected = { ...KNOWLEDGE, id: 'selected-entry', title: 'Runbook', visibility: 'selected', readers: [] }
+    const fetchMock = withRecord(
+      (url) => json(url.includes('/knowledge?') ? [KNOWLEDGE, selected, ...record.entries] : []),
+      record
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await renderView()
+    await settleUntil(() => host.textContent?.includes('Example Org builds release tooling') === true)
+
+    const content = host.textContent ?? ''
+    expect(content).toContain('Handbook')
+    expect(content).toContain('by Atlas')
+    expect(content.indexOf('Handbook')).toBeLessThan(content.indexOf('Library'))
+    expect(content).toContain('1 place')
+    expect(content).toContain('0 people')
+    expect(content).toContain('2 agents')
+    expect(content).toContain('No agents')
+    expect(content).toContain('All agents')
+    // The record's entries are the Handbook's rows, never the Library's.
+    expect(host.querySelectorAll('a[href="/knowledge/organization-id"]')).toHaveLength(1)
+    expect(content).not.toContain('Research again')
   })
 })

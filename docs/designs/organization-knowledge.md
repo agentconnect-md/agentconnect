@@ -706,13 +706,13 @@ platform mark, the name, the purpose and the source chip or the inferred tag.
 People is cards: display name, handles, the four fields with their sources. A
 person's own card carries Edit and Remove, and Remove is the opt-out; nobody
 else's card shows an edit control to them. Organization owners edit any entry in
-place and may clear it; every save is shape-checked in the Control Plane and
+a text editor and may clear it; every save is shape-checked in the Control Plane and
 refused at the failing line; owner edits and clears of People are audited
 without content. Revisions are listed beside the view as on any entry page.
 The `people` routes (§12): `mine` reads, replaces and removes only the caller's
 own entry, matched by their console key and the chat identities they linked;
 `:key` is owner-only. The agent Memory page's own-entry and directory routes and
-the `memory/member/clear` frame are retired with the move.
+the `memory/member/clear` frame are retired (assistant-mode.md §5.16 "As shipped, change 3").
 
 **Agent page.** The "Tools & Skills" tab splits into **Knowledge**, with two
 groups, Handbook (the three entries, whether this agent reads each, and a

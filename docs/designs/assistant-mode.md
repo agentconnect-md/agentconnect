@@ -2804,9 +2804,9 @@ is unchanged. Live tests had shown what that decision costs: a second assistant-
 researched the organization again and kept a copy of its own, which could differ from the first's.
 The decisions below are the owner's and are recorded as taken; what is marked _recommended_ is
 this revision's filling-in, for the owner to confirm, and what is _undecided_ is in §9 (Q30, Q32,
-Q33). The checklist at its end splits the work; its first change, the Control Plane's, and its
-second, the daemon's, shipped on 2026-10-18 ("As shipped, change 1" and "change 2", after the
-checklist), and the console's is to come.
+Q33). The checklist at its end splits the work; all three changes, the Control Plane's, the
+daemon's and the console's, shipped on 2026-10-18 ("As shipped, change 1" to "change 3", after the
+checklist).
 
 **Why.** Facts about the organization are the organization's, not one agent's. An organization
 runs one record of what it does, where its people talk and who works on what, every agent of the
@@ -3150,6 +3150,34 @@ smallest choice made for it:
   `updateMemoryEntry` 399, `getMemoryEntry` 308 and `listMemoryEntries` 398. No daemon store
   version change.
 
+**As shipped, change 3** (2026-10-18: the console).
+
+- **The status line** comes from the record's research claim: "Researched 17 Oct by Atlas" from the
+  last research revision, "Researched 17 Oct" alone once the claiming agent is gone, "Research
+  running since 14:05" while a research session runs, and "Not researched yet". Before any agent
+  is switched on, the group says the record is written once one is.
+- **Channels' platform mark.** The file names no platform, so a channel carries the platform's mark
+  only when the organization's integrations are on one chat platform, and `#` otherwise.
+- **Owner edits** of About and Channels are one text editor over the whole entry, not line by
+  line; the Control Plane's shape refusal names the failing line and the editor shows it under
+  the text. On People an owner edits or clears one card at a time in the same editor, and Clear on
+  the entry page clears the whole entry. A person's own card says "You" and its Edit and Remove use
+  the caller's own-card route.
+- **A text that no longer fits its shape** is shown as Markdown, and its Handbook row says so, so an
+  owner can open it and fix it.
+- **Visibility** is the existing visibility field with the agent picker, in the publish editor and
+  on the entry page; About and Channels show "All agents" with no control, since the Control Plane
+  refuses a change.
+- **Revisions** written by an agent say "Written by <agent> · <writer kind>".
+- **Agent page.** "Tools & Skills" is now "Tools", with the Knowledge tab before it; each Handbook
+  row says "Reads it" or "Does not read it".
+- **Retired**: the Memory page's own-entry card and the owner's directory list, the routes
+  `GET` and `DELETE /agents/:id/memory/mine/member`, `GET /agents/:id/memory/members` and
+  `DELETE /agents/:id/memory/members/:key`, and the `memory/member/clear` frame with its
+  `memory-member-clear-v1` feature.
+- **The console parses** the three files with the protocol's own parser, from a
+  `@agentconnect.md/protocol/organization-files` entry point that carries no frame code.
+
 ### 5.17 People profiles
 
 **Status:** Proposed (2026-10-17). The product owner decided on 2026-10-17 that the agent may keep
@@ -3367,8 +3395,9 @@ is not built.
   that moment; one linked later is covered for as long as it stays linked.
 - **Since the sixty-ninth revision** the directory is the organization record's People entry
   (§5.16), one per organization: the marker file, the Memory page's own-entry and directory routes
-  and the `memory/member/clear` frame above are what that change replaces, and the person rules
-  keep running on the daemon before each write.
+  and the `memory/member/clear` frame above are what that change replaces (the routes and the frame
+  are retired by its third change), and the person rules keep running on the daemon before each
+  write.
 
 ---
 
@@ -4330,3 +4359,11 @@ with every shape and person rule kept and the opt-out sent with each write; Peop
 the listing, the index and the knowledge reads where outsiders may be present or it is not visible
 to the agent; the shared index carries the three entries' lines synthesized from the record; and
 an agent switched on after the organization's research greets by naming the agent that did it.
+
+**Seventy-fourth revision (2026-10-18)**: the organization record's third change ships, the
+console's (issue #2810; §5.16 "As shipped, change 3"). The Knowledge page shows the Handbook above
+the Library, with the research status line and a visibility cell on every row; About, Channels and
+People open as file views with source chips, inferred tags and People's cards, edited by owners in
+one text editor whose refusals name the line and by each person on their own card. The agent page
+gains a Knowledge tab beside Tools, and the Memory page's directory card, list and routes and the
+`memory/member/clear` frame are retired.

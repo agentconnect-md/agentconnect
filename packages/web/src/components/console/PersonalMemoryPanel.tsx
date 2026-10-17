@@ -5,7 +5,6 @@ import { useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
 import { fetchMyAgentMemoryFull, listMyAgentMemory, type MemoryFileEntry } from '@/lib/api'
 import { Spinner } from '@/components/marks'
-import { MyDirectoryEntry } from '@/components/console/DirectoryEntries'
 import {
   FileBrowserLayout,
   FileBrowserPreviewHeader,
@@ -67,7 +66,6 @@ export function PersonalMemoryPanel({ agentId }: { agentId: string }) {
 
   return (
     <>
-      <MyDirectoryEntry agentId={agentId} />
       <FileBrowserShell title={t('yourMemory')}>
         {listing.state === 'loading' ? (
           <div className="flex items-center justify-center py-10">
