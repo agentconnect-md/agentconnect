@@ -17,6 +17,7 @@ function toRecord(row: FollowUpWatch): FollowUpWatchRecord {
     subject: row.subject as FollowUpWatchSubject,
     number: row.number,
     repoPath: row.repoPath,
+    generation: row.generation,
     wakeSeq: row.wakeSeq,
     pendingSince: row.pendingSince,
     pendingStateSince: row.pendingStateSince,
@@ -84,7 +85,16 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
         host: input.host,
         repoPath: input.repoPath,
         endedReason: null,
-        ...(same ? {} : { ...NO_PENDING, lastWakeAt: null, lastWakeKinds: [] })
+        ...(same
+          ? {}
+          : {
+              ...NO_PENDING,
+              lastWakeAt: null,
+              lastWakeKinds: [],
+              generation: { increment: 1 },
+              claimOwner: null,
+              claimUntil: null
+            })
       }
     })
   }
@@ -95,6 +105,13 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
     const rows = await this.db.followUpWatch.findMany({ where })
     await this.db.followUpWatch.deleteMany({ where })
     return rows.map(toRecord)
+  }
+
+  async removeIf(row: FollowUpWatchRecord): Promise<boolean> {
+    const deleted = await this.db.followUpWatch.deleteMany({
+      where: { agentId: row.agentId, followUpId: row.followUpId, generation: row.generation }
+    })
+    return deleted.count === 1
   }
 
   async forObject(object: FollowUpWatchObject): Promise<FollowUpWatchRecord[]> {
@@ -116,7 +133,13 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
 
   async fold(row: FollowUpWatchRecord, pending: FollowUpPendingWake): Promise<boolean> {
     const folded = await this.db.followUpWatch.updateMany({
-      where: { agentId: row.agentId, followUpId: row.followUpId, wakeSeq: row.wakeSeq, endedReason: null },
+      where: {
+        agentId: row.agentId,
+        followUpId: row.followUpId,
+        generation: row.generation,
+        wakeSeq: row.wakeSeq,
+        endedReason: null
+      },
       data: { ...pending, wakeSeq: row.wakeSeq + 1 }
     })
     return folded.count === 1
@@ -142,7 +165,7 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
   async complete(row: FollowUpWatchRecord, owner: string, at: Date): Promise<void> {
     const key = { agentId: row.agentId, followUpId: row.followUpId, claimOwner: owner }
     const completed = await this.db.followUpWatch.updateMany({
-      where: { ...key, wakeSeq: row.wakeSeq },
+      where: { ...key, generation: row.generation, wakeSeq: row.wakeSeq },
       data: { ...NO_PENDING, lastWakeAt: at, lastWakeKinds: row.pendingKinds, claimOwner: null, claimUntil: null }
     })
     if (completed.count === 0) {
@@ -152,16 +175,17 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
 
   async defer(row: FollowUpWatchRecord, owner: string, nextAttemptAt: Date): Promise<void> {
     await this.db.followUpWatch.updateMany({
-      where: { agentId: row.agentId, followUpId: row.followUpId, claimOwner: owner },
+      where: { agentId: row.agentId, followUpId: row.followUpId, generation: row.generation, claimOwner: owner },
       data: { dueAt: nextAttemptAt, claimOwner: null, claimUntil: null }
     })
   }
 
-  async end(row: FollowUpWatchRecord, reason: 'access_lost', at: Date): Promise<void> {
-    await this.db.followUpWatch.updateMany({
-      where: { agentId: row.agentId, followUpId: row.followUpId },
+  async end(row: FollowUpWatchRecord, reason: 'access_lost', at: Date): Promise<boolean> {
+    const ended = await this.db.followUpWatch.updateMany({
+      where: { agentId: row.agentId, followUpId: row.followUpId, generation: row.generation },
       data: { ...NO_PENDING, endedReason: reason, dueAt: at }
     })
+    return ended.count === 1
   }
 
   async objects(provider: CodeHostProvider): Promise<Array<FollowUpWatchObject & { installationId: bigint | null }>> {

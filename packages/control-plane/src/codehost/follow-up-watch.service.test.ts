@@ -86,6 +86,7 @@ class MemoryWatches implements FollowUpWatchRepo {
     this.rows = this.rows.filter((row) => row !== existing)
     this.rows.push({
       ...input,
+      generation: (existing?.generation ?? -1) + 1,
       wakeSeq: existing?.wakeSeq ?? 0,
       ...EMPTY,
       endedReason: null,
@@ -97,6 +98,12 @@ class MemoryWatches implements FollowUpWatchRepo {
     const removed = this.rows.filter((row) => row.agentId === agentId && followUpIds.includes(row.followUpId))
     this.rows = this.rows.filter((row) => !removed.includes(row))
     return removed
+  }
+  async removeIf(row: FollowUpWatchRecord) {
+    const current = this.find(row.agentId, row.followUpId)
+    if (!current || current.generation !== row.generation) return false
+    this.rows = this.rows.filter((candidate) => candidate !== current)
+    return true
   }
   async forObject(o: FollowUpWatchObject) {
     return this.rows.filter((row) => sameObject(row, o) && !row.endedReason).map((row) => ({ ...row }))
@@ -112,7 +119,8 @@ class MemoryWatches implements FollowUpWatchRepo {
   }
   async fold(row: FollowUpWatchRecord, pending: FollowUpPendingWake) {
     const current = this.find(row.agentId, row.followUpId)
-    if (!current || current.wakeSeq !== row.wakeSeq || current.endedReason) return false
+    if (!current || current.generation !== row.generation || current.wakeSeq !== row.wakeSeq || current.endedReason)
+      return false
     Object.assign(current, pending, { wakeSeq: row.wakeSeq + 1 })
     return true
   }
@@ -122,16 +130,18 @@ class MemoryWatches implements FollowUpWatchRepo {
   }
   async complete(row: FollowUpWatchRecord, _owner: string, at: Date) {
     const current = this.find(row.agentId, row.followUpId)
-    if (!current || current.wakeSeq !== row.wakeSeq) return
+    if (!current || current.generation !== row.generation || current.wakeSeq !== row.wakeSeq) return
     Object.assign(current, EMPTY, { lastWakeAt: at, lastWakeKinds: row.pendingKinds })
   }
   async defer(row: FollowUpWatchRecord, _owner: string, nextAttemptAt: Date) {
     const current = this.find(row.agentId, row.followUpId)
-    if (current) current.dueAt = nextAttemptAt
+    if (current?.generation === row.generation) current.dueAt = nextAttemptAt
   }
   async end(row: FollowUpWatchRecord, reason: 'access_lost', at: Date) {
     const current = this.find(row.agentId, row.followUpId)
-    if (current) Object.assign(current, EMPTY, { endedReason: reason, dueAt: at })
+    if (current?.generation !== row.generation) return false
+    Object.assign(current, EMPTY, { endedReason: reason, dueAt: at })
+    return true
   }
   async objects() {
     return this.rows.filter((row) => !row.endedReason)
@@ -422,6 +432,46 @@ describe('FollowUpWatchService', () => {
     expect(h.sent).toEqual([{ agentId: AGENT_A, followUpId: 'f1', wakeId: 2, kinds: [], ended: 'access_lost' }])
     expect(h.watches.rows).toEqual([])
     expect(h.relayed.at(-1)).toMatchObject({ number: 12, watched: false })
+  })
+
+  it('leaves a watch moved while a delivery of its old object was reading access', async () => {
+    const h = harness()
+    await h.service.apply(agent(AGENT_A), {
+      agentId: AGENT_A,
+      mode: 'set',
+      watches: [{ followUpId: 'f1', target: target(12) }]
+    })
+    await h.service.receive({ object: object(12), deliveryKey: 'd1', kind: 'merged', feedback: false })
+    h.clock.advance(STATE_QUIET_MS)
+    h.state.covers = false
+    const claimed = (await h.watches.claimNext('owner', new Date(NOW + STATE_QUIET_MS)))!
+    // The move lands between the claim and the old object's failed access check.
+    h.state.covers = true
+    await h.service.apply(agent(AGENT_A), {
+      agentId: AGENT_A,
+      mode: 'set',
+      watches: [{ followUpId: 'f1', target: target(13) }]
+    })
+    await expect(h.watches.end(claimed, 'access_lost', new Date(NOW))).resolves.toBe(false)
+    await expect(h.watches.removeIf(claimed)).resolves.toBe(false)
+    expect(h.watches.rows).toMatchObject([{ followUpId: 'f1', number: 13, endedReason: null }])
+  })
+
+  it("folds no event of a watch's old object into its new one", async () => {
+    const h = harness()
+    await h.service.apply(agent(AGENT_A), {
+      agentId: AGENT_A,
+      mode: 'set',
+      watches: [{ followUpId: 'f1', target: target(12) }]
+    })
+    const [stale] = await h.watches.forObject(object(12))
+    await h.service.apply(agent(AGENT_A), {
+      agentId: AGENT_A,
+      mode: 'set',
+      watches: [{ followUpId: 'f1', target: target(13) }]
+    })
+    await expect(h.watches.fold(stale!, foldWake(stale!, 'merged', new Date(NOW)))).resolves.toBe(false)
+    expect(h.watches.rows[0]).toMatchObject({ number: 13, pendingKinds: [] })
   })
 
   it('ends the subscription of a follow-up its daemon no longer has', async () => {

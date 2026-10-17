@@ -319,15 +319,16 @@ export class FollowUpWatchService {
   }
 
   private async deliver(row: FollowUpWatchRecord): Promise<void> {
-    const agent = await this.deps.agents.getUnscoped(row.agentId)
-    if (!agent || agent.orgId !== row.orgId) {
-      await this.drop(await this.deps.watches.remove(row.agentId, [row.followUpId]))
-      return
+    // Every write below matches the generation claimed, so a watch moved meanwhile is left alone.
+    const forget = async () => {
+      if (await this.deps.watches.removeIf(row)) await this.drop([row])
     }
+    const agent = await this.deps.agents.getUnscoped(row.agentId)
+    if (!agent || agent.orgId !== row.orgId) return forget()
     let ended = row.endedReason
     if (!ended && !(await this.providers.get(row.provider)?.covers(agent, row))) {
       // Access is gone: the pending wake gives way to a notice, and the relays stop forwarding.
-      await this.deps.watches.end(row, 'access_lost', new Date(this.deps.clock.now()))
+      if (!(await this.deps.watches.end(row, 'access_lost', new Date(this.deps.clock.now())))) return
       await this.drop([{ ...row, endedReason: 'access_lost' }])
       ended = 'access_lost'
     }
@@ -349,7 +350,7 @@ export class FollowUpWatchService {
     const result = await this.deps.send(daemonId, wake, agent.orgId)
     if (result.accepted || result.reason === 'not_found') {
       if (ended || !result.accepted) {
-        await this.drop(await this.deps.watches.remove(row.agentId, [row.followUpId]))
+        await forget()
       } else {
         await this.deps.watches.complete(row, this.owner, new Date(this.deps.clock.now()))
       }

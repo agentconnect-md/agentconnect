@@ -12,6 +12,7 @@ CREATE TABLE "follow_up_watch" (
     "number" INTEGER NOT NULL,
     "repoPath" TEXT NOT NULL,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "generation" INTEGER NOT NULL DEFAULT 0,
     "wakeSeq" INTEGER NOT NULL DEFAULT 0,
     "pendingSince" TIMESTAMPTZ(6),
     "pendingStateSince" TIMESTAMPTZ(6),

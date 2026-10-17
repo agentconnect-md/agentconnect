@@ -106,6 +106,24 @@ describe('PgFollowUpWatchRepo', () => {
     expect(await repo.claimNext(randomUUID(), NOW, NOW)).toMatchObject({ endedReason: 'access_lost' })
   })
 
+  it('fences a moved watch from work begun on its old object', async () => {
+    const repo = new PgFollowUpWatchRepo(prisma)
+    await put(repo, AGENT_ID, 'f1', 12)
+    const old = await row(repo, AGENT_ID, 'f1')
+    await repo.fold(old, foldWake(old, 'merged', NOW))
+    const owner = randomUUID()
+    const claimed = (await repo.claimNext(owner, new Date(NOW.getTime() + 60_000), new Date(NOW.getTime() + 120_000)))!
+    await put(repo, AGENT_ID, 'f1', 13)
+    const moved = await row(repo, AGENT_ID, 'f1')
+    expect(moved).toMatchObject({ number: 13, generation: old.generation + 1, pendingKinds: [] })
+    await expect(repo.fold(claimed, foldWake(claimed, 'checks', NOW))).resolves.toBe(false)
+    await expect(repo.end(claimed, 'access_lost', NOW)).resolves.toBe(false)
+    await expect(repo.removeIf(claimed)).resolves.toBe(false)
+    await repo.complete(claimed, owner, NOW)
+    expect(await row(repo, AGENT_ID, 'f1')).toMatchObject({ number: 13, endedReason: null, lastWakeAt: null })
+    await expect(repo.removeIf(moved)).resolves.toBe(true)
+  })
+
   it('goes with its agent', async () => {
     const repo = new PgFollowUpWatchRepo(prisma)
     await put(repo, AGENT_ID, 'f1', 12)

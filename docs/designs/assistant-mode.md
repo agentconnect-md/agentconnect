@@ -2201,7 +2201,8 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   redelivery folds into nothing for every watch of the object. The wake sequence grows with each
   folded event; a wake that raced a later event is sent again under the higher id.
 - **A refused move ends the old watch.** `set` replaces: the follow-up is watched by what the answer
-  names, or by nothing.
+  names, or by nothing. A move takes a new generation, and every fold, delivery, end and removal
+  begun on the old object must match it, so none of them reaches the watch that replaced it.
 - **The provider half** is a provider list given to the follow-up watch service, as the feedback
   lane's providers are, rather than a member of `codehost/provider.ts`, whose members take the HTTP
   layer's dependencies. GitHub reads the object once with a pull-request or issue read token minted

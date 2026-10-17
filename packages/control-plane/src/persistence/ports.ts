@@ -1780,6 +1780,8 @@ export interface FollowUpWatchRecord extends FollowUpWatchObject {
   installationId: bigint | null
   host: string
   repoPath: string
+  /** Grows with every move to another object; work begun on an older one must match it to change anything. */
+  generation: number
   wakeSeq: number
   pendingSince: Date | null
   pendingStateSince: Date | null
@@ -1799,13 +1801,15 @@ export type FollowUpPendingWake = Pick<
 
 export interface FollowUpWatchRepo {
   listForAgent(agentId: AgentId): Promise<FollowUpWatchRecord[]>
-  /** Create or move one watch; a moved watch drops its pending wake and ended state. */
+  /** Create or move one watch; a moved watch takes a new generation and drops its pending wake and ended state. */
   put(
     input: FollowUpWatchObject &
       Pick<FollowUpWatchRecord, 'agentId' | 'followUpId' | 'installationId' | 'host' | 'repoPath'>
   ): Promise<void>
   /** Delete these watches and return the ones that existed. */
   remove(agentId: AgentId, followUpIds: string[]): Promise<FollowUpWatchRecord[]>
+  /** Delete this watch only while it is still the generation `row` read; false when it moved since. */
+  removeIf(row: FollowUpWatchRecord): Promise<boolean>
   /** The live watches of one object, ended ones excluded. */
   forObject(object: FollowUpWatchObject): Promise<FollowUpWatchRecord[]>
   /** Whether any watch of any agent still names this object, ended ones included. */
@@ -1819,8 +1823,8 @@ export interface FollowUpWatchRepo {
   /** Clear a delivered wake unless a later event folded into it meanwhile. */
   complete(row: FollowUpWatchRecord, owner: string, at: Date): Promise<void>
   defer(row: FollowUpWatchRecord, owner: string, nextAttemptAt: Date): Promise<void>
-  /** End a watch for lost access: its pending wake gives way to a notice due now. */
-  end(row: FollowUpWatchRecord, reason: 'access_lost', at: Date): Promise<void>
+  /** End a watch for lost access, unless it moved since `row`: its pending wake gives way to a notice due now. */
+  end(row: FollowUpWatchRecord, reason: 'access_lost', at: Date): Promise<boolean>
   /** Every distinct object watched through `provider`, with the installation that reaches it, for a relay replay. */
   objects(provider: CodeHostProvider): Promise<Array<FollowUpWatchObject & { installationId: bigint | null }>>
   /** Drop delivery receipts older than the cutoff. */

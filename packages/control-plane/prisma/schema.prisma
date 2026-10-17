@@ -1527,6 +1527,8 @@ model FollowUpWatch {
   number            Int
   repoPath          String
   createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  // Grows with every move to another object; folds and deliveries of an older one change nothing.
+  generation        Int       @default(0)
   // Grows with every folded event; the pending wake carries it as its wakeId.
   wakeSeq           Int       @default(0)
   pendingSince      DateTime? @db.Timestamptz(6)
