@@ -703,6 +703,63 @@ describe('handleEventSession', () => {
     )
   })
 
+  it.each(['valid', 'other-host', 'other-project', 'other-org', 'stale-hook'])(
+    'fences a GitLab audience against its accepted run and project binding: %s',
+    async (scenario) => {
+      const recordMilestone = vi.fn().mockResolvedValue(recorded())
+      const deps = scopedDeps({
+        session: { recordMilestone },
+        hook: {
+          get: vi.fn().mockResolvedValue({
+            kind: 'gitlab',
+            agentId: AGENT_ID,
+            repoId: scenario === 'other-project' ? 999n : 123n,
+            configRevision: 1n
+          }),
+          getRun: vi.fn().mockResolvedValue({
+            orgId: scenario === 'other-org' ? 'other' : ORG_ID,
+            agentId: AGENT_ID,
+            configRevision: scenario === 'stale-hook' ? 2n : 1n
+          })
+        },
+        gitlabBaseUrl: 'https://gitlab.example.test',
+        gitlabProjectBinding: { byProject: vi.fn().mockResolvedValue({ id: 'binding' }) },
+        events: { publish: vi.fn() }
+      })
+      const frame = eventSessionFrame()
+      Object.assign(frame.payload as Record<string, unknown>, {
+        externalOrigin: {
+          provider: 'gitlab',
+          realmKey: scenario === 'other-host' ? 'https://other.example.test' : 'https://gitlab.example.test',
+          resourceKind: 'repository',
+          resourceKey: '123',
+          hookId: HOOK_ID,
+          deliveryKey: 'delivery-1'
+        }
+      })
+      await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+      expect(recordMilestone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalCandidate: expect.objectContaining({
+            provider: 'gitlab',
+            resolution: scenario === 'valid' ? 'settled' : 'invalid',
+            ...(scenario === 'valid'
+              ? {
+                  scope: {
+                    realmKey: 'https://gitlab.example.test',
+                    resourceKind: 'repository',
+                    resourceKey: '123',
+                    credentialKind: 'gitlab_project_binding',
+                    credentialId: 'binding'
+                  }
+                }
+              : {})
+          })
+        })
+      )
+    }
+  )
+
   it('binds a GitHub audience only to the accepted delivery snapshot and installation claim', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({

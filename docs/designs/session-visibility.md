@@ -204,6 +204,11 @@ Slack policy hides unresolved history instead of guessing an audience. The
 GitHub migration uses accepted `HookRun` snapshots only when every run tied to
 a session agrees on one numeric repository id; ambiguous history remains a
 hidden unresolved candidate after GitHub sync is enabled.
+GitLab history is tagged from its frozen hook kind, live hook identity or trusted
+thread namespace, together with inherited descendants. It stays unresolved until
+an authoritative source is available; enabling sync hides that backlog. New
+GitLab sessions use a fresh audience-bound namespace instead of resuming legacy
+runtimes.
 
 ## 4. Classifying sessions at ingest
 
@@ -247,6 +252,13 @@ GitHub direct ingress reports:
   repoFullName: string // validated snapshot; not the ACL identity
 }
 ```
+
+GitLab direct ingress uses provider `gitlab`, the configured instance base URL as
+`realmKey`, a `repository` resource and numeric project id as `resourceKey`. Its
+`hookId` and `deliveryKey` must match an accepted run for the reporting agent and
+the hook's current project and revision. The scope references the organization's
+project binding. Reads require either an enabled public repository or active,
+unexpired Reporter-or-higher membership for the issuer-bound linked identity.
 
 Feishu/Lark direct ingress uses provider `feishu`, a `conversation` resource,
 and realm `<region>:<appId>`. The App ID identifies and validates the registered

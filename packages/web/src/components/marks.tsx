@@ -14,7 +14,7 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiDiscord, SiForgejo, SiGitea, SiGithub, SiTelegram, SiVercel } from 'react-icons/si'
+import { SiDiscord, SiForgejo, SiGitea, SiGithub, SiGitlab, SiTelegram, SiVercel } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useGiteaProduct } from '@/lib/gitea-product'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
@@ -383,6 +383,7 @@ export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; s
   if (target === 'telegram') return <SiTelegram size={size} aria-hidden />
   if (target === 'discord') return <SiDiscord size={size} aria-hidden />
   if (target === 'github') return <SiGithub size={size} aria-hidden />
+  if (target === 'gitlab') return <SiGitlab size={size} aria-hidden />
   if (target === 'slack')
     return <IconifyIcon icon={slackIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
   if (target === 'lark' || target === 'feishu')

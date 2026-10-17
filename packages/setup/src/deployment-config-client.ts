@@ -81,6 +81,9 @@ export function gitlabDeploymentPut(
   current: CurrentDeploymentConfig,
   application: GitlabDeploymentCredentials | null
 ): DeploymentConfigPut {
+  if (!application && current.values.logto?.browser?.socialProviders.includes('gitlab')) {
+    throw new Error('disable GitLab sign-in before clearing its OAuth application')
+  }
   // A different instance is a different application, so its secret is required
   // whenever either half of the identity moves (§24.1).
   const baseUrl = application?.baseUrl ?? null
@@ -103,6 +106,23 @@ export function gitlabDeploymentPut(
 export interface GiteaDeploymentInstance {
   /** The instance base URL (gitea-integration.md §3); null or omitted means gitea.com. */
   baseUrl?: string | null
+}
+
+export function logtoGitlabSignInPut(current: CurrentDeploymentConfig, enabled: boolean): DeploymentConfigPut {
+  const logto = current.values.logto
+  if (!logto?.browser || (enabled && !current.values.gitlab)) {
+    throw new Error('save the GitLab application and Logto browser configuration first')
+  }
+  const socialProviders = enabled
+    ? [...new Set([...logto.browser.socialProviders, 'gitlab'])]
+    : logto.browser.socialProviders.filter((target) => target !== 'gitlab')
+  if (!socialProviders.length) throw new Error('keep at least one sign-in provider configured')
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      logto: { ...logto, browser: { ...logto.browser, socialProviders } }
+    }
+  })
 }
 
 /** Null clears the entry. Gitea registers no application, so the instance address is the whole

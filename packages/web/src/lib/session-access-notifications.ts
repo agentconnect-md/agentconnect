@@ -56,14 +56,21 @@ export interface UnverifiedConversationNotice {
   action?: SessionAccessNotificationAction
 }
 
-const BOT_PLATFORM_NAMES: Record<string, string> = { telegram: 'Telegram', discord: 'Discord', googlechat: 'Google' }
-const BOT_AUTHORIZATION_MESSAGES: Record<string, string> = {
+const BOT_PLATFORM_NAMES: Record<string, string> = {
+  telegram: 'Telegram',
+  discord: 'Discord',
+  gitlab: 'GitLab',
+  googlechat: 'Google'
+}
+const APP_ACCESS_MESSAGES: Record<string, string> = {
   telegram:
     'The Telegram chat bot must be an administrator to verify group membership. Ask a group administrator to check its role and credentials.',
   discord:
     'The Discord bot cannot verify conversation access. Ask a server administrator to check its channel access and credentials.',
   googlechat:
-    'The Google Chat app cannot verify space membership. Ask an administrator to check the app’s space access and credentials.'
+    'The Google Chat app cannot verify space membership. Ask an administrator to check the app’s space access and credentials.',
+  gitlab:
+    'The GitLab connection cannot verify project access. Ask an organization owner to reconnect it in Integrations.'
 }
 
 function botAccessNotice(
@@ -86,7 +93,7 @@ function botAccessNotice(
     }
   if (issue.reason === 'app_authorization')
     return {
-      message: BOT_AUTHORIZATION_MESSAGES[issue.provider]!,
+      message: APP_ACCESS_MESSAGES[issue.provider]!,
       retry: false,
       action: { label: 'Open Integrations', href: orgPath(`/integrations?platform=${issue.provider}`), external: false }
     }

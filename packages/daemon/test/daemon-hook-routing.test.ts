@@ -319,7 +319,7 @@ describe('code-host Decision routing host for GitLab and Gitea (daemon)', () => 
       repoId: GITLAB_PROJECT,
       repoFullName: 'example-group/example-project',
       fire: gitlabEvent,
-      thread: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+      thread: `gitlab:audience-v1:${GITLAB_PROJECT}:merge_request:42`,
       subject: { kind: 'merge_request', number: 42, draft: true }
     },
     {

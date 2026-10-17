@@ -4595,6 +4595,14 @@
           "unresolved": "{count, plural, one {# session hidden — no trusted repository scope.} other {# sessions hidden — no trusted repository scope.}}",
           "degraded": "Repository scopes stopped resolving — new sessions are being hidden."
         },
+        "gitlab": {
+          "name": "GitLab",
+          "label": "Follow GitLab access",
+          "details": "Public-repository sessions are visible to Everyone. Other projects require a linked account on this GitLab instance with an active Reporter or higher membership. Disabled repositories stay hidden.\nEarlier agent memory is not erased. History without a trusted project stays hidden.\nTurning this off hides previously synced sessions; turning it back on restores permission checks.",
+          "unavailable": "Configure GitLab integration and sign-in before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden — no trusted project.} other {# sessions hidden — no trusted project.}}",
+          "degraded": "GitLab project scopes stopped resolving — new sessions are being hidden."
+        },
         "feishu": {
           "name": "Feishu/Lark",
           "label": "Follow Feishu/Lark access",

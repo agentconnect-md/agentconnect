@@ -91,8 +91,6 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
   ) {
     return { provider: p.platform, resolution: 'pending' as const }
   }
-  // An explicit local source binding is authoritative; absent provenance uses the mixed-version fallback below.
-  if (p.sourceBindingKind === 'local' && !origin) return undefined
   if (!origin) {
     // A2A children inherit their audience from the parent and never claim a legacy hook scope.
     if (p.parentSessionId) return undefined
@@ -101,9 +99,13 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
       : p.platform === 'hook'
         ? p.channel
         : undefined
-    // The reporting daemon names the hook; the frame's org fences it and the agent check below
-    // binds that trust (§4).
+    // The frame's org and reporting agent fence the claimed hook.
     const hook = triggerId && UUID_RE.test(triggerId) ? await deps.hook.get(orgId, HookId(triggerId)) : null
+    if (hook?.kind === 'gitlab' && hook.agentId === agentId)
+      return { provider: 'gitlab', resolution: 'pending' as const }
+    if (p.platform === 'hook' && p.thread?.startsWith('gitlab:'))
+      return { provider: 'gitlab', resolution: 'pending' as const }
+    if (p.sourceBindingKind === 'local') return undefined
     const legacyGithub = hook?.kind === 'github' && hook.agentId === agentId
     if (legacyGithub) return { provider: 'github', resolution: 'pending' as const }
 
@@ -122,6 +124,37 @@ async function externalCandidate(p: EventSession, orgId: OrgId, agentId: AgentId
     return legacySharedSlack ? { provider: 'slack', resolution: 'pending' as const } : undefined
   }
   const pending = { provider: origin.provider, resolution: 'pending' as const }
+  if (origin.provider === 'gitlab') {
+    const [run, hook] = await Promise.all([
+      deps.hook.getRun(HookId(origin.hookId), origin.deliveryKey),
+      deps.hook.get(orgId, HookId(origin.hookId))
+    ])
+    if (!run || !hook || !deps.gitlabProjectBinding || !deps.gitlabBaseUrl) return pending
+    if (
+      run.orgId !== orgId ||
+      run.agentId !== agentId ||
+      hook.agentId !== agentId ||
+      hook.kind !== 'gitlab' ||
+      hook.repoId?.toString() !== origin.resourceKey ||
+      run.configRevision !== hook.configRevision ||
+      origin.realmKey !== deps.gitlabBaseUrl
+    ) {
+      return { provider: 'gitlab', resolution: 'invalid' as const }
+    }
+    const binding = await deps.gitlabProjectBinding.byProject(orgId, BigInt(origin.resourceKey))
+    if (!binding) return pending
+    return {
+      provider: 'gitlab',
+      resolution: 'settled' as const,
+      scope: {
+        realmKey: deps.gitlabBaseUrl,
+        resourceKind: 'repository',
+        resourceKey: origin.resourceKey,
+        credentialKind: 'gitlab_project_binding',
+        credentialId: binding.id
+      }
+    }
+  }
   if (origin.provider === 'github') {
     const run = await deps.hook.getRun(HookId(origin.hookId), origin.deliveryKey)
     if (!run || !deps.githubInstallation) return pending

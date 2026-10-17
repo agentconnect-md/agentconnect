@@ -327,6 +327,15 @@ export class LogtoIdentityService {
     return feishuIdentitiesOf(await this.logtoUser(sub, this.identityTtlMs))
   }
 
+  // A numeric GitLab identity is meaningful only on the issuer that authenticated it.
+  async gitlabUserIdFor(sub: string, issuer: string): Promise<string | null> {
+    const user = await this.logtoUser(sub, Math.min(this.identityTtlMs, PROVIDER_IDENTITY_TTL_MS))
+    const identity = user?.identities?.gitlab
+    const raw = identity?.details?.rawData as Record<string, unknown> | undefined
+    const id = identity?.userId
+    return id && /^[1-9]\d*$/.test(id) && raw?.sub === id && raw.iss === issuer ? id : null
+  }
+
   // Verified chat identities use workspace, developer region, or global provider user ids.
   async chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> {
     const user = await this.logtoUser(sub, this.identityTtlMs)

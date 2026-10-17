@@ -101,13 +101,13 @@ function isThreadless<T extends GitlabHookTarget | GiteaHookTarget>(
   return target.kind === 'push' || target.kind === 'release'
 }
 
-/** The §12.3 provider-qualified thread value, recomputed from trusted metadata. */
+// The audience namespace keeps pre-sync runtimes from being reused with a newly restricted transcript.
 export function gitlabSessionThread(gitlab: GitlabHookMetadata): string {
   const target = gitlab.target
-  if (target.kind === 'release') return `gitlab:${gitlab.projectId}:releases`
+  if (target.kind === 'release') return `gitlab:audience-v1:${gitlab.projectId}:releases`
   return target.kind === 'push'
-    ? `gitlab:${gitlab.projectId}:push:${target.ref}`
-    : `gitlab:${gitlab.projectId}:${target.kind}:${target.iid}`
+    ? `gitlab:audience-v1:${gitlab.projectId}:push:${target.ref}`
+    : `gitlab:audience-v1:${gitlab.projectId}:${target.kind}:${target.iid}`
 }
 
 /**

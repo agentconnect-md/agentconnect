@@ -274,6 +274,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label id="gitlab-initial-secret-field" class="field">Secret<input id="gitlab-secret" type="password" autocomplete="new-password" placeholder="Required when the Application ID changes"></label>
         </div>
         <div class="row"><button id="save-gitlab">Save GitLab application</button><button id="cancel-gitlab-configuration" hidden>Cancel</button><button id="clear-gitlab" class="danger" hidden>Clear configuration</button></div>
+        <div class="subsection">
+          <h4>GitLab sign-in</h4>
+          <p>Add these redirect URIs and the openid, profile and email scopes to the same confidential OAuth application.</p>
+          <ul id="gitlab-login-redirects" class="uris"></ul>
+          <p id="gitlab-login-status" class="muted"></p>
+          <div class="row"><button id="connect-gitlab-login">Use for Logto sign-in</button><button id="disconnect-gitlab-login" hidden>Disable GitLab sign-in</button><button id="check-gitlab-login" hidden>Check Logto</button></div>
+        </div>
       </section>
 
       <section id="gitea-section" class="panel setup-section" aria-labelledby="gitea-heading">
@@ -781,6 +788,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('save-gitlab').hidden = Boolean(gitlab);
       el('cancel-gitlab-configuration').hidden = true;
       el('clear-gitlab').hidden = !gitlab;
+      const gitlabLogin = values.logto?.browser?.socialProviders.includes('gitlab');
+      renderUriList('gitlab-login-redirects', expected.gitlabSignIn?.redirects || []);
+      el('gitlab-login-status').textContent = gitlabLogin ? 'GitLab sign-in is configured. Use Check Logto to verify it.' : 'GitLab sign-in is not enabled.';
+      el('connect-gitlab-login').hidden = Boolean(gitlabLogin);
+      el('connect-gitlab-login').disabled = !gitlab || !gitlabSecret || !values.logto?.browser;
+      el('disconnect-gitlab-login').hidden = !gitlabLogin;
+      el('check-gitlab-login').hidden = !gitlabLogin;
 
       const gitea = values.gitea;
       text('gitea-instance', (gitea && gitea.baseUrl) || 'https://gitea.com');
@@ -1233,8 +1247,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
         // Gitea holds no deployment secret, so clearing the address clears the whole entry.
         next = { ...values, gitea: null };
       } else if (provider === 'gitlab') {
-        next = { ...values, gitlab: null };
-        secrets = { 'gitlab.clientSecret': null };
+        await json(await fetch(api + '/configure/gitlab', {
+          method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+          body: JSON.stringify({ application: null })
+        }));
+        await load();
+        message('GitLab configuration cleared. Its setup controls are available again.');
+        return;
       } else if (provider === 'slack') {
         const logto = values.logto
           ? {
@@ -1529,6 +1548,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         })
       }));
       el('gitlab-secret').value = '';
+      if (currentStatus.values.logto?.browser?.socialProviders.includes('gitlab')) await reconcileLogto(Boolean(clientSecret));
       await load();
       showGitlabProbe(saved.probe);
       message('GitLab OAuth application saved. Restart AgentConnect to apply it.');
@@ -1539,6 +1559,15 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const line = el('gitlab-probe');
       line.hidden = !probe;
       line.textContent = probe ? probe.message : '';
+    }
+
+    async function configureGitlabLogin(enabled) {
+      await json(await fetch(api + '/configure/gitlab-login', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ enabled })
+      }));
+      try { await reconcileLogto(enabled); } finally { await load(); }
+      message('GitLab sign-in ' + (enabled ? 'configured' : 'disabled') + '. Restart AgentConnect to apply it.');
     }
 
     async function saveGitea() {
@@ -1636,6 +1665,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     function renderLoginAppChecks(report) {
       const connectors = report.findings.find((finding) => finding.id === 'logto.connectors');
+      if (currentStatus?.values.logto?.browser?.socialProviders.includes('gitlab')) {
+        const diff = connectors?.diff?.filter((item) => item.field.toLowerCase().startsWith('gitlab')) || [];
+        const passed = Boolean(connectors && diff.length === 0 && (connectors.status === 'pass' || connectors.diff?.length));
+        el('gitlab-login-status').textContent = passed
+          ? 'GitLab connector matches. Confirm the redirect URLs and OpenID scopes in GitLab.'
+          : 'GitLab sign-in could not be verified. Review the Logto check above.';
+      }
       for (const [provider, app] of Object.entries(loginApps)) {
         if (!currentStatus?.values.logto?.[provider + 'Connector']) continue;
         const diff = connectors?.diff?.filter((item) => item.field.toLowerCase().startsWith(provider)) || [];
@@ -1819,6 +1855,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
       if (!value) throw new Error('Enter the replacement secret');
       const refreshLogto =
+        (key === 'gitlab.clientSecret' && currentStatus.values.logto?.browser?.socialProviders.includes('gitlab')) ||
         (key === 'logto.githubConnectorClientSecret' && currentStatus.values.logto && currentStatus.values.logto.githubConnector) ||
         (key === 'logto.googleConnectorClientSecret' && currentStatus.values.logto && currentStatus.values.logto.googleConnector) ||
         Object.keys(loginApps).some((provider) => key === 'logto.' + provider + 'ConnectorClientSecret' && currentStatus.values.logto?.[provider + 'Connector']) ||
@@ -1895,6 +1932,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-github-configuration').onclick = cancelConfigurationEdit;
     el('clear-github').onclick = () => clearProvider('github').catch((error) => message(error.message, true));
     el('connect-github-login').onclick = () => connectGithubLogin().catch((error) => message(error.message, true));
+    el('connect-gitlab-login').onclick = () => configureGitlabLogin(true).catch((error) => message(error.message, true));
+    el('disconnect-gitlab-login').onclick = () => configureGitlabLogin(false).catch((error) => message(error.message, true));
+    el('check-gitlab-login').onclick = () => checkLogto().catch((error) => message(error.message, true));
     el('check-github').onclick = () => checkGithub().catch((error) => message(error.message, true));
     el('create-slack').onclick = () => createSlack('slack').catch((error) => message(error.message, true));
     el('connect-slack-login').onclick = () => connectSlackLogin().catch((error) => message(error.message, true));

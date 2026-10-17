@@ -149,6 +149,7 @@ export function GlobalSearch({
     fetchSessionExternalAccess(provider, scopedOrgId)
   const slackAccess = useSWR(accessKey('slack'), accessFetcher)
   const githubAccess = useSWR(accessKey('github'), accessFetcher)
+  const gitlabAccess = useSWR(accessKey('gitlab'), accessFetcher)
   const feishuAccess = useSWR(accessKey('feishu'), accessFetcher)
   const telegramAccess = useSWR(accessKey('telegram'), accessFetcher)
   const discordAccess = useSWR(accessKey('discord'), accessFetcher)
@@ -157,6 +158,7 @@ export function GlobalSearch({
   const sessionAccessRenders = [
     slackAccess,
     githubAccess,
+    gitlabAccess,
     feishuAccess,
     telegramAccess,
     discordAccess,

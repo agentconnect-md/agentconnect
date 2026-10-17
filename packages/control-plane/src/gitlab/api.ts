@@ -342,6 +342,8 @@ export async function gitlabVersion(accessToken: string, client: GitlabApiClient
 export interface GitlabProjectSummary {
   id: number
   path_with_namespace: string
+  visibility?: 'public' | 'internal' | 'private'
+  repository_access_level?: 'disabled' | 'private' | 'enabled'
   default_branch?: string
   http_url_to_repo?: string
   last_activity_at?: string

@@ -17,6 +17,28 @@ const MUTATIONS: SocialIdentityMutationGate = {
   runExclusive: async (_oidcSubject, mutation) => mutation()
 }
 
+it('binds GitLab numeric identities to the verified OIDC issuer and invalidates on unlink', async () => {
+  const issuer = 'https://gitlab.example.test/prefix'
+  const users = {
+    subject: {
+      identities: {
+        gitlab: { userId: '42', details: { rawData: { sub: '42', iss: issuer } } },
+        google: { userId: 'google-user' }
+      }
+    }
+  }
+  const fake = fakeLogto(users, {
+    onDelete: () => {
+      delete (users.subject.identities as Record<string, unknown>).gitlab
+    }
+  })
+  const service = new LogtoIdentityService(MGMT, new FakeClock(1_800_000_000_000), MUTATIONS, fake.fetchImpl)
+  expect(await service.gitlabUserIdFor('subject', issuer)).toBe('42')
+  expect(await service.gitlabUserIdFor('subject', 'https://other.example.test')).toBeNull()
+  await service.unlinkSocialIdentity('subject', 'gitlab')
+  expect(await service.gitlabUserIdFor('subject', issuer)).toBeNull()
+})
+
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
 /** A Logto user with a Slack identity in the given workspace. Synthetic ids. */

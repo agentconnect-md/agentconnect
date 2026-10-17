@@ -34,6 +34,7 @@ import {
 import { loadDeploymentEnvironment } from '../deployment-environment.js'
 import {
   LOGTO_GITHUB_CONNECTOR_ID,
+  LOGTO_GITLAB_CONNECTOR_ID,
   LOGTO_GOOGLE_CONNECTOR_ID,
   LOGTO_SLACK_CONNECTOR_ID,
   LOGTO_LOGIN_APPS
@@ -48,6 +49,7 @@ import {
   logtoGoogleConnectorPut,
   logtoLoginAppPut,
   logtoGithubConnectorPut,
+  logtoGitlabSignInPut,
   slackDeploymentPut
 } from '../deployment-config-client.js'
 import {
@@ -58,6 +60,7 @@ import {
   githubManifestRegistrationUrl
 } from '../github-app.js'
 import { gitlabConfiguredUrls } from '../gitlab-app.js'
+import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '@agentconnect.md/control-plane/gitlab-config'
 import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
@@ -419,6 +422,15 @@ function logtoSetup(
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(setupOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
       socialProviders: [...browser.socialProviders],
+      ...(record.values.gitlab && record.secrets['gitlab.clientSecret']
+        ? {
+            gitlab: {
+              clientId: record.values.gitlab.clientId,
+              clientSecret: record.secrets['gitlab.clientSecret'],
+              baseUrl: normalizeGitlabBaseUrl(record.values.gitlab.baseUrl ?? GITLAB_DEFAULT_BASE_URL)
+            }
+          }
+        : {}),
       ...(logto.githubConnector && githubSecret
         ? {
             github: {
@@ -510,7 +522,9 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     return result
   }
 
-  type ManagedConnectorIds = Partial<Record<'github' | 'google' | 'slack' | z.infer<typeof LoginAppProvider>, string>>
+  type ManagedConnectorIds = Partial<
+    Record<'github' | 'gitlab' | 'google' | 'slack' | z.infer<typeof LoginAppProvider>, string>
+  >
 
   const resolveLogtoConnectorIds = async (): Promise<ManagedConnectorIds> => {
     const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
@@ -518,6 +532,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     if (!config) return {}
     return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds([
       'github',
+      'gitlab',
       'google',
       'slack',
       ...LoginAppProvider.options
@@ -602,6 +617,16 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     return {
       github,
       gitlab,
+      gitlabSignIn: {
+        redirects: values.logto?.browser
+          ? socialRedirectUris(
+              logtoEndpoint,
+              connectorIds.gitlab ?? LOGTO_GITLAB_CONNECTOR_ID,
+              localAuthBootstrap.services.web
+            )
+          : [],
+        scopes: ['openid', 'profile', 'email']
+      },
       slack,
       linear,
       googleChat,
@@ -957,6 +982,23 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       return { revision: saved.revision, restartRequired: true as const }
     })
   )
+
+  app.post('/api/v1/configure/gitlab-login', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = z.strictObject({ enabled: z.boolean() }).safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'choose whether to enable GitLab sign-in')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings first')
+      let put: ReturnType<typeof logtoGitlabSignInPut>
+      try {
+        put = logtoGitlabSignInPut(current, parsed.data.enabled)
+      } catch (error) {
+        return problem(reply, 400, error instanceof Error ? error.message : 'invalid sign-in configuration')
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return { revision: saved.revision, restartRequired: true as const }
+    })
+  })
 
   app.post('/api/v1/configure/gitlab', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGitlabBody.safeParse(request.body)
@@ -1566,7 +1608,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         'logto.telegramConnectorClientSecret',
         'logto.discordConnectorClientSecret',
         'slack.clientSecret',
-        'github.clientSecret'
+        'github.clientSecret',
+        'gitlab.clientSecret'
       ] as const
       const initialRuntime = await deps.store.getRuntime(secretKeys)
       const config = logtoConfig(initialRuntime, logtoManagementEndpoint)
@@ -1651,6 +1694,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       'logto.googleConnectorClientSecret',
       'logto.telegramConnectorClientSecret',
       'logto.discordConnectorClientSecret',
+      'gitlab.clientSecret',
       'slack.clientSecret'
     ])
 
