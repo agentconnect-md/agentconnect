@@ -108,6 +108,7 @@ import {
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WAKE_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
+  parseFollowUpWatchUrl,
   WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
@@ -13937,11 +13938,25 @@ export class Daemon {
   /** §14.2: resolve this turn's trusted repository, then run exactly one allowlisted operation on its host's broker. */
   private async runCodeHostEffect(req: CodeHostEffectReq): Promise<unknown> {
     const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
-    const target = this.codeHostEffectTarget(req.agentId, key)
+    const target =
+      (isCheckCoordinate(req.thread) ? await this.watchedEffectTarget(req.agentId, key) : undefined) ??
+      this.codeHostEffectTarget(req.agentId, key)
     if (!target) throw new Error('this session has no code-host repository to act on')
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
     return await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
+  }
+
+  /** A follow-up check's watched GitLab project (assistant-mode.md §5.14), which the subscription verified; reads only. */
+  private async watchedEffectTarget(
+    agentId: string,
+    key: string
+  ): Promise<Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> | undefined> {
+    const watch = (await this.store.assistantItems.byTaskKey(agentId, key))?.watch
+    if (watch?.state !== 'watching' || !watch.repoId) return undefined
+    const parsed = parseFollowUpWatchUrl(watch.url)
+    if (!('target' in parsed) || parsed.target.provider !== 'gitlab') return undefined
+    return { provider: 'gitlab', repoId: watch.repoId }
   }
 
   /** The hook-dispatched turn's trusted repository first (§13.1), else the agent's managed workspace repository. */

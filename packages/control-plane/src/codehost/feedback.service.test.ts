@@ -148,3 +148,144 @@ describe.each(['gitlab', 'gitea'] as const)('%s author feedback', (provider) => 
     expect(h.enqueue).not.toHaveBeenCalled()
   })
 })
+
+describe('a watched project’s events reach its follow-ups (assistant-mode.md §5.14)', () => {
+  function harness(opts: { workspace?: boolean } = {}) {
+    const agent = {
+      id: AGENT,
+      orgId: ORG,
+      workspaceRepoId: opts.workspace === false ? 999n : 123n,
+      workspace: { mode: 'git', isolation: 'session', credential: { provider: 'gitlab', access: 'write' } }
+    } as AgentRecord
+    const repo: FeedbackRepository = {
+      bindingId: BINDING,
+      orgId: ORG,
+      repoId: 123n,
+      repoFullName: 'example-org/example-repo',
+      host: 'https://gitlab.example.test',
+      signingKey: 'example-key',
+      pulls: vi.fn(async () => [pull]),
+      admits: vi.fn(async () => true)
+    }
+    const received: unknown[] = []
+    const broadcast = vi.fn()
+    const enqueue = vi.fn(async () => null)
+    const service = new CodeHostFeedbackService({
+      providers: [
+        {
+          provider: 'gitlab',
+          pullNumber: () => 12,
+          repositories: async () => [{ orgId: ORG, repoId: 123n }],
+          repository: async () => repo
+        }
+      ],
+      agents: { list: async () => [agent] },
+      readBranch: async () => null,
+      queue: { enqueueForOrg: enqueue } as unknown as SessionPullRequestFeedbackService,
+      broadcast,
+      followUps: () => ({
+        receive: async (event) => {
+          received.push(event)
+        },
+        repositoryWatched: async () => true
+      })
+    })
+    const base = {
+      provider: 'gitlab' as const,
+      orgId: ORG,
+      bindingId: BINDING,
+      host: repo.host,
+      repoId: '123',
+      deliveryKey: 'delivery'
+    }
+    return { service, repo, received, broadcast, enqueue, base }
+  }
+  const object = (subject: 'pull' | 'issue', number: number) => ({
+    orgId: ORG,
+    provider: 'gitlab',
+    bindingId: BINDING,
+    repoId: 123n,
+    subject,
+    number
+  })
+
+  it('folds a wake-only event without resuming any session', async () => {
+    const h = harness()
+    const merged = {
+      ...h.base,
+      kind: 'event' as const,
+      subject: 'pull' as const,
+      event: 'merged' as const,
+      pullNumber: 12,
+      wakeOnly: true as const
+    }
+    expect(await h.service.receive(merged)).toEqual({ accepted: true, authorAgentIds: [] })
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.received).toEqual([
+      { object: object('pull', 12), deliveryKey: 'delivery', kind: 'merged', feedback: false }
+    ])
+  })
+
+  it('leaves a bound service account’s note on an issue out, as the lane does', async () => {
+    const h = harness()
+    vi.mocked(h.repo.admits).mockResolvedValue(false)
+    const note = {
+      ...h.base,
+      kind: 'comment' as const,
+      subject: 'issue' as const,
+      event: 'comment' as const,
+      pullNumber: 7,
+      actorId: '9',
+      wakeOnly: true as const
+    }
+    await h.service.receive(note)
+    expect(h.received).toEqual([])
+  })
+
+  it('still resumes the opening session on feedback, and folds it as feedback', async () => {
+    const h = harness()
+    const comment = {
+      ...h.base,
+      kind: 'comment' as const,
+      subject: 'pull' as const,
+      event: 'comment' as const,
+      pullNumber: 12,
+      actorId: '7'
+    }
+    await h.service.receive(comment)
+    expect(h.enqueue).toHaveBeenCalledTimes(1)
+    expect(h.received).toEqual([
+      { object: object('pull', 12), deliveryKey: 'delivery', kind: 'comment', feedback: true }
+    ])
+  })
+
+  it('takes the merge request an event names to its watches, a fork’s included, where the lane takes none', async () => {
+    const h = harness()
+    vi.mocked(h.repo.pulls).mockResolvedValue([{ ...pull, sourceRepoId: 999n }])
+    const comment = {
+      ...h.base,
+      kind: 'comment' as const,
+      subject: 'pull' as const,
+      event: 'comment' as const,
+      pullNumber: 12,
+      actorId: '7'
+    }
+    await h.service.receive(comment)
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.received).toEqual([
+      { object: object('pull', 12), deliveryKey: 'delivery', kind: 'comment', feedback: true }
+    ])
+  })
+
+  it('watches a project follow-ups watch, even with no writing workspace, and tells the relay to send its wakes', async () => {
+    const h = harness({ workspace: false })
+    await h.service.sync('gitlab', ORG, 123n)
+    expect(h.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'gitlab',
+        repoId: '123',
+        watch: expect.objectContaining({ followUps: true })
+      })
+    )
+  })
+})

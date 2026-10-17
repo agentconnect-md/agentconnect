@@ -291,6 +291,7 @@ async function main(): Promise<void> {
   const gitlabAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
   const gitlabIngressDeps = {
     reportFeedback: (signal: RcCodeHostFeedback) => client.reportCodeHostFeedback(signal),
+    reportFollowUpEvent: (signal: RcCodeHostFeedback) => client.reportFollowUpCodeHostEvent(signal),
     table: hookTable,
     daemons: () => held.rdServer,
     report: (r: RcRunReport) => client.emitRunReport(r),

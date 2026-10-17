@@ -67,6 +67,7 @@ import type {
   GitlabAgentAccountRepo,
   GitlabInstanceStateRepo,
   GitlabProjectBindingRepo,
+  FollowUpWatchRepo,
   GiteaConnectionRepo,
   GiteaRepositoryBindingRepo,
   DaemonLifecycleOpRepo,
@@ -310,6 +311,8 @@ export interface HttpDeps {
     gitlabConnection: GitlabConnectionRepo
     /** Managed GitLab project bindings (§8.2/§10). */
     gitlabProjectBinding: GitlabProjectBindingRepo
+    /** Event wake's subscriptions (assistant-mode.md §5.14); a watched project wants its webhook too. */
+    followUpWatch?: Pick<FollowUpWatchRepo, 'watchedRepos'>
     /** Per-agent GitLab service accounts and their memberships (§7.2/§8.2). */
     gitlabAgentAccount: GitlabAgentAccountRepo
     /** Deployment-level observed instance version (§24.2). */

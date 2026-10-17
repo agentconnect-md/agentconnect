@@ -465,6 +465,19 @@ export class RelayCpClient {
     return rep.payload.accepted
   }
 
+  /** Send one wake-only event of a watched GitLab or Gitea project; false when the CP takes none (assistant-mode.md §5.14). */
+  async reportFollowUpCodeHostEvent(signal: RcCodeHostFeedback): Promise<boolean> {
+    if (this.state !== 'READY' || !this.transport) return false
+    if (!this.serverFeatures.has(CODEHOST_FEEDBACK_FEATURE) || !this.serverFeatures.has(FOLLOW_UP_WATCH_FEATURE))
+      return false
+    const rep = await this.sendRequest(buildRelayCpFrame('rc/codehost-feedback', signal), {
+      maxTries: 1,
+      ackTimeoutMs: ACK_TIMEOUT_MS
+    })
+    if (rep.type !== 'rc/codehost-feedback/ok') throw new WireError('INTERNAL', 'unexpected feedback response', true)
+    return rep.payload.accepted
+  }
+
   /** Send one wake-only object event; false when the CP takes none, and a failure costs only the follow-up's time. */
   async reportFollowUpEvent(signal: RcPullRequestFeedback): Promise<boolean> {
     if (this.state !== 'READY' || !this.transport || !this.serverFeatures.has(FOLLOW_UP_WATCH_FEATURE)) return false

@@ -924,7 +924,8 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
         url,
         target: 'example-org/example-repo#12',
         state: 'watching',
-        reason: null
+        reason: null,
+        repoId: '456'
       })
     ).toBe(true)
     await s.assistantItems.setWatch(a, refused.id, { url, target: null, state: 'refused', reason: 'no_access' })
@@ -935,7 +936,8 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
       url,
       target: 'example-org/example-repo#12',
       state: 'watching',
-      reason: null
+      reason: null,
+      repoId: '456'
     })
     expect(await s.assistantItems.watching(a)).toEqual([{ id: watched.id, url }])
     await s.assistantItems.setWatch(a, watched.id, null)
@@ -987,6 +989,35 @@ describe.skipIf(usingPostgresStore())('the v60 → v61 event wake schema on SQLi
         })
       ).toBe('recorded')
       expect((await upgraded.assistantItems.get(a, it1.id))?.watch?.state).toBe('pending')
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v61 → v62 watched repository id on SQLite', () => {
+  it('adds the id a check’s code-host reads aim at to a v61 store', async () => {
+    const path = tempStorePath('ac-assistant-v61-')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE assistant_item DROP COLUMN watchRepoId; PRAGMA user_version = 61')
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    const a = agent()
+    try {
+      const it1 = await item(upgraded, a, undefined, 'waiting')
+      const url = 'https://gitlab.example.test/example-group/example-project/-/merge_requests/3'
+      await upgraded.assistantItems.setWatch(a, it1.id, {
+        url,
+        target: 'x',
+        state: 'watching',
+        reason: null,
+        repoId: '4455667'
+      })
+      expect((await upgraded.assistantItems.get(a, it1.id))?.watch?.repoId).toBe('4455667')
     } finally {
       await upgraded.close()
     }

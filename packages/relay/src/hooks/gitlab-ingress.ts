@@ -1,5 +1,5 @@
 /** GitLab ingress (`POST /webhooks/gitlab`, gitlab-com-integration.md §11.2, §12): per-rule Standard Webhooks verification before any matching, uniform 404, 202 when unmatched; the payload is never logged. */
-import { gitlabFeedback } from './codehost-feedback.js'
+import { gitlabFeedback, gitlabWakeSignals } from './codehost-feedback.js'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
@@ -36,6 +36,8 @@ export const GITLAB_BODY_LIMIT = 1024 * 1024
 
 export interface GitlabIngressDeps {
   reportFeedback?: (signal: RcCodeHostFeedback) => Promise<RcCodeHostFeedbackResult>
+  /** Send a watched project's wake-only event, fire-and-forget: the timed check covers a lost one (assistant-mode.md §5.14). */
+  reportFollowUpEvent?: (signal: RcCodeHostFeedback) => Promise<unknown>
   table: HookTable
   /** Late-bound: the rd/* server exists only after `listen()` (routes register before). */
   daemons: () => Pick<RelayDaemonServer, 'get'> | undefined
@@ -583,6 +585,14 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       const firedAt = new Date(nowMs).toISOString()
 
       const authorAgentIds = new Set<string>()
+      // A wake only saves a follow-up time, so it never holds this delivery back with a 503.
+      if (watchVerified && watch?.watch.followUps && deps.reportFollowUpEvent) {
+        for (const wake of gitlabWakeSignals(watch, deliveryKey, payload)) {
+          void deps.reportFollowUpEvent(wake).catch(() => {
+            deps.log.warn(`gitlab ingress: follow-up wake unavailable ${deliveryKey}`)
+          })
+        }
+      }
       const feedback = watchVerified && watch ? gitlabFeedback(watch, deliveryKey, payload) : undefined
       if (feedback) {
         try {

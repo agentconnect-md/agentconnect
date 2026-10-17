@@ -231,11 +231,13 @@ export function gitlabRoutes(deps: HttpDeps) {
     const webhookWanted = async (orgId: string): Promise<(projectId: bigint) => boolean> => {
       const hooks = await deps.repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')
       const agents = await deps.repos.agent.list(OrgId(orgId))
+      const watched = new Set((await deps.repos.followUpWatch?.watchedRepos(OrgId(orgId), 'gitlab')) ?? [])
       return (projectId) =>
         unionGitlabWebhookEvents(
           hooks,
           projectId,
-          agents.some((agent) => ownsFeedbackWorkspace(agent, 'gitlab', projectId))
+          agents.some((agent) => ownsFeedbackWorkspace(agent, 'gitlab', projectId)),
+          watched.has(projectId)
         ) !== null
     }
 

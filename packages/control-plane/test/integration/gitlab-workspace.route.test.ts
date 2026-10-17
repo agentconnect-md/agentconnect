@@ -749,6 +749,8 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     // An agent whose workspace is not this project is admitted only by an enabled hook, at comment level.
     const unbound = gitlabAgent({ workspace: { mode: 'scratch' } } as Partial<AgentRecord>)
     expect((await service.grantForBrokerEffect(unbound, PROJECT, true)).access).toBe('comment')
+    // A follow-up watch alone lets that follow-up's checks read (assistant-mode.md §5.14).
+    expect((await service.grantForBrokerEffect(unbound, PROJECT, false, true)).access).toBe('read')
 
     // Neither authorization ⇒ terminal refusal, and a write workspace on ANOTHER project is not one.
     const denial = await service.grantForBrokerEffect(unbound, PROJECT, false).catch((e: GitCredDeniedError) => e)

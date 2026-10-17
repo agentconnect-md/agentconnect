@@ -54,19 +54,30 @@ export class GitlabGitcredService {
   }
 
   /** §14.2 broker effect lease: the same never-agent-visible effect PAT, authorized by the agent's GitLab workspace binding or an enabled gitlab hook (§13.1). */
-  async grantForBrokerEffect(agent: AgentRecord, projectId: bigint, hookAuthorized: boolean): Promise<GitCredGrant> {
+  async grantForBrokerEffect(
+    agent: AgentRecord,
+    projectId: bigint,
+    hookAuthorized: boolean,
+    // A live follow-up watch on the project lets that follow-up's checks read it (assistant-mode.md §5.14).
+    watchAuthorized = false
+  ): Promise<GitCredGrant> {
     const credential =
       agent.workspace.mode === 'git' &&
       agent.workspace.credential?.provider === 'gitlab' &&
       agent.workspaceRepoId === projectId
         ? agent.workspace.credential
         : undefined
-    if (credential === undefined && !hookAuthorized) {
+    if (credential === undefined && !hookAuthorized && !watchAuthorized) {
       throw new GitCredDeniedError('the agent is not authorized for that gitlab project', 'SCOPE_DENIED', false)
     }
     // The clamp the daemon broker enforces per operation (§13.1): only a write workspace earns full
-    // effect authority; a read workspace or hook-only authorization stays comment-level.
-    const access = credential !== undefined && credential.access !== 'read' ? 'write' : 'comment'
+    // effect authority; a read workspace or hook-only authorization stays comment-level, and a watch alone reads.
+    const access =
+      credential !== undefined && credential.access !== 'read'
+        ? 'write'
+        : credential !== undefined || hookAuthorized
+          ? 'comment'
+          : 'read'
     return this.effectGrant(agent.orgId, agent.id, projectId, access)
   }
 

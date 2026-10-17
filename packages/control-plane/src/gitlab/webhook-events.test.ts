@@ -67,3 +67,17 @@ describe('unionGitlabWebhookEvents', () => {
     })
   })
 })
+
+describe('unionGitlabWebhookEvents for follow-ups (assistant-mode.md §5.14)', () => {
+  it('subscribes a project a follow-up watches to merge-request, issue, note and pipeline events', () => {
+    expect(unionGitlabWebhookEvents([], PROJECT, false, true)).toEqual({
+      push_events: false,
+      issues_events: true,
+      merge_requests_events: true,
+      note_events: true,
+      pipeline_events: true,
+      releases_events: false
+    })
+    expect(unionGitlabWebhookEvents([], PROJECT, true, false)?.issues_events).toBe(false)
+  })
+})

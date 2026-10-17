@@ -23,6 +23,19 @@ export class GitlabFeedbackProvider implements FeedbackProvider {
     }
   ) {}
 
+  /** The binding's read credential, from its first active account that has a live one. */
+  async readToken(orgId: string, bindingId: string): Promise<string> {
+    for (const account of await this.deps.accounts.listForBinding(bindingId)) {
+      if (account.lifecycle !== 'active' || account.state === 'runtime_degraded' || account.state === 'cleanup_pending')
+        continue
+      const credential = await this.deps.credentials.get(account.id, 'read')
+      if (!credential || credential.providerExpiresAt.getTime() <= this.deps.clock.now()) continue
+      const token = await this.deps.credentialSecrets.get(orgId, credential.id)
+      if (token) return token
+    }
+    throw new Error('PR feedback: repository read credential is unavailable')
+  }
+
   async repositories(): Promise<Array<{ orgId: string; repoId: bigint }>> {
     return (await this.deps.bindings.listAll()).map((binding) => ({ orgId: binding.orgId, repoId: binding.projectId }))
   }
@@ -42,21 +55,7 @@ export class GitlabFeedbackProvider implements FeedbackProvider {
           ? this.deps.membership.actorsAllowed(orgId, repoId, [BigInt(signal.actorId)])
           : Promise.resolve(false),
       pulls: async (query) => {
-        const accounts = await this.deps.accounts.listForBinding(binding.id)
-        let token: string | null = null
-        for (const account of accounts) {
-          if (
-            account.lifecycle !== 'active' ||
-            account.state === 'runtime_degraded' ||
-            account.state === 'cleanup_pending'
-          )
-            continue
-          const credential = await this.deps.credentials.get(account.id, 'read')
-          if (credential && credential.providerExpiresAt.getTime() > this.deps.clock.now())
-            token = await this.deps.credentialSecrets.get(orgId, credential.id)
-          if (token) break
-        }
-        if (!token) throw new Error('PR feedback: repository read credential is unavailable')
+        const token = await this.readToken(orgId, binding.id)
         try {
           return (await gitlabFeedbackPulls(token, repoId, query, this.deps.api)).map((pull) => ({
             number: pull.iid,

@@ -77,6 +77,7 @@ import { SessionPullRequestLinkService } from './github/session-pull-request-lin
 import { SessionPullRequestFeedbackService } from './codehost/session-pull-request-feedback.service.js'
 import { FollowUpWatchService } from './codehost/follow-up-watch.service.js'
 import { githubFollowUpWatchProvider } from './github/follow-up-watch.js'
+import { gitlabFollowUpWatchProvider } from './gitlab/follow-up-watch.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubHookRunSubject } from './github/hook-run-subject.js'
@@ -1288,7 +1289,8 @@ export function buildContainer(
             unionGitlabWebhookEvents(
               await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'),
               projectId,
-              await codeHostFeedback.wants('gitlab', orgId, projectId)
+              await codeHostFeedback.wants('gitlab', orgId, projectId),
+              (await repos.followUpWatch.watchedRepos(OrgId(orgId), 'gitlab')).includes(projectId)
             ),
           // Awaited under the run lease (§17.3 round 3): the durable clone-URL
           // convergence rides the saga; only the daemon fan-out stays async.
@@ -1608,22 +1610,22 @@ export function buildContainer(
       warn: (obj, message) => http.log.warn(obj, message)
     }
   })
+  const gitlabFeedbackProvider =
+    gitlab && gitlabMembershipAuthz
+      ? new GitlabFeedbackProvider({
+          api: gitlabApi!,
+          clock,
+          bindings: repos.gitlabProjectBinding,
+          accounts: repos.gitlabAgentAccount,
+          credentials: new PgGitlabProjectCredentialRepo(prisma),
+          credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+          secrets: gitlabWebhookSecretStore!,
+          membership: gitlabMembershipAuthz
+        })
+      : undefined
   const codeHostFeedback: CodeHostFeedbackService = new CodeHostFeedbackService({
     providers: [
-      ...(gitlab && gitlabMembershipAuthz
-        ? [
-            new GitlabFeedbackProvider({
-              api: gitlabApi!,
-              clock,
-              bindings: repos.gitlabProjectBinding,
-              accounts: repos.gitlabAgentAccount,
-              credentials: new PgGitlabProjectCredentialRepo(prisma),
-              credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
-              secrets: gitlabWebhookSecretStore!,
-              membership: gitlabMembershipAuthz
-            })
-          ]
-        : []),
+      ...(gitlabFeedbackProvider ? [gitlabFeedbackProvider] : []),
       new GiteaFeedbackProvider({
         api: giteaApi,
         bindings: repos.giteaRepositoryBinding,
@@ -1636,14 +1638,38 @@ export function buildContainer(
     agents: repos.agent,
     readBranch: (agent, session) => readSessionBranch(agent, session, 'session'),
     queue: sessionPullRequestFeedback,
-    broadcast: (watch) => relayControl.feedbackWatch(watch)
+    broadcast: (watch) => relayControl.feedbackWatch(watch),
+    // Built just below; a project a follow-up watches joins the project's feedback watch.
+    followUps: () => followUpWatch
   })
   // Event wake (assistant-mode.md §5.14): the feedback lane's second consumer, holding one wake per watch.
   const followUpWatch = new FollowUpWatchService({
     clock,
     watches: repos.followUpWatch,
     agents: repos.agent,
-    providers: github ? [githubFollowUpWatchProvider(github)] : [],
+    providers: [
+      ...(github ? [githubFollowUpWatchProvider(github)] : []),
+      ...(gitlabFeedbackProvider
+        ? [
+            gitlabFollowUpWatchProvider({
+              api: gitlabApi!,
+              bindings: repos.gitlabProjectBinding,
+              repoAuths: repos.agentRepoAuth,
+              feedback: gitlabFeedbackProvider
+            })
+          ]
+        : [])
+    ],
+    // A watched GitLab project's feedback watch and webhook converge as its watches come and go.
+    repositoryChanged: (object) => {
+      void codeHostFeedback
+        .sync(object.provider, object.orgId, object.repoId)
+        .catch((err) => http.log.warn({ err }, 'follow-up watch: feedback watch sync failed'))
+      if (object.provider === 'gitlab')
+        void gitlabRef.current?.provisioner
+          .convergeProject(object.orgId, object.repoId)
+          .catch((err) => http.log.warn({ err }, 'follow-up watch: webhook convergence failed'))
+    },
     opener: async (object) =>
       (
         await repos.sessionPullRequestFeedback.owner(
@@ -2024,6 +2050,7 @@ export function buildContainer(
       codeHostTrustedActor: repos.codeHostTrustedActor,
       gitlabConnection: repos.gitlabConnection,
       gitlabProjectBinding: repos.gitlabProjectBinding,
+      followUpWatch: repos.followUpWatch,
       gitlabAgentAccount: repos.gitlabAgentAccount,
       gitlabInstanceState: repos.gitlabInstanceState,
       giteaConnection: repos.giteaConnection,
