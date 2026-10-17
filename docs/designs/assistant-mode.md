@@ -111,7 +111,7 @@ does not pretend to defend against effects it cannot defend against.
   once, until you message it. A turn interrupted by a rolling deploy is re-run without
   bothering you.
 - **A follow-up waiting on a pull request, merge request or issue wakes when it changes**
-  (proposed, §5.14): a merge, a review, a finished CI run or a reply makes it check now instead of
+  (being built, §5.14): a merge, a review, a finished CI run or a reply makes it check now instead of
   at its next check, which stays as the fallback.
 
 ### 1.6 Approval
@@ -946,7 +946,7 @@ target below:
 
 - **Wake**: a follow-up's `nextCheck` wakes a check — a duty-gated sweep on the daemon, once per
   `nextCheck` value; pause suspends it and an overdue follow-up is checked once. Its place's
-  `messageTask` starts one at once (§5.12). An event on a watched object is §5.14 (proposed); a
+  `messageTask` starts one at once (§5.12). An event on a watched object is §5.14 (being built); a
   schedule and triage come later.
 - **Where it runs**: a read-only task on the **agent's own host**, with the agent's
   credentials, until the credential-less host exists, in the follow-up's one retained session.
@@ -1797,12 +1797,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
 
 ### 5.14 Event wake
 
-**Status:** Proposed (2026-10-16). Nothing here is implemented. What is marked _decided_ is the
-product owner's (2026-10-16): who speaks when a pull request has both the session that opened it and
-a follow-up, that discussion wakes only a follow-up with no such session, and that the agent does not
-offer a follow-up when it opens a pull request. Everything else is a recommendation for the owner to
-confirm. The `watch` field changes three agent-facing tools, so it waits for the owner's OK before
-any daemon work.
+**Status:** Being built. The product owner approved the design on 2026-10-17, the `watch` field
+included; what is marked _decided_ was settled on 2026-10-16. The Control Plane and relay for GitHub
+ship first (sixty-seventh revision; "As shipped" at the end of this section) and stay inert until a
+daemon subscribes; the daemon, GitLab and the console follow, in that order.
 
 **Why.** A follow-up such as "tell me when PR #12 merges" or "watch the release build" is woken only
 by time (§5.12). Every timed check spends one of the agent's `dailyCheckBudget` checks whether or not
@@ -2171,6 +2169,48 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   4. Console: the Tasks tab, task page and Activity lines.
 
   Each needs the one before it, except that 3 and 4 do not depend on each other.
+
+**As shipped.** Step 1, the Control Plane and relay for GitHub; choices the text above leaves open:
+
+- **Names.** The watched object's kind is its `subject`, `pull` or `issue`, since "kind" names an
+  event. The event kinds are `merged`, `closed`, `reopened`, `approved`, `changes_requested` and
+  `checks` (changes of state), and `comment`, `review` and `commits` (discussion).
+- **Frames.** `assistant/follow-up-watch` has the modes `set`, `remove` and `full`, at most 100
+  watches a frame, and is sent single-shot with a 30-second budget, since a new watch reads its
+  object first. A re-sent unchanged watch is answered without a read. `assistant/follow-up-wake` is
+  answered `accepted`, or refused with `not_found`, which ends the subscription, or with
+  `not_holder` or `not_ready`, which hold it. The relay is sent `rc/follow-up-watch` per object
+  (installation, repository id, subject, number) and replays them as a `follow-up-watch` snapshot.
+  `rc/pull-request-feedback` gains `subject`, `event` and `wakeOnly`; an issue's signal is always
+  wake-only.
+- **The relay's GitHub mapping.** The lane's feedback is unchanged and now names its event. The
+  wake-only events are a pull request closed, merged or reopened, new commits (`synchronize`), a
+  review approving without text or commenting with neither text nor a verdict, a passed check
+  suite, and an issue's close, reopen and comments. An issue event on a pull request's own issue is
+  left to its pull-request twin.
+- **Who speaks** is decided per event from the lane's owner row: a follow-up of the agent whose
+  session opened the pull request is not woken by feedback or by discussion, and is woken by any
+  change of state that is not feedback.
+- **Windows.** A change of state is due one minute after the latest, and at most ten after the
+  first; discussion 30 minutes after the first. A change of state brings a pending discussion wake
+  along.
+- **Spacing and the budget floor are the daemon's.** The Control Plane sends a wake as its window
+  closes; the 15-minute spacing and the fifth of the day's budget are applied where checks start,
+  so the Control Plane needs no copy of the budget.
+- **Receipts and `wakeId`.** A receipt is kept per watched object and delivery for seven days, so a
+  redelivery folds into nothing for every watch of the object. The wake sequence grows with each
+  folded event; a wake that raced a later event is sent again under the higher id.
+- **A refused move ends the old watch.** `set` replaces: the follow-up is watched by what the answer
+  names, or by nothing. A move takes a new generation, and every fold, delivery, end and removal
+  begun on the old object must match it, so none of them reaches the watch that replaced it.
+- **The provider half** is a provider list given to the follow-up watch service, as the feedback
+  lane's providers are, rather than a member of `codehost/provider.ts`, whose members take the HTTP
+  layer's dependencies. GitHub reads the object once with a pull-request or issue read token minted
+  for the repository's numeric id; an issue URL that names a pull request watches the pull request.
+  At event time it reads the stored installation row, the agent's workspace repository id, its
+  repository rows and its installation grants, and calls GitHub for none of them.
+- **Storage.** `follow_up_watch`, keyed by agent and follow-up and removed with the agent, and
+  `follow_up_watch_delivery` for the receipts.
 
 ### 5.15 Organization research and the organization files
 
@@ -2947,7 +2987,7 @@ is not built.
 | P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                                                                                                                                       |
 | First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                         |
 | Organization research and files   | §5.15–§5.17. Shipped (2026-10-17): the shapes of three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), checked on every write, and first looks that write them. Proposed: the files also written directly by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode |
-| P2 — cost and events              | Event wake (§5.14, proposed): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| P2 — cost and events              | Event wake (§5.14, being built): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
@@ -3024,8 +3064,8 @@ is not built.
 15. **Lark/Feishu's own join** (§5.13): its module does not yet listen for the bot being added to a
     chat, so a Lark/Feishu place takes a first look only on request until it does.
 16. **The `watch` field** (§5.14): its name, a URL rather than a structure, and its place on
-    `followUp`, `propose` and `recordCheck` change agent-facing tools. The owner confirms or
-    changes them before the daemon's pull request.
+    `followUp`, `propose` and `recordCheck` change agent-facing tools. Decided 2026-10-17: as
+    proposed.
 17. **Runs, branches and releases** (§5.14): "watch the release build" names no pull request.
     Whether a later version watches a branch's or a tag's CI, or a release, and by what identity
     before the run exists. Until then such a follow-up is woken by time.
@@ -3799,3 +3839,11 @@ Activity row's wording (issue #2810; §5.13).
 so every agent's Configuration tab offers the switch, as it did with the flag on. A Beta badge sits
 beside the panel's title and beside the switch, and nowhere else. The Control Plane and daemon are
 unchanged.
+
+**Sixty-seventh revision (2026-10-17)**: event wake's Control Plane and relay ship for GitHub,
+§5.14's rollout step 1 (issue #2810; §5.14 "As shipped", §9 Q16). The owner approved the design and
+the `watch` field. A relay advertising `follow-up-watch-v1` is sent the watched objects and sends
+their wake-only events without holding a delivery back; the Control Plane folds them, with the
+lane's feedback, into one pending wake per watch under "Two watchers", and holds it until a daemon
+advertising `follow-up-wake-v1` accepts it. No daemon subscribes yet, so nothing changes for people
+until step 2.

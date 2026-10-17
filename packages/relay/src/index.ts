@@ -39,6 +39,7 @@ import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
 import { registerGithubIngress } from './hooks/github-ingress.js'
+import { FollowUpWatchTable } from './hooks/follow-up-watch-table.js'
 import { registerGitlabIngress } from './hooks/gitlab-ingress.js'
 import { registerGiteaIngress } from './hooks/gitea/ingress.js'
 import { McpBindingTable } from './mcp/binding-table.js'
@@ -120,8 +121,15 @@ async function main(): Promise<void> {
   // Upstream headers are the upstream credential — never logged.
   const mcpBindings = new McpBindingTable()
   const memoryBindings = new MemoryConnectionBindingTable()
+  const followUpWatches = new FollowUpWatchTable()
   const projectionTable = (kind: RcSnapshotKind) =>
-    kind === 'mcp' ? mcpBindings : kind === 'hook' ? hookTable : memoryBindings
+    kind === 'mcp'
+      ? mcpBindings
+      : kind === 'hook'
+        ? hookTable
+        : kind === 'follow-up-watch'
+          ? followUpWatches
+          : memoryBindings
 
   const wsOrigin = toWsOrigin(config.CP_URL)
   const client = new RelayCpClient({
@@ -146,7 +154,7 @@ async function main(): Promise<void> {
     // dropped while it was down.
     onReady: () => {
       // A snapshot left open by the dropped link never ends; the new CP's replay starts its own.
-      for (const table of [mcpBindings, hookTable, memoryBindings]) table.abandonSnapshot()
+      for (const table of [mcpBindings, hookTable, memoryBindings, followUpWatches]) table.abandonSnapshot()
       // A CP without snapshots replays the full memory-binding set, so only its clear drops revoked grants.
       if (!client.advertisedFeature(RELAY_PROJECTION_SNAPSHOT_V1_FEATURE)) memoryBindings.clear()
       held.relayIngress?.flushPendingReports()
@@ -189,6 +197,7 @@ async function main(): Promise<void> {
         integrationId: ''
       }),
     onFeedbackWatch: (watch) => hookTable.feedbackWatch(watch),
+    onFollowUpWatch: (watch) => followUpWatches.apply(watch),
     onHookAssign: (rule) => hookTable.upsert(rule),
     onHookRemove: (hookId) => hookTable.remove(hookId),
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2) —
@@ -266,6 +275,8 @@ async function main(): Promise<void> {
     report: (r) => client.emitRunReport(r),
     doorbell: (poke) => client.emitGithubInstallation(poke),
     reportPullRequestFeedback: (signal) => client.reportPullRequestFeedback(signal),
+    followUpWatches,
+    reportFollowUpEvent: (signal) => client.reportFollowUpEvent(signal),
     authorizeComment: (request) => client.authorizeGithubComment(request),
     authorizeRerequest: (request) => client.authorizeGithubRerequest(request),
     authzLimiter: githubAuthzLimiter,

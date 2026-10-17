@@ -1183,6 +1183,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     skillSources?: Record<string, SkillSourceRecord>
     /** Installation grants (decision 10); absent ⇒ the dependency is not wired. */
     installationGrants?: AgentInstallationAuthorizationRecord[]
+    /** GET /repos/{owner}/{repo}/pulls|issues/{n} answers, keyed `owner/repo/pulls/n`; missing ⇒ 404. */
+    objects?: Record<string, { pull_request?: unknown }>
   }) {
     const clock = new FakeClock(1_700_000_000_000)
     const byAccount = opts.installationsByAccount ?? { acme: installation() }
@@ -1197,6 +1199,11 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
           { token: `ghs_${mintBodies.length}`, expires_at: new Date(clock.now() + 3_600_000).toISOString() },
           { status: 201 }
         )
+      }
+      const objectPath = /\/repos\/([^/]+\/[^/]+\/(?:pulls|issues)\/\d+)$/.exec(url)
+      if (objectPath) {
+        const hit = opts.objects?.[objectPath[1]!]
+        return hit ? Response.json(hit, { status: 200 }) : Response.json({ message: 'Not Found' }, { status: 404 })
       }
       const repoPath = /\/repos\/([^/]+\/[^/]+)$/.exec(url)
       if (repoPath) {
@@ -1219,7 +1226,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         liveByOrgAndAccount: async (_orgId: string, account: string) => {
           accountLookups.push(account)
           return byAccount[account] ?? null
-        }
+        },
+        getByInstallationId: async (id: bigint) =>
+          Object.values(byAccount).find((row) => row.installationId === id) ?? null
       } as never,
       installState: { put: async () => {}, consume: async () => true },
       ...(opts.withRepoAuths === false ? {} : { repoAuths: { listForAgent, updateFullName } as never }),
@@ -1243,6 +1252,68 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       updateAccountLogin
     }
   }
+
+  describe('event wake (assistant-mode.md §5.14)', () => {
+    const INFRA = { 'acme/infra': { id: 777, full_name: 'acme/infra' } }
+    const STALE = { since: new Date(0), reason: 'access_lost' as const }
+    const acmeGrant = (access: RepoAccess): AgentInstallationAuthorizationRecord => ({
+      id: 'ia-1',
+      agentId: 'agent-1' as never,
+      provider: 'github',
+      installationId: 42n,
+      accountLogin: 'acme',
+      access,
+      materialize: 'on-demand',
+      createdAt: new Date(0),
+      createdBy: null
+    })
+
+    it("resolves a pull request in the agent's workspace repository by its numeric id", async () => {
+      const { svc, mintBodies } = harness({ rows: [], repoRefs: INFRA, objects: { 'acme/infra/pulls/12': {} } })
+      await expect(svc.resolveWatchedObject(AGENT, 'acme/infra', 'pull', 12)).resolves.toEqual({
+        installationId: 42n,
+        repoId: 777n,
+        repoFullName: 'acme/infra',
+        subject: 'pull'
+      })
+      expect(mintBodies).toEqual([{ repository_ids: [777], permissions: { metadata: 'read', pull_requests: 'read' } }])
+    })
+
+    it('watches the pull request an issue URL names, and says when there is no such object', async () => {
+      const { svc } = harness({ rows: [], repoRefs: INFRA, objects: { 'acme/infra/issues/12': { pull_request: {} } } })
+      await expect(svc.resolveWatchedObject(AGENT, 'acme/infra', 'issue', 12)).resolves.toMatchObject({
+        subject: 'pull'
+      })
+      await expect(svc.resolveWatchedObject(AGENT, 'acme/infra', 'issue', 13)).resolves.toBe('not_found')
+    })
+
+    it("refuses what the agent's access does not cover, or no installation reaches", async () => {
+      const { svc, mintBodies } = harness({
+        rows: [],
+        repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
+      })
+      await expect(svc.resolveWatchedObject(SCRATCH_AGENT, 'acme/tools', 'pull', 1)).resolves.toBe('no_access')
+      await expect(svc.resolveWatchedObject(AGENT, 'example-co/app', 'pull', 1)).resolves.toBe('no_access')
+      expect(mintBodies).toEqual([])
+    })
+
+    it('checks coverage from its tables alone at event time', async () => {
+      const covered = harness({ rows: [grantRow({ access: 'read' })] })
+      await expect(covered.svc.coversWatchedRepo(AGENT, 42n, 777n)).resolves.toBe(true)
+      await expect(covered.svc.coversWatchedRepo(SCRATCH_AGENT, 42n, 111n)).resolves.toBe(true)
+      await expect(covered.svc.coversWatchedRepo(SCRATCH_AGENT, 42n, 112n)).resolves.toBe(false)
+      const stale = harness({ rows: [grantRow({ access: 'read', stale: STALE })] })
+      await expect(stale.svc.coversWatchedRepo(SCRATCH_AGENT, 42n, 111n)).resolves.toBe(false)
+      const granted = harness({ rows: [], installationGrants: [acmeGrant('read')] })
+      await expect(granted.svc.coversWatchedRepo(SCRATCH_AGENT, 42n, 112n)).resolves.toBe(true)
+      const suspended = harness({
+        rows: [],
+        installationsByAccount: { acme: installation({ suspendedAt: new Date(0) }) }
+      })
+      await expect(suspended.svc.coversWatchedRepo(AGENT, 42n, 777n)).resolves.toBe(false)
+      expect(covered.mintBodies).toEqual([])
+    })
+  })
 
   function skillSourceRow(over: Partial<SkillSourceRecord> = {}): SkillSourceRecord {
     return {

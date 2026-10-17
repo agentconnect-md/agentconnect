@@ -12,6 +12,7 @@
  * (its close removes it from the registry).
  */
 import type {
+  RcFollowUpWatch,
   RcCodeHostFeedbackWatch,
   RcHookAssign,
   RcCollabRoutes,
@@ -23,6 +24,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import {
   CODEHOST_FEEDBACK_FEATURE,
+  FOLLOW_UP_WATCH_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_GITHUB_INSTALLATION_V1_FEATURE,
   codeHostHookRuleOf
@@ -73,6 +75,13 @@ export class RelayControlSender {
     this.broadcast((ch) => {
       if (ch.features?.includes(CODEHOST_FEEDBACK_FEATURE)) ch.send('rc/codehost-feedback-watch', watch)
     })
+  }
+
+  /** One object a follow-up watches, or no longer does, to every relay that holds watches. */
+  followUpWatch(watch: RcFollowUpWatch): void {
+    this.broadcast((ch) => {
+      if (ch.features?.includes(FOLLOW_UP_WATCH_FEATURE)) ch.send('rc/follow-up-watch', watch)
+    }, 'follow-up-watch')
   }
 
   /**

@@ -985,6 +985,7 @@ model Agent {
   memoryStoreOperations AgentMemoryStoreOperation[]
   memoryHistory         AgentMemoryHistory[]
   hostedHookRoutings    CodeHostDecisionRouting[]
+  followUpWatches       FollowUpWatch[]
 
   @@unique([orgId, name]) // slug is unique within an org
   // Referenced by the composite assignment FK: a binding cannot name an agent in
@@ -1510,6 +1511,59 @@ model SessionPullRequestDelivery {
   @@id([orgId, provider, bindingId, repoId, pullNumber, deliveryKey], map: "session_pull_request_delivery_pkey")
   @@index([receivedAt], map: "session_pull_request_delivery_received_idx")
   @@map("session_pull_request_delivery")
+}
+
+// One follow-up's watch of one pull request, merge request or issue (assistant-mode.md §5.14): its identity and pending wake, never a body.
+model FollowUpWatch {
+  agentId           String    @db.Uuid
+  followUpId        String
+  orgId             String
+  provider          String
+  installationId    BigInt?   @db.BigInt
+  bindingId         String    @default("")
+  host              String
+  repoId            BigInt    @db.BigInt
+  subject           String
+  number            Int
+  repoPath          String
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  // Grows with every move to another object; folds and deliveries of an older one change nothing.
+  generation        Int       @default(0)
+  // Grows with every folded event; the pending wake carries it as its wakeId.
+  wakeSeq           Int       @default(0)
+  pendingSince      DateTime? @db.Timestamptz(6)
+  pendingStateSince DateTime? @db.Timestamptz(6)
+  pendingLatestAt   DateTime? @db.Timestamptz(6)
+  pendingKinds      String[]  @default([])
+  dueAt             DateTime? @db.Timestamptz(6)
+  endedReason       String?
+  lastWakeAt        DateTime? @db.Timestamptz(6)
+  lastWakeKinds     String[]  @default([])
+  claimOwner        String?   @db.Uuid
+  claimUntil        DateTime? @db.Timestamptz(6)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, followUpId], map: "follow_up_watch_pkey")
+  @@index([orgId, provider, bindingId, repoId, subject, number], map: "follow_up_watch_object_idx")
+  @@index([dueAt, claimUntil], map: "follow_up_watch_due_idx")
+  @@map("follow_up_watch")
+}
+
+// One receipt per watched object and delivery, so a redelivered event folds into nothing.
+model FollowUpWatchDelivery {
+  orgId       String
+  provider    String
+  bindingId   String   @default("")
+  repoId      BigInt   @db.BigInt
+  subject     String
+  number      Int
+  deliveryKey String
+  receivedAt  DateTime @db.Timestamptz(6)
+
+  @@id([orgId, provider, bindingId, repoId, subject, number, deliveryKey], map: "follow_up_watch_delivery_pkey")
+  @@index([receivedAt], map: "follow_up_watch_delivery_received_idx")
+  @@map("follow_up_watch_delivery")
 }
 
 // One durable, exact-session obligation to discover the PR created from its isolated worktree.

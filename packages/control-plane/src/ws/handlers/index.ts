@@ -58,6 +58,7 @@ import { handleHookStart } from './hook-start.js'
 import { handleHookPreparing } from './hook-preparing.js'
 import { handleApprovalRoute } from './approval-route.js'
 import { handleReadAccess } from './read-access.js'
+import { handleFollowUpWatch } from './follow-up-watch.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
 import { handleTransferGet, handleTransferSettle, handleTransferSign } from './file-transfer.js'
@@ -115,6 +116,7 @@ export class FrameRouter {
       'hook/start': handleHookStart,
       'agent/approval-route': handleApprovalRoute,
       'agent/read-access': handleReadAccess,
+      'assistant/follow-up-watch': handleFollowUpWatch,
       'github/review-authorize': handleGithubReviewAuthorize,
       'transfer/sign': handleTransferSign,
       'transfer/settle': handleTransferSettle,

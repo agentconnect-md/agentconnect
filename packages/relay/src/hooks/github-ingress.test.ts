@@ -21,6 +21,7 @@ import {
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
+import { FollowUpWatchTable } from './follow-up-watch-table.js'
 import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
@@ -249,6 +250,9 @@ interface Harness {
   rerequestRequests: RcGithubRerequest[]
   feedback: RcPullRequestFeedback[]
   feedbackError: boolean
+  watches: FollowUpWatchTable
+  wakes: RcPullRequestFeedback[]
+  wakeError: boolean
   rerequestResult: RcGithubRerequestResult | (() => Promise<RcGithubRerequestResult>)
   authzResult: boolean | ((request: RcGithubCommentAuthz) => boolean | Promise<boolean>)
   ack: RdAck | (() => Promise<RdAck>)
@@ -273,6 +277,8 @@ function makeHarness(authzCapacity = 20): Harness {
       | 'authzRequests'
       | 'rerequestRequests'
       | 'feedback'
+      | 'watches'
+      | 'wakes'
       | 'onlineDaemons'
     > = {
     sent: [],
@@ -283,6 +289,9 @@ function makeHarness(authzCapacity = 20): Harness {
     rerequestRequests: [],
     feedback: [],
     feedbackError: false,
+    watches: new FollowUpWatchTable(),
+    wakes: [],
+    wakeError: false,
     authzResult: true,
     rerequestResult: { allowed: false },
     ack: { msgId: 'x', accepted: true },
@@ -330,6 +339,12 @@ function makeHarness(authzCapacity = 20): Harness {
     reportPullRequestFeedback: async (signal) => {
       if (h.feedbackError) throw new Error('CP unavailable')
       h.feedback.push(signal)
+      return true
+    },
+    followUpWatches: h.watches,
+    reportFollowUpEvent: async (signal) => {
+      if (h.wakeError) throw new Error('CP unavailable')
+      h.wakes.push(signal)
       return true
     },
     authorizeComment: async (request) => {
@@ -503,6 +518,103 @@ describe('github ingress', () => {
         pullPayload({ action: 'created', comment: { body: 'please change this' } })
       )
       expect(res.statusCode).toBe(503)
+    })
+  })
+
+  describe('follow-up event wake', () => {
+    const watch = (subject: 'pull' | 'issue', number: number, installationId = String(INSTALLATION)) =>
+      h.watches.apply({ provider: 'github', installationId, repoId: String(REPO_ID), subject, number, watched: true })
+    const repo = {
+      installation: { id: INSTALLATION },
+      repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } }
+    }
+
+    it('sends a merge on a watched pull request as a wake-only event, and nothing for an unwatched one', async () => {
+      await post('pull_request', pullPayload({ action: 'closed', pull_request: { number: 78, merged: true } }))
+      expect(h.wakes).toEqual([])
+      watch('pull', 77)
+      const res = await post(
+        'pull_request',
+        pullPayload({ action: 'closed', pull_request: { number: 77, merged: true } })
+      )
+      expect(res.statusCode).toBe(202)
+      await flush()
+      expect(h.wakes).toEqual([
+        expect.objectContaining({ pullNumber: 77, subject: 'pull', event: 'merged', wakeOnly: true })
+      ])
+      expect(h.feedback).toEqual([])
+    })
+
+    it('maps each state change and discussion to its kind, and keeps the lane its feedback', async () => {
+      watch('pull', 77)
+      await post('pull_request', pullPayload({ action: 'reopened' }))
+      await post('pull_request', pullPayload({ action: 'synchronize' }))
+      await post('pull_request_review', pullPayload({ action: 'submitted', review: { state: 'approved', body: '' } }))
+      await post(
+        'pull_request_review',
+        pullPayload({ action: 'submitted', review: { state: 'approved', body: 'LGTM' } })
+      )
+      await post('check_suite', {
+        action: 'completed',
+        ...repo,
+        check_suite: { conclusion: 'success', pull_requests: [{ number: 77 }] }
+      })
+      await post('check_suite', {
+        action: 'completed',
+        ...repo,
+        check_suite: { conclusion: 'failure', pull_requests: [{ number: 77 }] }
+      })
+      await flush()
+      expect(h.wakes.map((signal) => signal.event)).toEqual(['reopened', 'commits', 'approved', 'checks'])
+      expect(h.feedback.map((signal) => [signal.event, signal.wakeOnly])).toEqual([
+        ['approved', undefined],
+        ['checks', undefined]
+      ])
+    })
+
+    it("wakes an issue's follow-up on its close and comments, never the lane", async () => {
+      watch('issue', 42)
+      await post('issues', issuesPayload({ action: 'closed' }))
+      await post('issue_comment', issuesPayload({ action: 'created', comment: { body: 'fixed in #77' } }))
+      await flush()
+      expect(h.wakes.map((signal) => [signal.subject, signal.event])).toEqual([
+        ['issue', 'closed'],
+        ['issue', 'comment']
+      ])
+      expect(h.feedback).toEqual([])
+    })
+
+    it('forwards nothing for a watch held under another installation', async () => {
+      watch('pull', 77, '7654321')
+      await post('pull_request', pullPayload({ action: 'closed', pull_request: { number: 77, merged: true } }))
+      await flush()
+      expect(h.wakes).toEqual([])
+    })
+
+    it('acknowledges the delivery when a wake cannot be sent', async () => {
+      watch('pull', 77)
+      h.wakeError = true
+      const res = await post(
+        'pull_request',
+        pullPayload({ action: 'closed', pull_request: { number: 77, merged: true } })
+      )
+      expect(res.statusCode).toBe(202)
+    })
+
+    it('drops an object the replay no longer names', () => {
+      watch('pull', 77)
+      watch('pull', 78)
+      h.watches.beginSnapshot('snap-1')
+      watch('pull', 78)
+      h.watches.endSnapshot('snap-1', [])
+      const object = {
+        provider: 'github' as const,
+        installationId: String(INSTALLATION),
+        repoId: String(REPO_ID),
+        subject: 'pull' as const
+      }
+      expect(h.watches.watched({ ...object, number: 77 })).toBe(false)
+      expect(h.watches.watched({ ...object, number: 78 })).toBe(true)
     })
   })
 

@@ -12,6 +12,7 @@ import {
   type RcGithubRerequest,
   type RcGithubRerequestResult,
   type RcPullRequestFeedback,
+  type FollowUpEventKind,
   type GithubHookMetadata,
   type HookContext,
   type RcGithubInstallation,
@@ -22,6 +23,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { RelayDaemonServer } from '../relay-daemon-server.js'
 import type { HookTable } from './hook-table.js'
+import type { FollowUpWatchTable } from './follow-up-watch-table.js'
 import { githubRuleByHookId, githubRulesForEvent } from './github-installation.js'
 import type { HookRateLimiter } from './rate-limit.js'
 import { dispatchHookFire, noticeDelivery } from './ingress.js'
@@ -61,6 +63,10 @@ export interface GithubIngressDeps {
   doorbell: (poke: RcGithubInstallation) => void
   /** Persist body-free PR feedback before the signed webhook is acknowledged. */
   reportPullRequestFeedback?: (signal: RcPullRequestFeedback) => Promise<boolean>
+  /** The objects follow-ups watch; a wake-only event on any other object goes nowhere. */
+  followUpWatches?: Pick<FollowUpWatchTable, 'watched'>
+  /** Send a wake-only event, fire-and-forget: the timed check covers a lost one. */
+  reportFollowUpEvent?: (signal: RcPullRequestFeedback) => Promise<boolean>
   /** Resolve every issue/PR actor's live write authority: metadata only, delegated to the CP's GitHub App. */
   authorizeComment: (request: RcGithubCommentAuthz) => Promise<boolean>
   /** Resolve a signed review control through CP-owned durable metadata. */
@@ -634,7 +640,8 @@ const FAILED_CHECK_CONCLUSIONS = new Set([
   'startup_failure'
 ])
 
-function pullRequestFeedbackSignals(
+/** Every watchable object event of a delivery; the lane's feedback ones resume the opening session, the rest are `wakeOnly` (assistant-mode.md §5.14). */
+export function githubObjectSignals(
   event: string,
   payload: GithubPayload,
   deliveryKey: string
@@ -643,41 +650,62 @@ function pullRequestFeedbackSignals(
   const repoId = payload.repository?.id
   const repoFullName = payload.repository?.full_name?.trim()
   if (!positiveSafeInteger(installationId) || !positiveSafeInteger(repoId) || !repoFullName) return []
-  const build = (pullNumber: number): RcPullRequestFeedback => ({
-    deliveryKey: `${deliveryKey.slice(0, 150)}:${event}:${pullNumber}`,
-    installationId: String(installationId),
-    repoId: String(repoId),
-    repoFullName,
-    pullNumber
-  })
+  const build = (
+    number: unknown,
+    kind: FollowUpEventKind,
+    feedback: boolean,
+    subject: 'pull' | 'issue' = 'pull'
+  ): RcPullRequestFeedback[] =>
+    positiveSafeInteger(number)
+      ? [
+          {
+            deliveryKey: `${deliveryKey.slice(0, 150)}:${event}:${number}`,
+            installationId: String(installationId),
+            repoId: String(repoId),
+            repoFullName,
+            pullNumber: number,
+            subject,
+            event: kind,
+            ...(feedback ? {} : { wakeOnly: true as const })
+          }
+        ]
+      : []
 
   if (event === 'pull_request_review' && payload.action === 'submitted') {
-    const pullNumber = payload.pull_request?.number
     const state = payload.review?.state?.toLowerCase()
     const hasBody = Boolean(payload.review?.body?.trim())
-    return positiveSafeInteger(pullNumber) && (state === 'changes_requested' || hasBody) ? [build(pullNumber)] : []
+    const kind = state === 'approved' ? 'approved' : state === 'changes_requested' ? 'changes_requested' : 'review'
+    return build(payload.pull_request?.number, kind, state === 'changes_requested' || hasBody)
   }
   if (event === 'pull_request_review_comment' && (payload.action === 'created' || payload.action === 'edited')) {
-    const pullNumber = payload.pull_request?.number
-    return positiveSafeInteger(pullNumber) ? [build(pullNumber)] : []
+    return build(payload.pull_request?.number, 'comment', true)
   }
-  if (
-    event === 'issue_comment' &&
-    (payload.action === 'created' || payload.action === 'edited') &&
-    payload.issue?.pull_request !== undefined
-  ) {
-    const pullNumber = payload.issue.number
-    return positiveSafeInteger(pullNumber) ? [build(pullNumber)] : []
+  if (event === 'issue_comment' && (payload.action === 'created' || payload.action === 'edited')) {
+    const pull = payload.issue?.pull_request !== undefined
+    return build(payload.issue?.number, 'comment', pull, pull ? 'pull' : 'issue')
+  }
+  if (event === 'pull_request') {
+    const number = payload.pull_request?.number
+    if (payload.action === 'closed') return build(number, payload.pull_request?.merged ? 'merged' : 'closed', false)
+    if (payload.action === 'reopened') return build(number, 'reopened', false)
+    if (payload.action === 'synchronize') return build(number, 'commits', false)
+    return []
+  }
+  if (event === 'issues' && (payload.action === 'closed' || payload.action === 'reopened')) {
+    // A pull request's own issue event is its pull_request event's twin.
+    if (payload.issue?.pull_request !== undefined) return []
+    return build(payload.issue?.number, payload.action, false, 'issue')
   }
   if (event === 'check_suite' && payload.action === 'completed') {
     const conclusion = payload.check_suite?.conclusion?.toLowerCase()
-    if (!conclusion || !FAILED_CHECK_CONCLUSIONS.has(conclusion)) return []
+    if (!conclusion) return []
+    const failed = FAILED_CHECK_CONCLUSIONS.has(conclusion)
     const pulls = new Set(
       (payload.check_suite?.pull_requests ?? [])
         .map((pull) => pull.number)
         .filter((pull): pull is number => positiveSafeInteger(pull))
     )
-    return [...pulls].map((pullNumber) => build(pullNumber))
+    return [...pulls].flatMap((pullNumber) => build(pullNumber, 'checks', failed))
   }
   return []
 }
@@ -1011,7 +1039,24 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
       }
 
-      const feedbackSignals = pullRequestFeedbackSignals(event, payload, deliveryKey)
+      const objectSignals = githubObjectSignals(event, payload, deliveryKey)
+      const feedbackSignals = objectSignals.filter((signal) => !signal.wakeOnly)
+      // A wake only saves a follow-up time, so it never holds this delivery back with a 503.
+      for (const signal of objectSignals) {
+        if (!signal.wakeOnly || !deps.reportFollowUpEvent || !deps.followUpWatches) continue
+        const watched = deps.followUpWatches.watched({
+          provider: 'github',
+          installationId: signal.installationId,
+          repoId: signal.repoId,
+          subject: signal.subject ?? 'pull',
+          number: signal.pullNumber
+        })
+        if (watched) {
+          void deps.reportFollowUpEvent(signal).catch(() => {
+            deps.log.warn(`github ingress: follow-up wake unavailable ${deliveryKey}`)
+          })
+        }
+      }
       try {
         if (deps.reportPullRequestFeedback) {
           await Promise.all(feedbackSignals.map((signal) => deps.reportPullRequestFeedback!(signal)))
