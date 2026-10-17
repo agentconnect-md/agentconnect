@@ -2522,7 +2522,9 @@ any task's failure is (§5.7), in the DM.
   and research's writes are a model's tool writes. Its session starts from the shared layer's
   index and is never captured.
 - **Its host.** A host of its own, keyed by its session, so it never shares the agent's host,
-  which holds the tool credentials. It launches as a dream host does, without them: no managed
+  which holds the tool credentials. The launch policy is derived from that key where every host is
+  built, so a model-session host (the key server's path) gets it too. It launches as a dream host
+  does, without them: no managed
   git credential, no `gh` or `glab` wrapper, no materialized config file and no runtime secret. It
   keeps its runtime's own tools under the agent's permission mode: OpenCode's daemon-authored
   `read-only` agent, which denies every tool, is not applied. On a local launch it starts in an

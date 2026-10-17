@@ -28,6 +28,8 @@ export interface AssistantOnboardingRow {
   /** The first looks running at onboarding, by follow-up id; research's second round waits on them. */
   firstLooks: string[]
   secondRound: AssistantSecondRound
+  /** Which attempt the second round's submission is; a definite refusal moves to the next, so a freed slot is tried again. */
+  secondRoundAttempt: number
   reason: string | null
   createdAt: number
   updatedAt: number
@@ -50,6 +52,7 @@ export const ASSISTANT_ONBOARDING_SCHEMA = `
         enabler INTEGER NOT NULL DEFAULT 0,
         firstLooks TEXT NOT NULL DEFAULT '[]',
         secondRound TEXT NOT NULL DEFAULT 'pending' CHECK (secondRound IN ('pending', 'sent', 'none')),
+        secondRoundAttempt INTEGER NOT NULL DEFAULT 0,
         reason TEXT,
         createdAt INTEGER NOT NULL,
         updatedAt INTEGER NOT NULL
@@ -86,6 +89,7 @@ function rowOf(row: Row): AssistantOnboardingRow {
     enabler: Number(row.enabler ?? 0) === 1,
     firstLooks: firstLooksOf(row.firstLooks),
     secondRound: String(row.secondRound ?? 'pending') as AssistantSecondRound,
+    secondRoundAttempt: Number(row.secondRoundAttempt ?? 0),
     reason: text(row.reason),
     createdAt: Number(row.createdAt),
     updatedAt: Number(row.updatedAt)
@@ -162,6 +166,16 @@ export class AssistantOnboardingLedger {
     const { changes } = await (tx ?? this.db).query(
       `UPDATE assistant_onboarding SET state = 'researching', updatedAt = ? WHERE agentId = ? AND state = 'greeting'`,
       [now, agentId]
+    )
+    return changes > 0
+  }
+
+  /** After a definite refusal, the next sweep's second round is a new submission, from `attempt` on. */
+  async nextSecondRoundAttempt(agentId: string, attempt: number, now: number): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_onboarding SET secondRoundAttempt = secondRoundAttempt + 1, updatedAt = ?
+        WHERE agentId = ? AND secondRound = 'pending' AND secondRoundAttempt = ?`,
+      [now, agentId, attempt]
     )
     return changes > 0
   }

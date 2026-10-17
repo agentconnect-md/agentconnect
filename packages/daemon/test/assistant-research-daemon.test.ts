@@ -282,6 +282,11 @@ describe('the research task’s session', () => {
       const key = sessionHostKey('bot-a', sessionKey('slack', 'D_FAKE', researchCoordinate('6'), 'bot-a', scope))
       const research = d.ensureHost(key, d.cfg, join(root, 'research-cwd')).opts
       expect(research.env.API_KEY).toBeUndefined()
+      // Every launch path builds through buildAcpHost, the model-session host's too: the research key alone decides it.
+      const modelSession = d.buildAcpHost(agent, d.cfg, { hostKey: key, strategy: 'host', cwd: join(root, 'ms-cwd') })
+        .host.opts
+      expect(modelSession.env.API_KEY).toBeUndefined()
+      expect(modelSession.env.OPENCODE_CONFIG_CONTENT ?? '').not.toContain('"read-only"')
       // A dream's credential-less host carries the read-only agent that denies every tool; research's does not.
       const dream = d.buildAcpHost(agent, d.cfg, {
         hostKey: sessionHostKey('bot-a', 'dream'),

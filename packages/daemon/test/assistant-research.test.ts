@@ -337,6 +337,32 @@ describe('the second round', () => {
     expect(w.messaged).toHaveLength(1)
   })
 
+  it('asks anew after a definite refusal, so a freed task slot still gets the round', async () => {
+    const w = await world({ firstLooks: ['look-1'] })
+    await w.research.sweep()
+    const taskKey = (await w.store.assistantOnboarding.get('bot-a'))!.taskKey!
+    w.firstLooks.clear()
+    await w.store.assistantSubsessions.finish('bot-a', taskKey, 'done')
+    const submissions: string[] = []
+    vi.mocked(w.host.messageTask).mockImplementation(async (row, _text, submissionId) => {
+      submissions.push(submissionId)
+      if (submissions.length === 1) return { delivered: false, targetSession: row.taskKey!, reason: 'task_limit' }
+      if (submissions.length === 2)
+        return { delivered: false, targetSession: row.taskKey!, reason: 'submission_in_flight' }
+      return { delivered: true, targetSession: row.taskKey! }
+    })
+    await w.research.sweep()
+    // Still in flight: the same submission is asked again, never a second one beside it.
+    await w.research.sweep()
+    await w.research.sweep()
+    expect(submissions).toEqual([
+      `research-second-round:${taskKey}`,
+      `research-second-round:${taskKey}:1`,
+      `research-second-round:${taskKey}:1`
+    ])
+    expect((await w.store.assistantOnboarding.get('bot-a'))!.secondRound).toBe('sent')
+  })
+
   it('is none to send with no first look at onboarding, past the window, or once the task is gone', async () => {
     const none = await world()
     await none.research.sweep()

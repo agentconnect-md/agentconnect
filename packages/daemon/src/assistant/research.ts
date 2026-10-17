@@ -3,6 +3,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import {
   DEFAULT_MAX_CONCURRENT_SUBSESSIONS,
   SUBSESSION_START_GRACE_MS,
+  SUBMISSION_IN_FLIGHT,
   TASK_NOT_FOUND,
   type SubsessionTurnEnd
 } from '../collab/coordinator.js'
@@ -166,7 +167,10 @@ export interface OrganizationResearchHost {
   /** This daemon holds the agent's duty, and the agent is neither paused nor draining. */
   mayRun(agentId: string): boolean
   draining(): boolean
-  onboarding: Pick<AssistantOnboardingLedger, 'get' | 'claim' | 'markResearching' | 'settleSecondRound'>
+  onboarding: Pick<
+    AssistantOnboardingLedger,
+    'get' | 'claim' | 'markResearching' | 'settleSecondRound' | 'nextSecondRoundAttempt'
+  >
   subsessions: Pick<AssistantSubsessionIndex, 'openWithinLimitClaiming' | 'get'>
   /** A console user's DM with the agent, the responsible user's without one; undefined when they have none; throws when nobody could be asked. */
   directMessage(agentId: string, consoleUserId: string | undefined): Promise<OnboardingDirectMessage | undefined>
@@ -384,12 +388,18 @@ export class OrganizationResearch {
     }
     // Its own round still runs or reports: the second round follows it.
     if (task.state === 'open' || task.state === 'reporting') return
-    const result = await this.host.messageTask(row, SECOND_ROUND_MESSAGE, `research-second-round:${row.taskKey}`)
+    // One submission per attempt: a replay of it dedupes after a restart, and a refusal recorded for it is never the last word.
+    const attempt = row.secondRoundAttempt
+    const submissionId = `research-second-round:${row.taskKey}${attempt > 0 ? `:${attempt}` : ''}`
+    const result = await this.host.messageTask(row, SECOND_ROUND_MESSAGE, submissionId)
     if (result.delivered) {
       await this.host.onboarding.settleSecondRound(agent.id, 'sent', now)
       this.host.log.info(`organization research: agent ${agent.id} takes its second round`)
     } else if (result.reason === TASK_NOT_FOUND) {
       await this.host.onboarding.settleSecondRound(agent.id, 'none', now)
+    } else if (result.reason !== SUBMISSION_IN_FLIGHT) {
+      // A definite refusal (the task cap, a pause, a report still landing): the next sweep asks anew.
+      await this.host.onboarding.nextSecondRoundAttempt(agent.id, attempt, now)
     }
   }
 }

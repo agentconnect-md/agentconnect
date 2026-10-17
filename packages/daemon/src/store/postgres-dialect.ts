@@ -299,6 +299,7 @@ export const canonicalColumns = [
   'parentThread',
   'firstLooks',
   'secondRound',
+  'secondRoundAttempt',
   'checkedNextCheck',
   'retryAt',
   'stoppedNextCheck',

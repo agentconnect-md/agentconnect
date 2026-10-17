@@ -7328,7 +7328,6 @@ export class Daemon {
     if (host) return host
     const agentId = hostKeyAgentId(key)
     const agent = this.sessionAgent(agentId, hostKeySessionKey(key))!
-    const research = isResearchSessionKey(hostKeySessionKey(key))
     const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
       hostKey: key,
@@ -7336,9 +7335,7 @@ export class Daemon {
       // A host of the session's own launches in its birth strategy; the agent's shared host, in the agent's (§5).
       strategy: this.sessionStrategy(agent, hostKeySessionKey(key)),
       cwd: launchCwd,
-      ...(sessionGitDirs ? { sessionGitDirs } : {}),
-      // §5.15: research reads untrusted pages, so like a dream it holds no tool credentials, but its runtime's tools stay under the agent's mode.
-      ...(research ? { excludeAgentToolCredentials: true, openCodeReadOnly: false } : {})
+      ...(sessionGitDirs ? { sessionGitDirs } : {})
     })
     this.hosts.set(key, built.host)
     this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd })
@@ -7368,8 +7365,6 @@ export class Daemon {
       strategy: string
       cwd: string
       excludeAgentToolCredentials?: boolean
-      /** OpenCode's daemon-authored `read-only` agent on a credential-less host; on by default, off for research, whose tools the agent's mode judges. */
-      openCodeReadOnly?: boolean
       providerCredential?: ProviderCredential
       modelCredential?: { target: ModelProviderTarget; credential: ModelCredential }
       /** A session whose clones are off this disk: their `.git`, as the filesystem holding them answered. */
@@ -7456,7 +7451,9 @@ export class Daemon {
     // attacker-controlled extraction AND avoids materializing files that a
     // dedicated dream host would never clean up (it never reaches stopHost's
     // cleanupConfigFiles) — task #36 A2.
-    const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true
+    // Organization research (assistant-mode.md §5.15) is credential-less on every launch path, decided here by its host key.
+    const research = isResearchSessionKey(hostKeySessionKey(opts.hostKey))
+    const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true || research
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
     const credentialProvider = excludeAgentToolCredentials
@@ -7626,7 +7623,8 @@ export class Daemon {
             applyRuntimeEnvironment(this.runtimeEnvironment, runtimeEntry?.aliasOf ?? agent.runtime, launchEnv)
           // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
           // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
-          if (excludeAgentToolCredentials && opts.openCodeReadOnly !== false) {
+          // Research keeps its runtime's tools under the agent's mode, the web among them, so it never gets that agent.
+          if (excludeAgentToolCredentials && !research) {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
           }
           if (!this.k8s && opts.providerCredential && agent.modelProvider) {
@@ -8039,10 +8037,14 @@ export class Daemon {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       // A session in its own pod is prepared by its turn before a cold launch (openSession); the gate re-verifies that pod alone.
       const inSessionPod = this.runsInSessionPod(agent, entry.sessionKey)
-      const cwd = inSessionPod
-        ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
-        : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
+      // Organization research starts in its own empty directory here too (assistant-mode.md §5.15).
+      const researchDir = isResearchSessionKey(entry.sessionKey) ? await this.researchCwd(agent, hostKey) : undefined
+      const cwd =
+        researchDir ??
+        (inSessionPod
+          ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
+          : await this.prepareAgentWorkspace(agent, undefined, undefined))
       // The clones it holds on that pod, as an ordinary start lists them.
       const sessionGitDirs = inSessionPod
         ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
