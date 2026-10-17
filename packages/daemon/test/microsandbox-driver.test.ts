@@ -108,7 +108,7 @@ function fakeSdk() {
       image: 'test-image',
       labels: {} as Record<string, string>,
       env: [{ key: 'PATH', value: '/image/bin' }],
-      secrets: {} as Record<string, { value: string; placeholder: string; host: string[] }>,
+      secrets: {} as Record<string, { value: string; placeholder: string; host: string[]; headerFields: string[] }>,
       runtime: { workdir: '/image', user: 'agent' }
     }
     readonly stopWithTimeout = vi.fn(async () => {
@@ -297,7 +297,7 @@ function fakeSdk() {
           },
           secret(configure: (entry: any) => unknown) {
             let name = ''
-            const data = { value: '', placeholder: '', host: [] as string[] }
+            const data = { value: '', placeholder: '', host: [] as string[], headerFields: [] as string[] }
             const entry = {
               env(value: string) {
                 name = value
@@ -315,9 +315,8 @@ function fakeSdk() {
                 data.host.push(value)
                 return entry
               },
-              // Headers only: a key in a query string or body is never substituted.
-              substituteInHeaders(value: boolean) {
-                expect(value).toBe(true)
+              substituteInHeaderFields(value: string[]) {
+                data.headerFields = value
                 return entry
               },
               substituteInQuery(value: boolean) {
@@ -560,6 +559,12 @@ describe('microsandbox process and VM ownership', () => {
       await (await occupy(manager, env)).stop(0)
       expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
       expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.host).toEqual([host].flat())
+      expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.headerFields).toEqual([
+        'authorization',
+        'x-api-key',
+        'api-key',
+        'x-goog-api-key'
+      ])
       // A local VM's shim is handed no seed: the guest reads the placeholder its launch names, never the value.
       expect(shims[0]!.input.seedEnv).toBeUndefined()
       const directory = join(options.root, 'microsandbox', 'bindings')
@@ -571,6 +576,7 @@ describe('microsandbox process and VM ownership', () => {
       await (await occupy(resumed, env)).stop(0)
       expect(created).toHaveLength(1)
       expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+      expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.headerFields).not.toHaveLength(0)
       expect(await readFile(path, 'utf8')).not.toContain(key)
       await resumed.stopAll()
       created[0]!.modify.mockResolvedValueOnce({ applied: false, changes: [], conflicts: [] } as never)
@@ -581,6 +587,41 @@ describe('microsandbox process and VM ownership', () => {
       await restarted.discard(env.id)
     }
   )
+
+  it('replaces a retained VM whose credential policy predates scoped headers', async () => {
+    const { manager, options, environment, created } = await fixture()
+    const env = {
+      ...environment,
+      secrets: [
+        {
+          env: 'OPENAI_API_KEY',
+          placeholder: 'fixture-placeholder',
+          host: 'api.example.test',
+          readValue: () => 'fixture-key'
+        }
+      ]
+    }
+    await (await occupy(manager, env)).stop(0)
+    await manager.stopAll()
+    const directory = join(options.root, 'microsandbox', 'bindings')
+    const path = join(directory, (await readdir(directory))[0]!)
+    const binding = JSON.parse(await readFile(path, 'utf8'))
+    const spec = JSON.parse(binding.spec)
+    delete spec.environment.secrets[0].headerFields
+    binding.spec = JSON.stringify(spec)
+    await writeFile(path, JSON.stringify(binding))
+
+    const resumed = new MicrosandboxManager(options)
+    await (await occupy(resumed, env)).stop(0)
+    expect(created).toHaveLength(2)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    expect(created[1]!.spec.secrets.OPENAI_API_KEY!.headerFields).not.toHaveLength(0)
+    await resumed.stopAll()
+    const restarted = new MicrosandboxManager(options)
+    await (await occupy(restarted, env)).stop(0)
+    expect(created).toHaveLength(2)
+    await restarted.discard(env.id)
+  })
 
   it.each([false, true])('replaces the VM when its credential scope changes (protected=%s)', async (protectedVm) => {
     const { manager, options, environment, created, volumes } = await fixture()
