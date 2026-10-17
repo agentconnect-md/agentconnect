@@ -168,7 +168,9 @@ export class CodeHostFeedbackService {
       return { accepted: true, authorAgentIds: [] }
     }
     const { authors, pulls } = await this.enqueue(repo, signal.provider, signal, undefined)
-    for (const pull of pulls) await this.fold(repo, signal, pull, true)
+    // The watches take the object the event names, a fork's or a closed one included; only a pipeline naming none takes the lane's.
+    for (const pull of signal.pullNumber !== undefined ? [signal.pullNumber] : pulls)
+      await this.fold(repo, signal, pull, true)
     return { accepted: true, authorAgentIds: authors }
   }
 

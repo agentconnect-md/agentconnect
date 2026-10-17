@@ -48,7 +48,8 @@ export function gitlabFollowUpWatchProvider(deps: {
       return {
         installationId: null,
         bindingId: binding.id,
-        host: deps.api.baseUrl,
+        // The instance's host, as a watch URL names it, so a re-sent unchanged watch is not read again.
+        host: instance,
         repoId: binding.projectId,
         repoPath: binding.projectPath,
         subject: target.subject,

@@ -2282,10 +2282,12 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   `rc/codehost-feedback`, with kind `event` for a change of state, without holding the delivery
   back: a merge request merged, closed, reopened, approved or given new commits, an issue closed or
   reopened, a note on an issue, and a pipeline of a merge request that succeeded or was cancelled. A
-  failed pipeline and a note on a merge request stay the lane's feedback, and also reach the
-  watches. A pipeline that names no merge request wakes nothing.
+  failed pipeline and a note on a merge request stay the lane's feedback, and also reach the watches of the merge request they name, a fork's or a closed one included. A pipeline that names no merge request wakes nothing.
 - **Admission** is the lane's: a note by a bound service account is left out, for an issue's watch
   too.
+- **Retries.** A watch is stored with the instance's host, as its URL names it, so a full set
+  re-sending it unchanged reads nothing. A watch still `pending` after an answer is sent again with
+  the duty holder's next sweep rather than at the next link.
 - **Reads.** A check of a follow-up watching a GitLab object aims the broker's read tools at the
   watched project, by the id the daemon kept. The Control Plane leases the broker a read-only
   credential for it while the agent has a live watch there; a workspace or a hook lease is

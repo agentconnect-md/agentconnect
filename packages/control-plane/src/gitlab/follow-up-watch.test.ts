@@ -55,7 +55,8 @@ describe('watching a GitLab merge request or issue', () => {
     expect(await provider.resolve(agent(PROJECT), target())).toEqual({
       installationId: null,
       bindingId: 'binding-1',
-      host: 'https://gitlab.example.test',
+      // The host as a watch URL names it, so a re-sent unchanged watch is matched without a read.
+      host: 'gitlab.example.test',
       repoId: PROJECT,
       repoPath: 'example-group/example-project',
       subject: 'pull',

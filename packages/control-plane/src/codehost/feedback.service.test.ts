@@ -259,6 +259,24 @@ describe('a watched project’s events reach its follow-ups (assistant-mode.md �
     ])
   })
 
+  it('takes the merge request an event names to its watches, a fork’s included, where the lane takes none', async () => {
+    const h = harness()
+    vi.mocked(h.repo.pulls).mockResolvedValue([{ ...pull, sourceRepoId: 999n }])
+    const comment = {
+      ...h.base,
+      kind: 'comment' as const,
+      subject: 'pull' as const,
+      event: 'comment' as const,
+      pullNumber: 12,
+      actorId: '7'
+    }
+    await h.service.receive(comment)
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.received).toEqual([
+      { object: object('pull', 12), deliveryKey: 'delivery', kind: 'comment', feedback: true }
+    ])
+  })
+
   it('watches a project follow-ups watch, even with no writing workspace, and tells the relay to send its wakes', async () => {
     const h = harness({ workspace: false })
     await h.service.sync('gitlab', ORG, 123n)
