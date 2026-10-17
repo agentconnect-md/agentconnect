@@ -164,6 +164,7 @@ import {
   assistantModeEditNeedsAdmission,
   assistantModeRefusalMessage,
   assistantResponsibleUser,
+  onboardingHintsFor,
   servedAssistantMode
 } from '../../agents/assistant-mode.js'
 import { readySetMembers, usesDecisionMaterialize } from '../repository-selection.js'
@@ -2916,6 +2917,16 @@ export function agentRoutes(deps: HttpDeps) {
             ...bodyPatch
           } = req.body
           const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)
+          // The first switch-on records research's hints (assistant-mode.md §5.15); a lookup that fails records none.
+          const assistantOnboardingHints =
+            existing.assistantMode?.enabled !== true &&
+            req.body.assistantMode?.enabled === true &&
+            !existing.assistantOnboarding
+              ? await onboardingHintsFor(deps, existing, req.principal?.userId).catch((err: unknown) => {
+                  req.log.warn({ err }, 'assistant onboarding hints unavailable')
+                  return undefined
+                })
+              : undefined
           let agent: AgentRecord
           try {
             agent = await withSubmittedMcpProviderChains(
@@ -2938,7 +2949,8 @@ export function agentRoutes(deps: HttpDeps) {
                   {
                     authorizeMcpServers,
                     ...(skillsFence ? { skillSources: skillsFence } : {}),
-                    ...(memoryHome ? { memoryHome } : {})
+                    ...(memoryHome ? { memoryHome } : {}),
+                    ...(assistantOnboardingHints ? { assistantOnboardingHints } : {})
                   }
                 )
             )

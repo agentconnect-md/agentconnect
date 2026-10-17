@@ -4,6 +4,7 @@ import { deriveTitle } from '../session/derive-title.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
   isDelegationCoordinate,
+  isResearchCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
   subsessionCoordinate
@@ -157,6 +158,8 @@ export interface DaemonReport {
   opens?: string | undefined
   /** A first look's report (§5.13), by its follow-up: the round it starts may propose. */
   firstLook?: string | undefined
+  /** Called once the turn the report started has ended, however it ended (the onboarding hello's, §5.15). */
+  settled?: (() => void) | undefined
 }
 
 /** The long session a report opens in a place nobody spoke in yet; the report's turn creates its row. */
@@ -490,7 +493,7 @@ export class CollabCoordinator {
   sessionInput(
     callMeta: CallMeta,
     body: string,
-    opts: { startsTask?: boolean; shown?: ShownInput; visiblePost?: boolean } = {}
+    opts: { startsTask?: boolean; shown?: ShownInput; visiblePost?: boolean; noReplyCall?: boolean } = {}
   ): { text: string; turnBody?: UserTurnBody } {
     const label = this.agentDisplayLabel(callMeta.callFrom)
     if (callMeta.messageId === undefined || callMeta.originSessionId === undefined) {
@@ -516,7 +519,7 @@ export class CollabCoordinator {
       sourceLabel: label,
       sourceSessionId: callMeta.originSessionId,
       ...(callMeta.inReplyTo !== undefined ? { inReplyTo: callMeta.inReplyTo } : {}),
-      replyRequested: callMeta.needsReply === true,
+      replyRequested: callMeta.needsReply === true && opts.noReplyCall !== true,
       ...(opts.startsTask ? { startsTask: true } : {})
     }
     // A wake paired with a visible post lands on that post's row, whose text and replay stay the post's own.
@@ -1054,6 +1057,7 @@ export class CollabCoordinator {
         this.host.log().error(`sub-session report dispatch failed for session "${parent.key}": ${formatErr(err)}`)
         settleAdmission({ accepted: false, reason: 'error' })
       })
+      .finally(() => report.settled?.())
     const admission = await admitted
     if (!admission.accepted) {
       this.host.log().warn(`sub-session report not delivered (${admission.reason ?? 'unknown'})`)
@@ -2451,7 +2455,8 @@ export class CollabCoordinator {
       ...(caller.transportScope !== undefined ? { transportScope: caller.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      ...this.sessionInput(callMeta, req.text),
+      // Organization research holds no sendMessage (assistant-mode.md §5.15), so its input names no reply call.
+      ...this.sessionInput(callMeta, req.text, { noReplyCall: isResearchCoordinate(caller.thread) }),
       mentionedBots: resolved?.botUserId ? [resolved.botUserId] : [],
       isDm: false,
       headless: true

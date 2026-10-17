@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { AssistantOnboarding } from '@agentconnect.md/protocol'
 import {
   AssistantModeAdmissionRefused,
   assertAssistantModeDefinition,
   assistantModeEditNeedsAdmission,
   assistantModePermissionModeForEdit,
   assistantModeStoreRefusals,
+  assistantOnboardingForEdit,
+  assistantOnboardingHints,
+  memberEmailDomains,
+  onboardingHintsFor,
   StoredAssistantModePolicyRow
 } from './assistant-mode.js'
 
@@ -100,6 +105,86 @@ describe('a stored assistant mode policy', () => {
       enabled: true,
       responsibleUserId: 'usr_1',
       limits: { dailyCheckBudget: 5 }
+    })
+  })
+})
+
+describe('the onboarding record (assistant-mode.md §5.15)', () => {
+  const now = new Date('2026-10-17T09:30:00.000Z')
+  const hints = { organization: 'Example Org', emailDomains: ['example.test'] }
+
+  it('is written by the first switch-on alone, naming the editor and when', () => {
+    const record = assistantOnboardingForEdit(undefined, ON, false, { userId: 'usr_1', hints, now })
+    expect(record).toEqual({ enabledByUserId: 'usr_1', enabledAt: '2026-10-17T09:30:00.000Z', hints })
+    expect(AssistantOnboarding.parse(record)).toEqual(record)
+    expect(assistantOnboardingForEdit(OFF, ON, false, { now })).toEqual({ enabledAt: '2026-10-17T09:30:00.000Z' })
+  })
+
+  it('is never written again: switching off and on later, or an edit while on, records nothing', () => {
+    expect(assistantOnboardingForEdit(OFF, ON, true, { userId: 'usr_2', now })).toBeUndefined()
+    expect(assistantOnboardingForEdit(ON, ON, false, { userId: 'usr_2', now })).toBeUndefined()
+    expect(assistantOnboardingForEdit(ON, OFF, false, { userId: 'usr_2', now })).toBeUndefined()
+    expect(assistantOnboardingForEdit(undefined, OFF, false, { userId: 'usr_2', now })).toBeUndefined()
+  })
+
+  it('keeps no empty hints', () => {
+    expect(assistantOnboardingForEdit(undefined, ON, false, { hints: {}, now })).toEqual({
+      enabledAt: '2026-10-17T09:30:00.000Z'
+    })
+  })
+})
+
+describe('research hints', () => {
+  it('names the domains members use, most used first, and never an address or a public provider', () => {
+    expect(
+      memberEmailDomains([
+        'alice@example.test',
+        'bob@Example.Test',
+        'carol@subsidiary.example',
+        'dave@gmail.com',
+        'erin@yahoo.co.uk',
+        'frank@mail.yahoo.com',
+        'grace@outlook.fr',
+        null,
+        'not-an-address'
+      ])
+    ).toEqual(['example.test', 'subsidiary.example'])
+  })
+
+  it('bounds every list and drops blank names', () => {
+    const emails = Array.from({ length: 30 }, (_, i) => `person@domain-${i}.example`)
+    const built = assistantOnboardingHints({
+      organization: '  Example Org  ',
+      workspaces: ['Example Workspace', 'Example Workspace', ' ', null, undefined],
+      memberEmails: emails
+    })
+    expect(built.organization).toBe('Example Org')
+    expect(built.workspaces).toEqual(['Example Workspace'])
+    expect(built.emailDomains).toHaveLength(10)
+    expect(assistantOnboardingHints({ organization: null, workspaces: [], memberEmails: [] })).toEqual({})
+  })
+
+  it('reads the organization through the editor’s membership, the agent’s bots and the members', async () => {
+    const deps = {
+      repos: {
+        org: { listForUser: async () => [{ id: 'org-a', name: null, slug: 'example-org' }] },
+        integration: { listForAgent: async () => [{ botId: 'bot-1' }, { botId: 'bot-2' }] },
+        bot: {
+          get: async (_org: string, id: string) => (id === 'bot-1' ? { workspaceName: 'Example Workspace' } : null)
+        },
+        user: { listMembers: async () => [{ email: 'alice@example.test' }, { email: null }] }
+      }
+    } as unknown as Parameters<typeof onboardingHintsFor>[0]
+    const agent = { id: 'agent-a', orgId: 'org-a' } as Parameters<typeof onboardingHintsFor>[1]
+    const hintsOf = (editor: string | undefined) => onboardingHintsFor(deps, agent, editor)
+    await expect(hintsOf('usr_1')).resolves.toEqual({
+      organization: 'example-org',
+      workspaces: ['Example Workspace'],
+      emailDomains: ['example.test']
+    })
+    await expect(hintsOf(undefined)).resolves.toEqual({
+      workspaces: ['Example Workspace'],
+      emailDomains: ['example.test']
     })
   })
 })

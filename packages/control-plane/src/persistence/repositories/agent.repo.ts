@@ -5,6 +5,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
   AgentMemoryBinding,
+  AssistantOnboarding,
   apiGateDecisionIds,
   modelSelectionDecisionIds,
   type AgentApiGates,
@@ -65,6 +66,7 @@ import {
   assertAssistantModeDefinition,
   assistantModeEditNeedsAdmission,
   assistantModePermissionModeForEdit,
+  assistantOnboardingForEdit,
   StoredAssistantModePolicyRow
 } from '../../agents/assistant-mode.js'
 import { PgHookRepo } from './hook.repo.js'
@@ -237,6 +239,13 @@ function assistantModeOf(value: unknown): StoredAssistantModePolicy | undefined 
   return parsed.success ? parsed.data : undefined
 }
 
+// A record that no longer parses reads as none, which takes no onboarding; the column itself is never rewritten.
+function assistantOnboardingOf(value: unknown): AssistantOnboarding | undefined {
+  if (value === null || value === undefined) return undefined
+  const parsed = AssistantOnboarding.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
 // The selector's evaluator columns are one pair: both set, or both null to clear.
 function repositorySelectorColumns(selector: AgentRepositorySelector | null) {
   return {
@@ -320,6 +329,7 @@ function workspaceColumns(workspace: AgentWorkspace) {
 function toRecord(a: AgentWithUsers): AgentRecord {
   const ov = overridesOf(a)
   const assistantMode = assistantModeOf(a.assistantMode)
+  const assistantOnboarding = assistantOnboardingOf(a.assistantOnboarding)
   return {
     id: AgentId(a.id),
     orgId: OrgId(a.orgId),
@@ -349,6 +359,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     managedSkills: a.managedSkills,
     memory: storedMemoryBinding(ov.memory),
     ...(assistantMode ? { assistantMode } : {}),
+    ...(assistantOnboarding ? { assistantOnboarding } : {}),
     status: a.status as AgentRecord['status'],
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
@@ -751,17 +762,30 @@ export class PgAgentRepo implements AgentRepo {
       }
       overrides = next
     }
-    // Assistant mode admission (assistant-mode.md §4.1) and permission default (§1.8), against the locked row so no concurrent edit slips past.
+    // Assistant mode admission (assistant-mode.md §4.1), permission default (§1.8) and onboarding record (§5.15), against the locked row so no concurrent edit slips past.
+    let onboarding: AssistantOnboarding | undefined
     if (patch.assistantMode !== undefined || patch.runtime !== undefined || overrides !== undefined) {
       const rows = await tx.$queryRaw<
-        Array<{ runtime: string | null; runtimeOverrides: unknown; assistantMode: unknown }>
+        Array<{
+          runtime: string | null
+          runtimeOverrides: unknown
+          assistantMode: unknown
+          assistantOnboarding: unknown
+        }>
       >(
-        Prisma.sql`SELECT "runtime", "runtimeOverrides", "assistantMode" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+        Prisma.sql`SELECT "runtime", "runtimeOverrides", "assistantMode", "assistantOnboarding" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
       )
       const row = rows[0]
       if (row) {
         const before = assistantModeOf(row.assistantMode)
         const after = patch.assistantMode !== undefined ? patch.assistantMode : before
+        // Any stored value counts as recorded, even one that no longer parses: the record is written once.
+        const recorded = row.assistantOnboarding !== null && row.assistantOnboarding !== undefined
+        onboarding = assistantOnboardingForEdit(before, after, recorded, {
+          userId: patch.lastModifiedByUserId,
+          hints: opts?.assistantOnboardingHints,
+          now: new Date()
+        })
         const lockedMemory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
         const memory = overrides !== undefined ? overrides.memory : lockedMemory
         const runtime = patch.runtime ?? row.runtime
@@ -804,6 +828,7 @@ export class PgAgentRepo implements AgentRepo {
                 patch.assistantMode === null ? Prisma.DbNull : (patch.assistantMode as Prisma.InputJsonValue)
             }
           : {}),
+        ...(onboarding ? { assistantOnboarding: onboarding as Prisma.InputJsonValue } : {}),
         // A PATCH is a human edit — advance the last-modified audit. The editor is
         // stamped when known (absent under devAuth ⇒ leave the prior editor as-is).
         lastModifiedAt: new Date(),

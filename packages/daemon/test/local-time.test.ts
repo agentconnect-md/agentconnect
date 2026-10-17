@@ -16,7 +16,12 @@ import { knownTimeZone, offsetTimeZone, profileTimeZone } from '../src/messages/
 import { buildSyntheticMessage } from '../src/scheduler/scheduler.js'
 import { renderLocalNow } from '../src/session/local-time.js'
 import { SessionManager } from '../src/session/session-manager.js'
-import { checkCoordinate, subsessionCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
+import {
+  checkCoordinate,
+  researchCoordinate,
+  subsessionCoordinate,
+  taskCoordinate
+} from '../src/session/subsession-coordinate.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { SlackNameResolver } from '../src/slack/name-resolver.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
@@ -378,6 +383,38 @@ describe('the local-time line on an assistant-mode agent’s turns, unchanged', 
     const sm = manager()
     await sm.handle('bot-a', room('U0ALICE', '300.1'))
     expect(localTimeOf((await sm.handle('bot-a', room('U0BOB', '300.2'))).blocks)).toEqual([SHANGHAI])
+  })
+})
+
+describe('the organization research line (assistant-mode.md §5.15)', () => {
+  const researchOf = (blocks: { type: string; text?: string }[]): string[] =>
+    blocks.flatMap((b) => (b.text?.includes('Organization research is running') ? [b.text] : []))
+
+  it('rides every place turn while research runs, beside the time and in its zone, and never a task’s', async () => {
+    const { manager, s } = await harness(ON, { profiles: { U0ALICE: 'Asia/Shanghai' } })
+    const sm = manager()
+    expect(researchOf((await sm.handle('bot-a', room('U0ALICE', '400.1'))).blocks)).toEqual([])
+    const taskKey = sessionKey('slack', 'D0ALICE', researchCoordinate('1'), 'bot-a', SCOPE)
+    await s.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      parentSessionId: 'sid-dm',
+      parentSessionKey: sessionKey('slack', 'D0ALICE', 'append:1', 'bot-a', SCOPE),
+      now: T - HOUR
+    })
+    const turn = await sm.handle('bot-a', room('U0ALICE', '400.2'))
+    expect(researchOf(turn.blocks)).toEqual([
+      '<system-reminder>\nOrganization research is running since 03:20; what memory holds about the organization ' +
+        'may be incomplete. Answer from what is known and say plainly that research is still running when it ' +
+        'matters.\n</system-reminder>'
+    ])
+    // It sits right after the time.
+    const texts = (turn.blocks as { text?: string }[]).map((b) => b.text ?? '')
+    expect(texts[texts.findIndex((text) => text.includes('\nNow: ')) + 1]).toContain('Organization research is running')
+    expect(researchOf((await sm.handle('bot-a', background('C0TEAM', checkCoordinate('1')))).blocks)).toEqual([])
+    expect(researchOf((await sm.handle('bot-a', background('D0ALICE', researchCoordinate('1')))).blocks)).toEqual([])
+    await s.assistantSubsessions.finish('bot-a', taskKey, 'done')
+    expect(researchOf((await sm.handle('bot-a', room('U0ALICE', '400.3'))).blocks)).toEqual([])
   })
 })
 

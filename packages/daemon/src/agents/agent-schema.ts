@@ -8,6 +8,7 @@ import {
   AgentRepositorySelector,
   AgentMemoryBinding,
   AssistantModePolicy,
+  AssistantOnboarding,
   ChatActions,
   HookRoutingProjection,
   CompatibleAgentSkillEntry,
@@ -244,6 +245,8 @@ export const AgentSchema = z.object({
   memory: AgentMemoryBinding.optional(),
   // Assistant mode (assistant-mode.md §5.1), replicated from the CP and stored only; absent ⇒ off.
   assistantMode: StoredAssistantModePolicy.optional(),
+  // Its first switch-on (assistant-mode.md §5.15), replicated from the CP, written once and never cleared.
+  assistantOnboarding: AssistantOnboarding.optional(),
   // The instance every GitLab consumer here addresses (§24.4); absent ⇒ GitLab.com, the axis default.
   gitlabHost: z.string().optional(),
   // Its Gitea twin (gitea-integration.md §11); absent ⇒ gitea.com, the axis default.

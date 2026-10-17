@@ -8,6 +8,7 @@ import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
 import { ASSISTANT_CHECK_SCHEMA, AssistantCheckLedger } from './assistant-checks.js'
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
+import { ASSISTANT_ONBOARDING_SCHEMA, AssistantOnboardingLedger } from './assistant-onboarding.js'
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
@@ -2491,6 +2492,8 @@ export class LocalStore {
   readonly assistantChecks: AssistantCheckLedger
   /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
   readonly assistantReminders: AssistantReminderLedger
+  /** Each agent's onboarding conversation and organization research (assistant-mode.md §5.15). */
+  readonly assistantOnboarding: AssistantOnboardingLedger
   /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
   readonly placeTimeZones: PlaceTimeZones
   /** The messages each session received and sent, with their reply obligations (send-message-guide.md §9.3). */
@@ -2532,6 +2535,7 @@ export class LocalStore {
       transaction: (fn) => this.transaction(fn)
     })
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
+    this.assistantOnboarding = new AssistantOnboardingLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
   }
@@ -2599,6 +2603,7 @@ export class LocalStore {
       ${ASSISTANT_SUBSESSION_SCHEMA}
       ${ASSISTANT_CHECK_SCHEMA}
       ${ASSISTANT_REMINDER_SCHEMA}
+      ${ASSISTANT_ONBOARDING_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (

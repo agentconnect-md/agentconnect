@@ -70,6 +70,8 @@ export function agentSpecDigest(spec: AgentSpec): string {
   if (content.repositorySelector === null) delete content.repositorySelector
   // So is a cleared assistant mode.
   if (content.assistantMode === null) delete content.assistantMode
+  // The onboarding record is write-once and lands with a new revision, so a daemon upgraded past it does not conflict.
+  delete content.assistantOnboarding
   // A GitHub credential beside `private` restates it, so a CP that starts shipping `credential` does not conflict either.
   if (content.skills?.some(restatesPrivate)) {
     content.skills = content.skills.map((entry) => {

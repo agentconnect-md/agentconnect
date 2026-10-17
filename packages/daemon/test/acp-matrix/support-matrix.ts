@@ -23,6 +23,8 @@ export type FeatureId =
   | 'mcp'
   | 'skills'
   | 'sendMessage'
+  // Organization research's web reach (assistant-mode.md §9 Q29), run only when asked for by name.
+  | 'web'
 
 export function verdictFor(feature: FeatureId, p: Profile): Verdict {
   switch (feature) {
@@ -33,6 +35,7 @@ export function verdictFor(feature: FeatureId, p: Profile): Verdict {
     case 'sandbox':
     case 'vm':
     case 'memory':
+    case 'web':
       return 'run'
     case 'model-switch':
       return (p.caps.models?.length ?? 0) >= 2 ? 'run' : 'degrade'

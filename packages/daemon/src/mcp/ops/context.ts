@@ -240,7 +240,7 @@ export interface SessionContext {
     /** Constrain topic filenames beyond the store's own path rules. A dream keeps the
      *  lowercase-kebab shape its proposal format always enforced. */
     topicPattern?: RegExp
-    /** The layer this binding's store is, for checks that depend on it; a session bound to the shared layer names "shared". */
+    /** The live layer this binding's store is (organization research's shared one, §5.15): its writes are revision-checked entry writes, and checks that depend on it see it. */
     layer?: MemoryLayerChoice
   }
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the

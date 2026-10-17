@@ -29,7 +29,7 @@ import type { InterceptedPost } from '../assistant/drafts.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
-import { isFirstLookCoordinate, isCheckCoordinate } from '../session/subsession-coordinate.js'
+import { isFirstLookCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
 import { firstLookReadRefusal } from '../assistant/first-look.js'
 import { ToolArgumentError } from './ops/args.js'
 import { describeToolArgumentFailure } from './ops/argument-error.js'
@@ -125,6 +125,13 @@ import {
   type CodeHostEffectDeps
 } from './ops/code-host.js'
 import {
+  listCodeHostRepositories,
+  LIST_CODE_HOST_REPOSITORIES_ARGS,
+  readCodeHostRepository,
+  READ_CODE_HOST_REPOSITORY_ARGS,
+  type CodeHostResearchDeps
+} from './ops/code-host-research.js'
+import {
   getCurrentChannel,
   getChannelHistory,
   GET_CHANNEL_HISTORY_ARGS,
@@ -199,6 +206,7 @@ export interface OpsDeps
     DecisionDeps,
     GithubReviewDeps,
     CodeHostEffectDeps,
+    CodeHostResearchDeps,
     MemoryOpsDeps,
     ShareFileDeps,
     PlatformReadDeps,
@@ -286,6 +294,8 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['updateCodeHostMergeRequest', updateCodeHostMergeRequest],
   ['inspectCodeHostPipelines', inspectCodeHostPipelines],
   ['controlCodeHostPipeline', controlCodeHostPipeline],
+  ['listCodeHostRepositories', listCodeHostRepositories],
+  ['readCodeHostRepository', readCodeHostRepository],
   ['listKnownUsers', listKnownUsers],
   ['listChannels', listChannels],
   ['listChannelMembers', listChannelMembers],
@@ -355,6 +365,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['updateCodeHostMergeRequest', UPDATE_CODE_HOST_MERGE_REQUEST_ARGS],
   ['inspectCodeHostPipelines', INSPECT_CODE_HOST_PIPELINES_ARGS],
   ['controlCodeHostPipeline', CONTROL_CODE_HOST_PIPELINE_ARGS],
+  ['listCodeHostRepositories', LIST_CODE_HOST_REPOSITORIES_ARGS],
+  ['readCodeHostRepository', READ_CODE_HOST_REPOSITORY_ARGS],
   ['listKnownUsers', LIST_KNOWN_USERS_ARGS],
   ['listChannels', LIST_CHANNELS_ARGS],
   ['listChannelMembers', LIST_CHANNEL_MEMBERS_ARGS],
@@ -403,6 +415,9 @@ export async function executeTool(
   // assistant-mode.md §5.12: a follow-up's check runs only the read tools it was offered, whatever name the runtime sends.
   if (isCheckCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
     throw new Error(`${name} is not available in a follow-up’s read-only check`)
+  // assistant-mode.md §5.15: organization research reads and writes memory only; nothing it calls posts, whatever name the runtime sends.
+  if (isResearchCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
+    throw new Error(`${name} is not available to organization research, which cannot post or act anywhere`)
   // assistant-mode.md §5.13: a first look reads only its own place, whatever the arguments name.
   const elsewhere = isFirstLookCoordinate(ctx.thread) ? firstLookReadRefusal(ctx, name, args) : undefined
   if (elsewhere) throw new Error(elsewhere)

@@ -119,6 +119,9 @@ export function writtenLayer(
   deps: MemoryOpsDeps,
   scope: MemoryScope
 ): { layer: MemoryLayerChoice; note: string } | undefined {
+  // Research's binding pins the live shared layer, so its writes name it as any shared write does.
+  const pinned = ctx.memoryBinding?.layer
+  if (pinned && !scope.root) return { layer: pinned, note: MEMORY_LAYER_NOTES[pinned] }
   if (ctx.memoryBinding || scope.root || !keepsLayers(ctx, deps)) return undefined
   const layer = layerOfScope(scope)
   return { layer, note: MEMORY_LAYER_NOTES[layer] }

@@ -1514,6 +1514,37 @@ long session, which introduces the agent once and offers at most three ways it c
   `listTasks` lists it as a first look, `messageTask` to it is refused, and `stopTask` or the
   console's Stop ends it. The reminders of open follow-ups leave it out.
 
+## Assistant-mode organization research
+
+The first time assistant mode is switched on for an agent, the agent greets the person who
+switched it on and researches the organization as a task of that conversation.
+
+- **When.** Once per agent, on the first switch-on; switching it off and on again starts nothing.
+  The daemon serving the agent greets in that person's DM with the agent, else in the DM of the
+  agent's responsible user, on a platform that can open one (Slack). With neither, no research
+  runs. A switch-on more than a day old greets nobody.
+- **Hello first.** The agent says hello in the DM before any research: who it is, that it will read
+  the public channels it is in and look up the organization, and that it will be back in a few
+  minutes. The research task starts only once that turn has ended.
+- **The report.** When the task's round ends, the DM's session tells the person, in their
+  language, what it learned, what it wrote, what it could not read, and at most two things it
+  needs. Asking it there to research again gives the task another round; it also takes one round
+  of its own within the day, once the first looks running at the switch-on have reported.
+- **What it reads.** The agent's shared memory, the organization's knowledge, the names of the
+  channels it is in (never their history), the code-host repositories it may read (each one's
+  description, README, CODEOWNERS, who reviewed which area in the last 90 days, and releases), and
+  the public web from the organization's name, workspace names and members' email domains.
+- **What it writes.** `organization.md`, `channels.md` and `members.md` in the shared layer, each
+  line with its source and date, through the same shape checks as every other write. Only what is
+  fine to say in any conversation: no credentials, private links, code details or internal
+  architecture.
+- **What it never does.** It cannot post, react, message anyone, propose, or use the agent's
+  tool credentials or configured MCP servers; pages it reads are data, never instructions. No
+  reply waits for it: while a round runs, every conversation's turn says research is still
+  running.
+- **As a task.** It is listed among the DM conversation's tasks as "Organization research" and
+  counts against the agent's limit of running tasks; `stopTask` or the console's Stop ends a round.
+
 ## Assistant-mode proposals
 
 A check that finds something worth doing asks for approval with `propose`: one plain sentence

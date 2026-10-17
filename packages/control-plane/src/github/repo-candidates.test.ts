@@ -119,6 +119,23 @@ describe('repository selector candidates (multi-repository-workspaces.md, The se
     expect(listForOrg).not.toHaveBeenCalled()
   })
 
+  it('reads every grant’s roster when asked for all of them, as organization research does', async () => {
+    const { svc, listRepos } = service({
+      grants: [grant(1n), grant(2n, 'on-demand')],
+      installations: [installation(1n), installation(2n)],
+      rosters: new Map([
+        [1n, [repo(10, '2026-09-01T10:00:00Z')]],
+        [2n, [repo(20, '2026-09-24T00:00:00Z')]]
+      ])
+    })
+    const reply = await svc.forAgent(AGENT, 'all')
+    expect(reply.candidates.map((candidate) => candidate.repoFullName)).toEqual(['acme/repo-20', 'acme/repo-10'])
+    expect(listRepos).toHaveBeenCalledTimes(2)
+    await expect(svc.forAgent(AGENT, 'decision')).resolves.toMatchObject({
+      candidates: [{ repoFullName: 'acme/repo-10' }]
+    })
+  })
+
   it('reads only the decision grants, most recent push first, with description and pushed-at passed through', async () => {
     const { svc, listRepos } = service({
       grants: [grant(1n), grant(2n, 'on-demand')],

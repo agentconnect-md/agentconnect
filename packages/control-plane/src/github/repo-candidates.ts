@@ -39,10 +39,12 @@ export class RepoCandidatesService {
   constructor(private readonly deps: RepoCandidatesDeps) {}
 
   async forAgent(
-    agent: Pick<AgentRecord, 'id' | 'orgId' | 'workspace' | 'workspaceRepoId'>
+    agent: Pick<AgentRecord, 'id' | 'orgId' | 'workspace' | 'workspaceRepoId'>,
+    // `all` adds the on-demand grants, which organization research lists (assistant-mode.md §5.15).
+    grantsOf: 'decision' | 'all' = 'decision'
   ): Promise<RepoCandidatesReply> {
     const grants = (await this.deps.installationAuths.listForAgent(agent.id)).filter(
-      (grant) => grant.provider === 'github' && grant.materialize === 'decision'
+      (grant) => grant.provider === 'github' && (grantsOf === 'all' || grant.materialize === 'decision')
     )
     if (grants.length === 0) return { candidates: [], partial: false }
     const [rows, claimed] = await Promise.all([

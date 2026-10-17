@@ -21,6 +21,12 @@ describe('repo-candidates frames (multi-repository-workspaces.md, The selector)'
   it('names one agent and answers bounded candidates with a partial flag', () => {
     expect(RepoCandidatesRequest.parse({ agentId: AGENT_ID })).toEqual({ agentId: AGENT_ID })
     expect(RepoCandidatesRequest.safeParse({ agentId: 'not-a-uuid' }).success).toBe(false)
+    // Organization research asks for every grant's roster (assistant-mode.md §5.15).
+    expect(RepoCandidatesRequest.parse({ agentId: AGENT_ID, grants: 'all' })).toEqual({
+      agentId: AGENT_ID,
+      grants: 'all'
+    })
+    expect(RepoCandidatesRequest.safeParse({ agentId: AGENT_ID, grants: 'some' }).success).toBe(false)
     const full = { ...candidate, description: 'Shared build tooling', pushedAt: '2026-09-01T12:00:00.000Z' }
     expect(RepoCandidatesReply.parse({ candidates: [full, candidate], partial: false })).toEqual({
       candidates: [full, candidate],

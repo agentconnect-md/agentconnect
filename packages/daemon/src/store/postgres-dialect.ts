@@ -293,6 +293,13 @@ export const canonicalColumns = [
   'childSessionKey',
   'parentSessionId',
   'parentSessionKey',
+  // assistant_onboarding (assistant-mode.md §5.15)
+  'enabledAt',
+  'parentKey',
+  'parentThread',
+  'firstLooks',
+  'secondRound',
+  'secondRoundAttempt',
   'checkedNextCheck',
   'retryAt',
   'stoppedNextCheck',

@@ -10,8 +10,15 @@ export const REPO_CANDIDATES_MAX = 512
 // A longer description is cut to this many characters before it is sent.
 export const REPO_CANDIDATE_DESCRIPTION_MAX = 350
 
-// D→C REQ: the rosters of the agent's installation grants marked `decision`; its repository rows already ride the spec.
-export const RepoCandidatesRequest = z.object({ agentId: z.string().uuid() })
+// The CP answers `grants: 'all'` with every installation grant's roster, which organization research lists (assistant-mode.md §5.15).
+export const REPO_CANDIDATES_ALL_V1_FEATURE = 'repo-candidates-all-v1'
+
+// D→C REQ: the rosters of the agent's installation grants; its repository rows already ride the spec.
+export const RepoCandidatesRequest = z.object({
+  agentId: z.string().uuid(),
+  // Absent or `decision`: the grants marked `decision`; `all` adds the on-demand ones, sent only after the feature above.
+  grants: z.enum(['decision', 'all']).optional()
+})
 export type RepoCandidatesRequest = z.infer<typeof RepoCandidatesRequest>
 
 // One covered repository: its names, numeric id, and what the host publishes about it; control metadata, never message content.

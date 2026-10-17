@@ -99,6 +99,41 @@ describe('assistant mode', () => {
     expect(spy.upserts.at(-1)?.spec).toHaveProperty('assistantMode', null)
   })
 
+  // assistant-mode.md §5.15: the first switch-on is recorded once, with research's hints, and rides the spec.
+  it('records the first switch-on once and ships it, never again on a later switch-on', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
+    const botId = randomUUID()
+    await prisma.bot.create({
+      data: {
+        id: botId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        name: `bot-${botId}`,
+        workspaceName: 'Example Workspace'
+      }
+    })
+    await prisma.integration.create({
+      data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'slack', name: 'example-bot' }
+    })
+    const { app, spy } = withSpy()
+    const stored = async () => (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantOnboarding
+
+    expect((await patch(app, agentId, { description: 'Before the switch.' })).statusCode).toBe(200)
+    expect(await stored()).toBeNull()
+    expect((await patch(app, agentId, { assistantMode: ON })).statusCode).toBe(200)
+    const first = (await stored()) as { enabledAt: string; enabledByUserId?: string; hints?: unknown }
+    expect(Date.parse(first.enabledAt)).toBeGreaterThan(0)
+    expect(first.hints).toMatchObject({ workspaces: ['Example Workspace'] })
+    expect(spy.upserts.at(-1)?.spec.assistantOnboarding).toEqual(first)
+
+    expect((await patch(app, agentId, { assistantMode: null })).statusCode).toBe(200)
+    expect((await patch(app, agentId, { assistantMode: ON })).statusCode).toBe(200)
+    expect(await stored()).toEqual(first)
+    expect(spy.upserts.at(-1)?.spec.assistantOnboarding).toEqual(first)
+  })
+
   // #2979 B7: the switch keys places on one session and gates nothing; the Off row stays Off.
   it("re-projects the agent's integrations as it switches, never gating them or rewriting the stored rows", async () => {
     await seedDaemon(prisma, DAEMON)

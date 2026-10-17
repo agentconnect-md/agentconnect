@@ -180,6 +180,18 @@ describe('AgentSpecAssembler', () => {
     expect('runInSandbox' in vm).toBe(false)
   })
 
+  it('ships the onboarding record only once one is written (assistant-mode.md §5.15)', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    const assistantOnboarding = {
+      enabledByUserId: 'usr_1',
+      enabledAt: '2026-10-17T09:30:00.000Z',
+      hints: { organization: 'Example Org' }
+    }
+    const recorded = specs.project({ ...AGENT, assistantOnboarding }, {}, [])
+    expect(AgentSpec.parse(recorded).assistantOnboarding).toEqual(assistantOnboarding)
+    expect('assistantOnboarding' in specs.project(AGENT, {}, [])).toBe(false)
+  })
+
   it('ships the repository selector’s evaluator, or null so a cleared one replicates', () => {
     const specs = new AgentSpecAssembler(storeWith({}))
     const repositorySelector = { providerId: 'typesafe', model: 'jev-latest' }

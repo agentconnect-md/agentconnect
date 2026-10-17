@@ -71,6 +71,7 @@ import {
   MEMORY_PLACE_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
+  REPO_CANDIDATES_ALL_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
   REPO_SELECTOR_V1_FEATURE,
   supportsRepositorySelector,
@@ -169,7 +170,7 @@ import {
   type ManagedWorkspaceRepo
 } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { setTimeout as sleepFor } from 'node:timers/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
@@ -482,6 +483,7 @@ import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
 import {
   confirmsInternalAudience,
+  offersDirectMessages,
   offersReadPort,
   platformLabel,
   reportsSharedConversations
@@ -914,9 +916,35 @@ import { appendCoordinate, isAppendCoordinate } from './session/append-coordinat
 import {
   isFirstLookCoordinate,
   isCheckCoordinate,
+  isResearchCoordinate,
+  isResearchSessionKey,
   isSubsessionCoordinate,
-  isTaskCoordinate
+  isTaskCoordinate,
+  researchThreadOf
 } from './session/subsession-coordinate.js'
+import {
+  GITHUB_API_BASE,
+  RESEARCH_REPOSITORIES_CACHE_MS,
+  RESEARCH_REPOSITORIES_MAX,
+  githubReadHeaders,
+  githubReads,
+  giteaReads,
+  gitlabReads,
+  readRepositoryPart,
+  repositoryReadClient,
+  type RepositoryPart,
+  type ResearchRepository
+} from './codehost/repository-research.js'
+import { CODE_HOST_RESEARCH_TOOLS } from './mcp/ops/code-host-research.js'
+import {
+  OrganizationResearch,
+  RESEARCH_CODE_HOST_TOOLS,
+  researchHintsLine,
+  researchPrompt,
+  researchSources,
+  researchTools,
+  type OnboardingDirectMessage
+} from './assistant/research.js'
 import {
   ConnectionReconciler,
   type ConnectionReconcilerHost,
@@ -4296,6 +4324,16 @@ export class Daemon {
       submitCodeReview: (req) => this.codeReviews.submit(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
+      codeHostResearch: {
+        list: async (ctx) => {
+          const { repositories, partial } = await this.researchRepositories(ctx.agentId)
+          return {
+            repositories: repositories.map(({ repoId: _id, ...shown }) => shown),
+            ...(partial ? { partial: true } : {})
+          }
+        },
+        read: (ctx, input) => this.readResearchRepository(ctx.agentId, input)
+      },
       memory: this.memory,
       memoryEntryStore: this.store,
       assistantItems: {
@@ -4587,21 +4625,24 @@ export class Daemon {
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
       // cwd against this filesystem — failing session create/load before the runtime call.
       workspaces: this.workspaces,
+      // Research is bound to the shared layer whichever conversation owns it (assistant-mode.md §5.15), so it starts from that index.
       memoryScopeFor: async (agentId, msg, integrationId, rec) =>
-        (
-          await this.memoryLayerFor(
-            this.memoryPlaceOf(
-              agentId,
-              {
-                platform: msg.platform,
-                channel: msg.channel,
-                transportScope: this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
-              },
-              rec,
-              msg
-            )
-          )
-        ).scope,
+        isResearchCoordinate(sessionThreadOf(msg))
+          ? { agentId }
+          : (
+              await this.memoryLayerFor(
+                this.memoryPlaceOf(
+                  agentId,
+                  {
+                    platform: msg.platform,
+                    channel: msg.channel,
+                    transportScope: this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
+                  },
+                  rec,
+                  msg
+                )
+              )
+            ).scope,
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
@@ -4707,14 +4748,18 @@ export class Daemon {
         let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const check = isCheckCoordinate(thread)
+        // §5.15: organization research gets memory, knowledge, the channel listing and the code-host reads, nothing that posts.
+        const research = isResearchCoordinate(thread)
+        const narrowed = check || research
         // A first look (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
         if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
         else if (check) tools = checkTools(tools)
+        else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
         // by per-agent visibility (e.g. only living players see `vote`).
         const evaluationTools = this.opts.evaluation?.environment?.tools
-        if (!check && evaluationTools?.length) {
+        if (!narrowed && evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
         }
         // MCP Apps (webchat-mcp-apps.md §4): a `ui: true` server's tools reach the runtime through
@@ -4724,7 +4769,7 @@ export class Daemon {
         // server still dialing contributes to the next session rather than delaying this one.
         // The admin catalog is a CP-delegated webchat descriptor, never an Apps-host server.
         const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
-        if (!check) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
+        if (!narrowed) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
@@ -4747,10 +4792,16 @@ export class Daemon {
             // Agent display identity, stamped on tool sends so they match ordinary
             // replies (slackAgentPostOptions uses the same displayName||name + iconUrl).
             agentName: agent.displayName?.trim() || agent.name,
-            ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
+            ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {}),
+            // §5.15: research's memory tools are bound to the live shared layer, whichever conversation owns it; no `layer` is taken.
+            ...(research
+              ? { memoryBinding: { source: 'tool' as const, scope: { agentId: agent.id }, layer: 'shared' as const } }
+              : {})
           })
           servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
         }
+        // Research reaches nothing beyond the bridge: no user-configured server, any of which could post or act for the agent.
+        if (research) return servers
         servers.push(
           ...resolveAgentMcpServers({
             enabled: agent.mcpServers,
@@ -5578,6 +5629,8 @@ export class Daemon {
         for (const integration of a.integrations) await this.store.setIntegrationRemoved(a.id, integration.id, false)
       }
       this.agents.set(a.id, a as LoadedAgent)
+      // A switch-on reaches its onboarding at once rather than on the next sweep (assistant-mode.md §5.15).
+      if (a.assistantOnboarding && !previous?.assistantOnboarding) void this.research.sweep([a.id])
       for (const integration of removed) await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
       if (settingsLeft) await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       let workspaceNeedsColdRecovery = change.workspace
@@ -6332,6 +6385,8 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (sessionKey === undefined || !agent) return agentHostKey(agentId)
     const key = sessionHostKey(agentId, sessionKey)
+    // Organization research launches without the agent's tool credentials, so it never shares a host that has them (assistant-mode.md §5.15).
+    if (isResearchSessionKey(sessionKey)) return key
     if (this.sessionRuntimes.has(sessionKey) || this.confinedSession(agent, sessionKey)) return key
     // An isolated session born in another strategy than the agent's now keeps its own host in its birth strategy (session-executors.md §5).
     if (this.bornInOtherStrategy(agent, sessionKey)) return key
@@ -6339,6 +6394,14 @@ export class Daemon {
     if (sessionMcpServersScope(agent.runtime, this.runtimes[agent.runtime]) === 'per-process') return key
     if (this.usesMicrosandbox(agent)) return this.legacyMicrosandboxSessions.has(key) ? agentHostKey(agentId) : key
     return agentHostKey(agentId)
+  }
+
+  /** Research's empty working directory on a local launch (assistant-mode.md §5.15); a pod, a VM or an executor keeps the session's own preparation. */
+  private async researchCwd(agent: LoadedAgent, key: HostKey): Promise<string | undefined> {
+    if (this.k8s || this.usesMicrosandbox(agent) || this.placedSession(hostKeySessionKey(key))) return undefined
+    const dir = join(agent.dir, 'research', hostKeyDirName(key))
+    await mkdir(dir, { recursive: true, mode: 0o700 })
+    return dir
   }
 
   /** Whether an isolated session's recorded strategy differs from the one the agent's shared host now runs; a pool session's boundary is its pod. */
@@ -7388,7 +7451,9 @@ export class Daemon {
     // attacker-controlled extraction AND avoids materializing files that a
     // dedicated dream host would never clean up (it never reaches stopHost's
     // cleanupConfigFiles) — task #36 A2.
-    const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true
+    // Organization research (assistant-mode.md §5.15) is credential-less on every launch path, decided here by its host key.
+    const research = isResearchSessionKey(hostKeySessionKey(opts.hostKey))
+    const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true || research
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
     const credentialProvider = excludeAgentToolCredentials
@@ -7558,7 +7623,8 @@ export class Daemon {
             applyRuntimeEnvironment(this.runtimeEnvironment, runtimeEntry?.aliasOf ?? agent.runtime, launchEnv)
           // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
           // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
-          if (excludeAgentToolCredentials) {
+          // Research keeps its runtime's tools under the agent's mode, the web among them, so it never gets that agent.
+          if (excludeAgentToolCredentials && !research) {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
           }
           if (!this.k8s && opts.providerCredential && agent.modelProvider) {
@@ -7971,10 +8037,14 @@ export class Daemon {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       // A session in its own pod is prepared by its turn before a cold launch (openSession); the gate re-verifies that pod alone.
       const inSessionPod = this.runsInSessionPod(agent, entry.sessionKey)
-      const cwd = inSessionPod
-        ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
-        : await this.prepareAgentWorkspace(agent, undefined, undefined)
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
+      // Organization research starts in its own empty directory here too (assistant-mode.md §5.15).
+      const researchDir = isResearchSessionKey(entry.sessionKey) ? await this.researchCwd(agent, hostKey) : undefined
+      const cwd =
+        researchDir ??
+        (inSessionPod
+          ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
+          : await this.prepareAgentWorkspace(agent, undefined, undefined))
       // The clones it holds on that pod, as an ordinary start lists them.
       const sessionGitDirs = inSessionPod
         ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
@@ -8478,6 +8548,242 @@ export class Daemon {
     return this.assistantTaskService
   }
 
+  /** Organization research (assistant-mode.md §5.15), built on first use over the live store. */
+  private organizationResearchService?: OrganizationResearch
+  private get research(): OrganizationResearch {
+    this.organizationResearchService ??= new OrganizationResearch({
+      now: () => this.clock.now(),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) },
+      agents: () => this.agents.values(),
+      mayRun: (agentId) => this.servesAgent(agentId) && !this.paused(agentId) && !this.drainingAgents.has(agentId),
+      draining: () => this.draining,
+      onboarding: this.store.assistantOnboarding,
+      subsessions: this.store.assistantSubsessions,
+      directMessage: (agentId, consoleUserId) => this.onboardingDirectMessage(agentId, consoleUserId),
+      parentFor: (agentId, place) => this.checkParent(agentId, place, { open: true, isDm: true }),
+      firstLooksRunning: async (agentId) =>
+        (await this.store.assistantItems.list(agentId, { status: ['active', 'waiting'] }))
+          .filter((item) => item.firstLook !== null)
+          .map((item) => item.id),
+      greet: async (row, text, settled) =>
+        (
+          await this.collab.deliverDaemonReport({
+            agentId: row.agentId,
+            caller: {
+              platform: row.platform!,
+              channel: row.channel!,
+              thread: researchThreadOf(row.taskKey!) ?? row.parentThread!,
+              ...(row.transportScope ? { transportScope: row.transportScope } : {})
+            },
+            place: { platform: row.platform!, channel: row.channel!, transportScope: row.transportScope },
+            parentSessionId: row.parentSessionId!,
+            text,
+            // One hello per agent: its receipt answers a re-send after a restart or a later sweep.
+            reportId: `assistant-onboarding:${row.agentId}`,
+            ...(row.parentThread ? { opens: row.parentThread } : {}),
+            settled
+          })
+        ).admitted,
+      helloSettled: async (row) =>
+        !!row.parentKey &&
+        !this.inflight.has(row.parentKey) &&
+        !this.serialQueue.has(row.parentKey) &&
+        !(await this.store.sessionHasPendingInboxRows(row.parentKey)),
+      researchPrompt: (agentId, row) => this.organizationResearchPrompt(agentId, row),
+      dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
+        this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
+      settleSubsession: (end) => this.collab.settleSubsessionTurn(end),
+      messageTask: (row, text, submissionId) =>
+        this.collab.continueSubsession({
+          callerAgentId: row.agentId,
+          platform: row.platform!,
+          callerChannel: row.channel!,
+          callerThread: row.parentThread!,
+          ...(row.transportScope ? { callerTransportScope: row.transportScope } : {}),
+          sessionId: row.taskKey!,
+          text,
+          submissionId
+        })
+    })
+    return this.organizationResearchService
+  }
+
+  /** A console user's DM with the agent, the responsible user's without one, on an integration that opens DMs; throws when the Control Plane cannot be asked. */
+  private async onboardingDirectMessage(
+    agentId: string,
+    consoleUserId: string | undefined
+  ): Promise<OnboardingDirectMessage | undefined> {
+    const agent = this.agents.get(agentId)
+    // Only a platform that can open a DM takes the onboarding conversation (assistant-mode.md §5.15).
+    const opening = (agent?.integrations ?? []).filter((integration) => offersDirectMessages(integration.platform))
+    if (!agent || opening.length === 0) return undefined
+    const integrationIds = opening
+      .map((integration) => integration.id)
+      .filter((id) => this.draftCardPort(id) !== undefined)
+      .slice(0, 8)
+    // One that can is not connected yet: a later sweep asks again.
+    if (integrationIds.length === 0) throw new Error('no direct-message integration is connected yet')
+    const cp = this.cpClient
+    if (cp?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) !== true)
+      throw new Error('approval routing is unavailable')
+    if (consoleUserId === undefined && cp.supportsServerFeature(ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE) !== true)
+      return undefined
+    const routed = await cp.approvalRoute(
+      {
+        agentId,
+        requestId: randomUUID(),
+        integrationIds,
+        ...(consoleUserId !== undefined ? { consoleUserId } : { responsible: true as const })
+      },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    const target = routed.target
+    if (!target || (consoleUserId !== undefined && target.consoleUserId !== consoleUserId)) return undefined
+    const int = agent.integrations.find((integration) => integration.id === target.integrationId)
+    const channel = int ? await this.draftCardPort(target.integrationId)?.openDirectMessage(target.userId) : undefined
+    if (!int || !channel) return undefined
+    return {
+      place: { platform: int.platform, channel, transportScope: this.transportScopeForIntegration(int) || null },
+      integrationId: int.id,
+      name: target.displayName ?? null
+    }
+  }
+
+  /** The research task's prompt: the organization's name and hints from the onboarding record, and the sources its tools reach. */
+  private async organizationResearchPrompt(
+    agentId: string,
+    row: { platform: string | null; channel: string | null }
+  ): Promise<string> {
+    const agent = this.agents.get(agentId)
+    const hints = agent?.assistantOnboarding?.hints ?? {}
+    const at = {
+      platform: row.platform ?? '',
+      channel: row.channel ?? '',
+      thread: 'subsession:research-0',
+      isDm: false
+    }
+    const tools = agent ? researchTools(this.researchBridgeTools(agent, this.sessionBridgeTools(agent, at))) : []
+    return researchPrompt({
+      organization: hints.organization ?? hints.workspaces?.[0] ?? 'your organization',
+      sources: researchSources(tools),
+      hints: researchHintsLine(hints),
+      codeHosts: tools.some((tool) => RESEARCH_CODE_HOST_TOOLS.has(tool.name))
+    })
+  }
+
+  /** The bridge tools research may be offered beyond a session's own: its code-host reads, where a code host is in reach (§5.15 "Code hosts"). */
+  private researchBridgeTools(agent: Agent, tools: ToolDescriptor[]): ToolDescriptor[] {
+    const workspace = agent.workspace as { additionalRepos?: unknown[]; additionalInstallations?: unknown[] }
+    const inReach =
+      this.researchWorkspaceRepository(agent) !== undefined ||
+      (workspace.additionalRepos?.length ?? 0) > 0 ||
+      (workspace.additionalInstallations?.length ?? 0) > 0
+    return inReach ? [...tools, ...CODE_HOST_RESEARCH_TOOLS] : tools
+  }
+
+  /** The agent's workspace repository as research names it: GitHub by its `owner/repo`, GitLab and Gitea by their path and numeric id. */
+  private researchWorkspaceRepository(agent: Agent): ResearchRepository | undefined {
+    const provider = this.workspaces.managedCredentialProvider(agent)
+    if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo || provider === undefined) return undefined
+    if (provider === 'github') {
+      const label = gitRepoLabel(agent.workspace.gitRepo)
+      return label ? { provider, repository: label, source: 'workspace', readable: true } : undefined
+    }
+    const managed = this.managedWorkspaceRepo(agent.id)
+    return managed?.repoPath
+      ? { provider, repository: managed.repoPath, repoId: managed.repoId, source: 'workspace', readable: true }
+      : undefined
+  }
+
+  private readonly researchRepositoryCache = new Map<
+    string,
+    { expiresAt: number; listing: { repositories: ResearchRepository[]; partial: boolean } }
+  >()
+
+  /** What research may read (§5.15 "Code hosts"): the workspace repository, the authorized ones and the installation grants' rosters, within the agent's own access; GitLab and Gitea read the workspace's alone. */
+  private async researchRepositories(
+    agentId: string
+  ): Promise<{ repositories: ResearchRepository[]; partial: boolean }> {
+    const now = this.clock.now()
+    const cached = this.researchRepositoryCache.get(agentId)
+    if (cached && cached.expiresAt > now) return cached.listing
+    const agent = this.agents.get(agentId)
+    if (!agent) throw new Error('this agent is not served here; nothing was read')
+    const repositories: ResearchRepository[] = []
+    const seen = new Set<string>()
+    const add = (repository: ResearchRepository) => {
+      const key = `${repository.provider}\u0000${repository.repository.toLowerCase()}`
+      if (seen.has(key) || repositories.length >= RESEARCH_REPOSITORIES_MAX) return
+      seen.add(key)
+      repositories.push(repository)
+    }
+    const workspace = this.researchWorkspaceRepository(agent)
+    if (workspace) add(workspace)
+    const ws = agent.workspace as {
+      additionalRepos?: { repoFullName: string; provider: string }[]
+      additionalInstallations?: unknown[]
+    }
+    for (const row of ws.additionalRepos ?? [])
+      add({
+        provider: row.provider,
+        repository: row.repoFullName,
+        source: 'authorized',
+        readable: row.provider === 'github'
+      })
+    let partial = false
+    const client = this.cpClient
+    if ((ws.additionalInstallations?.length ?? 0) > 0) {
+      if (client?.supportsServerFeature(REPO_CANDIDATES_ALL_V1_FEATURE)) {
+        const reply = await client.repoCandidates({ agentId, grants: 'all' })
+        for (const candidate of reply.candidates)
+          add({
+            provider: candidate.provider,
+            repository: candidate.repoFullName,
+            source: 'installation',
+            ...(candidate.description ? { description: candidate.description } : {}),
+            readable: candidate.provider === 'github'
+          })
+        partial = reply.partial
+      } else partial = true
+    }
+    const listing = { repositories, partial: partial || repositories.length >= RESEARCH_REPOSITORIES_MAX }
+    this.researchRepositoryCache.set(agentId, { expiresAt: now + RESEARCH_REPOSITORIES_CACHE_MS, listing })
+    return listing
+  }
+
+  /** One part of one listed repository, read with a daemon-held read credential the runtime never sees. */
+  private async readResearchRepository(
+    agentId: string,
+    input: { repository: string; part: RepositoryPart }
+  ): Promise<unknown> {
+    const { repositories } = await this.researchRepositories(agentId)
+    const entry = repositories.find((r) => r.repository.toLowerCase() === input.repository.toLowerCase())
+    if (!entry) throw new Error(`${input.repository} is not one listCodeHostRepositories lists; nothing was read`)
+    if (!entry.readable)
+      throw new Error(`on ${entry.provider}, only the workspace repository can be read here; nothing was read`)
+    let reads
+    if (entry.provider === 'github') {
+      const { token } = await this.gitCreds.getResearchReadToken(agentId, entry.repository)
+      reads = githubReads(
+        repositoryReadClient({ base: GITHUB_API_BASE, headers: githubReadHeaders(token) }),
+        entry.repository
+      )
+    } else if (entry.provider === 'gitlab' && entry.repoId) {
+      const { token } = await this.gitCreds.getGitlabEffectToken(agentId, entry.repoId)
+      reads = gitlabReads(
+        repositoryReadClient({ base: this.gitlabApiBase(agentId), headers: { 'private-token': token } }),
+        entry.repoId
+      )
+    } else if (entry.provider === 'gitea' && entry.repoId) {
+      const { token } = await this.gitCreds.getGiteaEffectToken(agentId, entry.repoId)
+      reads = giteaReads(
+        repositoryReadClient({ base: this.giteaApiBase(agentId), headers: { authorization: `token ${token}` } }),
+        entry.repository
+      )
+    } else throw new Error(`${entry.provider} repositories cannot be read here; nothing was read`)
+    return await readRepositoryPart(reads, entry.repository, input.part, this.clock.now())
+  }
+
   /** Where a proposal for a follow-up of this place runs and is carded (§5.10): the place itself, and its card's own place where it is confirmed internal. */
   private async proposalPlace(
     agentId: string,
@@ -8844,11 +9150,11 @@ export class Daemon {
   private async checkParent(
     agentId: string,
     place: AssistantPlace,
-    opts: { open?: boolean } = {}
+    opts: { open?: boolean; isDm?: boolean } = {}
   ): Promise<CheckParent | undefined> {
     const rec =
       (await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)) ??
-      (opts.open ? await this.openingPlaceSession(agentId, place) : undefined)
+      (opts.open ? await this.openingPlaceSession(agentId, place, opts.isDm) : undefined)
     if (!rec?.thread) return undefined
     const sessionId = await this.store.ensureOutwardSessionId(rec.key, agentId, this.clock.now())
     const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
@@ -8870,10 +9176,20 @@ export class Daemon {
   }
 
   /** The coordinate a place's first message would key, where that is its one appending session (§5.2); its row comes with the first turn there. */
-  private async openingPlaceSession(agentId: string, place: AssistantPlace): Promise<SessionRecord | undefined> {
+  private async openingPlaceSession(
+    agentId: string,
+    place: AssistantPlace,
+    isDm?: boolean
+  ): Promise<SessionRecord | undefined> {
     const integrationId = this.integrationIdForTransportScope(agentId, place.platform, place.transportScope)
     const int = this.agents.get(agentId)?.integrations.find((candidate) => candidate.id === integrationId)
-    if (!int || conversationSessionMode(int, place.channel) !== 'append') return undefined
+    // A DM nobody spoke in yet is not listed, so its kind decides, as a first message there would (the onboarding DM, §5.15).
+    const mode = int
+      ? isDm === undefined
+        ? conversationSessionMode(int, place.channel)
+        : this.sessionModeFor(agentId, int, { channel: place.channel, isDm })
+      : undefined
+    if (!int || mode !== 'append') return undefined
     const thread = await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
     return {
       key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
@@ -9049,6 +9365,8 @@ export class Daemon {
     this.checkSweepTimer = this.clock.setTimeout(async () => {
       this.checkSweepTimer = undefined
       await this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look sweep failed: ${formatErr(err)}`))
+      // Onboarding's hello, research's start and its second round (assistant-mode.md §5.15).
+      await this.research.sweep().catch((err) => this.log.warn(`organization research sweep failed: ${formatErr(err)}`))
       await this.releaseStrandedRounds().catch((err) =>
         this.log.warn(`first look card sweep failed: ${formatErr(err)}`)
       )
@@ -9745,8 +10063,8 @@ export class Daemon {
     if (!output.trim()) return
     // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
     const rec = session ? await this.store.getSession(session.key) : undefined
-    // A first look's own session feeds no capture; memory gets only what it writes explicitly (assistant-mode.md §5.15).
-    if (isFirstLookCoordinate(rec?.thread)) return
+    // A first look's or research's own session feeds no capture; memory gets only what it writes explicitly (assistant-mode.md §5.15).
+    if (isFirstLookCoordinate(rec?.thread) || isResearchCoordinate(rec?.thread)) return
     const placed = await this.memoryLayerOfSession(agentId, rec, msg)
     if (!placed) return
     // The shared layer never takes a capture-excluded turn, checked before distillation and the external outbox alike.
@@ -16837,8 +17155,14 @@ export class Daemon {
     let agent = run.agent
     const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     // The per-conversation Worktree choice this turn carries, in the isolation vocabulary the row, the host key and the pod claim all speak.
-    const webchatIsolation =
-      webchat?.worktree === undefined ? undefined : webchat.worktree ? ('session' as const) : ('shared' as const)
+    // Organization research needs no checkout of its own: it reads through bridge tools only (assistant-mode.md §5.15).
+    const webchatIsolation = isResearchSessionKey(key)
+      ? ('shared' as const)
+      : webchat?.worktree === undefined
+        ? undefined
+        : webchat.worktree
+          ? ('session' as const)
+          : ('shared' as const)
     // Install the exact route before session/new|load: adapters may emit metadata
     // (including a restored title) while SessionManager is still initializing.
     const previousDeliveryBinding = this.sessionDeliveryBindings.get(key)
@@ -21545,17 +21869,20 @@ export class Daemon {
         throw new Error(`host start superseded for ${label}`)
       }
       const boundKey = bound && hostKeySessionKey(key)
+      // Organization research reads no checkout: on a local launch it starts in an empty directory of its own (assistant-mode.md §5.15).
+      const researchDir = isResearchSessionKey(boundKey || undefined) ? await this.researchCwd(agent, key) : undefined
       // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
       // A shared host started for a session prepares that session's share too (its on-demand clone directory), since the session consumes this one preparation.
       const prepared =
-        bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
+        researchDir ??
+        (bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
           ? await this.prepareSessionPodLaunch(agent, boundKey, allowAgentDrain)
           : await this.prepareAgentWorkspace(
               agent,
               undefined,
               session && session.cwd === undefined ? session.workspace : undefined,
               allowAgentDrain
-            )
+            ))
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
       const sessionGitDirs = boundKey ? await this.listSessionGitDirs(agent, boundKey, label) : undefined

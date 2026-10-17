@@ -29,7 +29,8 @@ describe('repo-candidates/request', () => {
     const { agent, forAgent, conn, run } = setup()
     await run()
     expect(agent).toHaveBeenCalledWith(orgId, agentId)
-    expect(forAgent).toHaveBeenCalledWith(expect.objectContaining({ id: agentId, orgId }))
+    // A request that names no grants form asks for the decision-marked grants, as before.
+    expect(forAgent).toHaveBeenCalledWith(expect.objectContaining({ id: agentId, orgId }), 'decision')
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'repo-candidates/reply', reply)
     expect(conn.sendError).not.toHaveBeenCalled()
   })

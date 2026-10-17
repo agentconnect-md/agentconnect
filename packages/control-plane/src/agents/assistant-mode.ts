@@ -1,14 +1,26 @@
 import { z } from 'zod'
 import {
+  ASSISTANT_ONBOARDING_HINTS_MAX,
   AssistantModePolicy,
   assistantModeDefinitionRefusals,
+  type AssistantOnboarding,
+  type AssistantOnboardingHints,
   assistantModePermissionModeOnEnable,
   type AgentMemoryBinding,
   type AssistantModeAdmission,
   type AssistantModeRefusal
 } from '@agentconnect.md/protocol'
 import { canEdit } from '../authorization/policy.js'
-import type { AgentRecord, MemberSetRepo, OrgMemberRecord, StoredAssistantModePolicy } from '../persistence/ports.js'
+import type {
+  AgentRecord,
+  BotRepo,
+  IntegrationRepo,
+  MemberSetRepo,
+  OrgMemberRecord,
+  OrgRepo,
+  StoredAssistantModePolicy,
+  UserRepo
+} from '../persistence/ports.js'
 
 // Expand step (assistant-mode.md §5.1): an older CP's routing keys are read past and never written; removed keys are dropped.
 export const StoredAssistantModePolicyRow = AssistantModePolicy.extend({
@@ -84,6 +96,128 @@ export function assistantModePermissionModeForEdit(
 ): string | undefined {
   if (before?.enabled === true || after?.enabled !== true || editSetsPermissionMode) return undefined
   return assistantModePermissionModeOnEnable(agent.runtime, agent.permissionMode)
+}
+
+/** The onboarding record an edit writes (assistant-mode.md §5.15): only the first switch-on of an agent with none, never again. */
+export function assistantOnboardingForEdit(
+  before: AssistantModePolicy | null | undefined,
+  after: AssistantModePolicy | null | undefined,
+  recorded: boolean,
+  edit: { userId?: string | undefined; hints?: AssistantOnboardingHints | undefined; now: Date }
+): AssistantOnboarding | undefined {
+  if (recorded || before?.enabled === true || after?.enabled !== true) return undefined
+  const hints = edit.hints && Object.keys(edit.hints).length > 0 ? edit.hints : undefined
+  return {
+    ...(edit.userId ? { enabledByUserId: edit.userId } : {}),
+    enabledAt: edit.now.toISOString(),
+    ...(hints ? { hints } : {})
+  }
+}
+
+// Mail providers anyone may sign up with: such a domain names no organization, so research never searches by one.
+const PUBLIC_MAIL_DOMAINS = new Set([
+  '126.com',
+  '139.com',
+  '163.com',
+  'aol.com',
+  'fastmail.com',
+  'foxmail.com',
+  'gmail.com',
+  'gmx.com',
+  'gmx.de',
+  'gmx.net',
+  'googlemail.com',
+  'hey.com',
+  'hotmail.com',
+  'icloud.com',
+  'live.com',
+  'mac.com',
+  'mail.com',
+  'mail.ru',
+  'me.com',
+  'msn.com',
+  'naver.com',
+  'outlook.com',
+  'pm.me',
+  'proton.me',
+  'protonmail.com',
+  'qq.com',
+  'sina.com',
+  'sohu.com',
+  'tutanota.com',
+  'web.de',
+  'yahoo.co.jp',
+  'yahoo.com',
+  'yandex.com',
+  'yandex.ru',
+  'zoho.com'
+])
+
+/** The email domains the organization's members use, most used first: never an address, never a public provider's. */
+export function memberEmailDomains(emails: readonly (string | null)[]): string[] {
+  const counts = new Map<string, number>()
+  for (const email of emails) {
+    const domain = email?.split('@')[1]?.trim().toLowerCase()
+    if (!domain || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) || isPublicMailDomain(domain)) continue
+    counts.set(domain, (counts.get(domain) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .sort(([a, x], [b, y]) => y - x || (a < b ? -1 : 1))
+    .slice(0, ASSISTANT_ONBOARDING_HINTS_MAX)
+    .map(([domain]) => domain)
+}
+
+/** A public provider's domain, or a regional or subdomain variant of one (`yahoo.co.uk`, `mail.yahoo.com`). */
+function isPublicMailDomain(domain: string): boolean {
+  if (PUBLIC_MAIL_DOMAINS.has(domain)) return true
+  const parts = domain.split('.')
+  for (let i = 1; i < parts.length - 1; i++) if (PUBLIC_MAIL_DOMAINS.has(parts.slice(i).join('.'))) return true
+  return /^(gmail|googlemail|hotmail|outlook|live|yahoo|yandex|gmx|icloud)\./.test(domain)
+}
+
+/** The research hints an onboarding records: the organization's and its chat workspaces' names and its members' email domains. */
+export function assistantOnboardingHints(input: {
+  organization: string | null | undefined
+  workspaces: readonly (string | null | undefined)[]
+  memberEmails: readonly (string | null)[]
+}): AssistantOnboardingHints {
+  const organization = input.organization?.trim().slice(0, 200)
+  const workspaces = [
+    ...new Set(input.workspaces.map((name) => name?.trim().slice(0, 200)).filter((name): name is string => !!name))
+  ].slice(0, ASSISTANT_ONBOARDING_HINTS_MAX)
+  const emailDomains = memberEmailDomains(input.memberEmails)
+  return {
+    ...(organization ? { organization } : {}),
+    ...(workspaces.length > 0 ? { workspaces } : {}),
+    ...(emailDomains.length > 0 ? { emailDomains } : {})
+  }
+}
+
+/** The hints read for an agent's first switch-on: its organization's name as the editor's membership shows it, its bots' workspaces, and the members' emails. */
+export async function onboardingHintsFor(
+  deps: {
+    repos: {
+      org: Pick<OrgRepo, 'listForUser'>
+      integration: Pick<IntegrationRepo, 'listForAgent'>
+      bot: Pick<BotRepo, 'get'>
+      user: Pick<UserRepo, 'listMembers'>
+    }
+  },
+  agent: Pick<AgentRecord, 'id' | 'orgId'>,
+  editorUserId: string | undefined
+): Promise<AssistantOnboardingHints> {
+  const { repos } = deps
+  const org = editorUserId
+    ? (await repos.org.listForUser(editorUserId)).find((candidate) => candidate.id === agent.orgId)
+    : undefined
+  const integrations = await repos.integration.listForAgent(agent.id)
+  const bots = await Promise.all(integrations.map((integration) => repos.bot.get(agent.orgId, integration.botId)))
+  const members = await repos.user.listMembers(agent.orgId)
+  return assistantOnboardingHints({
+    organization: org?.name ?? org?.slug,
+    workspaces: bots.map((bot) => bot?.workspaceName),
+    memberEmails: members.map((member) => member.email)
+  })
 }
 
 /** The definition checks, as the row-locked write runs them. */
