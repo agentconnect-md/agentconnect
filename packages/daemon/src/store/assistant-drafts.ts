@@ -83,6 +83,8 @@ export interface AssistantProposalFollowUp {
   title: string
   doneWhen: string
   nextCheck: number | null
+  /** The URL it would watch (§5.14); null when it would be woken by time only. */
+  watch?: string | null
 }
 
 /** What a check proposes (§5.10): the card's sentence and reason, and the item at the version it was proposed against. */
@@ -228,6 +230,7 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         followUpTitle TEXT,
         followUpDoneWhen TEXT,
         followUpNextCheck INTEGER,
+        followUpWatch TEXT,
         reportRound TEXT,
         reportSeq INTEGER,
         heldForReply INTEGER NOT NULL DEFAULT 0,
@@ -263,6 +266,8 @@ export function assistantFollowUpHash(
   form: AssistantProposalFollowUp
 ): string {
   const parts = ['follow-up', agentId, itemId, itemVersion, form.title, form.doneWhen, form.nextCheck]
+  // A watch joins the digest only when present, so a record written before §5.14 still verifies.
+  if (form.watch) parts.push(form.watch)
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
 }
 
@@ -310,7 +315,8 @@ function draftOf(row: Row): AssistantDraft {
                 : {
                     title: String(row.followUpTitle),
                     doneWhen: String(row.followUpDoneWhen ?? ''),
-                    nextCheck: num(row.followUpNextCheck)
+                    nextCheck: num(row.followUpNextCheck),
+                    watch: str(row.followUpWatch)
                   },
             round: str(row.reportRound),
             held: Number(row.heldForReply ?? 0) === 1,
@@ -473,6 +479,7 @@ export class AssistantDraftLedger {
       followUpTitle: followUp?.title ?? null,
       followUpDoneWhen: followUp?.doneWhen ?? null,
       followUpNextCheck: followUp?.nextCheck ?? null,
+      followUpWatch: followUp?.watch ?? null,
       reportRound: round?.id ?? null,
       reportSeq: round?.seq ?? null,
       heldForReply: round ? 1 : 0

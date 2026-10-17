@@ -298,7 +298,12 @@ describe('the prompts', () => {
   })
 
   it('refuses a follow-up form with no first check, and lets one with a first check or a task through', () => {
-    const followUp = { title: 'Release notes', doneWhen: 'Each release has notes.', nextCheck: undefined }
+    const followUp = {
+      title: 'Release notes',
+      doneWhen: 'Each release has notes.',
+      nextCheck: undefined,
+      watch: undefined
+    }
     expect(firstLookProposalRefusal({ followUp })).toBe(
       'a follow-up offered after a first look needs followUp.nextCheck, since nothing else would wake it: set its ' +
         'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'

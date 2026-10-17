@@ -14,7 +14,7 @@ import {
   type AssistantItemSchedule,
   type AssistantPlace
 } from '../../store/assistant-items.js'
-import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
+import { obj, type JsonValue, type ObjectToolSchema, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { isCheckCoordinate } from '../../session/subsession-coordinate.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { parseArgs, requiredString } from './args.js'
@@ -33,6 +33,21 @@ export interface FollowUpInput {
   nextCheck?: number
   summary?: string
   asker: string
+  /** The URL it watches (assistant-mode.md §5.14). */
+  watch?: string
+}
+
+/** A follow-up's watch as a tool says it back (§5.14). */
+export type WatchOutcomeView =
+  { kind: 'watching'; target: string } | { kind: 'pending' } | { kind: 'refused'; reason: string } | { kind: 'none' }
+
+/** What the tools ask of the follow-ups' watches (§5.14). */
+export interface FollowUpWatchToolPort {
+  /** Refuse a URL that names no pull request, merge request or issue, before anything is written. */
+  check(url: string): void
+  set(agentId: string, itemId: string, url: string): Promise<WatchOutcomeView>
+  clear(agentId: string, itemId: string): Promise<WatchOutcomeView>
+  end(agentId: string, itemId: string): Promise<void>
 }
 
 export interface AssistantItemDeps {
@@ -47,6 +62,8 @@ export interface AssistantItemDeps {
     firstLook?(ctx: SessionContext): Promise<FirstLookRequest>
     /** A proposal of the place's long session on the round a first look reports back (§5.13); refused on any other. */
     proposeAfterFirstLook?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
+    /** The follow-ups' watches; absent when the Control Plane takes none, so `watch` is refused. */
+    watches?(): FollowUpWatchToolPort | undefined
     /** A check's side, in the follow-up's own session. */
     check?: {
       /** The follow-up this session's check is running for; undefined once it ended. */
@@ -110,7 +127,8 @@ export const FOLLOW_UP_ARGS = z.object({
   title: boundedString('title', ASSISTANT_ITEM_LIMITS.title),
   doneWhen: boundedString('doneWhen', ASSISTANT_ITEM_LIMITS.doneWhen),
   nextCheck: nextCheckArg,
-  summary: optionalBoundedString('summary', ASSISTANT_ITEM_LIMITS.summary)
+  summary: optionalBoundedString('summary', ASSISTANT_ITEM_LIMITS.summary),
+  watch: optionalBoundedString('watch', ASSISTANT_ITEM_LIMITS.watchUrl, 1)
 })
 
 /** A check may not set its next check sooner than this, so a follow-up cannot wake itself in a loop. */
@@ -125,7 +143,9 @@ export const RECORD_CHECK_ARGS = z.object({
   done: z
     .boolean('argument done must be a boolean')
     .nullish()
-    .transform((value) => value ?? undefined)
+    .transform((value) => value ?? undefined),
+  // An empty string stops watching; leaving it out keeps the watch.
+  watch: optionalBoundedString('watch', ASSISTANT_ITEM_LIMITS.watchUrl)
 })
 
 /** `propose` (assistant-mode.md §5.10, §5.13): the card's sentence, the reason, and the task an approval runs or the follow-up it takes. */
@@ -139,7 +159,8 @@ export const PROPOSE_ARGS = z
         {
           title: boundedString('followUp.title', ASSISTANT_ITEM_LIMITS.title),
           doneWhen: boundedString('followUp.doneWhen', ASSISTANT_ITEM_LIMITS.doneWhen),
-          nextCheck: nextCheckArg
+          nextCheck: nextCheckArg,
+          watch: optionalBoundedString('followUp.watch', ASSISTANT_ITEM_LIMITS.watchUrl, 1)
         },
         'argument followUp must be an object with title and doneWhen'
       )
@@ -154,16 +175,41 @@ export type ProposeInput = z.infer<typeof PROPOSE_ARGS>
 /** What an approval of a proposal does: the task it runs, or the follow-up form's follow-up it takes (§5.13). */
 export function proposalWork(
   input: ProposeInput
-): { task: string } | { followUp: { title: string; doneWhen: string; nextCheck: number | null } } {
+):
+  { task: string } | { followUp: { title: string; doneWhen: string; nextCheck: number | null; watch: string | null } } {
   return input.followUp
     ? {
         followUp: {
           title: input.followUp.title,
           doneWhen: input.followUp.doneWhen,
-          nextCheck: input.followUp.nextCheck ?? null
+          nextCheck: input.followUp.nextCheck ?? null,
+          watch: input.followUp.watch ?? null
         }
       }
     : { task: input.task ?? '' }
+}
+
+/** `watch` on `followUp` and the follow-up form of `propose` (assistant-mode.md §5.14). */
+const WATCH_PROPERTY: JsonValue = {
+  type: 'string',
+  maxLength: ASSISTANT_ITEM_LIMITS.watchUrl,
+  description:
+    'Optional. The URL of the one pull request, merge request or issue this follow-up waits on; its events then ' +
+    'wake a check early.'
+}
+
+/** `watch` on `recordCheck` (§5.14). */
+const RECORD_CHECK_WATCH_PROPERTY: JsonValue = {
+  type: 'string',
+  maxLength: ASSISTANT_ITEM_LIMITS.watchUrl,
+  description:
+    'Optional. A new pull request, merge request or issue URL to watch instead, or an empty string to stop watching.'
+}
+
+/** A descriptor with `watch` added to its arguments, its own description untouched. */
+function withWatch(tool: ToolDescriptor, property: JsonValue): ToolDescriptor {
+  const schema = tool.inputSchema as ObjectToolSchema
+  return { ...tool, inputSchema: { ...schema, properties: { ...schema.properties, watch: property } } }
 }
 
 const NEXT_CHECK =
@@ -308,9 +354,48 @@ export const PROPOSE_TOOL: ToolDescriptor = {
   )
 }
 
-/** The follow-up tools a conversation is offered: `followUp` in assistant mode, none otherwise. */
-export function followUpToolsFor(agent: Pick<Agent, 'assistantMode'>): ToolDescriptor[] {
-  return assistantModeOn(agent) ? [FOLLOW_UP_TOOL] : []
+/** The tools with `watch`, offered only toward a Control Plane that takes watches (§5.14). */
+export const FOLLOW_UP_WATCH_TOOL = withWatch(FOLLOW_UP_TOOL, WATCH_PROPERTY)
+export const RECORD_CHECK_WATCH_TOOL = withWatch(RECORD_CHECK_TOOL, RECORD_CHECK_WATCH_PROPERTY)
+const proposeSchema = PROPOSE_TOOL.inputSchema as ObjectToolSchema
+const followUpForm = proposeSchema.properties.followUp as ObjectToolSchema
+export const PROPOSE_WATCH_TOOL: ToolDescriptor = {
+  ...PROPOSE_TOOL,
+  inputSchema: {
+    ...proposeSchema,
+    properties: {
+      ...proposeSchema.properties,
+      followUp: { ...followUpForm, properties: { ...followUpForm.properties, watch: WATCH_PROPERTY } }
+    }
+  }
+}
+
+/** The follow-up tools a conversation is offered: `followUp` in assistant mode, none otherwise; with `watch` toward a Control Plane that takes it. */
+export function followUpToolsFor(
+  agent: Pick<Agent, 'assistantMode'>,
+  opts: { watch?: boolean } = {}
+): ToolDescriptor[] {
+  return assistantModeOn(agent) ? [opts.watch ? FOLLOW_UP_WATCH_TOOL : FOLLOW_UP_TOOL] : []
+}
+
+function watchesOf(deps: AssistantItemDeps): FollowUpWatchToolPort {
+  const port = deps.assistantItems?.watches?.()
+  if (!port) throw new Error('watching is not available here; take it without `watch`, woken by time only')
+  return port
+}
+
+/** What a tool says back about a follow-up's watch. */
+function watchNote(outcome: WatchOutcomeView): string | undefined {
+  switch (outcome.kind) {
+    case 'watching':
+      return `Watching ${outcome.target}: its events wake a check early.`
+    case 'pending':
+      return 'Not confirmed yet: it is watched once the connection returns, and checked by time until then.'
+    case 'refused':
+      return `Not watched: ${outcome.reason}. It is checked by time only; tell the person why.`
+    case 'none':
+      return undefined
+  }
 }
 
 function ledgerOf(ctx: SessionContext, deps: AssistantItemDeps): AssistantItemLedgerPort {
@@ -324,6 +409,7 @@ const iso = (ms: number | null): string | null => (ms === null ? null : new Date
 export const followUp: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
   const input = parseArgs(FOLLOW_UP_ARGS, args)
   ledgerOf(ctx, deps)
+  if (input.watch !== undefined) watchesOf(deps).check(input.watch)
   const take = deps.assistantItems?.take
   if (!take) throw new Error('followUp: taking a follow-up is not available on this daemon')
   const asker = await deps.assistantItems?.askerFor(ctx)
@@ -335,6 +421,9 @@ export const followUp: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) 
     ...(input.summary !== undefined ? { summary: input.summary } : {}),
     asker
   })
+  // The person confirmed the follow-up, not the watch: it is taken either way (§5.14).
+  const watch =
+    input.watch !== undefined ? watchNote(await watchesOf(deps).set(ctx.agentId, item.id, input.watch)) : undefined
   return {
     taskId: item.taskKey,
     followUp: {
@@ -343,6 +432,7 @@ export const followUp: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) 
       nextCheck: iso(item.nextCheck),
       summary: item.summary
     },
+    ...(watch !== undefined ? { watch } : {}),
     note:
       (item.nextCheck === null
         ? 'Taken. It runs no check until you message it with messageTask and this taskId.'
@@ -359,8 +449,8 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   const port = deps.assistantItems?.check
   const itemId = port ? await port.itemFor(ctx) : undefined
   if (!port || itemId === undefined) throw new Error('this check has ended; nothing was written')
-  if ((await ledger.get(ctx.agentId, itemId))?.firstLook)
-    return await handBackFirstLook(ctx, input, itemId, ledger, port)
+  const item = await ledger.get(ctx.agentId, itemId)
+  if (item?.firstLook) return await handBackFirstLook(ctx, input, itemId, ledger, port)
   if (input.report !== undefined && input.report.length > ASSISTANT_ITEM_LIMITS.observation)
     throw new Error(
       `argument report must be at most ${ASSISTANT_ITEM_LIMITS.observation} characters; nothing was written`
@@ -369,6 +459,8 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
     throw new Error('recordCheck takes `done` or `nextCheck`, not both; nothing was written')
   if (input.nextCheck !== undefined && input.nextCheck < port.now() + MIN_NEXT_CHECK_MS)
     throw new Error('nextCheck must be at least five minutes from now; nothing was written')
+  const watches = input.watch !== undefined || input.done === true ? deps.assistantItems?.watches?.() : undefined
+  if (input.watch !== undefined && input.watch !== '') watchesOf(deps).check(input.watch)
   const next: AssistantItemSchedule =
     input.done === true
       ? { status: 'done', nextCheck: null }
@@ -379,6 +471,13 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   if (!appended) throw new Error('this follow-up is gone; nothing was written')
   // One its conversation ended while this check ran stays ended; what the check saw is still recorded.
   const open = await ledger.schedule(ctx.agentId, itemId, next)
+  // `done` ends the watch with the follow-up; a new URL moves it, an empty one stops it (§5.14).
+  let watch: string | undefined
+  if (input.done === true || !open) {
+    if (item?.watch) await watches?.end(ctx.agentId, itemId)
+  } else if (input.watch === '')
+    watch = watchNote(await watchesOf(deps).clear(ctx.agentId, itemId)) ?? 'No longer watched.'
+  else if (input.watch !== undefined) watch = watchNote(await watchesOf(deps).set(ctx.agentId, itemId, input.watch))
   if (input.report !== undefined && !(await port.report(ctx, itemId, input.report)))
     throw new Error('this check has ended; the observation was written but the report was not kept')
   return {
@@ -386,6 +485,7 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
     followUp: open
       ? { state: next.status === 'done' ? 'done' : 'waiting', nextCheck: iso(next.nextCheck) }
       : { state: 'ended', nextCheck: null },
+    ...(watch !== undefined ? { watch } : {}),
     ...(input.report !== undefined ? { report: 'passed on when this check ends' } : {})
   }
 }
@@ -415,6 +515,7 @@ export const propose: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) =
     throw new Error('propose is available only in a follow-up’s check')
   const input = parseArgs(PROPOSE_ARGS, args)
   ledgerOf(ctx, deps)
+  if (input.followUp?.watch !== undefined) watchesOf(deps).check(input.followUp.watch)
   if (!check) return await afterFirstLook!(ctx, input)
   const port = deps.assistantItems?.check
   if (!port?.propose) throw new Error('this check has ended; nothing was proposed')

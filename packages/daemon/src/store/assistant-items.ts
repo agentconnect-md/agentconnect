@@ -10,6 +10,20 @@ export type AssistantItemStatus = (typeof ASSISTANT_ITEM_STATUSES)[number]
 export const ASSISTANT_FIRST_LOOK_TRIGGERS = ['joined', 'requested'] as const
 export type AssistantFirstLookTrigger = (typeof ASSISTANT_FIRST_LOOK_TRIGGERS)[number]
 
+/** Whether a follow-up's watch (assistant-mode.md §5.14) is taken, waits for the Control Plane to confirm it, was refused, or ended. */
+export const ASSISTANT_WATCH_STATES = ['pending', 'watching', 'refused', 'ended'] as const
+export type AssistantWatchState = (typeof ASSISTANT_WATCH_STATES)[number]
+
+/** The one pull request, merge request or issue a follow-up waits on: its URL, its label once taken, and why it is not watched. */
+export interface AssistantItemWatch {
+  url: string
+  /** `owner/repo#12` once the Control Plane took it; null before. */
+  target: string | null
+  state: AssistantWatchState
+  /** The refusal or end reason the Control Plane gave; null while watched. */
+  reason: string | null
+}
+
 /** A place (§5.2) in the coordinate a session row wears; an absent transport scope reads back as null. */
 export type AssistantPlace = Pick<SessionRecord, 'platform' | 'channel' | 'transportScope'>
 
@@ -40,6 +54,8 @@ export interface AssistantItem {
   replyThread: string | null
   /** Set on a first look of its place (assistant-mode.md §5.13), which ends after one check; null on a follow-up. */
   firstLook: AssistantFirstLookTrigger | null
+  /** What it watches (§5.14); null when it is woken by time and messages only. */
+  watch: AssistantItemWatch | null
   summary: string
   /** The newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT} observations, oldest first. */
   observations: AssistantObservation[]
@@ -107,7 +123,9 @@ export const ASSISTANT_ITEM_LIMITS = {
   refId: 256,
   taskKey: 1_024,
   /** A first look's report: room for its 1,500 words in any language (assistant-mode.md §5.13). */
-  firstLookReport: 16_000
+  firstLookReport: 16_000,
+  /** A watched object's URL (assistant-mode.md §5.14). */
+  watchUrl: 500
 } as const
 
 // Normalized children, not JSON columns: each is written piecewise and concurrently.
@@ -127,6 +145,10 @@ export const ASSISTANT_ITEM_SCHEMA = `
         shared INTEGER NOT NULL DEFAULT 0,
         replyThread TEXT,
         firstLook TEXT,
+        watchUrl TEXT,
+        watchTarget TEXT,
+        watchState TEXT,
+        watchReason TEXT,
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -177,6 +199,10 @@ interface ItemRow {
   shared: number
   replyThread: string | null
   firstLook: string | null
+  watchUrl: string | null
+  watchTarget: string | null
+  watchState: string | null
+  watchReason: string | null
   summary: string
   observationVersion: number
   version: number
@@ -212,6 +238,10 @@ const ITEM_COLUMNS = [
   'shared',
   'replyThread',
   'firstLook',
+  'watchUrl',
+  'watchTarget',
+  'watchState',
+  'watchReason',
   'summary',
   'observationVersion',
   'version',
@@ -378,6 +408,39 @@ export class AssistantItemLedger {
     return changes > 0
   }
 
+  /** Set or clear what an open follow-up watches (§5.14); false once it ended or is gone. */
+  async setWatch(
+    agentId: string,
+    itemId: string,
+    watch: AssistantItemWatch | null,
+    now = Date.now()
+  ): Promise<boolean> {
+    if (watch) {
+      checkText('watchUrl', watch.url, ASSISTANT_ITEM_LIMITS.watchUrl, true)
+      if (!ASSISTANT_WATCH_STATES.includes(watch.state)) throw new Error('assistant item watch state is not supported')
+    }
+    const { changes } = await this.db.query(
+      `UPDATE assistant_item SET watchUrl = ?, watchTarget = ?, watchState = ?, watchReason = ?, updatedAt = ?
+       WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting') AND firstLook IS NULL`,
+      [watch?.url ?? null, watch?.target ?? null, watch?.state ?? null, watch?.reason ?? null, now, agentId, itemId]
+    )
+    return changes > 0
+  }
+
+  /** The agent's open follow-ups whose watch is taken or waits to be, as a full set for the Control Plane (§5.14). */
+  async watching(agentId: string): Promise<Array<{ id: string; url: string }>> {
+    const rows = (
+      await this.db.query(
+        `SELECT id, watchUrl FROM assistant_item
+         WHERE agentId = ? AND status IN ('active', 'waiting') AND firstLook IS NULL AND watchUrl IS NOT NULL
+           AND watchState IN ('pending', 'watching')
+         ORDER BY createdAt, id`,
+        [agentId]
+      )
+    ).rows as Array<{ id: string; watchUrl: string }>
+    return rows.map((row) => ({ id: row.id, url: row.watchUrl }))
+  }
+
   /** Whether every internal place lists it, as its place's audience was last judged. */
   async setShared(agentId: string, itemId: string, shared: boolean): Promise<void> {
     const value = shared ? 1 : 0
@@ -481,6 +544,7 @@ export class AssistantItemLedger {
       shared: Number(row.shared) === 1,
       replyThread: row.replyThread ?? null,
       firstLook: triggerOf(row.firstLook),
+      watch: watchOf(row),
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
       subsessions: links.filter((l) => l.itemId === row.id && l.kind === 'subsession').map((l) => l.refId),
@@ -511,6 +575,13 @@ async function lockItem(tx: StoreTx, agentId: string, itemId: string): Promise<b
 
 async function touchItem(tx: StoreTx, agentId: string, itemId: string, now: number): Promise<void> {
   await tx.query('UPDATE assistant_item SET updatedAt = ? WHERE agentId = ? AND id = ?', [now, agentId, itemId])
+}
+
+const watchOf = (row: ItemRow): AssistantItemWatch | null => {
+  const state = ASSISTANT_WATCH_STATES.find((candidate) => candidate === row.watchState)
+  return row.watchUrl && state
+    ? { url: row.watchUrl, target: row.watchTarget ?? null, state, reason: row.watchReason ?? null }
+    : null
 }
 
 const triggerOf = (value: string | null | undefined): AssistantFirstLookTrigger | null =>

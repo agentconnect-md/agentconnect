@@ -102,6 +102,16 @@ export type FollowUpWatchRefusal = z.infer<typeof FollowUpWatchRefusal>
 export const FollowUpWatched = FollowUpWatchTarget.pick({ provider: true, repoPath: true, subject: true, number: true })
 export type FollowUpWatched = z.infer<typeof FollowUpWatched>
 
+/** How a watched object is named to people: `owner/repo#12`, or a GitLab merge request's `group/project!3`. */
+export function followUpWatchLabel(watched: FollowUpWatched): string {
+  const mark = watched.provider === 'gitlab' && watched.subject === 'pull' ? '!' : '#'
+  return `${watched.repoPath}${mark}${watched.number}`
+}
+
+/** A follow-up's watch as the Activity row and the console show it (§5.14). */
+export const FollowUpWatchState = z.enum(['pending', 'watching', 'refused', 'ended'])
+export type FollowUpWatchState = z.infer<typeof FollowUpWatchState>
+
 const FollowUpId = z.string().min(1).max(200)
 
 /** D→C REQ: `set` subscribes or moves each listed follow-up, `remove` ends each, `full` is the agent's whole set and drops the rest. */
@@ -137,6 +147,8 @@ export const AssistantFollowUpWake = z
   .object({
     agentId: z.string().uuid(),
     followUpId: FollowUpId,
+    // The subscription's identity: its wakeIds count from a new start whenever it changes.
+    subscription: z.number().int().positive().optional(),
     wakeId: z.number().int().positive(),
     kinds: z.array(FollowUpEventKind).max(FollowUpEventKind.options.length),
     latestAt: z.string().datetime().optional(),

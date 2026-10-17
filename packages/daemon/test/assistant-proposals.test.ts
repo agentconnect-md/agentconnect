@@ -198,6 +198,20 @@ describe('a first look’s proposals and the follow-up form (assistant-mode.md �
     )
   })
 
+  it('keeps the form’s watch on its record and under its hash (assistant-mode.md §5.14)', async () => {
+    const s = await open()
+    const a = agent()
+    const watch = 'https://github.com/example-org/example-repo/pull/12'
+    const proposal = await propose(s, a, { task: '', followUp: { ...FORM, watch } })
+    expect(proposal.proposal?.followUp).toEqual({ ...FORM, watch })
+    expect(proposal.hash).toBe(assistantProposalHash(a, proposal.proposal!, proposal.text))
+    expect(proposal.hash).not.toBe(assistantFollowUpHash(a, 'item-1', 3, FORM))
+    // A form without a watch hashes as it did before watches existed.
+    expect(assistantFollowUpHash(a, 'item-1', 3, { ...FORM, watch: null })).toBe(
+      assistantFollowUpHash(a, 'item-1', 3, FORM)
+    )
+  })
+
   it('numbers a round’s proposals and holds their cards until the round releases each once', async () => {
     const s = await open()
     const a = agent()

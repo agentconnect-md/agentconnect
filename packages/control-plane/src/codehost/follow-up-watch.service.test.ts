@@ -86,7 +86,7 @@ class MemoryWatches implements FollowUpWatchRepo {
     this.rows = this.rows.filter((row) => row !== existing)
     this.rows.push({
       ...input,
-      generation: (existing?.generation ?? -1) + 1,
+      generation: (existing?.generation ?? 0) + 1,
       wakeSeq: existing?.wakeSeq ?? 0,
       ...EMPTY,
       endedReason: null,
@@ -373,6 +373,7 @@ describe('FollowUpWatchService', () => {
       {
         agentId: AGENT_A,
         followUpId: 'f1',
+        subscription: 1,
         wakeId: 2,
         kinds: ['merged', 'checks'],
         latestAt: new Date(NOW).toISOString()
@@ -429,7 +430,9 @@ describe('FollowUpWatchService', () => {
     h.clock.advance(STATE_QUIET_MS)
     h.state.covers = false
     await h.deliver()
-    expect(h.sent).toEqual([{ agentId: AGENT_A, followUpId: 'f1', wakeId: 2, kinds: [], ended: 'access_lost' }])
+    expect(h.sent).toEqual([
+      { agentId: AGENT_A, followUpId: 'f1', subscription: 1, wakeId: 2, kinds: [], ended: 'access_lost' }
+    ])
     expect(h.watches.rows).toEqual([])
     expect(h.relayed.at(-1)).toMatchObject({ number: 12, watched: false })
   })

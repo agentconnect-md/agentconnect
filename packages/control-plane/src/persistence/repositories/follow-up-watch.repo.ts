@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto'
 import type { FollowUpWatch } from '../../generated/prisma/client.js'
 import type { CodeHostProvider, FollowUpEventKind, FollowUpWatchSubject } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../../domain/ids.js'
@@ -41,6 +42,14 @@ function objectKey(object: FollowUpWatchObject) {
   }
 }
 
+/** A fresh generation, never the one it replaces, so a recreated or moved watch never matches work begun on an older one. */
+function nextGeneration(prior?: number): number {
+  for (;;) {
+    const next = randomInt(1, 2 ** 31 - 1)
+    if (next !== prior) return next
+  }
+}
+
 const NO_PENDING = {
   pendingSince: null,
   pendingStateSince: null,
@@ -77,7 +86,8 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
         ...object,
         installationId: input.installationId,
         host: input.host,
-        repoPath: input.repoPath
+        repoPath: input.repoPath,
+        generation: nextGeneration()
       },
       update: {
         ...object,
@@ -91,7 +101,7 @@ export class PgFollowUpWatchRepo implements FollowUpWatchRepo {
               ...NO_PENDING,
               lastWakeAt: null,
               lastWakeKinds: [],
-              generation: { increment: 1 },
+              generation: nextGeneration(existing?.generation),
               claimOwner: null,
               claimUntil: null
             })

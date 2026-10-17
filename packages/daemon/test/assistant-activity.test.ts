@@ -168,7 +168,8 @@ describe('the Activity view: follow-ups in place of items', () => {
           recentChecks: [7, 6, 5, 4, 3].map((i) => ({
             at: new Date(i * 1_000).toISOString(),
             observation: `check ${i}`,
-            reported: i === 7
+            reported: i === 7,
+            startedBy: 'message'
           }))
         }
       }
