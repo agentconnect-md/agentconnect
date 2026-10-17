@@ -1076,7 +1076,9 @@
       "ssoOnly": "Single sign-on only. AgentConnect never stores a password.",
       "firstTime": "First time here? Signing in creates your account.",
       "continueWith": "Continue with {provider}",
-      "continueWithPrefix": "Continue with "
+      "continueWithPrefix": "Continue with ",
+      "moreOptions": "More sign-in options",
+      "fewerOptions": "Fewer options"
     },
     "activation": {
       "storageBlocked": "This browser is blocking the temporary storage this activation link needs, so it cannot verify who is signing in. Allow site data for this site (or use a regular, non-private window), then open the link again.",
