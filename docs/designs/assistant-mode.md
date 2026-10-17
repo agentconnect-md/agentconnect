@@ -200,13 +200,13 @@ Proposed (§5.15).
 - **It reports back in that DM**: what it learned, what it wrote down, what it could not read, and
   at most two things it needs (a repository it may not read, a channel to add it to). "Research
   again" there has it look once more.
-- **What it learns becomes the organization's knowledge.** Three entries under Organization on
-  the Knowledge page, one set for the whole organization (§5.16): Organization (a short summary
-  first, then its products, how it works, and its repositories and systems), Channels (its places
-  and what each is for) and People (who works on what, §1.11). Whatever learns something writes
+- **What it learns becomes the organization's knowledge.** Three entries under Handbook on the
+  Knowledge page, one set for the whole organization (§5.16): About (a short summary first, then
+  its products, how it works, and its repositories and systems), Channels (its places and what
+  each is for) and People (who works on what, §1.11). Whatever learns something writes
   them: a first look, a public channel where someone states a fact or corrects it, the research.
   The first agent switched into the mode researches once for the organization; one switched on
-  later reads what exists. Every agent of the organization can find Organization and Channels;
+  later reads what exists. Every agent of the organization can find About and Channels;
   People is read by the assistant-mode agents unless an owner changes its readers. An owner
   corrects any of the three on the Knowledge page.
 - **Facts with sources.** Every line names its source, the organization's own sources win over the
@@ -223,7 +223,7 @@ Proposed (§5.17).
 - **Work facts only.** Never opinions of people, judgments of their work or anything personal, and
   nothing from a DM, a private channel or a conversation with outsiders.
 - **Yours to see and change.** Ask it in your DM what it knows about you; correct or remove your
-  entry there, or on your own card under Knowledge › Organization › People in the console, where
+  entry there, or on your own card under Knowledge › Handbook › People in the console, where
   nobody else's card offers you an edit. Removing it keeps you out of the directory until you add
   your own entry. Only you can ask it to read your messages to fill your entry in.
 - **Never read with outsiders present.** In a conversation shared with another organization or
@@ -252,7 +252,7 @@ The terms as this design uses them, each with the section that defines it.
 | Report round                | A turn of a long session that delivers a task's report, which that session then speaks for                                                                       | §5.7                                                            |
 | The responsible user        | The member asked when no person is behind a draft, a proposal or a task's permission request; derived when asked, never stored                                   | §5.1                                                            |
 | The organization files      | `organization.md`, `channels.md` and `members.md`: the names an assistant-mode agent's memory tools read and write the record under, shape-checked on each write | §5.15                                                           |
-| The organization record     | Three knowledge entries, Organization, Channels and People, one set per organization, written by its assistant-mode agents under the three names above           | §5.16                                                           |
+| The organization record     | Three knowledge entries, About, Channels and People (the console's Handbook), one set per organization, written by its assistant-mode agents under those names   | §5.16                                                           |
 | The directory               | People, the record's third entry, written as `members.md`: who works on what, work facts only, which its subject sees, corrects and removes                      | §5.17                                                           |
 | Organization research       | A delegated task of the conversation that first switched the mode on in the organization, reading its own sources and writing the record                         | §5.15                                                           |
 | The shared layer            | The memory every conversation of the agent reads; only a conversation the product confirms holds only the organization's members writes it                       | §5.5, [Memory layers](../product-conventions.md#memory-layers)  |
@@ -2332,7 +2332,7 @@ recommended).
 - **Where.** The organization record (§5.16): an assistant-mode agent's sessions read and write
   them under these names in the shared layer, each with the one index line #3074 gives it, bodies
   read when a session needs them, and the daemon serves them from the record. They are shown on
-  the Knowledge page under Organization, with their revisions.
+  the Knowledge page under Handbook, with their revisions.
 - **Who writes.** Whatever learns the fact, with the memory tools every session has:
   - a first look, into its place's layer, so into these files only where that place is an internal
     public channel (below);
@@ -2518,7 +2518,7 @@ AgentConnect, and only what the organization already granted.
   - Results are bounded: a README's first 8 KB, a CODEOWNERS file whole up to 16 KB, reviewers as
     counts per path, the last 20 releases. The tools are offered to research alone; a GitHub broker
     for checks (§9 Q21) could reuse them.
-- **Repositories that are not public.** Organization and Channels are read by every agent of the
+- **Repositories that are not public.** About and Channels are read by every agent of the
   organization, in every conversation, those with outside guests included. So the record holds
   only what is fine to say anywhere: a
   repository's name, what it is for and who owns it ("the billing service lives in
@@ -2746,7 +2746,7 @@ it does, from a fixed set or by its own choice, and how many.
    research runs once per organization.
 
 Step 3 needs step 2; steps 1 to 3 reached the console only through the Tasks tab, Activity and the
-Memory page, and step 4 gives it the Knowledge page's Organization group.
+Memory page, and step 4 gives it the Knowledge page's Handbook group.
 
 ### 5.16 The organization record in knowledge
 
@@ -2767,13 +2767,15 @@ What knowledge lacked was two things the record needs: a way to say which agents
 and a write path for the agents that learn these facts. This section adds both and nothing else.
 
 **The record** (_decided_). Three knowledge entries, one set per organization, written by the
-organization's assistant-mode agents under the three names their memory tools already use:
+organization's assistant-mode agents under the three names their memory tools already use. The
+console calls the set the **Handbook** (the owner's name for it, decided after the brief) and the
+first entry **About**; this design keeps "the organization record" as its term for the set:
 
-| Entry        | Written as        | Holds                                                                                                       | Visibility                                                                 | Audience rule                                                                |
-| ------------ | ----------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Organization | `organization.md` | a summary of at most ten lines, then products and customers, how it works, repositories and systems (§5.15) | `all`, fixed                                                               | none                                                                         |
-| Channels     | `channels.md`     | one line per place, `#name: what it is for`, purposes only (§5.15)                                          | `all`, fixed                                                               | none                                                                         |
-| People       | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                        | `selected`: the organization's assistant-mode agents, until edited by hand | withheld in a conversation with people from outside, whatever its visibility |
+| Entry    | Written as        | Holds                                                                                                       | Visibility                                                                 | Audience rule                                                                |
+| -------- | ----------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| About    | `organization.md` | a summary of at most ten lines, then products and customers, how it works, repositories and systems (§5.15) | `all`, fixed                                                               | none                                                                         |
+| Channels | `channels.md`     | one line per place, `#name: what it is for`, purposes only (§5.15)                                          | `all`, fixed                                                               | none                                                                         |
+| People   | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                        | `selected`: the organization's assistant-mode agents, until edited by hand | withheld in a conversation with people from outside, whatever its visibility |
 
 - **One set per organization**, not per agent. Every assistant-mode agent writes the same three
   entries, and the revision-checked merges that let several first looks write one file (§5.15
@@ -2819,14 +2821,15 @@ by hand is a hand edit and stays (§9 Q32).
 says, an agent does not read it in a conversation with people from outside the organization: a
 place the platform reports as shared with another organization or holding a guest (§5.3, product
 conventions "Assistant-mode places"). This is a fixed property of the People entry, not a
-setting; Organization and Channels have no such rule, and nor does any other knowledge entry.
+setting; About and Channels have no such rule, and nor does any other knowledge entry.
 It is new: the shared layer, where the directory lived, is read in every conversation, those
 with outsiders included (product conventions "Memory layers"), so this revision changes §5.17's
 "Read" row. _Recommended_ mechanism: the daemon knows a conversation's audience and the Control
 Plane does not, so the daemon applies the rule in three places and tells the Control Plane once.
 In such a conversation it leaves People out of the standing injection below, refuses
 `getMemoryEntry` on `members.md` with one line saying the directory is not read here, and sends
-`withOutsiders: true` on `knowledge/search`, which leaves People out of the result. A conversation
+`withOutsiders: true` on `knowledge/search` and `knowledge/list`, which leaves People out of the
+result. A conversation
 whose audience cannot be told yet, as right after a restart before the platform answers, is
 treated as having outsiders, the same fail-closed reading the memory layers take for an
 unconfirmed channel. A DM never turns external (§5.3), so the directory is always read there. A
@@ -2896,15 +2899,15 @@ _Recommended_: the daemon synthesizes the three index lines from the record's ti
 summaries when it builds the shared index, so a session sees them as it did when they were files
 there; the Memory page does not show them (Console, below).
 
-**Console, Knowledge page** (_decided_). Two groups on one page.
+**Console, Knowledge page** (_decided_). Two groups on one page, Handbook and Library.
 
-- **Organization** first: a group heading; a status line saying when research finished and which
+- **Handbook** first: a group heading; a status line saying when research finished and which
   agent ran it ("Researched 17 Oct by Atlas", "Research running since 14:05", or "Not researched
   yet" when the record is empty); then three quiet rows, each with an icon, the entry's name, a
   one-line summary, its visibility cell and when it was last updated. The summary is
-  Organization's first summary line, Channels' count of places, and People's count of entries.
-- **Knowledge base** below it, with the Library and Suggestions tabs on its heading row and the
-  table under it, as the page is today.
+  About's first summary line, Channels' count of places, and People's count of entries.
+- **Library** below it, with the Suggestions tab beside its own on its heading row and the table
+  under it, as the page is today; Suggestions stays inside the Library group.
 - **Every row in both groups has a visibility cell**: "All agents", or up to three agent marks
   followed by "+N" when there are more, with "N agents" beside them.
 - **No "Research again" button anywhere.** Research is asked for in the onboarding DM (§5.15
@@ -2913,9 +2916,9 @@ there; the Memory page does not show them (Console, below).
   `research`, so no new frame reports a round's end, and "running" comes from the research task's
   state, which the Control Plane already lists.
 
-**File views** (_decided_), under Knowledge › Organization, each opened from its row:
+**File views** (_decided_), under Knowledge › Handbook, each opened from its row:
 
-- **Organization** is rendered by section: the summary, then each `##` section, every line as
+- **About** is rendered by section: the summary, then each `##` section, every line as
   text with its source as a chip (`#release`, a knowledge title, a repository path, a web address
   shortened to its host) and its date; an inferred line is dimmed and tagged "inferred".
 - **Channels** is a list: the platform mark, the channel's name, its purpose, and the source chip
@@ -2930,16 +2933,16 @@ there; the Memory page does not show them (Console, below).
   there. Owner edits and clears of People are in the audit log without content, as today.
 - An entry's revisions are listed beside the view, as on any entry page; the file views replace
   the raw Markdown render for the three record kinds and nothing else.
-- _Recommended_ routes: the three entries are knowledge entries with ids, so Organization and
-  Channels are edited with the knowledge update route, which gains the shape check; People's
+- _Recommended_ routes: the three entries are knowledge entries with ids, so About and Channels
+  are edited with the knowledge update route, which gains the shape check; People's
   cards have their own small routes (knowledge design §12, revised), one for the caller's own
   card that reads and writes only the caller's entry by their console key and the chat identities
   they linked, and owner routes by key. The Memory page's own-entry and directory routes and the
   `memory/member/clear` frame are retired with the move.
 
 **Agent page** (_decided_). The agent's "Tools & Skills" tab splits in two: **Knowledge**, with
-two groups, Organization (the three entries, each with whether this agent reads it, and a link to
-the Knowledge page) and Library (the entries this agent reads: every `all` entry and each
+two groups, Handbook (the three entries, each with whether this agent reads it, and a link to the
+Knowledge page) and Library (the entries this agent reads: every `all` entry and each
 `selected` one that lists it); and **Tools**, which keeps everything else the tab held. The
 Memory tab lists only the agent's own memory and does not mention the organization record:
 Your memory shows the person layer alone, and the directory's people no longer appear under the
@@ -2953,7 +2956,7 @@ shared layer.
   Control Plane (§4.1), so the Control Plane does the move itself at boot, per organization with
   at least one assistant-mode agent whose shared layer holds any of the three names, with no
   daemon involved. With several copies, each file is merged mechanically within its shape: the
-  copy written last is the base; Organization takes the other copies' lines whose text it lacks
+  copy written last is the base; About takes the other copies' lines whose text it lacks
   into the same section, the summary kept at ten lines by dropping the oldest-dated extras;
   Channels unions lines by `#name`, the newest date winning; People unions entries by key and
   lines by field and text, each entry kept at ten lines the same way. The opt-out markers are
@@ -2987,15 +2990,16 @@ third needs the first.
      `GET /knowledge/organization` for the record's status and three entries; People's own-card
      and owner routes; the knowledge update route gains the shape check and refuses a dream
      update whose target is a record entry; `knowledge/search` and the list route filter by the
-     requesting agent's visibility and honour `withOutsiders`. OpenAPI tags, summaries and
+     requesting agent's visibility and honour `withOutsiders` (knowledge design §15.6 names the
+     flag on both frames). OpenAPI tags, summaries and
      operation ids on each.
    - The switch-on write claims research, creates the record and adds the agent to People's
      readers in one transaction; switching off removes it while the flag is true; agent deletion
      prunes `readers`; `assistantOnboarding.research` on the spec.
    - Frames behind `knowledge-record-v1`: `knowledge/record/read` → `knowledge/record/ok`,
      `knowledge/record/write` → `knowledge/record/ok` or `knowledge/record/conflict`;
-     `withOutsiders` on `knowledge/search`. The Control Plane proves placement and assistant mode
-     on each.
+     `withOutsiders` on `knowledge/search` and `knowledge/list`. The Control Plane proves
+     placement and assistant mode on each.
    - The one-time move at boot, idempotent, with the merge rules above; the retirement of the
      Memory page's own-entry and directory routes and of `memory/member/clear`.
 2. **Daemon: write routing, the People audience rule, injection and `findKnowledge` filtering,
@@ -3006,8 +3010,8 @@ third needs the first.
      rules and the builder rules run before the write as today, the opt-out read from and written
      to the record instead of the marker file.
    - The audience rule: People left out of the injected index, `getMemoryEntry` on `members.md`
-     refused, and `withOutsiders` sent on `knowledge/search`, in a conversation with outsiders or
-     one whose audience is not yet known.
+     refused, and `withOutsiders` sent on `knowledge/search` and `knowledge/list`, in a
+     conversation with outsiders or one whose audience is not yet known.
    - The three index lines synthesized into the shared index from the record; `findKnowledge`
      and `listKnowledge` results carry the record entries the agent may read like any other.
    - Onboarding reads `research` from the spec: the hello for an agent that researches, and the
@@ -3115,7 +3119,7 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
 
 - **Seeing it.** In their own DM a person asks "what do you know about me?" and gets their directory
   entry and what their own layer holds. In the console, their own card under Knowledge ›
-  Organization › People shows their entry (§5.16); the agent's Memory page shows their person
+  Handbook › People shows their entry (§5.16); the agent's Memory page shows their person
   layer alone. The route behind the card reads only the caller's own entry of `members.md`, keyed
   as below. No knowledge permission is involved.
 - **Correcting and clearing.** In their own DM, at their request, the agent replaces or removes that
@@ -4167,14 +4171,14 @@ scheduled-check slot, spaced 15 minutes apart and only while a fifth of the day'
 §5.16, §5.15, §5.17, §9 Q26, Q30, Q32, Q33). Live tests showed a second assistant-mode agent
 researching the organization again and keeping a copy of its own, so the product owner reversed
 the morning's decision: `organization.md`, `channels.md` and `members.md` become one set of
-knowledge entries per organization, Organization, Channels and People, written by the
-organization's assistant-mode agents through the memory tools they have, with every shape, source
+knowledge entries per organization, About, Channels and People, the console's Handbook, written
+by the organization's assistant-mode agents through the memory tools they have, with every shape, source
 and person rule kept. Knowledge entries gain agent visibility, `all` or `selected`, existing ones
-defaulting to `all`; Organization and Channels are read by every agent, People by the
+defaulting to `all`; About and Channels are read by every agent, People by the
 assistant-mode agents until a person edits its readers, and People is never read in a conversation
 with outsiders, a fixed property rather than a setting. Research runs once per organization, at
 the first switch-on. Assistant-mode agents keep the standing injection of the three entries; every
-other agent reaches them through `findKnowledge`. The Knowledge page gets an Organization group
-above the knowledge base with a visibility cell on every row and three file views, the agent page
+other agent reaches them through `findKnowledge`. The Knowledge page gets a Handbook group above
+the Library with a visibility cell on every row and three file views, the agent page
 a Knowledge tab and a Tools tab, and the Memory tab stops mentioning the record. Existing copies
 in memory are moved once and removed. §5.16 ends in the three-change implementation checklist.

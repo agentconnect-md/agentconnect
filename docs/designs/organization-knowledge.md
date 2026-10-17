@@ -35,9 +35,9 @@ organization content or enable a skill.
 
 The console gains a separate top-level **Knowledge** destination at
 `/[slug]/knowledge`, beside Tools & Skills. Since the 2026-10-17 revision the
-page has two groups (§15.5): **Organization** first, the organization record's
-three entries under a status line, and **Knowledge base** below it, which is
-the Library and Suggestions described here. Every row in both groups has a
+page has two groups (§15.5): **Handbook** first, the organization record's
+three entries under a status line, and **Library** below it, which is the
+Library and Suggestions described here, Suggestions staying a tab inside it. Every row in both groups has a
 visibility cell saying which agents read the entry.
 
 The **Library** lists accepted knowledge, with archived entries on request. A
@@ -405,7 +405,8 @@ findKnowledge({
 ```
 
 The daemon fills `requesterAgentId` from the token-bound session context and
-issues `knowledge/search`, with `withOutsiders: true` when the session's
+issues `knowledge/search`, or `knowledge/list` for the query-less
+`listKnowledge`, with `withOutsiders: true` on either when the session's
 conversation holds people from outside the organization or its audience is not
 yet known (§15.3). The Control Plane answers only with entries the requesting
 agent may read, `all` ones and `selected` ones that list it, and leaves the
@@ -482,6 +483,7 @@ The 2026-10-17 revision adds `knowledge-record-v1`, advertised by both sides
 | D→C       | `knowledge/record/read`  | `knowledge/record/ok`                                | one record entry, its revision and the opt-out keys       |
 | D→C       | `knowledge/record/write` | `knowledge/record/ok` or `knowledge/record/conflict` | a revision-checked write of one record entry by an agent  |
 | D→C       | `knowledge/search`       | `knowledge/search/ok`                                | gains the optional `withOutsiders` flag under the feature |
+| D→C       | `knowledge/list`         | `knowledge/list/ok`                                  | gains the same optional `withOutsiders` flag              |
 
 No frame exceeds the existing 256 KiB limit. Content replies use byte offsets
 and authoritative `nextOffset`; the client never derives offsets from a base64
@@ -580,7 +582,7 @@ daemon converges without waiting for an unrelated agent edit or restart.
   knowledge and managed-skill revision selectors/provenance, managed skills in
   the Tools & Skills library card alongside Git sources, and the agent picker.
 - **The 2026-10-17 revision (§15):** visibility filtering per requesting agent
-  and the `withOutsiders` flag in the search; record writes with a stale
+  and the `withOutsiders` flag on the search and the list; record writes with a stale
   revision, a failed shape, an agent not in assistant mode and an agent not
   placed on the daemon; the switch-on transaction claiming research once under
   concurrency, creating the record once and adding the agent to People's
@@ -618,13 +620,13 @@ whose visibility is fixed (below) show "All agents" with no control.
 ### 15.2 The organization record
 
 Three entries, one set per organization, with a `kind` beside the ordinary
-`entry`:
+`entry`; the console calls the set the Handbook:
 
-| Kind           | Entry        | Written as        | Visibility                                                              |
-| -------------- | ------------ | ----------------- | ----------------------------------------------------------------------- |
-| `organization` | Organization | `organization.md` | `all`, fixed                                                            |
-| `channels`     | Channels     | `channels.md`     | `all`, fixed                                                            |
-| `people`       | People       | `members.md`      | `selected`: the organization's assistant-mode agents, until hand-edited |
+| Kind           | Entry    | Written as        | Visibility                                                              |
+| -------------- | -------- | ----------------- | ----------------------------------------------------------------------- |
+| `organization` | About    | `organization.md` | `all`, fixed                                                            |
+| `channels`     | Channels | `channels.md`     | `all`, fixed                                                            |
+| `people`       | People   | `members.md`      | `selected`: the organization's assistant-mode agents, until hand-edited |
 
 They hold what assistant-mode.md §5.15 and §5.17 give the three files, in the
 shapes the daemon checks on every write, with every line's source and date, the
@@ -671,8 +673,8 @@ whatever its visibility: a fixed property of the entry, not a setting, and one
 no other entry has. The daemon alone knows a conversation's audience, so it
 applies the rule: it leaves People out of the standing injection (§15.4),
 refuses `getMemoryEntry` on `members.md` there with one line, and sends
-`withOutsiders: true` on `knowledge/search`, which the Control Plane honours by
-leaving People out. A conversation whose audience is not yet known counts as
+`withOutsiders: true` on `knowledge/search` and `knowledge/list`, which the
+Control Plane honours by leaving People out of both. A conversation whose audience is not yet known counts as
 one with outsiders. A DM never turns external, so the directory is always read
 there.
 
@@ -688,19 +690,19 @@ reaches any entry.
 
 ### 15.5 Console
 
-**Knowledge page.** Two groups on one page. **Organization** first: a group
+**Knowledge page.** Two groups on one page. **Handbook** first: a group
 heading, a status line saying when research finished and which agent ran it
 ("Researched 17 Oct by Atlas", "Research running since 14:05", or "Not
 researched yet"), then three quiet rows with an icon, the entry's name, a
-one-line summary, the visibility cell and the last update. **Knowledge base**
-below it, with the Library and Suggestions tabs on its heading row and the table
-under it. Every row in both groups has a visibility cell: "All agents", or up to
+one-line summary, the visibility cell and the last update. **Library** below
+it, with the Suggestions tab beside its own on its heading row and the table
+under it; Suggestions stays inside the Library group. Every row in both groups has a visibility cell: "All agents", or up to
 three agent marks followed by "+N" when there are more, with "N agents" beside
 them. There is no "Research again" button anywhere; research is asked for in the
 onboarding DM.
 
-**File views**, opened from the Organization rows in place of the raw Markdown
-render. Organization is rendered by section, each line's source as a chip and
+**File views**, opened from the Handbook rows in place of the raw Markdown
+render. About is rendered by section, each line's source as a chip and
 its date, an inferred line dimmed and tagged. Channels is a list with the
 platform mark, the name, the purpose and the source chip or the inferred tag.
 People is cards: display name, handles, the four fields with their sources. A
@@ -715,7 +717,7 @@ own entry, matched by their console key and the chat identities they linked;
 the `memory/member/clear` frame are retired with the move.
 
 **Agent page.** The "Tools & Skills" tab splits into **Knowledge**, with two
-groups, Organization (the three entries, whether this agent reads each, and a
+groups, Handbook (the three entries, whether this agent reads each, and a
 link to the Knowledge page) and Library (the entries this agent reads), and
 **Tools**, which keeps everything else. The Memory tab lists only the agent's
 own memory and does not mention the record.
@@ -728,7 +730,8 @@ own memory and does not mention the record.
 - `knowledge/record/write { agentId, file, baseRevision, content, writerKind, optOut: { mark: string[], lift: string[] } }`
   → `knowledge/record/ok { id, revision }`, or `knowledge/record/conflict` with the current
   entry;
-- `knowledge/search` gains the optional `withOutsiders` flag.
+- `knowledge/search` and `knowledge/list` gain the optional `withOutsiders` flag; both
+  return entry content, so both apply the People audience rule.
 
 `file` is one of the three names; the Control Plane maps it to the
 organization's entry of that kind. No frame exceeds the 256 KiB limit: each file
@@ -743,7 +746,7 @@ the memory copies removed. Assistant mode keeps memory in the Control Plane, so
 the Control Plane does the move at boot with no daemon: per organization with at
 least one assistant-mode agent whose shared layer holds any of the three names,
 it merges the copies mechanically within each shape (the copy written last as
-the base; Organization taking the other copies' missing lines into the same
+the base; About taking the other copies' missing lines into the same
 section with the summary kept at ten lines; Channels unioned by `#name`, newest
 date winning; People unioned by key, then by field and text, each entry kept at
 ten lines), unions the opt-out markers with the earliest day kept, creates the

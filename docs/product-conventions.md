@@ -1566,7 +1566,7 @@ as a task of that conversation.
   running.
 - **As a task.** It is listed among the DM conversation's tasks as "Organization research" and
   counts against the agent's limit of running tasks; `stopTask` or the console's Stop ends a round.
-  The console offers no button to run it; the Knowledge page's Organization group says when it
+  The console offers no button to run it; the Knowledge page's Handbook group says when it
   finished and which agent ran it.
 
 ## Assistant-mode proposals
@@ -1693,7 +1693,7 @@ outside the organization, whichever agents it is visible to.
   outside, a scheduled run, a follow-up's check and another agent's message never write it.
 - **The person controls their entry.** In their own DM a person asks what the agent knows about
   them, and may correct or remove their entry; nothing else in the directory changes there. On
-  their own card under Knowledge › Organization › People they see their entry and may edit or
+  their own card under Knowledge › Handbook › People they see their entry and may edit or
   remove it; nobody else's card offers them a control.
 - **Removing keeps them out.** Once an entry is removed, nothing is written about that person again
   until they write their entry themselves. Linking or unlinking an account does not undo it.
@@ -1707,9 +1707,9 @@ outside the organization, whichever agents it is visible to.
 
 What the organization's assistant-mode agents learn about the organization is knowledge the whole
 organization shares, not one agent's memory: three knowledge entries, one set per organization,
-listed under Organization on the Knowledge page.
+listed under Handbook on the Knowledge page.
 
-- **The three entries.** Organization (a summary of at most ten lines, then products and
+- **The three entries.** About (a summary of at most ten lines, then products and
   customers, how it works, repositories and systems), Channels (one line per place, its purpose
   only, never a link to an agent's notes on it) and People (see "Assistant-mode people directory").
   Every fact is one line ending in its source and date, in the shapes under
@@ -1721,7 +1721,7 @@ listed under Organization on the Knowledge page.
   owner or accepted from a suggestion; no agent publishes one. Owners edit any of the three on
   the Knowledge page, line by line, and may clear one; a save that does not fit the shape is
   refused at the failing line.
-- **Who reads it.** Every agent of the organization finds Organization and Channels with
+- **Who reads it.** Every agent of the organization finds About and Channels with
   `findKnowledge`. People is read by the organization's assistant-mode agents: switching an
   agent's assistant mode on adds it to People's readers until a person edits that list by hand,
   after which the list is theirs. An assistant-mode agent also keeps the three entries in its
@@ -1736,24 +1736,24 @@ listed under Organization on the Knowledge page.
 Every knowledge entry says which agents read it: **All agents**, or **Selected agents**, a list
 chosen with the agent picker, in the same control the console uses for who may see an agent, a
 daemon or a schedule. Owners set it in the publish editor and on the entry page. It is for
-agents, not people: every member reads the whole Library. Organization and Channels are read by
+agents, not people: every member reads the whole Library. About and Channels are read by
 all agents and offer no control; People's readers are described under "Organization record".
 Deleting an agent removes it from every list; a Selected list left empty reads "No agents".
 
-- **The Knowledge page** has two groups. Organization first: a heading, a status line saying when
+- **The Knowledge page** has two groups. Handbook first: a heading, a status line saying when
   research finished and which agent ran it, or that it is running, or that nothing has been
   researched yet, then three quiet rows (icon, name, one-line summary, visibility, last update).
-  Knowledge base below it, with the Library and Suggestions tabs on its heading row and the table
+  Library below it, with the Suggestions tab beside its own on its heading row and the table
   under it. Every row in both groups has a visibility cell: "All agents", or up to three agent
   marks followed by "+N" when there are more, with "N agents" beside them. There is no "Research
   again" button anywhere.
-- **The three file views**, opened from the Organization rows, render the entry rather than its
-  Markdown: Organization by section, each line with its source as a chip and an inferred line
+- **The three file views**, opened from the Handbook rows, render the entry rather than its
+  Markdown: About by section, each line with its source as a chip and an inferred line
   dimmed and tagged; Channels as a list with the platform mark, the name, the purpose and the
   source chip or inferred tag; People as cards with the name, handles and the four fields with
   their sources. A person's own card carries Edit and Remove; no other card shows them a control.
   Owners edit and clear any entry. Revisions are listed beside the view, as on any entry page.
-- **The agent page** has a Knowledge tab with two groups, Organization (the three entries, whether
+- **The agent page** has a Knowledge tab with two groups, Handbook (the three entries, whether
   this agent reads each, and a link to the Knowledge page) and Library (the entries this agent
   reads), and a Tools tab with everything the Tools & Skills tab held. The Memory tab lists only
   the agent's own memory and does not mention the organization record.
