@@ -3,7 +3,7 @@ import { WORKSPACE_UPLOADS_DIR } from '@agentconnect.md/protocol'
 import type { PlatformThreadMessage } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import { FIRST_LOOK_DAYS, FIRST_LOOK_MAX_MESSAGES, withinWindow } from '../../assistant/first-look.js'
-import { isFirstLookCoordinate } from '../../session/subsession-coordinate.js'
+import { isFirstLookCoordinate, isResearchCoordinate } from '../../session/subsession-coordinate.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
   ambiguousIntegrations,
@@ -86,6 +86,20 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
     platform: string,
     integrationId?: string
   ) => Promise<{ id: string; name?: string }[]>
+  /** A directory builder's history read (assistant-mode.md §5.17): records its human senders and answers each one's key, or undefined where the round builds nothing. */
+  directoryReads?: (
+    ctx: SessionContext,
+    read: { platform: string; integrationId: string | undefined; channel: string; senders: readonly string[] }
+  ) => Promise<ReadonlyMap<string, string> | undefined>
+  /** Organization research's history reads (assistant-mode.md §5.15): why a channel is refused, and its bound per channel and round, at most `want`. */
+  researchHistory?: {
+    refusal(
+      ctx: SessionContext,
+      read: { integrationId: string | undefined; channel: string }
+    ): Promise<string | undefined>
+    since(): number
+    grant(ctx: SessionContext, read: { integrationId: string | undefined; channel: string }, want: number): number
+  }
   /** A first look's history bound (assistant-mode.md §5.13): the oldest time it may read, and how many more rows its check may take, at most `want`. */
   firstLookHistory?: {
     since(): number
@@ -336,23 +350,64 @@ export async function getUserProfile(
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
 }
 
-/** A first look's rows (§5.13): none older than its window or past its message cap; `ended` once a page crossed either. */
+/** A first look's rows (§5.13), or research's per channel (§5.15): none older than the window or past the message cap; `ended` once a page crossed either. */
 async function firstLookRows<T extends { ts: string }>(
   ctx: SessionContext,
   deps: PlatformReadDeps,
-  rows: readonly T[]
-): Promise<{ rows: T[]; ended: boolean; capped: boolean } | undefined> {
-  if (!isFirstLookCoordinate(ctx.thread)) return undefined
-  const bound = deps.firstLookHistory
-  if (!bound) throw new Error('history reads are unavailable to a first look on this daemon')
+  rows: readonly T[],
+  read: { integrationId: string | undefined; channel: string }
+): Promise<{ rows: T[]; ended: boolean; capped: boolean; research: boolean } | undefined> {
+  const research = isResearchCoordinate(ctx.thread)
+  if (!isFirstLookCoordinate(ctx.thread) && !research) return undefined
+  const look = deps.firstLookHistory
+  const bound = research ? deps.researchHistory : look
+  if (!bound) throw new Error('history reads are unavailable to this task on this daemon')
   const { kept, ended } = withinWindow(rows, bound.since())
-  const granted = kept.length === 0 ? 0 : await bound.grant(ctx, kept.length)
+  const granted =
+    kept.length === 0
+      ? 0
+      : research
+        ? deps.researchHistory!.grant(ctx, read, kept.length)
+        : await look!.grant(ctx, kept.length)
   const capped = granted < kept.length
-  return { rows: kept.slice(0, granted), ended: ended || capped, capped }
+  return { rows: kept.slice(0, granted), ended: ended || capped, capped, research }
+}
+
+/** Research reads only an internal public channel its bot is already in, and never joins one (§5.15). */
+async function researchReadRefusal(
+  ctx: SessionContext,
+  deps: PlatformReadDeps,
+  read: { integrationId: string | undefined; channel: string }
+): Promise<void> {
+  if (!isResearchCoordinate(ctx.thread)) return
+  const hook = deps.researchHistory
+  const refusal = hook ? await hook.refusal(ctx, read) : 'history reads are unavailable to research on this daemon.'
+  if (refusal) throw new Error(refusal)
+}
+
+/** On a builder round, each row a person typed carries the key their directory entry takes. */
+async function withSenderKeys<T extends { sender: string }>(
+  ctx: SessionContext,
+  deps: PlatformReadDeps,
+  read: { platform: string; integrationId: string | undefined; channel: string },
+  rows: readonly T[],
+  typed: (row: T) => boolean
+): Promise<(T & { senderKey?: string })[]> {
+  const people = rows.filter(typed)
+  const keys = people.length
+    ? await deps.directoryReads?.(ctx, { ...read, senders: people.map((r) => r.sender) })
+    : undefined
+  if (!keys?.size) return [...rows]
+  return rows.map((row) => {
+    const senderKey = typed(row) ? keys.get(row.sender) : undefined
+    return senderKey ? { ...row, senderKey } : row
+  })
 }
 
 const FIRST_LOOK_CAPPED = `This first look has read its ${FIRST_LOOK_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
 const FIRST_LOOK_WINDOW_END = `Older messages are past this first look's ${FIRST_LOOK_DAYS} days.`
+const RESEARCH_CAPPED = `This round has read its ${FIRST_LOOK_MAX_MESSAGES} messages of this channel: read no more of it.`
+const RESEARCH_WINDOW_END = `Older messages are past research's ${FIRST_LOOK_DAYS} days.`
 
 /** Read one bounded page of a channel: this session's own by default, or another one the read rule lets the asker see. */
 export async function getChannelHistory(
@@ -372,26 +427,39 @@ export async function getChannelHistory(
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel) throw new Error(`channel is required to read history on ${platform} (another bot than this session's)`)
   if (!gw.getChannelHistory) throw new Error('channel history is unavailable on this connection')
+  await researchReadRefusal(ctx, deps, { integrationId: parsed.integrationId, channel })
   const page = await gw.getChannelHistory(channel, {
     ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
     ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
     ...(parsed.oldest ? { oldest: parsed.oldest } : {}),
     ...(parsed.latest ? { latest: parsed.latest } : {})
   })
-  const bounded = await firstLookRows(ctx, deps, page.messages)
+  const read = { platform, integrationId: parsed.integrationId, channel }
+  const bounded = await firstLookRows(ctx, deps, page.messages, read)
+  const messages = await withSenderKeys(ctx, deps, read, bounded?.rows ?? page.messages, (row) => !row.isBot)
   if (bounded)
     return {
       platform,
       channel,
-      messages: bounded.rows,
+      messages,
       hasMore: !bounded.ended && page.hasMore,
       ...(!bounded.ended && page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-      ...(bounded.ended ? { note: bounded.capped ? FIRST_LOOK_CAPPED : FIRST_LOOK_WINDOW_END } : {})
+      ...(bounded.ended
+        ? {
+            note: bounded.capped
+              ? bounded.research
+                ? RESEARCH_CAPPED
+                : FIRST_LOOK_CAPPED
+              : bounded.research
+                ? RESEARCH_WINDOW_END
+                : FIRST_LOOK_WINDOW_END
+          }
+        : {})
     }
   return {
     platform,
     channel,
-    messages: page.messages,
+    messages,
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
   }
@@ -442,6 +510,7 @@ export async function getThreadHistory(
   if (!channel) throw new Error(`channel is required to read a thread on ${platform} (another bot than this session's)`)
   if (!gw.getThreadReplies)
     throw new Error(`thread history is unavailable on this ${platformLabel(platform)} connection`)
+  await researchReadRefusal(ctx, deps, { integrationId: parsed.integrationId, channel })
   const readState = { truncated: false }
   const messages = await gw.getThreadReplies(channel, parsed.thread, parsed.limit ?? DEFAULT_THREAD_HISTORY_LIMIT, {
     ...(parsed.oldest ? { oldest: parsed.oldest } : {}),
@@ -452,14 +521,24 @@ export async function getThreadHistory(
     readState
   })
   const shown = messages.filter((m) => !m.chrome)
-  const bounded = await firstLookRows(ctx, deps, shown)
+  const bounded = await firstLookRows(ctx, deps, shown, { integrationId: parsed.integrationId, channel })
+  const keyed = await withSenderKeys(
+    ctx,
+    deps,
+    { platform, integrationId: parsed.integrationId, channel },
+    bounded?.rows ?? shown,
+    (m) => !m.isBot && !m.agentAuthorId
+  )
   return {
     platform,
     channel,
     thread: parsed.thread,
     truncated: readState.truncated || (bounded?.capped ?? false),
-    messages: (bounded?.rows ?? shown).map(projectThreadMessage),
-    ...(bounded?.capped ? { note: FIRST_LOOK_CAPPED } : {})
+    messages: keyed.map((m) => ({
+      ...(projectThreadMessage(m) as object),
+      ...(m.senderKey ? { senderKey: m.senderKey } : {})
+    })),
+    ...(bounded?.capped ? { note: bounded.research ? RESEARCH_CAPPED : FIRST_LOOK_CAPPED } : {})
   }
 }
 

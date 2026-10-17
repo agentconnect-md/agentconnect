@@ -52,7 +52,7 @@ describe('the research coordinate', () => {
 })
 
 describe('what research may call', () => {
-  it('keeps memory reads and writes, knowledge, the channel listing and the code-host reads, and nothing that posts', () => {
+  it('keeps memory reads and writes, knowledge, the channel listing and history, the code-host reads, and nothing that posts', () => {
     const names = researchTools(
       [
         'listMemoryEntries',
@@ -93,7 +93,9 @@ describe('what research may call', () => {
       'listKnowledge',
       'listChannels',
       'listCodeHostRepositories',
-      'readCodeHostRepository'
+      'readCodeHostRepository',
+      'getChannelHistory',
+      'getThreadHistory'
     ])
   })
 })

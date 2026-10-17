@@ -22,7 +22,7 @@ import {
 import { openTestStore } from './store-support.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { appendCoordinate } from '../src/session/append-coordinate.js'
-import { firstLookCoordinate } from '../src/session/subsession-coordinate.js'
+import { firstLookCoordinate, researchCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
@@ -674,11 +674,63 @@ describe('the people directory, members.md in the shared layer', () => {
       })
     ).rejects.toThrow('cleared their entry')
   })
+})
 
-  it('takes a first look as a builder, with no turn to be on', async () => {
-    const s = world({ snapshot: PUBLIC })
-    expect(await s.daemon.membersWriter({ ...s.ctx, thread: firstLookCoordinate('d-1') })).toEqual({
-      kind: 'builder'
+// assistant-mode.md §5.17: a builder writes about the people whose messages its round read, in internal public channels only.
+describe("a directory builder's round", () => {
+  const LOOK = firstLookCoordinate('d-1')
+  const CHECK = { ...ROUNDS.check, msgId: 'check-1' }
+  function builder(place: Place) {
+    const w = world(place)
+    const ctx = { ...w.ctx, thread: LOOK, integrationId: 'int-1' } as SessionContext
+    const key = sessionKey('slack', w.ctx.channel, LOOK, AGENT)
+    w.daemon.activeGateEntries.set(key, { msg: CHECK, integrationId: 'int-1' })
+    w.daemon.store.getDisplayNames = async () => new Map([[w.ctx.channel, 'release-train']])
+    const read = (senders: string[]) =>
+      w.daemon.noteDirectoryReads(ctx, { platform: 'slack', integrationId: 'int-1', channel: w.ctx.channel, senders })
+    return { ...w, ctx, key, read }
+  }
+
+  it('records the people typing in an internal public channel, by key, for the round that read them', async () => {
+    const b = builder({ snapshot: PUBLIC, lookup: { isPrivate: false } })
+    const shown = await b.read(['U1', AGENT_UUID, 'U1'])
+    expect([...shown]).toEqual([['U1', `slack:${TENANT}:U1`]])
+    const writer = await b.daemon.membersWriter(b.ctx)
+    expect(writer.kind).toBe('builder')
+    expect([...writer.seen]).toEqual([[`slack:${TENANT}:U1`, new Set(['release-train'])]])
+    // A later round starts with nobody read.
+    b.daemon.activeGateEntries.set(b.key, { msg: { ...CHECK, msgId: 'check-2' }, integrationId: 'int-1' })
+    expect([...(await b.daemon.membersWriter(b.ctx)).seen]).toEqual([])
+  })
+
+  it('lets research read an internal public channel the bot is in, never another, at most 500 messages each a round', async () => {
+    const w = world({ snapshot: PUBLIC, lookup: { isPrivate: false } })
+    const ctx = { ...w.ctx, thread: researchCoordinate('r-1'), integrationId: 'int-1' } as SessionContext
+    const read = (channel: string) => w.daemon.researchReadRefusal(ctx, { integrationId: 'int-1', channel })
+    expect(await read(w.ctx.channel)).toBeUndefined()
+    expect(await read('C-NOT-IN')).toContain('never joins one')
+    expect(
+      await world({ snapshot: { isPrivate: true }, lookup: { isPrivate: true } }).daemon.researchReadRefusal(ctx, {
+        integrationId: 'int-1',
+        channel: w.ctx.channel
+      })
+    ).toContain('internal public channels')
+    w.daemon.activeGateEntries.set(sessionKey('slack', w.ctx.channel, ctx.thread, AGENT), {
+      msg: { ...CHECK, msgId: 'round-1' },
+      integrationId: 'int-1'
     })
+    const grant = (channel: string, want: number) => w.daemon.grantResearchHistory(ctx, { channel }, want)
+    expect([grant('C1', 300), grant('C1', 300), grant('C1', 10), grant('C2', 300)]).toEqual([300, 200, 0, 300])
+    w.daemon.activeGateEntries.set(sessionKey('slack', w.ctx.channel, ctx.thread, AGENT), {
+      msg: { ...CHECK, msgId: 'round-2' },
+      integrationId: 'int-1'
+    })
+    expect(grant('C1', 300)).toBe(300)
+  })
+
+  it('records nobody read in a private place, and refuses a first look there', async () => {
+    const b = builder({ snapshot: { isPrivate: true }, lookup: { isPrivate: true } })
+    expect(await b.read(['U1'])).toBeUndefined()
+    expect(await b.daemon.membersWriter(b.ctx)).toMatchObject({ kind: 'refused' })
   })
 })

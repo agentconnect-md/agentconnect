@@ -40,6 +40,12 @@ function lookups(
   }
 }
 
+/** A builder whose round read these people, each in these places. */
+const seenIn = (seen: Record<string, string[]>): MembersWriter => ({
+  kind: 'builder',
+  seen: new Map(Object.entries(seen).map(([key, places]) => [key, new Set(places)]))
+})
+
 const conversation = (senders: string[], mentioned: string[] = [], place = 'release-train'): MembersWriter => ({
   kind: 'conversation',
   senders: new Set(senders),
@@ -166,10 +172,17 @@ describe('an opt-out across linked identities', () => {
   it('keeps out a person who cleared their platform entry and then linked a console account', async () => {
     const carol = file(entry('Carol', CAROL, 'Role: designer (self, 2026-10-17)'))
     const linked = { [ALICE]: CAROL }
-    for (const writer of [conversation([ALICE, CAROL]), { kind: 'builder' } as const])
-      expect(await refusal(checkMembersWrite(null, carol, writer, lookups({ linked, optedOut: [ALICE] })))).toContain(
-        'cleared their entry'
+    expect(
+      await refusal(
+        checkMembersWrite(null, carol, conversation([ALICE, CAROL]), lookups({ linked, optedOut: [ALICE] }))
       )
+    ).toContain('cleared their entry')
+    const read = file(entry('Carol', CAROL, 'Role: designer (#release-train, 2026-10-17)'))
+    expect(
+      await refusal(
+        checkMembersWrite(null, read, seenIn({ [CAROL]: ['release-train'] }), lookups({ linked, optedOut: [ALICE] }))
+      )
+    ).toContain('cleared their entry')
   })
 
   it('refuses a heading written with a tab like any other, so its person is checked', async () => {
@@ -181,15 +194,49 @@ describe('an opt-out across linked identities', () => {
 })
 
 describe('a first look or research', () => {
-  it('writes anyone who is a member and did not opt out, with no turn to be on', async () => {
-    const after = file(entry('Bob', BOB, 'Role: billing owner (#release-train, 2026-10-17)'))
-    await expect(checkMembersWrite(null, after, { kind: 'builder' }, lookups())).resolves.toBeDefined()
-    expect(await refusal(checkMembersWrite(null, after, { kind: 'builder' }, lookups({ optedOut: [BOB] })))).toContain(
+  const bob = file(entry('Bob', BOB, 'Role: billing owner (#release-train, 2026-10-17)'))
+
+  it('adds someone whose messages its round read, sourced by a place it read them in', async () => {
+    await expect(checkMembersWrite(null, bob, seenIn({ [BOB]: ['release-train'] }), lookups())).resolves.toEqual({
+      optOut: [],
+      lift: []
+    })
+    // Membership and the opt-out still decide, as everywhere.
+    const seen = seenIn({ [BOB]: ['release-train'] })
+    expect(await refusal(checkMembersWrite(null, bob, seen, lookups({ optedOut: [BOB] })))).toContain(
       'cleared their entry'
     )
-    expect(await refusal(checkMembersWrite(null, after, { kind: 'builder' }, lookups({ members: [] })))).toContain(
-      'not about a member'
+    expect(await refusal(checkMembersWrite(null, bob, seen, lookups({ members: [] })))).toContain('not about a member')
+  })
+
+  it('refuses someone its round did not read, listing whom it read and where', async () => {
+    const message = await refusal(
+      checkMembersWrite(null, bob, seenIn({ [ALICE]: ['release-train', 'ops'] }), lookups())
     )
+    expect(message).toContain('whose messages this round did not read')
+    expect(message).toContain(`\`${ALICE}\` (#release-train, #ops)`)
+    expect(await refusal(checkMembersWrite(null, bob, seenIn({}), lookups()))).toContain("read no one's messages")
+  })
+
+  it('refuses a line sourced by a place where its round did not read that person, or sourced self', async () => {
+    const elsewhere = file(entry('Bob', BOB, 'Role: billing owner (#ops, 2026-10-17)'))
+    expect(
+      await refusal(checkMembersWrite(null, elsewhere, seenIn({ [BOB]: ['release-train'] }), lookups()))
+    ).toContain('must be sourced by a place where this round read their messages: #release-train')
+    const self = file(entry('Bob', BOB, 'Role: billing owner (self, 2026-10-17)'))
+    expect(await refusal(checkMembersWrite(null, self, seenIn({ [BOB]: ['release-train'] }), lookups()))).toContain(
+      'sourced self'
+    )
+  })
+
+  it('keeps a code-host source for an entry already there, and starts no new one from it', async () => {
+    const owner = 'Knows about: billing (example-org/example-repo CODEOWNERS, 2026-10-17)'
+    const old = file(entry('Bob', BOB, 'Role: billing owner (#release-train, 2026-10-01)'))
+    const added = file(entry('Bob', BOB, 'Role: billing owner (#release-train, 2026-10-01)', owner))
+    await expect(checkMembersWrite(old, added, seenIn({}), lookups())).resolves.toBeDefined()
+    await expect(
+      checkMembersWrite(null, file(entry('Bob', BOB, owner)), seenIn({ [BOB]: ['release-train'] }), lookups())
+    ).rejects.toThrow('must be sourced by a place where this round read their messages')
   })
 })
 

@@ -184,9 +184,15 @@ describe('the research task’s session', () => {
       const ctx = d.mcp.sessions.get(token) as SessionContext
       const names = ctx.tools.map((tool) => tool.name)
       expect(names).toEqual(
-        expect.arrayContaining(['listChannels', 'findKnowledge', 'listMemoryEntries', 'createMemoryEntry'])
+        expect.arrayContaining([
+          'listChannels',
+          'getChannelHistory',
+          'findKnowledge',
+          'listMemoryEntries',
+          'createMemoryEntry'
+        ])
       )
-      for (const posting of ['sendMessage', 'followUp', 'firstLook', 'listTasks', 'getChannelHistory', 'addReaction'])
+      for (const posting of ['sendMessage', 'followUp', 'firstLook', 'listTasks', 'addReaction'])
         expect(names).not.toContain(posting)
       expect(ctx.memoryBinding).toEqual({ source: 'tool', scope: { agentId: 'bot-a' }, layer: 'shared' })
       // As if its turn were live: the stop gate is the turn engine's, not this test's.
