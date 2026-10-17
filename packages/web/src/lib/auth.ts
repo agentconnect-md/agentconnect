@@ -19,7 +19,7 @@
 // resource Logto returns an opaque token the CP can't verify, so we fall back to
 // the id token (whose `aud` is the app id — set the CP's OIDC_AUDIENCE to the app
 // id in that case).
-import LogtoClient, { isLogtoRequestError, UserScope } from '@logto/browser'
+import LogtoClient, { isLogtoRequestError, Prompt, UserScope } from '@logto/browser'
 import { MOCK_MODE } from '@/lib/data'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
@@ -92,7 +92,9 @@ export async function login(provider?: SocialLoginTarget): Promise<void> {
   if (!c) return
   await c.signIn({
     redirectUri: `${window.location.origin}/auth/callback`,
-    ...(provider ? { directSignIn: { method: 'social', target: provider } } : {})
+    ...(provider
+      ? { directSignIn: { method: 'social', target: provider }, prompt: [Prompt.Login, Prompt.Consent] }
+      : {})
   })
 }
 

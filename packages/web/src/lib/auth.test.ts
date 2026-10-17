@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const logto = vi.hoisted(() => ({
+  signIn: vi.fn(),
   isAuthenticated: vi.fn(),
   getAccessToken: vi.fn(),
   clearAccessToken: vi.fn(),
@@ -16,11 +17,13 @@ vi.mock('@logto/browser', () => ({
       logto.clientConfig = config
     }
     isAuthenticated = logto.isAuthenticated
+    signIn = logto.signIn
     getAccessToken = logto.getAccessToken
     clearAccessToken = logto.clearAccessToken
     clearAllTokens = logto.clearAllTokens
     setJwtVerifier = logto.setJwtVerifier
   },
+  Prompt: { Login: 'login', Consent: 'consent' },
   UserScope: {
     Email: 'email',
     Profile: 'profile',
@@ -34,9 +37,10 @@ function requestError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { name: 'LogtoRequestError', code })
 }
 
-describe('getToken', () => {
+describe('console authentication', () => {
   beforeEach(() => {
     vi.resetModules()
+    logto.signIn.mockReset().mockResolvedValue(undefined)
     logto.isAuthenticated.mockReset().mockResolvedValue(true)
     logto.getAccessToken.mockReset()
     logto.clearAccessToken.mockReset().mockResolvedValue(undefined)
@@ -61,6 +65,26 @@ describe('getToken', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('authenticates the selected provider even with an existing SSO session and keeps offline consent', async () => {
+    const { login } = await import('./auth')
+
+    await login('gitlab')
+
+    expect(logto.signIn).toHaveBeenCalledWith({
+      redirectUri: 'https://console.example.test/auth/callback',
+      directSignIn: { method: 'social', target: 'gitlab' },
+      prompt: ['login', 'consent']
+    })
+  })
+
+  it('allows normal SSO when no provider was selected', async () => {
+    const { login } = await import('./auth')
+
+    await login()
+
+    expect(logto.signIn).toHaveBeenCalledWith({ redirectUri: 'https://console.example.test/auth/callback' })
   })
 
   it('clears the local session and silently redirects when the refresh grant is invalid', async () => {
