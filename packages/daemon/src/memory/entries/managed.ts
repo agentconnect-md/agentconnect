@@ -1,8 +1,22 @@
-import { mutateManagedMemoryEntry, mutateManagedMemoryEntryOnFilesystem, type ManagedEntryMutation } from './writer.js'
-import type { MemoryTextCheck } from '../organization-files.js'
+import {
+  mutateManagedMemoryEntry,
+  mutateManagedMemoryEntryOnFilesystem,
+  prepareEntryMutation,
+  type ManagedEntryMutation
+} from './writer.js'
+import {
+  indexWithRecord,
+  notVisible,
+  PEOPLE_NOT_VISIBLE,
+  PEOPLE_WITHHELD,
+  RECORD_NOT_DELETED,
+  RecordBackedMemoryFs,
+  recordBody,
+  titleOnly
+} from '../organization-record.js'
+import type { MemoryTextCheck, OrganizationFile } from '../organization-files.js'
 import { sidecarMemoryHistory } from '../home.js'
-import type { MemoryWriteSource } from '../store.js'
-import type { MemoryWriteGuard } from '../types.js'
+import type { MemoryOptOutChange, MemoryWriteGuard } from '../types.js'
 import { randomUUID } from 'node:crypto'
 import type {
   MemoryContextResult,
@@ -23,7 +37,8 @@ import {
   withMemoryDirLock,
   type MemoryFs,
   type MemoryHistorySink,
-  type MemoryNeighbor
+  type MemoryNeighbor,
+  type MemoryWriteSource
 } from '../store.js'
 import { MemoryHomeUnavailableError, MemoryPathError } from '../fs.js'
 import { parseMemoryFrontmatter } from '../frontmatter.js'
@@ -276,7 +291,12 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   async context(request: { maxBytes: number }): Promise<MemoryContextResult> {
     return this.lock(async () => {
       const inventory = await this.inventory()
-      const indexes = await Promise.all(this.roots.map((root) => root.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)))
+      const indexes = await Promise.all(
+        this.roots.map(async (root) => {
+          const index = await root.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
+          return index && { ...index, content: await indexWithRecord(root, index.content) }
+        })
+      )
       const text = [...indexes]
         .reverse()
         .map((index) => index?.content ?? '')
@@ -360,6 +380,8 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
     if (!this.writeContext || !this.capabilities.operations.includes(mutation.operation))
       throw new MemoryEntriesError('UNSUPPORTED', 'memory entry mutations are unavailable')
     const root = this.roots[0]!
+    const recordFile = root instanceof RecordBackedMemoryFs ? root.recordFile(`${MEMORY_DIRNAME}/${topic}`) : undefined
+    if (recordFile) return this.mutateRecord(root as RecordBackedMemoryFs, recordFile, topic, mutation)
     const result =
       root.atomicTransaction && root.stageTransactionFile && root.captureStatus
         ? await mutateManagedMemoryEntry(root, topic, mutation, this.writeContext)
@@ -391,6 +413,69 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
               editable: true
             }
           })
+    }
+  }
+
+  // A record entry's write (assistant-mode.md §5.16): the same precondition, checks and person rules, landing as a knowledge revision.
+  private async mutateRecord(
+    root: RecordBackedMemoryFs,
+    file: OrganizationFile,
+    topic: string,
+    mutation: ManagedEntryMutation
+  ) {
+    const context = this.writeContext!
+    if (mutation.operation === 'delete') throw new MemoryEntriesError('FORBIDDEN', RECORD_NOT_DELETED(file))
+    if (file === 'members.md' && root.audience.withOutsiders) throw new MemoryEntriesError('FORBIDDEN', PEOPLE_WITHHELD)
+    const current = await root.record.read(file).catch((err: unknown) => {
+      throw notVisible(err) ? new MemoryEntriesError('FORBIDDEN', PEOPLE_NOT_VISIBLE) : err
+    })
+    const digest = memoryDigest(current.content)
+    // The Control Plane creates each entry with its title line alone, which a create fills as if it were absent.
+    if (mutation.operation === 'create' && !titleOnly(current.content))
+      throw new MemoryEntriesError('CONFLICT', 'memory entry already exists', digest)
+    const update: ManagedEntryMutation =
+      mutation.operation === 'create' ? { operation: 'update', revision: digest, text: mutation.text } : mutation
+    let optOut: MemoryOptOutChange | undefined
+    const guard: MemoryWriteGuard | undefined = context.guard
+      ? async (t, before, after) => {
+          optOut = (await context.guard!(t, before, after)) ?? undefined
+        }
+      : undefined
+    const stamped = await prepareEntryMutation(
+      { content: current.content, size: Buffer.byteLength(current.content), mtime: new Date(0).toISOString() },
+      update,
+      topic,
+      () => new Date(),
+      context.check,
+      guard
+    )
+    const content = recordBody(stamped!)
+    const written = await root.record.write(file, {
+      baseRevision: current.revision,
+      content,
+      writerKind: root.audience.writerKind,
+      optOut: { mark: optOut?.mark ?? [], lift: optOut?.lift ?? [] }
+    })
+    if ('conflict' in written)
+      throw new MemoryEntriesError(
+        'CONFLICT',
+        'memory entry revision changed; read it again before editing',
+        memoryDigest(written.conflict.content)
+      )
+    await this.landed?.()
+    return {
+      operationId: randomUUID(),
+      catalogRevision: memoryDigest([this.identity, file, written.revision]),
+      entry: {
+        coordinate: { partition: '0', id: topic },
+        label: topic.replace(/\.md$/, ''),
+        format: 'markdown' as const,
+        byteSize: Buffer.byteLength(content),
+        updatedAt: new Date(written.revision * 1000).toISOString(),
+        revision: memoryDigest(content),
+        origin: 'active' as const,
+        editable: true
+      }
     }
   }
 

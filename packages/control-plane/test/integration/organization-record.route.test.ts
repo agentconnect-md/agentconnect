@@ -70,6 +70,11 @@ describe('the organization record', () => {
     expect((await switchMode(a, second, true)).statusCode).toBe(200)
     expect((await onboarding(first))?.research).toBe(true)
     expect((await onboarding(second))?.research).toBe(false)
+    // The hello of an agent that does not research names the one that does.
+    expect(((await onboarding(second)) as { researchedBy?: unknown } | null)?.researchedBy).toMatchObject({
+      agentId: first,
+      name: expect.stringMatching(/^agent-/)
+    })
 
     const body = await record(a)
     expect(body.research.agentId).toBe(first)

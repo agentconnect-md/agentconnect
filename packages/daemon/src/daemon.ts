@@ -69,6 +69,8 @@ import {
   GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  KNOWLEDGE_RECORD_FEATURE,
+  type KnowledgeRecordWriterKind,
   MEMORY_PERSON_LAYER_FEATURE,
   MEMORY_PLACE_CLEAR_FEATURE,
   MEMORY_MEMBER_CLEAR_FEATURE,
@@ -842,10 +844,14 @@ import {
   membersOwnEntryGuidance,
   readMembersOptOut,
   relinkMembers,
+  relinkedMembers,
+  membersKeysOf,
+  withoutMembersEntries,
   updateMembersOptOut,
   type MembersLookups,
   type MembersWriter
 } from './memory/members-directory.js'
+import { OrganizationRecordCache, type OrganizationRecordPort } from './memory/organization-record.js'
 import type { MembersGuard } from './mcp/ops/memory.js'
 import {
   MemoryLayers,
@@ -1398,6 +1404,7 @@ export class Daemon {
       return memory?.provider !== 'external' && memory?.autoDistill === true
     },
     extract: (id, prompt, scope) => this.runMemoryExtraction(id, prompt, scope),
+    organizationRecordFor: (id) => this.organizationRecordFor(id),
     externalBindingFor: (id) => {
       const binding = this.agents.get(id)?.memory
       return binding?.provider === 'external' ? binding : undefined
@@ -4334,6 +4341,9 @@ export class Daemon {
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
         return client.knowledgeList(req)
       },
+      outsiders: async (ctx) =>
+        this.cpClient?.supportsServerFeature?.(KNOWLEDGE_RECORD_FEATURE) === true &&
+        (await this.knowledgeOutsiders(ctx)),
       orgSkills: async (req) => {
         const client = this.cpClient
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
@@ -4673,23 +4683,24 @@ export class Daemon {
       // cwd against this filesystem — failing session create/load before the runtime call.
       workspaces: this.workspaces,
       // Research is bound to the shared layer whichever conversation owns it (assistant-mode.md §5.15), so it starts from that index.
-      memoryScopeFor: async (agentId, msg, integrationId, rec) =>
-        isResearchCoordinate(sessionThreadOf(msg))
-          ? { agentId }
-          : (
-              await this.memoryLayerFor(
-                this.memoryPlaceOf(
-                  agentId,
-                  {
-                    platform: msg.platform,
-                    channel: msg.channel,
-                    transportScope: this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
-                  },
-                  rec,
-                  msg
-                )
-              )
-            ).scope,
+      memoryScopeFor: async (agentId, msg, integrationId, rec) => {
+        if (isResearchCoordinate(sessionThreadOf(msg))) return { agentId, withOutsiders: false }
+        const place = this.memoryPlaceOf(
+          agentId,
+          {
+            platform: msg.platform,
+            channel: msg.channel,
+            transportScope: this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
+          },
+          rec,
+          msg
+        )
+        const { scope } = await this.memoryLayerFor(place)
+        // People is left out of the standing index where outsiders may be present, as the record's audience rule says (§5.16).
+        if (!this.organizationRecordFor(agentId)) return scope
+        const audience = await this.memoryLayers.audienceOf(place).catch(() => ({ external: true }))
+        return { ...scope, withOutsiders: audience.external }
+      },
       memoryGuidanceFor: (agentId, msg, integrationId, rec) => this.memoryGuidanceFor(agentId, msg, integrationId, rec),
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
@@ -4843,7 +4854,13 @@ export class Daemon {
             ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {}),
             // §5.15: research's memory tools are bound to the live shared layer, whichever conversation owns it; no `layer` is taken.
             ...(research
-              ? { memoryBinding: { source: 'tool' as const, scope: { agentId: agent.id }, layer: 'shared' as const } }
+              ? {
+                  memoryBinding: {
+                    source: 'tool' as const,
+                    scope: { agentId: agent.id, withOutsiders: false, recordWriter: 'research' as const },
+                    layer: 'shared' as const
+                  }
+                }
               : {})
           })
           servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
@@ -7981,6 +7998,7 @@ export class Daemon {
       MEMORY_ENTRIES_HISTORY_V1_FEATURE,
       MEMORY_ENTRIES_WRITE_V1_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
+      KNOWLEDGE_RECORD_FEATURE,
       MEMORY_PERSON_LAYER_FEATURE,
       MEMORY_PLACE_CLEAR_FEATURE,
       MEMORY_MEMBER_CLEAR_FEATURE,
@@ -8231,6 +8249,19 @@ export class Daemon {
     },
     placeName: async (place) => (await this.store.getDisplayNames([place.channel])).get(place.channel),
     linked: async (agentId, from, to) => {
+      if (this.organizationRecordFor(agentId)) {
+        // A marker on either key marks both and drops both entries; else the entry moves to the console key.
+        const { optOut } = await this.organizationRecordFor(agentId)!.read(MEMBERS_DIRECTORY_FILE)
+        if (optOut.includes(from) || optOut.includes(to))
+          await this.editRecordMembers(
+            agentId,
+            (text) => withoutMembersEntries(text, [from, to]).text,
+            [from, to],
+            'person'
+          )
+        else await this.editRecordMembers(agentId, (text) => relinkedMembers(text, from, to), [], 'person')
+        return
+      }
       const ports = this.memoryHomePortsFor(agentId)
       if (ports) await relinkMembers(ports.live, ports.historyFor(ports.live), from, to, new Date(this.clock.now()))
     },
@@ -8274,7 +8305,7 @@ export class Daemon {
   ): Promise<MemoryScope> {
     const key = this.sessionKeyOf(ctx)
     const sourceTurnId = this.activeMemorySourceTurns.get(key)
-    const turn = sourceTurnId ? { sourceTurnId } : {}
+    const turn = { ...(sourceTurnId ? { sourceTurnId } : {}), ...(await this.recordAudienceFor(ctx, key)) }
     const managed = (this.agents.get(ctx.agentId)?.memory?.provider ?? 'managed') === 'managed'
     if (call.layer === 'shared') {
       const audience = call.mode === 'write' ? await this.conversationAudience(ctx, key) : undefined
@@ -8332,6 +8363,16 @@ export class Daemon {
     if (scope.personKey || (scope.channelKey && !scope.sharedPlace)) return undefined
     const lookups = this.membersLookups(ctx.agentId)
     let lift: string[] = []
+    // The record keeps the opt-out with People, so its marks and lifts ride the write itself (§5.16).
+    if (this.organizationRecordFor(ctx.agentId))
+      return {
+        guard: async (topic, before, after) => {
+          if (topic !== MEMBERS_DIRECTORY_FILE) return
+          const effects = await checkMembersWrite(before, after, await this.membersWriter(ctx), lookups)
+          return { mark: effects.optOut, lift: effects.lift }
+        },
+        landed: async () => {}
+      }
     return {
       guard: async (topic, before, after) => {
         if (topic !== MEMBERS_DIRECTORY_FILE) return
@@ -8494,7 +8535,12 @@ export class Daemon {
         const at = await this.integrationOfKey(agentId, key)
         return at ? await this.memoryLayers.linkedConsoleKey(agentId, at.integrationId, at.uid) : undefined
       },
-      optedOut: () => readMembersOptOut(this.membersTree(agentId))
+      optedOut: async () => {
+        const record = this.organizationRecordFor(agentId)
+        if (!record) return readMembersOptOut(this.membersTree(agentId))
+        const { optOut } = await record.read(MEMBERS_DIRECTORY_FILE)
+        return new Map(optOut.map((key) => [key, '']))
+      }
     }
   }
 
@@ -8546,6 +8592,23 @@ export class Daemon {
       if (!assistantModeOn(agent) || (agent.memory?.provider ?? 'managed') !== 'managed') continue
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agent.id)) continue
       try {
+        if (this.organizationRecordFor(agent.id)) {
+          const { content } = await this.organizationRecordFor(agent.id)!.read(MEMBERS_DIRECTORY_FILE)
+          const gone: string[] = []
+          for (const key of membersKeysOf(content).slice(0, MEMBERS_SWEEP_MAX_LOOKUPS))
+            if (await this.memberGone(agent.id, key)) gone.push(key)
+          if (
+            gone.length &&
+            (await this.editRecordMembers(
+              agent.id,
+              (text) => withoutMembersEntries(text, gone).text,
+              [],
+              'conversation'
+            ))
+          )
+            this.log.info(`memory: agent "${agent.id}" dropped ${gone.length} People entries of people who left`)
+          continue
+        }
         const ports = this.memoryHomePortsFor(agent.id)
         if (!ports) continue
         const gone: string[] = []
@@ -8557,6 +8620,30 @@ export class Daemon {
         this.log.warn(`memory: agent "${agent.id}" directory sweep failed (${formatErr(err)})`)
       }
     }
+  }
+
+  /** Rewrite the record's People, marking `mark` before it lands, again on a stale revision; whether its text changed. */
+  private async editRecordMembers(
+    agentId: string,
+    edit: (text: string) => string | undefined,
+    mark: string[],
+    writerKind: KnowledgeRecordWriterKind
+  ): Promise<boolean> {
+    const record = this.organizationRecordFor(agentId)
+    if (!record) return false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await record.read(MEMBERS_DIRECTORY_FILE)
+      const next = edit(current.content) ?? current.content
+      if (next === current.content && mark.every((key) => current.optOut.includes(key))) return false
+      const written = await record.write(MEMBERS_DIRECTORY_FILE, {
+        baseRevision: current.revision,
+        content: next,
+        writerKind,
+        optOut: { mark, lift: [] }
+      })
+      if (!('conflict' in written)) return next !== current.content
+    }
+    throw new Error('People kept changing; try again')
   }
 
   /** Whether a key's person is gone: the console says they are no member, or the platform says the account was deactivated; unknown is not gone. */
@@ -9632,6 +9719,50 @@ export class Daemon {
 
   /** Whom each directory builder round read messages from (assistant-mode.md §5.17). */
   private readonly directorySeen = new DirectorySeen()
+  private readonly organizationRecords = new Map<string, OrganizationRecordCache>()
+
+  /** The organization record an assistant-mode agent's shared layer serves its three names from, while the Control Plane keeps it (assistant-mode.md §5.16). */
+  private organizationRecordFor(agentId: string): OrganizationRecordPort | undefined {
+    const agent = this.agents.get(agentId)
+    if (!assistantModeOn(agent) || (agent?.memory?.provider ?? 'managed') !== 'managed') return undefined
+    if (this.cpClient?.supportsServerFeature?.(KNOWLEDGE_RECORD_FEATURE) !== true) return undefined
+    let port = this.organizationRecords.get(agentId)
+    if (!port) {
+      port = new OrganizationRecordCache(agentId, () => {
+        if (!this.cpClient)
+          throw new Error('the organization record cannot be reached: the control plane is not connected')
+        return this.cpClient
+      })
+      this.organizationRecords.set(agentId, port)
+    }
+    return port
+  }
+
+  /** Whether a session's conversation may hold outsiders, for People's audience rule: one not yet known counts, a DM never does, research never does (§5.16). */
+  private async knowledgeOutsiders(ctx: SessionContext): Promise<boolean> {
+    if (isResearchCoordinate(ctx.thread)) return false
+    const key = this.sessionKeyOf(ctx)
+    const place = this.memoryPlaceOf(ctx.agentId, ctx, await this.store.getSession(key), this.liveTurn(ctx)?.msg)
+    return (await this.memoryLayers.audienceOf(place).catch(() => ({ external: true }))).external
+  }
+
+  /** How a session of a record-backed agent sees the record: People withheld with outsiders or an unknown audience, and who its writes come from. */
+  private async recordAudienceFor(
+    ctx: SessionContext,
+    key: string
+  ): Promise<{ withOutsiders: boolean; recordWriter: KnowledgeRecordWriterKind } | undefined> {
+    if (!this.organizationRecordFor(ctx.agentId)) return undefined
+    if (isResearchCoordinate(ctx.thread)) return { withOutsiders: false, recordWriter: 'research' }
+    const audience = await this.conversationAudience(ctx, key)
+    return {
+      withOutsiders: audience.external,
+      recordWriter: isFirstLookCoordinate(ctx.thread)
+        ? 'first-look'
+        : audience.layer === 'person'
+          ? 'person'
+          : 'conversation'
+    }
+  }
 
   /** Bot joins waiting for their place's row before a first look (assistant-mode.md §5.13). */
   private readonly pendingFirstLooks = new PendingFirstLooks()

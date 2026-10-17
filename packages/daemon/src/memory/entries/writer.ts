@@ -73,7 +73,7 @@ export async function mutateManagedMemoryEntry(
 }
 
 // The precondition and the stored text, the same for every home: null is an explicit delete; `check` sees the final text, then the guard both texts.
-async function prepareEntryMutation(
+export async function prepareEntryMutation(
   current: MemoryFsFile | null,
   mutation: ManagedEntryMutation,
   topic: string,

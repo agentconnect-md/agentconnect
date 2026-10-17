@@ -95,6 +95,10 @@ import type {
   KnowledgeSearchOk,
   KnowledgeListReq,
   KnowledgeListOk,
+  KnowledgeRecordConflict,
+  KnowledgeRecordOk,
+  KnowledgeRecordReadReq,
+  KnowledgeRecordWriteReq,
   MemoryStoreReq,
   MemoryFsReply,
   MemoryHistoryAppendReq,
@@ -139,6 +143,7 @@ import {
   SESSION_PURGE_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  KNOWLEDGE_RECORD_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
@@ -1712,6 +1717,31 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected knowledge/list/ok, got ${rep.type}`, false)
     }
     return rep.payload as KnowledgeListOk
+  }
+
+  // One organization record entry for an assistant-mode agent's memory tools (assistant-mode.md §5.16).
+  async knowledgeRecordRead(payload: KnowledgeRecordReadReq): Promise<KnowledgeRecordOk> {
+    this.requireReady('knowledge/record/read')
+    if (!this.supportsServerFeature(KNOWLEDGE_RECORD_FEATURE))
+      throw new WireError('INTERNAL', 'control plane does not keep the organization record', false)
+    const rep = await this.request('knowledge/record/read', payload)
+    if (rep.type !== 'knowledge/record/ok' || (rep.payload as KnowledgeRecordOk).content === undefined)
+      throw new WireError('INTERNAL', `expected knowledge/record/ok, got ${rep.type}`, false)
+    return rep.payload as KnowledgeRecordOk
+  }
+
+  // A revision-checked write of one record entry; a stale base revision answers the current entry.
+  async knowledgeRecordWrite(
+    payload: KnowledgeRecordWriteReq
+  ): Promise<{ ok: KnowledgeRecordOk } | { conflict: KnowledgeRecordConflict }> {
+    this.requireReady('knowledge/record/write')
+    if (!this.supportsServerFeature(KNOWLEDGE_RECORD_FEATURE))
+      throw new WireError('INTERNAL', 'control plane does not keep the organization record', false)
+    const rep = await this.request('knowledge/record/write', payload)
+    if (rep.type === 'knowledge/record/conflict') return { conflict: rep.payload as KnowledgeRecordConflict }
+    if (rep.type !== 'knowledge/record/ok')
+      throw new WireError('INTERNAL', `expected knowledge/record/ok, got ${rep.type}`, false)
+    return { ok: rep.payload as KnowledgeRecordOk }
   }
 
   async orgSkills(payload: OrgSkillsReq): Promise<OrgSkillsOk> {

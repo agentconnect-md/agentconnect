@@ -2782,9 +2782,9 @@ is unchanged. Live tests had shown what that decision costs: a second assistant-
 researched the organization again and kept a copy of its own, which could differ from the first's.
 The decisions below are the owner's and are recorded as taken; what is marked _recommended_ is
 this revision's filling-in, for the owner to confirm, and what is _undecided_ is in §9 (Q30, Q32,
-Q33). The checklist at its end splits the work; its first change, the Control Plane's, shipped on
-2026-10-18 ("As shipped, change 1", after the checklist), and the daemon's and the console's are
-to come.
+Q33). The checklist at its end splits the work; its first change, the Control Plane's, and its
+second, the daemon's, shipped on 2026-10-18 ("As shipped, change 1" and "change 2", after the
+checklist), and the console's is to come.
 
 **Why.** Facts about the organization are the organization's, not one agent's. An organization
 runs one record of what it does, where its people talk and who works on what, every agent of the
@@ -3099,6 +3099,47 @@ smallest choice made for it:
 - **No daemon store version change**; the Control Plane's migration adds three enums, two enum
   values, four columns on `organization_knowledge`, one on its revisions, and the
   `organization_record` and `organization_people_opt_out` tables, and changes no existing row.
+
+**As shipped, change 2** (2026-10-18: the daemon).
+
+- **Where the names resolve.** For an agent in assistant mode with managed memory, toward a
+  Control Plane that advertises `knowledge-record-v1`, the shared layer is read through a view
+  that serves the three names from the record and everything else from the agent's own store.
+  Reads are kept 15 seconds per agent, so a turn's listing and reads cost one round trip per
+  entry; a write drops that entry's copy. A copy of one of the names an older daemon left in the
+  store is hidden. With the feature absent, nothing changes: the names stay files of the shared
+  layer.
+- **Writes.** `createMemoryEntry` and `updateMemoryEntry` keep the revision a model reads (the
+  text's digest) and send the record's own revision underneath; a stale one is the tool's usual
+  conflict, re-read and merged. The shapes check and §5.17's person and builder rules run before
+  the write, and the rules' opt-out marks and lifts ride the write instead of the marker file. A
+  create fills an entry that holds its title line alone, which is how the Control Plane creates
+  one. The record keeps the text without a frontmatter header. `writeMemory` of the three names is
+  refused with the entry tools' procedure, and `deleteMemoryEntry` with "remove the lines
+  instead".
+- **Writer kinds**: research, a first look, a person's own conversation (`person`) and any other
+  conversation (`conversation`). The daily leaving sweep writes as `conversation`, and a person's
+  relinking as `person`.
+- **Who reads People.** A session's `withOutsiders` is its conversation's audience as the memory
+  layers read it, one not yet known counting as outsiders and research never; where it holds, and
+  where People is not visible to the agent (its readers left the agent out), People is left out of
+  the listing and the index and a read of it is refused with one line.
+- **The index lines** are synthesized on every read of the shared index, never stored:
+  `- [About](organization.md) — <the summary's first line>`, Channels with its count of places,
+  People with its count of people. The generated index the store writes leaves the three names
+  out.
+- **`findKnowledge` and `listKnowledge`** send `withOutsiders` by the same audience rule, for
+  every agent, once the Control Plane advertises the feature.
+- **Onboarding.** The Control Plane's switch-on now also records `researchedBy` (the claiming
+  agent's id, name and claim time) with `research: false`, so the hello of an agent that does not
+  research names it and its day; that agent's onboarding row then settles with no task. The
+  prelude line says "what is known about the organization may be incomplete".
+- **Not done here**: a dream's parser does not drop an update whose target is a record entry,
+  since a knowledge result does not say which entries are the record; the Control Plane refuses
+  accepting one (change 1).
+- **Tool sizes**, unchanged: `writeMemory` 1,609 characters, `createMemoryEntry` 478,
+  `updateMemoryEntry` 399, `getMemoryEntry` 308 and `listMemoryEntries` 398. No daemon store
+  version change.
 
 ### 5.17 People profiles
 
@@ -4265,3 +4306,11 @@ kind; the three record entries, research's claim and People's opt-out live in th
 ship behind `knowledge-record-v1`; the switch-on claims research once per organization and moves
 People's readers with the mode; and assistant-mode agents' copies of the three files are moved into
 the record at boot.
+
+**Seventy-second revision (2026-10-18)**: the organization record's second change ships, the
+daemon's (issue #2810; §5.16 "As shipped, change 2"). An assistant-mode agent's memory tools read
+and write `organization.md`, `channels.md` and `members.md` in the record through the record frames,
+with every shape and person rule kept and the opt-out sent with each write; People is left out of
+the listing, the index and the knowledge reads where outsiders may be present or it is not visible
+to the agent; the shared index carries the three entries' lines synthesized from the record; and
+an agent switched on after the organization's research greets by naming the agent that did it.

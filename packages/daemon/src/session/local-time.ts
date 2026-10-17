@@ -40,6 +40,16 @@ export function renderClock(at: number, timeZone: string | undefined): string {
   return zone ? clock : `${clock} UTC`
 }
 
+/** A calendar day such as `2026-10-17` in the people's zone, UTC's when it is unknown. */
+export function renderDay(at: number, timeZone: string | undefined): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: knownTimeZone(timeZone) ?? 'UTC',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date(at))
+}
+
 /** Each person's last known zone, by who they are to the read rule; in memory, so after a restart a run falls through to its place's. */
 export class PersonTimeZones {
   private readonly zones = new Map<string, string>()

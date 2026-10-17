@@ -854,7 +854,7 @@ export async function regenerateMemoryIndexHoldingLock(
 ): Promise<void> {
   const entries: MemoryIndexEntry[] = []
   for (const file of await listMemory(fs)) {
-    if (file.name === MEMORY_INDEX) continue
+    if (file.name === MEMORY_INDEX || fs.recordTopic?.(file.name)) continue
     const raw = await fs.readFile(`${MEMORY_DIRNAME}/${file.name}`)
     if (raw === null) continue
     const entry = memoryIndexEntry(file.name, parseMemoryFrontmatter(raw.content).header)

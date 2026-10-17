@@ -13,7 +13,7 @@ import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import type { MessageAgentResult } from '../mcp/ops/messaging.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
-import { renderClock } from '../session/local-time.js'
+import { renderClock, renderDay } from '../session/local-time.js'
 import { researchCoordinate, researchThreadOf } from '../session/subsession-coordinate.js'
 import type { AssistantPlace } from '../store/assistant-items.js'
 import type { AssistantOnboardingLedger, AssistantOnboardingRow } from '../store/assistant-onboarding.js'
@@ -156,6 +156,28 @@ export function onboardingMessage(input: { person: string | null; enabler: boole
   ].join('\n\n')
 }
 
+/** The hello of an agent switched on after the organization's research (assistant-mode.md §5.16): it reads the record and researches nothing. */
+export function readerOnboardingMessage(input: {
+  person: string | null
+  enabler: boolean
+  researchedBy: { name: string; at: string } | undefined
+  timeZone: string | undefined
+}): string {
+  const who = input.person ?? 'the person you are talking with here'
+  const opening = input.enabler
+    ? `Assistant mode was switched on for you by ${who}. Say hello to them here:`
+    : `Assistant mode was switched on for you, and ${who} is the person responsible for you. Say hello to them here:`
+  const by = input.researchedBy
+    ? `${input.researchedBy.name} researched it on ${renderDay(Date.parse(input.researchedBy.at), input.timeZone)}`
+    : 'another agent of the organization researched it'
+  return [
+    `${opening} who you are, and that the organization record (what the organization does, its channels and its ` +
+      `people) already exists: ${by}, and you have read it. You do not research the organization yourself.`,
+    `If they ask you to research the organization again, tell them to ask ${input.researchedBy?.name ?? 'that agent'} ` +
+      'in their direct message with it, which holds that research.'
+  ].join('\n\n')
+}
+
 /** The daemon's own second round, once the first looks running at onboarding have reported. */
 export const SECOND_ROUND_MESSAGE =
   'The first looks that were running when you started have reported. Read what they wrote in shared memory, merge ' +
@@ -164,7 +186,7 @@ export const SECOND_ROUND_MESSAGE =
 /** The prelude line every place turn carries while research runs (assistant-mode.md §5.15 "Replies never wait for research"). */
 export function researchRunningLine(since: number, timeZone: string | undefined): string {
   return (
-    `<system-reminder>\nOrganization research is running since ${renderClock(since, timeZone)}; what memory holds ` +
+    `<system-reminder>\nOrganization research is running since ${renderClock(since, timeZone)}; what is known ` +
     'about the organization may be incomplete. Answer from what is known and say plainly that research is still ' +
     'running when it matters.\n</system-reminder>'
   )
@@ -189,7 +211,7 @@ export interface OrganizationResearchHost {
   draining(): boolean
   onboarding: Pick<
     AssistantOnboardingLedger,
-    'get' | 'claim' | 'markResearching' | 'settleSecondRound' | 'nextSecondRoundAttempt'
+    'get' | 'claim' | 'markResearching' | 'settleSecondRound' | 'nextSecondRoundAttempt' | 'settleReader'
   >
   subsessions: Pick<AssistantSubsessionIndex, 'openWithinLimitClaiming' | 'get'>
   /** A console user's DM with the agent, the responsible user's without one; undefined when they have none; throws when nobody could be asked. */
@@ -301,8 +323,22 @@ export class OrganizationResearch {
   /** Hello first, as a hard rule: the task opens only once the hello's turn has ended. */
   private async greetThenOpen(agent: OnboardingAgent, row: AssistantOnboardingRow): Promise<void> {
     if (!row.taskKey || !row.parentKey || !row.parentSessionId) return
-    const text = onboardingMessage({ person: row.person, enabler: row.enabler, taskId: row.taskKey })
+    // Research runs once per organization: an agent switched on later greets, names who researched, and opens no task.
+    const reader = agent.assistantOnboarding?.research === false
+    const text = reader
+      ? readerOnboardingMessage({
+          person: row.person,
+          enabler: row.enabler,
+          researchedBy: agent.assistantOnboarding?.researchedBy,
+          timeZone: agent.assistantMode?.timezone
+        })
+      : onboardingMessage({ person: row.person, enabler: row.enabler, taskId: row.taskKey })
     const admitted = await this.host.greet(row, text, () => void this.sweep([agent.id]))
+    if (reader) {
+      if (admitted && (await this.host.onboarding.settleReader(agent.id, this.host.now())))
+        this.host.log.info(`organization research: agent ${agent.id} reads the record another agent researched`)
+      return
+    }
     if (!admitted || !(await this.host.helloSettled(row))) return
     const now = this.host.now()
     const limit = agent.assistantMode?.limits?.maxConcurrentSubsessions ?? DEFAULT_MAX_CONCURRENT_SUBSESSIONS

@@ -27,6 +27,7 @@ import { sidecarMemoryHistory, type MemoryHomePorts } from '../home.js'
 import { buildDistillationPrompt } from '../distill.js'
 import { memoryRefToTopic } from '../frontmatter.js'
 import type { MemoryTextCheck } from '../organization-files.js'
+import { indexWithRecord, RecordBackedMemoryFs, type OrganizationRecordPort } from '../organization-record.js'
 import type {
   FileMemoryAdmin,
   MemoryExtractor,
@@ -53,7 +54,9 @@ export class ManagedMemoryProvider implements MemoryProvider {
   constructor(
     private readonly memoryHomePortsFor: (agentId: string) => MemoryHomePorts | undefined,
     private readonly autoDistillFor: (agentId: string) => boolean = () => false,
-    private readonly extract?: MemoryExtractor
+    private readonly extract?: MemoryExtractor,
+    // The organization record for an assistant-mode agent whose Control Plane keeps it; undefined keeps the three names in the shared store.
+    private readonly organizationRecordFor: (agentId: string) => OrganizationRecordPort | undefined = () => undefined
   ) {}
 
   private portsFor(agentId: string): MemoryHomePorts {
@@ -73,7 +76,13 @@ export class ManagedMemoryProvider implements MemoryProvider {
     if (scope.root) return { active: scope.root, base: scope.root, history: sidecarMemoryHistory(scope.root) }
     if (scope.channelKey && scope.personKey) throw new Error('a memory scope names one layer beside the shared store')
     const ports = this.portsFor(scope.agentId)
-    const base = ports.live
+    const record = this.organizationRecordFor(scope.agentId)
+    const base = record
+      ? new RecordBackedMemoryFs(ports.live, record, {
+          withOutsiders: scope.withOutsiders ?? true,
+          writerKind: scope.recordWriter ?? 'conversation'
+        })
+      : ports.live
     const own = scope.channelKey
       ? channelMemoryRoot(base, scope.channelKey)
       : scope.personKey
@@ -149,7 +158,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
         : undefined
     const parts: string[] = []
     for (const root of [...roots.filter((r) => r === base), ...roots.filter((r) => r !== base)]) {
-      const index = (await readIndex(root)).trim()
+      const index = (await indexWithRecord(root, await readIndex(root))).trim()
       if (index) parts.push(root !== base && label ? `${label}\n${index}` : index)
     }
     return parts.join('\n\n')
@@ -215,9 +224,10 @@ export class ManagedMemoryProvider implements MemoryProvider {
     // The written layer shadows the other: the first root that HAS the file wins, even an intentionally empty one.
     const roots = this.readRoots(scope)
     // Each layer keeps its own index, so MEMORY.md never falls through to the layer beneath.
-    for (const root of memoryRefToTopic(path) === MEMORY_INDEX ? roots.slice(0, 1) : roots) {
+    const index = memoryRefToTopic(path) === MEMORY_INDEX
+    for (const root of index ? roots.slice(0, 1) : roots) {
       const content = await readMemoryFileIfPresent(root, path)
-      if (content !== null) return { path, content }
+      if (content !== null) return { path, content: index ? await indexWithRecord(root, content) : content }
     }
     return { path, content: '' }
   }

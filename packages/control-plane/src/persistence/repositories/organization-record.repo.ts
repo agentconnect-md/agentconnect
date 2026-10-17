@@ -111,7 +111,7 @@ export async function applyAssistantModeSwitch(
   orgId: string,
   agentId: string,
   change: { on: boolean; claimResearch: boolean; now: Date }
-): Promise<{ research?: boolean }> {
+): Promise<{ research?: boolean; researchedBy?: { agentId: string; name: string; at: string } }> {
   await lockOrganizationRecord(tx, orgId)
   if (change.on) await ensureOrganizationRecord(tx, orgId, { source: 'agent', sourceAgentId: agentId })
   const people = await tx.organizationKnowledge.findFirst({
@@ -132,7 +132,25 @@ export async function applyAssistantModeSwitch(
     where: { orgId, researchAgentId: null },
     data: { researchAgentId: agentId, researchClaimedAt: change.now }
   })
-  return { research: claimed.count === 1 }
+  if (claimed.count === 1) return { research: true }
+  // The hello of an agent that does not research names the one that does (§5.16).
+  const record = await tx.organizationRecord.findUnique({
+    where: { orgId },
+    select: { researchClaimedAt: true, researchAgent: { select: { id: true, name: true, displayName: true } } }
+  })
+  const by = record?.researchAgent
+  return {
+    research: false,
+    ...(by && record.researchClaimedAt
+      ? {
+          researchedBy: {
+            agentId: by.id,
+            name: (by.displayName?.trim() || by.name).slice(0, 200),
+            at: record.researchClaimedAt.toISOString()
+          }
+        }
+      : {})
+  }
 }
 
 /** An agent's deletion takes it out of every readers list. */

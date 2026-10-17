@@ -53,6 +53,10 @@ export interface MemoryScope {
   alone?: true
   userId?: string
   sessionId?: string
+  /** The conversation may hold people from outside the organization, or its audience is not known: People is withheld (assistant-mode.md §5.16). Absent counts as true. */
+  withOutsiders?: boolean
+  /** Who a write of the organization record comes from; absent is a conversation's. */
+  recordWriter?: import('@agentconnect.md/protocol').KnowledgeRecordWriterKind
 }
 
 /** Result of the `readMemory` tool path — the whole file's text. */
@@ -96,8 +100,18 @@ export interface MemoryNeighborsResult {
   backlinks: { name: string; topic: string; description?: string; exists: boolean }[]
 }
 
-/** A check a managed entry write passes inside its lock, with the topic's text before and after; it throws to refuse. */
-export type MemoryWriteGuard = (topic: string, before: string | null, after: string | null) => Promise<void>
+/** A write's opt-out changes for the organization record's People: keys to mark before it lands, keys to lift after (§5.16). */
+export interface MemoryOptOutChange {
+  mark: string[]
+  lift: string[]
+}
+
+/** A check a managed entry write passes inside its lock, with the topic's text before and after; it throws to refuse, and for the record it returns the opt-out changes. */
+export type MemoryWriteGuard = (
+  topic: string,
+  before: string | null,
+  after: string | null
+) => Promise<void | MemoryOptOutChange>
 
 export interface FileMemoryAdmin {
   shape: 'files'

@@ -20,7 +20,7 @@ import {
   type MemoryHistorySink
 } from './store.js'
 
-export { MEMBERS_DIRECTORY_FILE }
+export { MEMBERS_DIRECTORY_FILE, withoutMembersEntries }
 
 /** Who is writing the directory, from trusted session facts only. */
 export type MembersWriter =
@@ -370,16 +370,19 @@ export async function relinkMembers(
     await clearMembers(tree, history, [from, to], [from, to], now)
     return
   }
-  await editMembersFile(tree, history, (text) => {
-    const directory = parseMembersDirectory(text)
-    const moving = directory.entries.find((entry) => entry.key === from)
-    if (!moving) return undefined
-    const kept = directory.entries.some((entry) => entry.key === to)
-    const entries = kept
-      ? directory.entries.filter((entry) => entry !== moving)
-      : directory.entries.map((entry) => (entry === moving ? rekeyed(entry, to) : entry))
-    return renderMembersDirectory({ ...directory, entries })
-  })
+  await editMembersFile(tree, history, (text) => relinkedMembers(text, from, to))
+}
+
+/** The directory with the platform-keyed entry moved to the console key, or dropped when one is there; undefined when there is none. */
+export function relinkedMembers(text: string, from: string, to: string): string | undefined {
+  const directory = parseMembersDirectory(text)
+  const moving = directory.entries.find((entry) => entry.key === from)
+  if (!moving) return undefined
+  const kept = directory.entries.some((entry) => entry.key === to)
+  const entries = kept
+    ? directory.entries.filter((entry) => entry !== moving)
+    : directory.entries.map((entry) => (entry === moving ? rekeyed(entry, to) : entry))
+  return renderMembersDirectory({ ...directory, entries })
 }
 
 /** The same entry, its heading ending in another key. */
@@ -391,6 +394,10 @@ function rekeyed(entry: MembersDirectoryEntry, key: string): MembersDirectoryEnt
 /** The keys of every entry the directory holds now. */
 export async function membersKeys(tree: MemoryFs): Promise<string[]> {
   const file = await tree.readFile(`${MEMORY_DIRNAME}/${MEMBERS_DIRECTORY_FILE}`)
-  if (!file) return []
-  return parseMembersDirectory(file.content).entries.flatMap((entry) => (entry.key ? [entry.key] : []))
+  return file ? membersKeysOf(file.content) : []
+}
+
+/** The keys of every entry a directory's text holds. */
+export function membersKeysOf(text: string): string[] {
+  return parseMembersDirectory(text).entries.flatMap((entry) => (entry.key ? [entry.key] : []))
 }

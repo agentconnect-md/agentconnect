@@ -794,7 +794,12 @@ export class PgAgentRepo implements AgentRepo {
             claimResearch: onboarding !== undefined,
             now: new Date()
           })
-          if (onboarding && switched.research !== undefined) onboarding = { ...onboarding, research: switched.research }
+          if (onboarding && switched.research !== undefined)
+            onboarding = {
+              ...onboarding,
+              research: switched.research,
+              ...(switched.researchedBy ? { researchedBy: switched.researchedBy } : {})
+            }
         }
         const lockedMemory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
         const memory = overrides !== undefined ? overrides.memory : lockedMemory
