@@ -1,68 +1,47 @@
 'use client'
 
-// An agent's Activity view (assistant-mode.md §1.7, §5.11, §5.12): its tasks and what waits for approval, and in assistant mode its items until its daemon serves follow-ups.
-import { useState, type ReactNode } from 'react'
+// An agent's Activity view (assistant-mode.md §1.7, §5.11, §5.12): what waits for the viewer, then its tasks and follow-ups, with finished ones behind one toggle.
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { useFormatter, useTranslations } from 'next-intl'
+import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
   ApiError,
   decideAgentPermissionRequest,
   decideAssistantDraft,
-  deleteAssistantItem,
   fetchAssistantDrafts,
-  fetchAssistantItem,
-  fetchAssistantItems,
   fetchAssistantSubsessions,
   memberDisplayName,
   type AgentPermissionOptionDto,
   type AssistantDraftDecision,
   type AssistantDraftDto,
   type AssistantDraftOutcomeDto,
-  type AssistantFollowUpStatus,
-  type AssistantItemDto,
-  type AssistantItemStatus,
   type AssistantPermissionRequestDto,
   type AssistantSubsessionDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { chatPlaceName, chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
+import { chatPlatformName, chatRoomSigil } from '@/lib/platform-labels'
 import { consoleKeys } from '@/lib/swr-keys'
-import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+import { followUpOf, ProposedFollowUp } from '@/components/console/follow-up'
 import {
-  FollowUpChecks,
-  FollowUpChecksToggle,
-  followUpKindKey,
-  followUpOf,
-  ProposedFollowUp,
-  stopTask,
-  taskStopKey
-} from '@/components/console/follow-up'
+  BackgroundTaskRow,
+  DecisionButton,
+  FinishedToggle,
+  MetaLine,
+  ParentPlace,
+  PreviewLine,
+  TaskGroup,
+  TaskRow,
+  taskFinished,
+  useShortTime,
+  useTaskStops
+} from '@/components/console/task-list'
 
 const REFRESH_MS = 30_000
-
-const ITEM_STATUS_CLASS: Record<AssistantItemStatus, string> = {
-  active: 'bg-(--status-online-soft) text-(--status-online-text)',
-  waiting: 'bg-(--status-paused-soft) text-(--status-paused)',
-  done: 'bg-(--surface-active) text-(--text-tertiary)',
-  dropped: 'bg-(--surface-active) text-(--text-tertiary)'
-}
-
-const SUBSESSION_STATE_CLASS: Record<AssistantSubsessionDto['state'], string> = {
-  open: 'bg-(--status-info-soft) text-(--status-info)',
-  done: 'bg-(--status-online-soft) text-(--status-online-text)',
-  failed: 'bg-(--status-error-soft) text-(--status-error)'
-}
-
-const FOLLOW_UP_STATUS_CLASS: Record<AssistantFollowUpStatus, string> = {
-  waiting: 'bg-(--status-info-soft) text-(--status-info)',
-  checking: 'bg-(--status-info-soft) text-(--status-info)',
-  paused: 'bg-(--status-paused-soft) text-(--status-paused)',
-  done: 'bg-(--status-online-soft) text-(--status-online-text)',
-  stopped: 'bg-(--surface-active) text-(--text-tertiary)'
-}
+/** How often "started 4m ago" redraws; arithmetic, no request. */
+const TICK_MS = 30_000
 
 type Translate = ReturnType<typeof useTranslations<'Agents.detail.activity'>>
 
@@ -106,72 +85,24 @@ function errorText(t: Translate, error: unknown): string {
   return error instanceof ApiError && error.code === 'DAEMON_FEATURE_MISSING' ? t('upgradeDaemon') : t('unavailable')
 }
 
-function Section({
-  title,
-  count,
-  children,
-  kind
-}: {
-  title: string
-  count?: number
-  children: ReactNode
-  kind: string
-}) {
-  return (
-    <section className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[880px]" data-activity-section={kind}>
-      <div className="flex items-center gap-2 border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
-        <span className="min-w-0 flex-1 truncate">{title}</span>
-        {count !== undefined && count > 0 ? (
-          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">{count}</span>
-        ) : null}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 function Quiet({ children }: { children: ReactNode }) {
   return (
-    <div className="px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-      {children}
-    </div>
+    <div className="px-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{children}</div>
   )
 }
 
-export function AssistantActivityPanel({
-  agentId,
-  canEdit,
-  assistant
-}: {
-  agentId: string
-  canEdit: boolean
-  /** In assistant mode, with its items; any other agent has only background work and what waits for approval. */
-  assistant: boolean
-}) {
+export function AssistantActivityPanel({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
   const t = useTranslations('Agents.detail.activity')
+  const tl = useTranslations('Common.taskList')
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id
-  const [closedOpen, setClosedOpen] = useState(false)
+  const [showFinished, setShowFinished] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
   const subsessions = useSWR(
     consoleKeys.assistantSubsessions(orgId, agentId),
     ([, , , id]) => fetchAssistantSubsessions(id as string),
     { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
-  )
-  // Items are read once the task list says its daemon has no follow-ups, or could not say.
-  const items =
-    assistant &&
-    (subsessions.data !== undefined || subsessions.error !== undefined) &&
-    subsessions.data?.followUps !== true
-  const open = useSWR(
-    items ? consoleKeys.assistantItems(orgId, agentId, 'open') : null,
-    ([, , , id]) => fetchAssistantItems(id as string, 'open'),
-    { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
-  )
-  const closed = useSWR(
-    items && closedOpen ? consoleKeys.assistantItems(orgId, agentId, 'closed') : null,
-    ([, , , id]) => fetchAssistantItems(id as string, 'closed'),
-    { shouldRetryOnError: false }
   )
   const drafts = useSWR(
     canEdit ? consoleKeys.assistantDrafts(orgId, agentId) : null,
@@ -179,18 +110,14 @@ export function AssistantActivityPanel({
     { refreshInterval: REFRESH_MS, shouldRetryOnError: false }
   )
 
-  const removeItem = async (itemId: string) => {
-    await deleteAssistantItem(agentId, itemId)
-    const drop = (page?: { items: AssistantItemDto[]; truncated: boolean }) =>
-      page && { ...page, items: page.items.filter((item) => item.id !== itemId) }
-    await Promise.all([open.mutate(drop, { revalidate: false }), closed.mutate(drop, { revalidate: false })])
-  }
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(timer)
+  }, [])
 
-  const endFollowUp = async (row: AssistantSubsessionDto) => {
-    const { result } = await stopTask(agentId, row)
-    void subsessions.mutate()
-    return result
-  }
+  const { mutate: rereadTasks } = subsessions
+  const reread = useCallback(() => void rereadTasks(), [rereadTasks])
+  const { stopOf, stop } = useTaskStops(agentId, agentId, reread)
 
   // A decided or unconfirmed draft keeps its row and what happened, even after a refresh stops listing it.
   const [decided, setDecided] = useState<Record<string, { draft: AssistantDraftDto; result: DraftResult }>>({})
@@ -202,10 +129,6 @@ export function AssistantActivityPanel({
       .map((entry) => entry.draft)
       .filter((draft) => !pendingIds.has(draft.id))
   ]
-  const settledHere = (id: string) => {
-    const result = decided[id]?.result
-    return result !== undefined && !('unconfirmed' in result) && !('busy' in result)
-  }
   // Background work's permission request answered here keeps its row and what happened, like a draft.
   const [answered, setAnswered] = useState<
     Record<string, { request: AssistantPermissionRequestDto; result: PermissionResult }>
@@ -218,9 +141,6 @@ export function AssistantActivityPanel({
       .map((entry) => entry.request)
       .filter((request) => !pendingPermissionIds.has(request.requestId))
   ]
-  const waiting =
-    pendingDrafts.filter((draft) => !settledHere(draft.id)).length +
-    pendingPermissions.filter((request) => !answered[request.requestId]).length
 
   const decidePermission = async (
     request: AssistantPermissionRequestDto,
@@ -263,414 +183,87 @@ export function AssistantActivityPanel({
     }
   }
 
-  return (
-    <div className="flex flex-col gap-4 p-4 desktop:gap-[18px] desktop:p-0" data-assistant-activity>
-      {items ? (
-        <Section title={t('items.title')} count={open.data?.items.length} kind="items">
-          <Listing
-            state={open}
-            count={open.data?.items.length}
-            truncated={open.data?.truncated}
-            empty={t('items.empty')}
-          >
-            {open.data?.items.map((item, i) => (
-              <ItemRow
-                key={item.id}
-                agentId={agentId}
-                item={item}
-                first={i === 0}
-                canEdit={canEdit}
-                onDelete={removeItem}
-              />
-            ))}
-          </Listing>
-          <button
-            type="button"
-            aria-expanded={closedOpen}
-            onClick={() => setClosedOpen((v) => !v)}
-            className="flex w-full cursor-pointer items-center gap-2 border-t border-(--border-subtle) bg-transparent px-4 py-[10px] text-left font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
-          >
-            <Icon name={closedOpen ? 'chevron-down' : 'chevron-right'} size={14} />
-            {t('items.closed')}
-          </button>
-          {closedOpen ? (
-            <Listing
-              state={closed}
-              count={closed.data?.items.length}
-              truncated={closed.data?.truncated}
-              empty={t('items.closedEmpty')}
-            >
-              {closed.data?.items.map((item, i) => (
-                <ItemRow
-                  key={item.id}
-                  agentId={agentId}
-                  item={item}
-                  first={i === 0}
-                  canEdit={canEdit}
-                  onDelete={removeItem}
-                />
-              ))}
-            </Listing>
-          ) : null}
-        </Section>
-      ) : null}
+  const pending = subsessions.data === undefined && subsessions.error === undefined
+  const draftsPending = canEdit && drafts.data === undefined && drafts.error === undefined
+  if (pending || draftsPending) {
+    return (
+      <div className="flex flex-col gap-4 p-4 desktop:p-0" data-assistant-activity>
+        <Quiet>{t('loading')}</Quiet>
+      </div>
+    )
+  }
 
-      <Section title={t('subsessions.title')} count={subsessions.data?.subsessions.length} kind="subsessions">
-        <Listing
-          state={subsessions}
-          count={subsessions.data?.subsessions.length}
-          truncated={subsessions.data?.truncated}
-          empty={t('subsessions.empty')}
-        >
-          {subsessions.data?.subsessions.map((s, i) => (
-            <SubsessionRow
-              key={`${s.sessionId ?? 'hidden'}:${s.startedAt}:${i}`}
-              subsession={s}
-              first={i === 0}
-              onEnd={endFollowUp}
+  const errors = [
+    subsessions.error && !subsessions.data ? errorText(t, subsessions.error) : null,
+    canEdit && drafts.error && !drafts.data ? errorText(t, drafts.error) : null
+  ].filter((text): text is string => text !== null)
+  const rows = subsessions.data?.subsessions ?? []
+  const finished = rows.filter(taskFinished).length
+  const listed = [...rows.filter((row) => !taskFinished(row)), ...(showFinished ? rows.filter(taskFinished) : [])]
+  const tasks = listed.filter((row) => followUpOf(row) === null)
+  const followUps = listed.filter((row) => followUpOf(row) !== null)
+  // Messages first, then proposals, then permission requests.
+  const messages = draftRows.filter((draft) => draft.kind !== 'task')
+  const proposals = draftRows.filter((draft) => draft.kind === 'task')
+  const waiting = messages.length + proposals.length + permissionRows.length
+  const nothing = waiting + tasks.length + followUps.length === 0 && errors.length === 0
+  const truncated = drafts.data?.truncated === true || (showFinished && subsessions.data?.truncated === true)
+
+  const drawTask = (row: AssistantSubsessionDto, i: number) => (
+    <BackgroundTaskRow
+      key={`${row.sessionId ?? 'hidden'}:${row.startedAt}:${i}`}
+      row={row}
+      now={now}
+      stop={stopOf(row)}
+      onStop={stop}
+      withPlace
+      dim={taskFinished(row)}
+    />
+  )
+  const drawDraft = (draft: AssistantDraftDto) => (
+    <DraftRow
+      key={draft.id}
+      agentId={agentId}
+      draft={draft}
+      result={decided[draft.id]?.result}
+      pending={pendingIds.has(draft.id)}
+      onDecide={decideDraft}
+    />
+  )
+
+  return (
+    <div className="flex flex-col gap-4 p-4 desktop:max-w-[880px] desktop:p-0" data-assistant-activity>
+      {[...new Set(errors)].map((text) => (
+        <Quiet key={text}>{text}</Quiet>
+      ))}
+      {waiting > 0 ? (
+        <TaskGroup id="waiting" title={t('waiting')} count={waiting}>
+          {messages.map(drawDraft)}
+          {proposals.map(drawDraft)}
+          {permissionRows.map((request) => (
+            <PermissionRequestRow
+              key={request.requestId}
+              request={request}
+              result={answered[request.requestId]?.result}
+              onDecide={decidePermission}
             />
           ))}
-        </Listing>
-      </Section>
-
-      {canEdit ? (
-        <Section title={t('drafts.title')} count={waiting} kind="drafts">
-          <Listing
-            state={drafts}
-            count={permissionRows.length + draftRows.length}
-            truncated={drafts.data?.truncated}
-            empty={t('drafts.empty')}
-          >
-            {permissionRows.map((request, i) => (
-              <PermissionRequestRow
-                key={request.requestId}
-                request={request}
-                first={i === 0}
-                result={answered[request.requestId]?.result}
-                onDecide={decidePermission}
-              />
-            ))}
-            {draftRows.map((draft, i) => (
-              <DraftRow
-                key={draft.id}
-                agentId={agentId}
-                draft={draft}
-                first={i === 0 && permissionRows.length === 0}
-                result={decided[draft.id]?.result}
-                pending={pendingIds.has(draft.id)}
-                onDecide={decideDraft}
-              />
-            ))}
-          </Listing>
-        </Section>
+        </TaskGroup>
       ) : null}
-    </div>
-  )
-}
-
-/** One section's body: its rows once read, else why not, and a note when the daemon held more. */
-function Listing({
-  state,
-  count,
-  truncated,
-  empty,
-  children
-}: {
-  state: { data?: unknown; error?: unknown }
-  count: number | undefined
-  truncated: boolean | undefined
-  empty: string
-  children: ReactNode
-}) {
-  const t = useTranslations('Agents.detail.activity')
-  if (state.error && state.data === undefined) return <Quiet>{errorText(t, state.error)}</Quiet>
-  if (state.data === undefined) return <Quiet>{t('loading')}</Quiet>
-  return (
-    <>
-      {count ? <div>{children}</div> : <Quiet>{empty}</Quiet>}
+      {tasks.length > 0 ? (
+        <TaskGroup id="tasks" title={tl('groups.tasks')} count={tasks.length}>
+          {tasks.map(drawTask)}
+        </TaskGroup>
+      ) : null}
+      {followUps.length > 0 ? (
+        <TaskGroup id="follow-ups" title={tl('groups.followUps')} count={followUps.length}>
+          {followUps.map(drawTask)}
+        </TaskGroup>
+      ) : null}
+      {nothing ? <Quiet>{t('empty')}</Quiet> : null}
       {truncated ? <Quiet>{t('more')}</Quiet> : null}
-    </>
-  )
-}
-
-function ItemRow({
-  agentId,
-  item,
-  first,
-  canEdit,
-  onDelete
-}: {
-  agentId: string
-  item: AssistantItemDto
-  first: boolean
-  canEdit: boolean
-  onDelete: (itemId: string) => Promise<void>
-}) {
-  const t = useTranslations('Agents.detail.activity')
-  const format = useFormatter()
-  const { activeOrg } = useOrgs()
-  const placeLabel = usePlaceLabel(agentId)
-  const [expanded, setExpanded] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [failed, setFailed] = useState(false)
-  const detail = useSWR(
-    expanded ? consoleKeys.assistantItem(activeOrg?.id, agentId, item.id) : null,
-    ([, , , id, itemId]) => fetchAssistantItem(id as string, itemId as string),
-    { shouldRetryOnError: false }
-  )
-  const places = item.places.length > 0 ? item.places : [item.origin]
-
-  const remove = async () => {
-    setBusy(true)
-    setFailed(false)
-    try {
-      await onDelete(item.id)
-    } catch {
-      setFailed(true)
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`} data-assistant-item={item.id}>
-      <div className="flex items-start gap-2">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-label={expanded ? t('items.collapse') : t('items.expand')}
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-[1px] flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-tertiary)"
-        >
-          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} />
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
-            <span className={`badge w-fit flex-none ${ITEM_STATUS_CLASS[item.status]}`}>
-              {t(`items.status.${item.status}`)}
-            </span>
-            <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
-              {item.title}
-            </span>
-          </div>
-          {item.doneWhen ? (
-            <div className="mt-1 break-words font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-              {t('items.doneWhen', { text: item.doneWhen })}
-            </div>
-          ) : null}
-          <div className="mt-1 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:flex-wrap desktop:gap-x-3">
-            {item.nextCheck ? (
-              <span>
-                {t('items.nextCheck', {
-                  time: format.dateTime(new Date(item.nextCheck), { dateStyle: 'medium', timeStyle: 'short' })
-                })}
-              </span>
-            ) : null}
-            <span className="break-words">{places.map((place) => placeLabel(place)).join(', ')}</span>
-            <span>
-              {t('items.updated', {
-                time: format.dateTime(new Date(item.updatedAt), { dateStyle: 'medium', timeStyle: 'short' })
-              })}
-            </span>
-          </div>
-          {expanded ? (
-            <div className="mt-2 rounded-md bg-(--surface-sunken) px-3 py-2" data-assistant-item-detail>
-              {detail.error && !detail.data ? (
-                <div className="font-sans text-[12px] text-(--text-tertiary)">{t('unavailable')}</div>
-              ) : !detail.data ? (
-                <div className="font-sans text-[12px] text-(--text-tertiary)">{t('loading')}</div>
-              ) : (
-                <>
-                  {detail.data.summary ? (
-                    <div className="whitespace-pre-wrap break-words font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-primary)">
-                      {detail.data.summary}
-                    </div>
-                  ) : null}
-                  {detail.data.observations.length === 0 ? (
-                    <div className="font-sans text-[12px] text-(--text-tertiary)">{t('items.noObservations')}</div>
-                  ) : (
-                    <ol className={`m-0 flex list-none flex-col gap-2 p-0 ${detail.data.summary ? 'mt-2' : ''}`}>
-                      {detail.data.observations.map((o, i) => (
-                        <li key={`${o.at}:${i}`} className="flex flex-col gap-[2px] desktop:flex-row desktop:gap-3">
-                          <span className="flex-none font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary) desktop:w-[150px]">
-                            {format.dateTime(new Date(o.at), { dateStyle: 'medium', timeStyle: 'short' })}
-                          </span>
-                          <span className="min-w-0 whitespace-pre-wrap break-words font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                            {o.text}
-                          </span>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </>
-              )}
-            </div>
-          ) : null}
-          {confirming ? (
-            <ConfirmStrip
-              prompt={t('items.deleteConfirm')}
-              confirm={t('items.delete')}
-              keep={t('keep')}
-              busy={busy}
-              onConfirm={() => void remove()}
-              onKeep={() => setConfirming(false)}
-            />
-          ) : null}
-          {failed ? (
-            <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
-              {t('items.deleteFailed')}
-            </div>
-          ) : null}
-        </div>
-        {canEdit ? (
-          <Button
-            variant="ghost"
-            size="xs"
-            className="flex-none"
-            disabled={busy || confirming}
-            ariaLabel={t('items.delete')}
-            onClick={() => setConfirming(true)}
-          >
-            <Icon name="trash" size={13} />
-            <span className="max-desktop:hidden">{t('items.delete')}</span>
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-/** How ending a follow-up from here went. */
-type EndState = 'busy' | 'ended' | 'alreadyEnded' | 'endFailed'
-
-function SubsessionRow({
-  subsession,
-  first,
-  onEnd
-}: {
-  subsession: AssistantSubsessionDto
-  first: boolean
-  onEnd: (row: AssistantSubsessionDto) => Promise<'stopped' | 'not_running'>
-}) {
-  const t = useTranslations('Agents.detail.activity')
-  const tf = useTranslations('Common.followUp')
-  const format = useFormatter()
-  const { orgPath } = useOrgs()
-  const [expanded, setExpanded] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [ending, setEnding] = useState<EndState | null>(null)
-  const followUp = followUpOf(subsession)
-  // An item's editor delete becomes ending its follow-up, under the task's own stop rule, by its id before its first check.
-  const endable =
-    followUp !== null && subsession.state === 'open' && subsession.canStop && taskStopKey(subsession) !== null
-  const parent = subsession.parent
-  const parentName = parent
-    ? parent.channelName
-      ? chatPlaceName(parent.platform ?? undefined, parent.channelName)
-      : (parent.title ?? t('subsessions.conversation'))
-    : null
-
-  const end = async () => {
-    setEnding('busy')
-    try {
-      setEnding((await onEnd(subsession)) === 'stopped' ? 'ended' : 'alreadyEnded')
-    } catch {
-      setEnding('endFailed')
-    }
-    setConfirming(false)
-  }
-
-  return (
-    <div
-      className={`flex flex-col gap-1 px-4 py-3 desktop:flex-row desktop:items-center desktop:gap-3 ${followUp ? 'desktop:flex-wrap' : ''} ${first ? '' : 'border-t border-(--border-subtle)'}`}
-      data-assistant-subsession={subsession.sessionId ?? 'hidden'}
-      data-follow-up={followUp?.status}
-    >
-      <span
-        className={`badge w-fit flex-none ${followUp ? FOLLOW_UP_STATUS_CLASS[followUp.status] : SUBSESSION_STATE_CLASS[subsession.state]}`}
-      >
-        {followUp ? tf(`status.${followUp.status}`) : t(`subsessions.state.${subsession.state}`)}
-      </span>
-      <div className="min-w-0 flex-1 font-sans text-[13px] font-medium leading-normal">
-        {subsession.sessionId ? (
-          <Link className="lnk break-words" href={orgPath(`/sessions/${encodeURIComponent(subsession.sessionId)}`)}>
-            {subsession.title ?? t('subsessions.untitled')}
-          </Link>
-        ) : subsession.visible && followUp ? (
-          <span className="break-words">{subsession.title ?? t('subsessions.untitled')}</span>
-        ) : subsession.visible ? (
-          <span className="text-(--text-secondary)">{t('subsessions.starting')}</span>
-        ) : (
-          <span className="inline-flex items-center gap-[6px] text-(--text-tertiary)">
-            <Icon name="lock" size={12} />
-            {t('subsessions.hidden')}
-          </span>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-        {followUp ? <span>{tf(followUpKindKey(followUp))}</span> : null}
-        {followUp?.status === 'waiting' && followUp.nextCheck ? (
-          <span>
-            {tf('nextCheck', {
-              time: format.dateTime(new Date(followUp.nextCheck), { dateStyle: 'medium', timeStyle: 'short' })
-            })}
-          </span>
-        ) : null}
-        {parent && parentName ? (
-          <Link className="lnk text-[12px]" href={orgPath(`/sessions/${encodeURIComponent(parent.sessionId)}`)}>
-            {t('subsessions.from', { name: parentName })}
-          </Link>
-        ) : null}
-        {followUp ? null : (
-          <span>
-            {t('subsessions.started', {
-              time: format.dateTime(new Date(subsession.startedAt), { dateStyle: 'medium', timeStyle: 'short' })
-            })}
-          </span>
-        )}
-        {followUp && subsession.visible ? (
-          <FollowUpChecksToggle expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
-        ) : null}
-      </div>
-      {endable ? (
-        <Button
-          variant="secondary"
-          size="xs"
-          className="w-fit flex-none"
-          disabled={ending === 'busy' || confirming}
-          onClick={() => setConfirming(true)}
-        >
-          <Icon name="square" size={11} />
-          {tf('end')}
-        </Button>
-      ) : null}
-      {followUp && expanded ? (
-        <div className="w-full desktop:basis-full">
-          <FollowUpChecks followUp={followUp} />
-        </div>
-      ) : null}
-      {confirming && endable ? (
-        <div className="w-full desktop:basis-full">
-          <ConfirmStrip
-            prompt={tf('endConfirm')}
-            confirm={tf('end')}
-            keep={tf('keep')}
-            busy={ending === 'busy'}
-            onConfirm={() => void end()}
-            onKeep={() => setConfirming(false)}
-          />
-        </div>
-      ) : null}
-      {ending && ending !== 'busy' ? (
-        <div
-          role="status"
-          data-follow-up-end={ending}
-          className={`w-full font-sans text-[12px] font-normal leading-normal desktop:basis-full ${
-            ending === 'endFailed' ? 'text-(--status-error)' : 'text-(--text-secondary)'
-          }`}
-        >
-          {tf(ending)}
-        </div>
+      {finished > 0 ? (
+        <FinishedToggle count={finished} open={showFinished} onToggle={() => setShowFinished((v) => !v)} />
       ) : null}
     </div>
   )
@@ -679,27 +272,22 @@ function SubsessionRow({
 /** Background work waiting for permission (assistant-mode.md §5.6): which one, what it asks to run, and the same answers its card offers. */
 function PermissionRequestRow({
   request,
-  first,
   result,
   onDecide
 }: {
   request: AssistantPermissionRequestDto
-  first: boolean
   result: PermissionResult | undefined
   onDecide: (request: AssistantPermissionRequestDto, decision: 'allow' | 'deny', optionId?: string) => Promise<void>
 }) {
   const t = useTranslations('Agents.detail.activity')
-  const format = useFormatter()
+  const tl = useTranslations('Common.taskList')
+  const shortTime = useShortTime()
   const { orgPath } = useOrgs()
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const { subsession, parent } = request
-  const parentName = parent
-    ? parent.channelName
-      ? chatPlaceName(parent.platform ?? undefined, parent.channelName)
-      : (parent.title ?? t('subsessions.conversation'))
-    : null
-  const choices: { decision: 'allow' | 'deny'; label: string; optionId?: string }[] = request.options?.length
+  const offered: { decision: 'allow' | 'deny'; label: string; optionId?: string }[] = request.options?.length
     ? request.options.map((option: AgentPermissionOptionDto) => ({
         decision: option.kind === 'allow_once' || option.kind === 'allow_always' ? 'allow' : 'deny',
         label: option.name,
@@ -709,6 +297,8 @@ function PermissionRequestRow({
         { decision: 'allow', label: t('permissions.allow') },
         { decision: 'deny', label: t('permissions.deny') }
       ]
+  // Denials first, so the primary answer sits at the right edge.
+  const choices = [...offered.filter((c) => c.decision === 'deny'), ...offered.filter((c) => c.decision === 'allow')]
 
   const decide = async (choice: (typeof choices)[number]) => {
     setBusy(true)
@@ -723,101 +313,94 @@ function PermissionRequestRow({
   }
 
   return (
-    <div
-      className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`}
-      data-assistant-permission={request.requestId}
-    >
-      <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
-        <span className="badge w-fit flex-none bg-(--status-paused-soft) text-(--status-paused)">
-          {t('permissions.badge')}
-        </span>
-        <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
-          {subsession ? (
-            <Link className="lnk" href={orgPath(`/sessions/${encodeURIComponent(subsession.sessionId)}`)}>
-              {subsession.title ?? t('subsessions.untitled')}
-            </Link>
-          ) : (
-            <span className="inline-flex items-center gap-[6px] font-medium text-(--text-tertiary)">
-              <Icon name="lock" size={12} />
-              {t('subsessions.hidden')}
-            </span>
-          )}
-        </span>
-      </div>
-      <div
-        className="mt-2 break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-mono text-[11.5px] leading-[1.45] text-(--text-secondary)"
-        title={request.tool}
-      >
-        {request.tool}
-      </div>
-      <div className="mt-2 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:gap-3">
-        {parent && parentName ? (
-          <Link className="lnk text-[12px]" href={orgPath(`/sessions/${encodeURIComponent(parent.sessionId)}`)}>
-            {t('subsessions.from', { name: parentName })}
+    <TaskRow
+      tone="waiting"
+      attrs={{ 'data-assistant-permission': request.requestId }}
+      title={
+        subsession ? (
+          <Link
+            className="min-w-0 break-words text-inherit no-underline hover:underline"
+            href={orgPath(`/sessions/${encodeURIComponent(subsession.sessionId)}`)}
+          >
+            {subsession.title ?? tl('untitled')}
           </Link>
-        ) : null}
-        <span>
-          {t('permissions.expires', {
-            time: format.dateTime(new Date(request.expiresAt), { dateStyle: 'medium', timeStyle: 'short' })
-          })}
-        </span>
-      </div>
-      {result ? (
-        <div
-          role="status"
-          className={`mt-2 font-sans text-[12.5px] font-medium leading-normal ${
-            result === 'allowed' ? 'text-(--status-online-text)' : 'text-(--text-secondary)'
-          }`}
-        >
-          {t(`permissions.outcome.${result}`)}
-        </div>
-      ) : (
-        <div className="mt-2 flex flex-wrap items-center gap-2" data-assistant-permission-actions>
-          {choices.map((choice) => (
-            <Button
-              key={choice.optionId ?? choice.decision}
-              variant={choice.decision === 'allow' ? 'primary' : 'secondary'}
-              size="xs"
-              disabled={busy}
-              onClick={() => void decide(choice)}
+        ) : (
+          <span className="min-w-0 break-words font-normal text-(--text-tertiary)">{tl('hidden')}</span>
+        )
+      }
+      meta={
+        <MetaLine
+          platform={parent?.platform}
+          parts={[
+            parent ? <ParentPlace parent={parent} /> : null,
+            t('permissions.badge'),
+            tl('expires', { time: shortTime(request.expiresAt) })
+          ]}
+        />
+      }
+      preview={<PreviewLine text={request.tool} mono expanded={expanded} onToggle={() => setExpanded((v) => !v)} />}
+      actions={
+        result ? null : (
+          <div className="flex flex-wrap justify-end gap-2" data-assistant-permission-actions>
+            {choices.map((choice) => (
+              <DecisionButton
+                key={choice.optionId ?? choice.decision}
+                label={choice.label}
+                primary={choice.decision === 'allow'}
+                disabled={busy}
+                onClick={() => void decide(choice)}
+              />
+            ))}
+          </div>
+        )
+      }
+      after={
+        <>
+          {result ? (
+            <div
+              role="status"
+              className={`mt-1 font-sans text-[12.5px] font-medium leading-normal ${
+                result === 'allowed' ? 'text-(--status-online-text)' : 'text-(--text-secondary)'
+              }`}
             >
-              {choice.label}
-            </Button>
-          ))}
-        </div>
-      )}
-      {failure && !result ? (
-        <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
-          {t('permissions.decideFailed')}
-        </div>
-      ) : null}
-    </div>
+              {t(`permissions.outcome.${result}`)}
+            </div>
+          ) : null}
+          {failure && !result ? (
+            <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
+              {t('permissions.decideFailed')}
+            </div>
+          ) : null}
+        </>
+      }
+    />
   )
 }
 
 function DraftRow({
   agentId,
   draft,
-  first,
   result,
   pending,
   onDecide
 }: {
   agentId: string
   draft: AssistantDraftDto
-  first: boolean
   result: DraftResult | undefined
   /** The latest read still lists it as waiting for approval. */
   pending: boolean
   onDecide: (draft: AssistantDraftDto, decision: AssistantDraftDecision) => Promise<void>
 }) {
   const t = useTranslations('Agents.detail.activity')
-  const format = useFormatter()
+  const tl = useTranslations('Common.taskList')
+  const tf = useTranslations('Common.followUp')
+  const shortTime = useShortTime()
   const { members } = useConsoleData()
   const placeLabel = usePlaceLabel(agentId)
   const [confirming, setConfirming] = useState<AssistantDraftDecision | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
   const target = draft.target.name
     ? draft.target.dm
       ? t('dmWith', { name: draft.target.name })
@@ -827,15 +410,19 @@ function DraftRow({
   const proposal = draft.kind === 'task' ? draft.proposal : undefined
   const approver = draft.approver
   const member = approver?.consoleUserId ? members.find((m) => m.userId === approver.consoleUserId) : undefined
-  const approverName = draft.inConversation
-    ? t('drafts.inConversation')
+  const approves = draft.inConversation
+    ? t('drafts.inConversationApproves')
     : !approver
       ? t('drafts.noApprover')
-      : approver.kind === 'conversation'
-        ? placeLabel(approver)
-        : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.noApprover'))))
+      : t('drafts.approves', {
+          name:
+            approver.kind === 'conversation'
+              ? placeLabel(approver)
+              : (approver.name ?? (member ? memberDisplayName(member) : (approver.userId ?? t('drafts.someone'))))
+        })
   // An unconfirmed decision may be tried again only while the draft is still listed as waiting; a proposal left waiting may be approved again.
   const canDecide = !result || ('unconfirmed' in result && pending) || 'busy' in result
+  const expires = tl('expires', { time: shortTime(draft.expiresAt) })
 
   const decide = async (decision: AssistantDraftDecision) => {
     setBusy(true)
@@ -854,110 +441,123 @@ function DraftRow({
     }
   }
 
+  // The collapsed line: a message's text, a proposal's reason, else what it would take or run.
+  const previewText = proposal
+    ? proposal.why || (proposal.followUp ? tf('doneWhen', { text: proposal.followUp.doneWhen }) : draft.text)
+    : draft.text
+  const details = proposal ? (
+    <>
+      {proposal.itemTitle ? (
+        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {t('drafts.proposal.item', { title: proposal.itemTitle })}
+        </span>
+      ) : null}
+      {proposal.followUp ? (
+        <ProposedFollowUp followUp={proposal.followUp} compact />
+      ) : proposal.why ? (
+        <div className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-primary)">
+          {draft.text}
+        </div>
+      ) : null}
+    </>
+  ) : null
+
   return (
-    <div className={`px-4 py-3 ${first ? '' : 'border-t border-(--border-subtle)'}`} data-assistant-draft={draft.id}>
-      {proposal ? (
-        <>
-          <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
-            <span className="badge w-fit flex-none bg-(--status-info-soft) text-(--status-info)">
-              {t('drafts.proposal.badge')}
+    <TaskRow
+      tone="waiting"
+      attrs={{ 'data-assistant-draft': draft.id }}
+      title={
+        proposal ? (
+          <span className="min-w-0 break-words">{proposal.sentence}</span>
+        ) : (
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-[2px]">
+            <span className="min-w-0 break-words">
+              {t('drafts.to', { target })}
+              {draft.target.thread ? (
+                <span className="font-normal text-(--text-tertiary)"> · {t('drafts.inThread')}</span>
+              ) : null}
             </span>
-            <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
-              {proposal.sentence}
-            </span>
+            {draft.target.external ? (
+              <span className="flex-none rounded-xs border border-(--border-default) px-[5px] font-sans text-[11px] font-normal leading-[1.5] text-(--text-secondary)">
+                {t('drafts.external')}
+              </span>
+            ) : null}
+          </span>
+        )
+      }
+      meta={
+        <MetaLine
+          platform={draft.target.platform}
+          parts={
+            proposal
+              ? [target, proposal.followUp ? t('drafts.proposal.kindFollowUp') : t('drafts.proposal.kindTask'), expires]
+              : // The title already names where it goes, so the place is the mark alone.
+                [t('drafts.kind'), approves, expires]
+          }
+        />
+      }
+      preview={
+        <PreviewLine text={previewText} expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
+          {details}
+        </PreviewLine>
+      }
+      actions={
+        canDecide && !confirming ? (
+          <div className="flex gap-2" data-assistant-draft-actions>
+            <DecisionButton
+              label={proposal ? t('drafts.proposal.deny') : t('drafts.discard')}
+              primary={false}
+              onClick={() => setConfirming('discard')}
+            />
+            <DecisionButton label={t('drafts.approve')} primary onClick={() => setConfirming('approve')} />
           </div>
-          {proposal.why ? (
-            <div className="mt-1 break-words font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-              {t('drafts.proposal.why', { why: proposal.why })}
+        ) : null
+      }
+      after={
+        <>
+          {result ? (
+            <DraftOutcome
+              result={result}
+              pending={pending}
+              proposalPlace={proposal ? target : undefined}
+              followUpForm={proposal?.followUp !== undefined}
+            />
+          ) : null}
+          {canDecide && confirming ? (
+            <ConfirmStrip
+              prompt={
+                proposal
+                  ? confirming === 'discard'
+                    ? t('drafts.proposal.denyConfirm')
+                    : proposal.followUp
+                      ? t('drafts.proposal.takeConfirm', { place: target })
+                      : t('drafts.proposal.approveConfirm', { place: target })
+                  : confirming === 'discard'
+                    ? t('drafts.discardConfirm')
+                    : t('drafts.approveConfirm', { target })
+              }
+              confirm={
+                confirming !== 'discard'
+                  ? t('drafts.approve')
+                  : proposal
+                    ? t('drafts.proposal.deny')
+                    : t('drafts.discard')
+              }
+              keep={t('drafts.cancel')}
+              busy={busy}
+              tone={confirming === 'discard' ? 'danger' : 'primary'}
+              onConfirm={() => void decide(confirming)}
+              onKeep={() => setConfirming(null)}
+            />
+          ) : null}
+          {failure && canDecide ? (
+            <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
+              {failure}
             </div>
           ) : null}
         </>
-      ) : (
-        <div className="flex flex-col gap-1 desktop:flex-row desktop:items-center desktop:gap-2">
-          <span className="min-w-0 break-words font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary) desktop:flex-1">
-            {t('drafts.to', { target })}
-            {draft.target.thread ? (
-              <span className="font-normal text-(--text-tertiary)"> · {t('drafts.inThread')}</span>
-            ) : null}
-          </span>
-          {draft.target.external ? (
-            <span className="badge w-fit flex-none bg-(--status-paused-soft) text-(--status-paused)">
-              {t('drafts.external')}
-            </span>
-          ) : null}
-        </div>
-      )}
-      {proposal?.followUp ? (
-        <div className="mt-2">
-          <ProposedFollowUp followUp={proposal.followUp} />
-        </div>
-      ) : (
-        <div className="mt-2 max-h-[240px] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-primary)">
-          {draft.text}
-        </div>
-      )}
-      <div className="mt-2 flex flex-col gap-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:flex-row desktop:gap-3">
-        {proposal ? (
-          <span>
-            {proposal.followUp
-              ? t('drafts.proposal.followUpIn', { place: target })
-              : t('drafts.proposal.runsIn', { place: target })}
-          </span>
-        ) : null}
-        {proposal?.itemTitle ? <span>{t('drafts.proposal.item', { title: proposal.itemTitle })}</span> : null}
-        <span>{t('drafts.approver', { name: approverName })}</span>
-        <span>
-          {t('drafts.expires', {
-            time: format.dateTime(new Date(draft.expiresAt), { dateStyle: 'medium', timeStyle: 'short' })
-          })}
-        </span>
-      </div>
-      {result ? (
-        <DraftOutcome
-          result={result}
-          pending={pending}
-          proposalPlace={proposal ? target : undefined}
-          followUpForm={proposal?.followUp !== undefined}
-        />
-      ) : null}
-      {!canDecide ? null : confirming ? (
-        <ConfirmStrip
-          prompt={
-            proposal
-              ? confirming === 'discard'
-                ? t('drafts.proposal.denyConfirm')
-                : proposal.followUp
-                  ? t('drafts.proposal.takeConfirm', { place: target })
-                  : t('drafts.proposal.approveConfirm', { place: target })
-              : confirming === 'discard'
-                ? t('drafts.discardConfirm')
-                : t('drafts.approveConfirm', { target })
-          }
-          confirm={
-            confirming !== 'discard' ? t('drafts.approve') : proposal ? t('drafts.proposal.deny') : t('drafts.discard')
-          }
-          keep={t('drafts.cancel')}
-          busy={busy}
-          tone={confirming === 'discard' ? 'danger' : 'primary'}
-          onConfirm={() => void decide(confirming)}
-          onKeep={() => setConfirming(null)}
-        />
-      ) : (
-        <div className="mt-2 flex flex-wrap items-center gap-2" data-assistant-draft-actions>
-          <Button variant="primary" size="xs" onClick={() => setConfirming('approve')}>
-            {t('drafts.approve')}
-          </Button>
-          <Button variant="secondary" size="xs" onClick={() => setConfirming('discard')}>
-            {proposal ? t('drafts.proposal.deny') : t('drafts.discard')}
-          </Button>
-        </div>
-      )}
-      {failure && canDecide ? (
-        <div role="alert" className="mt-1 font-sans text-[12px] text-(--status-error)">
-          {failure}
-        </div>
-      ) : null}
-    </div>
+      }
+    />
   )
 }
 

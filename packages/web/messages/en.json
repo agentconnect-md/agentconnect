@@ -215,6 +215,40 @@
         "firstCheck": "First check {time}",
         "noCheck": "No check until it is messaged"
       }
+    },
+    "taskList": {
+      "groups": {
+        "tasks": "Tasks",
+        "followUps": "Follow-ups",
+        "subagents": "Subagents",
+        "commands": "Commands"
+      },
+      "finished": "{count} finished",
+      "state": {
+        "open": "Running",
+        "done": "Reported",
+        "failed": "Failed"
+      },
+      "runtimeState": {
+        "running": "Running",
+        "done": "Done",
+        "failed": "Failed"
+      },
+      "started": "started {time}",
+      "lastCheck": "last {time}",
+      "expires": "expires {time}",
+      "untitled": "Untitled task",
+      "starting": "Starting…",
+      "hidden": "Not visible to you",
+      "webchat": "Webchat",
+      "conversation": "Conversation",
+      "stop": "Stop",
+      "end": "End",
+      "stopped": "Stopped.",
+      "notRunning": "Nothing was running.",
+      "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
+      "stopFailed": "Couldn’t stop it. Try again.",
+      "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here."
     }
   },
   "Profile": {
@@ -839,52 +873,19 @@
         "lastCheck": "Last check: {error}"
       },
       "tasksPanel": {
-        "noBackgroundTasks": "None in this turn",
-        "noTasksInSession": "No background commands or subagents — everything the agent ran finished inside its turn.",
+        "idle": "Nothing running in the background.",
         "unnamedTask": "Unnamed background command",
         "unnamedSubagent": "Unnamed subagent",
-        "subagent": "subagent",
-        "subagentTitle": "The runtime’s own internal subagent invocation",
-        "olderTasksHidden": "Older ones are not shown — the daemon keeps a bounded history.",
-        "groupTurn": "This turn",
-        "groupTurnHint": "(reported by the runtime)",
-        "census": {
-          "running": "{count} running",
-          "done": "{count} done",
-          "failed": "{count} failed"
-        },
-        "upgradeDaemon": "This agent runs a daemon version that cannot report this turn’s tasks. Update the agent to watch them here.",
-        "oldDaemon": "This agent runs a daemon version that cannot report this turn’s tasks.",
-        "notReadable": "This session’s tasks are not available to read.",
-        "unavailable": "This turn’s tasks are unavailable — the owning daemon may be offline."
+        "olderTasksHidden": "Older ones aren’t shown.",
+        "upgradeDaemon": "Update this agent to see its subagents and commands here.",
+        "oldDaemon": "This agent’s daemon can’t report its subagents and commands.",
+        "notReadable": "This session’s subagents and commands can’t be read.",
+        "unavailable": "Subagents and commands are unavailable. The agent’s daemon may be offline."
       },
       "subsessionsPanel": {
-        "group": "Delegated",
-        "groupHint": "(managed by AgentConnect)",
-        "census": {
-          "running": "{count} running",
-          "waiting": "{count} waiting",
-          "reported": "{count} reported",
-          "ended": "{count} ended",
-          "failed": "{count} failed"
-        },
-        "state": {
-          "open": "Running",
-          "done": "Reported",
-          "failed": "Failed"
-        },
-        "untitled": "Untitled task",
-        "starting": "Starting…",
-        "hidden": "Not visible to you",
-        "started": "Started {time}",
-        "stop": "Stop",
-        "stopped": "Stopped.",
-        "notRunning": "Nothing was running.",
-        "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
-        "stopFailed": "Couldn’t stop it. Try again.",
-        "upgradeDaemon": "Upgrade this agent’s daemon to see its delegated tasks here.",
-        "notReadable": "This conversation’s delegated tasks can’t be read.",
-        "unavailable": "Delegated tasks are unavailable right now.",
+        "upgradeDaemon": "Upgrade this agent’s daemon to see its tasks and follow-ups here.",
+        "notReadable": "This conversation’s tasks and follow-ups can’t be read.",
+        "unavailable": "Tasks and follow-ups are unavailable right now.",
         "more": "Show more",
         "moreFailed": "Couldn’t load more. Try again."
       },
@@ -3182,55 +3183,14 @@
         "unavailable": "Activity is unavailable right now.",
         "upgradeDaemon": "Upgrade this agent’s daemon to see its activity.",
         "more": "Only the most recent are shown.",
-        "keep": "Keep",
         "webchat": "Webchat",
         "dmWith": "DM with {name}",
-        "items": {
-          "title": "Items",
-          "empty": "No open items.",
-          "closed": "Done and dropped",
-          "closedEmpty": "None yet.",
-          "expand": "Show observations",
-          "collapse": "Hide observations",
-          "status": {
-            "active": "Active",
-            "waiting": "Waiting",
-            "done": "Done",
-            "dropped": "Dropped"
-          },
-          "doneWhen": "Done when: {text}",
-          "nextCheck": "Next check {time}",
-          "updated": "Updated {time}",
-          "noObservations": "No observations yet.",
-          "delete": "Delete",
-          "deleteConfirm": "Delete this item? The agent stops following it.",
-          "deleteFailed": "Couldn’t delete the item."
-        },
-        "subsessions": {
-          "title": "Tasks",
-          "empty": "No tasks yet.",
-          "state": {
-            "open": "Running",
-            "done": "Reported",
-            "failed": "Failed"
-          },
-          "untitled": "Untitled task",
-          "starting": "Starting…",
-          "hidden": "Not visible to you",
-          "from": "From {name}",
-          "started": "Started {time}",
-          "conversation": "a conversation"
-        },
         "drafts": {
-          "title": "Waiting for approval",
-          "empty": "Nothing waiting for approval.",
-          "to": "To {target}",
+          "to": "Message to {target}",
           "inThread": "in a thread",
           "external": "External",
-          "approver": "Approver: {name}",
           "expires": "Expires {time}",
-          "noApprover": "No one reachable",
-          "inConversation": "anyone who may continue the conversation",
+          "noApprover": "No one can approve it",
           "approve": "Approve",
           "discard": "Discard",
           "cancel": "Cancel",
@@ -3255,13 +3215,11 @@
             "why": "Why: {why}",
             "details": "Reason and details",
             "item": "For {title}",
-            "runsIn": "Runs in {place}",
             "deny": "Deny",
             "approveConfirm": "Run this now? It reports back in {place}.",
             "approveConfirmHere": "Run this now? It reports back in this conversation.",
             "denyConfirm": "Deny this proposal? Nothing is run.",
             "dismiss": "Dismiss",
-            "followUpIn": "Followed up in {place}",
             "takeConfirm": "Take this follow-up in {place}? It is followed up for you, and nothing else runs.",
             "takeConfirmHere": "Take this follow-up in this conversation? It is followed up for you, and nothing else runs.",
             "outcome": {
@@ -3279,12 +3237,17 @@
               "notTaken": "Couldn’t take the follow-up: {reason}.",
               "deniedFollowUp": "Denied. No follow-up was taken.",
               "seeFollowUp": "See it in its conversation’s Tasks"
-            }
-          }
+            },
+            "kindTask": "Suggested task",
+            "kindFollowUp": "Suggested follow-up"
+          },
+          "kind": "Draft",
+          "approves": "{name} approves",
+          "inConversationApproves": "Anyone who may continue the conversation approves",
+          "someone": "Someone"
         },
         "permissions": {
           "badge": "Permission",
-          "expires": "Denied and stopped {time} if nobody answers",
           "allow": "Allow",
           "deny": "Deny",
           "decideFailed": "Couldn’t decide. Try again.",
@@ -3293,7 +3256,9 @@
             "denied": "Denied.",
             "gone": "No longer waiting for approval."
           }
-        }
+        },
+        "waiting": "Waiting for you",
+        "empty": "Nothing running or waiting."
       },
       "dreamSchedule": {
         "runOnSchedule": "Run on a schedule (otherwise dreams only run when you trigger them)",

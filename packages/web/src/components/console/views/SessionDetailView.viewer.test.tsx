@@ -1113,7 +1113,7 @@ describe('the Tasks tab', () => {
     })
     await render()
     expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).not.toContain('2')
-    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('1 done')
+    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('1 finished')
   })
 
   it('offers no Tasks tab for a synthetic playground session, whose canonical id does not exist yet', async () => {
@@ -1412,7 +1412,7 @@ describe('the Tasks tab’s Delegated group', () => {
     const groups = Array.from(container?.querySelectorAll<HTMLElement>('[data-task-group]') ?? []).map(
       (group) => group.dataset.taskGroup
     )
-    expect(groups).toEqual(['turn', 'delegated'])
+    expect(groups).toEqual(['tasks'])
     const panel = container?.querySelector('[data-subsessions-panel]')
     expect(panel?.textContent).toContain('Fix the flaky test')
     expect(panel?.querySelector('a[href="/acme/sessions/child-1"]')).not.toBeNull()

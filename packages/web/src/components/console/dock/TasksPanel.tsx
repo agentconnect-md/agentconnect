@@ -1,19 +1,25 @@
 'use client'
 
-// The dock's Tasks tab (§3.5): one session's tasks in two groups — what the runtime reports for this turn, read-only, and the tasks AgentConnect manages for it (delegated tasks, follow-ups, approved proposals), which can be stopped.
-// The runtime group is READ-ONLY by measurement: no agent-protocol primitive can address ONE background command, so a per-row control could only cancel unrelated work; the composer's turn-scoped stop is the escape hatch.
-// Both reads are proxied through the CP from the owning daemon and stored nowhere (body-locality, §2), so an offline daemon, an old daemon and an untracked session are expected answers drawn as data.
-// What the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line, and no "Logs" link (§3.5 records the measurement behind each).
+// The dock's Tasks tab (§3.5): one session's background work in four groups — Tasks and Follow-ups that AgentConnect manages and can stop, then the Subagents and Commands the runtime reports, read-only.
+// Runtime rows are READ-ONLY by measurement: no agent-protocol primitive can address ONE background command, so the composer's turn-scoped stop is the escape hatch.
+// Both reads are proxied from the owning daemon and stored nowhere (body-locality, §2), so an offline daemon, an old daemon and an untracked session are expected answers drawn as data.
+// What the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line and no "Logs" link (§3.5).
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
 import { ApiError, fetchAgentTasks, type AgentTaskDto, type AgentTasksDto } from '@/lib/api'
 import { useDockRefresh } from '@/components/console/dock/auto-refresh'
+import {
+  FinishedToggle,
+  MetaLine,
+  TaskGroup,
+  TaskRow,
+  formatTaskElapsed,
+  type MarkTone
+} from '@/components/console/task-list'
 import type { DockTabStatus } from './SessionDock'
-import { TaskGroupHeading, formatTaskElapsed } from './task-group'
 import {
   SUBSESSIONS_UNSETTLED,
   SubsessionsPanel,
@@ -36,11 +42,11 @@ const TICK_MS = 1_000
 
 /** What the Tasks tab reports upward; the caller owns the tab descriptor, as for the Files and Git tabs. */
 export interface TasksPanelVerdict {
-  /** Every group's first read of this scope has answered. */
+  /** Every read of this scope has answered once. */
   settled: boolean
-  /** Running tasks in both groups, for the badge; null while unknown and when neither group has a count. */
+  /** Running tasks across the groups, for the badge; null while unknown and when no read has a count. */
   running: number | null
-  /** Either group has something to show, or the runtime tracks this session. */
+  /** A group has something to show, or the runtime tracks this session. */
   shown: boolean
 }
 
@@ -51,15 +57,17 @@ export function tasksTabShown(verdict: TasksPanelVerdict): boolean {
   return !verdict.settled || verdict.shown
 }
 
-/** The runtime group's own answer, which the panel folds into {@link TasksPanelVerdict}. */
+/** The runtime read's own answer, which the panel folds into {@link TasksPanelVerdict}. */
 interface TurnVerdict {
   settled: boolean
   running: number | null
-  /** The runtime tracks this session, or the read failed and the group stays to say why. */
+  /** The runtime tracks this session, or the read failed and the panel stays to say why. */
   shown: boolean
+  finished: number
+  failed: boolean
 }
 
-const TURN_UNSETTLED: TurnVerdict = { settled: false, running: null, shown: false }
+const TURN_UNSETTLED: TurnVerdict = { settled: false, running: null, shown: false, finished: 0, failed: false }
 
 export { formatTaskElapsed }
 
@@ -109,7 +117,7 @@ function useAgentTasks(agentId: string, sessionId: string, revision: number): Ta
   return answered?.scope === scope ? answered.read : PENDING
 }
 
-/** Both groups in one scroll, and one verdict for the tab: settled when both are, badged with what runs in either. */
+/** Every group in one scroll, and one verdict for the tab: settled when both reads are, badged with what runs in either. */
 export function TasksPanel({
   agentId,
   sessionId,
@@ -120,22 +128,25 @@ export function TasksPanel({
   onVerdictChange
 }: {
   agentId: string
-  /** The ACP session whose tasks this reads; the daemon keys both groups by it. */
+  /** The ACP session whose tasks this reads; the daemon keys both reads by it. */
   sessionId: string
-  /** Whether the delegated group is read: the agent is in assistant mode, or its daemon lists every agent's tasks. */
+  /** Whether the Tasks and Follow-ups are read: the agent is in assistant mode, or its daemon lists every agent's tasks. */
   delegated?: boolean
   /** Whether this tab is the visible one. */
   active?: boolean
   /** Whether a turn is streaming in this session; its falling edge is where new tasks come from. */
   turnActive?: boolean
-  /** Bumped by the tab's `refresh-cw` action: re-reads both groups without remounting. */
+  /** Bumped by the tab's `refresh-cw` action: re-reads both without remounting. */
   refreshTick?: number
   onVerdictChange?: (verdict: TasksPanelVerdict) => void
 }) {
+  const t = useTranslations('Sessions.detail.tasksPanel')
   const scope = `${agentId}\n${sessionId}`
   // Held per scope, so a switch never folds the previous session's answer into the new one's verdict.
   const [turnHeard, setTurnHeard] = useState<{ scope: string; verdict: TurnVerdict } | null>(null)
   const [delegatedHeard, setDelegatedHeard] = useState<{ scope: string; verdict: SubsessionsPanelVerdict } | null>(null)
+  const [finishedOpen, setFinishedOpen] = useState<string | null>(null)
+  const showFinished = finishedOpen === scope
   const onTurnVerdict = useCallback((verdict: TurnVerdict) => setTurnHeard({ scope, verdict }), [scope])
   const onDelegatedVerdict = useCallback(
     (verdict: SubsessionsPanelVerdict) => setDelegatedHeard({ scope, verdict }),
@@ -151,6 +162,10 @@ export function TasksPanel({
   const delegatedRunning = delegatedVerdict?.running ?? 0
   const running = turn.running === null && delegatedVerdict === null ? null : (turn.running ?? 0) + delegatedRunning
   const shown = turn.shown || (delegatedVerdict !== null && subsessionsTabShown(delegatedVerdict))
+  const finished = turn.finished + (delegatedVerdict?.finished ?? 0)
+  const delegatedOpen = delegatedVerdict ? delegatedVerdict.count - delegatedVerdict.finished : 0
+  // Nothing open in any group and no read to explain: say so once instead of drawing empty groups.
+  const idle = (turn.running ?? 0) + delegatedOpen === 0 && !turn.failed && !delegatedVerdict?.failed
 
   // Reported on the EDGE: the caller's callback is a fresh closure per render and a poll usually finds the same census.
   const reported = useRef<string | null>(null)
@@ -161,21 +176,13 @@ export function TasksPanel({
     onVerdictChange?.({ settled, running, shown })
   }, [onVerdictChange, running, settled, shown])
 
-  // Mounted while pending so both groups read; drawn only once both have answered, so the dock's own placeholder speaks alone.
+  // Mounted while pending so both reads run; drawn only once both have answered, so the dock's own placeholder speaks alone.
   return (
     <div
       data-tasks-panel={settled ? '' : undefined}
       className={settled ? 'flex min-h-0 flex-1 flex-col overflow-auto px-3 py-[10px]' : 'hidden'}
     >
-      <div className="flex flex-none flex-col gap-4">
-        <TurnTasksGroup
-          agentId={agentId}
-          sessionId={sessionId}
-          active={active}
-          turnActive={turnActive}
-          refreshTick={refreshTick}
-          onVerdictChange={onTurnVerdict}
-        />
+      <div className="flex flex-none flex-col gap-3">
         {delegated ? (
           <SubsessionsPanel
             agentId={agentId}
@@ -183,7 +190,25 @@ export function TasksPanel({
             active={active}
             turnActive={turnActive}
             refreshTick={refreshTick}
+            showFinished={showFinished}
             onVerdictChange={onDelegatedVerdict}
+          />
+        ) : null}
+        <TurnTasksGroups
+          agentId={agentId}
+          sessionId={sessionId}
+          active={active}
+          turnActive={turnActive}
+          refreshTick={refreshTick}
+          showFinished={showFinished}
+          onVerdictChange={onTurnVerdict}
+        />
+        {idle && !showFinished ? <PanelNotice text={t('idle')} /> : null}
+        {finished > 0 ? (
+          <FinishedToggle
+            count={finished}
+            open={showFinished}
+            onToggle={() => setFinishedOpen(showFinished ? null : scope)}
           />
         ) : null}
       </div>
@@ -191,13 +216,14 @@ export function TasksPanel({
   )
 }
 
-/** The runtime's own tasks for this session: long commands and its subagents, read-only. */
-function TurnTasksGroup({
+/** The runtime's own background work for this session: its Subagents and its Commands, read-only. */
+function TurnTasksGroups({
   agentId,
   sessionId,
   active,
   turnActive,
   refreshTick,
+  showFinished,
   onVerdictChange
 }: {
   agentId: string
@@ -205,10 +231,12 @@ function TurnTasksGroup({
   active: boolean
   turnActive: boolean
   refreshTick: number
+  showFinished: boolean
   onVerdictChange: (verdict: TurnVerdict) => void
 }) {
   const t = useTranslations('Sessions.detail.tasksPanel')
-  // Reads the group asks for ITSELF (polls and the reveal edge), summed with the tab action's counter so every source names one read.
+  const tl = useTranslations('Common.taskList')
+  // Reads the groups ask for ITSELF (polls and the reveal edge), summed with the tab action's counter so every source names one read.
   const [ownTick, setOwnTick] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const read = useAgentTasks(agentId, sessionId, refreshTick + ownTick)
@@ -223,7 +251,7 @@ function TurnTasksGroup({
     wasActive.current = active
   }, [active])
 
-  // A visible group always polls (an idle session still has the 0 -> running edge to discover); a hidden one reads on a turn's falling edge, which is what reveals the tab once the runtime starts tracking the session.
+  // A visible panel always polls (an idle session still has the 0 -> running edge to discover); a hidden one reads on a turn's falling edge, which is what reveals the tab once the runtime starts tracking the session.
   useDockRefresh({
     active,
     turnActive,
@@ -242,135 +270,89 @@ function TurnTasksGroup({
   // `running` is null for anything that is not a counted answer: a failed read and an untracked session.
   const counted = read.data?.tracked ? running : null
   const shown = read.err !== null || read.data?.tracked === true
+  const finished = read.data?.tracked ? tasks.length - running : 0
+  const failed = read.err !== null
   const reported = useRef<string | null>(null)
   useEffect(() => {
-    const key = `${settled}:${counted ?? ''}:${shown}`
+    const key = `${settled}:${counted ?? ''}:${shown}:${finished}:${failed}`
     if (reported.current === key) return
     reported.current = key
-    onVerdictChange({ settled, running: counted, shown })
-  }, [counted, onVerdictChange, settled, shown])
+    onVerdictChange({ settled, running: counted, shown, finished, failed })
+  }, [counted, failed, finished, onVerdictChange, settled, shown])
 
-  // An untracked session has nothing in this group: a runtime that reports no task lifecycle is not an idle one, and the tab shows only what the delegated group holds.
+  // An untracked session has nothing here: a runtime that reports no task lifecycle is not an idle one.
   if (!settled || !shown) return null
+  if (read.err) return <PanelNotice text={t(noticeKey(read.errStatus, read.errCode))} warn={read.errStatus !== 503} />
 
-  const body = () => {
-    if (read.err) {
-      return <PanelNotice text={t(noticeKey(read.errStatus, read.errCode))} warn={read.errStatus !== 503} />
-    }
-    if (tasks.length === 0) return <PanelNotice text={t('noTasksInSession')} />
-    return (
-      <>
-        {tasks.map((task) => (
-          <TaskRow key={task.id} task={task} now={now} />
-        ))}
-        {read.data?.truncated ? (
-          <div className="px-3 pt-1 pb-[10px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-            {t('olderTasksHidden')}
-          </div>
-        ) : null}
-      </>
-    )
-  }
-
+  const listed = [
+    ...tasks.filter((task) => task.state === 'running'),
+    ...(showFinished ? tasks.filter((task) => task.state !== 'running') : [])
+  ]
+  const subagents = listed.filter((task) => task.subagent)
+  const commands = listed.filter((task) => !task.subagent)
   return (
-    <section data-task-group="turn" aria-label={t('groupTurn')} className="flex flex-none flex-col gap-[6px]">
-      <TaskGroupHeading
-        title={t('groupTurn')}
-        hint={t('groupTurnHint')}
-        census={read.err ? undefined : summaryText(tasks, t)}
-      />
-      {body()}
-    </section>
+    <>
+      {subagents.length > 0 ? (
+        <TaskGroup id="subagents" title={tl('groups.subagents')} count={subagents.length}>
+          {subagents.map((task) => (
+            <RuntimeTaskRow key={task.id} task={task} now={now} />
+          ))}
+        </TaskGroup>
+      ) : null}
+      {commands.length > 0 ? (
+        <TaskGroup id="commands" title={tl('groups.commands')} count={commands.length}>
+          {commands.map((task) => (
+            <RuntimeTaskRow key={task.id} task={task} now={now} />
+          ))}
+        </TaskGroup>
+      ) : null}
+      {showFinished && read.data?.truncated ? (
+        <div className="px-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+          {t('olderTasksHidden')}
+        </div>
+      ) : null}
+    </>
   )
 }
 
-/** The group's one-line census. Counts what is on screen, so it can never disagree with the rows. */
-function summaryText(
-  tasks: AgentTaskDto[],
-  t: ReturnType<typeof useTranslations<'Sessions.detail.tasksPanel'>>
-): string {
-  if (tasks.length === 0) return t('noBackgroundTasks')
-  const running = tasks.filter((task) => task.state === 'running').length
-  const failed = tasks.filter((task) => task.state === 'failed').length
-  const done = tasks.length - running - failed
-  const parts = [t('census.running', { count: running })]
-  if (done > 0) parts.push(t('census.done', { count: done }))
-  if (failed > 0) parts.push(t('census.failed', { count: failed }))
-  return parts.join(' · ')
-}
+const TONE: Record<AgentTaskDto['state'], MarkTone> = { running: 'running', done: 'done', failed: 'failed' }
 
-/** The accent that carries a row's state, as tokens rather than a colour decision per row. */
-// `circle-check` and `circle-x` are names THIS lucide version has; `check-circle-2`, which §8's icon list names, is not one of them and would render nothing at all.
-const ACCENT: Record<AgentTaskDto['state'], string> = {
-  running: 'var(--status-info)',
-  done: 'var(--status-online)',
-  failed: 'var(--red-600)'
-}
-
-// The row's left edge, coloured per state. Every side is named explicitly rather than painting all four and overriding the left: two colour utilities for the same edge would leave which one wins to the order Tailwind happens to emit them in.
-const BORDER: Record<AgentTaskDto['state'], string> = {
-  running: 'border-l-(--status-info)',
-  done: 'border-l-(--status-online)',
-  failed: 'border-l-(--red-600)'
-}
-
-function TaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
+function RuntimeTaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
   const t = useTranslations('Sessions.detail.tasksPanel')
+  const tl = useTranslations('Common.taskList')
   const running = task.state === 'running'
   return (
-    <div
-      data-task-row={task.state}
-      className={`flex flex-none flex-col gap-[5px] rounded-md border-y border-r border-l-2 border-y-(--border-subtle) border-r-(--border-subtle) bg-(--surface-card) px-[10px] py-2 ${BORDER[task.state]}`}
-    >
-      <div className="flex items-center gap-2">
-        {running ? (
-          <span className="flex flex-none items-center">
-            <Spinner size={12} />
-          </span>
-        ) : (
-          <Icon
-            name={task.state === 'failed' ? 'circle-x' : 'circle-check'}
-            size={13}
-            color={ACCENT[task.state]}
-            className="flex-none"
-          />
-        )}
-        {/* A runtime that named no description still gets a row — it is the thing fencing host reclaim, and an unnamed task is exactly what a reader needs to be told about. */}
+    <TaskRow
+      tone={TONE[task.state]}
+      dim={!running}
+      attrs={{ 'data-task-row': task.state }}
+      title={
+        // An unnamed task still gets a row: it is what fences host reclaim, so a reader needs to be told about it.
         <span
-          className={`min-w-0 flex-1 truncate font-sans text-[12.5px] leading-normal ${
-            task.description ? 'font-medium text-(--text-primary)' : 'font-normal italic text-(--text-tertiary)'
-          }`}
+          className={`min-w-0 truncate ${task.description ? (task.subagent ? '' : 'font-mono text-[12.5px]') : 'font-normal italic text-(--text-tertiary)'}`}
           title={task.description ?? undefined}
         >
           {task.description ?? (task.subagent ? t('unnamedSubagent') : t('unnamedTask'))}
         </span>
-        {/* Subagent rows are CARRIED rather than filtered: the same records fence reclaim, so hiding them here would show "no tasks" beside a host refusing to be reclaimed. Marked instead. */}
-        {task.subagent ? (
-          <span
-            className="flex-none rounded-xs bg-(--surface-active) px-[5px] py-px font-sans text-[10px] font-medium leading-normal text-(--text-tertiary)"
-            title={t('subagentTitle')}
-          >
-            {t('subagent')}
-          </span>
-        ) : null}
-        <span className="mono flex-none text-[11px] leading-normal text-(--text-tertiary)">
-          {running ? formatTaskElapsed(task.startedAt, now) : formatFileMtime(task.endedAt)}
-        </span>
-      </div>
-      {/* The terminal status the runtime reported, when it named one. Most settle edges carry none, which is why `done` never asserts success on its own. */}
-      {task.detail ? (
-        <div className="pl-[21px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-secondary)">
-          {task.detail}
-        </div>
-      ) : null}
-    </div>
+      }
+      meta={
+        <MetaLine
+          parts={[
+            tl(`runtimeState.${task.state}`),
+            // The terminal status the runtime reported, when it named one; most settle edges carry none.
+            task.detail,
+            running ? formatTaskElapsed(task.startedAt, now) : formatFileMtime(task.endedAt)
+          ]}
+        />
+      }
+    />
   )
 }
 
 // A degraded or empty state, drawn calmly: a session nobody can read tasks for still has something to say about why.
 function PanelNotice({ text, warn = false }: { text: string; warn?: boolean }) {
   return (
-    <div className="flex items-start gap-2 px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
+    <div className="flex items-start gap-2 px-[2px] py-1 font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
       <Icon
         name={warn ? 'triangle-alert' : 'list-checks'}
         size={14}

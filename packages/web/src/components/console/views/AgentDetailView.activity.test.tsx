@@ -36,15 +36,9 @@ vi.mock('@/components/console/AssistantModePanel', () => ({
   )
 }))
 vi.mock('@/components/console/AssistantActivityPanel', () => ({
-  AssistantActivityPanel: ({
-    agentId,
-    canEdit,
-    assistant
-  }: {
-    agentId: string
-    canEdit: boolean
-    assistant: boolean
-  }) => <div data-activity-panel={agentId} data-can-edit={String(canEdit)} data-assistant={String(assistant)} />
+  AssistantActivityPanel: ({ agentId, canEdit }: { agentId: string; canEdit: boolean }) => (
+    <div data-activity-panel={agentId} data-can-edit={String(canEdit)} />
+  )
 }))
 vi.mock('@/lib/use-daemon-detail', () => ({ useDaemonDetail: (row: unknown) => row }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
@@ -177,19 +171,17 @@ describe('the agent page’s Activity tab', () => {
     const panel = scope.querySelector('[data-activity-panel]')
     expect(panel?.getAttribute('data-activity-panel')).toBe('agent-1')
     expect(panel?.getAttribute('data-can-edit')).toBe('true')
-    expect(panel?.getAttribute('data-assistant')).toBe('true')
   })
 
-  it('stays whole for an assistant-mode agent whether or not its daemon serves every agent', async () => {
+  it('appears for an assistant-mode agent whether or not its daemon serves every agent', async () => {
     mocks.assistantMode = { enabled: true }
     mocks.query = 'tab=activity'
     mocks.features = ['activity-every-agent-v1']
     const scope = await render()
     expect(tabs(scope).at(-1)).toEqual(['Activity', '/agents/agent-1?tab=activity'])
-    expect(scope.querySelector('[data-activity-panel]')?.getAttribute('data-assistant')).toBe('true')
   })
 
-  it('appears for an agent outside assistant mode whose daemon serves every agent’s, with its own sections only', async () => {
+  it('appears for an agent outside assistant mode whose daemon serves every agent’s', async () => {
     mocks.features = ['activity-every-agent-v1']
     mocks.query = 'tab=activity'
     for (const mode of [undefined, { enabled: false }]) {
@@ -199,7 +191,6 @@ describe('the agent page’s Activity tab', () => {
       expect(scope.querySelector('a.tab.on')?.textContent).toBe('Activity')
       const panel = scope.querySelector('[data-activity-panel]')
       expect(panel?.getAttribute('data-activity-panel')).toBe('agent-1')
-      expect(panel?.getAttribute('data-assistant')).toBe('false')
       await act(async () => root!.unmount())
       host?.remove()
       root = undefined

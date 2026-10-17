@@ -1,17 +1,11 @@
 // @vitest-environment happy-dom
-// The Activity view: what everyone who can view the agent sees, what only its editors see and do, in assistant mode or not.
+// The Activity view: what waits for an editor, the tasks and follow-ups everyone who can view the agent sees, and the finished ones behind one toggle.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { NextIntlClientProvider } from 'next-intl'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type {
-  AssistantDraftDto,
-  AssistantItemDetailDto,
-  AssistantItemDto,
-  AssistantPermissionRequestDto,
-  AssistantSubsessionDto
-} from '@/lib/api'
+import type { AssistantDraftDto, AssistantPermissionRequestDto, AssistantSubsessionDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -19,37 +13,22 @@ const AGENT = 'agent-1'
 const INTEGRATION = 'int-1'
 
 const mocks = vi.hoisted(() => ({
-  open: [] as unknown[],
-  closed: [] as unknown[],
-  detail: null as unknown,
   subsessions: [] as unknown[],
-  /** Unset: a daemon without `follow-up-tasks-v1`. */
-  followUps: undefined as boolean | undefined,
+  subsessionsTruncated: false,
   subsessionsFailure: null as Error | null,
   stopAnswer: { result: 'stopped' } as unknown,
   drafts: [] as unknown[],
   /** Unset: a Control Plane that does not list tasks' permission requests. */
   permissions: undefined as unknown[] | undefined,
-  failure: null as Error | null,
   outcome: { status: 'succeeded', failure: null } as unknown,
   decideFailure: null as Error | null,
   permissionFailure: null as Error | null
 }))
 
 const api = vi.hoisted(() => ({
-  fetchAssistantItems: vi.fn(async (_agentId: string, section: 'open' | 'closed') => {
-    if (mocks.failure) throw mocks.failure
-    return { items: section === 'open' ? mocks.open : mocks.closed, truncated: false }
-  }),
-  fetchAssistantItem: vi.fn(async () => mocks.detail),
-  deleteAssistantItem: vi.fn(async () => undefined),
-  fetchAssistantSubsessions: vi.fn(async () => {
+  fetchAssistantSubsessions: vi.fn(async (_agentId: string) => {
     if (mocks.subsessionsFailure) throw mocks.subsessionsFailure
-    return {
-      subsessions: mocks.subsessions,
-      truncated: false,
-      ...(mocks.followUps === undefined ? {} : { followUps: mocks.followUps })
-    }
+    return { subsessions: mocks.subsessions, truncated: mocks.subsessionsTruncated, nextCursor: null }
   }),
   stopAssistantSubsession: vi.fn(async (_agentId: string, _sessionId: string) => mocks.stopAnswer),
   stopAssistantFollowUp: vi.fn(
@@ -104,99 +83,70 @@ const { ApiError } = await import('@/lib/api')
 const { AssistantActivityPanel } = await import('./AssistantActivityPanel')
 const { default: chinese } = await import('../../../messages/zh-CN.json')
 
-const ITEM: AssistantItemDto = {
-  id: 'item-1',
-  title: 'Ship the release notes',
-  status: 'active',
-  doneWhen: 'The notes are published',
-  nextCheck: '2026-10-10T09:00:00.000Z',
-  origin: { platform: 'slack', channel: 'D0ADA' },
-  places: [
-    { platform: 'slack', channel: 'D0ADA' },
-    { platform: 'slack', channel: 'C0SUPPORT' },
-    { platform: 'webchat', channel: 'conv-1' }
-  ],
-  createdAt: '2026-10-09T09:00:00.000Z',
-  updatedAt: '2026-10-09T10:00:00.000Z'
+const SUPPORT = { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' }
+
+/** A running task the viewer may open and stop, and a failed one it may not see. */
+const TASK: AssistantSubsessionDto = {
+  sessionId: 'sid-child',
+  title: 'Fix the flaky test',
+  state: 'open',
+  startedAt: '2026-10-09T09:00:00.000Z',
+  visible: true,
+  canStop: true,
+  parent: SUPPORT,
+  kind: 'delegated'
 }
-const WAITING: AssistantItemDto = {
-  ...ITEM,
-  id: 'item-2',
-  title: 'Wait for the review',
-  status: 'waiting',
-  nextCheck: null
+const HIDDEN_FAILED: AssistantSubsessionDto = {
+  sessionId: null,
+  title: null,
+  state: 'failed',
+  startedAt: '2026-10-09T08:00:00.000Z',
+  visible: false,
+  canStop: false,
+  parent: null,
+  kind: 'delegated'
 }
-const DONE: AssistantItemDto = { ...ITEM, id: 'item-3', title: 'Rotate the key', status: 'done' }
-const DETAIL: AssistantItemDetailDto = {
-  ...ITEM,
-  summary: 'The draft is in review.',
-  observations: [
-    { text: 'Review requested', at: '2026-10-09T11:00:00.000Z' },
-    { text: 'PR opened', at: '2026-10-09T10:00:00.000Z' }
-  ]
-}
-const SUBSESSIONS: AssistantSubsessionDto[] = [
-  {
-    sessionId: 'sid-child',
-    title: 'Fix the flaky test',
-    state: 'open',
-    startedAt: '2026-10-09T09:00:00.000Z',
-    visible: true,
-    canStop: true,
-    parent: { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' }
-  },
-  {
-    sessionId: null,
-    title: null,
-    state: 'failed',
-    startedAt: '2026-10-09T08:00:00.000Z',
-    visible: false,
-    canStop: false,
-    parent: null
+/** A follow-up the viewer may see and end, a hidden one, and an ended one. */
+const FOLLOW_UP: AssistantSubsessionDto = {
+  sessionId: 'sid-follow',
+  title: 'Watch the release',
+  state: 'open',
+  startedAt: '2026-10-09T09:00:00.000Z',
+  visible: true,
+  canStop: true,
+  parent: SUPPORT,
+  kind: 'follow-up',
+  followUp: {
+    status: 'waiting',
+    nextCheck: '2026-10-16T09:00:00.000Z',
+    doneWhen: 'The release is published',
+    recentChecks: [{ at: '2026-10-15T09:00:00.000Z', observation: 'Still a draft.', reported: true }]
   }
-]
-/** A daemon with `follow-up-tasks-v1`: a follow-up the viewer may see and end, a hidden one, an ended one, and a delegated task. */
-const FOLLOW_UPS: AssistantSubsessionDto[] = [
-  {
-    sessionId: 'sid-follow',
-    title: 'Watch the release',
-    state: 'open',
-    startedAt: '2026-10-09T09:00:00.000Z',
-    visible: true,
-    canStop: true,
-    parent: { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' },
-    kind: 'follow-up',
-    followUp: {
-      status: 'waiting',
-      nextCheck: '2026-10-16T09:00:00.000Z',
-      doneWhen: 'The release is published',
-      recentChecks: [{ at: '2026-10-15T09:00:00.000Z', observation: 'Still a draft.', reported: true }]
-    }
-  },
-  {
-    sessionId: null,
-    title: null,
-    state: 'open',
-    startedAt: '2026-10-08T09:00:00.000Z',
-    visible: false,
-    canStop: false,
-    parent: null,
-    kind: 'follow-up',
-    followUp: { status: 'paused', nextCheck: null, doneWhen: null, recentChecks: [] }
-  },
-  {
-    sessionId: 'sid-ended',
-    title: 'Rotate the key',
-    state: 'done',
-    startedAt: '2026-10-07T09:00:00.000Z',
-    visible: true,
-    canStop: false,
-    parent: null,
-    kind: 'follow-up',
-    followUp: { status: 'stopped', nextCheck: null, doneWhen: 'The key is rotated', recentChecks: [] }
-  },
-  { ...SUBSESSIONS[0]!, kind: 'delegated' }
-]
+}
+const HIDDEN_FOLLOW_UP: AssistantSubsessionDto = {
+  sessionId: null,
+  title: null,
+  state: 'open',
+  startedAt: '2026-10-08T09:00:00.000Z',
+  visible: false,
+  canStop: false,
+  parent: null,
+  kind: 'follow-up',
+  followUp: { status: 'paused', nextCheck: null, doneWhen: null, recentChecks: [] }
+}
+const ENDED: AssistantSubsessionDto = {
+  sessionId: 'sid-ended',
+  title: 'Rotate the key',
+  state: 'done',
+  startedAt: '2026-10-07T09:00:00.000Z',
+  visible: true,
+  canStop: false,
+  parent: null,
+  kind: 'follow-up',
+  followUp: { status: 'stopped', nextCheck: null, doneWhen: 'The key is rotated', recentChecks: [] }
+}
+const ROWS = [FOLLOW_UP, HIDDEN_FOLLOW_UP, ENDED, TASK, HIDDEN_FAILED]
+
 const DRAFT: AssistantDraftDto = {
   id: 'draft-1',
   kind: 'elsewhere',
@@ -285,7 +235,7 @@ const PERMISSION: AssistantPermissionRequestDto = {
     { optionId: 'o-deny', name: 'Deny', kind: 'reject_once' }
   ],
   subsession: { sessionId: 'sid-child', title: 'Fix the flaky test' },
-  parent: { sessionId: 'sid-parent', title: 'support', platform: 'slack', channelName: 'support' }
+  parent: SUPPORT
 }
 /** One the viewer may not open, asking for a plain Allow or Deny. */
 const HIDDEN_PERMISSION: AssistantPermissionRequestDto = {
@@ -300,17 +250,15 @@ let root: Root | undefined
 let container: HTMLDivElement | undefined
 
 beforeEach(() => {
+  // Four minutes into the first task, on the day the permission request expires.
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-09T09:04:00.000Z') })
   for (const fn of Object.values(api)) fn.mockClear()
-  mocks.open = [ITEM, WAITING]
-  mocks.closed = [DONE]
-  mocks.detail = DETAIL
-  mocks.subsessions = SUBSESSIONS
-  mocks.followUps = undefined
+  mocks.subsessions = ROWS
+  mocks.subsessionsTruncated = false
   mocks.subsessionsFailure = null
   mocks.stopAnswer = { result: 'stopped' }
   mocks.drafts = [DRAFT]
   mocks.permissions = undefined
-  mocks.failure = null
   mocks.outcome = { status: 'succeeded', failure: null }
   mocks.decideFailure = null
   mocks.permissionFailure = null
@@ -321,9 +269,10 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
+  vi.useRealTimers()
 })
 
-async function mount(canEdit: boolean, assistant = true, wrap: (node: ReactNode) => ReactNode = (node) => node) {
+async function mount(canEdit: boolean, wrap: (node: ReactNode) => ReactNode = (node) => node) {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -331,7 +280,7 @@ async function mount(canEdit: boolean, assistant = true, wrap: (node: ReactNode)
     root?.render(
       wrap(
         <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <AssistantActivityPanel agentId={AGENT} canEdit={canEdit} assistant={assistant} />
+          <AssistantActivityPanel agentId={AGENT} canEdit={canEdit} />
         </SWRConfig>
       )
     )
@@ -340,8 +289,15 @@ async function mount(canEdit: boolean, assistant = true, wrap: (node: ReactNode)
   return container
 }
 
-const section = (host: HTMLElement, name: string) =>
-  host.querySelector<HTMLElement>(`[data-activity-section="${name}"]`)
+const group = (host: HTMLElement, id: string) => host.querySelector<HTMLElement>(`[data-task-group="${id}"]`)
+const groups = (host: HTMLElement) =>
+  [...host.querySelectorAll<HTMLElement>('[data-task-group]')].map((g) => g.dataset.taskGroup)
+const count = (host: HTMLElement, id: string) => group(host, id)?.querySelector('[data-task-group-count]')?.textContent
+const taskRow = (host: HTMLElement, sessionId: string) =>
+  [...host.querySelectorAll<HTMLElement>('[data-subsession-row]')].find(
+    (row) => row.querySelector('a')?.getAttribute('href') === `/example/sessions/${sessionId}`
+  )!
+const meta = (row: Element) => row.querySelector('[data-meta-line]')?.textContent
 const click = async (element: Element | null | undefined) => {
   expect(element).toBeTruthy()
   await act(async () => (element as HTMLElement).click())
@@ -351,81 +307,183 @@ const button = (scope: ParentNode, label: string) =>
   [...scope.querySelectorAll('button')].find(
     (b) => b.textContent?.trim() === label || b.getAttribute('aria-label') === label
   )
+/** The row's decision and stop buttons, not its links or preview line. */
+const actions = (row: Element) => [...row.querySelectorAll('.dsbtn')].map((b) => b.textContent?.trim())
 
 describe('the Activity view for anyone who can view the agent', () => {
-  it('lists open items with what they wait on and where they are followed, and nothing an editor alone sees', async () => {
+  it('groups tasks and follow-ups with their place, and reads nothing an editor alone sees', async () => {
     const host = await mount(false)
-    const items = section(host, 'items')!
-    const row = items.querySelector('[data-assistant-item="item-1"]')!
-    expect(row.textContent).toContain('Active')
-    expect(row.textContent).toContain('Ship the release notes')
-    expect(row.textContent).toContain('Done when: The notes are published')
-    expect(row.textContent).toContain('Next check Oct 10, 2026')
-    expect(row.textContent).toContain('DM with Ada, #support, Webchat')
-    expect(items.querySelector('[data-assistant-item="item-2"]')?.textContent).toContain('Waiting')
-    expect(items.querySelector('[data-assistant-item="item-2"]')?.textContent).not.toContain('Next check')
-
-    // Read-only: no delete, no drafts, and the editor read is not made.
-    expect(button(host, 'Delete')).toBeUndefined()
-    expect(button(host, 'Approve')).toBeUndefined()
-    expect(section(host, 'drafts')).toBeNull()
+    expect(groups(host)).toEqual(['tasks', 'follow-ups'])
+    expect(count(host, 'tasks')).toBe('1')
+    expect(count(host, 'follow-ups')).toBe('2')
+    expect(host.textContent).not.toContain('Waiting for you')
     expect(api.fetchAssistantDrafts).not.toHaveBeenCalled()
-  })
 
-  it('reads observations only when an item is expanded, and closed items only when that section opens', async () => {
-    const host = await mount(false)
-    expect(api.fetchAssistantItems.mock.calls.map((call) => call[1])).toEqual(['open'])
-    expect(api.fetchAssistantItem).not.toHaveBeenCalled()
-
-    await click(button(host.querySelector('[data-assistant-item="item-1"]')!, 'Show observations'))
-    expect(api.fetchAssistantItem).toHaveBeenCalledWith(AGENT, 'item-1')
-    const detail = host.querySelector('[data-assistant-item-detail]')!
-    expect(detail.textContent).toContain('The draft is in review.')
-    const observations = [...detail.querySelectorAll('li')].map((li) => li.textContent)
-    expect(observations[0]).toContain('Review requested')
-    expect(observations[1]).toContain('PR opened')
-
-    expect(section(host, 'items')!.textContent).not.toContain('Rotate the key')
-    await click(button(host, 'Done and dropped'))
-    expect(api.fetchAssistantItems.mock.calls.map((call) => call[1])).toEqual(['open', 'closed'])
-    expect(host.querySelector('[data-assistant-item="item-3"]')?.textContent).toContain('Done')
-  })
-
-  it('links the tasks the viewer may open and hides the rest', async () => {
-    const host = await mount(false)
-    const subsessions = section(host, 'subsessions')!
-    const visible = subsessions.querySelector('[data-assistant-subsession="sid-child"]')!
-    expect(visible.textContent).toContain('Running')
-    const links = [...visible.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
+    const task = taskRow(host, 'sid-child')
+    // The platform's mark leads the place, and nothing reads "From".
+    expect(meta(task)).toBe('#support · Running · started 4m ago')
+    expect(task.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('running')
+    const links = [...task.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
     expect(links).toEqual([
       ['Fix the flaky test', '/example/sessions/sid-child'],
-      ['From #support', '/example/sessions/sid-parent']
+      ['#support', '/example/sessions/sid-parent']
     ])
-    const hidden = subsessions.querySelector('[data-assistant-subsession="hidden"]')!
-    expect(hidden.textContent).toContain('Failed')
+    expect(task.textContent).not.toContain('From')
+    expect(actions(task)).toEqual(['Stop'])
+  })
+
+  it('keeps finished rows behind one toggle, then shows them dimmed in their groups', async () => {
+    const host = await mount(false)
+    const toggle = host.querySelector('[data-finished-toggle]')!
+    expect(toggle.textContent).toBe('2 finished')
+    expect(host.textContent).not.toContain('Rotate the key')
+    await click(toggle)
+    expect(count(host, 'tasks')).toBe('2')
+    expect(count(host, 'follow-ups')).toBe('3')
+    const ended = taskRow(host, 'sid-ended')
+    expect(ended.className).toContain('opacity-60')
+    expect(meta(ended)).toBe('Stopped')
+    const hidden = group(host, 'tasks')!.querySelectorAll<HTMLElement>('[data-subsession-row]')[1]!
     expect(hidden.textContent).toContain('Not visible to you')
     expect(hidden.querySelector('a')).toBeNull()
+    expect(meta(hidden)).toMatch(/^Failed · started /)
+  })
+
+  it('stops a running task and reads the list again', async () => {
+    const host = await mount(false)
+    const reads = api.fetchAssistantSubsessions.mock.calls.length
+    await click(button(taskRow(host, 'sid-child'), 'Stop'))
+    expect(api.stopAssistantSubsession).toHaveBeenCalledWith(AGENT, 'sid-child')
+    expect(taskRow(host, 'sid-child').querySelector('[data-subsession-stop]')?.textContent).toBe('Stopped.')
+    expect(api.fetchAssistantSubsessions.mock.calls.length).toBeGreaterThan(reads)
   })
 
   it('says when the agent’s daemon is too old to answer', async () => {
-    mocks.failure = new ApiError('upgrade', 409, 'DAEMON_FEATURE_MISSING')
+    mocks.subsessionsFailure = new ApiError('upgrade', 409, 'DAEMON_FEATURE_MISSING')
     const host = await mount(false)
-    expect(section(host, 'items')!.textContent).toContain('Upgrade this agent’s daemon to see its activity.')
+    expect(host.textContent).toBe('Upgrade this agent’s daemon to see its activity.')
+  })
+
+  it('says so once when nothing runs or waits', async () => {
+    mocks.subsessions = []
+    mocks.drafts = []
+    const host = await mount(true)
+    expect(groups(host)).toEqual([])
+    expect(host.textContent).toBe('Nothing running or waiting.')
+  })
+
+  it('notes a truncated list with the finished rows', async () => {
+    mocks.subsessionsTruncated = true
+    const host = await mount(false)
+    expect(host.textContent).not.toContain('Only the most recent are shown.')
+    await click(host.querySelector('[data-finished-toggle]'))
+    expect(host.textContent).toContain('Only the most recent are shown.')
   })
 })
 
-describe('the Activity view for an editor', () => {
-  it('shows each pending draft’s target, exact text, approver and expiry, with its choices', async () => {
+describe('follow-ups in Activity', () => {
+  it('shows the place and next check in the meta line, and its checks under its done-when line', async () => {
+    const host = await mount(false)
+    const row = taskRow(host, 'sid-follow')
+    expect(row.dataset.followUp).toBe('waiting')
+    expect(row.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
+    expect(meta(row)).toBe('#support · Next check Oct 16, 9:00 AM · last Oct 15, 9:00 AM')
+    const line = row.querySelector('[data-preview-line]')!
+    expect(line.textContent).toBe('Done when: The release is published')
+    expect(line.getAttribute('aria-expanded')).toBe('false')
+    expect(row.querySelector('[data-follow-up-checks]')).toBeNull()
+    await click(line)
+    const checks = row.querySelector('[data-follow-up-checks]')!
+    // The done-when line is already on screen, so the checks do not repeat it.
+    expect(checks.textContent).not.toContain('Done when')
+    expect(checks.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('Still a draft.')
+
+    const hidden = group(host, 'follow-ups')!.querySelectorAll<HTMLElement>('[data-subsession-row]')[1]!
+    expect(hidden.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('paused')
+    expect(hidden.textContent).toContain('Not visible to you')
+    expect(hidden.querySelector('[data-preview-line]')).toBeNull()
+    expect(actions(hidden)).toEqual([])
+  })
+
+  it('names a follow-up taken in a DM by its person, with no channel sigil', async () => {
+    mocks.subsessions = [{ ...FOLLOW_UP, parent: { ...SUPPORT, sessionId: 'sid-dm', channelName: '@Alice' } }]
+    const host = await mount(false)
+    expect(meta(taskRow(host, 'sid-follow'))).toMatch(/^@Alice · /)
+  })
+
+  // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
+  it('labels a first look as one', async () => {
+    mocks.subsessions = [{ ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true, nextCheck: null } }]
+    const host = await mount(false)
+    expect(meta(taskRow(host, 'sid-follow'))).toBe('#support · First look · Waiting · last Oct 15, 9:00 AM')
+  })
+
+  it('ends a follow-up after a confirmation, and reads the tasks again', async () => {
+    const host = await mount(false)
+    const row = taskRow(host, 'sid-follow')
+    await click(button(row, 'End'))
+    expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
+    expect(row.querySelector('[role="group"]')?.textContent).toContain('End this follow-up? The agent stops checking.')
+    const reads = api.fetchAssistantSubsessions.mock.calls.length
+    await click(button(row.querySelector('[role="group"]')!, 'End follow-up'))
+    expect(api.stopAssistantSubsession).toHaveBeenCalledWith(AGENT, 'sid-follow')
+    expect(row.querySelector('[data-subsession-stop]')?.textContent).toBe('Follow-up ended.')
+    expect(row.querySelector('[role="group"]')).toBeNull()
+    expect(api.fetchAssistantSubsessions.mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('ends a follow-up whose first check has not run by its own id, under the conversation it is listed in', async () => {
+    mocks.subsessions = [
+      { ...FOLLOW_UP, sessionId: null, followUp: { ...FOLLOW_UP.followUp!, id: 'item-9' } },
+      // Without an id from its daemon, a follow-up with no session has nothing to end it by.
+      { ...FOLLOW_UP, sessionId: null, startedAt: '2026-10-09T08:00:00.000Z' }
+    ]
+    const host = await mount(false)
+    const [unchecked, other] = [...host.querySelectorAll<HTMLElement>('[data-subsession-row]')]
+    expect(actions(unchecked!)).toEqual(['End'])
+    expect(actions(other!)).toEqual([])
+    await click(button(unchecked!, 'End'))
+    await click(button(unchecked!.querySelector('[role="group"]')!, 'End follow-up'))
+    expect(api.stopAssistantFollowUp).toHaveBeenCalledWith(AGENT, 'item-9', 'sid-parent')
+    expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
+    expect(unchecked!.querySelector('[data-subsession-stop]')?.textContent).toBe('Follow-up ended.')
+  })
+})
+
+describe('Waiting for you', () => {
+  it('leads with drafts, then proposals, then permission requests, each with its kind word and an amber mark', async () => {
+    mocks.drafts = [PROPOSAL, DRAFT]
+    mocks.permissions = [PERMISSION]
+    const host = await mount(true)
+    expect(groups(host)).toEqual(['waiting', 'tasks', 'follow-ups'])
+    const waiting = group(host, 'waiting')!
+    expect(waiting.querySelector('h3')?.textContent).toBe('Waiting for you3')
+    const rows = [...waiting.querySelectorAll<HTMLElement>('[data-assistant-draft], [data-assistant-permission]')]
+    expect(rows.map((row) => row.dataset.assistantDraft ?? row.dataset.assistantPermission)).toEqual([
+      'draft-1',
+      'proposal-1',
+      'request-1'
+    ])
+    for (const row of rows)
+      expect(row.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('waiting')
+  })
+
+  it('names a draft’s target in its title alone, with its approver and expiry in the meta line', async () => {
     mocks.drafts = [DRAFT, REPLY]
     const host = await mount(true)
-    const draft = section(host, 'drafts')!.querySelector('[data-assistant-draft="draft-1"]')!
-    expect(draft.textContent).toContain('To #support · in a thread')
-    expect(draft.textContent).toContain('The release is out.\n\nNotes are in the docs.')
-    expect(draft.textContent).toContain('Approver: Ada')
-    expect(draft.textContent).toContain('Expires Oct 10, 2026')
-    const labels = (row: Element) => [...row.querySelectorAll('button')].map((b) => b.textContent?.trim())
-    expect(labels(draft)).toEqual(['Approve', 'Discard'])
-    expect(labels(host.querySelector('[data-assistant-draft="draft-2"]')!)).toEqual(['Approve', 'Discard'])
+    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
+    expect(draft.textContent).toContain('Message to #support · in a thread')
+    expect(meta(draft)).toBe('Draft · Ada approves · expires Oct 10, 9:00 AM')
+    expect(draft.querySelector('[data-meta-line] svg, [data-meta-line] img')).not.toBeNull()
+    const line = draft.querySelector('[data-preview-line]')!
+    expect(line.textContent).toBe('The release is out.\n\nNotes are in the docs.')
+    expect(line.querySelector('span')?.className).toContain('truncate')
+    await click(line)
+    expect(line.querySelector('span')?.className).toContain('whitespace-pre-wrap')
+    expect(actions(draft)).toEqual(['Discard', 'Approve'])
+    const reply = host.querySelector('[data-assistant-draft="draft-2"]')!
+    expect(reply.textContent).toContain('External')
+    expect(actions(reply)).toEqual(['Discard', 'Approve'])
   })
 
   it('approves a draft after a confirmation, then shows the outcome in place of the choices', async () => {
@@ -435,12 +493,11 @@ describe('the Activity view for an editor', () => {
     expect(api.decideAssistantDraft).not.toHaveBeenCalled()
     const confirm = draft.querySelector('[role="group"]')!
     expect(confirm.textContent).toContain('Post this to #support now?')
+    expect(actions(draft)).toEqual(['Approve', 'Cancel'])
     await click(button(confirm, 'Approve'))
     expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'draft-1', 'approve')
     expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Posted.')
-    expect(draft.querySelector('button')).toBeNull()
-    // The section counts what still waits; the decided row stays, showing how it ended.
-    expect(section(host, 'drafts')!.querySelector('.badge')).toBeNull()
+    expect(actions(draft)).toEqual([])
   })
 
   it('discards a draft after a confirmation, posting nothing', async () => {
@@ -493,7 +550,7 @@ describe('the Activity view for an editor', () => {
     await click(button(draft, 'Approve'))
     await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
     expect(draft.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(text)
-    expect(draft.querySelector('button')).toBeNull()
+    expect(actions(draft)).toEqual([])
   })
 
   it('keeps the choices after a decision that did not go through, and reads the list again when unconfirmed', async () => {
@@ -534,13 +591,11 @@ describe('the Activity view for an editor', () => {
     expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
     const row = host.querySelector('[data-assistant-draft="draft-1"]')!
     expect(row).not.toBeNull()
-    expect(row.textContent).toContain('To #support')
-    expect(row.textContent).toContain('The release is out.\n\nNotes are in the docs.')
+    expect(row.textContent).toContain('Message to #support')
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
       'Couldn’t confirm the decision, and it is no longer waiting. Check the destination; it may have been posted.'
     )
-    expect(row.querySelector('button')).toBeNull()
-    expect(section(host, 'drafts')!.querySelector('.badge')).toBeNull()
+    expect(actions(row)).toEqual([])
   })
 
   it('keeps a decided row when a later read no longer lists it', async () => {
@@ -559,24 +614,26 @@ describe('the Activity view for an editor', () => {
     expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
     const row = host.querySelector('[data-assistant-draft="draft-1"]')
     expect(row?.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe('Posted.')
-    expect(section(host, 'drafts')!.querySelector('.badge')?.textContent).toBe('1')
+    // The count is the rows on screen, decided ones included.
+    expect(count(host, 'waiting')).toBe('2')
   })
 
-  it('labels a proposal, leads with its sentence, and offers approve or deny only', async () => {
-    mocks.drafts = [DRAFT, PROPOSAL]
+  it('leads a proposal with its sentence, its reason as the collapsed line, and approve or deny only', async () => {
+    mocks.drafts = [PROPOSAL]
     const host = await mount(true)
-    const row = section(host, 'drafts')!.querySelector('[data-assistant-draft="proposal-1"]')!
-    expect(row.textContent).toContain('Proposal')
+    const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
     expect(row.textContent).toContain('I want to rebase PR #12 because it conflicts with main.')
-    expect(row.textContent).toContain('Why: The check found a merge conflict.')
-    expect(row.textContent).toContain('Rebase PR #12 onto main and push.')
-    expect(row.textContent).toContain('Runs in #support')
+    expect(meta(row)).toBe('#support · Suggested task · expires Oct 10, 9:00 AM')
+    const line = row.querySelector('[data-preview-line]')!
+    expect(line.textContent).toBe('The check found a merge conflict.')
+    expect(row.textContent).not.toContain('Rebase PR #12 onto main and push.')
+    await click(line)
     expect(row.textContent).toContain('For Ship the release notes')
-    expect([...row.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual(['Approve', 'Deny'])
-    expect(section(host, 'drafts')!.querySelector('.badge:not([class*="status-info"])')?.textContent).toBe('2')
+    expect(row.textContent).toContain('Rebase PR #12 onto main and push.')
+    expect(actions(row)).toEqual(['Deny', 'Approve'])
   })
 
-  it('names a webchat proposal’s approvers as whoever may continue its conversation', async () => {
+  it('places a webchat proposal under its webchat mark', async () => {
     mocks.drafts = [
       {
         ...PROPOSAL,
@@ -586,10 +643,8 @@ describe('the Activity view for an editor', () => {
       }
     ]
     const host = await mount(true)
-    const row = section(host, 'drafts')!.querySelector('[data-assistant-draft="proposal-1"]')!
-    expect(row.textContent).toContain('Runs in Webchat')
-    expect(row.textContent).toContain('Approver: anyone who may continue the conversation')
-    expect(row.textContent).not.toContain('No one reachable')
+    const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
+    expect(meta(row)).toBe('Webchat · Suggested task · expires Oct 10, 9:00 AM')
   })
 
   it('approves a proposal after a confirmation, and says it runs in the background', async () => {
@@ -604,7 +659,7 @@ describe('the Activity view for an editor', () => {
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
       'Approved. It runs as a task and reports back in #support.'
     )
-    expect(row.querySelector('button')).toBeNull()
+    expect(actions(row)).toEqual([])
   })
 
   it('denies a proposal after a confirmation, running nothing', async () => {
@@ -643,20 +698,18 @@ describe('the Activity view for an editor', () => {
     mocks.outcome = {
       status: 'succeeded',
       failure: null,
-      followUp: {
-        id: 'item-taken',
-        conversation: { sessionId: 'sid-support', title: 'support', platform: 'slack', channelName: 'support' }
-      }
+      followUp: { id: 'item-taken', conversation: { ...SUPPORT, sessionId: 'sid-support' } }
     }
     const host = await mount(true)
     const row = host.querySelector('[data-assistant-draft="proposal-2"]')!
+    expect(meta(row)).toBe('#support · Suggested follow-up · expires Oct 10, 9:00 AM')
+    expect(row.querySelector('[data-proposed-follow-up]')).toBeNull()
+    await click(row.querySelector('[data-preview-line]'))
     const proposed = row.querySelector('[data-proposed-follow-up]')!
     expect(proposed.textContent).toContain('Takes this follow-up')
     expect(proposed.textContent).toContain('The 2.6 release date')
     expect(proposed.textContent).toContain('Done when: A date is posted.')
     expect(proposed.textContent).toContain('First check')
-    expect(row.textContent).toContain('Followed up in #support')
-    expect(row.textContent).not.toContain('Runs in')
     await click(button(row, 'Approve'))
     expect(row.querySelector('[role="group"]')?.textContent).toContain(
       'Take this follow-up in #support? It is followed up for you, and nothing else runs.'
@@ -692,34 +745,29 @@ describe('the Activity view for an editor', () => {
     )
   })
 
-  it('lists tasks waiting for permission and answers them with their own choices', async () => {
+  it('lists tasks waiting for permission and answers them with their own choices, denials first', async () => {
     mocks.permissions = [PERMISSION, HIDDEN_PERMISSION]
     const host = await mount(true)
-    const drafts = section(host, 'drafts')!
-    const waiting = () => drafts.firstElementChild?.querySelector('.badge')?.textContent
-    // Two requests and one draft wait.
-    expect(waiting()).toBe('3')
-    const row = drafts.querySelector('[data-assistant-permission="request-1"]')!
-    expect(row.querySelector('.badge')?.textContent).toBe('Permission')
-    expect(row.textContent).toContain('Write src/app.ts')
-    expect(row.textContent).toContain('Denied and stopped Oct 9, 2026')
+    expect(count(host, 'waiting')).toBe('3')
+    const row = host.querySelector('[data-assistant-permission="request-1"]')!
+    expect(meta(row)).toBe('#support · Permission · expires 9:00 PM')
+    expect(row.querySelector('[data-preview-line]')?.textContent).toBe('Write src/app.ts')
     const links = [...row.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
     expect(links).toEqual([
       ['Fix the flaky test', '/example/sessions/sid-child'],
-      ['From #support', '/example/sessions/sid-parent']
+      ['#support', '/example/sessions/sid-parent']
     ])
-    const labels = (scope: Element) => [...scope.querySelectorAll('button')].map((b) => b.textContent?.trim())
-    expect(labels(row)).toEqual(['Always allow', 'Allow', 'Deny'])
-    const hidden = drafts.querySelector('[data-assistant-permission="request-2"]')!
+    expect(actions(row)).toEqual(['Deny', 'Always allow', 'Allow'])
+    const hidden = host.querySelector('[data-assistant-permission="request-2"]')!
     expect(hidden.textContent).toContain('Not visible to you')
     expect(hidden.querySelector('a')).toBeNull()
-    expect(labels(hidden)).toEqual(['Allow', 'Deny'])
+    expect(meta(hidden)).toBe('Permission · expires 9:00 PM')
+    expect(actions(hidden)).toEqual(['Deny', 'Allow'])
 
     await click(button(row, 'Always allow'))
     expect(api.decideAgentPermissionRequest).toHaveBeenCalledWith(AGENT, 'request-1', 'allow', 'o-always')
     expect(row.querySelector('[role="status"]')?.textContent).toBe('Allowed. The task continues.')
-    expect(row.querySelector('button')).toBeNull()
-    expect(waiting()).toBe('2')
+    expect(actions(row)).toEqual([])
 
     await click(button(hidden, 'Deny'))
     expect(api.decideAgentPermissionRequest).toHaveBeenLastCalledWith(AGENT, 'request-2', 'deny', undefined)
@@ -736,250 +784,42 @@ describe('the Activity view for an editor', () => {
     expect(row.querySelector('[role="status"]')?.textContent).toBe('No longer waiting for approval.')
     expect(api.fetchAssistantDrafts.mock.calls.length).toBeGreaterThan(reads)
   })
-
-  it('shows only drafts when the console reads no permission requests', async () => {
-    const host = await mount(true)
-    const drafts = section(host, 'drafts')!
-    expect(drafts.querySelector('[data-assistant-permission]')).toBeNull()
-    expect(drafts.querySelector('[data-assistant-draft="draft-1"]')).not.toBeNull()
-  })
-
-  it('deletes an item after a confirmation, and drops it from the list', async () => {
-    const host = await mount(true)
-    const row = host.querySelector('[data-assistant-item="item-1"]')!
-    await click(button(row, 'Delete'))
-    expect(api.deleteAssistantItem).not.toHaveBeenCalled()
-    expect(row.textContent).toContain('Delete this item? The agent stops following it.')
-    await click(button(row.querySelector('[role="group"]')!, 'Delete'))
-    expect(api.deleteAssistantItem).toHaveBeenCalledWith(AGENT, 'item-1')
-    expect(host.querySelector('[data-assistant-item="item-1"]')).toBeNull()
-    expect(host.querySelector('[data-assistant-item="item-2"]')).not.toBeNull()
-  })
-
-  it('keeps an item when the confirmation is declined', async () => {
-    const host = await mount(true)
-    const row = host.querySelector('[data-assistant-item="item-1"]')!
-    await click(button(row, 'Delete'))
-    await click(button(row, 'Keep'))
-    expect(row.querySelector('[role="group"]')).toBeNull()
-    expect(api.deleteAssistantItem).not.toHaveBeenCalled()
-  })
 })
 
-describe('the Activity view of an agent outside assistant mode', () => {
-  const sections = (host: HTMLElement) =>
-    [...host.querySelectorAll('[data-activity-section]')].map((s) => s.getAttribute('data-activity-section'))
-
-  it('shows an editor its tasks, permission requests and drafts, and reads no items', async () => {
+describe('the Activity view on a phone and in Chinese', () => {
+  it('keeps one responsive tree: decisions inline at a 44px tap size, stops always visible, colors from tokens', async () => {
     mocks.permissions = [PERMISSION]
-    const host = await mount(true, false)
-    expect(sections(host)).toEqual(['subsessions', 'drafts'])
-    expect(api.fetchAssistantItems).not.toHaveBeenCalled()
-    expect(host.querySelector('[data-assistant-item]')).toBeNull()
-    expect(button(host, 'Done and dropped')).toBeUndefined()
-
-    const subsessions = section(host, 'subsessions')!
-    expect(subsessions.querySelector('[data-assistant-subsession="sid-child"]')?.textContent).toContain('Running')
-    const drafts = section(host, 'drafts')!
-    expect(drafts.firstElementChild?.textContent).toContain('Waiting for approval')
-    expect(drafts.querySelector('[data-assistant-permission="request-1"]')?.textContent).toContain('Write src/app.ts')
-    expect(drafts.querySelector('[data-assistant-draft="draft-1"]')?.textContent).toContain('The release is out.')
-
-    // Both are decided as an assistant-mode agent’s are.
-    await click(button(drafts.querySelector('[data-assistant-permission="request-1"]')!, 'Allow'))
-    expect(api.decideAgentPermissionRequest).toHaveBeenCalledWith(AGENT, 'request-1', 'allow', 'o-allow')
-    const draft = drafts.querySelector('[data-assistant-draft="draft-1"]')!
-    await click(button(draft, 'Approve'))
-    await click(button(draft.querySelector('[role="group"]')!, 'Approve'))
-    expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'draft-1', 'approve')
-  })
-
-  it('shows anyone else its tasks alone', async () => {
-    const host = await mount(false, false)
-    expect(sections(host)).toEqual(['subsessions'])
-    expect(api.fetchAssistantItems).not.toHaveBeenCalled()
-    expect(api.fetchAssistantDrafts).not.toHaveBeenCalled()
-    expect(api.fetchAssistantSubsessions).toHaveBeenCalledWith(AGENT)
-  })
-
-  it('keeps one responsive tree on a phone, its colors from the theme’s tokens', async () => {
-    mocks.permissions = [PERMISSION]
-    const host = await mount(true, false)
-    const panel = host.querySelector('[data-assistant-activity]')!
+    const host = await mount(true)
+    const panel = host.querySelector<HTMLElement>('[data-assistant-activity]')!
     expect(panel.className).toContain('p-4')
     expect(panel.className).toContain('desktop:p-0')
-    const subsession = host.querySelector('[data-assistant-subsession="sid-child"]')!
-    expect(subsession.className).toContain('flex-col')
-    expect(subsession.className).toContain('desktop:flex-row')
-    expect(host.querySelector('[data-assistant-draft-actions]')?.className).toContain('flex-wrap')
-    // Every color is a token, so the dark theme's remap applies; no literal would survive it.
-    for (const badge of host.querySelectorAll('.badge')) expect(badge.className).toMatch(/(bg|text)-\(--/)
-    expect(panel.outerHTML).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
+    for (const choice of host.querySelectorAll('[data-task-group="waiting"] .dsbtn'))
+      expect(choice.className).toContain('max-desktop:h-11')
+    // A stop shows on hover on desktop and always on a phone.
+    const stop = button(taskRow(host, 'sid-child'), 'Stop')!
+    expect(stop.className).toContain('desktop:opacity-0')
+    expect(stop.className).toContain('max-desktop:h-11')
+    // Every color but a platform's own mark is a token, so the dark theme's remap applies.
+    const copy = panel.cloneNode(true) as HTMLElement
+    for (const mark of copy.querySelectorAll('svg, img')) mark.remove()
+    expect(copy.outerHTML).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
   })
 
   it('reads in Chinese with the zh-CN messages', async () => {
     mocks.permissions = [PERMISSION]
-    const host = await mount(true, false, (node) => (
+    mocks.drafts = [DRAFT, PROPOSAL]
+    const host = await mount(true, (node) => (
       <NextIntlClientProvider locale="zh-CN" messages={chinese} timeZone="UTC">
         {node}
       </NextIntlClientProvider>
     ))
-    expect(section(host, 'subsessions')?.firstElementChild?.textContent).toContain('任务')
-    expect(section(host, 'subsessions')?.textContent).toContain('运行中')
-    expect(section(host, 'drafts')?.firstElementChild?.textContent).toContain('等待批准')
-    expect(host.querySelector('[data-assistant-permission="request-1"] .badge')?.textContent).toBe('权限')
-  })
-})
-
-describe('the Activity view toward a daemon that serves follow-ups', () => {
-  const sections = (host: HTMLElement) =>
-    [...host.querySelectorAll('[data-activity-section]')].map((s) => s.getAttribute('data-activity-section'))
-  const row = (host: HTMLElement, id: string) =>
-    section(host, 'subsessions')!.querySelector<HTMLElement>(`[data-assistant-subsession="${id}"]`)!
-
-  beforeEach(() => {
-    mocks.followUps = true
-    mocks.subsessions = FOLLOW_UPS
-  })
-
-  it('shows no Items section and reads no items', async () => {
-    const host = await mount(true)
-    expect(sections(host)).toEqual(['subsessions', 'drafts'])
-    expect(api.fetchAssistantItems).not.toHaveBeenCalled()
-    expect(button(host, 'Done and dropped')).toBeUndefined()
-  })
-
-  it('names a follow-up taken in a DM by its person, with no channel sigil', async () => {
-    const dm = { sessionId: 'sid-dm', title: null, platform: 'slack', channelName: '@Alice' }
-    mocks.subsessions = [{ ...FOLLOW_UPS[0]!, parent: dm }]
-    const host = await mount(false)
-    expect(row(host, 'sid-follow').textContent).toContain('From @Alice')
-    expect(row(host, 'sid-follow').textContent).not.toContain('#@')
-  })
-
-  // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
-  it('labels a first look as one', async () => {
-    mocks.subsessions = [
-      { ...FOLLOW_UPS[0]!, followUp: { ...FOLLOW_UPS[0]!.followUp!, firstLook: true, nextCheck: null } }
-    ]
-    const host = await mount(false)
-    expect(row(host, 'sid-follow').textContent).toContain('First look')
-    expect(row(host, 'sid-follow').textContent).not.toContain('Follow-up')
-  })
-
-  it('lists follow-ups with their state, kind and next check, and their checks only where visible', async () => {
-    const host = await mount(false)
-    const waiting = row(host, 'sid-follow')
-    expect(waiting.dataset.followUp).toBe('waiting')
-    expect(waiting.querySelector('.badge')?.textContent).toBe('Waiting')
-    expect(waiting.textContent).toContain('Follow-up')
-    expect(waiting.textContent).toContain('Next check Oct 16, 2026, 9:00 AM')
-    expect(waiting.textContent).toContain('From #support')
-    expect(waiting.textContent).not.toContain('Started')
-    const hidden = row(host, 'hidden')
-    expect(hidden.querySelector('.badge')?.textContent).toBe('Paused')
-    expect(hidden.textContent).toContain('Not visible to you')
-    expect(button(hidden, 'Show checks')).toBeUndefined()
-    expect(row(host, 'sid-ended').querySelector('.badge')?.textContent).toBe('Stopped')
-    expect(row(host, 'sid-child').textContent).toContain('Running')
-    expect(row(host, 'sid-child').textContent).toContain('Started')
-
-    // The viewer may end only the follow-up whose stop rule allows it.
-    expect([...host.querySelectorAll('button')].filter((b) => b.textContent === 'End follow-up')).toHaveLength(1)
-    expect(button(waiting, 'End follow-up')).toBeTruthy()
-
-    expect(host.querySelector('[data-follow-up-checks]')).toBeNull()
-    await click(button(waiting, 'Show checks'))
-    const checks = waiting.querySelector('[data-follow-up-checks]')!
-    expect(checks.textContent).toContain('Done when: The release is published')
-    expect(checks.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('Still a draft.')
-    expect(checks.textContent).toContain('Oct 15, 2026, 9:00 AM')
-  })
-
-  it('ends a follow-up after a confirmation, and reads the tasks again', async () => {
-    const host = await mount(false)
-    const waiting = row(host, 'sid-follow')
-    await click(button(waiting, 'End follow-up'))
-    expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
-    expect(waiting.querySelector('[role="group"]')?.textContent).toContain(
-      'End this follow-up? The agent stops checking.'
-    )
-    const reads = api.fetchAssistantSubsessions.mock.calls.length
-    await click(button(waiting.querySelector('[role="group"]')!, 'End follow-up'))
-    expect(api.stopAssistantSubsession).toHaveBeenCalledWith(AGENT, 'sid-follow')
-    expect(waiting.querySelector('[data-follow-up-end]')?.textContent).toBe('Follow-up ended.')
-    expect(waiting.querySelector('[role="group"]')).toBeNull()
-    expect(api.fetchAssistantSubsessions.mock.calls.length).toBeGreaterThan(reads)
-  })
-
-  it('ends a follow-up whose first check has not run by its own id, under the conversation it is listed in', async () => {
-    mocks.subsessions = [
-      { ...FOLLOW_UPS[0]!, sessionId: null, followUp: { ...FOLLOW_UPS[0]!.followUp!, id: 'item-9' } },
-      // Without an id from its daemon, a follow-up with no session has nothing to end it by.
-      { ...FOLLOW_UPS[0]!, sessionId: null, startedAt: '2026-10-09T08:00:00.000Z' }
-    ]
-    const host = await mount(false)
-    const [unchecked] = [...section(host, 'subsessions')!.querySelectorAll<HTMLElement>('[data-assistant-subsession]')]
-    expect([...host.querySelectorAll('button')].filter((b) => b.textContent === 'End follow-up')).toHaveLength(1)
-    await click(button(unchecked!, 'End follow-up'))
-    await click(button(unchecked!.querySelector('[role="group"]')!, 'End follow-up'))
-    expect(api.stopAssistantFollowUp).toHaveBeenCalledWith(AGENT, 'item-9', 'sid-parent')
-    expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
-    expect(unchecked!.querySelector('[data-follow-up-end]')?.textContent).toBe('Follow-up ended.')
-  })
-
-  it('keeps the Items section toward a daemon without them, or when the task list cannot say', async () => {
-    for (const setup of [
-      () => (mocks.followUps = false),
-      () => (mocks.subsessionsFailure = new ApiError('offline', 503, 'DAEMON_OFFLINE'))
-    ]) {
-      api.fetchAssistantItems.mockClear()
-      setup()
-      const host = await mount(false)
-      expect(sections(host)).toEqual(['items', 'subsessions'])
-      expect(api.fetchAssistantItems.mock.calls.map((call) => call[1])).toEqual(['open'])
-      await act(async () => root?.unmount())
-      root = undefined
-      container?.remove()
-    }
-  })
-
-  it('reads in Chinese with the zh-CN messages', async () => {
-    const host = await mount(false, true, (node) => (
-      <NextIntlClientProvider locale="zh-CN" messages={chinese} timeZone="UTC">
-        {node}
-      </NextIntlClientProvider>
-    ))
-    const waiting = row(host, 'sid-follow')
-    expect(waiting.querySelector('.badge')?.textContent).toBe('等待中')
-    expect(waiting.textContent).toContain('跟进')
-    expect(waiting.textContent).toContain('下次检查：')
-    expect(button(waiting, '结束跟进')).toBeTruthy()
-    expect(button(waiting, '显示检查记录')).toBeTruthy()
-  })
-})
-
-describe('the Activity view on a phone', () => {
-  it('stacks each row under one responsive tree and keeps icon-only controls labelled', async () => {
-    const host = await mount(true)
-    const panel = host.querySelector('[data-assistant-activity]')!
-    // Base classes are the phone layout; desktop: variants restore the wide one.
-    expect(panel.className).toContain('p-4')
-    expect(panel.className).toContain('desktop:p-0')
-    const row = host.querySelector('[data-assistant-item="item-1"]')!
-    const heading = row.querySelector('.badge')!.parentElement!
-    expect(heading.className).toContain('flex-col')
-    expect(heading.className).toContain('desktop:flex-row')
-    const remove = button(row, 'Delete')!
-    expect(remove.getAttribute('aria-label')).toBe('Delete')
-    expect(remove.querySelector('span')?.className).toContain('max-desktop:hidden')
-    const subsession = host.querySelector('[data-assistant-subsession="sid-child"]')!
-    expect(subsession.className).toContain('flex-col')
-    expect(subsession.className).toContain('desktop:flex-row')
-    // A draft's choices wrap under its text, and so does the confirmation that replaces them.
-    const draft = host.querySelector('[data-assistant-draft="draft-1"]')!
-    expect(draft.querySelector('[data-assistant-draft-actions]')?.className).toContain('flex-wrap')
-    await click(button(draft, 'Approve'))
-    expect(draft.querySelector('[role="group"]')?.className).toContain('flex-wrap')
+    expect([...host.querySelectorAll('h3')].map((h) => h.firstChild?.textContent)).toEqual(['等你处理', '任务', '跟进'])
+    expect(meta(host.querySelector('[data-assistant-draft="draft-1"]')!)).toMatch(/^草稿 · 由 Ada 审批 · /)
+    expect(meta(host.querySelector('[data-assistant-draft="proposal-1"]')!)).toMatch(/^#support · 建议的任务 · /)
+    expect(meta(host.querySelector('[data-assistant-permission="request-1"]')!)).toMatch(/^#support · 权限 · /)
+    expect(meta(taskRow(host, 'sid-child'))).toMatch(/^#support · 运行中 · /)
+    expect(meta(taskRow(host, 'sid-follow'))).toContain('下次检查：')
+    expect(button(taskRow(host, 'sid-follow'), '结束')).toBeTruthy()
+    expect(host.querySelector('[data-finished-toggle]')?.textContent).toBe('2 个已结束')
   })
 })
