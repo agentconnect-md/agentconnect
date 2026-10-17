@@ -89,6 +89,8 @@ export interface CheckParent {
   thread: string
   transportScope: string | null
   integrationId?: string
+  /** Not opened yet: the place's first message, or a first look's report, opens it. */
+  opening?: true
   inherited: Pick<CallMeta, 'parentPrivate' | 'externalOrigin' | 'originCodeHostReplyTarget'>
 }
 
@@ -795,7 +797,9 @@ export class FollowUpChecks {
         channel: parent.channel,
         thread: parent.thread
       },
-      ...parent.inherited
+      ...parent.inherited,
+      // A first look whose place has no long session yet has no audience to inherit, so it takes the place's.
+      ...(item.firstLook && parent.opening ? { placeAudience: true as const } : {})
     }
     let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
     const admitted: Admission = new Promise((resolve) => (settleAdmission = resolve))

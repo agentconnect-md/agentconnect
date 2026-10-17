@@ -393,7 +393,6 @@ function DraftRow({
 }) {
   const t = useTranslations('Agents.detail.activity')
   const tl = useTranslations('Common.taskList')
-  const tf = useTranslations('Common.followUp')
   const shortTime = useShortTime()
   const { members } = useConsoleData()
   const placeLabel = usePlaceLabel(agentId)
@@ -443,7 +442,7 @@ function DraftRow({
 
   // The collapsed line: a message's text, a proposal's reason, else what it would take or run.
   const previewText = proposal
-    ? proposal.why || (proposal.followUp ? tf('doneWhen', { text: proposal.followUp.doneWhen }) : draft.text)
+    ? proposal.why || (proposal.followUp ? proposal.followUp.doneWhen : draft.text)
     : draft.text
   const details = proposal ? (
     <>

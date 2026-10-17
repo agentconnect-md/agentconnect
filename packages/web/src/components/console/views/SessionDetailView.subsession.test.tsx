@@ -466,7 +466,8 @@ describe.each([
     )
     expect(summary()?.textContent).toContain('Follow-up')
     const checks = summary()?.querySelector('[data-follow-up-checks]')
-    expect(checks?.textContent).toContain('Done when: The release is published')
+    expect(checks?.textContent).toContain('The release is published')
+    expect(checks?.textContent).not.toContain('Done when')
     expect(checks?.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('still a draft.')
     // The page stays read-only, and still names the session it belongs to.
     expect(container?.querySelector('[data-task-owner]')?.textContent).toBe('Belongs to Deploy the thing · task')

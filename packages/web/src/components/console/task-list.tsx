@@ -181,16 +181,18 @@ export function PlaceMark({ platform }: { platform: string }) {
   )
 }
 
-/** A long text cut to one ellipsised line; expanding wraps it in full and shows what follows it. */
+/** A long text cut to one ellipsised line, `quiet` in the meta line's tone; expanding wraps it in full and shows what follows it. */
 export function PreviewLine({
   text,
   mono = false,
+  quiet = false,
   expanded,
   onToggle,
   children
 }: {
   text: string
   mono?: boolean
+  quiet?: boolean
   expanded: boolean
   onToggle: () => void
   children?: ReactNode
@@ -202,7 +204,9 @@ export function PreviewLine({
         aria-expanded={expanded}
         data-preview-line=""
         onClick={onToggle}
-        className="mt-[3px] flex w-full min-w-0 cursor-pointer items-start gap-2 border-0 bg-transparent p-0 text-left text-(--text-secondary) max-desktop:py-1"
+        className={`mt-[3px] flex w-full min-w-0 cursor-pointer items-start gap-2 border-0 bg-transparent p-0 text-left max-desktop:py-1 ${
+          quiet ? 'text-(--text-tertiary)' : 'text-(--text-secondary)'
+        }`}
       >
         <span
           className={`min-w-0 flex-1 ${expanded ? 'whitespace-pre-wrap break-words' : 'truncate'} ${
@@ -443,11 +447,7 @@ export function BackgroundTaskRow({
   )
   const preview =
     viaPreview && followUp.doneWhen ? (
-      <PreviewLine
-        text={tf('doneWhen', { text: followUp.doneWhen })}
-        expanded={expanded}
-        onToggle={() => setExpanded((v) => !v)}
-      >
+      <PreviewLine text={followUp.doneWhen} quiet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
         <FollowUpChecks followUp={{ ...followUp, doneWhen: null }} />
       </PreviewLine>
     ) : null
@@ -512,11 +512,12 @@ export function ParentPlace({
 }) {
   const t = useTranslations('Common.taskList')
   const { orgPath } = useOrgs()
+  // A session's title is never its place: with no name known, the meta line's platform mark and a neutral label stand in.
   const name = parent.channelName
     ? chatPlaceName(parent.platform ?? undefined, parent.channelName)
     : parent.platform === 'webchat'
       ? t('webchat')
-      : (parent.title ?? t('conversation'))
+      : t('conversation')
   return (
     <Link
       className="text-inherit no-underline hover:underline"

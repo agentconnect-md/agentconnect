@@ -259,7 +259,8 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     await click('Reason and details')
     const shown = row('proposal-1')!.querySelector('[data-proposed-follow-up]')!
     expect(shown.textContent).toContain('Takes this follow-up')
-    expect(shown.textContent).toContain('Done when: A date is posted.')
+    expect(shown.textContent).toContain('A date is posted.')
+    expect(shown.textContent).not.toContain('Done when')
     expect(shown.textContent).toContain('No check until it is messaged')
     await choose('proposal-1', 'Approve')
     expect(host!.textContent).toContain(

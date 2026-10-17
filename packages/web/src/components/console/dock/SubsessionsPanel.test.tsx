@@ -456,7 +456,8 @@ describe('SubsessionsPanel', () => {
 
     await click(labelled('Show checks', rows()[0]))
     const checks = rows()[0]?.querySelector('[data-follow-up-checks]')
-    expect(checks?.textContent).toContain('Done when: The release is published')
+    expect(checks?.textContent).toContain('The release is published')
+    expect(checks?.textContent).not.toContain('Done when')
     const items = Array.from(checks?.querySelectorAll<HTMLElement>('[data-follow-up-check]') ?? [])
     expect(items.map((li) => li.dataset.followUpCheck)).toEqual(['reported', 'silent'])
     expect(items[0]?.querySelector('time')?.getAttribute('dateTime')).toBe('2026-10-15T09:00:00.000Z')

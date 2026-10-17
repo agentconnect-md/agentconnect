@@ -90,7 +90,7 @@ export function FollowUpChecks({ followUp }: { followUp: AssistantFollowUpDto })
     <div data-follow-up-checks="" className="rounded-md bg-(--surface-sunken) px-3 py-2">
       {followUp.doneWhen ? (
         <div className="break-words font-sans text-[12px] font-normal leading-[1.5] text-(--text-primary)">
-          {t('doneWhen', { text: followUp.doneWhen })}
+          {followUp.doneWhen}
         </div>
       ) : null}
       {followUp.recentChecks.length === 0 ? (
@@ -148,7 +148,7 @@ export function ProposedFollowUp({
       <span
         className={`whitespace-pre-wrap break-words font-sans ${size} font-normal leading-[1.5] text-(--text-secondary)`}
       >
-        {t('doneWhen', { text: followUp.doneWhen })}
+        {followUp.doneWhen}
       </span>
       <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
         {followUp.nextCheck

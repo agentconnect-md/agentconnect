@@ -200,7 +200,6 @@
       "nextCheck": "下次检查：{time}",
       "showChecks": "显示检查记录",
       "hideChecks": "隐藏检查记录",
-      "doneWhen": "完成标准：{text}",
       "noChecks": "还没有检查记录。",
       "reported": "已回报",
       "notReported": "未回报",

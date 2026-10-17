@@ -1742,7 +1742,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
   report opens one on its append coordinate as the place's own: a root session bound to the conversation's people as a person's
   first message there would bind it, and not kept out of memory capture. The first look stays its
   child; recorded as the opened session's creator, each named the other as its parent, and the
-  Control Plane never settled who may see either. A first look that ends without handing back a
+  Control Plane never settled who may see either. Until that report, a first look in such a place
+  has no session to take its audience from, so it binds the place's own and is reported as the
+  place's own row, still the long session's child: the place's people see it while it runs. The
+  place's name its lookup returns is kept, so both sessions are named by it. A first look that ends without handing back a
   report counts as a failed check, and one whose check is stopped ends as stopped.
 - **Messages.** `messageTask` to a first look is refused while it runs as well as after it ended,
   since its one check takes none. `listTasks` lists it as a first look.
@@ -3778,3 +3781,18 @@ longer a builder. Research gains a bounded read of each internal public channel 
 already in, at most 30 days or 500 messages per channel per round and never a join, so the
 channels the bot was in before the mode was turned on fill the directory too, and a `channels.md`
 purpose guessed from a channel's name is replaced by one the channel shows (§5.15).
+
+**Sixty-fifth revision (2026-10-17)**: a running first look of a just-joined channel, and the
+Activity row's wording (issue #2810; §5.13).
+
+- **Found on test.** While a first look ran in an internal public channel the bot had just joined,
+  Activity showed it as "Not visible to you" to a member of that channel, and named its place by
+  the long session's title once it ended. The place's long session is opened by the first look's
+  report, so while the first look ran it waited to inherit an audience from a session the Control
+  Plane did not have yet, and was hidden from everyone. An HTTP bot's join lists no channels, so
+  nothing had named the channel either.
+- **The fix.** A first look whose place has no long session yet binds the place's own audience and
+  is reported as the place's own row, and the channel name its lookup returns is kept. The console
+  never shows a session's title as a place: with no name known, the platform's mark and
+  "Conversation" stand in. A follow-up's done-when line shows the sentence alone, in the meta
+  line's tone.

@@ -174,6 +174,8 @@ export interface CallMeta {
   platformOrigin?: true
   /** A report that opens its place's long session (assistant-mode.md §5.13): the session is the place's own root, bound to the place, as its first message would open it. */
   opensPlace?: true
+  /** A first look in a place whose long session does not exist yet (§5.13): with no parent to inherit from, it binds and reports the place's own audience. */
+  placeAudience?: true
   /**
    * webchat-multi-agents.md §5.2a (#549 parity): this delivery is a conversation-roster
    * CONTINUATION — a peer participant's committed post fanned to this agent — not a
