@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -16,7 +16,14 @@ import { ProtocolError } from '../../domain/errors.js'
 import { ConnectionClosed } from '../../ws/registry.js'
 import { packageSkillBundle, SkillBundleValidationError } from '../../organization-knowledge/skill-bundle.js'
 import { organizationSuggestionSnapshotToken } from '../../organization-knowledge/suggestion-snapshot.js'
+import {
+  changedPeopleKeys,
+  isRecordKind,
+  recordShapeRefusal,
+  removedPeopleKeys
+} from '../../organization-knowledge/record.js'
 import type {
+  OrganizationRecordKind,
   ManagedSkillRecord,
   ManagedSkillRevisionRecord,
   OrganizationKnowledgeRecord,
@@ -44,7 +51,7 @@ import {
 
 const IncludeArchivedQuery = z.object({ includeArchived: z.stringbool().default(false) })
 
-function knowledgeDto(row: OrganizationKnowledgeRecord, canManage: boolean) {
+export function knowledgeDto(row: OrganizationKnowledgeRecord, canManage: boolean) {
   return {
     id: row.id,
     title: row.title,
@@ -54,11 +61,15 @@ function knowledgeDto(row: OrganizationKnowledgeRecord, canManage: boolean) {
     currentRevision: row.currentRevision,
     digest: row.digest,
     source: row.source,
+    writerKind: row.writerKind,
     sourceAgentId: row.sourceAgentId,
     sourceDreamId: row.sourceDreamId,
     sourceSessionIds: row.sourceSessionIds,
     createdByUserId: row.createdByUserId,
     reviewedByUserId: row.reviewedByUserId,
+    kind: row.kind,
+    visibility: row.visibility,
+    readers: row.readers,
     archivedAt: row.archivedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -123,6 +134,7 @@ function knowledgeRevisionDto(row: OrganizationKnowledgeRevisionRecord) {
     tags: row.tags,
     digest: row.digest,
     source: row.source,
+    writerKind: row.writerKind,
     sourceAgentId: row.sourceAgentId,
     sourceDreamId: row.sourceDreamId,
     sourceSessionIds: row.sourceSessionIds,
@@ -213,6 +225,57 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const repo = deps.repos.organizationKnowledge
 
+    // An owner's edit or clear of a record entry: its shape checked, its title kept, People's removals marked (§5.16).
+    const updateRecordEntry = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      existing: OrganizationKnowledgeRecord,
+      kind: OrganizationRecordKind,
+      expectedRevision: number,
+      content: string
+    ) => {
+      const record = deps.repos.organizationRecord
+      if (!record) return unavailable(reply)
+      const refusal = recordShapeRefusal(kind, content)
+      if (refusal) return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: refusal })
+      const people = kind === 'people'
+      const removed = people ? removedPeopleKeys(existing.content, content) : []
+      if (people) {
+        const optedOut = new Set(await record.optOut(orgOf(req)))
+        if (changedPeopleKeys(existing.content, content).some((key) => optedOut.has(key)))
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'a person who removed their entry stays out of People until they write it themselves'
+          })
+      }
+      const written = await record.write(orgOf(req), kind, {
+        baseRevision: expectedRevision,
+        content,
+        provenance: { source: 'manual', ...(ctxOf(req).userId ? { createdByUserId: ctxOf(req).userId } : {}) },
+        optOut: { mark: removed, lift: [] },
+        now: new Date()
+      })
+      if (written.outcome !== 'written')
+        return reply.code(409).send({
+          error: 'Conflict',
+          statusCode: 409,
+          message: 'knowledge changed since it was loaded; refresh before publishing'
+        })
+      if (people)
+        await deps.repos.audit
+          .append({
+            kind: 'memory_change',
+            orgId: orgOf(req),
+            ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+            frameType: 'knowledge/people',
+            message: removed.length ? 'people entries cleared' : 'people edited',
+            details: { operation: removed.length ? 'clear' : 'edit', knowledgeId: existing.id, removed: removed.length }
+          })
+          .catch((err: unknown) => req.log.warn({ err }, 'knowledge: audit append failed'))
+      return knowledgeDto(written.entry, true)
+    }
+
     const fanOutManagedSkill = async (orgId: OrgId, managedSkillId: string): Promise<void> => {
       const agents = (await deps.repos.agent.list(orgId)).filter((agent) =>
         agent.managedSkills.includes(managedSkillId)
@@ -252,7 +315,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Publish organization knowledge manually',
-          description: 'Publishes the first immutable revision of an owner-authored organization knowledge entry.',
+          description:
+            'Publishes the first immutable revision of an owner-authored organization knowledge entry. `visibility` and `readers` say which agents read it; every agent does by default.',
           operationId: 'createOrganizationKnowledge',
           body: CreateOrganizationKnowledgeBody,
           response: { 201: OrganizationKnowledgeDto, 403: ErrorDto, 503: ErrorDto }
@@ -261,10 +325,19 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         if (!repo) return unavailable(reply)
-        const row = await repo.createKnowledge(orgOf(req), req.body, {
-          source: 'manual',
-          createdByUserId: ctxOf(req).userId
-        })
+        const { visibility, readers, ...body } = req.body
+        // Readers are kept to the organization's agents, as the visibility route keeps them.
+        const known = new Set((await deps.repos.agent.list(orgOf(req))).map((agent) => String(agent.id)))
+        const row = await repo.createKnowledge(
+          orgOf(req),
+          {
+            ...body,
+            ...(visibility
+              ? { visibility: { visibility, readers: [...new Set(readers ?? [])].filter((id) => known.has(id)) } }
+              : {})
+          },
+          { source: 'manual', createdByUserId: ctxOf(req).userId }
+        )
         return reply.code(201).send(knowledgeDto(row, true))
       }
     )
@@ -295,11 +368,19 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Publish a new immutable knowledge revision',
-          description: 'Publishes an owner-authored revision using optimistic revision fencing.',
+          description:
+            'Publishes an owner-authored revision using optimistic revision fencing. An organization record entry (About, Channels, People) keeps its title and must fit its shape; 400 names the line that failed. Removing a person from People keeps them out of it until they write their entry themselves, and a person who did so cannot be written back (409); owner changes to People are audited without content.',
           operationId: 'updateOrganizationKnowledge',
           params: IdParam,
           body: UpdateOrganizationKnowledgeBody,
-          response: { 200: OrganizationKnowledgeDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: {
+            200: OrganizationKnowledgeDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -308,6 +389,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         const existing = await repo.getKnowledge(orgOf(req), req.params.id)
         if (!existing) return missing(reply)
         const { expectedRevision, ...body } = req.body
+        if (isRecordKind(existing.kind))
+          return updateRecordEntry(req, reply, existing, existing.kind, expectedRevision, body.content)
         const row = await repo.updateKnowledge(orgOf(req), req.params.id, expectedRevision, body, {
           source: 'manual',
           createdByUserId: ctxOf(req).userId
@@ -349,11 +432,12 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Knowledge],
           summary: 'Archive or restore organization knowledge',
-          description: 'Archives or restores an organization knowledge entry without deleting its revisions.',
+          description:
+            "Archives or restores an organization knowledge entry without deleting its revisions. The organization record's entries refuse it (409).",
           operationId: 'archiveOrganizationKnowledge',
           params: IdParam,
           body: SetOrganizationArtifactArchivedBody,
-          response: { 200: OrganizationKnowledgeDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: OrganizationKnowledgeDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -361,6 +445,13 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         if (!repo) return unavailable(reply)
         const existing = await repo.getKnowledge(orgOf(req), req.params.id)
         if (!existing) return missing(reply)
+        // The record's entries are what the assistant-mode agents write; a clear empties one instead.
+        if (isRecordKind(existing.kind))
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'the organization record is not archived; clear an entry instead'
+          })
         const row = await repo.setKnowledgeArchived(orgOf(req), req.params.id, req.body.archived, ctxOf(req).userId)
         return knowledgeDto(row, true)
       }

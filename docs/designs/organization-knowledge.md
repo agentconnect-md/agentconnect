@@ -1,8 +1,9 @@
 # Organization Knowledge and Dream Suggestions
 
-> **Status:** Implemented, with one revision in design (2026-10-17): agent visibility on every
+> **Status:** Implemented, with one revision being built (2026-10-17): agent visibility on every
 > entry and the organization record, §15, decided in
-> [assistant-mode.md](assistant-mode.md) §5.16 and not yet built.
+> [assistant-mode.md](assistant-mode.md) §5.16. Its Control Plane side shipped on 2026-10-18
+> (assistant-mode.md §5.16 "As shipped, change 1"); the daemon's and the console's are to come.
 >
 > **Scope:** protocol, control plane, daemon, and web console
 >
@@ -601,7 +602,8 @@ daemon converges without waiting for an unrelated agent edit or restart.
 Decided by the product owner on 2026-10-17 and recorded in
 [assistant-mode.md](assistant-mode.md) §5.16, which holds the reasons, the
 decisions and the implementation checklist. This section records what changes
-in the knowledge system itself. Nothing here is built yet.
+in the knowledge system itself. The Control Plane side is built; the daemon's and
+the console's are not yet.
 
 ### 15.1 Entry visibility
 

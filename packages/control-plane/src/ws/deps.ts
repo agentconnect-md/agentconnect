@@ -195,6 +195,8 @@ export interface DaemonWsDeps {
   placementResolver?: PlacementResolver
   /** Accepted Knowledge/skills and retained suggestion metadata. */
   organizationKnowledge?: OrganizationKnowledgeRepo
+  /** The organization record an assistant-mode agent reads and writes (assistant-mode.md §5.16). */
+  organizationRecord?: import('../persistence/ports.js').OrganizationRecordRepo
   /** Revision-fenced sink for daemon external-memory conformance facts. */
   externalMemoryConnection?: ExternalMemoryConnectionRepo
   /** The `control-plane` memory home's op set (memory-evolution.md §3.2.1); absent ⇒ `memory/store` answers INTERNAL. */

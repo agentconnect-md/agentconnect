@@ -74,6 +74,7 @@ export {
 export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 export { PgAgentSkillSourceStatusRepo } from './repositories/agent-skill-source-status.repo.js'
 export { PgOrganizationKnowledgeRepo } from './repositories/organization-knowledge.repo.js'
+export { PgOrganizationRecordRepo } from './repositories/organization-record.repo.js'
 export {
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,

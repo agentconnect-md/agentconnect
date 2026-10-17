@@ -1,6 +1,7 @@
 /**
  * PgAgentRepo — agent definition & placement (design §3.6, §3.14).
  */
+import { applyAssistantModeSwitch, pruneKnowledgeReaders } from './organization-record.repo.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
@@ -786,6 +787,15 @@ export class PgAgentRepo implements AgentRepo {
           hints: opts?.assistantOnboardingHints,
           now: new Date()
         })
+        // People's readers follow the switch, and the organization's first switch-on claims research (§5.16).
+        if ((before?.enabled === true) !== (after?.enabled === true)) {
+          const switched = await applyAssistantModeSwitch(tx, orgId, agentId, {
+            on: after?.enabled === true,
+            claimResearch: onboarding !== undefined,
+            now: new Date()
+          })
+          if (onboarding && switched.research !== undefined) onboarding = { ...onboarding, research: switched.research }
+        }
         const lockedMemory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
         const memory = overrides !== undefined ? overrides.memory : lockedMemory
         const runtime = patch.runtime ?? row.runtime
@@ -1270,6 +1280,7 @@ export class PgAgentRepo implements AgentRepo {
       // Deleting a preset is the explicit opt-out — settle BEFORE the delete
       // (the FK SetNull would orphan the row from this agentId lookup).
       await settlePresetPlacement(tx, agentId)
+      if (row) await pruneKnowledgeReaders(tx, row.orgId, agentId)
       await tx.agent.delete({ where: { id: agentId, orgId } })
       return removedHooks
     })

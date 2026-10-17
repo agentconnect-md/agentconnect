@@ -1414,7 +1414,16 @@ export const OrganizationEnvironmentAgentParam = z.object({
 
 // ── organization Knowledge + managed Agent Skills ─────────────────────────
 
-export const OrganizationArtifactSourceDto = z.enum(['manual', 'dream'])
+export const OrganizationArtifactSourceDto = z.enum(['manual', 'dream', 'agent', 'migration'])
+export const OrganizationKnowledgeKindDto = z
+  .enum(['entry', 'organization', 'channels', 'people'])
+  .describe(
+    '`entry` is an ordinary entry; `organization`, `channels` and `people` are the organization record (About, Channels, People).'
+  )
+export const OrganizationKnowledgeVisibilityDto = z
+  .enum(['all', 'selected'])
+  .describe('Which agents read the entry: every agent of the organization, or the agents in `readers`.')
+export const OrganizationKnowledgeWriterKindDto = z.enum(['research', 'first-look', 'conversation', 'person'])
 
 export const OrganizationKnowledgeDto = z.object({
   id: z.string().uuid(),
@@ -1425,11 +1434,15 @@ export const OrganizationKnowledgeDto = z.object({
   currentRevision: z.number().int().positive(),
   digest: z.string(),
   source: OrganizationArtifactSourceDto,
+  writerKind: OrganizationKnowledgeWriterKindDto.nullable(),
   sourceAgentId: z.string().nullable(),
   sourceDreamId: z.string().nullable(),
   sourceSessionIds: z.array(z.string()),
   createdByUserId: z.string().nullable(),
   reviewedByUserId: z.string().nullable(),
+  kind: OrganizationKnowledgeKindDto,
+  visibility: OrganizationKnowledgeVisibilityDto,
+  readers: z.array(z.string()).describe('Agent ids that read the entry under `selected`; empty under `all`.'),
   archivedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -1446,6 +1459,7 @@ export const OrganizationKnowledgeRevisionDto = z.object({
   tags: z.array(z.string()),
   digest: z.string(),
   source: OrganizationArtifactSourceDto,
+  writerKind: OrganizationKnowledgeWriterKindDto.nullable(),
   sourceAgentId: z.string().nullable(),
   sourceDreamId: z.string().nullable(),
   sourceSessionIds: z.array(z.string()),
@@ -1455,24 +1469,82 @@ export const OrganizationKnowledgeRevisionDto = z.object({
 })
 export const OrganizationKnowledgeRevisionListDto = z.array(OrganizationKnowledgeRevisionDto)
 
-export const CreateOrganizationKnowledgeBody = z
+const OrganizationKnowledgeBodyBase = z.object({
+  title: z.string().trim().min(1).max(128),
+  content: z
+    .string()
+    .min(1)
+    .max(262_144)
+    .refine((content) => Buffer.byteLength(content, 'utf8') <= 262_144, {
+      message: 'content must be at most 262144 UTF-8 bytes'
+    }),
+  summary: z.string().trim().max(1024).optional(),
+  tags: z.array(z.string().trim().min(1).max(64)).max(16).default([])
+})
+
+export const UpdateKnowledgeVisibilityBody = z
   .object({
-    title: z.string().trim().min(1).max(128),
-    content: z
-      .string()
-      .min(1)
-      .max(262_144)
-      .refine((content) => Buffer.byteLength(content, 'utf8') <= 262_144, {
-        message: 'content must be at most 262144 UTF-8 bytes'
-      }),
-    summary: z.string().trim().max(1024).optional(),
-    tags: z.array(z.string().trim().min(1).max(64)).max(16).default([])
+    visibility: OrganizationKnowledgeVisibilityDto,
+    readers: z
+      .array(z.string().uuid())
+      .max(500)
+      .default([])
+      .describe('Agent ids under `selected`; ignored under `all`.')
   })
   .strict()
 
-export const UpdateOrganizationKnowledgeBody = CreateOrganizationKnowledgeBody.extend({
+export const CreateOrganizationKnowledgeBody = OrganizationKnowledgeBodyBase.extend({
+  visibility: OrganizationKnowledgeVisibilityDto.optional(),
+  readers: z.array(z.string().uuid()).max(500).optional()
+}).strict()
+
+export const UpdateOrganizationKnowledgeBody = OrganizationKnowledgeBodyBase.extend({
   expectedRevision: z.number().int().positive()
 }).strict()
+
+export const KnowledgeVisibilityDto = z.object({
+  visibility: OrganizationKnowledgeVisibilityDto,
+  readers: z.array(z.string()),
+  canManage: z
+    .boolean()
+    .describe('False for About and Channels, whose visibility is fixed, and for anyone but an owner.')
+})
+
+export const OrganizationRecordDto = z.object({
+  research: z.object({
+    agentId: z.string().nullable().describe('The agent that researched the organization, or holds its research.'),
+    researchedAt: z
+      .string()
+      .nullable()
+      .describe("When research last wrote the record, or the moved record's last research."),
+    runningSince: z.string().nullable().describe('Set while a research round is running.')
+  }),
+  entries: z.array(OrganizationKnowledgeDto).describe('About, Channels and People, once the record exists.')
+})
+
+export const PeopleEntryDto = z.object({ key: z.string(), text: z.string() })
+export const MyPeopleEntriesDto = z.object({
+  revision: z.number().int().positive(),
+  entries: z
+    .array(PeopleEntryDto)
+    .describe("The caller's own entries: under their console key and each chat identity they linked."),
+  keys: z.array(z.string()).describe('The keys the caller may write their own entry under.')
+})
+export const PeopleEntryBody = z
+  .object({
+    text: z
+      .string()
+      .min(1)
+      .max(8192)
+      .describe('One entry: its "## <name> (<handles>) `<key>`" heading and at most ten field lines.'),
+    expectedRevision: z.number().int().positive()
+  })
+  .strict()
+export const PeopleWriteDto = z.object({ revision: z.number().int().positive(), cleared: z.boolean().optional() })
+export const PeopleKeyParam = z.object({
+  id: z.string().uuid(),
+  key: z.string().min(1).max(512).describe("The entry's identity key, as its heading ends.")
+})
 
 export const SetOrganizationArtifactArchivedBody = z.object({ archived: z.boolean() }).strict()
 

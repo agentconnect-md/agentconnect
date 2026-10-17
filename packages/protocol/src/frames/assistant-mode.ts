@@ -33,6 +33,8 @@ export const AssistantOnboarding = z.object({
   /** The console user whose edit switched it on; absent when no person made the edit. */
   enabledByUserId: z.string().min(1).max(256).optional(),
   enabledAt: z.string().datetime(),
-  hints: AssistantOnboardingHints.optional()
+  hints: AssistantOnboardingHints.optional(),
+  /** Whether this agent researches the organization (§5.16): true for the first switch-on in the organization; absent on a record older than the field. */
+  research: z.boolean().optional()
 })
 export type AssistantOnboarding = z.infer<typeof AssistantOnboarding>

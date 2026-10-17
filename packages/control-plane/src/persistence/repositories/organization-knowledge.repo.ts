@@ -16,7 +16,9 @@ import type {
   OrganizationKnowledgeRepo,
   OrganizationKnowledgeRevisionRecord,
   OrganizationSuggestionRecord,
-  OrganizationSuggestionState
+  OrganizationSuggestionState,
+  KnowledgeReader,
+  KnowledgeVisibilityInput
 } from '../ports.js'
 import type { OrganizationSuggestionInfo } from '@agentconnect.md/protocol'
 import { OrgId } from '../../domain/ids.js'
@@ -26,6 +28,15 @@ import { bumpAgentsReferencingManagedSkill } from './organization-environment-fe
 
 type KnowledgeWithRevision = OrganizationKnowledge & { revisions: OrganizationKnowledgeRevision[] }
 type SkillWithRevision = ManagedSkill & { revisions: ManagedSkillRevision[] }
+
+/** The agents' read filter: entries visible to `agentId`, People left out with outsiders (§15.1, §15.3). */
+function readerWhere(reader: KnowledgeReader | undefined) {
+  if (!reader) return {}
+  return {
+    OR: [{ visibility: 'all' as const }, { readers: { has: reader.agentId } }],
+    ...(reader.withOutsiders ? { kind: { not: 'people' as const } } : {})
+  }
+}
 
 function sha256(value: string | Uint8Array): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
@@ -38,6 +49,9 @@ function prismaBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
   copy.set(value)
   return copy
 }
+
+const writerKindOf = (value: OrganizationKnowledgeRevision['writerKind']) =>
+  value === 'first_look' ? ('first-look' as const) : value
 
 function toKnowledgeRevision(row: OrganizationKnowledgeRevision): OrganizationKnowledgeRevisionRecord {
   return {
@@ -54,11 +68,12 @@ function toKnowledgeRevision(row: OrganizationKnowledgeRevision): OrganizationKn
     sourceSessionIds: row.sourceSessionIds,
     createdByUserId: row.createdByUserId,
     reviewedByUserId: row.reviewedByUserId,
+    writerKind: writerKindOf(row.writerKind),
     createdAt: row.createdAt
   }
 }
 
-function toKnowledge(row: KnowledgeWithRevision): OrganizationKnowledgeRecord {
+export function toKnowledge(row: KnowledgeWithRevision): OrganizationKnowledgeRecord {
   const revision = row.revisions[0]
   if (!revision) throw new Error(`organization knowledge ${row.id} has no current revision`)
   return {
@@ -70,6 +85,10 @@ function toKnowledge(row: KnowledgeWithRevision): OrganizationKnowledgeRecord {
     archivedByUserId: row.archivedByUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    kind: row.kind,
+    visibility: row.visibility,
+    readers: row.readers,
+    readersFollowAssistantMode: row.readersFollowAssistantMode,
     content: revision.content,
     summary: revision.summary,
     tags: revision.tags,
@@ -81,6 +100,7 @@ function toKnowledge(row: KnowledgeWithRevision): OrganizationKnowledgeRecord {
     sourceSessionIds: revision.sourceSessionIds,
     createdByUserId: revision.createdByUserId,
     reviewedByUserId: revision.reviewedByUserId,
+    writerKind: writerKindOf(revision.writerKind),
     revisionCreatedAt: revision.createdAt
   }
 }
@@ -168,7 +188,7 @@ function provenanceData(provenance: OrganizationArtifactProvenance) {
   }
 }
 
-const currentKnowledgeInclude = {
+export const currentKnowledgeInclude = {
   revisions: { orderBy: { revision: 'desc' as const }, take: 1 }
 }
 
@@ -179,9 +199,13 @@ const currentSkillInclude = {
 export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  async listKnowledge(orgId: OrgId, includeArchived = false): Promise<OrganizationKnowledgeRecord[]> {
+  async listKnowledge(
+    orgId: OrgId,
+    includeArchived = false,
+    reader?: KnowledgeReader
+  ): Promise<OrganizationKnowledgeRecord[]> {
     const rows = await this.db.organizationKnowledge.findMany({
-      where: { orgId, ...(includeArchived ? {} : { archivedAt: null }) },
+      where: { orgId, ...(includeArchived ? {} : { archivedAt: null }), ...readerWhere(reader) },
       include: currentKnowledgeInclude,
       orderBy: { updatedAt: 'desc' }
     })
@@ -209,9 +233,10 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
 
   async searchKnowledge(
     orgId: OrgId,
-    input: { query: string; tags?: string[]; limit: number }
+    input: { query: string; tags?: string[]; limit: number; reader?: KnowledgeReader }
   ): Promise<OrganizationKnowledgeRecord[]> {
     const query = input.query.trim()
+    const reader = input.reader
     const like = `%${query}%`
     const tags = input.tags ?? []
     const rows = await this.db.$queryRaw<
@@ -221,7 +246,8 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
           summary: string | null
           tags: string[]
           digest: string
-          source: 'manual' | 'dream'
+          source: OrganizationKnowledgeRecord['source']
+          writerKind: OrganizationKnowledgeRevision['writerKind']
           sourceAgentId: string | null
           sourceDreamId: string | null
           sourceCandidateId: string | null
@@ -235,7 +261,7 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       SELECT k.*,
              r."content", r."summary", r."tags", r."digest", r."source",
              r."sourceAgentId", r."sourceDreamId", r."sourceCandidateId",
-             r."sourceSessionIds", r."createdByUserId", r."reviewedByUserId",
+             r."sourceSessionIds", r."createdByUserId", r."reviewedByUserId", r."writerKind",
              r."createdAt" AS "revisionCreatedAt"
       FROM "organization_knowledge" k
       JOIN "organization_knowledge_revision" r
@@ -243,6 +269,8 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       WHERE k."orgId" = ${orgId}
         AND k."archivedAt" IS NULL
         AND (${tags.length === 0} OR r."tags" @> ${tags}::text[])
+        AND (${reader === undefined} OR k."visibility" = 'all' OR k."readers" @> ARRAY[${reader?.agentId ?? ''}]::text[])
+        AND NOT (${reader?.withOutsiders === true} AND k."kind" = 'people')
         AND (
           k."title" ILIKE ${like}
           OR r."content" ILIKE ${like}
@@ -269,6 +297,10 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       archivedByUserId: row.archivedByUserId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      kind: row.kind,
+      visibility: row.visibility,
+      readers: row.readers,
+      readersFollowAssistantMode: row.readersFollowAssistantMode,
       content: row.content,
       summary: row.summary,
       tags: row.tags,
@@ -280,19 +312,26 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       sourceSessionIds: row.sourceSessionIds,
       createdByUserId: row.createdByUserId,
       reviewedByUserId: row.reviewedByUserId,
+      writerKind: writerKindOf(row.writerKind),
       revisionCreatedAt: row.revisionCreatedAt
     }))
   }
 
   async createKnowledge(
     orgId: OrgId,
-    input: { title: string; content: string; summary?: string; tags?: string[] },
+    input: { title: string; content: string; summary?: string; tags?: string[]; visibility?: KnowledgeVisibilityInput },
     provenance: OrganizationArtifactProvenance
   ): Promise<OrganizationKnowledgeRecord> {
     const row = await this.db.organizationKnowledge.create({
       data: {
         orgId,
         title: input.title,
+        ...(input.visibility
+          ? {
+              visibility: input.visibility.visibility,
+              readers: input.visibility.visibility === 'selected' ? input.visibility.readers : []
+            }
+          : {}),
         revisions: {
           create: {
             revision: 1,
@@ -359,6 +398,24 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       include: currentKnowledgeInclude
     })
     return toKnowledge(row)
+  }
+
+  async setKnowledgeVisibility(
+    orgId: OrgId,
+    id: string,
+    input: KnowledgeVisibilityInput
+  ): Promise<OrganizationKnowledgeRecord | null> {
+    // A hand edit makes People's list the person's: the switch no longer touches it (§5.16).
+    const updated = await this.db.organizationKnowledge.updateMany({
+      where: { id, orgId },
+      data: {
+        visibility: input.visibility,
+        readers: input.visibility === 'selected' ? input.readers : [],
+        readersFollowAssistantMode: false
+      }
+    })
+    if (updated.count === 0) return null
+    return this.getKnowledge(orgId, id)
   }
 
   async listManagedSkills(orgId: OrgId, includeArchived = false): Promise<ManagedSkillRecord[]> {
@@ -600,15 +657,16 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       } else {
         if (!suggestion.targetArtifactId || !suggestion.targetRevision)
           return { outcome: 'target_missing', suggestion: toSuggestion(suggestion) }
+        // A record entry is written directly, never by a dream (§15.2): its id reads as no target.
         const target = await tx.organizationKnowledge.findFirst({
-          where: { id: suggestion.targetArtifactId, orgId: suggestion.orgId, archivedAt: null }
+          where: { id: suggestion.targetArtifactId, orgId: suggestion.orgId, archivedAt: null, kind: 'entry' }
         })
         if (!target) return { outcome: 'target_missing', suggestion: toSuggestion(suggestion) }
         if (target.currentRevision !== suggestion.targetRevision)
           return { outcome: 'stale_target', suggestion: toSuggestion(suggestion) }
         revision = target.currentRevision + 1
         const advanced = await tx.organizationKnowledge.updateMany({
-          where: { id: target.id, currentRevision: target.currentRevision, archivedAt: null },
+          where: { id: target.id, currentRevision: target.currentRevision, archivedAt: null, kind: 'entry' },
           data: { title: body.title, currentRevision: revision }
         })
         if (advanced.count === 0) return { outcome: 'stale_target', suggestion: toSuggestion(suggestion) }

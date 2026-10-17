@@ -6779,7 +6779,20 @@ export interface AgentSkillSourceStatusRepo {
 // (docs/designs/organization-knowledge.md)
 // ───────────────────────────────────────────────────────────────────────────
 
-export type OrganizationArtifactSource = 'manual' | 'dream'
+export type OrganizationArtifactSource = 'manual' | 'dream' | 'agent' | 'migration'
+export type OrganizationKnowledgeKind = 'entry' | 'organization' | 'channels' | 'people'
+export type OrganizationRecordKind = Exclude<OrganizationKnowledgeKind, 'entry'>
+export type OrganizationKnowledgeVisibility = 'all' | 'selected'
+export type OrganizationKnowledgeWriterKind = 'research' | 'first-look' | 'conversation' | 'person'
+/** The agent an organization read is served for, and whether its conversation holds outsiders (§15.3). */
+export interface KnowledgeReader {
+  agentId: string
+  withOutsiders?: boolean
+}
+export interface KnowledgeVisibilityInput {
+  visibility: OrganizationKnowledgeVisibility
+  readers: string[]
+}
 export type OrganizationSuggestionKind = 'knowledge' | 'skill'
 export type OrganizationSuggestionOperation = 'create' | 'update'
 export type OrganizationSuggestionState = 'pending' | 'accepted' | 'rejected'
@@ -6793,6 +6806,10 @@ export interface OrganizationKnowledgeRecord {
   archivedByUserId: string | null
   createdAt: Date
   updatedAt: Date
+  kind: OrganizationKnowledgeKind
+  visibility: OrganizationKnowledgeVisibility
+  readers: string[]
+  readersFollowAssistantMode: boolean
   content: string
   summary: string | null
   tags: string[]
@@ -6804,6 +6821,7 @@ export interface OrganizationKnowledgeRecord {
   sourceSessionIds: string[]
   createdByUserId: string | null
   reviewedByUserId: string | null
+  writerKind: OrganizationKnowledgeWriterKind | null
   revisionCreatedAt: Date
 }
 
@@ -6821,6 +6839,7 @@ export interface OrganizationKnowledgeRevisionRecord {
   sourceSessionIds: string[]
   createdByUserId: string | null
   reviewedByUserId: string | null
+  writerKind: OrganizationKnowledgeWriterKind | null
   createdAt: Date
 }
 
@@ -6897,6 +6916,49 @@ export interface OrganizationArtifactProvenance {
   reviewedByUserId?: string
 }
 
+/** Who writes a record entry: an assistant-mode agent with its writer kind, or a console user. */
+export type OrganizationRecordProvenance =
+  | { source: 'agent'; sourceAgentId: string; writerKind: OrganizationKnowledgeWriterKind }
+  | { source: 'manual'; createdByUserId?: string }
+
+export interface OrganizationRecordWriteInput {
+  baseRevision: number
+  content: string
+  provenance: OrganizationRecordProvenance
+  optOut: { mark: string[]; lift: string[] }
+  now: Date
+}
+
+export type OrganizationRecordWriteResult =
+  | { outcome: 'written'; entry: OrganizationKnowledgeRecord; optOut: string[] }
+  | { outcome: 'conflict'; entry: OrganizationKnowledgeRecord; optOut: string[] }
+  | { outcome: 'missing' }
+
+export interface OrganizationRecordStatus {
+  /** The agent that claimed research, else the last one that wrote a research revision. */
+  researchAgentId: string | null
+  researchedAt: Date | null
+  runningSince: Date | null
+  entries: OrganizationKnowledgeRecord[]
+}
+
+/** The organization record's three entries, read and written by kind (assistant-mode.md §5.16). */
+export interface OrganizationRecordRepo {
+  /** `create` makes the record when the organization has none yet, for an agent's first read. */
+  read(
+    orgId: OrgId,
+    kind: OrganizationRecordKind,
+    create?: { sourceAgentId: string }
+  ): Promise<{ entry: OrganizationKnowledgeRecord; optOut: string[] } | null>
+  write(
+    orgId: OrgId,
+    kind: OrganizationRecordKind,
+    input: OrganizationRecordWriteInput
+  ): Promise<OrganizationRecordWriteResult>
+  status(orgId: OrgId): Promise<OrganizationRecordStatus>
+  optOut(orgId: OrgId): Promise<string[]>
+}
+
 export type AcceptOrganizationSuggestionResult =
   | { outcome: 'accepted'; suggestion: OrganizationSuggestionRecord }
   | { outcome: 'not_pending'; suggestion: OrganizationSuggestionRecord }
@@ -6916,17 +6978,22 @@ export type AcceptOrganizationSuggestionResult =
  * agent, which the WS handler has already proved is placed on the connection.
  */
 export interface OrganizationKnowledgeRepo {
-  listKnowledge(orgId: OrgId, includeArchived?: boolean): Promise<OrganizationKnowledgeRecord[]>
+  /** `reader` narrows to the entries that agent reads (§15.1). */
+  listKnowledge(
+    orgId: OrgId,
+    includeArchived?: boolean,
+    reader?: KnowledgeReader
+  ): Promise<OrganizationKnowledgeRecord[]>
   getKnowledge(orgId: OrgId, id: string): Promise<OrganizationKnowledgeRecord | null>
   /** Fences through {@link OrganizationKnowledgeRepo.getKnowledge} (§3.6). */
   listKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionRecord[]>
   searchKnowledge(
     orgId: OrgId,
-    input: { query: string; tags?: string[]; limit: number }
+    input: { query: string; tags?: string[]; limit: number; reader?: KnowledgeReader }
   ): Promise<OrganizationKnowledgeRecord[]>
   createKnowledge(
     orgId: OrgId,
-    input: { title: string; content: string; summary?: string; tags?: string[] },
+    input: { title: string; content: string; summary?: string; tags?: string[]; visibility?: KnowledgeVisibilityInput },
     provenance: OrganizationArtifactProvenance
   ): Promise<OrganizationKnowledgeRecord>
   /** Org-fenced: a cross-org id misses the revision CAS exactly like a stale
@@ -6945,6 +7012,12 @@ export interface OrganizationKnowledgeRepo {
     archived: boolean,
     byUserId?: string
   ): Promise<OrganizationKnowledgeRecord>
+  /** Org-fenced; a hand edit, so People's readers stop following assistant mode. Null when absent. */
+  setKnowledgeVisibility(
+    orgId: OrgId,
+    id: string,
+    input: KnowledgeVisibilityInput
+  ): Promise<OrganizationKnowledgeRecord | null>
 
   listManagedSkills(orgId: OrgId, includeArchived?: boolean): Promise<ManagedSkillRecord[]>
   /** Org-fenced: a cross-org id reads as absent. Every caller previously
