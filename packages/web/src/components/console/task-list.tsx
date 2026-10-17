@@ -4,11 +4,19 @@
 
 import { useCallback, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { useFormatter, useTimeZone, useTranslations } from 'next-intl'
+import { useFormatter, useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
-import { FollowUpChecks, followUpKindKey, followUpOf, stopTask, taskStopKey } from '@/components/console/follow-up'
+import {
+  FollowUpChecks,
+  followUpKindKey,
+  followUpOf,
+  FollowUpWatchLine,
+  stopTask,
+  taskStopKey,
+  useShortTime
+} from '@/components/console/follow-up'
 import { ApiError, type AssistantFollowUpDto, type AssistantSubsessionDto } from '@/lib/api'
 import { chatPlaceName } from '@/lib/platform-labels'
 import { useOrgs } from '@/lib/org-context'
@@ -25,19 +33,7 @@ export function formatTaskElapsed(startedAt: string, now: number): string {
   return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`
 }
 
-/** A clock time today in the viewer's time zone, else a short date with it. */
-export function useShortTime(): (at: string) => string {
-  const format = useFormatter()
-  const timeZone = useTimeZone()
-  const day = (date: Date) => date.toLocaleDateString('en-CA', { timeZone })
-  return (at) => {
-    const date = new Date(at)
-    const today = day(date) === day(new Date())
-    return today
-      ? format.dateTime(date, { hour: 'numeric', minute: '2-digit' })
-      : format.dateTime(date, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-  }
-}
+export { useShortTime }
 
 export type MarkTone = 'running' | 'open' | 'paused' | 'waiting' | 'done' | 'failed' | 'stopped'
 
@@ -438,19 +434,22 @@ export function BackgroundTaskRow({
   const checksOpen = followUp !== null && row.visible
   const viaPreview = checksOpen && withPlace && !!followUp.doneWhen
   const meta = (
-    <MetaLine
-      platform={parent?.platform ?? ownPlace?.platform}
-      parts={parts}
-      toggle={
-        checksOpen && !viaPreview
-          ? {
-              expanded,
-              onToggle: () => setExpanded((v) => !v),
-              label: expanded ? tf('hideChecks') : tf('showChecks')
-            }
-          : undefined
-      }
-    />
+    <>
+      <MetaLine
+        platform={parent?.platform ?? ownPlace?.platform}
+        parts={parts}
+        toggle={
+          checksOpen && !viaPreview
+            ? {
+                expanded,
+                onToggle: () => setExpanded((v) => !v),
+                label: expanded ? tf('hideChecks') : tf('showChecks')
+              }
+            : undefined
+        }
+      />
+      {followUp && row.visible ? <FollowUpWatchLine followUp={followUp} /> : null}
+    </>
   )
   const preview =
     viaPreview && followUp.doneWhen ? (

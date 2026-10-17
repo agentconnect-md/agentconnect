@@ -3990,6 +3990,28 @@ export async function decideSessionPermissionRequest(
 /** A follow-up's state (assistant-mode.md §5.12); `paused` stopped after five failed checks until it is messaged. */
 export type AssistantFollowUpStatus = 'waiting' | 'checking' | 'paused' | 'done' | 'stopped'
 
+/** What happened on a watched object (assistant-mode.md §5.14): the first six change its state, the rest are discussion. */
+export type AssistantFollowUpEvent =
+  'merged' | 'closed' | 'reopened' | 'approved' | 'changes_requested' | 'checks' | 'comment' | 'review' | 'commits'
+
+/** One finished check: when, what it saw, whether it reported, and what started it, from a daemon that says. */
+export interface AssistantFollowUpCheckDto {
+  at: string
+  observation: string
+  reported: boolean
+  startedBy?: 'time' | 'message' | 'wake'
+  /** The events it took from a wake. */
+  events?: AssistantFollowUpEvent[]
+}
+
+/** The one object a follow-up watches (assistant-mode.md §5.14); `target` is its label once taken, `reason` why it is not watched. */
+export interface AssistantFollowUpWatchDto {
+  url: string
+  target: string | null
+  state: 'pending' | 'watching' | 'refused' | 'ended'
+  reason: string | null
+}
+
 export interface AssistantFollowUpDto {
   /** Its own id where the row is visible, from a daemon that ends a follow-up by it. */
   id?: string
@@ -3999,9 +4021,11 @@ export interface AssistantFollowUpDto {
   /** Null where the row is not visible. */
   doneWhen: string | null
   /** Newest first, at most five; empty where the row is not visible. */
-  recentChecks: { at: string; observation: string; reported: boolean }[]
+  recentChecks: AssistantFollowUpCheckDto[]
   /** A first look of its conversation (assistant-mode.md §5.13), which ends after one check. */
   firstLook?: boolean
+  /** What it watches; only where the row is visible. */
+  watch?: AssistantFollowUpWatchDto
 }
 
 export interface AssistantSubsessionDto {
@@ -4037,6 +4061,8 @@ export interface AssistantProposalFollowUpDto {
   doneWhen: string
   /** Its first check; null waits until it is messaged. */
   nextCheck: string | null
+  /** The URL it would watch. */
+  watch?: string
 }
 
 /** What a scheduled check proposes to do: the sentence its card leads with, why, and the item it serves. */
