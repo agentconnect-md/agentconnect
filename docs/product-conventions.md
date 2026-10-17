@@ -1268,6 +1268,12 @@ check then, never an action. Before restating it lists its conversation's tasks,
 follow-up there already covers the request it offers to send that one the change instead of taking
 a second. The person who confirmed a follow-up is its asker.
 
+A follow-up may also watch one pull request or issue, named by its URL when it is taken or later by
+one of its checks; today that is one on GitHub. A change on it then wakes the follow-up early (see
+"Assistant-mode follow-up checks"). The watch must be readable with the agent's own code-host
+access. The follow-up is taken whether or not the watch is, and when it cannot be watched the agent
+says why. A follow-up that ends stops watching.
+
 A follow-up belongs to the conversation it was taken in, not to one session: that conversation's
 current long session, after `!new` or a rollover the new one, lists it with `listTasks`, gives it
 new instructions with `messageTask` and ends it with `stopTask`, by its `taskId`. No other
@@ -1430,9 +1436,21 @@ changed since the latest observation, or a message asked for an answer, does it 
 into the conversation the follow-up belongs to, whose long session then speaks for it. Otherwise it
 stays silent. The check records what it saw either way, and one that records nothing counts as
 failed. When that conversation has no long session a scheduled check is skipped, and the follow-up
-records why. Only a follow-up's own next check and its messages wake it: there is no cadence and no
-event trigger yet. A next check runs once; one missed while the agent was paused is not replayed,
+records why. A follow-up's own next check, its messages and changes on what it watches wake it:
+there is no cadence. A next check runs once; one missed while the agent was paused is not replayed,
 and an overdue follow-up is checked once.
+
+A change of state on a watched pull request or issue, such as a merge, a close, a reopen, an
+approval or requested changes, or finished CI, makes its follow-up due about a minute later.
+Comments, reviews and new commits make it due within half an hour, and only when no session of the
+agent opened that pull request, since that session already answers them. A change that resumed
+the session which opened the pull request wakes none of that agent's follow-ups on it. A follow-up
+starts at most one woken check in 15 minutes, and only while a fifth of the day's budget is left;
+a woken check waits otherwise, and any check that starts first takes the change along and counts
+once. A woken check is told what woke it and reads the object's current state itself; nothing of
+the change's content is passed to it. A change that arrives while the agent is paused is checked
+once the agent resumes. When the agent's access to a watched object is lost, the watch ends, the
+next check says so, and the follow-up is woken by its next check and messages only.
 
 An agent runs one scheduled check at a time. A message starts its check at once; one that arrives
 while a check of that follow-up runs waits, and the next check takes it as soon as the running one
@@ -1561,10 +1579,10 @@ look's report arrives in, at most three times (see "Assistant-mode first look");
 assistant mode is offered it.
 
 Instead of work to carry out, a proposal may offer a follow-up to take: what it would follow up,
-what counts as done and, optionally, when to check first. Approving it takes that follow-up of the
-conversation, with whoever approved it as the person it is followed up for, as if they had
-confirmed it there; nothing runs, it counts toward no limit, and the card then says the follow-up
-was taken. The card, Activity and a webchat conversation's pending requests show what it would
+what counts as done and, optionally, when to check first and what it would watch. Approving it takes
+that follow-up of the conversation, with whoever approved it as the person it is followed up for,
+as if they had confirmed it there; nothing runs, it counts toward no limit, and the card then says
+the follow-up was taken, and why it is not watched when its watch was refused. The card, Activity and a webchat conversation's pending requests show what it would
 take; once approved in Activity, the row links to the conversation the follow-up belongs to, whose
 Tasks tab lists it, for someone who may open that conversation.
 
@@ -1589,7 +1607,7 @@ and the first answer decides it.
 The card reads as the agent talking: the sentence in bold, then the reason, with no labels or
 footer. Work to carry out is a 🔗 to the session that proposed it, where the exact work is shown
 (quoted on the card where there is no such link). A follow-up shows one sentence of when it looks,
-what it does and when it stops, then 🕒 and its first check. The card offers Approve and Deny;
+what it does and when it stops, what it would watch, then 🕒 and its first check. The card offers Approve and Deny;
 there is no "always allow". Once decided it is rewritten in place: approved by whom and running,
 denied by whom, or expired with nothing run, and later how the approved proposal ended. A card a restart left unedited is
 rewritten when its integration reconnects. A proposal expires after 24 hours and never runs

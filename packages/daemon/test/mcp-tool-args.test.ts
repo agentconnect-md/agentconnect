@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { SEND_MESSAGE_ACTION_SCHEMAS, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
 import { CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
-import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
+import { FOLLOW_UP_WATCH_TOOL, PROPOSE_WATCH_TOOL, RECORD_CHECK_WATCH_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { FIRST_LOOK_TOOL } from '../src/mcp/ops/first-look.js'
@@ -77,10 +77,11 @@ const advertised: ToolDescriptor[] = [
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS,
   ...CODE_HOST_RESEARCH_TOOLS,
-  FOLLOW_UP_TOOL,
+  // The widest form each is advertised in: with `watch`, toward a Control Plane that takes it (assistant-mode.md §5.14).
+  FOLLOW_UP_WATCH_TOOL,
   FIRST_LOOK_TOOL,
-  RECORD_CHECK_TOOL,
-  PROPOSE_TOOL,
+  RECORD_CHECK_WATCH_TOOL,
+  PROPOSE_WATCH_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,
   LIST_TASKS_TOOL,
   STOP_TASK_TOOL

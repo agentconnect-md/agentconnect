@@ -75,6 +75,7 @@ describe('follow-ups: create and read', () => {
       shared: false,
       replyThread: '100.1',
       firstLook: null,
+      watch: null,
       summary: 'Alice asked for the notes.',
       observations: [],
       observationVersion: 0,
@@ -458,7 +459,16 @@ async function expectFollowUps(s: LocalStore): Promise<void> {
     runningSince: 40_000
   })
   expect(await s.assistantChecks.checks(AGENT, 'item-running', 10)).toEqual([
-    { itemId: 'item-running', checkNo: 1, startedAt: 40_000, endedAt: null, observation: null, reported: false }
+    {
+      itemId: 'item-running',
+      checkNo: 1,
+      startedAt: 40_000,
+      endedAt: null,
+      observation: null,
+      reported: false,
+      startedBy: null,
+      events: []
+    }
   ])
   expect(await s.assistantSubsessions.get(AGENT, MIGRATED('running'))).toMatchObject({
     state: 'open',

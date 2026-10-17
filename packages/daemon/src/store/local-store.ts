@@ -1309,7 +1309,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 60
+export const SCHEMA_VERSION = 61
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2039,7 +2039,25 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
   },
   // v60 keeps the thread of the turn that asked a task for work, where its round's report replies (assistant-mode.md §5.6).
-  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'replyThread', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'replyThread', 'TEXT'),
+  // v61 keeps what a follow-up watches, its waiting wake, what started each check and a proposal's watch (assistant-mode.md §5.14).
+  async (db, store) => {
+    for (const column of ['watchUrl', 'watchTarget', 'watchState', 'watchReason'])
+      await addColumn(db, store.postgres, 'assistant_item', column, 'TEXT')
+    for (const [column, type] of [
+      ['wakeId', 'INTEGER NOT NULL DEFAULT 0'],
+      ['wakeSubscription', 'INTEGER'],
+      ['wakeAt', 'INTEGER'],
+      ['wakeKinds', 'TEXT'],
+      ['wakeLatestAt', 'INTEGER'],
+      ['lastWokenAt', 'INTEGER'],
+      ['runningWake', 'TEXT']
+    ] as const)
+      await addColumn(db, store.postgres, 'assistant_check_state', column, type)
+    await addColumn(db, store.postgres, 'assistant_check', 'startedBy', 'TEXT')
+    await addColumn(db, store.postgres, 'assistant_check', 'events', 'TEXT')
+    await addColumn(db, store.postgres, 'assistant_draft', 'followUpWatch', 'TEXT')
+  }
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */

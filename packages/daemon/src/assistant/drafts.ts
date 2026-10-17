@@ -1024,7 +1024,10 @@ function followUpOutcomeOf(draft: AssistantDraft, by: string): string {
     case 'executing':
       return `▶️ Approved${by}. Taking the follow-up.`
     case 'succeeded':
-      return `✅ Approved${by}. The follow-up was taken; it reports in the conversation it belongs to.`
+      return (
+        `✅ Approved${by}. The follow-up was taken; it reports in the conversation it belongs to.` +
+        (draft.failure ? ` It is not watched: ${draft.failure}.` : '')
+      )
     case 'denied':
       return `🚫 Denied${by}. No follow-up was taken.`
     case 'expired':

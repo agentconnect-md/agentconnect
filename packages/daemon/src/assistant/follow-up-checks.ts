@@ -1,11 +1,19 @@
-// Follow-ups (assistant-mode.md §5.12): read-only tasks of a place, checked in one retained session of their own when a next check falls due or their conversation messages them.
+// Follow-ups (assistant-mode.md §5.12): read-only tasks of a place, checked in one retained session of their own when a next check falls due, their conversation messages them, or what they watch changes (§5.14).
+import type { AssistantFollowUpWake, AssistantFollowUpWakeResult, FollowUpEventKind } from '@agentconnect.md/protocol'
 import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
-import { assistantModeOn, PROPOSE_TOOL, RECORD_CHECK_TOOL, type ProposeInput } from '../mcp/ops/assistant-items.js'
+import {
+  assistantModeOn,
+  PROPOSE_TOOL,
+  PROPOSE_WATCH_TOOL,
+  RECORD_CHECK_TOOL,
+  RECORD_CHECK_WATCH_TOOL,
+  type ProposeInput
+} from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
 import { firstLookCoordinate, checkCoordinate } from '../session/subsession-coordinate.js'
 import type {
@@ -14,7 +22,12 @@ import type {
   AssistantItemLedger,
   AssistantPlace
 } from '../store/assistant-items.js'
-import type { AssistantCheckDue, AssistantCheckLedger, AssistantCheckState } from '../store/assistant-checks.js'
+import type {
+  AssistantCheckDue,
+  AssistantCheckLedger,
+  AssistantCheckStart,
+  AssistantCheckState
+} from '../store/assistant-checks.js'
 import { CHECK_BUDGET_WINDOW_MS, CHECK_MAX_FAILURES, checkBackoffMs } from '../store/assistant-checks.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import { sessionKey } from '../store/local-store.js'
@@ -23,6 +36,7 @@ import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { firstLookFailedText, firstLookHandling, firstLookPrompt, firstLookReportText } from './first-look.js'
 import type { ReadAsker } from './place-access.js'
 import { callerOfMessage, type TaskCaller } from './tasks.js'
+import { watchReasonText, type FollowUpWatches } from './follow-up-watches.js'
 
 /** Checks an agent may start in any 24 hours when its policy sets no `dailyCheckBudget`. */
 export const DEFAULT_DAILY_CHECK_BUDGET = 50
@@ -35,6 +49,23 @@ export const CHECK_START_GRACE_MS = 10 * 60_000
 const CHECK_OBSERVATIONS_SHOWN = 5
 /** Messages that may wait for a running check. */
 export const FOLLOW_UP_PENDING_MAX = 10
+/** A follow-up starts at most one woken check in this long (§5.14). */
+export const WAKE_SPACING_MS = 15 * 60_000
+/** A wake starts a check only while this share of the day's budget is left: a fifth. */
+export const WAKE_BUDGET_SHARE = 5
+
+/** What woke a check, in the words its prompt and the console use. */
+export const EVENT_WORDS: Record<FollowUpEventKind, string> = {
+  merged: 'merged',
+  closed: 'closed',
+  reopened: 'reopened',
+  approved: 'approved',
+  changes_requested: 'changes requested',
+  checks: 'CI finished',
+  comment: 'new comments',
+  review: 'a review',
+  commits: 'new commits'
+}
 
 // The bridge tools a check may read with (§5.9 layer a); platform write tools, sendMessage and followUp never are.
 const CHECK_READ_TOOLS = new Set([
@@ -58,15 +89,17 @@ const CHECK_READ_TOOLS = new Set([
   'inspectCodeHostPipelines'
 ])
 
-/** A check's tool set: the reads of what the session would get, `recordCheck`, and `propose`. */
-export function checkTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
+/** A check's tool set: the reads of what the session would get, `recordCheck`, and `propose`; with `watch` toward a Control Plane that takes it (§5.14). */
+export function checkTools(tools: readonly ToolDescriptor[], opts: { watch?: boolean } = {}): ToolDescriptor[] {
   const reads = tools.filter(
     (tool) =>
       CHECK_READ_TOOLS.has(tool.name) ||
       MEMORY_TOOL_ACCESS_MODES[tool.name] === 'read' ||
       isAttachmentReadTool(tool.name)
   )
-  return [...reads, RECORD_CHECK_TOOL, PROPOSE_TOOL]
+  return opts.watch
+    ? [...reads, RECORD_CHECK_WATCH_TOOL, PROPOSE_WATCH_TOOL]
+    : [...reads, RECORD_CHECK_TOOL, PROPOSE_TOOL]
 }
 
 /** How a check's turn, or its refused start, ended. */
@@ -136,10 +169,14 @@ export interface FollowUpChecksHost {
   agents(): Iterable<Pick<Agent, 'id' | 'assistantMode'>>
   /** This daemon holds the agent's duty, and the agent is neither paused nor draining. */
   mayCheck(agentId: string): boolean
+  /** This daemon holds the agent's duty, paused or not: it records wakes and keeps the agent's watches. */
+  holdsDuty?(agentId: string): boolean
+  /** The follow-ups' watches (§5.14); absent on a daemon that offers none. */
+  watches?: FollowUpWatches
   draining(): boolean
   items: Pick<
     AssistantItemLedger,
-    'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestFirstLook'
+    'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestFirstLook' | 'setWatch'
   >
   checks: AssistantCheckLedger
   subsessions: Pick<AssistantSubsessionIndex, 'openFollowUp' | 'checking' | 'adoptFollowUps' | 'finish' | 'get'>
@@ -212,13 +249,35 @@ const iso = (ms: number | null): string => (ms === null ? 'none' : new Date(ms).
 export const followUpOpen = (item: Pick<AssistantItem, 'status'>): boolean =>
   item.status === 'active' || item.status === 'waiting'
 
+/** The watch line of a check's prompt (§5.14): what it watches, or why it no longer does. */
+function watchLine(item: AssistantItem): string[] {
+  const watch = item.watch
+  if (!watch) return []
+  switch (watch.state) {
+    case 'watching':
+      return [`Watches: ${watch.target ?? watch.url} (${watch.url}); read its current state yourself.`]
+    case 'pending':
+      return [`Watches: ${watch.url} (not confirmed yet); read its current state yourself.`]
+    case 'refused':
+      return [
+        `Watch: ${watch.url} is not watched (${watchReasonText(watch.reason)}); it is checked by time and messages only.`
+      ]
+    case 'ended':
+      return [
+        `Watch ended: ${watch.url} is no longer watched (${watchReasonText(watch.reason)}); it is checked by time and messages only.`
+      ]
+  }
+}
+
 /** The check's first message: the follow-up, what woke it, and the standing rules of a check. */
 export function checkPrompt(
   item: AssistantItem,
   due: AssistantCheckDue | undefined,
-  messages: readonly CheckMessage[] = []
+  messages: readonly CheckMessage[] = [],
+  events: readonly FollowUpEventKind[] = []
 ): string {
   const observations = item.observations.slice(-CHECK_OBSERVATIONS_SHOWN)
+  const woken = events.length > 0 ? events.map((kind) => EVENT_WORDS[kind]).join(', ') : undefined
   return [
     `[follow-up check] A read-only check of one of your follow-ups. You run in the background: nothing you write ` +
       `here is posted anywhere.`,
@@ -226,7 +285,15 @@ export function checkPrompt(
     `Follow-up ${item.taskKey}`,
     `Title: ${quote(item.title)}`,
     `Done when: ${item.doneWhen === null ? 'not set' : quote(item.doneWhen)}`,
-    due ? `Check due: ${iso(due.nextCheck)}` : 'Check: asked for by its conversation now',
+    due
+      ? `Check due: ${iso(due.nextCheck)}`
+      : messages.length > 0
+        ? 'Check: asked for by its conversation now'
+        : woken
+          ? 'Check: woken by events on what it watches'
+          : 'Check: asked for by its conversation now',
+    ...watchLine(item),
+    ...(woken ? [`Woken by: ${woken}. Read where it stands now; the events are only why you look.`] : []),
     `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,
     observations.length === 0
       ? 'Observations: none yet.'
@@ -477,7 +544,7 @@ export class FollowUpChecks {
       const due = { itemId: item.id, nextCheck: item.nextCheck ?? now }
       const started = await this.withLock(
         item.taskKey,
-        async () => await this.begin(agentId, item.id, due, this.host.now(), false)
+        async () => await this.begin(agentId, item.id, due, this.host.now(), false, 'message')
       )
       if (started === 'no-place' || started === 'busy')
         return {
@@ -504,7 +571,15 @@ export class FollowUpChecks {
     this.sweeping = true
     try {
       for (const agent of this.host.agents()) {
-        if (!assistantModeOn(agent) || !this.host.mayCheck(agent.id)) continue
+        if (!assistantModeOn(agent)) continue
+        // The duty holder keeps the agent's watches, paused or not (§5.14).
+        if (this.host.holdsDuty?.(agent.id))
+          await this.host.watches
+            ?.sync(agent.id)
+            .catch((err) =>
+              this.host.log.warn(`follow-up: agent ${agent.id} watches not sent: ${(err as Error).message}`)
+            )
+        if (!this.host.mayCheck(agent.id)) continue
         try {
           await this.checkAgent(agent)
         } catch (err) {
@@ -637,6 +712,7 @@ export class FollowUpChecks {
       return false
     })
     if (ended) return 'ended'
+    if (item.watch) await this.host.watches?.end(agentId, item.id)
     const state = await this.host.checks.get(agentId, item.id)
     if (state?.runningKey) await this.host.stopSession?.(item.taskKey, actor).catch(() => false)
     this.host.log.info(`follow-up ${item.taskKey}: ended`)
@@ -679,6 +755,18 @@ export class FollowUpChecks {
       const item = await this.host.items.get(agent.id, itemId)
       if (item) await this.withLock(item.taskKey, async () => await this.begin(agent.id, itemId, undefined, now))
     }
+    // A wake takes the one scheduled slot only while a fifth of the day's budget is left (§5.14).
+    const { count } = await this.host.checks.checksSince(agent.id, now - CHECK_BUDGET_WINDOW_MS)
+    if (budget - count >= Math.ceil(budget / WAKE_BUDGET_SHARE)) {
+      const [woken] = await this.host.checks.wokenDue(agent.id, now, 1, now - CHECK_STALE_MS, now - WAKE_SPACING_MS)
+      const item = woken === undefined ? undefined : await this.host.items.get(agent.id, woken)
+      if (item) {
+        const started = await this.withLock(item.taskKey, async () =>
+          this.begin(agent.id, item.id, undefined, now, true, 'wake')
+        )
+        if (started !== 'busy' && started !== 'no-place') return
+      }
+    }
     const [due] = await this.host.checks.due(agent.id, now, 1, now - CHECK_STALE_MS)
     if (!due || (await spent())) return
     const item = await this.host.items.get(agent.id, due.itemId)
@@ -691,7 +779,8 @@ export class FollowUpChecks {
     itemId: string,
     due: AssistantCheckDue | undefined,
     now: number,
-    exclusive = due !== undefined
+    exclusive = due !== undefined,
+    startedBy: AssistantCheckStart = due !== undefined ? 'time' : 'message'
   ): Promise<'no-place' | 'busy' | { admitted: Admission }> {
     const item = await this.host.items.get(agentId, itemId)
     if (!item || !followUpOpen(item) || (due && item.nextCheck !== due.nextCheck)) return 'busy'
@@ -744,7 +833,8 @@ export class FollowUpChecks {
       input: pending.length > 0 ? JSON.stringify(input) : null,
       now,
       staleBefore: now - CHECK_STALE_MS,
-      exclusive
+      exclusive,
+      startedBy
     })
     // A check of it, or the agent's one scheduled check, is still running.
     if (!begun) return 'busy'
@@ -776,7 +866,7 @@ export class FollowUpChecks {
         },
         facts && !('refused' in facts)
           ? firstLookPrompt({ ...facts, requested: item.firstLook === 'requested' })
-          : checkPrompt(item, due, messages)
+          : checkPrompt(item, due, messages, begun.events)
       ),
       mentionedBots: [],
       isDm: false,
@@ -957,8 +1047,11 @@ export class FollowUpChecks {
       await this.host.checks.release(agentId, itemId, key, now)
       await this.host.subsessions.finish(agentId, key, 'failed')
       await this.restore(agentId, itemId, input.messages, now)
+      await this.host.checks.restoreWake(agentId, itemId, state.runningWake, now)
     } else {
       await this.host.subsessions.finish(agentId, key, 'failed')
+      // The events stay recorded: the retry takes them, and once checks stop a message does (§5.14).
+      await this.host.checks.restoreWake(agentId, itemId, state.runningWake, now)
       const why = `Scheduled check failed (${verdict.why})`
       const failed = await this.host.checks.fail(agentId, itemId, key, now, item?.nextCheck ?? null)
       if (failed) {
@@ -1052,6 +1145,35 @@ export class FollowUpChecks {
       await this.observe(agentId, itemId, note)
       if (failed.stopped) await this.host.items.schedule(agentId, itemId, { status: 'dropped', nextCheck: null }, now)
     }
+  }
+
+  /** A wake from the Control Plane (§5.14): recorded once per wakeId on an open follow-up of an agent whose duty this daemon holds, paused or not. */
+  async wake(agentId: string, req: AssistantFollowUpWake): Promise<AssistantFollowUpWakeResult> {
+    if (!this.host.holdsDuty?.(agentId) || this.host.draining()) return { accepted: false, reason: 'not_holder' }
+    const agent = [...this.host.agents()].find((candidate) => candidate.id === agentId)
+    const item = assistantModeOn(agent) ? await this.host.items.get(agentId, req.followUpId) : undefined
+    const watched = item?.watch && (item.watch.state === 'watching' || item.watch.state === 'pending')
+    if (!item || !followUpOpen(item) || item.firstLook !== null || !watched)
+      return { accepted: false, reason: 'not_found' }
+    const now = this.host.now()
+    if (req.ended) {
+      await this.host.items.setWatch(agentId, item.id, { ...item.watch!, state: 'ended', reason: req.ended }, now)
+      this.host.log.info(`follow-up ${item.taskKey}: its watch ended (${req.ended})`)
+      return { accepted: true }
+    }
+    const outcome = await this.host.checks.recordWake(agentId, item.id, {
+      wakeId: req.wakeId,
+      ...(req.subscription !== undefined ? { subscription: req.subscription } : {}),
+      kinds: req.kinds,
+      latestAt: Date.parse(req.latestAt!),
+      now,
+      staleBefore: now - CHECK_STALE_MS
+    })
+    if (outcome === 'recorded') {
+      this.host.log.info(`follow-up ${item.taskKey}: woken (${req.kinds.join(', ')})`)
+      void this.sweep()
+    }
+    return { accepted: true }
   }
 
   /** Put a check's messages back in front of any that arrived meanwhile. */

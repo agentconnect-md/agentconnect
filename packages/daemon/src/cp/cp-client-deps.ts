@@ -43,6 +43,7 @@ import { createDreamReader } from './dream-reader.js'
 import { createLocalSkillsReader } from './local-skills-reader.js'
 import { createRuntimeCommandsReader } from './runtime-commands-reader.js'
 import { createAssistantActivity, type AssistantActivityDeps } from './assistant-activity.js'
+import type { AssistantControlDeps } from './control/assistant.js'
 import type { RuntimeCommandsCache } from '../runtimes/runtime-commands.js'
 import type { CpAgentRegistry } from './cp-agent-registry.js'
 import type { CpIntegrationRegistry } from './cp-integration-registry.js'
@@ -205,6 +206,8 @@ export interface CpClientSeamHost {
   pendingSubsessionApprovals(agentId: string): AssistantActivityPermission[]
   /** End a follow-up from the console (assistant-mode.md §5.12). */
   stopAssistantFollowUp: NonNullable<AssistantActivityDeps['stopFollowUp']>
+  /** Record a follow-up's event wake (assistant-mode.md §5.14). */
+  assistantFollowUpWake: NonNullable<AssistantControlDeps['followUpWake']>
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
@@ -456,6 +459,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       pendingPermissions: (agentId) => host.pendingSubsessionApprovals(agentId),
       stopFollowUp: (agentId, item, actor) => host.stopAssistantFollowUp(agentId, item, actor)
     }),
+    followUpWake: (req) => host.assistantFollowUpWake(req),
     // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
     // stores nothing, so an unarmed answer is the truth about this process, not a lost row.
     ...(host.autoMerge() ? { autoMerge: host.autoMerge()! } : {}),

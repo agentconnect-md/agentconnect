@@ -12,8 +12,8 @@ const isLarkOrFeishu = (
 ): provider is Extract<SocialLoginProvider, { target: LarkFeishuTarget }> =>
   provider.target === 'lark' || provider.target === 'feishu'
 
-// Shown up front; every other enabled provider waits behind "More sign-in options".
-const PRIMARY_TARGETS = new Set<SocialLoginTarget>(['github', 'google', 'slack', 'lark', 'feishu'])
+// Buttons shown up front; the rest wait behind "More sign-in options".
+const VISIBLE_BUTTONS = 4
 
 function ProviderContent({ provider }: { provider: SocialLoginProvider }) {
   const t = useTranslations('Auth.login')
@@ -88,10 +88,10 @@ export default function SocialLoginButtons({
     )
   }
 
-  const primary = providers.filter((provider) => PRIMARY_TARGETS.has(provider.target))
-  const more = providers.filter((provider) => !PRIMARY_TARGETS.has(provider.target))
-  // Nothing to collapse behind when a deployment offers no primary provider at all.
-  if (primary.length === 0) return more.map(renderProvider)
+  // One button per provider, except that Lark and Feishu share one.
+  const buttons = providers.filter((provider) => !isLarkOrFeishu(provider) || provider === firstRegionalProvider)
+  const primary = buttons.slice(0, VISIBLE_BUTTONS)
+  const more = buttons.slice(VISIBLE_BUTTONS)
 
   return (
     <>
@@ -111,18 +111,24 @@ export default function SocialLoginButtons({
           </div>
           {showMore && (
             <div className="grid grid-cols-2 gap-2">
-              {more.map((provider) => (
-                <button
-                  key={provider.target}
-                  type="button"
-                  aria-label={t('continueWith', { provider: provider.name })}
-                  className="sso h-[38px]"
-                  onClick={() => onContinue(provider.target)}
-                >
-                  <SocialLoginMark target={provider.target} size={18} />
-                  {provider.name}
-                </button>
-              ))}
+              {more.map((provider) =>
+                isLarkOrFeishu(provider) ? (
+                  <div key={provider.target} className="col-span-2">
+                    {renderProvider(provider)}
+                  </div>
+                ) : (
+                  <button
+                    key={provider.target}
+                    type="button"
+                    aria-label={t('continueWith', { provider: provider.name })}
+                    className="sso h-[38px]"
+                    onClick={() => onContinue(provider.target)}
+                  >
+                    <SocialLoginMark target={provider.target} size={18} />
+                    {provider.name}
+                  </button>
+                )
+              )}
             </div>
           )}
         </>

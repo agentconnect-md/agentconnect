@@ -95,7 +95,7 @@ describe('the check state', () => {
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, 1_000)
-    expect(await begin(s, a, it1, 2_000, { nextCheck: 1_000 })).toEqual({ checkNo: 1, messages: null })
+    expect(await begin(s, a, it1, 2_000, { nextCheck: 1_000 })).toEqual({ checkNo: 1, messages: null, events: [] })
     expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
       itemId: it1.id,
       runningNextCheck: 1_000,
@@ -110,7 +110,7 @@ describe('the check state', () => {
     await s.assistantItems.schedule(a, it1.id, { status: 'active', nextCheck: 4_000 })
     expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
     // A messaged check leaves the scheduled one due.
-    expect(await begin(s, a, it1, 5_000)).toEqual({ checkNo: 2, messages: null })
+    expect(await begin(s, a, it1, 5_000)).toEqual({ checkNo: 2, messages: null, events: [] })
     await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 5_500)
     expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
   })
@@ -181,7 +181,7 @@ describe('the check state', () => {
     await s.assistantChecks.release(a, it2.id, it2.taskKey, 2_400)
     // A check older than the stale bound no longer holds anything, and ends in the log as it was.
     expect(await begin(s, a, it2, 3_000, { nextCheck: 1_000, exclusive: true, staleBefore: 2_001 })).toBeDefined()
-    expect(await begin(s, a, it1, 3_100, { staleBefore: 2_001 })).toEqual({ checkNo: 2, messages: null })
+    expect(await begin(s, a, it1, 3_100, { staleBefore: 2_001 })).toEqual({ checkNo: 2, messages: null, events: [] })
     expect((await s.assistantChecks.checks(a, it1.id, 10)).map((c) => [c.checkNo, c.endedAt])).toEqual([
       [2, null],
       [1, 3_100]
@@ -210,7 +210,9 @@ describe('the check state', () => {
       startedAt: (ASSISTANT_CHECKS_KEPT + 2) * HOUR,
       endedAt: (ASSISTANT_CHECKS_KEPT + 2) * HOUR + 1,
       observation: `seen ${ASSISTANT_CHECKS_KEPT + 2}`,
-      reported: true
+      reported: true,
+      startedBy: 'message',
+      events: []
     })
     expect(checks.at(-1)?.checkNo).toBe(3)
     await begin(s, b, await item(s, b, 1_000), 50 * HOUR)
@@ -256,7 +258,7 @@ describe('the check state', () => {
     await s.assistantChecks.fail(a, it1.id, it1.taskKey, 3_000, null)
     expect(await s.assistantChecks.withPendingMessages(a, 3_000, 10)).toEqual([])
     expect(await s.assistantChecks.withPendingMessages(a, 3_000 + checkBackoffMs(1), 10)).toEqual([it1.id])
-    expect(await begin(s, a, it1, 9_000_000)).toEqual({ checkNo: 2, messages: '["two"]' })
+    expect(await begin(s, a, it1, 9_000_000)).toEqual({ checkNo: 2, messages: '["two"]', events: [] })
     expect((await s.assistantChecks.get(a, it1.id))?.pendingMessages).toBeNull()
   })
 
@@ -792,5 +794,204 @@ describe.skipIf(!usingPostgresStore())('the v54 → v55 first-look schema on Pos
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
       await admin.end()
     }
+  })
+})
+
+describe('event wake in the check state (assistant-mode.md §5.14)', () => {
+  const wake = (wakeId: number, kinds: Array<'merged' | 'checks' | 'comment'>, latestAt: number, now = latestAt) => ({
+    wakeId,
+    kinds,
+    latestAt,
+    now,
+    staleBefore: 0
+  })
+  const start = (
+    s: LocalStore,
+    agentId: string,
+    it1: { id: string; taskKey: string },
+    now: number,
+    startedBy: 'time' | 'message' | 'wake'
+  ) =>
+    s.assistantChecks.begin(agentId, it1.id, {
+      key: it1.taskKey,
+      nextCheck: null,
+      observationVersion: 0,
+      input: null,
+      now,
+      staleBefore: 0,
+      exclusive: false,
+      startedBy
+    })
+
+  it('records a wake once per wakeId and folds a later one into the waiting wake', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, undefined, 'waiting')
+    expect(await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 1_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 1_000))).toBe('duplicate')
+    expect(await s.assistantChecks.recordWake(a, it1.id, wake(2, ['checks', 'merged'], 2_000))).toBe('recorded')
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+      wakeId: 2,
+      wakeAt: 1_000,
+      wakeKinds: ['merged', 'checks'],
+      wakeLatestAt: 2_000
+    })
+    expect(await s.assistantChecks.wokenDue(a, 3_000, 10, 0, 3_000)).toEqual([it1.id])
+  })
+
+  it('counts a new subscription’s wakes afresh, so watching again loses none of its events', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, undefined, 'waiting')
+    const on = (subscription: number, wakeId: number, at: number) => ({ ...wake(wakeId, ['merged'], at), subscription })
+    expect(await s.assistantChecks.recordWake(a, it1.id, on(7, 5, 1_000))).toBe('recorded')
+    // Stopped and watched again: the Control Plane's new subscription counts from 1.
+    expect(await s.assistantChecks.recordWake(a, it1.id, on(9, 1, 2_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.id, on(9, 1, 2_000))).toBe('duplicate')
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ wakeId: 1, wakeSubscription: 9 })
+  })
+
+  it('drops a wake the check running since before its events answers, and keeps one with a later event', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, undefined, 'waiting')
+    await start(s, a, it1, 5_000, 'message')
+    expect(await s.assistantChecks.recordWake(a, it1.id, wake(1, ['comment'], 4_000, 6_000))).toBe('answered')
+    expect((await s.assistantChecks.get(a, it1.id))?.wakeAt).toBeNull()
+    expect(await s.assistantChecks.recordWake(a, it1.id, wake(2, ['merged'], 7_000))).toBe('recorded')
+    // It waits for the running check to end.
+    expect(await s.assistantChecks.wokenDue(a, 8_000, 10, 0, 8_000)).toEqual([])
+    await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 9_000)
+    expect(await s.assistantChecks.wokenDue(a, 9_000, 10, 0, 9_000)).toEqual([it1.id])
+  })
+
+  it('lets any check take the wake along, logs what started it, and spaces woken checks apart', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, undefined, 'waiting')
+    // A wake starts nothing while none waits.
+    expect(await start(s, a, it1, 1_000, 'wake')).toBeUndefined()
+    await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 2_000))
+    expect(await start(s, a, it1, 3_000, 'wake')).toEqual({ checkNo: 1, messages: null, events: ['merged'] })
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+      wakeAt: null,
+      wakeKinds: [],
+      lastWokenAt: 3_000,
+      runningWake: ['merged']
+    })
+    await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 4_000)
+    expect((await s.assistantChecks.checks(a, it1.id, 1))[0]).toMatchObject({ startedBy: 'wake', events: ['merged'] })
+
+    await s.assistantChecks.recordWake(a, it1.id, wake(2, ['checks'], 5_000))
+    expect(await s.assistantChecks.wokenDue(a, 6_000, 10, 0, 6_000 - 15 * MINUTE)).toEqual([])
+    expect(await s.assistantChecks.wokenDue(a, 3_000 + 15 * MINUTE, 10, 0, 3_000)).toEqual([it1.id])
+    // A message's check takes the waiting wake with it and counts once.
+    await s.assistantChecks.setPendingMessages(a, it1.id, '["look again"]', 7_000)
+    expect(await start(s, a, it1, 8_000, 'message')).toEqual({
+      checkNo: 2,
+      messages: '["look again"]',
+      events: ['checks']
+    })
+    expect(await s.assistantChecks.wokenDue(a, 3_000 + 15 * MINUTE, 10, 9_000, 3_000)).toEqual([])
+  })
+
+  it('puts back the wake of a check that did not finish, due at once', async () => {
+    const s = await open()
+    const a = agent()
+    const it1 = await item(s, a, undefined, 'waiting')
+    await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 1_000))
+    await start(s, a, it1, 2_000, 'wake')
+    const running = (await s.assistantChecks.get(a, it1.id))!
+    await s.assistantChecks.release(a, it1.id, it1.taskKey, 3_000)
+    await s.assistantChecks.recordWake(a, it1.id, wake(2, ['comment'], 3_500))
+    await s.assistantChecks.restoreWake(a, it1.id, running.runningWake, 4_000)
+    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+      wakeAt: 3_500,
+      wakeKinds: ['merged', 'comment'],
+      runningWake: []
+    })
+  })
+
+  it('keeps what a follow-up watches, and lists the open ones whose watch is taken or waits', async () => {
+    const s = await open()
+    const a = agent()
+    const watched = await item(s, a, undefined, 'waiting')
+    const refused = await item(s, a, undefined, 'waiting')
+    const ended = await item(s, a, undefined, 'done')
+    const url = 'https://github.com/example-org/example-repo/pull/12'
+    expect(
+      await s.assistantItems.setWatch(a, watched.id, {
+        url,
+        target: 'example-org/example-repo#12',
+        state: 'watching',
+        reason: null
+      })
+    ).toBe(true)
+    await s.assistantItems.setWatch(a, refused.id, { url, target: null, state: 'refused', reason: 'no_access' })
+    expect(await s.assistantItems.setWatch(a, ended.id, { url, target: null, state: 'pending', reason: null })).toBe(
+      false
+    )
+    expect((await s.assistantItems.get(a, watched.id))?.watch).toEqual({
+      url,
+      target: 'example-org/example-repo#12',
+      state: 'watching',
+      reason: null
+    })
+    expect(await s.assistantItems.watching(a)).toEqual([{ id: watched.id, url }])
+    await s.assistantItems.setWatch(a, watched.id, null)
+    expect((await s.assistantItems.get(a, watched.id))?.watch).toBeNull()
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v60 → v61 event wake schema on SQLite', () => {
+  it('adds the watch, the waiting wake, what started each check and a proposal’s watch to a v60 store', async () => {
+    const path = tempStorePath('ac-assistant-v60-')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec(
+      [
+        'ALTER TABLE assistant_item DROP COLUMN watchUrl',
+        'ALTER TABLE assistant_item DROP COLUMN watchTarget',
+        'ALTER TABLE assistant_item DROP COLUMN watchState',
+        'ALTER TABLE assistant_item DROP COLUMN watchReason',
+        'ALTER TABLE assistant_check_state DROP COLUMN wakeId',
+        'ALTER TABLE assistant_check_state DROP COLUMN wakeAt',
+        'ALTER TABLE assistant_check_state DROP COLUMN wakeKinds',
+        'ALTER TABLE assistant_check_state DROP COLUMN wakeLatestAt',
+        'ALTER TABLE assistant_check_state DROP COLUMN lastWokenAt',
+        'ALTER TABLE assistant_check_state DROP COLUMN runningWake',
+        'ALTER TABLE assistant_check DROP COLUMN startedBy',
+        'ALTER TABLE assistant_check DROP COLUMN events',
+        'ALTER TABLE assistant_draft DROP COLUMN followUpWatch',
+        'PRAGMA user_version = 60'
+      ].join('; ')
+    )
+    old.close()
+    const upgraded = await LocalStore.open(path)
+    const a = agent()
+    try {
+      const it1 = await item(upgraded, a, undefined, 'waiting')
+      await upgraded.assistantItems.setWatch(a, it1.id, {
+        url: 'https://github.com/example-org/example-repo/issues/7',
+        target: null,
+        state: 'pending',
+        reason: null
+      })
+      expect(
+        await upgraded.assistantChecks.recordWake(a, it1.id, {
+          wakeId: 1,
+          kinds: ['closed'],
+          latestAt: 1_000,
+          now: 1_000,
+          staleBefore: 0
+        })
+      ).toBe('recorded')
+      expect((await upgraded.assistantItems.get(a, it1.id))?.watch?.state).toBe('pending')
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
   })
 })

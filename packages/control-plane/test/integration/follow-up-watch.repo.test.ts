@@ -115,13 +115,18 @@ describe('PgFollowUpWatchRepo', () => {
     const claimed = (await repo.claimNext(owner, new Date(NOW.getTime() + 60_000), new Date(NOW.getTime() + 120_000)))!
     await put(repo, AGENT_ID, 'f1', 13)
     const moved = await row(repo, AGENT_ID, 'f1')
-    expect(moved).toMatchObject({ number: 13, generation: old.generation + 1, pendingKinds: [] })
+    expect(moved).toMatchObject({ number: 13, pendingKinds: [] })
+    expect(moved.generation).not.toBe(old.generation)
     await expect(repo.fold(claimed, foldWake(claimed, 'checks', NOW))).resolves.toBe(false)
     await expect(repo.end(claimed, 'access_lost', NOW)).resolves.toBe(false)
     await expect(repo.removeIf(claimed)).resolves.toBe(false)
     await repo.complete(claimed, owner, NOW)
     expect(await row(repo, AGENT_ID, 'f1')).toMatchObject({ number: 13, endedReason: null, lastWakeAt: null })
     await expect(repo.removeIf(moved)).resolves.toBe(true)
+    // A watch removed and taken again is a new generation, so a delivery of the old one changes nothing.
+    await put(repo, AGENT_ID, 'f1', 13)
+    await expect(repo.removeIf(moved)).resolves.toBe(false)
+    expect((await row(repo, AGENT_ID, 'f1')).generation).not.toBe(moved.generation)
   })
 
   it('goes with its agent', async () => {

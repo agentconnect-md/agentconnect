@@ -6,13 +6,14 @@ const targets = (raw: string | undefined) => selectEnabledProviders(raw).map((p)
 describe('social login provider selection', () => {
   it('keeps the original providers by default and requires an explicit wildcard for the whole catalog', () => {
     expect(parseEnabledTargets(undefined)).toEqual(new Set(['github', 'google', 'slack']))
-    expect(targets(undefined)).toEqual(['github', 'google', 'slack'])
+    expect(targets(undefined)).toEqual(['google', 'slack', 'github'])
     expect(targets('*')).toEqual(SOCIAL_LOGIN_CATALOG.map((p) => p.target))
-    expect(targets('   ')).toEqual(['github', 'google', 'slack'])
+    expect(targets('   ')).toEqual(['google', 'slack', 'github'])
   })
 
   it('keeps catalog order except for the configured Lark/Feishu preference', () => {
-    expect(targets('slack,github')).toEqual(['github', 'slack'])
+    expect(targets('github,slack')).toEqual(['slack', 'github'])
+    expect(targets('discord,feishu,lark,google')).toEqual(['google', 'feishu', 'lark', 'discord'])
     expect(targets(' google , slack ')).toEqual(['google', 'slack'])
     expect(targets('lark,feishu')).toEqual(['lark', 'feishu'])
     expect(targets('feishu,lark')).toEqual(['feishu', 'lark'])
@@ -26,8 +27,8 @@ describe('social login provider selection', () => {
 
   it('falls back to the original providers when the setting names nothing usable', () => {
     // Leaving the sign-in page with zero ways in is worse than ignoring a typo.
-    expect(targets('facebook')).toEqual(['github', 'google', 'slack'])
-    expect(targets(',,')).toEqual(['github', 'google', 'slack'])
+    expect(targets('facebook')).toEqual(['google', 'slack', 'github'])
+    expect(targets(',,')).toEqual(['google', 'slack', 'github'])
   })
 
   // The invariant this variable exists for: whatever the console offers must be

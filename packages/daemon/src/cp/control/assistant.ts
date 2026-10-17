@@ -1,10 +1,29 @@
-import type { AnyFrame, AssistantActivityReadReq, AssistantActivityWriteReq } from '@agentconnect.md/protocol'
+import type {
+  AnyFrame,
+  AssistantActivityReadReq,
+  AssistantActivityWriteReq,
+  AssistantFollowUpWake,
+  AssistantFollowUpWakeResult
+} from '@agentconnect.md/protocol'
 import { AssistantActivityViolationError, type AssistantActivity } from '../assistant-activity.js'
 import type { ControlHandler, ControlWire } from './context.js'
 
 export interface AssistantControlDeps {
   /** The Activity view's store seam; absent ⇒ every request is refused as for an unknown agent. */
   assistantActivity?: AssistantActivity
+  /** A follow-up's event wake (assistant-mode.md §5.14); absent ⇒ every wake waits for a daemon that takes it. */
+  followUpWake?: (req: AssistantFollowUpWake) => Promise<AssistantFollowUpWakeResult>
+}
+
+export const assistantFollowUpWake: ControlHandler<AssistantControlDeps> = (frame: AnyFrame, deps, wire) => {
+  const req = frame.payload as AssistantFollowUpWake
+  const answer = deps.followUpWake?.(req) ?? Promise.resolve({ accepted: false, reason: 'not_ready' as const })
+  answer
+    .then((result) => wire.reply(frame, 'assistant/follow-up-wake/result', result))
+    .catch((err: unknown) => {
+      wire.log.warn(`cp: assistant/follow-up-wake failed: ${(err as Error)?.message}`)
+      wire.sendError(frame.id, 'INTERNAL', 'assistant/follow-up-wake failed', true)
+    })
 }
 
 export const assistantActivityRead: ControlHandler<AssistantControlDeps> = (frame: AnyFrame, deps, wire) => {

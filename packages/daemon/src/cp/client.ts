@@ -11,7 +11,10 @@ import {
   type DecisionGetRequest,
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
   type MemoryTransactionReq,
-  type MemoryTransactionResult
+  type MemoryTransactionResult,
+  FOLLOW_UP_WATCH_BUDGET_MS,
+  type AssistantFollowUpWatchReq,
+  type AssistantFollowUpWatchResult
 } from '@agentconnect.md/protocol'
 /**
  * `CpClient` — the daemon-side CP WebSocket client FSM (protocol §2.1). Dials
@@ -407,6 +410,7 @@ export class CpClient {
       ...(deps.transferNetwork ? { transferNetwork: deps.transferNetwork } : {}),
       taskReader: deps.taskReader,
       assistantActivity: deps.assistantActivity,
+      followUpWake: deps.followUpWake,
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
       runtimeProbe: deps.runtimeProbe,
@@ -1073,6 +1077,25 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected agent/approval-routed, got ${rep.type}`, false)
     }
     return rep.payload as AgentApprovalRouted
+  }
+
+  /** The current link's registration count: a follow-up watch set is sent again on a new one (assistant-mode.md §5.14). */
+  registration(): number {
+    return this.linkGeneration
+  }
+
+  /** An agent's follow-up watches (assistant-mode.md §5.14), single-shot: a new watch reads its object on the code host first. */
+  async followUpWatch(payload: AssistantFollowUpWatchReq, orgId?: string): Promise<AssistantFollowUpWatchResult> {
+    this.requireReady('assistant/follow-up-watch')
+    const rep = await this.correlator.request(
+      this.scopedFrame('assistant/follow-up-watch', payload, orgId),
+      (e) => this.transport!.send(e),
+      { maxTries: 1, ackTimeoutMs: FOLLOW_UP_WATCH_BUDGET_MS }
+    )
+    if (rep.type !== 'assistant/follow-up-watch/result') {
+      throw new WireError('INTERNAL', `expected assistant/follow-up-watch/result, got ${rep.type}`, false)
+    }
+    return rep.payload as AssistantFollowUpWatchResult
   }
 
   /** Which of an agent's sessions the console user behind an asker could see, for the read rule (assistant-mode.md §5.5). */

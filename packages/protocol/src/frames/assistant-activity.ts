@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { FollowUpEventKind, FollowUpWatchState } from './follow-up-watch.js'
 import { AGENT_PERMISSION_MAX_OPTIONS, AgentPermissionOption } from './agent.js'
 
 // The console's Activity view of an assistant-mode agent (assistant-mode.md §1.7, §5.11): the owning daemon answers from its store, the Control Plane proxies and keeps nothing.
@@ -92,7 +93,11 @@ export type AssistantActivityTaskKind = z.infer<typeof AssistantActivityTaskKind
 export const AssistantActivityCheck = z.object({
   at: time,
   observation: z.string().max(2_000),
-  reported: z.boolean()
+  reported: z.boolean(),
+  /** What started it: its scheduled time, a message, or events on what the follow-up watches (§5.14). */
+  startedBy: z.enum(['time', 'message', 'wake']).optional(),
+  /** The events it took from a wake, whatever started it. */
+  events: z.array(FollowUpEventKind).max(FollowUpEventKind.options.length).optional()
 })
 export type AssistantActivityCheck = z.infer<typeof AssistantActivityCheck>
 
@@ -113,7 +118,16 @@ export const AssistantActivityFollowUp = z.object({
   /** Newest first. */
   recentChecks: z.array(AssistantActivityCheck).max(ASSISTANT_ACTIVITY_CHECKS_MAX),
   /** A first look of its place (assistant-mode.md §5.13), which ends after one check. */
-  firstLook: z.boolean().optional()
+  firstLook: z.boolean().optional(),
+  /** The one object it watches (§5.14): its URL, its label once taken, and why it is not watched. */
+  watch: z
+    .object({
+      url: z.string().max(500),
+      target: z.string().max(400).nullable(),
+      state: FollowUpWatchState,
+      reason: z.string().max(64).nullable()
+    })
+    .optional()
 })
 export type AssistantActivityFollowUp = z.infer<typeof AssistantActivityFollowUp>
 
@@ -142,7 +156,9 @@ export const AssistantActivityProposalFollowUp = z.object({
   title: z.string().min(1).max(300),
   doneWhen: z.string().max(2_000),
   /** Its first check; null waits until it is messaged. */
-  nextCheck: time.nullable()
+  nextCheck: time.nullable(),
+  /** The URL it would watch (§5.14). */
+  watch: z.string().max(500).optional()
 })
 export type AssistantActivityProposalFollowUp = z.infer<typeof AssistantActivityProposalFollowUp>
 
