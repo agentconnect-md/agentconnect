@@ -4618,6 +4618,14 @@
           "unavailable": "Configure Discord sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
           "degraded": "Discord conversation sources stopped resolving — new sessions are being hidden."
+        },
+        "googlechat": {
+          "name": "Google Chat",
+          "label": "Follow Google Chat access",
+          "details": "Spaces and DMs follow current human membership, checked by the conversation’s Chat app. Invitations alone do not grant access.\nLink your Google account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
+          "unavailable": "Configure Google sign-in for this deployment before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
+          "degraded": "Google Chat conversation sources stopped resolving — new sessions are being hidden."
         }
       }
     },

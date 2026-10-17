@@ -331,8 +331,12 @@ export class LogtoIdentityService {
   async chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> {
     const user = await this.logtoUser(sub, this.identityTtlMs)
     const slack = slackIdentityOf(user)
+    const google = firstString(user?.identities?.google?.userId)
     return [
       ...(slack ? [{ platform: 'slack', tenant: slack.teamId, memberId: slack.userId }] : []),
+      ...(google && /^[1-9]\d*$/.test(google)
+        ? [{ platform: 'googlechat', tenant: 'global', memberId: `users/${google}` }]
+        : []),
       ...feishuIdentitiesOf(user).map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId })),
       ...globalChatIdentitiesOf(user)
     ]

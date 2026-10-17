@@ -3462,7 +3462,14 @@ export const SessionVisibilityDto = z.object({
 })
 
 export const SessionExternalAccessStateEnum = z.enum(['disabled', 'enabling', 'enabled', 'degraded'])
-export const SessionExternalAccessProviderEnum = z.enum(['slack', 'github', 'feishu', 'telegram', 'discord'])
+export const SessionExternalAccessProviderEnum = z.enum([
+  'slack',
+  'github',
+  'feishu',
+  'telegram',
+  'discord',
+  'googlechat'
+])
 export const SessionExternalAccessDto = z.object({
   provider: SessionExternalAccessProviderEnum,
   /** False when this deployment cannot resolve linked provider identities and

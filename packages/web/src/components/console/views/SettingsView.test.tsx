@@ -59,14 +59,14 @@ async function render() {
       </SWRConfig>
     )
   })
-  // One more turn for the three reads to settle and the card to commit.
+  // Let the provider reads settle and the card commit.
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
 }
 
 function rowNames(): string[] {
-  return ['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord'].filter((name) =>
+  return ['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'].filter((name) =>
     [...host.querySelectorAll('span')].some((span) => span.textContent === name)
   )
 }
@@ -80,6 +80,7 @@ beforeEach(() => {
   answers.clear()
   answers.set('telegram', nothingToOffer('telegram'))
   answers.set('discord', nothingToOffer('discord'))
+  answers.set('googlechat', nothingToOffer('googlechat'))
 })
 
 afterEach(async () => {
@@ -95,11 +96,12 @@ describe('session access card', () => {
     answers.set('feishu', access('feishu'))
     answers.set('telegram', access('telegram'))
     answers.set('discord', access('discord'))
+    answers.set('googlechat', access('googlechat'))
 
     await render()
 
-    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord'])
-    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(5)
+    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'])
+    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(6)
   })
 
   it('leaves out a provider this deployment cannot offer, rather than showing a dead switch', async () => {

@@ -4,14 +4,19 @@ import { sessionAccessNotifications, unverifiedConversationNotice } from '@/lib/
 const orgPath = (path: string) => `/acme${path}`
 
 describe('sessionAccessNotifications', () => {
-  it.each(['telegram', 'discord'])('routes %s identity and bot permission failures to the right repair', (provider) => {
-    const identity = sessionAccessNotifications('sessions', true, [{ provider, reason: 'authorization' }], orgPath)
-    expect(identity[0]?.action?.href).toBe(`/acme/profile?reauthorize=${provider}#sign-in-methods`)
-    const issue = { provider, reason: 'app_authorization' as const }
-    const bot = sessionAccessNotifications('sessions', true, [issue], orgPath)
-    expect(bot[0]?.action?.href).toBe(`/acme/integrations?platform=${provider}`)
-    expect(unverifiedConversationNotice(false, [issue], orgPath).retry).toBe(false)
-  })
+  it.each(['telegram', 'discord', 'googlechat'])(
+    'routes %s identity and bot permission failures to the right repair',
+    (provider) => {
+      const identity = sessionAccessNotifications('sessions', true, [{ provider, reason: 'authorization' }], orgPath)
+      expect(identity[0]?.action?.href).toBe(
+        `/acme/profile?reauthorize=${provider === 'googlechat' ? 'google' : provider}#sign-in-methods`
+      )
+      const issue = { provider, reason: 'app_authorization' as const }
+      const bot = sessionAccessNotifications('sessions', true, [issue], orgPath)
+      expect(bot[0]?.action?.href).toBe(`/acme/integrations?platform=${provider}`)
+      expect(unverifiedConversationNotice(false, [issue], orgPath).retry).toBe(false)
+    }
+  )
   it('creates an actionable Lark quota notification for hidden sessions', () => {
     expect(
       sessionAccessNotifications('sessions', true, [{ provider: 'feishu', region: 'lark', reason: 'quota' }], orgPath)

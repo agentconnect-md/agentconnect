@@ -174,7 +174,7 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     ).toEqual(externalOrigin)
   })
 
-  it.each(['telegram', 'discord'] as const)('carries %s conversation proof', (provider) => {
+  it.each(['telegram', 'discord', 'googlechat'] as const)('carries %s conversation proof', (provider) => {
     const externalOrigin = {
       provider,
       realmKey: 'bot42',

@@ -3,7 +3,7 @@ import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
 import { BotId } from '../domain/ids.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
-import type { BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
+import type { BotRecord, BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
 import type {
   SessionAccessIssue,
   SessionAccessPlugin,
@@ -35,7 +35,7 @@ export class BotSessionAccessService implements SessionAccessPlugin {
   constructor(
     readonly provider: string,
     private readonly deps: BotSessionAccessDeps,
-    private readonly realm: (token: string) => string | null,
+    private readonly realm: (token: string, bot: BotRecord) => string | null,
     check: (input: Check, signal: AbortSignal) => Promise<boolean>
   ) {
     this.decisions = new LRUCache({
@@ -71,7 +71,7 @@ export class BotSessionAccessService implements SessionAccessPlugin {
     for (const bot of await this.deps.bots.listForOrg(orgId)) {
       if (bot.platform !== this.provider || bot.revokedAt !== null) continue
       const secret = await this.deps.botSecrets.get(orgId, bot.id)
-      const realm = secret && this.realm(secret.botToken)
+      const realm = secret && this.realm(secret.botToken, bot)
       if (realm) for (const member of members) identitySet.add(`${this.provider}:${realm}:${member}`)
     }
   }
@@ -107,7 +107,7 @@ export class BotSessionAccessService implements SessionAccessPlugin {
           const bot = await this.deps.bots.getUnscoped(BotId(scope.credentialId))
           if (!bot || bot.orgId !== viewer.orgId || bot.platform !== this.provider || bot.revokedAt !== null) return
           const secret = await this.deps.botSecrets.get(viewer.orgId, bot.id)
-          if (!secret || this.realm(secret.botToken) !== scope.realmKey) return
+          if (!secret || this.realm(secret.botToken, bot) !== scope.realmKey) return
           for (const member of members) {
             const key = [scope.id, scope.aclRevision, bot.credentialRevision, member].join(':')
             const result = await this.decisions.fetch(key, {

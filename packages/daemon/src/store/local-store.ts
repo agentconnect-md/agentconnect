@@ -1309,7 +1309,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 58
+export const SCHEMA_VERSION = 59
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1998,6 +1998,41 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       WHERE c.externalProvider IS NULL AND COALESCE(c.directDestination, 0) = 0
     ) UPDATE sessions SET
       externalProvider = (SELECT externalProvider FROM audience a WHERE a.key = sessions.key),
+      externalRealmKey = (SELECT externalRealmKey FROM audience a WHERE a.key = sessions.key),
+      externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
+      externalResourceKind = 'conversation', sourceBindingKind = 'external'
+      WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
+  },
+  // v59 binds existing Google Chat conversations without replacing their runtime or direct child audiences.
+  async (db, store) => {
+    if (!(await tableExists(db, store.postgres, 'sessions'))) return
+    const rows = (
+      await db.query(
+        `SELECT key, channel, tenantScope FROM sessions
+         WHERE platform = 'googlechat' AND externalProvider IS NULL
+           AND transportScope IS NOT NULL AND conversationKind IS NOT NULL
+           AND launchCorrelationId IS NULL AND (originSessionId IS NULL OR directDestination = 1)`,
+        []
+      )
+    ).rows as { key: string; channel: string; tenantScope: string | null }[]
+    for (const row of rows) {
+      if (!/^spaces\/[A-Za-z0-9_-]+$/.test(row.channel)) continue
+      const realm = row.tenantScope && /^[1-9]\d*$/.test(row.tenantScope) ? row.tenantScope : null
+      await db.query(
+        `UPDATE sessions SET externalProvider = 'googlechat', externalRealmKey = ?,
+         externalResourceKind = 'conversation', externalResourceKey = ?, sourceBindingKind = 'external'
+         WHERE key = ?`,
+        [realm, row.channel, row.key]
+      )
+    }
+    await db.exec(`WITH RECURSIVE audience AS (
+      SELECT key, sessionId, externalRealmKey, externalResourceKey FROM sessions WHERE externalProvider = 'googlechat'
+      UNION
+      SELECT c.key, c.sessionId, p.externalRealmKey, p.externalResourceKey
+      FROM sessions c JOIN audience p ON c.originSessionId = p.sessionId
+      WHERE c.externalProvider IS NULL AND COALESCE(c.directDestination, 0) = 0
+    ) UPDATE sessions SET
+      externalProvider = 'googlechat',
       externalRealmKey = (SELECT externalRealmKey FROM audience a WHERE a.key = sessions.key),
       externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
       externalResourceKind = 'conversation', sourceBindingKind = 'external'
