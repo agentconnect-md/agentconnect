@@ -3465,6 +3465,7 @@ export const SessionExternalAccessStateEnum = z.enum(['disabled', 'enabling', 'e
 export const SessionExternalAccessProviderEnum = z.enum([
   'slack',
   'github',
+  'gitlab',
   'feishu',
   'telegram',
   'discord',

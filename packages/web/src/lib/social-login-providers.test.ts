@@ -17,6 +17,7 @@ describe('social login provider selection', () => {
     expect(targets('lark,feishu')).toEqual(['lark', 'feishu'])
     expect(targets('feishu,lark')).toEqual(['feishu', 'lark'])
     expect(targets('github')).toEqual(['github'])
+    expect(targets('gitlab')).toEqual(['gitlab'])
   })
 
   it('ignores targets it cannot render rather than rendering a blank button', () => {

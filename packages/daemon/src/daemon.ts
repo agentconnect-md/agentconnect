@@ -1,5 +1,7 @@
 import { memorySourceTurnId } from './memory/source-turn.js'
+import { codeHostExternalSource } from './codehost/session-audience.js'
 import {
+  ExternalSessionAudience,
   MEMORY_ENTRIES_V1_FEATURE,
   AGENT_MODEL_PROVIDER_FEATURE,
   AGENT_MODEL_PROVIDER_AUTO_FEATURE,
@@ -83,7 +85,6 @@ import {
   type SessionStayedHomeReason,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
-  ConversationSessionAudience,
   MAX_TASK_DESCRIPTION,
   MAX_TASK_DETAIL,
   MAX_TASK_LIST_TASKS,
@@ -1041,8 +1042,6 @@ import type {
   RdChatEvent,
   GitCommitIdentity,
   MemoryDreamingPolicy,
-  ExternalSessionAudience,
-  ExternalSessionOrigin,
   ChannelAgentsOk,
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
@@ -22460,52 +22459,13 @@ export class Daemon {
   }
 
   private externalAudienceForSessionRecord(rec: SessionRecord | undefined): ExternalSessionAudience | undefined {
-    const provider = ConversationSessionAudience.shape.provider.safeParse(rec?.externalProvider)
-    if (rec && provider.success && rec.externalResourceKind === 'conversation' && rec.externalResourceKey) {
-      return {
-        provider: provider.data,
-        ...(rec.externalRealmKey ? { realmKey: rec.externalRealmKey } : {}),
-        resourceKind: 'conversation',
-        resourceKey: rec.externalResourceKey
-      }
-    }
-    if (
-      rec?.externalProvider === 'github' &&
-      rec.externalRealmKey === 'github.com' &&
-      rec.externalResourceKind === 'repository' &&
-      rec.externalResourceKey &&
-      /^[1-9]\d*$/.test(rec.externalResourceKey)
-    ) {
-      return {
-        provider: 'github',
-        realmKey: 'github.com',
-        resourceKind: 'repository',
-        resourceKey: rec.externalResourceKey
-      }
-    }
-    return undefined
-  }
-
-  private githubExternalSource(hookContext: HookDispatchContext | undefined) {
-    const github = hookContext?.github
-    if (!github) return undefined
-    const externalOrigin: ExternalSessionOrigin = {
-      provider: 'github',
-      realmKey: 'github.com',
-      resourceKind: 'repository',
-      resourceKey: github.repoId,
-      hookId: hookContext.hookId,
-      deliveryKey: hookContext.deliveryKey,
-      sourceInstallationId: github.sourceInstallationId,
-      repoFullName: github.repoFullName
-    }
-    return {
-      externalProvider: 'github' as const,
-      externalRealmKey: externalOrigin.realmKey,
-      externalResourceKind: externalOrigin.resourceKind,
-      externalResourceKey: externalOrigin.resourceKey,
-      externalOrigin
-    }
+    const audience = ExternalSessionAudience.safeParse({
+      provider: rec?.externalProvider,
+      realmKey: rec?.externalRealmKey ?? undefined,
+      resourceKind: rec?.externalResourceKind,
+      resourceKey: rec?.externalResourceKey
+    })
+    return audience.success ? audience.data : undefined
   }
 
   private async conversationExternalSource(
@@ -22566,12 +22526,9 @@ export class Daemon {
     // A console continuation onto a hook session is not a new audience claiming a runtime — it IS that session, and nothing re-derives a hook audience without the delivery's trusted metadata, so the row keeps its binding (§9).
     if (msg.adoptedSession && originKindOf(msg.platform) === 'hook') return 'unchanged'
     const direct =
-      this.githubExternalSource(hookContext) ??
+      codeHostExternalSource(hookContext) ??
       (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))
-    // A CONVERSATION audience is only bindable when fully attributed (realm +
-    // integration); a repository audience (GitHub) has its own completeness rule.
-    // Keyed on the resource kind, so a new platform's audience gets the same
-    // guard without this growing a provider list.
+    // Conversation audiences require both a realm and integration; repository audiences carry their own proof.
     if (
       direct?.externalResourceKind === 'conversation' &&
       (!direct.externalRealmKey || !direct.externalIntegrationId)
@@ -22638,7 +22595,7 @@ export class Daemon {
     // session it creates, or that session is classified local and every later externally-
     // attributed wake of it (human or agent) rejects as a cross-source mismatch.
     const directExternalSource =
-      this.githubExternalSource(hookContext) ??
+      codeHostExternalSource(hookContext) ??
       (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))
     const inheritedExternalSource = callMeta?.externalOrigin
       ? {

@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { seedPoolMember } from '../fakes/member-set.js'
@@ -1112,34 +1113,73 @@ describe('session visibility — membership across an agent filter', () => {
   })
 })
 
-describe('session visibility — GitHub repository audience', () => {
-  it('exposes an independent owner-only sync setting', async () => {
-    const owner = await makeUser(`sv-github-owner-${randomUUID()}`, 'owner')
-    const collaborator = await makeUser(`sv-github-collab-${randomUUID()}`, 'collaborator')
+describe('session visibility — repository audiences', () => {
+  it.each(['github', 'gitlab'])('exposes an independent owner-only %s sync setting', async (provider) => {
+    const owner = await makeUser(`sv-${provider}-owner-${randomUUID()}`, 'owner')
+    const collaborator = await makeUser(`sv-${provider}-collab-${randomUUID()}`, 'collaborator')
 
-    const read = await appAs(collaborator).app.inject({ method: 'GET', url: `${ORG}/session-access/github` })
+    const read = await appAs(collaborator).app.inject({ method: 'GET', url: `${ORG}/session-access/${provider}` })
     expect(read.statusCode).toBe(200)
-    expect(read.json()).toMatchObject({ provider: 'github', available: false, enabled: false })
+    expect(read.json()).toMatchObject({ provider, available: false, enabled: false })
     expect(read.json()).not.toHaveProperty('hiddenSessions')
 
     const forbidden = await appAs(collaborator).app.inject({
       method: 'PUT',
-      url: `${ORG}/session-access/github`,
+      url: `${ORG}/session-access/${provider}`,
       payload: { enabled: true }
     })
     expect(forbidden.statusCode).toBe(403)
 
     const enabled = await appAs(owner, {
       sessionAccessPlugins: [
-        { provider: 'github', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+        { provider, available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
       ]
     }).app.inject({
       method: 'PUT',
-      url: `${ORG}/session-access/github`,
+      url: `${ORG}/session-access/${provider}`,
       payload: { enabled: true }
     })
     expect(enabled.statusCode).toBe(200)
-    expect(enabled.json()).toMatchObject({ provider: 'github', available: true, enabled: true, state: 'enabled' })
+    expect(enabled.json()).toMatchObject({ provider, available: true, enabled: true, state: 'enabled' })
+  })
+
+  it('quarantines legacy GitLab history and inherited children, including deleted hooks', async () => {
+    const owner = await makeUser(`sv-gitlab-migration-${randomUUID()}`, 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const root = await seedSessionMeta(prisma, randomUUID(), agentId, { platform: 'hook', channel: randomUUID() })
+    const child = await seedSessionMeta(prisma, randomUUID(), agentId, { parentSessionId: root })
+    const explicit = await seedSessionMeta(prisma, randomUUID(), agentId, { platform: 'hook' })
+    await prisma.sessionMeta.update({ where: { id: root }, data: { hookKind: 'gitlab' } })
+    await prisma.sessionMeta.update({ where: { id: child }, data: { visibilitySource: 'inherited' } })
+    await prisma.sessionMeta.update({
+      where: { id: explicit },
+      data: { hookKind: 'gitlab', visibilitySource: 'explicit' }
+    })
+    const migration = await readFile(
+      new URL('../../prisma/migrations/20261123000000_gitlab_session_audience/migration.sql', import.meta.url),
+      'utf8'
+    )
+    await prisma.$executeRawUnsafe(migration)
+    await prisma.$executeRawUnsafe(migration)
+    const repo = new PgSessionRepo(prisma)
+    await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'gitlab', true)
+    const http = appAs(owner, {
+      sessionAccessPlugins: [
+        { provider: 'gitlab', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      ]
+    }).app
+    for (const id of [root, child]) {
+      expect(await repo.getUnscoped(SessionId(id))).toMatchObject({
+        visibility: 'external',
+        externalProvider: 'gitlab',
+        externalResolution: 'pending'
+      })
+      expect((await http.inject({ url: `${ORG}/sessions/${id}` })).statusCode).toBe(404)
+    }
+    expect(await repo.getUnscoped(SessionId(explicit))).toMatchObject({ visibility: 'org', externalProvider: null })
+    await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'gitlab', false)
+    expect((await http.inject({ url: `${ORG}/sessions/${root}` })).statusCode).toBe(404)
   })
 
   it('keeps allowed GitHub alternatives when another integration is selected', async () => {

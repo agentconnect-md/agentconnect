@@ -66,7 +66,7 @@ async function render() {
 }
 
 function rowNames(): string[] {
-  return ['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'].filter((name) =>
+  return ['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'].filter((name) =>
     [...host.querySelectorAll('span')].some((span) => span.textContent === name)
   )
 }
@@ -78,6 +78,7 @@ beforeEach(() => {
   root = createRoot(host)
   setApiOrgId('org-test')
   answers.clear()
+  answers.set('gitlab', nothingToOffer('gitlab'))
   answers.set('telegram', nothingToOffer('telegram'))
   answers.set('discord', nothingToOffer('discord'))
   answers.set('googlechat', nothingToOffer('googlechat'))
@@ -93,6 +94,7 @@ describe('session access card', () => {
   it('lists every provider the deployment can offer', async () => {
     answers.set('slack', access('slack'))
     answers.set('github', access('github', { enabled: false, state: 'disabled' }))
+    answers.set('gitlab', access('gitlab'))
     answers.set('feishu', access('feishu'))
     answers.set('telegram', access('telegram'))
     answers.set('discord', access('discord'))
@@ -100,8 +102,8 @@ describe('session access card', () => {
 
     await render()
 
-    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'])
-    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(6)
+    expect(rowNames()).toEqual(['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'])
+    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(7)
   })
 
   it('leaves out a provider this deployment cannot offer, rather than showing a dead switch', async () => {

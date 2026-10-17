@@ -4,8 +4,8 @@ import { sessionAccessNotifications, unverifiedConversationNotice } from '@/lib/
 const orgPath = (path: string) => `/acme${path}`
 
 describe('sessionAccessNotifications', () => {
-  it.each(['telegram', 'discord', 'googlechat'])(
-    'routes %s identity and bot permission failures to the right repair',
+  it.each(['telegram', 'discord', 'gitlab', 'googlechat'])(
+    'routes %s identity and app permission failures to the right repair',
     (provider) => {
       const identity = sessionAccessNotifications('sessions', true, [{ provider, reason: 'authorization' }], orgPath)
       expect(identity[0]?.action?.href).toBe(

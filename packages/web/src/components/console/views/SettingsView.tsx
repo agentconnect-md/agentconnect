@@ -156,6 +156,14 @@ function SessionAccessRow({
       unresolved: (count: number) => t('providers.github.unresolved', { count }),
       degraded: t('providers.github.degraded')
     },
+    gitlab: {
+      name: t('providers.gitlab.name'),
+      label: t('providers.gitlab.label'),
+      details: t('providers.gitlab.details'),
+      unavailable: t('providers.gitlab.unavailable'),
+      unresolved: (count: number) => t('providers.gitlab.unresolved', { count }),
+      degraded: t('providers.gitlab.degraded')
+    },
     feishu: {
       name: t('providers.feishu.name'),
       label: t('providers.feishu.label'),
@@ -264,6 +272,7 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
   // Fixed hooks keep the provider reads stable while the card filters unavailable rows.
   const providers = [
     useSessionAccess('github', orgId, isOwner),
+    useSessionAccess('gitlab', orgId, isOwner),
     useSessionAccess('slack', orgId, isOwner),
     useSessionAccess('feishu', orgId, isOwner),
     useSessionAccess('telegram', orgId, isOwner),

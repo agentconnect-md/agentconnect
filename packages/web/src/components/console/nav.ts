@@ -144,7 +144,7 @@ const SETTING_CARDS: ConsolePage[] = [
     label: 'Session access',
     icon: 'messages-square',
     kind: 'setting',
-    keywords: ['settings', 'slack', 'github', 'feishu']
+    keywords: ['settings', 'slack', 'github', 'gitlab', 'feishu']
   },
   {
     href: '/settings#environment',

@@ -2557,7 +2557,47 @@ integration job: authority granted and withdrawn, Free or Community Edition
 and Premium, a private authority, a path prefix, the webhook allowlist, and
 the full connect-to-disconnect checklist.
 
-## 25. References
+## 25. Console sign-in and session access
+
+Setup's GitLab application also supplies the Logto OIDC connector for **Sign in
+with GitLab**. Its issuer and endpoints derive from the configured GitLab base
+URL, including any path prefix. Add `openid`, `profile`, and `email` to the
+application's existing scopes and register every sign-in redirect shown in
+Setup, alongside the integration callback. Select **Use for sign-in**, reconcile
+Logto, run **Check Logto**, then restart the Control Plane to apply the saved
+browser authentication configuration. Existing users can link GitLab in Profile.
+Secrets remain write-only; rotating the application secret refreshes the same
+connector. Disabling sign-in preserves linked identities and cannot remove the
+last login method. An existing OIDC connector's issuer cannot be changed in
+place because numeric subjects belong to that issuer.
+
+Organization owners enable **Settings → Session access → GitLab** independently
+of sign-in. GitLab hook sessions bind to the configured instance and numeric
+project id through the accepted hook run, matching hook revision and live project
+binding. A2A children inherit that audience. Permission reads use the project's
+connected administrator credential and the viewer's linked numeric GitLab id,
+validated against the OIDC token's issuer and subject; usernames never authorize
+access and no separate viewer access token is stored.
+
+A public project with its repository enabled is visible to organization members.
+Other repositories require an active, unexpired direct or inherited Reporter-or-
+higher membership. Disabled repositories remain hidden. This conservative check
+does not grant access through internal-project nonmembership or custom Guest
+roles. Allowed verdicts last at most two minutes, denied membership thirty
+seconds, and missing-identity diagnostics five seconds. Each read also checks the
+project binding and connection state before accepting a cached verdict. Missing
+credentials and failed provider requests hide affected sessions; organization
+owners have no bypass.
+
+Upgrade the Control Plane and relay, then all participating daemons before
+enabling sync: older peers cannot consume the GitLab audience wire member.
+Existing GitLab history, including descendants and deleted-hook snapshots, is
+marked unresolved and hidden when sync is enabled. New hook sessions use a fresh
+`gitlab:audience-v1:` thread namespace so a pre-sync runtime cannot be reused with
+a different audience. Turning sync off does not republish restricted history,
+and knowledge previously captured in shared agent memory is not erased.
+
+## 26. References
 
 - [GitLab OAuth 2.0 identity provider API](https://docs.gitlab.com/api/oauth2/)
 - [GitLab service accounts](https://docs.gitlab.com/user/profile/service_accounts/)

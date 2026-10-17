@@ -338,6 +338,7 @@ import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
+import { GitlabSessionAccessService } from './http/gitlab-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
 import { GoogleChatSessionAccessService } from './http/googlechat-session-access.js'
 import { createTelegramSessionAccess } from './platforms/telegram/session-access.js'
@@ -1812,6 +1813,18 @@ export function buildContainer(
     // Lazy over `http.log` (assigned below; only ever called at resolve time).
     log: { warn: (o, m) => http.log.warn(o, m), debug: (o, m) => http.log.debug(o, m) }
   })
+  const configuredSocialProviders =
+    opts.deploymentConfig?.values.auth.mode === 'oidc' ? opts.deploymentConfig.values.auth.socialProviders : []
+  const gitlabSessionAccess = new GitlabSessionAccessService({
+    bindings: repos.gitlabProjectBinding,
+    connections: repos.gitlabConnection,
+    users: repos.user,
+    clock,
+    configured: configuredSocialProviders.includes('gitlab'),
+    ...(gitlabApi ? { api: gitlabApi } : {}),
+    ...(gitlabOauthService ? { oauth: gitlabOauthService } : {}),
+    ...(logtoIdentity ? { identity: logtoIdentity } : {})
+  })
   const feishuSessionAccess = new FeishuSessionAccessService({
     bots: repos.bot,
     botSecrets: repos.botSecret,
@@ -1821,8 +1834,6 @@ export function buildContainer(
     // Lazy over `http.log` (assigned below; only ever called at resolve time).
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
-  const configuredSocialProviders =
-    opts.deploymentConfig?.values.auth.mode === 'oidc' ? opts.deploymentConfig.values.auth.socialProviders : []
   const botSessionAccessDeps = {
     bots: repos.bot,
     botSecrets: repos.botSecret,
@@ -2041,6 +2052,7 @@ export function buildContainer(
     sessionAccessPlugins: [
       slackSessionAccess,
       githubSessionAccess,
+      gitlabSessionAccess,
       feishuSessionAccess,
       googleChatSessionAccess,
       telegramSessionAccess,
@@ -2588,6 +2600,8 @@ export function buildContainer(
       revoke: (botId, reason, eventAtMs) => httpBot.revokeBot(botId, reason, { eventAtMs }, { evidence: 'event' })
     },
     githubInstallation: repos.githubInstallation,
+    gitlabProjectBinding: repos.gitlabProjectBinding,
+    ...(gitlabAppCfg ? { gitlabBaseUrl: gitlabAppCfg.baseUrl } : {}),
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,

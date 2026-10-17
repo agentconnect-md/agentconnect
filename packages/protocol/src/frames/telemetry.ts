@@ -31,7 +31,7 @@ export const Heartbeat = z.object({
 export type Heartbeat = z.infer<typeof Heartbeat>
 
 const ExternalKey = z.string().min(1).max(200)
-const GithubId = z.string().regex(/^[1-9]\d*$/)
+const NumericId = z.string().regex(/^[1-9]\d*$/)
 
 export const ConversationSessionAudience = z.object({
   provider: z.enum(['slack', 'feishu', 'telegram', 'discord', 'googlechat']),
@@ -48,13 +48,18 @@ export const ExternalSessionAudience = z.discriminatedUnion('provider', [
     realmKey: z.literal('github.com'),
     resourceKind: z.literal('repository'),
     // Rename-proof GitHub repository id, never owner/repo.
-    resourceKey: GithubId
+    resourceKey: NumericId
+  }),
+  z.object({
+    provider: z.literal('gitlab'),
+    realmKey: ExternalKey,
+    resourceKind: z.literal('repository'),
+    resourceKey: NumericId
   })
 ])
 export type ExternalSessionAudience = z.infer<typeof ExternalSessionAudience>
 
-/** Direct-ingress audience plus the provider-specific proof the CP validates
- * before binding a durable ExternalScope. */
+// Direct-ingress audience plus the proof the CP validates before binding a durable scope.
 export const ExternalSessionOrigin = z.discriminatedUnion('provider', [
   ExternalSessionAudience.options[0].extend({
     integrationId: z.string().uuid().optional()
@@ -62,10 +67,14 @@ export const ExternalSessionOrigin = z.discriminatedUnion('provider', [
   ExternalSessionAudience.options[1].extend({
     hookId: z.string().uuid(),
     deliveryKey: ExternalKey,
-    sourceInstallationId: GithubId,
+    sourceInstallationId: NumericId,
     // Trusted webhook snapshot; display/API-routing hint only. repoId above is
     // the authorization identity and must still match the accepted HookRun.
     repoFullName: ExternalKey
+  }),
+  ExternalSessionAudience.options[2].extend({
+    hookId: z.string().uuid(),
+    deliveryKey: ExternalKey
   })
 ])
 export type ExternalSessionOrigin = z.infer<typeof ExternalSessionOrigin>

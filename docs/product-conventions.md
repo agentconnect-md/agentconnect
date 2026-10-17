@@ -1804,6 +1804,15 @@ the conversation hidden. Without sync, new Google Chat conversations are visible
 to the organization. Turning sync off hides previously synced sessions until it
 is enabled again; historical private DMs retain their recorded owner.
 
+GitLab session access uses the configured instance and numeric project identity.
+An enabled public repository is visible to organization members; other projects
+require an active, unexpired direct or inherited Reporter-or-higher membership
+through a linked GitLab login from the same instance. Internal visibility alone
+and custom Guest permissions do not grant access. Disabled repositories and
+failed permission checks stay hidden. GitLab verdicts expire within two minutes;
+unresolved historical sessions stay hidden after sync is enabled, including
+their inherited children.
+
 Whether a conversation (or GitHub repository) is public is itself a cached provider
 observation with an accepted conversion window (session-access-cold-visit.md §2.1): after
 a public→private conversion, its recorded sessions may stay visible to the pre-conversion

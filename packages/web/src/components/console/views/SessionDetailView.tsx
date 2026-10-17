@@ -2754,6 +2754,7 @@ export default function SessionDetailView() {
       : value === 'slack' ||
           value === 'google' ||
           value === 'github' ||
+          value === 'gitlab' ||
           value === 'lark' ||
           value === 'feishu' ||
           value === 'telegram' ||

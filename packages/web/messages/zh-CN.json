@@ -4595,6 +4595,14 @@
           "unresolved": "{count, plural, other {已隐藏 # 个会话：没有可信的仓库权限范围。}}",
           "degraded": "仓库权限范围已无法解析，新会话将被隐藏。"
         },
+        "gitlab": {
+          "name": "GitLab",
+          "label": "遵循 GitLab 权限",
+          "details": "公开代码库的会话对组织所有成员可见。其他项目需要关联此 GitLab 实例的账号，并拥有有效的 Reporter 或更高成员权限。已禁用的代码库保持隐藏。\n此前学到的智能体记忆不会删除。缺少可信项目来源的历史会话保持隐藏。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
+          "unavailable": "请先配置 GitLab 集成和登录，再开启权限同步。",
+          "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的项目来源。}}",
+          "degraded": "GitLab 项目来源解析失败，新的会话已隐藏。"
+        },
         "feishu": {
           "name": "飞书/Lark",
           "label": "遵循飞书/Lark 访问权限",

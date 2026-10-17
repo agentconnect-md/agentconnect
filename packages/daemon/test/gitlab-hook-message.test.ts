@@ -57,7 +57,7 @@ describe('gitlab hook normalization (§12.3)', () => {
   it('recomputes the thread from trusted metadata: channel = hookId, thread = full key, scope pinned', () => {
     const msg = buildHookMessage(fire(), 'trace-1')
     expect(msg.channel).toBe(HOOK)
-    expect(msg.thread).toBe(`gitlab:${PROJECT}:issue:42`)
+    expect(msg.thread).toBe(`gitlab:audience-v1:${PROJECT}:issue:42`)
     expect(msg.transportScope).toBe(`gitlab:${PROJECT}`)
     expect(msg.platform).toBe('hook')
     expect(msg.headless).toBe(true)
@@ -69,7 +69,7 @@ describe('gitlab hook normalization (§12.3)', () => {
   it('trusted metadata wins over a divergent sessionKey string — the key is never parsed', () => {
     const msg = buildHookMessage(fire({ sessionKey: 'gitlab:999:issue:1#evil' }), 'trace-2')
     expect(msg.channel).toBe(HOOK)
-    expect(msg.thread).toBe(`gitlab:${PROJECT}:issue:42`)
+    expect(msg.thread).toBe(`gitlab:audience-v1:${PROJECT}:issue:42`)
   })
 
   it('subjects are disjoint by kind, iid, project, and ref; deliveries for one subject share a key', () => {
@@ -164,7 +164,7 @@ describe('gitlab hook normalization (§12.3)', () => {
         truncated: false
       }
     })
-    expect(gitlabSessionThread(release.gitlab!)).toBe(`gitlab:${PROJECT}:releases`)
+    expect(gitlabSessionThread(release.gitlab!)).toBe(`gitlab:audience-v1:${PROJECT}:releases`)
     const text = buildHookText(release)
     expect(text).toContain('GitLab release:published — example-group/example-project "v1.2.0 — faster sync"')
     expect(text).toContain('Tag: v1.2.0')

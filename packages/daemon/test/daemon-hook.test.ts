@@ -479,7 +479,7 @@ describe('Daemon rd/msg hook fires', () => {
               agentId: AGENT_ID,
               platform: 'hook',
               channel: HOOK_ID,
-              thread: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+              thread: `gitlab:audience-v1:${GITLAB_PROJECT}:merge_request:42`,
               transportScope: `gitlab:${GITLAB_PROJECT}`,
               event: 'COMMENT',
               verdict: 'neutral',

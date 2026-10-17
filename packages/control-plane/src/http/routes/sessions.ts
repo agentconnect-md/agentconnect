@@ -684,6 +684,7 @@ export function sessionRoutes(deps: HttpDeps) {
     const accessProviders = {
       slack: 'Slack',
       github: 'GitHub',
+      gitlab: 'GitLab',
       feishu: 'Feishu/Lark',
       telegram: 'Telegram',
       discord: 'Discord',

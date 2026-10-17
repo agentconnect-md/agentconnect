@@ -2655,7 +2655,7 @@ export async function putSessionVisibility(
   })
 }
 
-export type SessionAccessProvider = 'slack' | 'github' | 'feishu' | 'telegram' | 'discord' | 'googlechat'
+export type SessionAccessProvider = 'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat'
 export type SessionProfileProvider = Exclude<SessionAccessProvider, 'googlechat'> | 'lark' | 'google'
 
 export interface SessionExternalAccessDto {

@@ -28,6 +28,7 @@ import type {
   OrganizationKnowledgeRepo,
   BotRepo,
   GithubInstallationRepo,
+  GitlabProjectBindingRepo,
   DaemonLifecycleOpRepo,
   AgentRecord,
   BotRecord,
@@ -140,6 +141,8 @@ export interface DaemonWsDeps {
   /** Resolves a trusted GitHub delivery's installation id to this org's
    * durable credential locator before binding a repository ExternalScope. */
   githubInstallation?: GithubInstallationRepo
+  gitlabProjectBinding?: Pick<GitlabProjectBindingRepo, 'byProject'>
+  gitlabBaseUrl?: string
   /** Persists authoritative membership snapshots and partial conversation reports. */
   integrationChannel: IntegrationChannelRepo
   /** §4.2(4) `isPrivate` cross-check (session-access-cold-visit.md): a snapshot observing a

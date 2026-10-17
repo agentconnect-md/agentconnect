@@ -116,6 +116,47 @@ function server() {
 }
 
 describe('global login application configuration', () => {
+  it('reuses the GitLab application for sign-in, rotates its secret and refuses clearing the last provider', async () => {
+    const { app, admin, secrets, reconciled } = server()
+    admin.values.gitlab = { clientId: 'gitlab-client', baseUrl: 'https://gitlab.example.test/prefix/' }
+    secrets['gitlab.clientSecret'] = 'gitlab-secret'
+    const configure = (enabled: boolean) =>
+      app.inject({ method: 'POST', url: '/api/v1/configure/gitlab-login', headers, payload: { enabled } })
+    expect((await configure(true)).statusCode).toBe(200)
+    const status = await app.inject({ url: '/api/v1/deployment-config', headers })
+    expect(status.statusCode).toBe(200)
+    expect(status.body).not.toContain('gitlab-secret')
+    expect(status.json().providerExpectations.gitlabSignIn.redirects).toEqual([
+      'https://login.example.test/callback/agentconnect-gitlab',
+      'https://login.example.test/account/callback/social/agentconnect-gitlab',
+      'https://console.example.test/auth/social/callback'
+    ])
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/v1/reconcile/logto', headers, payload: {} })).statusCode
+    ).toBe(200)
+    expect(reconciled.at(-1)?.desired.gitlab).toEqual({
+      clientId: 'gitlab-client',
+      clientSecret: 'gitlab-secret',
+      baseUrl: 'https://gitlab.example.test/prefix'
+    })
+    secrets['gitlab.clientSecret'] = 'rotated-secret'
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/reconcile/logto',
+      headers,
+      payload: { refreshConnectorSecrets: true }
+    })
+    expect(reconciled.at(-1)?.desired.gitlab?.clientSecret).toBe('rotated-secret')
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/v1/configure/gitlab', headers, payload: { application: null } }))
+        .statusCode
+    ).toBe(400)
+    admin.values.logto!.browser!.socialProviders = ['gitlab']
+    expect((await configure(false)).statusCode).toBe(400)
+    admin.values.logto!.browser!.socialProviders = ['google', 'gitlab']
+    expect((await configure(false)).statusCode).toBe(200)
+  })
+
   it.each(['telegram', 'discord'] as const)(
     'saves, reconciles, rotates and clears %s without exposing its secret',
     async (provider) => {

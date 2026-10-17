@@ -1378,7 +1378,16 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     }
   )
 
-  it('forwards parentPrivate only for a capture-excluded origin, alongside the caller’s external origin', async () => {
+  it.each([
+    { provider: 'slack', realmKey: 'T1', resourceKind: 'conversation', resourceKey: 'C1' },
+    { provider: 'github', realmKey: 'github.com', resourceKind: 'repository', resourceKey: '42' },
+    {
+      provider: 'gitlab',
+      realmKey: 'https://gitlab.example.test/prefix',
+      resourceKind: 'repository',
+      resourceKey: '42'
+    }
+  ])('forwards capture exclusion and the caller’s external audience: $provider', async (externalOrigin) => {
     const root = scaffold([{ id: 'bot-a' }]) // bot-b is remote
     const { daemon, call } = await bootWithDispatchSpy(root)
     const d = daemon as any
@@ -1398,17 +1407,16 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     const callerKey = await seedCallerSession(d)
     await d.store.setSessionClassification(callerKey, {
       sourceBindingKind: 'external',
-      externalProvider: 'slack',
-      externalRealmKey: 'T1',
-      externalResourceKind: 'conversation',
-      externalResourceKey: 'C1',
-      externalIntegrationId: 'int-a'
+      externalProvider: externalOrigin.provider,
+      externalRealmKey: externalOrigin.realmKey,
+      externalResourceKind: externalOrigin.resourceKind,
+      externalResourceKey: externalOrigin.resourceKey
     })
     await call(baseReq())
     expect(sent[1]).toMatchObject({
       originSessionId: 'sid-parent-1',
       parentPrivate: true,
-      externalOrigin: { provider: 'slack', realmKey: 'T1', resourceKind: 'conversation', resourceKey: 'C1' }
+      externalOrigin
     })
     await d.store.setLocalCaptureGate('bot-a', callerKey, false)
     await call(baseReq())

@@ -125,11 +125,12 @@ export function useSessionAccessCardAvailable(): boolean | undefined {
   const opts = { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
   const slack = useSWR(key('slack'), fetcher, opts)
   const github = useSWR(key('github'), fetcher, opts)
+  const gitlab = useSWR(key('gitlab'), fetcher, opts)
   const feishu = useSWR(key('feishu'), fetcher, opts)
   const telegram = useSWR(key('telegram'), fetcher, opts)
   const discord = useSWR(key('discord'), fetcher, opts)
   const googlechat = useSWR(key('googlechat'), fetcher, opts)
-  const results = [slack, github, feishu, telegram, discord, googlechat]
+  const results = [slack, github, gitlab, feishu, telegram, discord, googlechat]
   if (results.some(({ data, error }) => data === undefined && !error)) return undefined
   return results.some(({ data }) => data === undefined || data.available || data.enabled)
 }

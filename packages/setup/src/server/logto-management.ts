@@ -2,6 +2,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import {
   LOGTO_GITHUB_CONNECTOR_ID,
+  LOGTO_GITLAB_CONNECTOR_ID,
   LOGTO_GOOGLE_CONNECTOR_ID,
   LOGTO_SLACK_CONNECTOR_ID,
   LOGTO_LOGIN_APPS
@@ -36,6 +37,7 @@ export interface LogtoSetupDesired {
   postLogoutRedirectUris: readonly string[]
   socialProviders: readonly string[]
   github?: { clientId: string; clientSecret: string }
+  gitlab?: { clientId: string; clientSecret: string; baseUrl: string }
   google?: { clientId: string; clientSecret: string }
   slack?: { clientId: string; clientSecret: string; scope: string }
   telegram?: { clientId: string; clientSecret: string }
@@ -245,6 +247,30 @@ function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredCo
       id: LOGTO_LOGIN_APPS.discord.id,
       connectorId: 'discord-universal',
       config: { ...desired.discord, scope: 'identify' }
+    }
+  }
+  if (target === 'gitlab' && desired.gitlab) {
+    const { baseUrl, clientId, clientSecret } = desired.gitlab
+    return {
+      id: LOGTO_GITLAB_CONNECTOR_ID,
+      connectorId: 'oidc',
+      metadata: { target: 'gitlab', name: { en: 'GitLab' } },
+      config: {
+        clientId,
+        clientSecret,
+        scope: 'openid profile email',
+        authorizationEndpoint: `${baseUrl}/oauth/authorize`,
+        tokenEndpoint: `${baseUrl}/oauth/token`,
+        tokenEndpointAuthMethod: 'client_secret_post',
+        idTokenVerificationConfig: {
+          issuer: baseUrl,
+          jwksUri: `${baseUrl}/oauth/discovery/keys`,
+          algorithms: ['RS256']
+        },
+        customConfig: {},
+        authRequestOptionalConfig: {},
+        trustUnverifiedEmail: false
+      }
     }
   }
   if (target === 'telegram' && desired.telegram) {
@@ -659,6 +685,18 @@ export class LogtoAdminClaimClient {
         throw new LogtoManagementError(
           'SOCIAL_CONNECTOR_UNSUPPORTED',
           `the existing ${target} connector must use ${expected.connectorId}`
+        )
+      }
+      // OIDC subjects are issuer-local; reusing a target for another issuer could attach someone else's identity.
+      if (
+        connector &&
+        expected.connectorId === 'oidc' &&
+        asRecord(connector.config.idTokenVerificationConfig).issuer !==
+          asRecord(expected.config.idTokenVerificationConfig).issuer
+      ) {
+        throw new LogtoManagementError(
+          'SOCIAL_CONNECTOR_UNSUPPORTED',
+          `the existing ${target} sign-in issuer cannot be changed; migrate linked identities before switching instances`
         )
       }
       await this.deleteDemoConnectors(existing, target)

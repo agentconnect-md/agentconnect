@@ -211,7 +211,12 @@ describe('Logto setup reconciliation', () => {
       applicationName: 'AgentConnect',
       redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
       postLogoutRedirectUris: ['http://localhost:3000/login'],
-      socialProviders: ['github', 'google', 'slack', 'telegram', 'discord'],
+      socialProviders: ['github', 'google', 'slack', 'telegram', 'discord', 'gitlab'],
+      gitlab: {
+        clientId: 'gitlab-client',
+        clientSecret: 'gitlab-secret',
+        baseUrl: 'https://gitlab.example.test/prefix'
+      },
       github: { clientId: 'github-client', clientSecret: 'github-secret' },
       google: { clientId: 'google-client', clientSecret: 'google-secret' },
       telegram: { clientId: '123456789', clientSecret: 'telegram-secret' },
@@ -231,7 +236,8 @@ describe('Logto setup reconciliation', () => {
         { target: 'google', id: 'agentconnect-google', created: true },
         { target: 'slack', id: 'agentconnect-slack', created: true },
         { target: 'telegram', id: 'agentconnect-telegram', created: true },
-        { target: 'discord', id: 'agentconnect-discord', created: true }
+        { target: 'discord', id: 'agentconnect-discord', created: true },
+        { target: 'gitlab', id: 'agentconnect-gitlab', created: true }
       ],
       signInExperienceChanged: true,
       adminRoleCreated: true
@@ -244,7 +250,8 @@ describe('Logto setup reconciliation', () => {
         { target: 'google', id: 'agentconnect-google', created: false },
         { target: 'slack', id: 'agentconnect-slack', created: false },
         { target: 'telegram', id: 'agentconnect-telegram', created: false },
-        { target: 'discord', id: 'agentconnect-discord', created: false }
+        { target: 'discord', id: 'agentconnect-discord', created: false },
+        { target: 'gitlab', id: 'agentconnect-gitlab', created: false }
       ],
       signInExperienceChanged: false,
       adminRoleCreated: false
@@ -257,6 +264,22 @@ describe('Logto setup reconciliation', () => {
       signInMode: 'SignInAndRegister'
     })
     const telegram = connectors.find((connector) => connector.target === 'telegram')!
+    expect(connectors.find((connector) => connector.target === 'gitlab')).toMatchObject({
+      connectorId: 'oidc',
+      metadata: { target: 'gitlab', name: { en: 'GitLab' } },
+      config: {
+        clientId: 'gitlab-client',
+        scope: 'openid profile email',
+        authorizationEndpoint: 'https://gitlab.example.test/prefix/oauth/authorize',
+        tokenEndpoint: 'https://gitlab.example.test/prefix/oauth/token',
+        tokenEndpointAuthMethod: 'client_secret_post',
+        idTokenVerificationConfig: {
+          issuer: 'https://gitlab.example.test/prefix',
+          jwksUri: 'https://gitlab.example.test/prefix/oauth/discovery/keys',
+          algorithms: ['RS256']
+        }
+      }
+    })
     expect(telegram).toMatchObject({
       connectorId: 'oidc',
       metadata: { target: 'telegram', name: { en: 'Telegram' } },
@@ -303,6 +326,15 @@ describe('Logto setup reconciliation', () => {
     expect((await client.inspectSetup(externalConnectors)).connectors.every((connector) => connector.matches)).toBe(
       true
     )
+    await expect(
+      client.reconcileSetup({
+        ...desired,
+        gitlab: { ...desired.gitlab, baseUrl: 'https://other.example.test' }
+      })
+    ).rejects.toMatchObject({ code: 'SOCIAL_CONNECTOR_UNSUPPORTED' })
+    expect(connectors.find((connector) => connector.target === 'gitlab')?.config).toMatchObject({
+      idTokenVerificationConfig: { issuer: desired.gitlab.baseUrl }
+    })
   })
 
   it('deletes the Logto Cloud demo connectors parked on the managed social targets', async () => {
