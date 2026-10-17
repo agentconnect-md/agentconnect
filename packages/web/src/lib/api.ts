@@ -1700,12 +1700,13 @@ export function subscribeSessionEvents(
   return () => ctrl.abort()
 }
 
-async function apiPost<T>(path: string, body: unknown): Promise<T> {
+async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await authenticatedFetch(
     path,
     {
       method: 'POST',
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     },
     { 'content-type': 'application/json' }
   )
@@ -5160,10 +5161,9 @@ export async function fetchMySessionIdentity(provider: SessionProfileProvider): 
   return { linked: account.identities.some((identity) => identity.target === provider) }
 }
 
-// Linking runs browser→provider, so the CP never sees that write and its cached
-// copy would hide the new identity. Say so once, right after a link lands.
-export async function refreshMySocialIdentities(): Promise<void> {
-  await apiPost('/me/social-identities/refresh', {})
+// Refresh identities after provider-side linking, including automatic linking during sign-in.
+export async function refreshMySocialIdentities(signal?: AbortSignal): Promise<void> {
+  await apiPost('/me/social-identities/refresh', {}, signal)
   // Repository rosters are identity-filtered. A successful GitHub link must
   // not leave the public-only result cached when the user reopens a picker.
   invalidateGithubRepoRosterCache()

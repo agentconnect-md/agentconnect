@@ -24,6 +24,26 @@ describe('Control Plane authentication recovery', () => {
 
   afterEach(() => vi.unstubAllGlobals())
 
+  it('cancels an identity refresh when the sign-in deadline expires', async () => {
+    const controller = new AbortController()
+    const fetchImpl = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+    )
+    vi.stubGlobal('fetch', fetchImpl)
+    const { refreshMySocialIdentities } = await import('./api')
+    const refresh = refreshMySocialIdentities(controller.signal)
+    const rejected = expect(refresh).rejects.toBeInstanceOf(DOMException)
+
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    controller.abort()
+
+    await rejected
+    expect(auth.redirectExpiredSession).not.toHaveBeenCalled()
+  })
+
   it('forces a token refresh and retries a rejected GET once', async () => {
     const fetchImpl = vi
       .fn()

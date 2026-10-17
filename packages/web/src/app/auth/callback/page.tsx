@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl'
 import { completeLogin, currentSubject, isAuthConfigured, redirectExpiredSession } from '@/lib/auth'
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
+import { refreshMySocialIdentities } from '@/lib/api'
 import { Spinner } from '@/components/marks'
 import { Button } from '@/components/ui'
 
@@ -22,6 +23,8 @@ export default function AuthCallback() {
     }
     completeLogin()
       .then(async () => {
+        // Social sign-in can link an identity without passing through the Control Plane.
+        await refreshMySocialIdentities(AbortSignal.timeout(5_000)).catch(() => undefined)
         // Only a completed sign-in grants pending activation proof, bound to the signed-in subject.
         promoteActivationProof(await currentSubject())
         let dest = '/'
