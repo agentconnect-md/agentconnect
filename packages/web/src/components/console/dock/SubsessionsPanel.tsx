@@ -253,8 +253,8 @@ export function SubsessionsPanel({
           {followUps.map(drawRow)}
         </TaskGroup>
       ) : null}
-      {/* Older pages hold what finished long ago, so "Show more" sits with the finished rows. */}
-      {current?.cursor && showFinished ? (
+      {/* Pages run by start time, so an older page can hold open work: "Show more" stays whenever a cursor does. */}
+      {current?.cursor ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="ghost" size="xs" disabled={more.loading} onClick={() => void loadMore()}>
             {t('more')}

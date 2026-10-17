@@ -223,6 +223,16 @@ describe('SubsessionsPanel', () => {
     expect(last()).toEqual({ settled: true, count: 3, running: 1, finished: 2, failed: false })
   })
 
+  it('keeps "Show more" reachable when the first page holds only open rows', async () => {
+    const open = (i: number) => row({ sessionId: `o${i}` })
+    wire.server = Array.from({ length: SUBSESSIONS_PAGE + 1 }, (_, i) => open(SUBSESSIONS_PAGE + 1 - i))
+    await render({ showFinished: false })
+    expect(last()).toMatchObject({ finished: 0 })
+    await click(buttons('Show more')[0])
+    expect(rows()).toHaveLength(SUBSESSIONS_PAGE + 1)
+    expect(buttons('Show more')).toHaveLength(0)
+  })
+
   it('draws only open rows by default, and still counts the finished ones for the toggle', async () => {
     wire.pages = [page([row({ sessionId: 'child-2', state: 'done', canStop: false }), row()])]
     await render({ showFinished: false })
