@@ -861,6 +861,7 @@ import {
   type MemoryLayerChoice,
   type MemoryPlace,
   type PlaceAudience,
+  withholdsPeople,
   type ResolvedMemoryLayer
 } from './memory/layers.js'
 import {
@@ -4698,8 +4699,10 @@ export class Daemon {
         const { scope } = await this.memoryLayerFor(place)
         // People is left out of the standing index where outsiders may be present, as the record's audience rule says (§5.16).
         if (!this.organizationRecordFor(agentId)) return scope
-        const audience = await this.memoryLayers.audienceOf(place).catch(() => ({ external: true }))
-        return { ...scope, withOutsiders: audience.external }
+        const audience = await this.memoryLayers
+          .audienceOf(place)
+          .catch((): PlaceAudience => ({ layer: 'place', external: true }))
+        return { ...scope, withOutsiders: withholdsPeople(audience) }
       },
       memoryGuidanceFor: (agentId, msg, integrationId, rec) => this.memoryGuidanceFor(agentId, msg, integrationId, rec),
       store: this.store,
@@ -9743,7 +9746,9 @@ export class Daemon {
     if (isResearchCoordinate(ctx.thread)) return false
     const key = this.sessionKeyOf(ctx)
     const place = this.memoryPlaceOf(ctx.agentId, ctx, await this.store.getSession(key), this.liveTurn(ctx)?.msg)
-    return (await this.memoryLayers.audienceOf(place).catch(() => ({ external: true }))).external
+    return withholdsPeople(
+      await this.memoryLayers.audienceOf(place).catch((): PlaceAudience => ({ layer: 'place', external: true }))
+    )
   }
 
   /** How a session of a record-backed agent sees the record: People withheld with outsiders or an unknown audience, and who its writes come from. */
@@ -9755,7 +9760,7 @@ export class Daemon {
     if (isResearchCoordinate(ctx.thread)) return { withOutsiders: false, recordWriter: 'research' }
     const audience = await this.conversationAudience(ctx, key)
     return {
-      withOutsiders: audience.external,
+      withOutsiders: withholdsPeople(audience),
       recordWriter: isFirstLookCoordinate(ctx.thread)
         ? 'first-look'
         : audience.layer === 'person'

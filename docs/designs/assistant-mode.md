@@ -3120,10 +3120,13 @@ smallest choice made for it:
 - **Writer kinds**: research, a first look, a person's own conversation (`person`) and any other
   conversation (`conversation`). The daily leaving sweep writes as `conversation`, and a person's
   relinking as `person`.
-- **Who reads People.** A session's `withOutsiders` is its conversation's audience as the memory
-  layers read it, one not yet known counting as outsiders and research never; where it holds, and
-  where People is not visible to the agent (its readers left the agent out), People is left out of
-  the listing and the index and a read of it is refused with one line.
+- **Who reads People.** People is read only where the audience is confirmed to be the
+  organization's: a DM, webchat or the console, a pass that is no conversation, research, or a
+  channel whose platform answered that it is not shared and that holds no known guest. Anywhere
+  else (people from outside, a group DM, a channel whose sharing no lookup has answered yet, as
+  right after a restart) it is withheld, and so is it where People is not visible to the agent
+  (its readers left the agent out): left out of the listing and the index, and a read of it
+  refused with one line.
 - **The index lines** are synthesized on every read of the shared index, never stored:
   `- [About](organization.md) — <the summary's first line>`, Channels with its count of places,
   People with its count of people. The generated index the store writes leaves the three names

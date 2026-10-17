@@ -6,7 +6,14 @@ import { join } from 'node:path'
 import type { SourcePlace } from '../src/assistant/place-access.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
-import { MemoryLayers, layerOfPlace, personId, type MemoryLayerDeps, type MemoryPlace } from '../src/memory/layers.js'
+import {
+  MemoryLayers,
+  layerOfPlace,
+  personId,
+  withholdsPeople,
+  type MemoryLayerDeps,
+  type MemoryPlace
+} from '../src/memory/layers.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
 import { listChannelMemoryKeys, memoryChannelKey, memoryPersonKey, readChannelMemoryMeta } from '../src/memory/store.js'
@@ -124,6 +131,21 @@ describe('which layer a place uses', () => {
       }
     })
     expect((await failing.resolve(place({ channel: 'C9' }))).layer).toBe('place')
+  })
+
+  it('withholds People where the audience is unconfirmed, and reads it where the platform answered or in a DM', async () => {
+    const { layers: l } = layers({ described: { C1: PUBLIC, C2: { kind: 'channel', private: true } } })
+    const failing = new MemoryLayers({
+      ...(l as unknown as { deps: MemoryLayerDeps }).deps,
+      describe: async () => {
+        throw new Error('platform unreachable')
+      }
+    })
+    expect(withholdsPeople(await l.audienceOf(place({ channel: 'C1' })))).toBe(false)
+    expect(withholdsPeople(await l.audienceOf(place({ channel: 'C2' })))).toBe(true)
+    expect(withholdsPeople(await failing.audienceOf(place({ channel: 'C9' })))).toBe(true)
+    expect(withholdsPeople(await failing.audienceOf(place({ channel: 'D1', kinds: ['dm'] })))).toBe(false)
+    expect(withholdsPeople(await l.audienceOf(place({ channel: 'G1', kinds: ['group_dm'] })))).toBe(true)
   })
 })
 
