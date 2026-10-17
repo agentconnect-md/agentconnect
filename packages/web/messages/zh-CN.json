@@ -4340,6 +4340,8 @@
       "emptyChannels": "暂无频道记录",
       "emptyPeople": "暂无人员记录",
       "places": "{count, plural, other {# 个频道}}",
+      "placesRead": "{places} · 已读 {read} 个",
+      "notReadYet": "还没读过",
       "people": "{count, plural, other {# 人}}",
       "summary": "概述",
       "self": "本人",

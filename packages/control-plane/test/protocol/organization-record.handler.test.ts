@@ -83,7 +83,7 @@ describe('the organization record over the daemon connection', () => {
     expect(read.type).toBe('knowledge/record/ok')
     expect(read.payload).toMatchObject({ revision: 1, content: '# Channels', optOut: [] })
 
-    const content = '# Channels\n#release: release trains and freezes (#release, 2026-10-17)\n'
+    const content = '# Channels\n- [slack] release: release trains and freezes (#release, 2026-10-17)\n'
     const write = (baseRevision: number, text = content, extra: object = {}) =>
       ask('knowledge/record/write', {
         agentId,
@@ -99,7 +99,7 @@ describe('the organization record over the daemon connection', () => {
     const revision = await prisma.organizationKnowledgeRevision.findFirstOrThrow({ where: { revision: 2 } })
     expect(revision).toMatchObject({ source: 'agent', sourceAgentId: agentId, writerKind: 'first_look' })
 
-    const stale = await write(1, `${content}#ops: incidents (#ops, 2026-10-17)\n`)
+    const stale = await write(1, `${content}- [slack] ops: incidents (#ops, 2026-10-17)\n`)
     expect(stale.type).toBe('knowledge/record/conflict')
     expect(stale.payload).toMatchObject({ revision: 2, content })
 

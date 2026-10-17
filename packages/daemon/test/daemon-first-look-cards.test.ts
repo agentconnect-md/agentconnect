@@ -345,8 +345,8 @@ describe('a first look’s report round on a platform with cards', () => {
     // The task's own memory writes land in the organization record, each checked against its file's shape.
     behavior.look = async (ctx) => {
       for (const text of [
-        '#release-train: release decisions\n',
-        '#release-train: release decisions (#release-train, 2026-10-17)\n'
+        '- [slack] release-train: release decisions\n',
+        '- [slack] release-train: release decisions (#release-train, 2026-10-17)\n'
       ])
         outcomes.push(
           await executeTool(ctx, 'createMemoryEntry', { label: 'channels', text }, deps).catch(
@@ -356,13 +356,17 @@ describe('a first look’s report round on a platform with cards', () => {
     }
     await look()
     expect(outcomes).toEqual([
-      expect.stringContaining('INVALID_ARGUMENT: channels.md line 1 "#release-train: release decisions" does not end'),
+      expect.stringContaining(
+        'INVALID_ARGUMENT: channels.md line 1 "- [slack] release-train: release decisions" does not end'
+      ),
       expect.objectContaining({ state: 'completed', layer: 'shared' })
     ])
-    expect(record.get('channels.md')?.content).toBe('#release-train: release decisions (#release-train, 2026-10-17)\n')
+    expect(record.get('channels.md')?.content).toBe(
+      '- [slack] release-train: release decisions (#release-train, 2026-10-17)\n'
+    )
     const textOf = (msg: NormalizedMessage) => msg.turnBody?.prompt ?? msg.text ?? ''
     const task = textOf(dispatched.find((c) => textOf(c.msg).includes(LOOK_OPENING))!.msg)
-    expect(task).toContain('- channels.md: one line for this place, linking the file above:')
+    expect(task).toContain('- channels.md: one line for this place, "- [slack] <name>: what it is for')
     expect(task).toContain('- organization.md: only what this place shows about the organization as a whole')
     expect(task).toContain('updateMemoryEntry and that revision')
     // It still runs in the runtime's read-only mode, told that its memory writes and recordCheck are not edits it forbids.

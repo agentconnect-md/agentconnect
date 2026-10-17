@@ -15,6 +15,9 @@ export const ORGANIZATION_MAX_BYTES = 16 * 1024
 export const MEMBER_FIELDS = ['Role', 'Works on', 'Knows about', 'Ask about'] as const
 export type MemberField = (typeof MEMBER_FIELDS)[number]
 export const MEMBER_ENTRY_LINES = 10
+/** The platform ids a channels.md line may name: the chat platforms whose rooms an agent is in. */
+export const CHANNEL_PLATFORMS = ['slack', 'telegram', 'discord', 'feishu', 'googlechat', 'qq'] as const
+export type ChannelPlatform = (typeof CHANNEL_PLATFORMS)[number]
 
 /** Who a fact line rests on: an internal place, a knowledge entry, a repository, the person themself, or a web page. */
 export type FactSource =
@@ -44,9 +47,15 @@ export interface MemberEntry {
   facts: (FactLine & { field: MemberField })[]
 }
 
+/** One channels.md line: its platform, the place's name without a sigil, and its purpose as `text`. */
+export interface ChannelLine extends FactLine {
+  platform: ChannelPlatform
+  channel: string
+}
+
 export type ParsedOrganizationFile =
   | { file: typeof ORGANIZATION_FILE; facts: FactLine[] }
-  | { file: typeof CHANNELS_FILE; channels: (FactLine & { channel: string })[] }
+  | { file: typeof CHANNELS_FILE; channels: ChannelLine[] }
   | { file: typeof MEMBERS_FILE; entries: MemberEntry[] }
 
 export type OrganizationFileParse = { ok: true; parsed: ParsedOrganizationFile } | { ok: false; refusal: string }
@@ -159,20 +168,42 @@ function parseOrganization(text: string): FactLine[] {
   return facts
 }
 
-function parseChannels(text: string): (FactLine & { channel: string })[] {
-  const channels: (FactLine & { channel: string })[] = []
+const CHANNEL_SHAPE =
+  '"- [<platform>] <name>: what it is for (<source>, <YYYY-MM-DD>)", e.g. "- [slack] release-train: release decisions (#release-train, 2026-10-17)"'
+
+function parseChannels(text: string): ChannelLine[] {
+  const channels: ChannelLine[] = []
   const lines = new Map<string, number>()
   for (const { line, content } of untitled(bodyLines(text))) {
     if (content.trim() === '') continue
-    const place = /^#([^\s:#][^:]*?)\s*:\s+\S/.exec(content)
-    if (!place)
-      throw lineError(line, content, 'is not one place\'s line, "#name: what it is for (<source>, <YYYY-MM-DD>)"')
-    const key = place[1]!.toLowerCase()
+    const place = /^- \[([^\]\n]*)\]\s+(\S[^:]*?)\s*:\s+(\S.*)$/.exec(content.trim())
+    if (!place) throw lineError(line, content, `is not one place's line, ${CHANNEL_SHAPE}`)
+    const [, platform, name, rest] = place
+    if (!(CHANNEL_PLATFORMS as readonly string[]).includes(platform!))
+      throw lineError(
+        line,
+        content,
+        `names "[${platform}]", which is no platform; a place's platform is one of ${CHANNEL_PLATFORMS.join(', ')}`
+      )
+    if (/^[#@]/.test(name!))
+      throw lineError(
+        line,
+        content,
+        `writes "${name}" with a sigil; write the name as the platform shows it, without "${name![0]}"`
+      )
+    const key = `${platform}:${name!.toLowerCase()}`
     const earlier = lines.get(key)
     if (earlier !== undefined)
-      throw lineError(line, content, `repeats #${place[1]} from line ${earlier}; keep one line per place`)
+      throw lineError(line, content, `repeats ${name} on ${platform} from line ${earlier}; keep one line per place`)
     lines.set(key, line)
-    channels.push({ ...fact(line, content), channel: place[1]! })
+    const parsed = fact(line, content, rest!)
+    // A purpose left ending in a dash, as by a removed link, reads as cut off, so the dash is dropped.
+    channels.push({
+      ...parsed,
+      text: parsed.text.replace(/\s+[-–—]+$/, ''),
+      platform: platform as ChannelPlatform,
+      channel: name!
+    })
   }
   return channels
 }

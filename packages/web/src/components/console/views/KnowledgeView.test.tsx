@@ -518,7 +518,11 @@ describe('organization knowledge surface', () => {
       research: { agentId: 'agent-atlas', researchedAt: '2026-10-17T09:00:00.000Z', runningSince: null },
       entries: [
         entry('organization', 'About', '# About\nExample Org builds release tooling (#general, 2026-10-17)'),
-        entry('channels', 'Channels', '# Channels\n#release: release trains (#release, 2026-10-17)'),
+        entry(
+          'channels',
+          'Channels',
+          '# Channels\n- [slack] release: release trains (#release, 2026-10-17)\n- [slack] ops: incidents (#ops, 2026-10-17) (inferred)'
+        ),
         entry('people', 'People', '# People', ['agent-atlas', 'agent-beta'])
       ]
     }
@@ -535,7 +539,7 @@ describe('organization knowledge surface', () => {
     expect(content).toContain('Handbook')
     expect(content).toContain('by Atlas')
     expect(content.indexOf('Handbook')).toBeLessThan(content.indexOf('Library'))
-    expect(content).toContain('1 place')
+    expect(content).toContain('2 places · 1 read')
     expect(content).toContain('0 people')
     expect(content).toContain('2 agents')
     expect(content).toContain('No agents')

@@ -4,9 +4,15 @@
 
 import { useId, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { parseOrganizationFile, type FactLine, type FactSource } from '@agentconnect.md/protocol/organization-files'
+import {
+  parseOrganizationFile,
+  type ChannelLine,
+  type FactLine,
+  type FactSource
+} from '@agentconnect.md/protocol/organization-files'
 import { fmtDate, type KnowledgeKind, type OrganizationRecordDto } from '@/lib/api'
 import { agentLabel } from '@/lib/data'
+import { chatPlaceName } from '@/lib/platform-labels'
 import { useConsoleData } from '@/lib/data-context'
 import { PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -35,7 +41,7 @@ export function useRecordName(): (kind: RecordKind) => string {
   return (kind) => t(`names.${kind}`)
 }
 
-/** About's first summary line, Channels' count of places, People's count of entries. */
+/** About's first summary line, Channels' count of places and how many were read, People's count of entries. */
 export function useRecordSummary(): (kind: RecordKind, content: string) => string {
   const t = useTranslations('Knowledge.handbook')
   return (kind, content) => {
@@ -43,7 +49,11 @@ export function useRecordSummary(): (kind: RecordKind, content: string) => strin
     if (!parsed.ok) return t('unreadable')
     const p = parsed.parsed
     if (p.file === 'organization.md') return p.facts[0]?.text.replace(/^\s*[-*]\s+/, '') ?? t('emptyAbout')
-    if (p.file === 'channels.md') return t('places', { count: p.channels.length })
+    if (p.file === 'channels.md') {
+      const read = p.channels.filter((channel) => !channel.inferred).length
+      const places = t('places', { count: p.channels.length })
+      return read < p.channels.length ? t('placesRead', { places, read }) : places
+    }
     return t('people', { count: p.entries.length })
   }
 }
@@ -64,8 +74,8 @@ export function useResearchStatus(): (research: OrganizationRecordDto['research'
   }
 }
 
-/** A fact's source as a chip: a channel, a knowledge title, a repository, the person themself, or a web host. */
-export function SourceChip({ source, date }: { source: FactSource; date: string }) {
+/** A fact's source as a chip, with its date when given: a channel, a knowledge title, a repository, the person themself, or a web host. */
+export function SourceChip({ source, date }: { source: FactSource; date?: string }) {
   const t = useTranslations('Knowledge.handbook')
   const label =
     source.kind === 'channel'
@@ -82,9 +92,11 @@ export function SourceChip({ source, date }: { source: FactSource; date: string 
       <span className="badge block min-w-0 max-w-[220px] truncate bg-(--surface-sunken) text-[10.5px] text-(--text-secondary)">
         {label}
       </span>
-      <span className="flex-none font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-        {date}
-      </span>
+      {date && (
+        <span className="flex-none font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+          {date}
+        </span>
+      )}
     </span>
   )
 }
@@ -158,36 +170,64 @@ export function AboutView({ content }: { content: string }) {
   )
 }
 
-/** Channels as a list: the platform mark, the name, the purpose and its source. */
+/** Channels as a list: the places read first, then those not read yet; each row its platform mark, name, purpose and a source chip only when another place is the source. */
 export function ChannelsView({ content }: { content: string }) {
   const t = useTranslations('Knowledge.handbook')
-  const { integrations } = useConsoleData()
   const parsed = parseOrganizationFile('channels.md', content)
   if (!parsed.ok || parsed.parsed.file !== 'channels.md') return null
-  // The file names no platform; the mark shows when the organization chats on one platform alone.
-  const platforms = [...new Set(integrations.map((integration) => integration.platform))]
-  const platform = platforms.length === 1 ? platforms[0] : undefined
-  if (parsed.parsed.channels.length === 0) return <Empty text={t('emptyChannels')} />
+  const channels = parsed.parsed.channels
+  if (channels.length === 0) return <Empty text={t('emptyChannels')} />
+  const read = channels.filter((channel) => !channel.inferred)
+  const notRead = channels.filter((channel) => channel.inferred)
+  return (
+    <div className="flex flex-col gap-4">
+      {read.length > 0 && <ChannelRows channels={read} />}
+      {notRead.length > 0 && (
+        <section>
+          <div className="mb-1 font-sans text-[11px] font-semibold uppercase leading-normal tracking-[0.04em] text-(--text-tertiary)">
+            {t('notReadYet')}
+          </div>
+          <ChannelRows channels={notRead} />
+        </section>
+      )}
+    </div>
+  )
+}
+
+function ChannelRows({ channels }: { channels: ChannelLine[] }) {
   return (
     <div className="flex flex-col">
-      {parsed.parsed.channels.map((channel) => (
+      {channels.map((channel) => (
         <div
           key={channel.line}
+          title={channel.date}
           className="flex items-start gap-3 border-b border-(--border-subtle) py-[9px] last:border-b-0"
         >
-          <span className="mt-[2px] flex h-5 w-5 flex-none items-center justify-center">
-            {platform ? <PlatformMark platform={platform} /> : <Icon name="hash" size={14} />}
+          <span className="mt-px flex h-5 w-5 flex-none items-center justify-center">
+            <PlatformMark platform={channel.platform} />
           </span>
-          <div className="min-w-0 flex-1">
-            <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-              #{channel.channel}
+          <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1">
+            <div className="min-w-0 flex-1 basis-[240px]">
+              <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                {chatPlaceName(channel.platform, channel.channel)}
+              </div>
+              <div className="font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
+                {channel.text}
+              </div>
             </div>
-            <Fact fact={channel} text={channel.text.replace(/^#[^:]*:\s*/, '')} />
+            {!fromItself(channel) && <SourceChip source={channel.source} />}
           </div>
         </div>
       ))}
     </div>
   )
+}
+
+const placeKey = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+
+/** Whether a channel's purpose was read in that same place, which a chip would only repeat. */
+function fromItself(channel: ChannelLine): boolean {
+  return channel.source.kind === 'channel' && placeKey(channel.source.name) === placeKey(channel.channel)
 }
 
 export interface PeopleActions {

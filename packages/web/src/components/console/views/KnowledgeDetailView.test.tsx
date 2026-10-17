@@ -303,6 +303,36 @@ describe('knowledge entry page', () => {
     expect(labels.some((label) => label.includes('Clear'))).toBe(true)
   })
 
+  it('lists Channels by platform, read places first, with a source chip only where another place is the source', async () => {
+    const channels = {
+      ...ENTRY,
+      kind: 'channels' as const,
+      title: 'Channels',
+      content: [
+        '# Channels',
+        '- [slack] ops: incidents (#ops, 2026-10-12) (inferred)',
+        '- [slack] release: release trains and freezes — (#release, 2026-10-17)',
+        '- [telegram] Field Team: site visits (#release, 2026-10-16)'
+      ].join('\n')
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/revisions') ? [] : channels))
+    )
+    await render()
+    await settleUntil(() => host.textContent?.includes('release trains and freezes') === true)
+    const rows = [...host.querySelectorAll('[title^="2026-"]')]
+    expect(rows.map((row) => row.getAttribute('title'))).toEqual(['2026-10-17', '2026-10-16', '2026-10-12'])
+    // Slack writes a place with "#", Telegram without; a chip shows only for a source other than the place itself.
+    expect(rows[0]!.textContent).toBe('#releaserelease trains and freezes')
+    expect(rows[1]!.textContent).toBe('Field Teamsite visits#release')
+    expect(rows[2]!.textContent).toBe('#opsincidents')
+    const content = host.textContent ?? ''
+    expect(content.indexOf('Not read yet')).toBeGreaterThan(content.indexOf('site visits'))
+    expect(content.indexOf('Not read yet')).toBeLessThan(content.indexOf('incidents'))
+    expect(content).not.toContain('inferred')
+  })
+
   it("puts Edit and Remove on the caller's own People card only, and writes it through its own route", async () => {
     mocks.role = 'collaborator'
     const people = {

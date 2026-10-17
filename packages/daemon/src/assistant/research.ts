@@ -113,7 +113,9 @@ something; where two internal sources disagree, keep the newer.
   customers", "## How it works" (teams and what each owns, tools, where decisions and docs
   live) and "## Repositories and systems" (each repository you could read, what it is for,
   its system). Merge into what is there; at most 16 KB.
-- channels.md: one line per channel, "#name: what it is for (source, date)"; add which
+- channels.md: one line per channel, "- [<platform>] <name>: what it is for (source, date)",
+  <platform> as listChannels returns it and <name> as the platform shows it, with no "#", e.g.
+  "- [slack] release-train: release decisions (#release-train, 2026-10-17)"; add which
   repository a channel's release talk maps to, marked (inferred). Where a line's purpose was
   guessed from the channel's name and you read the channel, replace it with what the channel
   itself shows, sourced "(#name, date)", without (inferred).

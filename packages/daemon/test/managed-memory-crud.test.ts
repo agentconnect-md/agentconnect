@@ -279,7 +279,7 @@ describe('common managed entry mutations', () => {
     })
     await expect(api.create({ label: 'channels', text: '#ops\n' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
     expect(f.commits).toHaveLength(0)
-    const created = await api.create({ label: 'channels', text: '#ops: incidents (#ops, 2026-10-15)\n' })
+    const created = await api.create({ label: 'channels', text: '- [slack] ops: incidents (#ops, 2026-10-15)\n' })
     const { ref, revision } = created.entry!
     await expect(
       api.update({ ref, revision, edit: { oldText: ' (#ops, 2026-10-15)', newText: '' } })

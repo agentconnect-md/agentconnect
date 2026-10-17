@@ -4340,6 +4340,8 @@
       "emptyChannels": "No channels recorded yet",
       "emptyPeople": "No one recorded yet",
       "places": "{count, plural, one {# place} other {# places}}",
+      "placesRead": "{places} · {read} read",
+      "notReadYet": "Not read yet",
       "people": "{count, plural, one {# person} other {# people}}",
       "summary": "Summary",
       "self": "self",

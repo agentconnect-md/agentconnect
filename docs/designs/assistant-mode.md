@@ -1501,9 +1501,9 @@ it:
 ```text
 2. Three shared files every conversation reads. Give each a description header when you
    create it, so MEMORY.md lists it:
-   - channels.md: one line for this place, linking the file above: "#name: what it is for —
-     [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]]
-     (#release-train, 2026-10-17)". This place's later sessions find its notes through that link.
+   - channels.md: one line for this place, "- [{platform}] <name>: what it is for (#<name>, date)",
+     its name as the platform shows it with no "#", e.g. "- [{platform}] release-train: release
+     decisions (#release-train, 2026-10-17)".
    - organization.md: only what this place shows about the organization as a whole that the
      file does not already say: what it builds or does, its products and customers, teams, stated
      goals and priorities, key systems, and terms people use. Merge it into its sections, not as
@@ -2374,7 +2374,7 @@ recommended).
 | File              | Holds                                                                                                                   | Written by                                                                                               |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `organization.md` | a summary of at most ten lines first, then products and customers, how the organization works, repositories and systems | first looks and research; a public channel's session on a person's turn; owners on the Knowledge page    |
-| `channels.md`     | one line per place the agent is in, `#name: what it is for` (#3074)                                                     | first looks; research adds the repository a place's release talk maps to, as "(inferred)"                |
+| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | first looks; research adds the repository a place's release talk maps to, as "(inferred)"                |
 | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                                    | first looks and research; a public channel's session on a person's turn; the person, for their own entry |
 
 - **Where.** The organization record (§5.16): an assistant-mode agent's sessions read and write
@@ -2407,8 +2407,12 @@ recommended).
     the sections `## Products and customers`, `## How it works` and `## Repositories and systems`,
     each at most once, in any order, any of them missing. Every other line is a fact line, a
     leading `- ` or `* ` allowed. Any other heading is refused. At most 16 KB.
-  - **`channels.md`**: each line `#name: what it is for (<source>, <date>)`, one per place, names
-    compared without case.
+  - **`channels.md`**: each line `- [<platform>] <name>: what it is for (<source>, <date>)`, one per
+    place. `<platform>` is the platform id the platform modules use (`slack`, `telegram`,
+    `discord`, `feishu`, `googlechat` or `qq`), and `<name>` is the place's name as the platform
+    shows it, with no sigil; an unknown platform and a name starting with `#` or `@` are refused.
+    A place is its platform and its name, the name compared without case. A trailing dash on the
+    purpose is dropped when the line is read.
   - **`members.md`**: entries only, each `## <display name> (<handles>)` with its handles separated
     by commas, then at most ten lines, each starting with `Role:`, `Works on:`, `Knows about:` or
     `Ask about:` and ending as a fact line.
@@ -2824,7 +2828,7 @@ first entry **About**; this design keeps "the organization record" as its term f
 | Entry    | Written as        | Holds                                                                                                       | Visibility                                                                 | Audience rule                                                                |
 | -------- | ----------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | About    | `organization.md` | a summary of at most ten lines, then products and customers, how it works, repositories and systems (§5.15) | `all`, fixed                                                               | none                                                                         |
-| Channels | `channels.md`     | one line per place, `#name: what it is for`, purposes only (§5.15)                                          | `all`, fixed                                                               | none                                                                         |
+| Channels | `channels.md`     | one line per place, `- [<platform>] <name>: what it is for`, purposes only (§5.15)                          | `all`, fixed                                                               | none                                                                         |
 | People   | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                        | `selected`: the organization's assistant-mode agents, until edited by hand | withheld in a conversation with people from outside, whatever its visibility |
 
 - **One set per organization**, not per agent. Every assistant-mode agent writes the same three
@@ -2835,7 +2839,7 @@ first entry **About**; this design keeps "the organization record" as its term f
 - **Channels keeps purposes only** (_decided_). Its lines name no agent's place files: those
   stay in each agent's memory, written by its own first looks, and the `[[name]]` link a first
   look adds today is dropped from the record's line. A line reads
-  `#release: release trains and freezes (#release, 2026-10-17)`.
+  `- [slack] release: release trains and freezes (#release, 2026-10-17)`.
 
 **Knowledge entries gain agent visibility** (_decided_).
 
@@ -2954,7 +2958,8 @@ there; the Memory page does not show them (Console, below).
   agent ran it ("Researched 17 Oct by Atlas", "Research running since 14:05", or "Not researched
   yet" when the record is empty); then three quiet rows, each with an icon, the entry's name, a
   one-line summary, its visibility cell and when it was last updated. The summary is
-  About's first summary line, Channels' count of places, and People's count of entries.
+  About's first summary line, Channels' count of places with how many were read ("31 places · 3
+  read") while some were not, and People's count of entries.
 - **Library** below it, with the Suggestions tab beside its own on its heading row and the table
   under it, as the page is today; Suggestions stays inside the Library group.
 - **Every row in both groups has a visibility cell**: "All agents", or up to three agent marks
@@ -2970,8 +2975,10 @@ there; the Memory page does not show them (Console, below).
 - **About** is rendered by section: the summary, then each `##` section, every line as
   text with its source as a chip (`#release`, a knowledge title, a repository path, a web address
   shortened to its host) and its date; an inferred line is dimmed and tagged "inferred".
-- **Channels** is a list: the platform mark, the channel's name, its purpose, and the source chip
-  or the inferred tag.
+- **Channels** is a list: the platform mark, the place's name as its platform writes it, its
+  purpose, and the source chip only when another place is the source. The places read come
+  first; those whose purpose is guessed from the name (`(inferred)`) follow under "Not read yet",
+  with no tag. The date is the row's hover title.
 - **People** is cards: display name, handles, and the four fields with their sources. A person's
   own card carries Edit and Remove; removing it is the opt-out (§5.17). Nobody else's card shows
   an edit control to them.
@@ -3156,8 +3163,9 @@ smallest choice made for it:
   last research revision, "Researched 17 Oct" alone once the claiming agent is gone, "Research
   running since 14:05" while a research session runs, and "Not researched yet". Before any agent
   is switched on, the group says the record is written once one is.
-- **Channels' platform mark.** The file names no platform, so a channel carries the platform's mark
-  only when the organization's integrations are on one chat platform, and `#` otherwise.
+- **Channels' platform mark.** Each line names its platform (seventy-fifth revision), so every row
+  carries that platform's mark and its naming; before it, the file named none and rows showed `#`
+  unless the organization chatted on one platform alone.
 - **Owner edits** of About and Channels are one text editor over the whole entry, not line by
   line; the Control Plane's shape refusal names the failing line and the editor shows it under
   the text. On People an owner edits or clears one card at a time in the same editor, and Clear on
@@ -4367,3 +4375,14 @@ People open as file views with source chips, inferred tags and People's cards, e
 one text editor whose refusals name the line and by each person on their own card. The agent page
 gains a Knowledge tab beside Tools, and the Memory page's directory card, list and routes and the
 `memory/member/clear` frame are retired.
+
+**Seventy-fifth revision (2026-10-18)**: a `channels.md` line names its platform (issue #2810;
+§5.15 "Shapes", §5.16 "File views"). A line is now `- [<platform>] <name>: what it is for
+(<source>, <date>)`, the name as the platform shows it with no sigil, and the shape check refuses
+an unknown platform, a leading sigil and the old `#name:` line; the first look's and research's
+prompts teach it, and a trailing dash on a purpose is dropped when read. The console's Channels
+view shows each row's platform mark and naming, shows the source chip only when another place is
+the source, moves the date to the row's hover title, and lists the places guessed from their name
+last under "Not read yet" instead of tagging each one; the Handbook row adds how many places were
+read. Nothing was released, so earlier lines are not migrated: the next first look or research
+round rewrites them.
