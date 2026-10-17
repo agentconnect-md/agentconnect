@@ -63,6 +63,7 @@ import {
   type MemoryFs
 } from '../memory/store.js'
 import type { MemoryHomePorts } from '../memory/home.js'
+import { organizationFileRefusal } from '../memory/organization-files.js'
 import type { MemoryAdminSurface, MemoryScope } from '../memory/provider.js'
 
 /** Unknown-agent violation → `BAD_PAYLOAD` on the wire (path escapes surface as
@@ -268,6 +269,9 @@ export function createMemoryReader(
 
     async write(req) {
       const surface = requireFileSurface(req.agentId)
+      // The shared layer's organization files keep their shapes on the Memory page too (assistant-mode.md §5.15).
+      const refusal = req.channelKey ? undefined : organizationFileRefusal(req.path, req.content)
+      if (refusal !== undefined) throw new MemoryViolationError(refusal)
       const { size, mtime } = await surface.write(
         scopeFor(req.agentId, req.channelKey),
         req.path,

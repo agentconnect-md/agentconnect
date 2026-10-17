@@ -11,6 +11,7 @@ import type { LocalStore } from '../store/local-store.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { MemoryEntriesError } from '../memory/entries/contract.js'
 import { MemoryHomeUnavailableError } from '../memory/fs.js'
+import { organizationFileRefusal } from '../memory/organization-files.js'
 
 export function createMemoryEntriesReader(
   provider: MemoryProvider,
@@ -70,7 +71,12 @@ export function createMemoryEntriesWriter(
         store,
         scope: { agentId: req.agentId, ...(req.channelKey ? { channelKey: req.channelKey } : {}) },
         canRead: () => canWrite(req.agentId),
-        write: { source: 'console', canWrite: () => canWrite(req.agentId) }
+        // A console write with no place layer lands in the shared one, where the organization files keep their shapes.
+        write: {
+          source: 'console',
+          canWrite: () => canWrite(req.agentId),
+          ...(req.channelKey ? {} : { check: organizationFileRefusal })
+        }
       })
       const result = await entries[req.operation](req.request)
       return { operation: 'completed', result }

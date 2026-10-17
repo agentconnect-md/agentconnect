@@ -4707,7 +4707,7 @@ export class Daemon {
         let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const check = isCheckCoordinate(thread)
-        // A first look (§5.13) gets only its own place's reads, memory reads and recordCheck.
+        // A first look (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
         if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
         else if (check) tools = checkTools(tools)
         // Collaboration Arena §6: game-owned structured action tools, appended
@@ -9745,7 +9745,7 @@ export class Daemon {
     if (!output.trim()) return
     // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
     const rec = session ? await this.store.getSession(session.key) : undefined
-    // A first look's own session feeds no memory; only what its place's long session writes does (assistant-mode.md §5.13).
+    // A first look's own session feeds no capture; memory gets only what it writes explicitly (assistant-mode.md §5.15).
     if (isFirstLookCoordinate(rec?.thread)) return
     const placed = await this.memoryLayerOfSession(agentId, rec, msg)
     if (!placed) return

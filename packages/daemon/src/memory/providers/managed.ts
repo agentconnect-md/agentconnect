@@ -26,6 +26,7 @@ import {
 import { sidecarMemoryHistory, type MemoryHomePorts } from '../home.js'
 import { buildDistillationPrompt } from '../distill.js'
 import { memoryRefToTopic } from '../frontmatter.js'
+import type { MemoryTextCheck } from '../organization-files.js'
 import type {
   FileMemoryAdmin,
   MemoryExtractor,
@@ -102,14 +103,14 @@ export class ManagedMemoryProvider implements MemoryProvider {
     return disabledRuntimeMemoryEnv(runtime, effectiveEnv, runtimeId)
   }
 
-  entryView(scope: MemoryScope, writeSource?: MemoryWriteSource) {
+  entryView(scope: MemoryScope, writeSource?: MemoryWriteSource, check?: MemoryTextCheck) {
     // A staged draft logs to the sidecar inside it; a live root pages the home's own change log.
     const historyFor = (root: MemoryFs) =>
       scope.root ? sidecarMemoryHistory(root) : this.portsFor(scope.agentId).historyFor(root)
     return managedMemoryEntries(
       this.readRoots(scope),
       scope.agentId,
-      writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId } : undefined,
+      writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId, ...(check ? { check } : {}) } : undefined,
       historyFor,
       () => this.landed(scope)
     )

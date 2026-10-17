@@ -1,5 +1,5 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
-import type { MemoryScope } from '../../memory/types.js'
+import type { MemoryLayerChoice, MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type {
   PlatformCanvas,
@@ -240,6 +240,8 @@ export interface SessionContext {
     /** Constrain topic filenames beyond the store's own path rules. A dream keeps the
      *  lowercase-kebab shape its proposal format always enforced. */
     topicPattern?: RegExp
+    /** The layer this binding's store is, for checks that depend on it; a session bound to the shared layer names "shared". */
+    layer?: MemoryLayerChoice
   }
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
    *  platform-neutral `sendMessage` tool route to ANY connected platform,
