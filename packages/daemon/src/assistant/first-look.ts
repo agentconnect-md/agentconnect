@@ -39,6 +39,13 @@ const FIRST_LOOK_READ_TOOLS = new Set([
 // Its memory writes (§5.15): the place's topic file, and the organization files where its layer is the shared one; never a delete.
 const FIRST_LOOK_WRITE_TOOLS = new Set(['writeMemory', 'createMemoryEntry', 'updateMemoryEntry'])
 
+// A check runs in the runtime's read-only mode (§5.12), whose reminder reads as forbidding every write, so name the outputs it leaves alone.
+const OUTPUTS = [...FIRST_LOOK_WRITE_TOOLS, 'recordCheck']
+const READ_ONLY_MODE_OUTPUTS = `This session runs under a read-only or plan permission mode, which restricts your native
+shell and file tools only. ${OUTPUTS.slice(0, -1).join(', ')} and ${OUTPUTS.at(-1)}
+are AgentConnect tools and this task's outputs, not edits the mode forbids: call them
+directly, since no one is here to approve a plan.`
+
 /** A first look's `recordCheck`: same name and handler as a check's, its report going to the place's long session. */
 export const FIRST_LOOK_RECORD_CHECK_TOOL: ToolDescriptor = {
   name: 'recordCheck',
@@ -165,6 +172,8 @@ export function firstLookPrompt(input: FirstLookPrompt): string {
   return `You are taking a first look at ${input.place}, a ${input.kind} ${how}. Read it, write
 what you learned to memory, and report back. You cannot post or react: only your memory writes
 and your report leave this task.
+
+${READ_ONLY_MODE_OUTPUTS}
 
 Read, newest first, until you have the last ${FIRST_LOOK_DAYS} days or ${FIRST_LOOK_MAX_MESSAGES} messages, whichever
 is less: the description, topic, pinned messages and bookmarks; every top-level message; the

@@ -20,6 +20,7 @@ import { PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.
 import type { RoutingRule } from '../src/router/routing-rule.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { MEMBER_FIELDS, ORGANIZATION_SECTIONS } from '../src/memory/organization-files.js'
+import { MEMORY_TOOL_ACCESS_MODES } from '../src/mcp/ops/memory.js'
 
 const ON = { assistantMode: { enabled: true } }
 const OFF = { assistantMode: { enabled: false } }
@@ -182,6 +183,25 @@ describe('the prompts', () => {
     expect(firstLookPrompt({ ...facts, requested: true })).toContain('a public channel you are in. Read it')
   })
 
+  it('keeps the read-only mode and names every write it may make, and recordCheck, as outputs that mode leaves alone', () => {
+    // Every memory write the tool filter keeps, plus recordCheck: what a plan-mode reminder must not talk it out of.
+    const outputs = firstLookTools(Object.keys(MEMORY_TOOL_ACCESS_MODES).map(tool))
+      .map((t) => t.name)
+      .filter((name) => MEMORY_TOOL_ACCESS_MODES[name] !== 'read')
+    expect(outputs).toEqual(['createMemoryEntry', 'updateMemoryEntry', 'writeMemory', 'recordCheck'])
+    for (const shared of [false, true]) {
+      const prompt = flat(firstLookPrompt({ ...facts, requested: false, shared }))
+      expect(prompt).toContain(
+        'This session runs under a read-only or plan permission mode, which restricts your native shell and file tools only.'
+      )
+      const named = prompt.split('file tools only. ')[1]!.split(' are AgentConnect tools')[0]!
+      expect(named.split(/, | and /).sort()).toEqual([...outputs].sort())
+      expect(prompt).toContain(
+        "are AgentConnect tools and this task's outputs, not edits the mode forbids: call them directly, since no one is here to approve a plan."
+      )
+    }
+  })
+
   it('writes the place’s own topic file itself, and reports only what the long session acts on', () => {
     const prompt = firstLookPrompt({ ...facts, requested: false })
     expect(prompt).toContain('You cannot post or react: only your memory writes\nand your report leave this task.')
@@ -194,7 +214,7 @@ describe('the prompts', () => {
     expect(flat(prompt)).toContain('one line on what this place is for, then these sections.')
     expect(prompt.match(/^## .+$/gm)).toEqual(['## In flight', '## Where I could help', '## Not covered'])
     // A private channel, a group chat or an external place writes only its own file.
-    for (const shared of ['organization.md', 'channels.md', 'members.md', 'index: false', 'updateMemoryEntry'])
+    for (const shared of ['organization.md', 'channels.md', 'members.md', 'index: false', 'that revision'])
       expect(prompt).not.toContain(shared)
   })
 
