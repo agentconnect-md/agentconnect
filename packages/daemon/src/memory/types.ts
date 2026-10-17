@@ -1,5 +1,6 @@
 import type { MemoryEntriesView } from './entries/contract.js'
 import type { MemoryFs } from './fs.js'
+import type { MemoryTextCheck } from './organization-files.js'
 /** The L0 memory contract: the `MemoryProvider` port plus its scope, result, admin-surface
  *  and error types. Implementations and factories live in `provider.ts`, which re-exports
  *  everything here so existing importers stay unchanged. */
@@ -159,7 +160,12 @@ export interface MemoryProvider {
   readonly kind: MemoryProviderKind
 
   // Additive read contract; native and none keep their own lifecycle and expose no entries.
-  entryView?(scope: MemoryScope, writeSource?: MemoryWriteSource): Promise<MemoryEntriesView | null>
+  /** `check` refuses a managed write's final text before it is stored (the organization files' shapes); record backends ignore it. */
+  entryView?(
+    scope: MemoryScope,
+    writeSource?: MemoryWriteSource,
+    check?: MemoryTextCheck
+  ): Promise<MemoryEntriesView | null>
 
   /** Env delta for the runtime child: `managed`/`none`/`external` turn its own memory off, `native` adds nothing (see `memoryProviderFor`). */
   runtimeEnv(runtime: RuntimeDef, effectiveEnv?: NodeJS.ProcessEnv, runtimeId?: string): Record<string, string>

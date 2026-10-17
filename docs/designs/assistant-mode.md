@@ -230,18 +230,28 @@ Proposed (§5.17).
 
 ---
 
-## 2. Prior art
+## 2. Vocabulary
 
-| Reference                                                               | Taken                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Not taken                                                                                                                                                                                                                              |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hosted always-on personal and coworker agents (two launched in 2026-09) | Goals outlive conversations; the agent wakes itself; proactive research is read-only; it speaks only when needed; **rules first, free rein on its own computer, consequential actions brought back for approval, waiting without a deadline**; stopping the main task does not stop delegated work; each task in its own environment                                                                                                                                                                                                                                                                                          | The personal form (acting as a user with that user's accounts)                                                                                                                                                                         |
-| An open-source personal-agent template                                  | The approval record: hash-bound, expiring, `outcome_unknown` never retried; idempotent notifications; failure backoff and auto-pause                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Rule-based idea generation; a task model that re-runs from scratch each time                                                                                                                                                           |
-| An open-source coworker-agent template                                  | Scheduled turns run in the original conversation; interruption waits for human review before retry                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | One task at a time globally                                                                                                                                                                                                            |
-| A durable agent-harness library                                         | The shape of background sub-agents: own conversation, anchored outside the parent's abort, replies delivered back as follow-ups, request ids on every delivery and report; sub-agents cannot spawn sub-agents                                                                                                                                                                                                                                                                                                                                                                                                                 | Using it as a runtime                                                                                                                                                                                                                  |
-| A commercial AI coworker for team chat                                  | **Access scoped per person, enforced at recall**; DM content cannot be asked out of it; shared-channel replies drafted in a DM and posted after approval; approval cards lead with a sentence and offer "always allow"; whether an action needs approval is configured per action, never judged by the model; stopping the main task does not stop scheduled ones                                                                                                                                                                                                                                                             | One session per thread plus memory retrieval                                                                                                                                                                                           |
-| An open-source self-hosted multi-agent assistant                        | Read-only as a per-session tool filter; self-scheduled tasks in two tiers (push text without a model / run a turn); push cadence with active hours, random intervals and a dedup record; background replies only raise an unread badge                                                                                                                                                                                                                                                                                                                                                                                        | No distinction between senders in an IM; a per-thread persisted "allow all" bypass                                                                                                                                                     |
-| A team-chat AI coworker trialed in 2026-08                              | Onboarding researched first and reported back; a twice-daily alert watch that spoke only when needed, with one concrete ask and no repeat if ignored (§5.13); a one-time onboarding of about four minutes as a DM with the installer: a welcome first, as a hard rule, then a web search from the installer's email domain and channel names and a read of the joined channels, returning to those still being read, a company file and a team file, and a report back of what it learned, what it wrote and what it needs (§5.15); a team file per person of name, handle, role and current work, enriched over time (§5.17) | A quota-based outreach job (up to five DMs and one channel post per run), which the team stopped as noise; a per-person investigation of anyone, which fed that outreach: a deeper pass runs only at its subject's own request (§5.17) |
-| A coding agent's project coordinator (2026-10)                          | On a user's first project it may take a turn of its own: a read-only exploration plus setup suggestions, and suggested threads started with one click (§5.13); a thread with an open pull request wakes on its CI failures and review comments instead of polling (§5.14)                                                                                                                                                                                                                                                                                                                                                     | Suggestions to one person: in a shared place they are offered to the place                                                                                                                                                             |
+The terms as this design uses them, each with the section that defines it.
+
+| Term                        | Meaning                                                                                                                                                          | Section                                                         |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Place                       | An IM conversation the agent answers in (a DM, a group DM or a channel), or a webchat conversation                                                               | §5.2                                                            |
+| Long session                | A place's one continuous session; a channel's is forced to `append`. It speaks for the place's tasks and owns its follow-ups                                     | §5.2                                                            |
+| Internal and external place | A place is internal, the organization's own, unless the platform detects it as external: shared with another organization, or holding a known guest              | §5.3                                                            |
+| Task                        | A delegated task, a follow-up or an approved proposal: what the console's Tasks tab lists and the limits count                                                   | §5.6                                                            |
+| Delegated task              | A sub-session a session starts with `delegateTask`, messages with `messageTask` and stops with `stopTask`; that session is its owning session                    | §5.6                                                            |
+| Follow-up                   | A task of the place it was taken in, woken by time or by its place's message, each round of which is a check                                                     | §5.12                                                           |
+| Check                       | One read-only round of a follow-up: it records what it saw, when to look again, and at most a report                                                             | §5.9                                                            |
+| First look                  | A one-check follow-up the daemon takes when the agent joins a place or someone there asks: it reads the place once, writes what it learned to memory and reports | §5.13                                                           |
+| Approved proposal           | Work the agent proposed with `propose` and a person approved, run once with the agent's own permissions                                                          | §5.10                                                           |
+| Report round                | A turn of a long session that delivers a task's report, which that session then speaks for                                                                       | §5.7                                                            |
+| The responsible user        | The member asked when no person is behind a draft, a proposal or a task's permission request; derived when asked, never stored                                   | §5.1                                                            |
+| The organization files      | `organization.md`, `channels.md` and `members.md` in the agent's shared layer, each in a shape the daemon checks on every write                                  | §5.15                                                           |
+| The directory               | `members.md`: who works on what, work facts only, which its subject sees, corrects and clears                                                                    | §5.17                                                           |
+| Organization research       | A delegated task of the conversation that switched the mode on, which reads the organization's own sources and writes the organization files                     | §5.15                                                           |
+| The shared layer            | The memory every conversation of the agent reads; only a conversation the product confirms holds only the organization's members writes it                       | §5.5, [Memory layers](../product-conventions.md#memory-layers)  |
+| The person layer            | One person's own memory, written in their own DM or console conversation and injected only there; it never feeds the directory                                   | §5.17, [Memory layers](../product-conventions.md#memory-layers) |
 
 ---
 
@@ -1346,8 +1356,8 @@ else, and nobody but its own conversation is told of it.
 who confirmed every recommendation below the same day. The first look, the read ports' topic,
 description and message links, and the `propose` changes ("Cards") have shipped. Pins are left out
 of v1 (§9 Q12), and Lark/Feishu's join waits for its module to listen for the bot being added (§9
-Q15). How it shipped is under "As shipped" at the end of this section. §5.15 proposes that the
-first look writes memory itself, moving step 1 of the handling below into the task.
+Q15). How it shipped is under "As shipped" at the end of this section. Since 2026-10-17 the first
+look writes memory itself (§5.15): what step 1 of the long session's handling did is now the task's.
 
 **Why.** Added to a channel, an assistant-mode agent does nothing until someone @-mentions it, and
 then knows nothing of how the place works. A first look reads the place once as the agent arrives,
@@ -1357,9 +1367,9 @@ follow-up (below), and waking on platform events is later work (§7).
 
 **What runs** (_decided_).
 
-- A read-only task of the place reads it and reports to the place's long session. The task cannot
-  post, react or write memory.
-- The long session then writes memory, posts the introduction and offers the suggestions.
+- A task of the place reads it, writes what it learned to memory, and reports to the place's long
+  session. The task cannot post or react. It wrote no memory until §5.15 moved that into it.
+- The long session then posts the introduction and offers the suggestions.
 
 **Where** (_decided_): channels and group chats only, never a 1:1 DM, which has nothing to read.
 Three conditions are recommended below: the agent answers in the place (its row is not Off), the
@@ -1376,8 +1386,9 @@ place is internal, and its platform can read history.
 The daemon holds it to the bounds, not the prompt alone. Its history reads go back no further than
 30 days and return nothing past 500 messages in all. Its tools are the place's own reads (history,
 thread replies, the conversation's details, members and profiles, reactions, bookmarks, pins and
-attachments), memory reads and `recordCheck`. `recall`, search, other channels, knowledge and
-code-host reads are not offered, and §5.5's read gate refuses any source but its own place.
+attachments), memory reads, the memory writes of §5.15 and `recordCheck`. `recall`, search,
+other channels, knowledge and code-host reads are not offered, and §5.5's read gate refuses any
+source but its own place.
 
 **Outputs** (_decided_). Each goes somewhere different.
 
@@ -1395,10 +1406,11 @@ code-host reads are not offered, and §5.5's read gate refuses any source but it
      new memory layer for public channels.
    - In an internal public channel only, the shared index stays short (_decided_ by the owner,
      2026-10-17): the place's file says `index: false` and gets no `MEMORY.md` line. The place
-     gets one line in the shared `channels.md` instead, linking its file. What is new about the organization as a
-     whole is merged into the shared `organization.md`, each fact dated and named after the
-     place it came from. Those two files each have their one index line, and both are updated
-     only with revision-checked entry writes, since other places update them too (below).
+     gets one line in the shared `channels.md` instead, linking its file. What is new about the
+     organization as a whole is merged into the shared `organization.md`, and the roles people
+     state into `members.md` (§5.17), each fact dated and named after the place it came from.
+     Those files each have their one index line, keep the shapes of §5.15, and are updated only
+     with revision-checked entry writes, since other places update them too (below).
 2. **Report.** The whole report is the task's result: its check's report, on the task's own page,
    visible to whoever may see the place's conversation, as every task is (§5.6).
 3. **Introduction and suggestions.**
@@ -1413,39 +1425,37 @@ code-host reads are not offered, and §5.5's read gate refuses any source but it
      only as an offer, never taken silently.
 
 The first look's own session is excluded from memory capture, as a private session is, so neither
-per-turn distillation nor a dream mines what it read: memory gets only what the long session
-writes in step 1 of its handling. The report itself arrives as a report round of the long session,
-which a dream of the shared layer mines as it mines every report round in such a channel.
+per-turn distillation nor a dream mines what it read: memory gets only what the task writes
+explicitly (§5.15), and an explicit write is not capture. The report itself arrives as a report
+round of the long session, which a dream of the shared layer mines as it mines every report round
+in such a channel.
 
-**The prompts** (_decided_, adjusted where noted below). The task's prompt, in English as product
-text:
+**The prompts** (_decided_, adjusted where noted below; the writing moved into the task with §5.15
+on 2026-10-17). The task's prompt, in English as product text:
 
 ```text
-You are taking a first look at {place}, a {kind} you were just added to. Read it and report
-back. You cannot post, react or change anything, and nothing you write here reaches the place.
+You are taking a first look at {place}, a {kind} you were just added to. Read it, write
+what you learned to memory, and report back. You cannot post or react: only your memory writes
+and your report leave this task.
 
 Read, newest first, until you have the last {days} days or {maxMessages} messages, whichever
 is less: the description, topic, pinned messages and bookmarks; every top-level message; the
 replies of any thread with 3+ replies or an unanswered question. Stop early once new messages
 stop changing your picture. Read only this place.
 
-Answer in these sections, in the place's main language. Link every claim to the message it
-rests on (its link, or its time where it has none), and mark anything inferred rather than
-read as (inferred).
+Then write to memory, without a layer argument:
+1. A topic file named after the place, dated, with a description header so MEMORY.md lists it.
+   If an earlier first look wrote one, update it. It says how the place works: what it is
+   for, in two sentences; who owns or decides what, as people here say it: roles, never
+   opinions of people; how requests are made, where decisions are recorded, links people keep
+   using, other bots and what they post. And what recurs: things that happened at least twice
+   on a rhythm, and when.
+Write nothing in flight, no request still open wherever it appears, and nothing you would
+not say in every conversation that reads this memory.
 
-## How this place works
-What it is for, in two sentences. Who owns or decides what, as people here say it: roles,
-never opinions of people. How requests are made, where decisions are recorded, links people
-keep using, other bots and what they post.
-
-## About the organization
-Only what this place shows about the organization as a whole: what it builds or does, its
-products, teams, stated goals and priorities, key systems, and terms people use. First read
-organization.md in shared memory, if it exists, and give only what is new or contradicts it.
-"Nothing new" is a fine answer.
-
-## Recurring
-Things that happened at least twice on a rhythm, and when.
+Then report, in the place's main language: one line on what this place is for, then these
+sections. Link every claim to the message it rests on (its link, or its time where it has
+none), and mark anything inferred rather than read as (inferred).
 
 ## In flight
 Unanswered questions, commitments with a date, threads waiting on someone: owner, date, link.
@@ -1459,53 +1469,60 @@ schedule of what came in since the last one. Offer only what the place's convers
 actually do with its tools: {tools}.
 
 ## Not covered
-What you could not read or check.
+What you could not read, check or write.
 
 Stay under 1,500 words. Quote no more than a short phrase, record nothing about a person
 beyond their role here, and leave out credentials, private links and personal details.
-Hand it back with recordCheck: a one-line observation, this answer as its report, and done
-set. It is your only output.
+Hand it back with recordCheck: a one-line observation, this report, and done set.
+```
+
+In an internal public channel, the one place whose conversation writes the shared layer, step 1's
+file is `with "index: false" in its header so MEMORY.md leaves it out` instead, and step 2 follows
+it:
+
+```text
+2. Three shared files every conversation reads. Give each a description header when you
+   create it, so MEMORY.md lists it:
+   - channels.md: one line for this place, linking the file above: "#name: what it is for —
+     [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]]
+     (#release-train, 2026-10-17)". This place's later sessions find its notes through that link.
+   - organization.md: only what this place shows about the organization as a whole that the
+     file does not already say: what it builds or does, its products and customers, teams, stated
+     goals and priorities, key systems, and terms people use. Merge it into its sections, not as
+     a new block; write nothing when nothing is new.
+   - members.md: the roles people here state for themselves or others, one entry per person.
+     Work facts only: role, the areas and systems they own, expertise shown here, current
+     projects. Never opinions or evaluations of a person, judgments of their work, sensitive
+     personal attributes (health, family, religion, politics, ethnicity, sexuality, finances,
+     immigration status, where they live), absences or their reasons.
+   Every fact is one line ending in its source and date, "(#name, YYYY-MM-DD)" for what you read
+   here, with "(inferred)" after it for anything inferred. organization.md opens with a summary
+   of at most ten lines, then only the sections "## Products and customers", "## How it works"
+   and "## Repositories and systems"; channels.md holds one line per place; a members.md entry
+   is "## Display name (@handle on Platform)" and at most ten lines, each starting with "Role:",
+   "Works on:", "Knows about:" or "Ask about:". A save that does not fit is refused with the line
+   that failed: fix that line and save again.
+   Other places update these files too, so never rewrite them with writeMemory: find each with
+   listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
+   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
+   CONFLICT, read it again, merge, and save again.
 ```
 
 The long session's handling arrives with the report, as a `[follow-up]` report's text does, never
 in a tool description:
 
 ```text
-When a first look reports back:
-1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   plus one index line. Leave out "In flight", any request still open wherever it is listed,
-   and anything you would not say in every conversation that reads this layer.
-2. Post one short introduction in the place: who you are, one line on what you saw, how to
+When a first look reports back (it has already written what it learned to memory):
+1. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you ({reach}).
-3. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
+2. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
    follow-up only if someone is visibly waiting on it.
    A follow-up runs only at its next check or when messaged, so give each one a first check,
    and word one that must notice new messages as a check on a schedule ("each weekday at 10:00
    I'll look for releases announced since the last check and confirm their notes were posted").
-4. Ask at most one question, and only if the answer changes what you do. Then post nothing
+3. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
 In everything people read, name a channel by its name or link, never by its raw id.
-```
-
-In an internal public channel, the one place whose conversation writes the shared layer, step 1
-reads instead:
-
-```text
-1. Write "How this place works" and "Recurring" to a topic file named after the place, dated,
-   with "index: false" in its header so MEMORY.md leaves it out. Leave out "In flight", any
-   request still open wherever it is listed, and anything you would not say in every
-   conversation that reads this layer.
-   Then update two shared files, each listed in MEMORY.md by its own description header:
-   - channels.md: one line for this place by its channel name, linking the file above:
-     "#name: what it is for — [[file name]]", e.g. "#release-train: release decisions —
-     [[release-train]]". This place's later sessions find its own notes through that link.
-   - organization.md: unless "About the organization" has nothing new, merge it into the
-     existing sections, not as a new block, each new fact dated, "(inferred)" kept, and the
-     place it came from named by its channel name. Keep it short.
-   Other places update these two files too, so never rewrite them with writeMemory: find each
-   with listMemoryEntries, read its text and revision with getMemoryEntry, then save it with
-   updateMemoryEntry and that revision, or createMemoryEntry while it does not exist. On
-   CONFLICT, read it again, merge, and save again.
 ```
 
 Changed from the agreed drafts, each to fit a verified fact:
@@ -1518,37 +1535,38 @@ Changed from the agreed drafts, each to fit a verified fact:
 - A last line hands the answer back with `recordCheck`, a check's only output (§5.12).
 - A first look someone asked for in a place the agent was already in reads "a {kind} you are in"
   instead of "you were just added to".
-- Step 2's "how to reach you" names the place's trigger, `{reach}` ("@-mention me", "I read every
-  message"). A report round carries no mention to infer it from.
-- Step 4's "Then stay quiet unless mentioned" becomes "Then post nothing more on your own". In a
-  place whose trigger is every message people reach it without a mention, and the decided rule
-  defers to the trigger.
-- On a platform with no card surface, step 3 reads "In the same message, list each 'Where I could
+- The introduction's "how to reach you" names the place's trigger, `{reach}` ("@-mention me", "I
+  read every message"). A report round carries no mention to infer it from.
+- The last step's "Then stay quiet unless mentioned" becomes "Then post nothing more on your own".
+  In a place whose trigger is every message people reach it without a mention, and the decided
+  rule defers to the trigger.
+- On a platform with no card surface, step 2 reads "In the same message, list each 'Where I could
   help' item in one line, and an 'In flight' item only if someone is visibly waiting on it; act on
   one when someone here asks for it."
-- "Where I could help" says a check runs only on its schedule or when messaged, and step 3, in
+- "Where I could help" says a check runs only on its schedule or when messaged, and step 2, in
   both forms, says the same of a follow-up, so each offered one gets a first check and one that
   must notice new messages is worded as a check on a schedule. In a live run, both suggestions were
   shaped by events ("after each release announcement, check its notes were posted") and offered
   with no first check. Nothing would have woken them: the long session hears the place only as
   its trigger says, and event wake (§5.14) covers code-host objects only.
-- Step 1 also leaves out "any request still open wherever it is listed". A live run filed a
+- The writing also leaves out "any request still open wherever it appears". A live run filed a
   request for a weekly reminder under "Recurring".
 - A last line, "In everything people read, name a channel by its name or link, never by its raw
   id", the rule a follow-up's `taskId` already follows. A live introduction asked about another
   channel by its platform id. Memory may keep ids, which the agent's reads take, so the task
   prompt does not say it.
-- A section, "About the organization", after "How this place works" (_decided_ by the owner,
-  2026-10-17). Each place's file said how that place works, and nothing recorded what the
-  organization does or aims for. The task first reads `organization.md` in shared memory and
-  reports only what is new or contradicts it, so the file builds up one first look at a time.
-- Step 1 merges that section into `organization.md` only where the conversation writes the shared
-  layer: an internal public channel, the one place whose writes land in the layer every
+- What is new about the organization (_decided_ by the owner, 2026-10-17), first a report section,
+  "About the organization", and since §5.15 the task's own merge into `organization.md`. Each
+  place's file said how that place works, and nothing recorded what the organization does or aims
+  for. The task merges only what the file does not already say, so it builds up one first look at
+  a time.
+- The task writes the organization files only where the conversation writes the shared layer: an
+  internal public channel, the one place whose writes land in the layer every
   conversation reads. A private channel, a group chat or an external place gets no such step.
   Its content must never reach the shared layer, and its writes go to its own layer unless a
   person asks to remember something for everyone. The name is fixed, so every first look updates
   the same file and its one index line.
-- In that channel, step 1 also keeps the shared index short (_decided_ by the owner,
+- In that channel, the task also keeps the shared index short (_decided_ by the owner,
   2026-10-17). The shared `MEMORY.md` is injected into every session, and a line per public
   channel would grow without bound. So the place's own file says `index: false`, the one header
   field that keeps a topic out of the generated index ([unified-memory-interface.md](unified-memory-interface.md)),
@@ -1556,12 +1574,14 @@ Changed from the agreed drafts, each to fit a verified fact:
   `[[name]]`: nothing else points to it once it is out of the index. A later session of the place
   (after `!new` or a rollover) sees only the shared index, which leads it to `channels.md` and
   from there to its own notes. A place layer is unchanged: its file is that layer's only topic.
-- Several places' report rounds can run at once, and a full rewrite of `channels.md` or
-  `organization.md` would drop another place's update. So step 1 saves them only through the
-  memory entry tools with the revision it read, and reads and merges again on a conflict. The
+- Several places' first looks can run at once, and a full rewrite of `channels.md`,
+  `organization.md` or `members.md` would drop another place's update. So the task saves them only
+  through the memory entry tools with the revision it read, and reads and merges again on a
+  conflict. The
   store's revision check is what makes that safe. `writeMemory` itself is not refused for these
-  two names: the generic memory tool would have to know two first-look file names, and its
-  targeted-edit mode is safe already. A whole-file `writeMemory` is left to the prompt.
+  names: its targeted-edit mode is safe already, and since §5.15 every write of them, a whole-file
+  one included, is checked against the file's shape. A whole-file `writeMemory` is left to the
+  prompt.
 
 **Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
 marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
@@ -1636,7 +1656,8 @@ asking while one runs is refused with that reason.
 not offered there. A card in an external place goes to an internal member's DM (§5.5 "Drafts"), so
 its suggestions would leave the place, which output 3 exists to avoid; and what an introduction
 should tell people from outside is undecided (§9). A place that turns external while a first look
-runs keeps only step 1 of its handling.
+runs gets a handling that posts nothing; what the task already wrote stays in the layer it was
+written to.
 
 **Cards** (verified, then recommended). Only Slack has a `propose` card surface (`DraftCardPort`);
 elsewhere a proposal is carded to the responsible user's DM or waits in Activity (§5.10). Slack's
@@ -1703,11 +1724,11 @@ under the introduction works. For a first look, `propose` changes in four ways:
 - **A request.** `firstLook` is offered on a place's appending long session only and checked again
   on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
 - **Its report.** One report round at the place's top level carries the handling, then the report;
-  step 3 is the `propose` wording where the place's integration has an approval card surface, else
-  the text form, and step 1 is the shared-channel form (`index: false`, `channels.md`,
-  `organization.md`) only where the place's memory layer is the shared one when the report
-  arrives. Where the place has no long session yet, the report opens one on its append
-  coordinate as the place's own: a root session bound to the conversation's people as a person's
+  step 2 is the `propose` wording where the place's integration has an approval card surface, else
+  the text form. Since §5.15 the task's own prompt carries the shared-channel writing step
+  (`index: false`, `channels.md`, `organization.md`, `members.md`) only where the place's memory
+  layer is the shared one when the task starts. Where the place has no long session yet, the
+  report opens one on its append coordinate as the place's own: a root session bound to the conversation's people as a person's
   first message there would bind it, and not kept out of memory capture. The first look stays its
   child; recorded as the opened session's creator, each named the other as its parent, and the
   Control Plane never settled who may see either. A first look that ends without handing back a
@@ -1716,7 +1737,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
   since its one check takes none. `listTasks` lists it as a first look.
 - **Console.** Activity's follow-up row carries `firstLook: true` and no next check; the console
   labels it "First look". Tool sizes: `firstLook` 433 characters with a 76-byte input schema, and a
-  first look's `recordCheck` 244 characters with a 391-byte schema.
+  first look's `recordCheck` 244 characters with a 391-byte schema; since §5.15, 431 and 268
+  characters, the schemas unchanged.
 - **The report round's `propose`.** A session's tools are fixed when it starts, so `propose` is
   listed beside `firstLook` on a place's long session wherever the place's integration has a card
   surface, and a call is refused unless its turn is a first look's report round. The report's
@@ -2141,13 +2163,15 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
 
 ### 5.15 Organization research and the organization files
 
-**Status:** Proposed (2026-10-17). Nothing here is implemented. What is marked _decided_ is the
-product owner's, settled while reviewing this proposal on 2026-10-17: the organization files live in
-the agent's memory (§5.16); there is no home session; a first look and organization research write
-memory themselves; and research is a delegated task of the conversation that switched the mode on,
-shaped like the reference agent's onboarding (§2). Everything else is a recommendation for the owner
-to confirm, and what is marked _undecided_ is listed in §9 (Q22–Q31). Research adds agent-facing
-tools, the code-host reads, so it waits for the owner's OK before any daemon work.
+**Status:** Partly shipped. The organization files' shapes and a first look that writes memory
+itself shipped on 2026-10-17 ("As shipped" below); organization research, `members.md`'s entry
+rules and the other writers are proposed. What is marked _decided_ is the product owner's, settled
+while reviewing this proposal on 2026-10-17: the organization files live in the agent's memory
+(§5.16); there is no home session; a first look and organization research write memory themselves;
+and research is a delegated task of the conversation that switched the mode on. Everything else is
+a recommendation for the owner to confirm, and what is marked _undecided_ is listed in §9
+(Q22–Q31). Research adds agent-facing tools, the code-host reads, so it waits for the owner's OK
+before any daemon work.
 
 **Why.**
 
@@ -2187,7 +2211,8 @@ because each piece was machinery for a job the existing mechanisms already do:
   the read-only guarantee exists for follow-up checks, which promise to change nothing while nobody
   is around (§5.9).
 
-**The organization files** (recommended).
+**The organization files** (the files and their shapes shipped 2026-10-17; their other writers are
+recommended).
 
 | File              | Holds                                                                                                                   | Written by                                                                                               |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -2208,20 +2233,35 @@ because each piece was machinery for a job the existing mechanisms already do:
   - organization research, bound to the shared layer by the daemon (below);
   - a person, for their own entry in `members.md` (§5.17), and editors on the Memory page, where
     `members.md` keeps §5.17's entry rules.
-- **Shapes.** The daemon checks each write against the file's shape and refuses one that does not
-  fit, naming the line that failed so the model can correct it. Every fact is one line ending in its
-  source and date: an internal place by name, a knowledge entry by title, a repository by path, or a
-  web address, a line from the web marked as such. `organization.md` is at most 16 KB with its
-  sections fixed; `channels.md` one line per place; `members.md` the entry shape of §5.17.
+- **Shapes** (shipped). The daemon checks every write of one of the three names into the shared
+  layer, whoever makes it, and refuses one that does not fit with one line naming the line that
+  failed, so the model corrects it and saves again. The grammar:
+  - **A fact line** ends in its source and date, `(<source>, <YYYY-MM-DD>)`, a real calendar date.
+    The source is an internal place by its channel name (`#release-train`), a knowledge entry by its
+    title in double quotes, a repository by its path (`owner/name`, optionally followed by the part
+    read, as in `example-org/example-repo CODEOWNERS`), `self` for a person's own words, or a web
+    address. A line whose source is a web address also ends with `(web)`, and no other line may.
+    `(inferred)` may follow. Each marker appears at most once.
+  - **Every file** may carry a frontmatter header, as every topic file does, and open with one `# `
+    title line. Blank lines are free.
+  - **`organization.md`**: a summary of at most ten fact lines before the first section, then only
+    the sections `## Products and customers`, `## How it works` and `## Repositories and systems`,
+    each at most once, in any order, any of them missing. Every other line is a fact line, a
+    leading `- ` or `* ` allowed. Any other heading is refused. At most 16 KB.
+  - **`channels.md`**: each line `#name: what it is for (<source>, <date>)`, one per place, names
+    compared without case.
+  - **`members.md`**: entries only, each `## <display name> (<handles>)` with its handles separated
+    by commas, then at most ten lines, each starting with `Role:`, `Works on:`, `Knows about:` or
+    `Ask about:` and ending as a fact line.
 - **Merging.** The files are saved only through revision-checked entry writes, re-read and merged
   on a conflict, as #3074 does, so several first looks at once lose nothing. Between two internal
   sources the newer wins; an internal source wins over the web, and a web statement an internal one
   contradicts stays beneath it as "Public sources say …" only when it adds something. "(inferred)"
   is kept.
 
-**A first look writes memory itself** (recommended; it changes step 1 of §5.13's handling as
-shipped). The task holds the place's whole history; the long session gets a 1,500-word report. So
-the task writes what it learned, and the long session only speaks:
+**A first look writes memory itself** (shipped 2026-10-17; it moved step 1 of §5.13's handling
+into the task). The task holds the place's whole history; the long session gets a 1,500-word
+report. So the task writes what it learned, and the long session only speaks:
 
 - Its tools gain the memory writes, bound to its place's layer as every session's are: an internal
   public channel's first look writes the shared layer, any other place's its place layer. It writes
@@ -2235,6 +2275,42 @@ the task writes what it learned, and the long session only speaks:
 - Unchanged: its coordinate, its bounds, its reads of its own place only, its capture exclusion (an
   explicit write is not capture), its budget, and when it runs. It still cannot post or react.
 
+**As shipped** (2026-10-17: the shapes and the first look's writes).
+
+- **The check** is one module, `memory/organization-files.ts`: a parser per file that refuses with
+  `<file> line <n> "<the line>" <what is wrong>. Nothing was saved; fix that line and save again.`,
+  the line counted in the whole final text. An exact edit is judged on the file it would leave,
+  header included, so its line number is the stored file's, which is what the model reads back.
+  `members.md` parses into its entries (name, handles, line, and each line's field, source, date
+  and markers), the seam §5.17's entry rules read.
+- **Where it runs.** A write's final text passes it where that text first exists: the memory entry
+  writer, for a tool's or the console's create, whole update or exact edit, on the transactional
+  and the filesystem home alike; `writeMemory`, before the file write, for a whole write or an
+  edit; and the Memory page's whole-file save. It applies where the write lands in the shared
+  layer: a tool scope that names no place or person layer, or a shared place's; a console write
+  that names no place layer; and a bound session only when its binding names the shared layer, as
+  research's will. A dream's staged store names none and is not checked. A delete is never
+  refused.
+- **The names** are compared without case, so a home on a case-insensitive filesystem cannot write
+  `Organization.md` around the check. A place or person layer's files of those names are not
+  checked.
+- **Files written before.** A `channels.md` written by #3074's handling has lines with no source and
+  date. Its next write is refused, naming the first such line, until each line carries them.
+- **The first look's tools** gain `writeMemory`, `createMemoryEntry` and `updateMemoryEntry`, never
+  `deleteMemoryEntry`. Its writes resolve to its place's layer as its long session's would, so no
+  binding changed, and its session stays out of capture.
+- **Its prompt** carries step 1, the place's topic file, everywhere, and step 2, the three shared
+  files with their shapes, §5.17's two lists and the revision-checked procedure, only where the
+  place writes the shared layer when the task starts. Its report opens with one line on what the
+  place is for, which the introduction's "one line on what you saw" rests on, then "In flight",
+  "Where I could help" and "Not covered". The handling keeps the introduction, the offers and the
+  one question as steps 1 to 3; a place that turned external meanwhile is told to post nothing.
+- **Tool sizes.** `firstLook` 431 characters (433 before) with its 76-byte schema; a first look's
+  `recordCheck` 268 characters (244 before) with its 391-byte schema. The memory writes it now gets
+  are unchanged: `writeMemory` 1,609 characters, `createMemoryEntry` 478 and `updateMemoryEntry` 399. Each is within Claude Code's 2,048-character cap.
+- **Not yet:** `members.md`'s entry rules (who an entry may be about, the opt-out marker, a person's
+  own entry), the memory guidance an internal public channel's session gets, and research.
+
 **Organization research** (recommended).
 
 - **Shape** (_decided_: a delegated task of the conversation that switched the mode on). The daemon
@@ -2244,17 +2320,15 @@ the task writes what it learned, and the long session only speaks:
   kind: an owning session, a round report, `messageTask` for another round in the retained context,
   `stopTask`, the Tasks tab and `maxConcurrentSubsessions`. A marker says it is research.
   - Not a follow-up: it is not read-only and not woken by time. Not a check: its output is memory.
-  - The DM, because the reference agent's onboarding is a conversation with its installer: a
-    welcome, the research, a report with what it needs (§2). The person who switched the mode on
-    is that installer.
+  - The DM, because onboarding is a conversation with the person who switched the mode on: a
+    welcome, the research, a report with what it needs.
 - **The onboarding conversation.** Switching the mode on sends that DM's long session a
   daemon-authored message, opening the session if there is none, as a first look's report opens its
   place's. Hello comes first, as a hard rule, before any research: who it is, that it will read the
   public channels it is in and look up the organization, and that it will be back in a few minutes.
-  Then the task runs. When its round report arrives, the session says, in the reference agent's
-  four parts: what it learned, what it wrote (the three files, by name), what it could not read,
-  and what it needs from the person, at most two things (a repository it may not read, a channel
-  to add it to).
+  Then the task runs. When its round report arrives, the session says, in four parts: what it
+  learned, what it wrote (the three files, by name), what it could not read, and what it needs
+  from the person, at most two things (a repository it may not read, a channel to add it to).
 - **Again.** The person says so in that DM, and the session gives the task another round with
   `messageTask`; while a round runs, the message waits for the next (§5.6). A person who asks in a
   channel is pointed to that person or an editor. The daemon also gives the task one more round of
@@ -2440,10 +2514,10 @@ does, from a fixed set or by its own choice, and how many.
 
 **Rollout** (recommended).
 
-1. #3074's per-place merge, shipped; its step 1 moves into the first look's task in step 2.
-2. Daemon: the organization files' shapes and `members.md`'s entry rules on the write path; the
-   first look's memory writes and its handling without step 1; §5.17's person-scoped reads and
-   writes.
+1. #3074's per-place merge, shipped; its step 1 moved into the first look's task in step 2.
+2. Daemon: the organization files' shapes on the write path, and the first look's memory writes
+   with its handling without step 1, shipped (2026-10-17); `members.md`'s entry rules and §5.17's
+   person-scoped reads and writes, to come.
 3. Research: the onboarding message and the research-marked delegated task, its shared-layer
    binding and credential-less launch, the code-host bridge reads and the read grant's
    `pull_requests: read`, the prelude line, and the second round after first looks. Each
@@ -2560,7 +2634,9 @@ could keep, so this section says what one may hold, who sees it, and how its sub
   it, a sender or someone a message mentions, so the model cannot write about someone who is not
   there. A first look's and research's writes are checked for membership and the marker alone,
   since no turn carries their people. A shape cannot see an opinion phrased as a fact. That
-  residual is accepted, and the prompt and the person's own view of their entry guard it.
+  residual is accepted, and the prompt and the person's own view of their entry guard it. The
+  entry's shape is checked since 2026-10-17 (§5.15 "As shipped"); the rules on its person are not
+  yet.
 
 ```text
 ## Alice (@alice on Slack, @alice-gh on GitHub)
@@ -2588,8 +2664,8 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
   can run it for someone else, editors and owners included: reading one person's messages at length comes close to profiling them, and only that
   person can agree to it.
 - **Never outreach.** No proposal, DM, follow-up, mention or check is started from the directory.
-  The reference agent's per-person investigation fed a quota-based outreach job its team stopped
-  (§2). The directory answers questions and starts nothing.
+  Reading one person's messages to feed outreach is what the directory must never become. The
+  directory answers questions and starts nothing.
 
 **The person's own control** (recommended).
 
@@ -2681,16 +2757,16 @@ subject's control is what that move would have to carry over.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                                                                            |
-| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                                                                                    |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                                           |
-| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped. Still to come: `propose` in its report round, under the introduction and with a follow-up form; Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                        |
-| Organization research and files   | §5.15–§5.17, proposed: three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), written directly by first looks, by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode |
-| P2 — cost and events              | Event wake (§5.14, proposed): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                                                                                                                                       |
+| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                         |
+| Organization research and files   | §5.15–§5.17. Shipped (2026-10-17): the shapes of three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), checked on every write, and first looks that write them. Proposed: the files also written directly by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode |
+| P2 — cost and events              | Event wake (§5.14, proposed): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -2784,10 +2860,11 @@ subject's control is what that move would have to carry over.
     GitHub broker should give checks the read tools GitLab and Gitea have. Organization research
     adds bridge reads of its own (§5.15 "Code hosts"), which such a broker could reuse.
 22. **The new names** (§5.15): the research marker on a delegated task, and
-    `listCodeHostRepositories` and `readCodeHostRepository`, change agent-facing tools, and so does
-    the first look's tool filter gaining the memory writes. `sendMessage` is unchanged. The owner
-    confirms or changes them before the daemon's pull request, and each description and schema is
-    measured against the runtimes' caps, as `propose`'s were (§5.13).
+    `listCodeHostRepositories` and `readCodeHostRepository`, change agent-facing tools. The first
+    look's tool filter gained the memory writes when §5.15's first part shipped (2026-10-17).
+    `sendMessage` is unchanged. The owner confirms or changes them before the daemon's pull
+    request, and each description and schema is measured against the runtimes' caps, as
+    `propose`'s were (§5.13).
 23. **First looks asked for in the onboarding DM** (§5.15), _undecided_: whether the person who
     switched the mode on may ask there for first looks of the places the agent was already in,
     which posts an introduction in each, and whether research's report should offer it.
@@ -3417,9 +3494,9 @@ undecided.
   place's long session only speaks (step 1 of §5.13's handling moves into the task); an internal
   public channel's long session on a turn a person typed; and research. Concurrent writers are
   #3074's revision-checked entry writes, and the newer internal source wins.
-- **Research** (_decided_: a delegated task of the conversation that switched the mode on, shaped
-  like the reference agent's onboarding). The daemon opens it, owned by the DM long session of the
-  person who switched the mode on, else the responsible user's; that session says hello first, as
+- **Research** (_decided_: a delegated task of the conversation that switched the mode on). The
+  daemon opens it, owned by the DM long session of the person who switched the mode on, else the
+  responsible user's; that session says hello first, as
   a hard rule, and when the task's round reports, says what it learned, what it wrote, what it
   could not read and at most two things it needs. "Research again" is `messageTask`. The daemon
   binds the task's memory tools to the shared layer by its marker, so #3077's rule on the `layer`
@@ -3447,3 +3524,17 @@ undecided.
 - **Verified from the code.** The network is open on every host. A check refuses every runtime
   permission request, which research as a delegated task escapes; what stays to verify per runtime
   is that the web tools run under the agent's mode and under a credential-less launch.
+
+**Sixtieth revision (2026-10-17)**: the organization files' shapes and a first look that writes
+memory itself ship, the first part of §5.15's rollout step 2 (issue #2810; §2, §5.13, §5.15, §5.17,
+§7, §9 Q22).
+
+- **Shapes.** Every write of `organization.md`, `channels.md` or `members.md` into the shared layer,
+  from a memory tool, the entry writer or the Memory page, is checked against the file's grammar
+  (§5.15 "Shapes") and refused with one line naming the line that failed.
+- **The first look writes.** Its tools gain `writeMemory`, `createMemoryEntry` and
+  `updateMemoryEntry`. Its prompt writes the place's topic file and, where the place writes the
+  shared layer, the three organization files with their shapes, §5.17's two lists and
+  revision-checked entry writes. Its report keeps "In flight", "Where I could help" and "Not
+  covered", after one line on what the place is for, and the long session's handling drops step 1.
+- **Not yet:** `members.md`'s entry rules and organization research, in their own changes.

@@ -32,7 +32,7 @@ export function firstLookCoordinate(deliveryId: string): string {
   return `${FIRST_LOOK_COORDINATE_PREFIX}${deliveryId}`
 }
 
-/** Whether a session's thread segment is a first look's: only its own place's reads, bounded, and no memory capture. */
+/** Whether a session's thread segment is a first look's: only its own place's reads and memory writes, bounded, and no memory capture. */
 export function isFirstLookCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(FIRST_LOOK_COORDINATE_PREFIX)
 }

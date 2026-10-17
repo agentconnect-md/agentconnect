@@ -1,4 +1,5 @@
 import { mutateManagedMemoryEntry, mutateManagedMemoryEntryOnFilesystem, type ManagedEntryMutation } from './writer.js'
+import type { MemoryTextCheck } from '../organization-files.js'
 import { sidecarMemoryHistory } from '../home.js'
 import type { MemoryWriteSource } from '../store.js'
 import { randomUUID } from 'node:crypto'
@@ -94,7 +95,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   constructor(
     private readonly roots: readonly MemoryFs[],
     bindingGeneration: string,
-    private readonly writeContext?: { source: MemoryWriteSource; sourceTurnId?: string },
+    private readonly writeContext?: { source: MemoryWriteSource; sourceTurnId?: string; check?: MemoryTextCheck },
     private readonly historyFor?: (root: MemoryFs) => MemoryHistorySink,
     private readonly landed?: () => Promise<void>
   ) {
@@ -408,7 +409,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
 export async function managedMemoryEntries(
   roots: readonly MemoryFs[],
   bindingGeneration: string,
-  writeContext?: { source: MemoryWriteSource; sourceTurnId?: string },
+  writeContext?: { source: MemoryWriteSource; sourceTurnId?: string; check?: MemoryTextCheck },
   historyFor?: (root: MemoryFs) => MemoryHistorySink,
   // Called once a mutation has landed in the written root.
   landed?: () => Promise<void>

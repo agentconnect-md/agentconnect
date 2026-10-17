@@ -9,6 +9,7 @@ import { localMemoryHome } from '../src/memory/home.js'
 import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { createMemoryEntryService } from '../src/memory/entries/factory.js'
 import { memoryChannelKey } from '../src/memory/store.js'
+import { organizationFileRefusal } from '../src/memory/organization-files.js'
 import { openTestStore } from './store-support.js'
 
 const cleanup: (() => Promise<unknown>)[] = []
@@ -265,6 +266,25 @@ describe('common managed entry mutations', () => {
     await loser.update({ ref, revision: current.entry.revision, text: add(current.text, lines[lost]!) })
     const merged = (await first.get({ ref }))!.text
     for (const line of lines) expect(merged).toContain(line)
+  })
+
+  it('refuses a transaction whose final text breaks an organization file’s shape, before publishing anything', async () => {
+    const f = await fixture()
+    const api = await createMemoryEntryService({
+      provider: f.provider,
+      store: f.db,
+      scope: { agentId: 'agent' },
+      canRead: () => true,
+      write: { source: 'tool', canWrite: () => true, check: organizationFileRefusal }
+    })
+    await expect(api.create({ label: 'channels', text: '#ops\n' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
+    expect(f.commits).toHaveLength(0)
+    const created = await api.create({ label: 'channels', text: '#ops: incidents (#ops, 2026-10-15)\n' })
+    const { ref, revision } = created.entry!
+    await expect(
+      api.update({ ref, revision, edit: { oldText: ' (#ops, 2026-10-15)', newText: '' } })
+    ).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('channels.md line 1') })
+    expect(f.commits).toHaveLength(1)
   })
 
   it('refuses ambiguous edits and UTF-8 overflow without publishing anything', async () => {

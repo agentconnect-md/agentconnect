@@ -983,8 +983,7 @@ export class FollowUpChecks {
     if (verdict.kind === 'completed' && report !== null && row && caller) {
       const handling = firstLookHandling(known?.reach ?? '@-mention me', {
         external: known?.external ?? false,
-        cards: known?.cards ?? false,
-        organization: known?.shared ?? false
+        cards: known?.cards ?? false
       })
       const text = firstLookReportText(place, handling, report)
       const reportId = `check:${key}:${check}:report`
