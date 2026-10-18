@@ -1,8 +1,6 @@
 // Webchat output mapping and canonical transcript helpers used by the turn engine.
 import { randomUUID } from 'node:crypto'
-import type { SessionImageAttachment, SharedImage, WebchatEvent } from '@agentconnect.md/protocol'
-import type { LocalStore, TranscriptAdmission } from '../store/local-store.js'
-import { monotonicTs } from '../store/monotonic-ts.js'
+import type { WebchatEvent } from '@agentconnect.md/protocol'
 import { isNoResponsePrefix } from '../session/no-response.js'
 import { planEntriesOf } from '../session/plan-entries.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
@@ -120,51 +118,7 @@ export function emitWebchatUpdate(
   }
 }
 
-/** Append one webchat text row at (or just after) `ts`. The `(channel, ts)` unique index dedups by
- *  timestamp alone and two daemons can mint one millisecond for DISTINCT posts, so probe the slot:
- *  an identical post dedups in place (its admission is still recorded), a foreign occupant bumps
- *  the ts by 1 ms (bounded). Returns the ts actually used — the post's canonical `at` at the origin. */
-export async function appendWebchatTextRow(
-  store: LocalStore,
-  channel: string,
-  thread: string,
-  ts: string,
-  entry: {
-    sender: string
-    recipient?: string
-    admission?: TranscriptAdmission
-    text: string
-    /** Canonical webchat post id — persisted on the row (§6). */
-    postId?: string
-    trustedAgentBot?: boolean
-    attachments?: SessionImageAttachment[]
-    sharedImage?: SharedImage
-  }
-): Promise<string> {
-  let slot = BigInt(ts)
-  for (let attempt = 0; attempt < 32; attempt++) {
-    const existing = await store.transcriptTextAt(channel, String(slot), entry)
-    // Canonical identity decides slot reuse (§6): two DISTINCT posts can share
-    // sender, text, AND millisecond (`at` minting is connection-local, so two
-    // tabs can collide) — only a matching postId proves the occupant IS this
-    // post. Rows without an id on either side keep the historical
-    // (sender, text) heuristic as the legacy fallback.
-    const samePost =
-      existing !== undefined &&
-      (entry.postId && existing.postId
-        ? existing.postId === entry.postId
-        : existing.sender === entry.sender && existing.text === entry.text)
-    if (!existing || samePost) {
-      await store.appendTranscript({ channel, thread, ts: String(slot), kind: 'text', ...entry })
-      return String(slot)
-    }
-    slot += 1n
-  }
-  // Pathological pile-up — fall back to the process-monotonic clock (locally unique).
-  const fallback = monotonicTs()
-  await store.appendTranscript({ channel, thread, ts: fallback, kind: 'text', ...entry })
-  return fallback
-}
+export { appendChatTextRow as appendWebchatTextRow } from '../session/chat-transcript.js'
 
 /** Resolve one complete Markdown message before releasing its held suffix and recording the canonical reply. */
 export function flushHeldWebchatText(wc: WebchatTurnOutput, resolveFileLink?: WorkspaceFileLinkResolver): void {
