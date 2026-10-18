@@ -1,5 +1,6 @@
 import type { NormalizedPlatformMessage, PlatformAttachment, QuotedMessage } from '@agentconnect.md/protocol'
 import { attachmentMention } from './attachment-mention.js'
+import { leadingMentions, type LeadingMention } from './command-text.js'
 
 /**
  * Minimal plain-object Telegram Bot API views used by pure normalization. The
@@ -201,6 +202,17 @@ export function telegramMessageUrl(message: TelegramMessage): string | undefined
   return topicId && /^\d+$/.test(topicId) ? `${base}/${topicId}/${messageId}` : `${base}/${messageId}`
 }
 
+// Each mention entity as its text reads, named by the id `mentionedBots` gives it.
+function telegramMentionTexts(text: string, entities: TelegramMessageEntity[]): LeadingMention[] {
+  return entities.flatMap((entity) => {
+    const label = text.slice(entity.offset, entity.offset + entity.length)
+    if (entity.type === 'mention') return label.length > 1 ? [{ id: label.replace(/^@/, ''), text: label }] : []
+    return entity.type === 'text_mention' && entity.user?.id != null
+      ? [{ id: String(entity.user.id), text: label }]
+      : []
+  })
+}
+
 function extractTelegramMentions(text: string, entities: TelegramMessageEntity[]): string[] {
   const mentions = new Set<string>()
   for (const entity of entities) {
@@ -232,6 +244,7 @@ export function normalizeTelegramMessage(
   const quoted = quotedFromTelegramReply(message)
   const senderName = telegramSenderName(message.from)
   const threadUrl = telegramMessageUrl(message)
+  const leading = leadingMentions(text, telegramMentionTexts(text, entities))
 
   return {
     msgId: `telegram:${message.chat.id}:${message.message_id}`,
@@ -256,6 +269,7 @@ export function normalizeTelegramMessage(
     },
     text,
     mentionedBots: extractTelegramMentions(text, entities),
+    ...(leading ? { leadingMentions: leading } : {}),
     ...(attachments.length ? { attachments } : {}),
     isDm: message.chat.type === 'private'
   }

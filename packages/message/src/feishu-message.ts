@@ -1,4 +1,5 @@
 import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
+import { leadingMentions } from './command-text.js'
 
 /**
  * Minimal plain-object view of a Lark `im.message.receive_v1` event. Both the
@@ -228,6 +229,13 @@ export function normalizeFeishuMessage(
     .map((attachment) => toFeishuAttachment(attachment, message.messageId))
     .filter((attachment): attachment is PlatformAttachment => attachment !== null)
   const isDm = message.chatType === 'p2p'
+  const text = extractFeishuMessageText(message.messageType, message.content, message.mentions)
+  const leading = leadingMentions(
+    text,
+    (message.mentions ?? []).flatMap((m) =>
+      m?.id?.open_id ? [{ id: m.id.open_id, text: `@${m.name ?? m.id.open_id}` }] : []
+    )
+  )
   return {
     msgId: `feishu:${message.chatId}:${message.messageId}`,
     ...(message.createTimeMs ? { platformTimeMs: message.createTimeMs } : {}),
@@ -242,7 +250,7 @@ export function normalizeFeishuMessage(
       isBot: message.senderIsBot ?? false,
       ...(message.senderUnionId ? { memberId: message.senderUnionId } : {})
     },
-    text: extractFeishuMessageText(message.messageType, message.content, message.mentions),
+    text,
     mentionedBots: (message.mentions ?? [])
       .map((mention) => mention?.id?.open_id)
       .filter((id): id is string => typeof id === 'string' && id.length > 0),
@@ -254,6 +262,7 @@ export function normalizeFeishuMessage(
           .filter((id): id is string => typeof id === 'string' && id.length > 0)
       )
     ].slice(0, 100),
+    ...(leading ? { leadingMentions: leading } : {}),
     ...(attachments.length ? { attachments } : {}),
     isDm
   }

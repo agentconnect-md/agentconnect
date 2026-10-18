@@ -144,6 +144,12 @@ describe('isControlCommandText', () => {
     expect(isControlCommandText('<@U0000000001> !queue hello')).toBe(false)
     expect(queuePromptText('<@U0000000001> !queue hello *Sent using* <@U0000000009>')).toBe('hello')
   })
+
+  it('reads a row addressed by a one-word label as a command', () => {
+    expect(isControlCommandText('@agent_bot !new')).toBe(true)
+    expect(isControlCommandText('@agent_bot please !new')).toBe(false)
+    expect(queuePromptText('@agent_bot !queue hello')).toBe('hello')
+  })
 })
 
 describe('parseInboundCommand', () => {
@@ -156,6 +162,17 @@ describe('parseInboundCommand', () => {
     })
     expect(parseInboundCommand(slack('<@U0000000002> !new'), ['U0000000001'])).toBeNull()
     expect(parseInboundCommand(slack('<@U0000000001> !new'), [])).toBeNull()
+  })
+
+  it('accepts a leading label the message names as the receiving bot', () => {
+    const labelled = (text: string, id: string, label: string) => ({
+      platform: 'discord',
+      text,
+      leadingMentions: [{ id, text: label }]
+    })
+    expect(parseInboundCommand(labelled('@Agent Bot !new', '100', '@Agent Bot'), ['100'])).toEqual({ kind: 'new' })
+    expect(parseInboundCommand(labelled('@alice !new', '300', '@alice'), ['100'])).toBeNull()
+    expect(parseInboundCommand(labelled('@Agent Bot !new', '100', '@Agent Bot'), [])).toBeNull()
   })
 })
 

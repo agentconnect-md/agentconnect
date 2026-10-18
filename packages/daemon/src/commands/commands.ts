@@ -1,17 +1,17 @@
 // In-conversation control commands: detected after the channel record is written, never fed to the agent as a prompt.
 
 import { parseCommand, type AgentCommand } from '@agentconnect.md/activation-policy'
-import { commandText, recordedCommandTexts } from '@agentconnect.md/message'
+import { commandText, recordedCommandTexts, type LeadingMention } from '@agentconnect.md/message'
 
 // The grammar lives in activation-policy so the relay parses commands exactly as the daemon does.
 export { COMMAND_PREFIXES, parseCommand, type AgentCommand } from '@agentconnect.md/activation-policy'
 
 /** The command an inbound message gives the bot with ids `self`: a leading mention of that bot still leaves a command. */
 export function parseInboundCommand(
-  msg: { platform: string; text: string },
+  msg: { platform: string; text: string; leadingMentions?: readonly LeadingMention[] },
   self: readonly string[]
 ): AgentCommand | null {
-  return parseCommand(commandText(msg.platform, msg.text, self))
+  return parseCommand(commandText(msg, self))
 }
 
 // A recorded row's command under any platform's reading, so every command an ingress parsed reads as one here too.

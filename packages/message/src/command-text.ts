@@ -1,4 +1,4 @@
-// The text a control command is read from: a platform drops its own address of the receiving bot and its own attribution suffix.
+// The text a control command is read from: a leading address of the receiving bot and a platform's own attribution suffix dropped.
 
 /** Reads a message's command text; `self` holds the receiving bot's ids, undefined accepts an address of anyone. */
 type CommandTextReader = (text: string, self?: readonly string[]) => string
@@ -17,12 +17,56 @@ export function slackCommandText(text: string, self?: readonly string[]): string
 
 const READERS = new Map<string, CommandTextReader>([['slack', slackCommandText]])
 
-/** The text a command addressed to the bot with ids `self` is read from; unchanged on a platform with no reader. */
-export function commandText(platform: string, text: string, self: readonly string[]): string {
-  return READERS.get(platform)?.(text, self) ?? text
+/** A mention as a message's text reads it: the platform id it names and its literal text. */
+export interface LeadingMention {
+  id: string
+  text: string
 }
 
-/** Every platform's reading of a recorded row, which carries no platform or receiver, with an address of anyone accepted. */
+const MAX_LEADING_MENTIONS = 20
+const MAX_MENTION_FIELD = 256
+
+/** The mentions `text` opens with, each the longest of `mentions` ending at a space or the end; stops at a label two ids share. */
+export function leadingMentions(text: string, mentions: readonly LeadingMention[]): LeadingMention[] | undefined {
+  const usable = mentions.filter(
+    (m) => m.id && m.text && m.id.length <= MAX_MENTION_FIELD && m.text.length <= MAX_MENTION_FIELD
+  )
+  const out: LeadingMention[] = []
+  let at = 0
+  while (out.length < MAX_LEADING_MENTIONS) {
+    while (at < text.length && /\s/.test(text[at]!)) at++
+    let best: LeadingMention[] = []
+    for (const m of usable) {
+      const next = text[at + m.text.length]
+      if (!text.startsWith(m.text, at) || (next !== undefined && !/\s/.test(next))) continue
+      if (!best.length || m.text.length > best[0]!.text.length) best = [m]
+      else if (m.text.length === best[0]!.text.length) best.push(m)
+    }
+    if (new Set(best.map((m) => m.id)).size !== 1) break
+    out.push({ id: best[0]!.id, text: best[0]!.text })
+    at += best[0]!.text.length
+  }
+  return out.length ? out : undefined
+}
+
+/** The text a command addressed to the bot with ids `self` is read from: the platform's reader, then leading mentions of `self` dropped. */
+export function commandText(
+  msg: { platform: string; text: string; leadingMentions?: readonly LeadingMention[] },
+  self: readonly string[]
+): string {
+  let out = READERS.get(msg.platform)?.(msg.text, self) ?? msg.text
+  for (const mention of msg.leadingMentions ?? []) {
+    const rest = out.trimStart()
+    if (!self.includes(mention.id) || !rest.startsWith(mention.text)) break
+    out = rest.slice(mention.text.length)
+  }
+  return out
+}
+
+// A row keeps no mention ids, so a label of one word is the only one its reading can bound.
+const LEADING_LABELS = /^(?:\s*@\S+(?=\s|$))+/
+
+/** Every reading of a recorded row, which carries no platform or receiver, with an address of anyone accepted. */
 export function recordedCommandTexts(text: string): string[] {
-  return [...READERS.values()].map((read) => read(text))
+  return [...[...READERS.values()].map((read) => read(text)), text.replace(LEADING_LABELS, '')]
 }

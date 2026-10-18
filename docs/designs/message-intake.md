@@ -215,10 +215,13 @@ strategy for the thread it is about to open, so a root and the replies inside it
 
 **Step 2 — commands.** `parseCommand` runs on the recorded message. A command may follow a leading
 mention of the bot it addresses, and Slack's trailing "Sent using" attribution on a post made
-through an app does not hide it; a leading mention of anyone else leaves an ordinary message. The
-platform module owns that reading, and readers of recorded rows accept a leading mention of anyone,
-so a command an ingress acted on never re-enters context. A command is never judged and,
-with one exception, never admitted; it acts on the target's session as today. The exception is
+through an app does not hide it; a leading mention of anyone else leaves an ordinary message. A
+platform whose text keeps mention ids reads that address in its own module; a normalizer whose text
+reads a mention by label lists the mentions the text opens with, by id, as `leadingMentions`.
+Readers of recorded rows, which keep no ids, accept a leading mention of anyone, so a command an
+ingress acted on stays out of context; on a labelled platform that reading bounds only a one-word
+label, and a row opening with a longer one reads as text. A command is never judged and, with one
+exception, never admitted; it acts on the target's session as today. The exception is
 `!queue <text>`, which is a delivery: `runQueue` dispatches the stripped payload through the ordinary
 admission gate, so the admission attaches to the recorded row — the row keeps the command as typed,
 which is also what the channel shows, and prompt assembly strips the `!queue` prefix from an admitted
