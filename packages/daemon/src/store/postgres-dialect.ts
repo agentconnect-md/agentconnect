@@ -197,6 +197,7 @@ export const canonicalColumns = [
   'timeZone',
   'toAgentId',
   'toolCallId',
+  'toolDigests',
   'touchedAt',
   'totalCount',
   'transportScope',

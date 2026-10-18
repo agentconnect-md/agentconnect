@@ -341,6 +341,8 @@ export interface SessionRecord {
   replyThread?: string | null
   // A digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null on a session from before it was recorded.
   standingDigest?: string | null
+  // The digests of the tool definitions its model last received, a JSON object written by `setSessionToolDigests`; null on a session from before it was recorded.
+  toolDigests?: string | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1309,7 +1311,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 63
+export const SCHEMA_VERSION = 64
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2061,7 +2063,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v62 keeps a watched object's repository id, which a check's code-host reads aim at (assistant-mode.md §5.14).
   async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'watchRepoId', 'TEXT'),
   // v63 names a first look a getting-to-know task (assistant-mode.md §5.13): its marker, onboarding's list and a queued report round.
-  async (db, store) => await migrateFirstLookToGettingToKnow(db, store.postgres)
+  async (db, store) => await migrateFirstLookToGettingToKnow(db, store.postgres),
+  // v64 keeps digests of the tool definitions a session's model last received, so a runtime that kept earlier ones is told the current ones.
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'toolDigests', 'TEXT')
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -2700,7 +2704,7 @@ export class LocalStore {
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
         onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
-        standingDigest TEXT
+        standingDigest TEXT, toolDigests TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -4385,6 +4389,11 @@ export class LocalStore {
   /** The digest of the standing context this session's model holds, or null for none yet; compared when the session resumes. */
   async setSessionStandingDigest(key: string, digest: string | null): Promise<void> {
     await this.db.prepare('UPDATE sessions SET standingDigest = ? WHERE key = ?').run(digest, key)
+  }
+
+  /** The digests of the tool definitions this session's model holds, or null for unknown; compared before each turn. */
+  async setSessionToolDigests(key: string, digests: string | null): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET toolDigests = ? WHERE key = ?').run(digests, key)
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):
