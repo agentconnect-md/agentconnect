@@ -2374,7 +2374,7 @@ recommended).
 | File              | Holds                                                                                                                   | Written by                                                                                               |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `organization.md` | a summary of at most ten lines first, then products and customers, how the organization works, repositories and systems | first looks and research; a public channel's session on a person's turn; owners on the Knowledge page    |
-| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | first looks; research adds the repository a place's release talk maps to, as "(inferred)"                |
+| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | first looks and research; `(inferred)` marks only a purpose guessed from the name, not read yet          |
 | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                                    | first looks and research; a public channel's session on a person's turn; the person, for their own entry |
 
 - **Where.** The organization record (§5.16): an assistant-mode agent's sessions read and write
@@ -2552,8 +2552,9 @@ AgentConnect, and only what the organization already granted.
     requests, counted by top-level path, say who owns what and whom to ask. That is a stronger
     signal than chat, and it goes into `members.md` (§5.17).
   - Release history and cadence, from the last 20 releases or tags, say which channel's release
-    talk maps to which repository. That goes into `channels.md`, marked "(inferred)", and into the
-    summary.
+    talk maps to which repository. That goes into `organization.md`'s repositories and systems,
+    marked "(inferred)", and into the summary; in `channels.md` "(inferred)" means only a purpose
+    guessed from a channel's name, which the console lists as not read yet.
 - **The read path.** Today a session's code-host read tools target only the agent's workspace
   repository, and a GitHub read goes through the `gh` wrapper in the runtime's shell (§9 Q21), which
   a credential-less launch does not have. Research needs reads the bridge serves. They widen the
@@ -2596,8 +2597,8 @@ disagree, keep the internal one beneath it; where two internal sources disagree,
 newer. Keep the summary at ten lines.
 - organization.md: what the organization is (the summary), products and customers, how it
   works (teams and what each owns, tools, where decisions and docs live), repositories and
-  systems (each repository you could read, what it is for, its system).
-- channels.md: which channel's release talk maps to which repository, as (inferred).
+  systems (each repository you could read, what it is for, its system, and which channel's
+  release talk maps to it, as (inferred)).
 - members.md: work facts only, one entry per person: role, areas, what they own, as people
   state them and as CODEOWNERS, maintainers and reviews show. Never opinions, judgments or
   anything personal. Skip anyone whose entry says they opted out.
@@ -2972,9 +2973,15 @@ there; the Memory page does not show them (Console, below).
 
 **File views** (_decided_), under Knowledge › Handbook, each opened from its row:
 
-- **About** is rendered by section: the summary, then each `##` section, every line as
-  text with its source as a chip (`#release`, a knowledge title, a repository path, a web address
-  shortened to its host) and its date; an inferred line is dimmed and tagged "inferred".
+- **About** reads as a document: the summary as one paragraph, then each `##` section as a
+  heading over plain bullets, every line ending in a footnote number for its source (one number
+  per distinct source, in order of first appearance) and no per-line date. Lines marked
+  `(inferred)` leave their sections and sit together at the end under "Not confirmed yet". Beside
+  it, a sources rail, "Where this came from", groups the sources into channels (with the platform
+  mark, from the Channels entry's line for that place), repositories, web pages (host and path,
+  linked) and Library docs (linked to the entry), each with its footnote number and how many lines
+  cite it; hovering or focusing a footnote marks its source and the reverse. The header says
+  "Updated <relative time> by <agent>". On a phone the rail follows the text.
 - **Channels** is a list: the platform mark, the place's name as its platform writes it, its
   purpose, and the source chip only when another place is the source. The places read come
   first; those whose purpose is guessed from the name (`(inferred)`) follow under "Not read yet",
@@ -2997,8 +3004,8 @@ there; the Memory page does not show them (Console, below).
   `memory/member/clear` frame are retired with the move.
 
 **Agent page** (_decided_). The agent's "Tools & Skills" tab splits in two: **Knowledge**, with
-two groups, Handbook (the three entries, each with whether this agent reads it, and a link to the
-Knowledge page) and Library (the entries this agent reads: every `all` entry and each
+two groups, Handbook (the record entries this agent reads, and a link to the Knowledge page;
+an entry it does not read is not listed) and Library (the entries this agent reads: every `all` entry and each
 `selected` one that lists it); and **Tools**, which keeps everything else the tab held. The
 Memory tab lists only the agent's own memory and does not mention the organization record:
 Your memory shows the person layer alone, and the directory's people no longer appear under the
@@ -3177,8 +3184,9 @@ smallest choice made for it:
   on the entry page; About and Channels show "All agents" with no control, since the Control Plane
   refuses a change.
 - **Revisions** written by an agent say "Written by <agent> · <writer kind>".
-- **Agent page.** "Tools & Skills" is now "Tools", with the Knowledge tab before it; each Handbook
-  row says "Reads it" or "Does not read it".
+- **Agent page.** "Tools & Skills" is now "Tools", with the Knowledge tab before it; it lists only
+  the entries the agent reads (seventy-sixth revision; each Handbook row first said "Reads it" or
+  "Does not read it"), and a Library with none is not shown.
 - **Retired**: the Memory page's own-entry card and the owner's directory list, the routes
   `GET` and `DELETE /agents/:id/memory/mine/member`, `GET /agents/:id/memory/members` and
   `DELETE /agents/:id/memory/members/:key`, and the `memory/member/clear` frame with its
@@ -4386,3 +4394,14 @@ the source, moves the date to the row's hover title, and lists the places guesse
 last under "Not read yet" instead of tagging each one; the Handbook row adds how many places were
 read. Nothing was released, so earlier lines are not migrated: the next first look or research
 round rewrites them.
+
+**Seventy-sixth revision (2026-10-18)**: About reads as a document (issue #2810; §5.16 "File
+views"). With real content a row per fact, each with a chip, a date and a tag, read as a wall of
+chips, so the summary is now a paragraph, each section plain bullets ending in footnote numbers,
+the lines not confirmed yet are gathered at the end, and a sources rail beside the text lists
+each source with its number and how many lines cite it; the header carries one "Updated … by …"
+line instead of per-line dates. The agent page's Knowledge tab lists only the entries the agent
+reads and drops the "Reads it" / "Does not read it" labels. Since Channels lists `(inferred)` lines
+as not read yet, research now writes which channel's release talk maps to which repository into
+`organization.md`'s repositories and systems, and `(inferred)` in `channels.md` means only a
+purpose guessed from the channel's name.

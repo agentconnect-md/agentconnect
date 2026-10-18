@@ -1,6 +1,6 @@
 'use client'
 
-// An agent's Knowledge tab (assistant-mode.md §5.16): the Handbook's three entries with whether this agent reads each, and the Library entries it reads.
+// An agent's Knowledge tab (assistant-mode.md §5.16): the Handbook entries and the Library entries this agent reads, and nothing it does not.
 
 import Link from 'next/link'
 import useSWR from 'swr'
@@ -26,7 +26,11 @@ export function AgentKnowledgePanel({ agentId }: { agentId: string }) {
   const library = useSWR(consoleKeys.organizationKnowledge(activeOrg?.id, false), () =>
     listOrganizationKnowledge(false)
   )
-  const readable = library.data?.filter((entry) => entry.kind === 'entry' && agentReads(entry, agentId))
+  const handbook = RECORD_KINDS.flatMap((kind) => {
+    const entry = record.data?.entries.find((candidate) => candidate.kind === kind)
+    return entry && agentReads(entry, agentId) ? [{ kind, entry }] : []
+  })
+  const readable = library.data?.filter((entry) => entry.kind === 'entry' && agentReads(entry, agentId)) ?? []
 
   return (
     <div className="flex flex-col gap-4 p-4 desktop:max-w-[760px] desktop:gap-[18px] desktop:p-0">
@@ -39,70 +43,54 @@ export function AgentKnowledgePanel({ agentId }: { agentId: string }) {
         </div>
         {record.isLoading && !record.data ? (
           <LoadingState size={20} padding={16} />
-        ) : !record.data?.entries.length ? (
-          <div className="px-4 py-4 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            {t('noRecord')}
-          </div>
         ) : (
-          RECORD_KINDS.map((kind) => {
-            const entry = record.data!.entries.find((candidate) => candidate.kind === kind)
-            if (!entry) return null
-            const reads = agentReads(entry, agentId)
-            return (
-              <Link
-                key={kind}
-                href={orgPath(`/knowledge/${entry.id}`)}
-                className="row click grid-cols-[auto_minmax(0,1fr)_auto] gap-3"
-              >
-                <Icon name={HANDBOOK_ICONS[kind]} size={15} color="var(--text-secondary)" />
-                <span className="min-w-0">
-                  <span className="block font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                    {name(kind)}
-                  </span>
-                  <span className="block truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    {summary(kind, entry.content)}
-                  </span>
+          handbook.map(({ kind, entry }) => (
+            <Link
+              key={kind}
+              href={orgPath(`/knowledge/${entry.id}`)}
+              className="row click grid-cols-[auto_minmax(0,1fr)] gap-3"
+            >
+              <Icon name={HANDBOOK_ICONS[kind]} size={15} color="var(--text-secondary)" />
+              <span className="min-w-0">
+                <span className="block font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                  {name(kind)}
                 </span>
-                <span
-                  className={
-                    reads
-                      ? 'inline-flex items-center gap-[5px] font-sans text-[12px] font-medium leading-normal text-(--status-online)'
-                      : 'inline-flex items-center gap-[5px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)'
-                  }
-                >
-                  <Icon name={reads ? 'check' : 'minus'} size={13} />
-                  {reads ? t('reads') : t('doesNotRead')}
+                <span className="block truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                  {summary(kind, entry.content)}
                 </span>
-              </Link>
-            )
-          })
-        )}
-      </div>
-      <div className="card overflow-hidden max-desktop:rounded-lg">
-        <div className="cardhead">
-          <span className="cardtitle">{t('library')}</span>
-        </div>
-        {library.isLoading && !library.data ? (
-          <LoadingState size={20} padding={16} />
-        ) : !readable?.length ? (
-          <div className="px-4 py-4 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            {t('emptyLibrary')}
-          </div>
-        ) : (
-          readable.map((entry) => (
-            <Link key={entry.id} href={orgPath(`/knowledge/${entry.id}`)} className="row click grid-cols-1 gap-1">
-              <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {entry.title}
               </span>
-              {entry.summary && (
-                <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                  {entry.summary}
-                </span>
-              )}
             </Link>
           ))
         )}
       </div>
+      {library.isLoading && !library.data ? (
+        <div className="card overflow-hidden max-desktop:rounded-lg">
+          <div className="cardhead">
+            <span className="cardtitle">{t('library')}</span>
+          </div>
+          <LoadingState size={20} padding={16} />
+        </div>
+      ) : (
+        readable.length > 0 && (
+          <div className="card overflow-hidden max-desktop:rounded-lg">
+            <div className="cardhead">
+              <span className="cardtitle">{t('library')}</span>
+            </div>
+            {readable.map((entry) => (
+              <Link key={entry.id} href={orgPath(`/knowledge/${entry.id}`)} className="row click grid-cols-1 gap-1">
+                <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                  {entry.title}
+                </span>
+                {entry.summary && (
+                  <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                    {entry.summary}
+                  </span>
+                )}
+              </Link>
+            ))}
+          </div>
+        )
+      )}
     </div>
   )
 }

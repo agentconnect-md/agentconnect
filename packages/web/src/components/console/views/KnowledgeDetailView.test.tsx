@@ -273,30 +273,67 @@ describe('knowledge entry page', () => {
     expect(button('Back to knowledge')).toBeDefined()
   })
 
-  it('renders About by section with its sources, and offers no visibility change on it', async () => {
+  it('reads About as a document with footnotes and a sources rail, and offers no visibility change on it', async () => {
     const about = {
       ...ENTRY,
       kind: 'organization' as const,
       title: 'About',
+      source: 'agent',
+      sourceAgentId: 'agent-1',
       content: [
         '# About',
-        'Example Org builds release tooling (#general, 2026-10-17)',
+        'Example Org builds release tooling. (#general, 2026-10-17)',
+        'It serves platform teams. (https://www.example.test/about/, 2026-10-16) (web)',
         '',
         '## Repositories and systems',
-        '- example-org/example-repo holds billing (example-org/example-repo, 2026-10-16) (inferred)'
+        '- example-org/example-repo holds billing (example-org/example-repo, 2026-10-16) (inferred)',
+        '- The release runbook lives in the Library ("Release runbook", 2026-10-15)',
+        '- Releases are cut on Tuesdays (#General, 2026-10-17)'
       ].join('\n')
     }
+    const channels = {
+      ...ENTRY,
+      id: 'channels-id',
+      kind: 'channels' as const,
+      content: '- [slack] general: all hands (#general, 2026-10-17)'
+    }
+    const runbook = { ...ENTRY, id: 'runbook-id', title: 'Release runbook' }
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/revisions') ? [] : about))
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/revisions')) return json([])
+        if (url.includes('/knowledge/organization')) return json({ research: {}, entries: [about, channels] })
+        if (url.includes('/knowledge?')) return json([runbook])
+        return json(about)
+      })
     )
     await render()
-    await settleUntil(() => host.textContent?.includes('Example Org builds release tooling') === true)
-    expect(host.textContent).toContain('Repositories and systems')
-    expect(host.textContent).toContain('#general')
-    expect(host.textContent).toContain('example-org/example-repo')
-    expect(host.textContent).toContain('inferred')
-    expect(host.textContent).toContain('All agents')
+    await settleUntil(() => host.querySelector('#about-source-3 a') !== null)
+    const content = host.textContent ?? ''
+    // The summary is one paragraph; each line ends in its source's footnote, numbered by first appearance.
+    expect(host.querySelector('p')?.textContent).toBe('Example Org builds release tooling.1 It serves platform teams.2')
+    expect(content).toContain('Repositories and systems')
+    expect([...host.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
+      'The release runbook lives in the Library3',
+      'Releases are cut on Tuesdays1',
+      'example-org/example-repo holds billing4'
+    ])
+    expect(content.indexOf('Not confirmed yet')).toBeGreaterThan(content.indexOf('Releases are cut on Tuesdays'))
+    expect(content).not.toContain('inferred')
+    expect(content).toContain('Updated')
+    expect(content).toContain('by dreamer')
+    // The rail groups the sources, each with its footnote and how many lines cite it.
+    expect(content).toContain('Where this came from')
+    expect(host.querySelector('#about-source-1')?.textContent).toBe('1#general2')
+    expect(host.querySelector('#about-source-2 a')?.getAttribute('href')).toBe('https://www.example.test/about/')
+    expect(host.querySelector('#about-source-2')?.textContent).toContain('www.example.test/about')
+    expect(host.querySelector('#about-source-3 a')?.getAttribute('href')).toBe('/knowledge/runbook-id')
+    // Hovering a footnote marks its source in the rail.
+    const note = host.querySelector<HTMLAnchorElement>('a[href="#about-source-1"]')!
+    await act(async () => note.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(host.querySelector('#about-source-1')?.className).toContain('bg-(--surface-active)')
+    expect(content).toContain('All agents')
     const labels = [...host.querySelectorAll('button')].map((b) => b.textContent ?? '')
     expect(labels).not.toContain('Change')
     expect(labels.some((label) => label.includes('Archive'))).toBe(false)

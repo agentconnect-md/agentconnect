@@ -1753,17 +1753,20 @@ Deleting an agent removes it from every list; a Selected list left empty reads "
   marks followed by "+N" when there are more, with "N agents" beside them. There is no "Research
   again" button anywhere.
 - **The three file views**, opened from the Handbook rows, render the entry rather than its
-  Markdown: About by section, each line with its source as a chip and an inferred line
-  dimmed and tagged; Channels as a list with each place's platform mark, its name as that
+  Markdown: About as a document, the summary as a paragraph and each section as plain bullets,
+  each line ending in a footnote number for its source, the lines not confirmed yet together at
+  the end, and a sources rail beside it (below it on a phone) listing each source with its number
+  and how many lines cite it; Channels as a list with each place's platform mark, its name as that
   platform writes it and its purpose, with a source chip only when another place is the source
   and the date on hover, the places the agent has read first and those it only guessed from the
   name after them under "Not read yet"; People as cards with the name, handles and the four fields with
   their sources. A person's own card carries Edit and Remove; no other card shows them a control.
   Owners edit and clear any entry. Revisions are listed beside the view, as on any entry page.
-- **The agent page** has a Knowledge tab with two groups, Handbook (the three entries, whether
-  this agent reads each, and a link to the Knowledge page) and Library (the entries this agent
-  reads), and a Tools tab with everything the Tools & Skills tab held. The Memory tab lists only
-  the agent's own memory and does not mention the organization record.
+- **The agent page** has a Knowledge tab with two groups, Handbook (the record entries this agent
+  reads, and a link to the Knowledge page) and Library (the entries this agent reads, shown only
+  when there are any); an entry the agent does not read is not listed. It also has a Tools tab
+  with everything the Tools & Skills tab held. The Memory tab lists only the agent's own memory
+  and does not mention the organization record.
 
 ## Directional agent visibility
 

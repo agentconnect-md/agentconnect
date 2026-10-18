@@ -3365,11 +3365,7 @@
       "knowledge": {
         "handbook": "Handbook",
         "library": "Library",
-        "reads": "Reads it",
-        "doesNotRead": "Does not read it",
-        "openKnowledge": "Open Knowledge",
-        "noRecord": "No organization record yet",
-        "emptyLibrary": "This agent reads no Library entry"
+        "openKnowledge": "Open Knowledge"
       }
     }
   },
@@ -4343,7 +4339,24 @@
       "placesRead": "{places} · {read} read",
       "notReadYet": "Not read yet",
       "people": "{count, plural, one {# person} other {# people}}",
-      "summary": "Summary",
+      "sections": {
+        "products": "Products and customers",
+        "howItWorks": "How it works",
+        "repositories": "Repositories and systems"
+      },
+      "notConfirmed": "Not confirmed yet",
+      "sourceNote": "Source {note}",
+      "sourcesTitle": "Where this came from",
+      "sourceGroups": {
+        "channel": "Channels",
+        "repository": "Repositories",
+        "web": "Web pages",
+        "knowledge": "Library docs",
+        "self": "In their own words"
+      },
+      "citedLines": "{count, plural, one {# line} other {# lines}}",
+      "updated": "Updated {when}",
+      "updatedBy": "Updated {when} by {name}",
       "self": "self",
       "inferred": "inferred",
       "you": "You",

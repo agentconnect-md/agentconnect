@@ -112,13 +112,14 @@ something; where two internal sources disagree, keep the newer.
 - organization.md: a summary of at most ten lines, then only the sections "## Products and
   customers", "## How it works" (teams and what each owns, tools, where decisions and docs
   live) and "## Repositories and systems" (each repository you could read, what it is for,
-  its system). Merge into what is there; at most 16 KB.
+  its system); which channel's release talk maps to which repository goes there, marked
+  (inferred). Merge into what is there; at most 16 KB.
 - channels.md: one line per channel, "- [<platform>] <name>: what it is for (source, date)",
   <platform> as listChannels returns it and <name> as the platform shows it, with no "#", e.g.
-  "- [slack] release-train: release decisions (#release-train, 2026-10-17)"; add which
-  repository a channel's release talk maps to, marked (inferred). Where a line's purpose was
-  guessed from the channel's name and you read the channel, replace it with what the channel
-  itself shows, sourced "(#name, date)", without (inferred).
+  "- [slack] release-train: release decisions (#release-train, 2026-10-17)". Here "(inferred)"
+  means only a purpose guessed from the channel's name because you did not read it; where you
+  read the channel, replace such a line with what the channel itself shows, sourced
+  "(#name, date)", without (inferred).
 - members.md: one entry per person, "## Display name (@handle on Platform) \`key\`" and at most
   ten lines, each starting with "Role:", "Works on:", "Knows about:" or "Ask about:". Work
   facts only, as people state them and as CODEOWNERS and reviews show. Never opinions or
