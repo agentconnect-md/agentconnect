@@ -440,7 +440,7 @@ function pageOf(url: string): string {
   }
 }
 
-/** Channels as a list: the places read first, then those not read yet; each row its platform mark, name, purpose and a source chip only when another place is the source. */
+/** Channels as a list: the places read first, then those guessed from the name; each row its platform mark, name, purpose and a source chip only when another place is the source. */
 export function ChannelsView({ content }: { content: string }) {
   const t = useTranslations('Knowledge.handbook')
   const parsed = parseOrganizationFile('channels.md', content)
@@ -455,7 +455,7 @@ export function ChannelsView({ content }: { content: string }) {
       {notRead.length > 0 && (
         <section>
           <div className="mb-1 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-            {t('notReadYet')}
+            {t('guessedFromName')}
           </div>
           <ChannelRows channels={notRead} />
         </section>
