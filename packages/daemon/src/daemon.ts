@@ -4842,6 +4842,7 @@ export class Daemon {
         return {
           fingerprint: toolContextFingerprint(tools, configuredServers, instructions),
           instructions,
+          tools,
           mcpServers: () => {
             for (const warning of warnings) this.log.warn(warning)
             const servers: McpServer[] = []
@@ -17532,7 +17533,8 @@ export class Daemon {
         sessionId,
         turnModel,
         settlement,
-        ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {})
+        ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {}),
+        ...(handled.toolDigests !== undefined ? { toolDigests: handled.toolDigests } : {})
       })
       if (outcome.kind === 'cancelled') return null
       if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
@@ -18986,6 +18988,8 @@ export class Daemon {
       providerCheckpoint: string | undefined
       /** The digest of the standing context the first prompt carries inline (SessionManager.standingDelivered). */
       standingDigest?: string
+      /** The tool digests the first prompt brings the model up to (SessionManager.toolsDelivered). */
+      toolDigests?: string
     }
   ): Promise<TurnPromptOutcome> {
     const { entry, key, plan, agent, evaluation } = run
@@ -18998,7 +19002,7 @@ export class Daemon {
     let generation = 0
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
-    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest } = turn
+    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest, toolDigests } = turn
     const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
 
     while (true) {
@@ -19016,6 +19020,10 @@ export class Daemon {
       if (standingDigest !== undefined) {
         await this.sessions.standingDelivered(key, standingDigest)
         standingDigest = undefined
+      }
+      if (toolDigests !== undefined) {
+        await this.sessions.toolsDelivered(key, toolDigests)
+        toolDigests = undefined
       }
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.

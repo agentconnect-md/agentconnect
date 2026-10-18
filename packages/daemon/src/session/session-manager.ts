@@ -46,7 +46,7 @@ import {
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
-import type { SessionToolContext } from './turn/tool-context.js'
+import { toolDefinitionsBlock, toolDigests, type SessionToolContext } from './turn/tool-context.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
 import { NO_FOLLOW_UPS, runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
@@ -446,6 +446,8 @@ export class SessionManager {
     providerCheckpoint?: string
     /** The digest of the standing context these blocks carry inline; hand it to `standingDelivered` once the runtime takes the prompt. */
     standingDigest?: string
+    /** The tool digests these blocks bring the model up to; hand them to `toolsDelivered` once the runtime takes the prompt. */
+    toolDigests?: string
     /** False when session creation/loading rejected the trusted additional MCP
      * descriptors and the runtime session succeeded only after retrying with
      * the ordinary server set. Absent when no additional descriptors existed. */
@@ -782,6 +784,13 @@ export class SessionManager {
     if (created) await recordStanding(rec, usesMeta ? (await standingContext()).sessionDigest : null)
     else if (opened.resumed && appliesOnLoad) await recordStanding(rec, (await standingContext()).resumeDigest)
     if ((created && !usesMeta) || (opened.resumed && !appliesOnLoad)) this.standingRefreshDue.add(key)
+    // What the model holds of the daemon's tool definitions: a new session starts from the current ones.
+    const toolsNow = toolContext?.tools?.length ? toolContext.tools : undefined
+    const digestsNow = toolsNow ? toolDigests(toolsNow) : undefined
+    if (created && digestsNow !== undefined) {
+      await this.deps.store.setSessionToolDigests(key, digestsNow)
+      rec.toolDigests = digestsNow
+    }
 
     // A channel-root message posted by this same agent creates the thread's session cursor
     // without running the model. Keep lastDeliveredTs at null: the first real reply must replay
@@ -1003,6 +1012,15 @@ export class SessionManager {
       standingDigest = preludeStanding.sessionDigest
       promptPrelude.push({ type: 'text', text: standingRefreshBlock(preludeStanding.sessionContext) })
     }
+    // Tools whose definitions changed since the model got them, once the session's bridge serves the current ones.
+    let toolDigestsDue: string | undefined
+    const attachedTools = host.sessionToolContext?.(rec.acpSessionId!)
+    const toolsAttached = attachedTools === undefined || attachedTools === toolContext?.fingerprint
+    if (toolsNow && digestsNow !== undefined && toolsAttached && rec.toolDigests !== digestsNow) {
+      const block = toolDefinitionsBlock(rec.toolDigests, toolsNow)
+      if (block) promptPrelude.push({ type: 'text', text: block })
+      toolDigestsDue = digestsNow
+    }
     let reminded = false
     if (opening) {
       // Start the reminder epoch: this session just received the full rule, inline or via `_meta`.
@@ -1103,7 +1121,8 @@ export class SessionManager {
       contextEvents,
       ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
       ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {}),
-      ...(standingDigest !== undefined ? { standingDigest } : {})
+      ...(standingDigest !== undefined ? { standingDigest } : {}),
+      ...(toolDigestsDue !== undefined ? { toolDigests: toolDigestsDue } : {})
     }
   }
 
@@ -1111,6 +1130,11 @@ export class SessionManager {
   async standingDelivered(key: string, digest: string): Promise<void> {
     await this.deps.store.setSessionStandingDigest(key, digest)
     this.standingRefreshDue.delete(key)
+  }
+
+  /** The runtime took a prompt that restated changed tool definitions: record what its model now holds. */
+  async toolsDelivered(key: string, digests: string): Promise<void> {
+    await this.deps.store.setSessionToolDigests(key, digests)
   }
 
   /** The local-time line and its zone, the first found: the sender's, a run's schedule's, its starter's, the place's last seen, UTC. */

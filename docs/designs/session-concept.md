@@ -239,6 +239,18 @@ instructions in this comparison, so rerunning an existing task receives current
 rules without repeating them on unchanged turns. The fingerprint belongs to the
 host's attachment: a cold resume always assembles the current tools.
 
+Installing the current tools is not enough on its own: a runtime may render the
+definitions a session's transcript recorded when that session started, and add
+only tools with new names, so a load keeps an earlier description or argument
+schema of a tool it already has. The session row therefore records a digest of
+each daemon tool's description and argument schema that its model received. A
+new session records the definitions it started with. Before a later turn, once
+the session's bridge serves the current tools, a digest that differs puts the
+current definitions of the changed and added tools, and the names of removed
+ones, at the head of that turn's prompt. A row without digests, from before they
+were recorded, gets every current definition once. The digests are recorded when
+the runtime takes that prompt, so a rejected prompt leaves the note due.
+
 Current fields identify the agent and source:
 
 ```text
