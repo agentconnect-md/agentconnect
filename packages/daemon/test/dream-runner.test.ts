@@ -1727,12 +1727,7 @@ describe('DreamRunner crash recovery', () => {
       extract: async () => ({ output: '' }),
       log: silent
     }).initialize()
-    for (let i = 0; i < 20; i++) {
-      if (!(await readdir(base)).includes('output')) break
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
-
-    expect(await readdir(base)).toEqual(['skills'])
+    await vi.waitFor(async () => expect(await readdir(base)).toEqual(['skills']), WAIT)
     expect(await readFile(join(base, 'skills', 'keep-me', 'SKILL.md'), 'utf8')).toBe('# keep')
   })
 })
