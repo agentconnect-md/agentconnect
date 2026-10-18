@@ -208,7 +208,7 @@ export function aboutDocument(content: string): AboutDocument | null {
 
 // Two lines rest on one source when they name the same place, entry, repository or page.
 function sourceKey(source: FactSource): string {
-  if (source.kind === 'channel') return `channel:${placeKey(source.name)}`
+  if (source.kind === 'channel') return `channel:${source.name.toLowerCase()}`
   if (source.kind === 'knowledge') return `knowledge:${source.title.toLowerCase()}`
   if (source.kind === 'repository') return `repository:${source.path.toLowerCase()}`
   if (source.kind === 'web') return `web:${source.url.replace(/\/+$/, '')}`
@@ -322,11 +322,15 @@ export function AboutSourcesRail({ doc, focus }: { doc: AboutDocument; focus: So
   // A channel source names no platform; the Channels entry's line for that place gives it and the name as the platform writes it.
   const channels = record.data?.entries.find((entry) => entry.kind === 'channels')
   const parsedChannels = channels ? parseOrganizationFile('channels.md', channels.content) : undefined
-  const placeOf = new Map(
-    parsedChannels?.ok && parsedChannels.parsed.file === 'channels.md'
-      ? parsedChannels.parsed.channels.map((channel) => [placeKey(channel.channel), channel] as const)
-      : []
-  )
+  const places =
+    parsedChannels?.ok && parsedChannels.parsed.file === 'channels.md' ? parsedChannels.parsed.channels : []
+  // The exact name first; a relaxed match ("Field Team" for #field-team) only when it names one place.
+  const placeOf = (name: string): ChannelLine | undefined => {
+    const exact = places.filter((place) => place.channel.toLowerCase() === name.toLowerCase())
+    if (exact.length > 0) return exact.length === 1 ? exact[0] : undefined
+    const relaxed = places.filter((place) => placeKey(place.channel) === placeKey(name))
+    return relaxed.length === 1 ? relaxed[0] : undefined
+  }
   const entryIdOf = (title: string) =>
     library.data?.find((entry) => entry.title.toLowerCase() === title.toLowerCase())?.id
   if (doc.sources.length === 0) return null
@@ -366,7 +370,7 @@ export function AboutSourcesRail({ doc, focus }: { doc: AboutDocument; focus: So
                   <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
                     <SourceLabel
                       source={source}
-                      place={source.kind === 'channel' ? placeOf.get(placeKey(source.name)) : undefined}
+                      place={source.kind === 'channel' ? placeOf(source.name) : undefined}
                       href={source.kind === 'knowledge' ? entryIdOf(source.title) : undefined}
                       orgPath={orgPath}
                     />
