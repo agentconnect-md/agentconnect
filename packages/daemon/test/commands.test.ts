@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { isControlCommandText, parseCommand, queuePromptText, requiresTrustedActor } from '../src/commands/commands.js'
+import {
+  isControlCommandText,
+  parseCommand,
+  parseInboundCommand,
+  queuePromptText,
+  requiresTrustedActor
+} from '../src/commands/commands.js'
 
 // One predicate, asked by every ingress path that parses a command. The failure it exists to
 // prevent is a gate applied on direct ingress but not on relay — which is where the HTTP
@@ -129,6 +135,27 @@ describe('isControlCommandText', () => {
     expect(isControlCommandText('!queue hello')).toBe(false)
     expect(isControlCommandText('hello!')).toBe(false)
     expect(isControlCommandText('!deploy the thing')).toBe(false)
+  })
+
+  it('reads a row addressed by a leading mention as the command an ingress parsed', () => {
+    expect(isControlCommandText('<@U0000000001> !new')).toBe(true)
+    expect(isControlCommandText('<@U0000000001> !new\n\n*Sent using* <@U0000000009>')).toBe(true)
+    expect(isControlCommandText('<@U0000000001> please !new')).toBe(false)
+    expect(isControlCommandText('<@U0000000001> !queue hello')).toBe(false)
+    expect(queuePromptText('<@U0000000001> !queue hello *Sent using* <@U0000000009>')).toBe('hello')
+  })
+})
+
+describe('parseInboundCommand', () => {
+  it('accepts a leading mention of the receiving bot only', () => {
+    const slack = (text: string) => ({ platform: 'slack', text })
+    expect(parseInboundCommand(slack('<@U0000000001> !new'), ['U0000000001'])).toEqual({ kind: 'new' })
+    expect(parseInboundCommand(slack('<@U0000000001> !queue go'), ['U0000000001'])).toEqual({
+      kind: 'queue',
+      text: 'go'
+    })
+    expect(parseInboundCommand(slack('<@U0000000002> !new'), ['U0000000001'])).toBeNull()
+    expect(parseInboundCommand(slack('<@U0000000001> !new'), [])).toBeNull()
   })
 })
 

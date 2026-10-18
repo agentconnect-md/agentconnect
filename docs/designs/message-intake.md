@@ -213,7 +213,11 @@ platform's own thread normalization, which is what produces the physical thread 
 platform opens a root's thread only at dispatch (Discord's promotion, §7.4), the record asks that
 strategy for the thread it is about to open, so a root and the replies inside it group alike.
 
-**Step 2 — commands.** `parseCommand` runs on the recorded message. A command is never judged and,
+**Step 2 — commands.** `parseCommand` runs on the recorded message. A command may follow a leading
+mention of the bot it addresses, and Slack's trailing "Sent using" attribution on a post made
+through an app does not hide it; a leading mention of anyone else leaves an ordinary message. The
+platform module owns that reading, and readers of recorded rows accept a leading mention of anyone,
+so a command an ingress acted on never re-enters context. A command is never judged and,
 with one exception, never admitted; it acts on the target's session as today. The exception is
 `!queue <text>`, which is a delivery: `runQueue` dispatches the stripped payload through the ordinary
 admission gate, so the admission attaches to the recorded row — the row keeps the command as typed,
