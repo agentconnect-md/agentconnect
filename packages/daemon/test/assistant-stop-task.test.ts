@@ -481,17 +481,19 @@ describe('who is offered stopTask', () => {
     const h = await boot()
     try {
       const tool = (agent: Record<string, unknown>, session: Record<string, unknown>) => {
-        const [server] = h.d.sessions.deps.mcpServersFor({
-          agent: { id: AGENT, name: AGENT, runtime: 'claude', integrations: [], mcpServers: [], ...agent },
-          platform: 'slack',
-          channel: DM,
-          thread: 'append:1',
-          deliveryThread: '1700000000.000100',
-          integrationId: INT,
-          isDm: true,
-          sessionKey: `slack:${DM}:append:1:${AGENT}`,
-          ...session
-        })
+        const [server] = h.d.sessions.deps
+          .toolContextFor({
+            agent: { id: AGENT, name: AGENT, runtime: 'claude', integrations: [], mcpServers: [], ...agent },
+            platform: 'slack',
+            channel: DM,
+            thread: 'append:1',
+            deliveryThread: '1700000000.000100',
+            integrationId: INT,
+            isDm: true,
+            sessionKey: `slack:${DM}:append:1:${AGENT}`,
+            ...session
+          })
+          .mcpServers()
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
         const tools = h.d.mcp.sessions.get(token)!.tools as { name: string }[]
         const stopTool = tools.find((t) => t.name === 'stopTask')
@@ -547,16 +549,18 @@ describe('who is offered stopTask', () => {
     const h = await boot()
     try {
       const toolsOf = (agent: Record<string, unknown>, thread: string) => {
-        const [server] = h.d.sessions.deps.mcpServersFor({
-          agent: { ...h.d.agents.get(AGENT), assistantMode: undefined, ...agent },
-          platform: 'slack',
-          channel: DM,
-          thread,
-          deliveryThread: '1700000000.000100',
-          integrationId: INT,
-          isDm: true,
-          sessionKey: `slack:${DM}:${thread}:${AGENT}`
-        })
+        const [server] = h.d.sessions.deps
+          .toolContextFor({
+            agent: { ...h.d.agents.get(AGENT), assistantMode: undefined, ...agent },
+            platform: 'slack',
+            channel: DM,
+            thread,
+            deliveryThread: '1700000000.000100',
+            integrationId: INT,
+            isDm: true,
+            sessionKey: `slack:${DM}:${thread}:${AGENT}`
+          })
+          .mcpServers()
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
         return h.d.mcp.sessions.get(token)!.tools as { name: string; description: string }[]
       }

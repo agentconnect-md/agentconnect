@@ -319,6 +319,7 @@ import {
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
+import { toolContextFingerprint } from './session/turn/tool-context.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
 import { namesNativeUi, nativeUiChrome, nativeUiFromToolUpdate } from './mcp/native-ui.js'
@@ -4791,12 +4792,8 @@ export class Daemon {
         ...(this.agentRunsInSandbox(agent) ? this.cfg.sandbox.env : {}),
         ...Object.fromEntries((this.runtimes[agent.runtime]?.env ?? []).map((entry) => [entry.name, entry.value]))
       }),
-      // Inject the agent's tool set. Memory/collaboration tools are universal, so a
-      // session is registered even with no platform integration. The token binds this
-      // ACP session to its exact channel/thread/delivery integration.
-      // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
-      // on the runtime's probed transport caps.
-      mcpServersFor: ({
+      // Compare pure tool snapshots each turn; register tokens and resolve executables only on attachment.
+      toolContextFor: ({
         agent,
         platform,
         channel,
@@ -4807,14 +4804,10 @@ export class Daemon {
         isDm,
         sessionKey
       }) => {
-        // An OpenClaw-style bridge rejects non-empty session mcpServers — skip assembly instead of failing session/new.
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
-          this.log.debug(
-            `acp: runtime "${agent.runtime}" rejects per-session MCP servers — agent "${agent.id}" runs without AgentConnect tools and configured MCP servers`
-          )
-          return []
+          const instructions = isResearchCoordinate(thread) ? this.organizationResearchPrompt(agent, []) : undefined
+          return { fingerprint: toolContextFingerprint([], [], instructions), instructions, mcpServers: () => [] }
         }
-        const servers: McpServer[] = []
         let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const check = isCheckCoordinate(thread)
@@ -4825,81 +4818,77 @@ export class Daemon {
         if (isGettingToKnowCoordinate(thread)) tools = gettingToKnowTools(tools)
         else if (check) tools = checkTools(tools, { watch: this.followUpWatches.offered() })
         else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
-        // Collaboration Arena §6: game-owned structured action tools, appended
-        // AFTER the product tools (collision-checked at startup) and filtered
-        // by per-agent visibility (e.g. only living players see `vote`).
+        // Evaluation tools follow product tools, filtered by the agent's current visibility.
         const evaluationTools = this.opts.evaluation?.environment?.tools
         if (!narrowed && evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
         }
-        // MCP Apps (webchat-mcp-apps.md §4): a `ui: true` server's tools reach the runtime through
-        // the bridge, not as an ACP McpServer entry of their own — which is what lets the daemon
-        // see `_meta.ui` on the way back. `resolveAgentMcpServers` below skips the same servers,
-        // so each of their tools has exactly one call path. Read from connections already up: a
-        // server still dialing contributes to the next session rather than delaying this one.
-        // The admin catalog is a CP-delegated webchat descriptor, never an Apps-host server.
+        // Read cached Apps descriptors without dialing; their tools use the bridge, never a second runtime connection.
         const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
         if (!narrowed) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
-        // Bind the bridge token to the exact integration that delivered this turn.
-        // Falling back to agent.integrations[0] can send a title/message through the
-        // wrong bot when one agent has multiple integrations. A memory-only session
-        // still registers with no integration so its universal tools work.
-        // No reachable bridge ⇒ no token either: a live credential nothing can present.
-        if (tools.length > 0 && this.mcpToolServerReachable()) {
-          const token = this.mcp.register({
-            agentId: agent.id,
-            platform,
-            ...(integrationId ? { integrationId } : {}),
-            ...(transportScope ? { transportScope } : {}),
-            isDm,
-            channel,
-            thread,
-            deliveryThread,
-            tools,
-            // Full integration set so sendPlatformMessage can route to ANY connected
-            // platform, not only the one that delivered this turn.
-            integrations: agent.integrations.map((i) => ({ id: i.id, platform: i.platform })),
-            // Agent display identity, stamped on tool sends so they match ordinary
-            // replies (slackAgentPostOptions uses the same displayName||name + iconUrl).
-            agentName: agent.displayName?.trim() || agent.name,
-            ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {}),
-            // §5.15: research's memory tools are bound to the live shared layer, whichever conversation owns it; no `layer` is taken.
-            ...(research
-              ? {
-                  memoryBinding: {
-                    source: 'tool' as const,
-                    scope: { agentId: agent.id, withOutsiders: false, recordWriter: 'research' as const },
-                    layer: 'shared' as const
-                  }
-                }
-              : {})
-          })
-          servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
+        if (!this.mcpToolServerReachable()) tools = []
+        const instructions = research ? this.organizationResearchPrompt(agent, tools) : undefined
+        const warnings: string[] = []
+        const configuredServers = research
+          ? []
+          : resolveAgentMcpServers({
+              enabled: agent.mcpServers,
+              defs: this.mcpDefsForAgent(agent.id),
+              caps: this.runtimeFacts.mcpCapabilities(agent.runtime),
+              hostsUiServer: (name) => this.appsHost.isUiServer(this.orgForAgent(agent.id), name),
+              warn: (warning) => warnings.push(warning)
+            })
+        return {
+          fingerprint: toolContextFingerprint(tools, configuredServers, instructions),
+          instructions,
+          mcpServers: () => {
+            for (const warning of warnings) this.log.warn(warning)
+            const servers: McpServer[] = []
+            if (tools.length > 0) {
+              const token = this.mcp.register({
+                agentId: agent.id,
+                platform,
+                ...(integrationId ? { integrationId } : {}),
+                ...(transportScope ? { transportScope } : {}),
+                isDm,
+                channel,
+                thread,
+                deliveryThread,
+                tools,
+                // Posting tools can reach any of the agent's integrations.
+                integrations: agent.integrations.map((i) => ({ id: i.id, platform: i.platform })),
+                // Tool sends use the same display identity as ordinary replies.
+                agentName: agent.displayName?.trim() || agent.name,
+                ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {}),
+                // §5.15: research's memory tools are bound to the live shared layer, whichever conversation owns it; no `layer` is taken.
+                ...(research
+                  ? {
+                      memoryBinding: {
+                        source: 'tool' as const,
+                        scope: { agentId: agent.id, withOutsiders: false, recordWriter: 'research' as const },
+                        layer: 'shared' as const
+                      }
+                    }
+                  : {})
+              })
+              servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
+            }
+            servers.push(
+              ...configuredServers.map((server) =>
+                this.agentRunsInSandbox(agent) && 'command' in server
+                  ? {
+                      ...server,
+                      command: resolveTrustedExecutable(server.command, {
+                        ...process.env,
+                        ...Object.fromEntries(server.env.map((entry) => [entry.name, entry.value]))
+                      })
+                    }
+                  : server
+              )
+            )
+            return servers
+          }
         }
-        // Research reaches nothing beyond the bridge: no user-configured server, any of which could post or act for the agent.
-        if (research) return servers
-        servers.push(
-          ...resolveAgentMcpServers({
-            enabled: agent.mcpServers,
-            defs: this.mcpDefsForAgent(agent.id),
-            caps: this.runtimeFacts.mcpCapabilities(agent.runtime),
-            // Withhold a `ui` server from the runtime only when this daemon really hosts it: the
-            // Apps host reads daemon-local config, so a CP-pushed `ui` flag names a server nothing
-            // would carry (webchat-mcp-apps.md §4).
-            hostsUiServer: (name) => this.appsHost.isUiServer(this.orgForAgent(agent.id), name),
-            ...(this.agentRunsInSandbox(agent)
-              ? {
-                  resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
-                    resolveTrustedExecutable(command, {
-                      ...process.env,
-                      ...Object.fromEntries(entries.map((entry) => [entry.name, entry.value]))
-                    })
-                }
-              : {}),
-            warn: (m) => this.log.warn(m)
-          })
-        )
-        return servers
       },
       // Download from the actual ingress integration, including platforms without a legacy reply connection.
       downloadAttachment: (agentId, att, integrationId) =>
@@ -8992,7 +8981,6 @@ export class Daemon {
         !this.inflight.has(row.parentKey) &&
         !this.serialQueue.has(row.parentKey) &&
         !(await this.store.sessionHasPendingInboxRows(row.parentKey)),
-      researchPrompt: (agentId, row) => this.organizationResearchPrompt(agentId, row),
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
       settleSubsession: (end) => this.collab.settleSubsessionTurn(end),
@@ -9052,20 +9040,9 @@ export class Daemon {
     }
   }
 
-  /** The research task's prompt: the organization's name and hints from the onboarding record, and the sources its tools reach. */
-  private async organizationResearchPrompt(
-    agentId: string,
-    row: { platform: string | null; channel: string | null }
-  ): Promise<string> {
-    const agent = this.agents.get(agentId)
-    const hints = agent?.assistantOnboarding?.hints ?? {}
-    const at = {
-      platform: row.platform ?? '',
-      channel: row.channel ?? '',
-      thread: 'subsession:research-0',
-      isDm: false
-    }
-    const tools = agent ? researchTools(this.researchBridgeTools(agent, this.sessionBridgeTools(agent, at))) : []
+  // Rules come from the same tool snapshot that the research session receives.
+  private organizationResearchPrompt(agent: Agent, tools: ToolDescriptor[]): string {
+    const hints = agent.assistantOnboarding?.hints ?? {}
     return researchPrompt({
       organization: hints.organization ?? hints.workspaces?.[0] ?? 'your organization',
       sources: researchSources(tools),
@@ -9554,7 +9531,7 @@ export class Daemon {
     })
     // Static descriptor, dynamic authority: the call resolves the current daemon-private turn and fails closed elsewhere.
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]
-    // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
+    // Recheck assistant-mode authority at execution as well as at each turn's tool snapshot.
     tools = [...tools, ...followUpToolsFor(agent, { watch: this.followUpWatches.offered() })]
     // A getting-to-know task on request (§5.13), only to a place's long session where one could run, with `propose` for its report round where the place has cards.
     tools = [

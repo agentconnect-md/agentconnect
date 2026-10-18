@@ -3,6 +3,7 @@ import { ModelSelectionError, type AcpHost } from '../../acp/acp-host.js'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { LocalStore, SessionRecord } from '../../store/local-store.js'
 import { withStartupPhase } from '../startup-progress.js'
+import type { SessionToolContext } from './tool-context.js'
 
 /** The store writes the opener owns — the session row plus the ingress-supplied title. */
 type OpenerStore = Pick<LocalStore, 'setSessionState' | 'upsertSession' | 'setSessionTitle'>
@@ -47,8 +48,8 @@ export interface OpenRuntimeSessionInput {
   prepareWorkspace: (agent: Agent, expectedWarmHost?: AcpHost) => Promise<string>
   /** Extra roots the runtime may read beyond cwd, per workspace isolation. */
   workspaceDirectories: (cwd: string) => Promise<string[]>
-  /** The default MCP servers for this turn's platform binding, resolved once. */
-  mcpServersFor: () => McpServer[]
+  /** The effective tools and task instructions, sampled without connection side effects. */
+  toolContext?: SessionToolContext
   /** Trusted descriptors bound to an overridden host; dropped if the runtime rejects them. */
   additionalMcpServers?: McpServer[]
   /** Runtime built-ins a new session must not offer (a check's, which nobody can approve). */
@@ -104,6 +105,15 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   let created = false
   let historyLost = false
   let resumed = false
+  let recreate = false
+
+  const previousContext = rec?.acpSessionId ? host.sessionToolContext?.(rec.acpSessionId) : undefined
+  if (rec?.acpSessionId && input.toolContext && previousContext && previousContext !== input.toolContext.fingerprint) {
+    // Closing releases the runtime's cached MCP connections while retaining native history.
+    const sessionId = rec.acpSessionId
+    recreate = !(await abortable(() => host.closeSession(sessionId), signal))
+    host.discardSession(sessionId)
+  }
 
   const sessionStartEffort = async (): Promise<{ value?: string; chatSelected: boolean }> => {
     if (!input.chatRuntimeChangesAllowed()) return { chatSelected: false }
@@ -165,7 +175,15 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       abortable(
         () =>
           withStartupPhase('runtime', () =>
-            host.loadSession(sessionId, cwd, servers, selected.value, systemAppend, additionalDirectories)
+            host.loadSession(
+              sessionId,
+              cwd,
+              servers,
+              selected.value,
+              systemAppend,
+              additionalDirectories,
+              input.extraDisallowedTools
+            )
           ),
         signal
       )
@@ -190,7 +208,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
 
   if (!rec || !rec.acpSessionId) {
     const cwd = await resolveCwd()
-    const ordinaryMcpServers = input.mcpServersFor()
+    const ordinaryMcpServers = input.toolContext?.mcpServers() ?? []
     const mcpServers = [...ordinaryMcpServers, ...(input.additionalMcpServers ?? [])]
     const acpSessionId = await newRuntimeSession(
       cwd,
@@ -228,7 +246,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     }
     await store.upsertSession(rec)
     if (identity.initialTitle) await store.setSessionTitle(identity.key, identity.initialTitle)
-  } else if (host.hasSession?.(rec.acpSessionId) === false) {
+  } else if (recreate || host.hasSession?.(rec.acpSessionId) === false) {
     const persistedSessionId = rec.acpSessionId
     // Persisted, but unknown to THIS agent process (daemon restart / host eviction):
     // prompting it would yield ACP "Session not found". Prefer native resume
@@ -239,10 +257,10 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     // Resolved once, shared by both paths: session/load must re-attach the same
     // MCP servers a fresh session would get (the agent doesn't persist them
     // across processes), and resolving twice would register two bridge tokens.
-    const ordinaryMcpServers = input.mcpServersFor()
+    const ordinaryMcpServers = input.toolContext?.mcpServers() ?? []
     const mcpServers = [...ordinaryMcpServers, ...(input.additionalMcpServers ?? [])]
     const fallbackMcpServers = input.additionalMcpServers?.length ? ordinaryMcpServers : undefined
-    if (host.loadSupported?.()) {
+    if (!recreate && host.loadSupported?.()) {
       // §7.3 closed/evicted → resuming: mark the re-attach so a TTL-closed session
       // isn't seen as `closed` mid-load, then fall through to `prompting` later.
       await store.setSessionState(identity.key, 'resuming', Date.now())
@@ -268,6 +286,10 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       rec = { ...rec, acpSessionId, state: 'idle', lastDeliveredTs: null, updatedAt: Date.now() }
       await store.upsertSession(rec)
     }
+  }
+
+  if (input.toolContext && (created || resumed || previousContext === undefined)) {
+    host.setSessionToolContext?.(rec.acpSessionId!, input.toolContext.fingerprint)
   }
 
   return {

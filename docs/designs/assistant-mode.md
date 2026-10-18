@@ -2584,7 +2584,12 @@ AgentConnect, and only what the organization already granted.
   dependencies and issue contents stay out of memory. A session reads them from the repository
   when it needs them, under its own access.
 
-**The prompts** (drafts, for the owner). The task's, in English as product text:
+**The prompts** (drafts, for the owner). The task's rules are standing instructions,
+refreshed with its tools before a turn when their content changes
+([session-concept.md §2.3](session-concept.md#23-standing-metadata-injected-when-a-session-starts)).
+The opening message asks it to research the organization; a `messageTask` rerun
+retains history and receives the current rules. Unchanged turns repeat neither
+the rules nor the tool setup. The task's rules, in English as product text:
 
 ```text
 You are researching {organization}, the organization you work for: what it does and

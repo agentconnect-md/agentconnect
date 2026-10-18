@@ -46,6 +46,7 @@ import {
 import { backfillThreadHistory } from './turn/thread-backfill.js'
 import { RecallObserver, runTurnRecall, type MemoryRecallLifecycleEvent } from './turn/memory-recall.js'
 import { openRuntimeSession } from './turn/runtime-session.js'
+import type { SessionToolContext } from './turn/tool-context.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
 import { NO_FOLLOW_UPS, runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
@@ -279,12 +280,8 @@ export class SessionManager {
       now?: () => number
       /** Sandbox/runtime defaults used to detect config-file pointer conflicts, as at spawn. */
       runtimeEnvFor?: (agent: Agent) => Record<string, string>
-      /**
-       * Build the default MCP servers to inject for a brand-new ACP session,
-       * given its platform binding. Omitted (or returning []) means no tools —
-       * e.g. the `chat` CLI, which has no daemon control socket.
-       */
-      mcpServersFor?: (ctx: {
+      /** Snapshot effective tools and task rules in memory; materialize connections only on new/load. */
+      toolContextFor?: (ctx: {
         agent: Agent
         platform: string
         channel: string
@@ -297,7 +294,7 @@ export class SessionManager {
         isDm: boolean
         /** The logical session: its runtime may execute somewhere this agent's others do not (session-executors.md §5). */
         sessionKey: string
-      }) => McpServer[]
+      }) => SessionToolContext
       /**
        * Download an inbound attachment's bytes (§9.2) — resolved by the daemon
        * to the ingress integration's platform connection. Omitted in the `chat`
@@ -653,6 +650,19 @@ export class SessionManager {
         includeOverview
       ))
     }
+    const toolContext = this.deps.toolContextFor?.({
+      agent,
+      platform: msg.platform,
+      channel: msg.channel,
+      thread,
+      // Posting tools default to this turn’s delivery thread, not the session coordinate.
+      deliveryThread,
+      ...(integrationId !== undefined ? { integrationId } : {}),
+      ...(transportScope !== undefined ? { transportScope } : {}),
+      isDm: msg.isDm,
+      sessionKey: key
+    })
+
     let standing: Promise<StandingContext> | undefined
     const standingContext = (): Promise<StandingContext> =>
       (standing ??= (async () =>
@@ -677,6 +687,7 @@ export class SessionManager {
           memoryIndex,
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
+          taskInstructions: toolContext?.instructions,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
           ...(platformStanding ? { platformStanding } : {})
@@ -728,22 +739,7 @@ export class SessionManager {
         if (onDemand !== undefined && directories.includes(onDemand.path)) onDemandClonesHanded = true
         return directories
       },
-      mcpServersFor: () =>
-        this.deps.mcpServersFor?.({
-          agent,
-          platform: msg.platform,
-          channel: msg.channel,
-          thread,
-          // `thread` above is the SESSION's coordinate, which the bridge's session-key
-          // lookups want and which a delivery must never use — it is no platform thread
-          // where the conversation appends. Tools that POST resolve their default target
-          // from this one instead (channel-session-mode.md §3.1).
-          deliveryThread,
-          ...(integrationId !== undefined ? { integrationId } : {}),
-          ...(transportScope !== undefined ? { transportScope } : {}),
-          isDm: msg.isDm,
-          sessionKey: key
-        }) ?? [],
+      toolContext,
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
       // A check (assistant-mode.md §5.12) runs in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
       ...(isCheckCoordinate(thread) || isResearchCoordinate(thread)

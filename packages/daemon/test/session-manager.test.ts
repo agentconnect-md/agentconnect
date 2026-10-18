@@ -17,7 +17,10 @@ import type { McpServer } from '@agentclientprotocol/sdk'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { planReplay } from '../src/session/turn/replay-plan.js'
-import { ModelSelectionError } from '../src/acp/acp-host.js'
+import { AcpHost, ModelSelectionError } from '../src/acp/acp-host.js'
+import { fileURLToPath } from 'node:url'
+import { toolContextFingerprint } from '../src/session/turn/tool-context.js'
+import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
 
 /** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
  *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
@@ -86,6 +89,153 @@ const msg = (over: Partial<NormalizedMessage> & { ts?: string; channel?: string 
 }
 
 describe('SessionManager', () => {
+  it.each(['claude-acp', 'inline'])(
+    'refreshes changed tools and research rules once, preserving warm prompts (%s)',
+    async (runtime) => {
+      const store = await newStore()
+      const host = new AcpHost(
+        {
+          command: process.execPath,
+          args: [fileURLToPath(new URL('./fixtures/fake-acp-agent.mjs', import.meta.url)), runtime],
+          env: []
+        },
+        { onUpdate: () => {}, env: { AC_CLOSE_SESSION: '1', AC_LOAD_UPDATES: '1' } }
+      )
+      await host.start()
+      const create = vi.spyOn(host, 'newSession')
+      const load = vi.spyOn(host, 'loadSession')
+      const close = vi.spyOn(host, 'closeSession')
+      let tools: ToolDescriptor[] = [{ name: 'followUp', description: 'Follow up.', inputSchema: obj({}) }]
+      let instructions = 'Research rules version one.'
+      const materialize = vi.fn(() => [
+        {
+          name: 'agentconnect',
+          command: 'node',
+          args: [],
+          env: [{ name: 'TOKEN', value: String(materialize.mock.calls.length) }]
+        }
+      ])
+      const sm = new SessionManager({
+        store,
+        hostFor: async () => host,
+        agentById: () => agent,
+        memory,
+        toolContextFor: () => ({
+          fingerprint: toolContextFingerprint(tools, [], instructions),
+          instructions,
+          mcpServers: materialize
+        })
+      })
+      const thread = 'subsession:research-5'
+      const key = sessionKey('slack', 'C1', thread, 'bot-a')
+      let turn = 0
+      const run = async () => {
+        const result = await sm.handle(
+          'bot-a',
+          msg({ ts: `100.${String(++turn).padStart(6, '0')}`, thread, text: `turn ${turn}` })
+        )
+        await host.prompt(result.sessionId, result.blocks)
+        await promptDelivered(sm, key, result)
+        return result
+      }
+      try {
+        const first = await run()
+        const initial = create.mock.calls[0]!
+        expect(JSON.stringify(runtime === 'claude-acp' ? initial[3] : first.blocks)).toContain(instructions)
+        // Fresh objects and reordered object keys must leave the runtime and its prefix alone.
+        tools = [
+          {
+            inputSchema: { additionalProperties: false, required: [], properties: {}, type: 'object' },
+            description: 'Follow up.',
+            name: 'followUp'
+          }
+        ]
+        const warm = await run()
+        expect(warm.sessionId).toBe(first.sessionId)
+        expect(JSON.stringify(warm.blocks)).not.toContain('Research rules')
+        expect(JSON.stringify(warm.blocks)).not.toContain('Standing instructions updated')
+        expect(materialize).toHaveBeenCalledOnce()
+        expect(close).not.toHaveBeenCalled()
+        expect(load).not.toHaveBeenCalled()
+        expect(create.mock.calls[0]).toEqual(initial)
+
+        const watch = {
+          name: 'followUp',
+          description: 'Follow up.',
+          inputSchema: obj({ watch: { type: 'string' } })
+        } satisfies ToolDescriptor
+        for (const changed of [
+          [watch],
+          [{ ...watch, description: 'Watch for an event.' }],
+          [watch, { ...watch, name: 'newTool' }],
+          [watch]
+        ]) {
+          tools = changed
+          const before = load.mock.calls.length
+          const refreshed = await run()
+          expect(refreshed.sessionId).toBe(first.sessionId)
+          expect(refreshed.created).toBe(false)
+          expect(load).toHaveBeenCalledTimes(before + 1)
+          expect(close).toHaveBeenCalledTimes(before + 1)
+          expect(JSON.stringify(refreshed.blocks)).not.toContain('turn 1')
+          tools = [...tools].reverse()
+          const again = await run()
+          expect(load).toHaveBeenCalledTimes(before + 1)
+          expect(JSON.stringify(again.blocks)).not.toContain('Research rules')
+        }
+        instructions = 'Research rules version two: use the current Channels format.'
+        const refreshed = await run()
+        expect(JSON.stringify(runtime === 'claude-acp' ? load.mock.lastCall?.[4] : refreshed.blocks)).toContain(
+          instructions
+        )
+        expect(load.mock.lastCall?.[6]).toEqual(initial[6])
+        const stable = await run()
+        expect(JSON.stringify(stable.blocks)).not.toContain(instructions)
+        expect(materialize).toHaveBeenCalledTimes(6)
+        expect(create).toHaveBeenCalledOnce()
+        expect(close).toHaveBeenCalledTimes(5)
+        expect(load).toHaveBeenCalledTimes(5)
+      } finally {
+        await host.stop()
+        await store.close()
+      }
+    }
+  )
+
+  it('replays history with current tools when a runtime cannot close and reload a warm session', async () => {
+    const store = await newStore()
+    const host = new AcpHost(
+      {
+        command: process.execPath,
+        args: [fileURLToPath(new URL('./fixtures/fake-acp-agent.mjs', import.meta.url))],
+        env: []
+      },
+      { onUpdate: () => {} }
+    )
+    await host.start()
+    let fingerprint = 'old'
+    const materialize = vi.fn(() => [])
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory,
+      toolContextFor: () => ({ fingerprint, mcpServers: materialize })
+    })
+    try {
+      const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'Remember the first request.' }))
+      fingerprint = 'new'
+      const next = await sm.handle('bot-a', msg({ ts: '100.2', text: 'Continue.' }))
+      expect(next.sessionId).not.toBe(first.sessionId)
+      expect(next.created).toBe(true)
+      expect(JSON.stringify(next.blocks)).toContain('Remember the first request.')
+      expect(materialize).toHaveBeenCalledTimes(2)
+    } finally {
+      await host.stop()
+      await store.close()
+    }
+  })
+
   it('creates a session on the first message and prompts with just that text', async () => {
     const store = await newStore()
     const host = fakeHost()
@@ -1073,19 +1223,19 @@ describe('SessionManager', () => {
   it('passes the exact delivery route to MCP setup', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-title-1') } as any
-    const mcpServersFor = vi.fn(() => [])
+    const toolContextFor = vi.fn(() => ({ fingerprint: 'tools', mcpServers: () => [] }))
     const codexAgent = { ...agent, runtime: 'codex-acp' }
     const sm = new SessionManager({
       store,
       hostFor: async () => host,
       agentById: () => codexAgent,
       memory,
-      mcpServersFor
+      toolContextFor
     })
 
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'fix titles', isDm: true }), undefined, 'int-b')
 
-    expect(mcpServersFor).toHaveBeenCalledWith(
+    expect(toolContextFor).toHaveBeenCalledWith(
       expect.objectContaining({
         agent: codexAgent,
         platform: 'slack',
@@ -1672,13 +1822,13 @@ describe('SessionManager', () => {
       loadSupported: () => true,
       loadSession: vi.fn(async () => {})
     } as any
-    const mcpServersFor = vi.fn(() => [])
+    const toolContextFor = vi.fn(() => ({ fingerprint: 'tools', mcpServers: () => [] }))
     const sm2 = new SessionManager({
       store,
       hostFor: async () => host2,
       agentById: () => agent,
       memory,
-      mcpServersFor
+      toolContextFor
     })
     const { sessionId, blocks, created } = await sm2.handle(
       'bot-a',
@@ -1689,8 +1839,8 @@ describe('SessionManager', () => {
 
     expect(sessionId).toBe('acp-1') // resumed the SAME session, not recreated
     expect(created).toBe(false) // same id, CP already knows it → no start emit
-    expect(host2.loadSession).toHaveBeenCalledWith('acp-1', expect.any(String), [], undefined, undefined, [])
-    expect(mcpServersFor).toHaveBeenCalledWith(
+    expect(host2.loadSession).toHaveBeenCalledWith('acp-1', expect.any(String), [], undefined, undefined, [], undefined)
+    expect(toolContextFor).toHaveBeenCalledWith(
       expect.objectContaining({ integrationId: 'int-b', isDm: true, thread: '100.1' })
     )
     expect(host2.newSession).not.toHaveBeenCalled()
@@ -1773,7 +1923,7 @@ describe('SessionManager', () => {
       hostFor: async () => host2,
       agentById: () => agent,
       memory,
-      mcpServersFor: () => [ordinary]
+      toolContextFor: () => ({ fingerprint: 'tools', mcpServers: () => [ordinary] })
     })
 
     const result = await sm2.handle(
@@ -1864,7 +2014,7 @@ describe('SessionManager', () => {
       hostFor: async () => host2,
       agentById: () => agent,
       memory,
-      mcpServersFor: () => [ordinary]
+      toolContextFor: () => ({ fingerprint: 'tools', mcpServers: () => [ordinary] })
     })
 
     const result = await sm2.handle(

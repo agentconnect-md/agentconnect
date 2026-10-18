@@ -227,8 +227,6 @@ export interface OrganizationResearchHost {
   greet(row: AssistantOnboardingRow, text: string, settled: () => void): Promise<boolean>
   /** Whether the DM's long session has nothing left to run, the hello's turn included. */
   helloSettled(row: AssistantOnboardingRow): Promise<boolean>
-  /** Research's prompt, with the daemon's hints and sources. */
-  researchPrompt(agentId: string, row: AssistantOnboardingRow): Promise<string>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
@@ -390,7 +388,7 @@ export class OrganizationResearch {
           replyRequested: false,
           startsTask: true
         },
-        await this.host.researchPrompt(agentId, row)
+        'Research the organization using your current research instructions, save what you learn, and report your findings.'
       ),
       mentionedBots: [],
       isDm: false,

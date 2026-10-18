@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { KNOWLEDGE_RECORD_FEATURE } from '@agentconnect.md/protocol'
+import { FOLLOW_UP_WATCH_FEATURE, KNOWLEDGE_RECORD_FEATURE } from '@agentconnect.md/protocol'
 import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
@@ -126,9 +126,7 @@ describe('the onboarding conversation', () => {
         initialSessionTitle: 'Organization research'
       })
       const prompt: string = research!.msg.turnBody.prompt
-      expect(prompt).toContain('You are researching Example Org')
-      expect(prompt).toContain('example.test')
-      expect(prompt).toContain('findKnowledge')
+      expect(prompt).toContain('current research instructions')
       expect(prompt).not.toContain('replyToSession')
       expect(research!.callMeta).toMatchObject({ originSessionId: row.parentSessionId, subsessionRound: 1 })
       expect(await d.store.assistantSubsessions.get('bot-a', row.taskKey)).toMatchObject({
@@ -164,6 +162,64 @@ describe('the onboarding conversation', () => {
 })
 
 describe('the research task’s session', () => {
+  it('samples tool and research changes without registering tokens, ignoring reconnect generations', async () => {
+    const { daemon, d } = await boot(scaffold(), ALICE)
+    try {
+      const agent = d.agents.get('bot-a')
+      let supportsWatch = false
+      let registration = 1
+      d.cpClient.supportsServerFeature = (feature: string) =>
+        feature === FOLLOW_UP_WATCH_FEATURE ? supportsWatch : feature !== KNOWLEDGE_RECORD_FEATURE
+      d.cpClient.registration = () => registration
+      const at = {
+        agent,
+        platform: 'slack',
+        channel: 'D_FAKE',
+        thread: 'append:1',
+        deliveryThread: '1',
+        integrationId: INTEGRATION,
+        isDm: true,
+        sessionKey: 'slack:D_FAKE:append:1:bot-a'
+      }
+      const snapshot = (thread = at.thread) => d.sessions.deps.toolContextFor({ ...at, thread })
+      const size = d.mcp.sessions.size
+      const initial = snapshot()
+      expect(snapshot().fingerprint).toBe(initial.fingerprint)
+      expect(d.mcp.sessions.size).toBe(size)
+      const registeredTools = (context: ReturnType<typeof snapshot>) => {
+        const [server] = context.mcpServers()
+        const token = server.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN').value
+        return d.mcp.sessions.get(token).tools as {
+          name: string
+          inputSchema: { properties: Record<string, unknown> }
+        }[]
+      }
+      expect(
+        registeredTools(initial).find((tool) => tool.name === 'followUp')?.inputSchema.properties
+      ).not.toHaveProperty('watch')
+      supportsWatch = true
+      const current = snapshot()
+      expect(current.fingerprint).not.toBe(initial.fingerprint)
+      expect(d.mcp.sessions.size).toBe(size + 1)
+      expect(registeredTools(current).find((tool) => tool.name === 'followUp')?.inputSchema.properties).toHaveProperty(
+        'watch'
+      )
+      registration++
+      expect(snapshot().fingerprint).toBe(current.fingerprint)
+      expect(d.mcp.sessions.size).toBe(size + 2)
+      supportsWatch = false
+      expect(snapshot().fingerprint).toBe(initial.fingerprint)
+      const research = snapshot(researchCoordinate('5'))
+      agent.assistantOnboarding.hints.organization = 'Example Research Group'
+      const updated = snapshot(researchCoordinate('5'))
+      expect(updated.fingerprint).not.toBe(research.fingerprint)
+      expect(updated.instructions).toContain('Example Research Group')
+      expect(d.mcp.sessions.size).toBe(size + 2)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('is offered memory, knowledge, the channel listing and nothing that posts, bound to the shared layer, on a host of its own', async () => {
     const { daemon, d } = await boot(scaffold(), ALICE)
     try {
@@ -171,7 +227,7 @@ describe('the research task’s session', () => {
       const scope = d.transportScopeForIntegrationIds([INTEGRATION])
       const thread = researchCoordinate('5')
       const key = sessionKey('slack', 'D_FAKE', thread, 'bot-a', scope)
-      const servers = d.sessions.deps.mcpServersFor({
+      const context = d.sessions.deps.toolContextFor({
         agent,
         platform: 'slack',
         channel: 'D_FAKE',
@@ -181,7 +237,11 @@ describe('the research task’s session', () => {
         transportScope: scope,
         isDm: false,
         sessionKey: key
-      }) as { env: { name: string; value: string }[] }[]
+      })
+      expect(context.instructions).toContain('You are researching Example Org')
+      expect(context.instructions).toContain('example.test')
+      expect(context.instructions).toContain('findKnowledge')
+      const servers = context.mcpServers() as { env: { name: string; value: string }[] }[]
       // The bridge alone: no user-configured server reaches research.
       expect(servers).toHaveLength(1)
       const token = servers[0]!.env.find((entry) => entry.name === 'AC_MCP_TOKEN')!.value
@@ -250,17 +310,19 @@ describe('the research task’s session', () => {
       const scope = d.transportScopeForIntegrationIds([INTEGRATION])
       const thread = researchCoordinate('9')
       const register = () => {
-        const [server] = d.sessions.deps.mcpServersFor({
-          agent,
-          platform: 'slack',
-          channel: 'D_FAKE',
-          thread,
-          deliveryThread: thread,
-          integrationId: INTEGRATION,
-          transportScope: scope,
-          isDm: false,
-          sessionKey: sessionKey('slack', 'D_FAKE', thread, 'bot-a', scope)
-        }) as { env: { name: string; value: string }[] }[]
+        const [server] = d.sessions.deps
+          .toolContextFor({
+            agent,
+            platform: 'slack',
+            channel: 'D_FAKE',
+            thread,
+            deliveryThread: thread,
+            integrationId: INTEGRATION,
+            transportScope: scope,
+            isDm: false,
+            sessionKey: sessionKey('slack', 'D_FAKE', thread, 'bot-a', scope)
+          })
+          .mcpServers() as { env: { name: string; value: string }[] }[]
         return d.mcp.sessions.get(server!.env.find((entry) => entry.name === 'AC_MCP_TOKEN')!.value) as SessionContext
       }
       expect(register().tools.map((tool) => tool.name)).not.toContain('listCodeHostRepositories')

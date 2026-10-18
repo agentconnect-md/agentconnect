@@ -91,6 +91,8 @@ export type StandingContextInput = {
   usesMeta: boolean
   /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
   platformStanding?: string
+  /** Current rules for a daemon-owned task, refreshed with its tool context. */
+  taskInstructions?: string
 }
 
 /** The assembled standing-context strings for one turn. */
@@ -396,6 +398,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
       platformAppend,
       COLLAB_APPEND,
       taskReportingAppend,
+      input.taskInstructions,
       NO_RESPONSE_RULE,
       memoryGuidance
     ]

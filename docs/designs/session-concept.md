@@ -219,8 +219,22 @@ before its prompt reaches the runtime hands it to the next prompt. A row
 without a digest counts as changed. The digest covers the standing context
 alone, not the memory catalog appended beside it on the native channel, and
 leaves out the `Session` line, which the turn that opens a session does not have
-yet. A session whose standing context changes while its runtime stays up keeps
-what it has, on every runtime, until it next resumes.
+yet. General standing-context changes take effect on the next resume.
+
+Before each turn, the daemon compares an in-memory fingerprint of the effective
+tool descriptors, configured MCP servers, and daemon-owned task instructions.
+Object key order and tool/server list order do not change the fingerprint;
+connection tokens, clocks, and release versions are excluded. An unchanged
+fingerprint leaves the runtime session, MCP registration, and prompt prefix
+untouched. No filesystem or network lookup is needed for this comparison.
+
+A changed fingerprint closes and loads only that runtime session before its next
+prompt, installing the current tool list while preserving native history. If
+close/load is unavailable or loading fails, the existing recreation path restores
+the conversation from its transcript. Organization research rules are standing
+instructions in this comparison, so rerunning an existing task receives current
+rules without repeating them on unchanged turns. The fingerprint belongs to the
+host's attachment: a cold resume always assembles the current tools.
 
 Current fields identify the agent and source:
 
