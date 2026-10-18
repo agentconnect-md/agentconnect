@@ -13,7 +13,7 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 // A one-line settings summary sits above a tree of the layers the caller can see, beside the selected file.
 // The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { type ManagedMemoryHome, type MemoryDreamingConfig } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -378,39 +378,36 @@ export function MemoryPanel({
   // daemon's connection and a native/external/off backend reads nothing from a pod, so none of those wake it.
   const sandboxedMemory = sandboxed && persistedProvider === 'managed' && persistedSettings.home !== 'control-plane'
   const summary = persistedProvider === 'external' ? [persistedProviderLabel, ...settingsSummary] : settingsSummary
-  const summaryLine = (end: ReactNode) => (
-    <div className="flex items-end gap-4">
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-[6px] gap-y-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-        <span>
-          <span className="text-(--text-secondary)">{summary[0]}</span>
-          {summary.slice(1).map((part) => ` · ${part}`)}
+  const summaryLine = (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+      <span>
+        <span className="text-(--text-secondary)">{summary[0]}</span>
+        {summary.slice(1).map((part) => ` · ${part}`)}
+      </span>
+      {settingsChanged ? (
+        <span className="font-sans text-[11px] font-semibold leading-normal text-(--amber-500)" aria-live="polite">
+          {t('unsavedChanges')}
         </span>
-        {settingsChanged ? (
-          <span className="font-sans text-[11px] font-semibold leading-normal text-(--amber-500)" aria-live="polite">
-            {t('unsavedChanges')}
-          </span>
-        ) : null}
-        {persistedProvider === 'managed' && homeMigrationPending ? (
-          <span
-            data-memory-home-status
-            className="inline-flex items-center gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
-            aria-live="polite"
-          >
-            <Spinner size={11} />
-            {t('movingToControlPlane')}
-          </span>
-        ) : null}
-        <button
-          type="button"
-          className="ml-1 cursor-pointer border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) underline decoration-(--border-strong) underline-offset-[3px] hover:text-(--text-primary) disabled:cursor-default"
-          aria-expanded={settingsOpen}
-          disabled={savingProvider}
-          onClick={() => (settingsOpen ? closeSettings() : setSettingsOpen(true))}
+      ) : null}
+      {persistedProvider === 'managed' && homeMigrationPending ? (
+        <span
+          data-memory-home-status
+          className="inline-flex items-center gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
+          aria-live="polite"
         >
-          {settingsOpen ? (settingsChanged ? t('cancel') : t('close')) : canEdit ? t('change') : t('details')}
-        </button>
-      </div>
-      {end}
+          <Spinner size={11} />
+          {t('movingToControlPlane')}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="cursor-pointer border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) underline decoration-(--border-strong) underline-offset-[3px] hover:text-(--text-primary) disabled:cursor-default"
+        aria-expanded={settingsOpen}
+        disabled={savingProvider}
+        onClick={() => (settingsOpen ? closeSettings() : setSettingsOpen(true))}
+      >
+        {settingsOpen ? (settingsChanged ? t('cancel') : t('close')) : canEdit ? t('change') : t('details')}
+      </button>
     </div>
   )
   // The settings form edits one explicit draft; the content below keeps describing the persisted backend until Save.
@@ -646,7 +643,7 @@ export function MemoryPanel({
     <div className="flex flex-col gap-4 p-4 desktop:p-0">
       {persistedProvider !== 'managed' || backendChanged ? (
         <>
-          {summaryLine(null)}
+          {summaryLine}
           {settingsForm}
         </>
       ) : null}
@@ -684,12 +681,12 @@ export function MemoryPanel({
             agentId={agentId}
             canEdit={canEdit}
             sandboxed={sandboxedMemory}
-            header={(newMemory) => (
+            header={
               <>
-                {summaryLine(newMemory)}
+                {summaryLine}
                 {settingsForm}
               </>
-            )}
+            }
           />
           {/* Dreaming sits below the browser, and only while the persisted policy is on. */}
           {persistedSettings.dreaming.enabled ? (

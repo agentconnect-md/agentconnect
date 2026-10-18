@@ -35,13 +35,13 @@ vi.mock('@/components/console/UnifiedMemoryPanel', async () => {
 vi.mock('@/components/console/MemoryLayerBrowser', async () => {
   const { useEffect } = await import('react')
   return {
-    MemoryLayerBrowser: (props: { sandboxed?: boolean; header?: (newMemory: ReactNode) => ReactNode }) => {
+    MemoryLayerBrowser: (props: { sandboxed?: boolean; header?: ReactNode }) => {
       useEffect(() => {
         mocks.entryMounts += 1
       }, [])
       return (
         <>
-          {props.header?.(null)}
+          {props.header}
           <div data-testid="layer-memory-view" data-sandboxed={String(props.sandboxed ?? '')} />
         </>
       )

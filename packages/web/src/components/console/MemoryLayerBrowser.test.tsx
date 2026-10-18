@@ -153,7 +153,7 @@ async function render(
   props: Partial<Parameters<typeof MemoryLayerBrowser>[0]> = {},
   wrap?: (n: ReactNode) => ReactNode
 ) {
-  const node = <MemoryLayerBrowser agentId={AGENT} canEdit header={(newMemory) => newMemory} {...props} />
+  const node = <MemoryLayerBrowser agentId={AGENT} canEdit {...props} />
   await act(async () => root.render(wrap ? wrap(node) : node))
   await settle()
 }
@@ -236,7 +236,8 @@ describe('MemoryLayerBrowser tree', () => {
     await render()
     await click(tree(), '#launch-room')
     await click(tree(), 'q1-priorities')
-    await click(host, 'New memory')
+    // New memory sits in the tree toolbar, beside Filter and Refresh, like Add file in Workspace.
+    await click(tree(), 'New memory')
     expect(reader().textContent).toContain('#launch-room')
     const name = reader().querySelector<HTMLInputElement>('input')!
     await act(async () => {

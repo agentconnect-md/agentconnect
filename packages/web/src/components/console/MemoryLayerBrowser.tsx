@@ -190,8 +190,8 @@ export function MemoryLayerBrowser({
   canEdit: boolean
   /** The managed tree sits on a pool sandbox volume: a read refused as asleep presses the wake. */
   sandboxed?: boolean
-  /** The settings line above the card; it receives the New memory button to place beside it. */
-  header?: (newMemory: ReactNode) => ReactNode
+  /** The settings line above the card. */
+  header?: ReactNode
 }) {
   const t = useTranslations('Agents.detail.memory')
   const tFiles = useTranslations('Sessions.fileBrowser')
@@ -737,7 +737,8 @@ export function MemoryLayerBrowser({
   const newMemory = canCreate ? (
     <Button
       variant="secondary"
-      size="sm"
+      size="xs"
+      className="flex-none"
       disabled={saving || reading || (editing && !blocked) || blocked}
       onClick={() => {
         resetReader()
@@ -745,6 +746,7 @@ export function MemoryLayerBrowser({
         setMobileReader(true)
       }}
     >
+      <Icon name="file-plus" size={13} />
       {t('newMemory')}
     </Button>
   ) : null
@@ -1030,7 +1032,7 @@ export function MemoryLayerBrowser({
 
   return (
     <div className="flex flex-col gap-4">
-      {header ? header(newMemory) : null}
+      {header}
       <div className="card overflow-hidden max-desktop:rounded-lg desktop:grid desktop:h-[620px] desktop:grid-cols-[320px_minmax(0,1fr)]">
         <div
           data-memory-pane="tree"
@@ -1058,6 +1060,7 @@ export function MemoryLayerBrowser({
             >
               <Icon name="refresh-cw" size={15} strokeWidth={1.9} />
             </button>
+            {newMemory}
           </div>
           <div className="min-h-0 flex-1 overflow-auto pb-[10px] pt-[6px]">
             {asleepView && sharedListing?.status !== 'loading' ? (
