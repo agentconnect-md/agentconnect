@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useParams } from 'next/navigation'
 import useSWR from 'swr'
-import { useTranslations } from 'next-intl'
+import { useFormatter, useTranslations } from 'next-intl'
 import { parseOrganizationFile } from '@agentconnect.md/protocol/organization-files'
 import {
   ApiError,
@@ -25,19 +25,25 @@ import {
 } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useOrgs } from '@/lib/org-context'
+import { useConsoleData } from '@/lib/data-context'
+import { agentLabel } from '@/lib/data'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { NotFound } from '@/components/console/NotFound'
 import { KnowledgeEditor, TagChips, useProvenanceLabel } from '@/components/console/knowledge'
 import {
+  AboutSourcesRail,
   AboutView,
+  aboutDocument,
   ChannelsView,
   PeopleView,
   RecordTextEditor,
   isRecordKind,
   recordFile,
   useRecordName,
+  type AboutDocument,
   type PeopleActions,
-  type RecordKind
+  type RecordKind,
+  type SourceFocus
 } from '@/components/console/handbook'
 import {
   AgentVisibilityCell,
@@ -52,11 +58,33 @@ import { Button, Icon } from '@/components/ui'
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), { ssr: false })
 
 /** A record entry's text as its file view, or its Markdown when the text no longer fits the shape. */
-function RecordBody({ kind, content, people }: { kind: RecordKind; content: string; people?: PeopleActions }) {
+function RecordBody({
+  kind,
+  content,
+  people,
+  about
+}: {
+  kind: RecordKind
+  content: string
+  people?: PeopleActions
+  about?: { doc: AboutDocument; focus: SourceFocus }
+}) {
   if (!parseOrganizationFile(recordFile(kind), content).ok) return <MarkdownView content={content} />
-  if (kind === 'organization') return <AboutView content={content} />
+  if (kind === 'organization') return about ? <AboutView {...about} /> : null
   if (kind === 'channels') return <ChannelsView content={content} />
   return <PeopleView content={content} actions={people} />
+}
+
+/** "Updated 2 hours ago by Atlas" for About's revision on screen; the agent is named only when one wrote it and still exists. */
+function useUpdatedLine(): (date: string, source: { source: string; sourceAgentId: string | null }) => string {
+  const th = useTranslations('Knowledge.handbook')
+  const format = useFormatter()
+  const { agents } = useConsoleData()
+  return (date, source) => {
+    const when = format.relativeTime(new Date(date), { now: Date.now() })
+    const agent = source.source === 'agent' ? agents.find((a) => a.id === source.sourceAgentId) : undefined
+    return agent ? th('updatedBy', { when, name: agentLabel(agent) }) : th('updated', { when })
+  }
 }
 
 /** Which agents read an entry, an owner's choice; About and Channels are every agent's and never open it. */
@@ -122,7 +150,9 @@ export default function KnowledgeDetailView() {
   const { activeOrg, myRole, orgPath } = useOrgs()
   const canManage = myRole === 'owner'
   const provenance = useProvenanceLabel()
+  const updatedLine = useUpdatedLine()
   const recordName = useRecordName()
+  const [activeSource, setActiveSource] = useState<number | null>(null)
   const entry = useSWR(consoleKeys.organizationKnowledgeEntry(activeOrg?.id, id), ([, , , entryId]) =>
     getOrganizationKnowledge(entryId)
   )
@@ -203,6 +233,9 @@ export default function KnowledgeDetailView() {
   const historyError = history.error instanceof Error ? history.error.message : null
   // About and Channels are read by every agent; People's readers and every other entry's are an owner's choice.
   const visibilityFixed = kind === 'organization' || kind === 'channels'
+  // About reads as a document whose footnotes and sources rail point at each other.
+  const aboutDoc = kind === 'organization' && shown ? aboutDocument(shown.content) : null
+  const about = aboutDoc ? { doc: aboutDoc, focus: { active: activeSource, onActive: setActiveSource } } : undefined
 
   const run = async (action: () => Promise<unknown>) => {
     if (busy) return
@@ -301,13 +334,16 @@ export default function KnowledgeDetailView() {
             </button>
           )}
         </span>
-        {meta && (
-          <>
-            <span>{provenance(meta.source)}</span>
-            <span>{fmtDate(meta.date)}</span>
-            <TagChips values={meta.tags} />
-          </>
-        )}
+        {meta &&
+          (kind === 'organization' ? (
+            <span title={fmtDate(meta.date)}>{updatedLine(meta.date, meta.source)}</span>
+          ) : (
+            <>
+              <span>{provenance(meta.source)}</span>
+              <span>{fmtDate(meta.date)}</span>
+              <TagChips values={meta.tags} />
+            </>
+          ))}
       </div>
       {error && (
         <div className="mb-3 rounded-md bg-(--status-error-soft) px-3 py-2 font-sans text-[12px] text-(--status-error)">
@@ -328,7 +364,12 @@ export default function KnowledgeDetailView() {
           <div className="px-5 py-4">
             {shown ? (
               kind ? (
-                <RecordBody kind={kind} content={shown.content} {...(people ? { people } : {})} />
+                <RecordBody
+                  kind={kind}
+                  content={shown.content}
+                  {...(people ? { people } : {})}
+                  {...(about ? { about } : {})}
+                />
               ) : (
                 <MarkdownView content={shown.content} />
               )
@@ -339,52 +380,55 @@ export default function KnowledgeDetailView() {
             )}
           </div>
         </div>
-        <div className="card overflow-hidden">
-          <div className="cardhead">
-            <span className="cardtitle">{t('detail.history')}</span>
-          </div>
-          {history.isLoading && !history.data ? (
-            <LoadingState size={18} padding={16} />
-          ) : historyError ? (
-            <div className="px-4 py-3 font-sans text-[12px] text-(--status-error)">{historyError}</div>
-          ) : (
-            history.data?.map((revision) => {
-              const active = revision.revision === viewing
-              const current = revision.revision === record.currentRevision
-              return (
-                <button
-                  key={revision.revision}
-                  type="button"
-                  aria-current={active ? 'true' : undefined}
-                  className={
-                    active
-                      ? 'row click w-full grid-cols-[minmax(0,1fr)_auto] gap-2 bg-(--surface-active) text-left'
-                      : 'row click w-full grid-cols-[minmax(0,1fr)_auto] gap-2 text-left'
-                  }
-                  onClick={() => setSelectedRevision(current ? null : revision.revision)}
-                >
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-2">
-                      <span className="mono text-[12px] font-medium text-(--text-primary)">
-                        {t('revision', { value: revision.revision })}
-                      </span>
-                      {current && (
-                        <span className="badge bg-(--status-online-soft) text-[9.5px] text-(--status-online)">
-                          {t('detail.current')}
+        <div className="flex min-w-0 flex-col gap-[18px]">
+          {about && <AboutSourcesRail {...about} />}
+          <div className="card overflow-hidden">
+            <div className="cardhead">
+              <span className="cardtitle">{t('detail.history')}</span>
+            </div>
+            {history.isLoading && !history.data ? (
+              <LoadingState size={18} padding={16} />
+            ) : historyError ? (
+              <div className="px-4 py-3 font-sans text-[12px] text-(--status-error)">{historyError}</div>
+            ) : (
+              history.data?.map((revision) => {
+                const active = revision.revision === viewing
+                const current = revision.revision === record.currentRevision
+                return (
+                  <button
+                    key={revision.revision}
+                    type="button"
+                    aria-current={active ? 'true' : undefined}
+                    className={
+                      active
+                        ? 'row click w-full grid-cols-[minmax(0,1fr)_auto] gap-2 bg-(--surface-active) text-left'
+                        : 'row click w-full grid-cols-[minmax(0,1fr)_auto] gap-2 text-left'
+                    }
+                    onClick={() => setSelectedRevision(current ? null : revision.revision)}
+                  >
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2">
+                        <span className="mono text-[12px] font-medium text-(--text-primary)">
+                          {t('revision', { value: revision.revision })}
                         </span>
-                      )}
+                        {current && (
+                          <span className="badge bg-(--status-online-soft) text-[9.5px] text-(--status-online)">
+                            {t('detail.current')}
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-[2px] block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                        {provenance(revision)}
+                      </span>
                     </span>
-                    <span className="mt-[2px] block truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      {provenance(revision)}
+                    <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      {fmtDate(revision.createdAt)}
                     </span>
-                  </span>
-                  <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                    {fmtDate(revision.createdAt)}
-                  </span>
-                </button>
-              )
-            })
-          )}
+                  </button>
+                )
+              })
+            )}
+          </div>
         </div>
       </div>
       {editing &&

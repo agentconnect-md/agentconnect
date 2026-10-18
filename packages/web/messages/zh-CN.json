@@ -3365,11 +3365,7 @@
       "knowledge": {
         "handbook": "手册",
         "library": "知识库",
-        "reads": "可查阅",
-        "doesNotRead": "不可查阅",
-        "openKnowledge": "打开知识",
-        "noRecord": "还没有组织记录",
-        "emptyLibrary": "此 Agent 不能查阅任何知识库条目"
+        "openKnowledge": "打开知识"
       }
     }
   },
@@ -4343,7 +4339,24 @@
       "placesRead": "{places} · 已读 {read} 个",
       "notReadYet": "还没读过",
       "people": "{count, plural, other {# 人}}",
-      "summary": "概述",
+      "sections": {
+        "products": "产品与客户",
+        "howItWorks": "如何运作",
+        "repositories": "代码仓库与系统"
+      },
+      "notConfirmed": "还没确认",
+      "sourceNote": "来源 {note}",
+      "sourcesTitle": "来源",
+      "sourceGroups": {
+        "channel": "频道",
+        "repository": "代码仓库",
+        "web": "网页",
+        "knowledge": "知识库文档",
+        "self": "本人所说"
+      },
+      "citedLines": "{count, plural, other {# 行}}",
+      "updated": "更新于 {when}",
+      "updatedBy": "{name} 更新于 {when}",
       "self": "本人",
       "inferred": "推断",
       "you": "你",

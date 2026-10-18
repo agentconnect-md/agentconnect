@@ -3,17 +3,28 @@
 // The Handbook, the organization record's three entries (assistant-mode.md §5.16): names, summaries, the research status and the file views.
 
 import { useId, useState } from 'react'
+import Link from 'next/link'
+import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import {
+  ORGANIZATION_SECTIONS,
   parseOrganizationFile,
   type ChannelLine,
   type FactLine,
   type FactSource
 } from '@agentconnect.md/protocol/organization-files'
-import { fmtDate, type KnowledgeKind, type OrganizationRecordDto } from '@/lib/api'
+import {
+  fmtDate,
+  getOrganizationRecord,
+  listOrganizationKnowledge,
+  type KnowledgeKind,
+  type OrganizationRecordDto
+} from '@/lib/api'
 import { agentLabel } from '@/lib/data'
 import { chatPlaceName } from '@/lib/platform-labels'
 import { useConsoleData } from '@/lib/data-context'
+import { consoleKeys } from '@/lib/swr-keys'
+import { useOrgs } from '@/lib/org-context'
 import { PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { Scrim } from '@/components/console/Scrim'
@@ -135,39 +146,294 @@ function Fact({ fact, text }: { fact: FactLine; text?: string }) {
   )
 }
 
-/** About by section: the summary first, then each section's lines. */
-export function AboutView({ content }: { content: string }) {
-  const t = useTranslations('Knowledge.handbook')
+/** One About line as the document shows it: its text and its source's footnote number. */
+export interface AboutLine {
+  line: number
+  text: string
+  note: number
+}
+
+/** One distinct source of About, numbered by first appearance, with how many lines cite it. */
+export interface AboutSource {
+  note: number
+  source: FactSource
+  lines: number
+}
+
+/** About as a document: the summary, each section's confirmed lines, the inferred lines apart, and the sources they cite. */
+export interface AboutDocument {
+  summary: AboutLine[]
+  sections: { name: OrganizationSection; lines: AboutLine[] }[]
+  unconfirmed: AboutLine[]
+  sources: AboutSource[]
+}
+
+type OrganizationSection = (typeof ORGANIZATION_SECTIONS)[number]
+
+/** About's text as a document, or null when it does not fit its shape. */
+export function aboutDocument(content: string): AboutDocument | null {
   const parsed = parseOrganizationFile('organization.md', content)
   if (!parsed.ok || parsed.parsed.file !== 'organization.md') return null
   const lines = content.split('\n')
-  const sectionOf = (line: number) => {
+  const sectionOf = (line: number): OrganizationSection | undefined => {
     for (let at = line - 1; at >= 1; at--) {
       const heading = /^##\s+(.+?)\s*$/.exec(lines[at - 1] ?? '')
-      if (heading) return heading[1]!
+      if (heading) return heading[1] as OrganizationSection
     }
-    return ''
+    return undefined
   }
-  const groups = new Map<string, FactLine[]>()
+  const summary: FactLine[] = []
+  const sections = new Map<OrganizationSection, FactLine[]>()
+  const unconfirmed: FactLine[] = []
   for (const fact of parsed.parsed.facts) {
     const section = sectionOf(fact.line)
-    groups.set(section, [...(groups.get(section) ?? []), fact])
+    if (fact.inferred) unconfirmed.push(fact)
+    else if (!section) summary.push(fact)
+    else sections.set(section, [...(sections.get(section) ?? []), fact])
   }
-  if (groups.size === 0) return <Empty text={t('emptyAbout')} />
+  // Footnotes count up in reading order: the summary, the sections, then the lines not confirmed yet.
+  const notes = new Map<string, AboutSource>()
+  const toLine = (fact: FactLine): AboutLine => {
+    const key = sourceKey(fact.source)
+    const known = notes.get(key) ?? { note: notes.size + 1, source: fact.source, lines: 0 }
+    known.lines++
+    notes.set(key, known)
+    return { line: fact.line, text: fact.text.replace(/^\s*[-*]\s+/, ''), note: known.note }
+  }
+  const summaryLines = summary.map(toLine)
+  const sectionLines = [...sections].map(([name, facts]) => ({ name, lines: facts.map(toLine) }))
+  const unconfirmedLines = unconfirmed.map(toLine)
+  return { summary: summaryLines, sections: sectionLines, unconfirmed: unconfirmedLines, sources: [...notes.values()] }
+}
+
+// Two lines rest on one source when they name the same place, entry, repository or page.
+function sourceKey(source: FactSource): string {
+  if (source.kind === 'channel') return `channel:${placeKey(source.name)}`
+  if (source.kind === 'knowledge') return `knowledge:${source.title.toLowerCase()}`
+  if (source.kind === 'repository') return `repository:${source.path.toLowerCase()}`
+  if (source.kind === 'web') return `web:${source.url.replace(/\/+$/, '')}`
+  return 'self'
+}
+
+const SECTION_KEYS: Record<OrganizationSection, 'products' | 'howItWorks' | 'repositories'> = {
+  'Products and customers': 'products',
+  'How it works': 'howItWorks',
+  'Repositories and systems': 'repositories'
+}
+
+/** Which source a footnote or a rail row points at while hovered or focused, shared by the document and its rail. */
+export interface SourceFocus {
+  active: number | null
+  onActive: (note: number | null) => void
+}
+
+function Footnote({ note, focus }: { note: number; focus: SourceFocus }) {
+  const t = useTranslations('Knowledge.handbook')
   return (
-    <div className="flex flex-col gap-4">
-      {[...groups].map(([section, facts]) => (
-        <section key={section || 'summary'}>
-          <div className="mb-1 font-sans text-[11px] font-semibold uppercase leading-normal tracking-[0.04em] text-(--text-tertiary)">
-            {section || t('summary')}
-          </div>
-          {facts.map((fact) => (
-            <Fact key={fact.line} fact={fact} />
+    <sup className="ml-[3px]">
+      <a
+        href={`#about-source-${note}`}
+        aria-label={t('sourceNote', { note })}
+        className={
+          focus.active === note
+            ? 'rounded-xs bg-(--brand-soft) px-[3px] font-mono text-[9.5px] font-medium text-(--brand-soft-text) no-underline'
+            : 'rounded-xs bg-(--surface-sunken) px-[3px] font-mono text-[9.5px] font-medium text-(--text-tertiary) no-underline'
+        }
+        onMouseEnter={() => focus.onActive(note)}
+        onMouseLeave={() => focus.onActive(null)}
+        onFocus={() => focus.onActive(note)}
+        onBlur={() => focus.onActive(null)}
+      >
+        {note}
+      </a>
+    </sup>
+  )
+}
+
+function AboutBullets({ lines, focus, quiet }: { lines: AboutLine[]; focus: SourceFocus; quiet?: boolean }) {
+  return (
+    <ul className="m-0 flex list-disc flex-col gap-[5px] pl-5">
+      {lines.map((line) => (
+        <li
+          key={line.line}
+          className={
+            quiet
+              ? 'font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)'
+              : 'font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-primary)'
+          }
+        >
+          {line.text}
+          <Footnote note={line.note} focus={focus} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** About as a readable document: the summary as a paragraph, each section's lines, and what is not confirmed yet at the end. */
+export function AboutView({ doc, focus }: { doc: AboutDocument; focus: SourceFocus }) {
+  const t = useTranslations('Knowledge.handbook')
+  if (doc.sources.length === 0) return <Empty text={t('emptyAbout')} />
+  return (
+    <div className="flex flex-col gap-5">
+      {doc.summary.length > 0 && (
+        <p className="m-0 font-sans text-[14px] font-normal leading-[1.65] text-(--text-primary)">
+          {doc.summary.map((line, at) => (
+            <span key={line.line}>
+              {at > 0 && ' '}
+              {line.text}
+              <Footnote note={line.note} focus={focus} />
+            </span>
           ))}
+        </p>
+      )}
+      {doc.sections.map((section) => (
+        <section key={section.name}>
+          <h3 className="m-0 mb-2 font-sans text-[15px] font-semibold leading-normal text-(--text-primary)">
+            {t(`sections.${SECTION_KEYS[section.name]}`)}
+          </h3>
+          <AboutBullets lines={section.lines} focus={focus} />
         </section>
       ))}
+      {doc.unconfirmed.length > 0 && (
+        <section className="rounded-md border border-dashed border-(--border-default) px-4 py-3">
+          <h3 className="m-0 mb-2 flex items-baseline gap-2 font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
+            {t('notConfirmed')}
+            <span className="font-mono text-[11.5px] font-normal text-(--text-tertiary)">{doc.unconfirmed.length}</span>
+          </h3>
+          <AboutBullets lines={doc.unconfirmed} focus={focus} quiet />
+        </section>
+      )}
     </div>
   )
+}
+
+type SourceGroup = 'channel' | 'repository' | 'web' | 'knowledge' | 'self'
+const SOURCE_GROUPS: SourceGroup[] = ['channel', 'repository', 'web', 'knowledge', 'self']
+
+/** The sources rail beside About: each group with its count, each source with its footnote and how many lines cite it. */
+export function AboutSourcesRail({ doc, focus }: { doc: AboutDocument; focus: SourceFocus }) {
+  const t = useTranslations('Knowledge.handbook')
+  const { activeOrg, orgPath } = useOrgs()
+  const record = useSWR(consoleKeys.organizationRecord(activeOrg?.id), () => getOrganizationRecord())
+  const library = useSWR(consoleKeys.organizationKnowledge(activeOrg?.id, false), () =>
+    listOrganizationKnowledge(false)
+  )
+  // A channel source names no platform; the Channels entry's line for that place gives it and the name as the platform writes it.
+  const channels = record.data?.entries.find((entry) => entry.kind === 'channels')
+  const parsedChannels = channels ? parseOrganizationFile('channels.md', channels.content) : undefined
+  const placeOf = new Map(
+    parsedChannels?.ok && parsedChannels.parsed.file === 'channels.md'
+      ? parsedChannels.parsed.channels.map((channel) => [placeKey(channel.channel), channel] as const)
+      : []
+  )
+  const entryIdOf = (title: string) =>
+    library.data?.find((entry) => entry.title.toLowerCase() === title.toLowerCase())?.id
+  if (doc.sources.length === 0) return null
+  return (
+    <div className="card overflow-hidden">
+      <div className="cardhead">
+        <span className="cardtitle">{t('sourcesTitle')}</span>
+      </div>
+      {SOURCE_GROUPS.map((group) => {
+        const sources = doc.sources.filter((entry) => entry.source.kind === group)
+        if (sources.length === 0) return null
+        return (
+          <section key={group} className="border-t border-(--border-subtle) px-4 py-3 first-of-type:border-t-0">
+            <div className="mb-1 flex items-center justify-between gap-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+              {t(`sourceGroups.${group}`)}
+              <span className="font-mono text-[11.5px] font-normal text-(--text-tertiary)">{sources.length}</span>
+            </div>
+            <div className="flex flex-col">
+              {sources.map(({ note, source, lines }) => (
+                <div
+                  key={note}
+                  id={`about-source-${note}`}
+                  tabIndex={0}
+                  className={
+                    focus.active === note
+                      ? '-mx-2 flex items-center gap-2 rounded-sm bg-(--surface-active) px-2 py-[5px] outline-none'
+                      : '-mx-2 flex items-center gap-2 rounded-sm px-2 py-[5px] outline-none focus-visible:bg-(--surface-hover)'
+                  }
+                  onMouseEnter={() => focus.onActive(note)}
+                  onMouseLeave={() => focus.onActive(null)}
+                  onFocus={() => focus.onActive(note)}
+                  onBlur={() => focus.onActive(null)}
+                >
+                  <span className="w-4 flex-none text-right font-mono text-[10.5px] font-semibold leading-normal text-(--text-tertiary)">
+                    {note}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
+                    <SourceLabel
+                      source={source}
+                      place={source.kind === 'channel' ? placeOf.get(placeKey(source.name)) : undefined}
+                      href={source.kind === 'knowledge' ? entryIdOf(source.title) : undefined}
+                      orgPath={orgPath}
+                    />
+                  </span>
+                  <span
+                    title={t('citedLines', { count: lines })}
+                    className="flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+                  >
+                    {lines}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
+function SourceLabel({
+  source,
+  place,
+  href,
+  orgPath
+}: {
+  source: FactSource
+  place: ChannelLine | undefined
+  href: string | undefined
+  orgPath: (path: string) => string
+}) {
+  const t = useTranslations('Knowledge.handbook')
+  if (source.kind === 'channel')
+    return (
+      <span className="inline-flex min-w-0 items-center gap-[6px]">
+        <span className="flex h-4 w-4 flex-none items-center justify-center">
+          {place ? <PlatformMark platform={place.platform} /> : <Icon name="hash" size={12} />}
+        </span>
+        <span className="truncate">{place ? chatPlaceName(place.platform, place.channel) : source.name}</span>
+      </span>
+    )
+  if (source.kind === 'web')
+    return (
+      <a className="lnk" href={source.url} target="_blank" rel="noopener noreferrer" title={source.url}>
+        {pageOf(source.url)}
+      </a>
+    )
+  if (source.kind === 'knowledge')
+    return href ? (
+      <Link className="lnk" href={orgPath(`/knowledge/${href}`)}>
+        {source.title}
+      </Link>
+    ) : (
+      <>{source.title}</>
+    )
+  if (source.kind === 'repository') return <span className="font-mono text-[12px]">{source.path}</span>
+  return <>{t('self')}</>
+}
+
+// A page as its host and path, without the scheme, a query or a trailing slash.
+function pageOf(url: string): string {
+  try {
+    const at = new URL(url)
+    return `${at.host}${at.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return url
+  }
 }
 
 /** Channels as a list: the places read first, then those not read yet; each row its platform mark, name, purpose and a source chip only when another place is the source. */
