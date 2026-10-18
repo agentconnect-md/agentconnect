@@ -1,0 +1,212 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1500"
+  height="1460"
+  viewBox="0 0 1500 1460"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">Open AHP access with separate legacy and AHP services</title>
+  <desc id="description">
+    Webchat selects a legacy or AHP adapter at attachment time. Third-party clients use the independently enabled public
+    AHP endpoint. Separate relay routes lead to sibling legacy and AHP services in the daemon. Both use a
+    protocol-neutral application port over one existing session core, store, and ACP runtime owner. Control Plane links
+    carry control and metadata. The feature switches are proposed configuration, with legacy as the default.
+  </desc>
+  <defs>
+    <marker
+      id="arrow"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto-start-reverse"
+    >
+      <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#526174" stroke-width="1.7" />
+    </marker>
+    <marker
+      id="control-arrow"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto-start-reverse"
+    >
+      <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#64748b" stroke-width="1.7" />
+    </marker>
+    <style>
+      text {
+        font-family: Inter, Arial, sans-serif;
+        fill: #172335;
+      }
+      .heading {
+        font-size: 34px;
+        font-weight: 600;
+      }
+      .section {
+        font-size: 25px;
+        font-weight: 600;
+      }
+      .label {
+        font-size: 23px;
+        font-weight: 600;
+      }
+      .detail {
+        font-size: 20px;
+        fill: #526174;
+      }
+      .small {
+        font-size: 18px;
+        fill: #526174;
+      }
+      .box {
+        fill: #f8fafc;
+        stroke: #cbd5e1;
+        stroke-width: 1.5;
+      }
+      .new {
+        fill: #f1edff;
+        stroke: #8b72d6;
+        stroke-width: 2;
+      }
+      .group {
+        fill: #fff;
+        stroke: #a9b6c7;
+        stroke-width: 1.5;
+      }
+      .flow {
+        fill: none;
+        stroke: #526174;
+        stroke-width: 2;
+        marker-end: url(#arrow);
+      }
+      .duplex {
+        marker-start: url(#arrow);
+      }
+      .control {
+        fill: none;
+        stroke: #64748b;
+        stroke-width: 2;
+        stroke-dasharray: 7 7;
+        marker-end: url(#control-arrow);
+      }
+    </style>
+  </defs>
+  <rect width="1500" height="1460" fill="#fff" />
+  <text x="60" y="62" class="heading">Open AHP access to AgentConnect</text>
+  <text x="60" y="98" class="detail">Separate protocol services · reversible client rollout · one execution owner</text>
+  <rect x="1160" y="40" width="272" height="44" rx="22" fill="#f1edff" />
+  <text x="1296" y="69" class="small" text-anchor="middle">PROPOSAL · DESIGN ONLY</text>
+
+  <rect x="70" y="145" width="460" height="90" rx="12" class="box" />
+  <text x="300" y="183" class="label" text-anchor="middle">Webchat</text>
+  <text x="300" y="214" class="detail" text-anchor="middle">Common UI contract · separate adapters</text>
+  <rect x="650" y="145" width="400" height="90" rx="12" class="box" />
+  <text x="850" y="183" class="label" text-anchor="middle">Third-party AHP clients</text>
+  <text x="850" y="214" class="detail" text-anchor="middle">VS Code / CLI / custom UI</text>
+  <rect x="1100" y="145" width="330" height="90" rx="12" class="box" />
+  <text x="1265" y="183" class="label" text-anchor="middle">Control Plane</text>
+  <text x="1265" y="214" class="detail" text-anchor="middle">Identity · registry · credentials</text>
+
+  <path d="M 300 235 V 280" class="flow duplex" />
+  <rect x="70" y="280" width="460" height="90" rx="12" class="new" />
+  <text x="300" y="314" class="label" text-anchor="middle">Client protocol selector</text>
+  <text x="300" y="346" class="detail" text-anchor="middle">webchat.protocol: legacy | ahp</text>
+  <path d="M 300 370 V 440" class="flow duplex" />
+  <text x="278" y="417" class="small" text-anchor="end">Legacy (default)</text>
+  <path d="M 500 370 V 398 H 730 V 440" class="flow duplex" />
+  <text x="616" y="386" class="small" text-anchor="middle">AHP</text>
+  <path d="M 850 235 V 440" class="flow duplex" />
+  <text x="876" y="314" class="small">Public AHP / WSS</text>
+  <text x="876" y="343" class="small">Independent of Webchat</text>
+  <path d="M 1190 235 V 440" class="control" />
+  <text x="1210" y="317" class="small">Auth / routing</text>
+  <path d="M 1420 235 V 258 H 1470 V 612 H 1450" class="control" />
+  <text x="1398" y="563" class="small" text-anchor="end">Create / bind / metadata</text>
+
+  <rect x="70" y="440" width="460" height="86" rx="12" class="box" />
+  <text x="300" y="475" class="label" text-anchor="middle">Relay · legacy route</text>
+  <text x="300" y="506" class="detail" text-anchor="middle">Existing protocol and client compatibility</text>
+  <rect x="650" y="440" width="780" height="86" rx="12" class="new" />
+  <text x="1040" y="475" class="label" text-anchor="middle">Relay · authenticated AHP endpoint</text>
+  <text x="1040" y="506" class="detail" text-anchor="middle">
+    Standard frames · auth / audience / daemon capability gates
+  </text>
+
+  <rect x="50" y="590" width="1400" height="605" rx="18" class="group" />
+  <text x="82" y="627" class="section">AgentConnect daemon</text>
+  <path d="M 300 526 V 566 H 560 V 650" class="flow duplex" />
+  <path d="M 1040 526 V 650" class="flow duplex" />
+  <rect x="85" y="650" width="500" height="165" rx="14" class="box" />
+  <text x="335" y="686" class="section" text-anchor="middle">LegacyChatService</text>
+  <text x="335" y="722" class="detail" text-anchor="middle">Legacy wire + per-turn stream / replay</text>
+  <text x="335" y="752" class="detail" text-anchor="middle">Existing webchat/ adapter</text>
+  <text x="335" y="784" class="small" text-anchor="middle">Independent connections and lifecycle</text>
+  <rect x="650" y="650" width="780" height="165" rx="14" class="new" />
+  <text x="1040" y="686" class="section" text-anchor="middle">AhpChatService · AHP v1 host</text>
+  <text x="1040" y="722" class="detail" text-anchor="middle">
+    Negotiation · channels · action mapping · state projection
+  </text>
+  <text x="1040" y="752" class="detail" text-anchor="middle">
+    Separate subscriptions, snapshots, replay and lifecycle
+  </text>
+  <text x="1040" y="784" class="small" text-anchor="middle">ahp.mode: off | shadow | on</text>
+
+  <path d="M 335 815 V 870" class="flow duplex" />
+  <path d="M 1040 815 V 870" class="flow duplex" />
+  <text x="690" y="848" class="small" text-anchor="middle">One service per incoming command</text>
+  <rect x="85" y="870" width="1345" height="80" rx="12" class="new" />
+  <text x="757" y="903" class="label" text-anchor="middle">
+    Shared session application port · protocol-neutral business types
+  </text>
+  <text x="757" y="934" class="detail" text-anchor="middle">
+    CP-backed discovery / creation · admission / cancel / approve · masked events / lifecycle
+  </text>
+  <path d="M 385 950 V 1010" class="flow duplex" />
+  <path d="M 907 1010 V 950" class="flow" />
+  <text x="928" y="988" class="small">Read / reconstruct state</text>
+
+  <rect x="85" y="1010" width="600" height="110" rx="12" class="box" />
+  <text x="385" y="1045" class="label" text-anchor="middle">Existing session core</text>
+  <text x="385" y="1076" class="detail" text-anchor="middle">Admission · queues · tasks · recovery</text>
+  <text x="385" y="1103" class="detail" text-anchor="middle">Memory · context · tools · permissions</text>
+  <path d="M 685 1065 H 740" class="flow duplex" />
+  <rect x="740" y="1010" width="335" height="110" rx="12" class="box" />
+  <text x="907" y="1045" class="label" text-anchor="middle">Existing session store</text>
+  <text x="907" y="1077" class="detail" text-anchor="middle">Sessions + transcripts</text>
+  <text x="907" y="1104" class="small" text-anchor="middle">One durable business record</text>
+  <rect x="1150" y="1010" width="280" height="110" rx="12" class="box" />
+  <text x="1290" y="1045" class="label" text-anchor="middle">Platform adapters</text>
+  <text x="1290" y="1077" class="detail" text-anchor="middle">Ingress + renderers</text>
+  <text x="1290" y="1104" class="small" text-anchor="middle">Native edits / rate limits</text>
+  <path d="M 640 1120 V 1166 H 1200 V 1120" class="flow duplex" />
+  <text x="907" y="1154" class="small" text-anchor="middle">Existing platform delivery and routing</text>
+
+  <path d="M 385 1120 V 1260" class="flow duplex" />
+  <text x="410" y="1234" class="small">ACP</text>
+  <path d="M 1290 1120 V 1260" class="flow duplex" />
+  <text x="1315" y="1234" class="small">Platform APIs</text>
+  <rect x="170" y="1260" width="430" height="85" rx="12" class="box" />
+  <text x="385" y="1296" class="label" text-anchor="middle">Claude / Codex / ACP runtime</text>
+  <text x="385" y="1326" class="detail" text-anchor="middle">Local process or sandbox pod</text>
+  <rect x="1150" y="1260" width="280" height="85" rx="12" class="box" />
+  <text x="1290" y="1296" class="label" text-anchor="middle">Slack / Discord</text>
+  <text x="1290" y="1326" class="detail" text-anchor="middle">Telegram / other platforms</text>
+  <text x="730" y="1266" class="small">off: legacy only (default)</text>
+  <text x="730" y="1296" class="small">shadow: read-only projection</text>
+  <text x="730" y="1326" class="small">on: legacy + authorized AHP</text>
+
+  <line x1="60" y1="1374" x2="1440" y2="1374" stroke="#dbe2ec" />
+  <rect x="60" y="1397" width="16" height="16" rx="3" class="new" />
+  <text x="89" y="1412" class="small">Proposed boundary</text>
+  <path d="M 430 1406 H 485" class="flow" />
+  <text x="503" y="1412" class="small">Content / execution path</text>
+  <path d="M 900 1406 H 955" class="control" />
+  <text x="973" y="1412" class="small">Control / metadata path</text>
+  <text x="60" y="1445" class="small">
+    Switch names are placeholders under features.*. Shadow opens no client endpoint. Gateway: reference + interop
+    fixture only.
+  </text>
+</svg>
