@@ -2412,7 +2412,8 @@ recommended).
     `discord`, `feishu`, `googlechat` or `qq`), and `<name>` is the place's name as the platform
     shows it, with no sigil; an unknown platform and a name starting with `#` or `@` are refused.
     A place is its platform and its name, the name compared without case. A trailing dash on the
-    purpose is dropped when the line is read.
+    purpose is dropped when the line is read. A line carrying a `[[link]]` is refused: Channels
+    keeps purposes only.
   - **`members.md`**: entries only, each `## <display name> (<handles>)` with its handles separated
     by commas, then at most ten lines, each starting with `Role:`, `Works on:`, `Knows about:` or
     `Ask about:` and ending as a fact line.
@@ -4405,3 +4406,9 @@ reads and drops the "Reads it" / "Does not read it" labels. Since Channels lists
 as not read yet, research now writes which channel's release talk maps to which repository into
 `organization.md`'s repositories and systems, and `(inferred)` in `channels.md` means only a
 purpose guessed from the channel's name.
+
+**Seventy-seventh revision (2026-10-18)**: Channels keeps links out (issue #2810; §5.15 "Shapes").
+On test, research added `see [[name]]` links to the agent's own place files to Channels lines,
+following the general memory guidance to link liberally. The shape check now refuses a
+`channels.md` line carrying a `[[link]]`, telling the model to drop it; the prompts that teach the
+line ask for none. The Channels view's "Not read yet" heading is sentence case.

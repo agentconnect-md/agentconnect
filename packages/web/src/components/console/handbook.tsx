@@ -454,7 +454,7 @@ export function ChannelsView({ content }: { content: string }) {
       {read.length > 0 && <ChannelRows channels={read} />}
       {notRead.length > 0 && (
         <section>
-          <div className="mb-1 font-sans text-[11px] font-semibold uppercase leading-normal tracking-[0.04em] text-(--text-tertiary)">
+          <div className="mb-1 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
             {t('notReadYet')}
           </div>
           <ChannelRows channels={notRead} />
