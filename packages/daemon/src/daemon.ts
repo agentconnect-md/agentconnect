@@ -446,7 +446,12 @@ import {
   isUsableSourceDepth,
   routeRules
 } from './router/routing-table.js'
-import { isControlCommandText, parseCommand, requiresTrustedActor, type AgentCommand } from './commands/commands.js'
+import {
+  isControlCommandText,
+  parseInboundCommand,
+  requiresTrustedActor,
+  type AgentCommand
+} from './commands/commands.js'
 import { CommandHandlers, type CommandHost } from './commands/handlers.js'
 import {
   rulesFromAgent,
@@ -12362,7 +12367,7 @@ export class Daemon {
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
-    const command = parseCommand(msg.text)
+    const command = this.inboundCommand(msg, srcIntegrationIds)
     if (command) {
       // Resetting a durable safety latch is privileged control input. A malformed
       // platform wrapper or bot echo must never be able to forge !resume and reopen
@@ -13076,7 +13081,7 @@ export class Daemon {
     // HTTP-bot IM bypasses onInbound() because the relay already arbitrated the
     // target. It must still intercept control commands before dispatch — especially
     // `!resume`, otherwise an open loop circuit drops the only recovery message.
-    const command = parseCommand(normalized.text)
+    const command = this.inboundCommand(normalized, [msg.integrationId])
     if (command) {
       // The same gate as direct ingress: relay is where Slack and Feishu HTTP callbacks
       // arrive, so an event carrying neither a user nor a bot id lands here, not there.
@@ -23039,6 +23044,19 @@ export class Daemon {
     return srcIntegrationIds === undefined || srcIntegrationIds.includes(integrationId)
   }
 
+  /** The command `msg` gives the bots of the source's integrations, which a leading mention of one of them may address. */
+  private inboundCommand(msg: NormalizedMessage, srcIntegrationIds?: readonly string[]): AgentCommand | null {
+    const self = new Set<string>()
+    for (const agent of this.agents.values()) {
+      for (const int of agent.integrations ?? []) {
+        if (int.platform !== msg.platform || !this.integrationBelongsToSource(int.id, srcIntegrationIds)) continue
+        const botUserId = this.botUserIds[int.id] ?? integrationRouting(int).staticBotUserId
+        if (botUserId) self.add(botUserId)
+      }
+    }
+    return parseInboundCommand(msg, [...self])
+  }
+
   private mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[] {
     return this.mergedRules().filter((rule) => this.integrationBelongsToSource(rule.integrationId, srcIntegrationIds))
   }
@@ -23354,7 +23372,7 @@ export class Daemon {
     if (this.isAgentBotMessage(normalized)) return imRejected(msg.msgId, false, 'rejected', false)
     await this.discoverConversations(normalized, [msg.integrationId])
     if (!this.gatedAdmission(msg.integrationId, normalized)) return imRejected(msg.msgId, true, 'off', false)
-    const command = parseCommand(normalized.text)
+    const command = this.inboundCommand(normalized, [msg.integrationId])
     if (command) return imRejected(msg.msgId, false, 'rejected', false)
     const int = this.integrationConfigById(msg.integrationId)
     const routed = int ? integrationRouting(int).routingFor(normalized.channel) : undefined
@@ -23418,7 +23436,7 @@ export class Daemon {
     const check = routedTargetCheck({
       agentAuthored: this.isAgentBotMessage(normalized),
       admitted: this.gatedAdmission(msg.integrationId, normalized),
-      command: parseCommand(normalized.text),
+      command: this.inboundCommand(normalized, [msg.integrationId]),
       routing: int ? integrationRouting(int).routingFor(normalized.channel) : undefined
     })
     if (!check.ok) return reject(check.reason, check.recoverable)

@@ -599,6 +599,81 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
+  it('!new after a leading mention of the bot clears the session on relay and direct ingress', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => idleHost() as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    const channel = (ts: string, text: string, mentionedBots: string[]) => ({
+      ...dm(ts, text),
+      isDm: false,
+      trigger: undefined,
+      mentionedBots
+    })
+    const relay = (ts: string, text: string, mentionedBots: string[]): RdMsgIm => ({
+      source: 'im',
+      agentId: 'bot-a',
+      sessionKey: 'slack:C1:T1',
+      msgId: `slack:C1:${ts}`,
+      botId: '11111111-1111-4111-8111-111111111111',
+      integrationId: 'int-a',
+      chatId: 'C1',
+      payload: channel(ts, text, mentionedBots) as any
+    })
+    const prime = async (ts: string) => {
+      await (daemon as any).dispatch('bot-a', dm(ts, 'the old thing'), 'int-a')
+      await vi.waitFor(async () => expect((await store.getSession(SESSION_KEY))?.acpSessionId).toBeTruthy(), WAIT)
+      conn.postMessage.mockClear()
+    }
+    const cleared = () => conn.postMessage.mock.calls.some((call) => String(call[1]).includes('Cleared'))
+
+    await prime('100.100')
+    await (daemon as any).handleRelayMsg(relay('100.200', '<@UBOTA> !new', ['UBOTA']), () => {})
+    expect(cleared()).toBe(true)
+    expect((await store.getSession(SESSION_KEY))?.acpSessionId).toBeNull()
+
+    // A person posting through an app carries Slack's attribution after the command.
+    await prime('100.300')
+    await (daemon as any).handleRelayMsg(
+      relay('100.400', '<@UBOTA> !new\n\n*Sent using* <@U0000000009>', ['UBOTA', 'U0000000009']),
+      () => {}
+    )
+    expect(cleared()).toBe(true)
+
+    await prime('100.500')
+    await (daemon as any).onInboundOutcome(channel('100.600', '<@UBOTA> !new', ['UBOTA']))
+    expect(cleared()).toBe(true)
+    await daemon.stop()
+  })
+
+  it('a leading mention of someone else does not make !new a command for this bot', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => idleHost() as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const store = (daemon as any).store
+    await (daemon as any).dispatch('bot-a', dm('100.100', 'the old thing'), 'int-a')
+    await vi.waitFor(async () => expect((await store.getSession(SESSION_KEY))?.acpSessionId).toBeTruthy(), WAIT)
+    conn.postMessage.mockClear()
+
+    await (daemon as any).onInboundOutcome({
+      ...dm('100.200', '<@U0000000002> !new'),
+      isDm: false,
+      trigger: undefined,
+      mentionedBots: ['U0000000002']
+    })
+    expect(conn.postMessage.mock.calls.some((call) => String(call[1]).includes('Cleared'))).toBe(false)
+    expect((await store.getSession(SESSION_KEY))?.acpSessionId).toBeTruthy()
+    await daemon.stop()
+  })
+
   it('!stop cancels the in-flight turn', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({
