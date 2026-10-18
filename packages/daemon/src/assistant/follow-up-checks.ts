@@ -639,7 +639,7 @@ export class FollowUpChecks {
         reason: 'first_look',
         message:
           'A getting-to-know task takes no messages: it ends after its one read, and its report comes here. Nothing was sent; ' +
-          'once it has ended, ask for another with firstLook.'
+          'once it has ended, ask for another with getToKnow.'
       }
     if (!followUpOpen(item))
       return {

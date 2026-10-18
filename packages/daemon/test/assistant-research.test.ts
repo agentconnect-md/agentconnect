@@ -70,7 +70,7 @@ describe('what research may call', () => {
         'getToolGuide',
         'propose',
         'followUp',
-        'firstLook',
+        'getToKnow',
         'listTasks',
         'stopTask',
         'getChannelHistory',

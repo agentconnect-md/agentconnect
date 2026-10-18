@@ -188,7 +188,7 @@ async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>;
   }
   /** Ask for a first look and wait until its report round has run and settled. */
   const look = async () => {
-    expect(await executeTool(placeCtx, 'firstLook', {}, deps)).toMatchObject({ started: true })
+    expect(await executeTool(placeCtx, 'getToKnow', {}, deps)).toMatchObject({ started: true })
     await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
     await settled()
   }
@@ -243,7 +243,7 @@ describe('a first look’s report round on a platform with cards', () => {
     }
     await look()
     const longSession = registered.find((c) => isAppendCoordinate(c.thread))!
-    expect(longSession.tools.map((t) => t.name)).toEqual(expect.arrayContaining(['firstLook', 'propose']))
+    expect(longSession.tools.map((t) => t.name)).toEqual(expect.arrayContaining(['getToKnow', 'propose']))
     expect(results.slice(0, 3)).toEqual([
       expect.objectContaining({ proposed: true }),
       expect.objectContaining({ proposed: true }),

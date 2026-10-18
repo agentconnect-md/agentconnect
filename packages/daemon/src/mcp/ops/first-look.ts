@@ -1,4 +1,4 @@
-// The `firstLook` tool (assistant-mode.md §5.13): a place's long session asks for a first look of its own place.
+// The `getToKnow` tool (assistant-mode.md §5.13): a place's long session asks for a first look of its own place.
 import { z } from 'zod'
 import type { Agent } from '../../agents/agent-schema.js'
 import { firstLookPlaceRefusal } from '../../assistant/first-look.js'
@@ -11,7 +11,7 @@ import type { ToolHandler } from './context.js'
 export const FIRST_LOOK_ARGS = z.object({})
 
 export const FIRST_LOOK_TOOL: ToolDescriptor = {
-  name: 'firstLook',
+  name: 'getToKnow',
   description:
     'Get to know this conversation, only when someone here asks you to: a task reads its last 30 days ' +
     'or 500 messages, whichever is less, writes how the place works to memory, and reports back here with what ' +
@@ -21,7 +21,7 @@ export const FIRST_LOOK_TOOL: ToolDescriptor = {
   inputSchema: obj({})
 }
 
-/** `firstLook` for a place's long session where a first look could run: assistant mode, not a 1:1 DM, history declared, internal; with `cards`, `propose` for its report's round. */
+/** `getToKnow` for a place's long session where a first look could run: assistant mode, not a 1:1 DM, history declared, internal; with `cards`, `propose` for its report's round. */
 export function firstLookToolsFor(
   agent: Pick<Agent, 'assistantMode' | 'integrations'>,
   at: { channel: string; thread: string; integrationId?: string | undefined; isDm: boolean },
@@ -37,7 +37,7 @@ export function firstLookToolsFor(
 export const firstLook: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
   parseArgs(FIRST_LOOK_ARGS, args)
   const request = deps.assistantItems?.firstLook
-  if (!request) throw new Error('firstLook is not available on this daemon')
+  if (!request) throw new Error('getToKnow is not available on this daemon')
   const result = await request(ctx)
   if (result.kind === 'refused') return { started: false, reason: result.reason, note: result.message }
   return {

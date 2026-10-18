@@ -319,7 +319,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['updateCanvas', updateCanvas],
   ['recall', recall],
   ...ASSISTANT_ITEM_HANDLERS,
-  ['firstLook', firstLook],
+  ['getToKnow', firstLook],
   ...ASSISTANT_REMINDER_HANDLERS,
   ...ASSISTANT_SUBSESSION_HANDLERS
 ])
@@ -391,7 +391,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['recall', RECALL_ARGS],
   ['getToolGuide', GET_TOOL_GUIDE_ARGS],
   ...ASSISTANT_ITEM_ARG_SCHEMAS,
-  ['firstLook', FIRST_LOOK_ARGS],
+  ['getToKnow', FIRST_LOOK_ARGS],
   ...ASSISTANT_REMINDER_ARG_SCHEMAS,
   ...ASSISTANT_SUBSESSION_ARG_SCHEMAS,
   // The session's own conversation is read from trusted context alone — no arguments.
