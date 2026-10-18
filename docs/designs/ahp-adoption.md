@@ -22,6 +22,12 @@ its synchronization code is a secondary benefit. Third-party interoperability
 is an acceptance requirement from the start, even if public availability ships
 after the internal rollout.
 
+**Migration constraint:** retain independent legacy and AHP protocol services,
+selected by an explicit feature switch. Keep their wire handling, recovery state,
+and client adapters separate, with a shared protocol-neutral session application
+boundary underneath. The switch must support rollback without a second execution
+owner or a copy of the durable conversation.
+
 "Any client" means interoperability within that published compatibility
 contract, not support for every optional AHP feature or every client's required
 authentication mechanism. Product-specific enhancements must be optional; the
@@ -60,7 +66,7 @@ that every capability below first appeared in the 1.0 release.
 
 ## 3. Architecture and ownership
 
-![Proposed AHP integration: relay-forwarded client traffic terminates at the daemon's new AHP host, which projects existing session state and delegates actions to the existing execution core.](ahp-adoption.svg)
+![Proposed integration: a feature switch selects Webchat's legacy or AHP adapter; independent protocol services share one session application port and execution owner. Third-party clients use the independently enabled AHP endpoint.](ahp-adoption.svg)
 
 The SVG is editable source. All added components in the diagram are proposed,
 not current runtime behavior.
@@ -74,9 +80,10 @@ The new host has three responsibilities:
 2. **State projection:** fold masked execution output and daemon-owned lifecycle
    events into AHP state. The host is authoritative for the exposed AHP state,
    while its business facts come from the existing session and transcript owners.
-3. **Action adapter:** translate permitted client actions into the existing
-   admission, cancellation, configuration, and approval entry points. Never call
-   a raw ACP subprocess directly from this adapter.
+3. **Action adapter:** translate permitted client actions into a shared session
+   application port for admission, cancellation, configuration, and approval.
+   Extract currently Webchat-owned business behavior behind that port as needed;
+   the AHP service must not call the legacy transport or a raw ACP subprocess.
 
 Memory/context assembly, tool registration, execution queues, deduplication,
 background tasks, ACP attachment/recovery, and platform delivery stay in the
@@ -159,6 +166,68 @@ Public release requires endpoint and credential documentation, a capability
 matrix, and a working minimal client example using only the official AHP SDK.
 Publishing the endpoint means authenticated access, not anonymous session access.
 
+### 3.5 Feature switch and two independent protocol services
+
+Implement two sibling services, provisionally `LegacyChatService` and
+`AhpChatService`. Each owns its routes, connections, wire schemas, reducer/stream
+state, replay policy, and lifecycle. Both call the same protocol-neutral session
+application port. Starting both services creates two client interfaces, not two
+runtime/session owners; one incoming command is dispatched through one service.
+
+The initial composition can host both modules inside the daemon, with separate
+relay ingress routes and independently managed listeners/subscriptions. Separate
+service processes are also compatible with this boundary if they use a scoped
+internal port to the owning daemon; they must not independently open ACP sessions,
+write transcripts, or compete for execution leases. Process separation is not
+required to achieve code separation and does not change the ownership model.
+
+Proposed controls (names are design placeholders, not existing configuration):
+
+| Control                     | Values / initial default        | Meaning                                                                                                                                                                    |
+| --------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `features.ahp.mode`         | `off` (default), `shadow`, `on` | `off`: legacy service only; `shadow`: read-only AHP projection with no client endpoint or command dispatch; `on`: AHP service accepts authorized clients alongside legacy. |
+| `features.webchat.protocol` | `legacy` (default), `ahp`       | Select the first-party client adapter and matching endpoint at bootstrap/attachment. Selecting `ahp` requires AHP mode `on`; reject an invalid configuration.              |
+
+Resolve the effective configuration server-side for the deployment or authorized
+rollout cohort, and pin it for each client attachment. The second control must
+not disable third-party AHP access: Webchat can use legacy while a third-party
+client uses the enabled AHP endpoint against the same authorized session.
+
+Keep switch evaluation at composition, bootstrap, and route-selection boundaries.
+Legacy handlers must not import AHP SDK/reducers, and AHP handlers must not import
+`WebchatTransport` or depend on `WebchatTurnStream`/`Pending` internals. Shared
+business types must contain no legacy frame or AHP SDK types.
+
+| Proposed boundary               | Owns                                                                                                             | Isolation rule                                                                                                                              |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon session application port | Authorized discovery/create/read, admission, cancel, approval/config actions, and masked domain/lifecycle events | Reuse one business implementation. Extract admission/continuation/mirroring currently embedded in Webchat once; do not duplicate it in AHP. |
+| Existing `webchat/` service     | Legacy encoding, sink, per-turn stream/replay, connection cleanup                                                | Preserve legacy behavior behind its adapter; no AHP conditionals in its state machine.                                                      |
+| New `ahp/` service              | AHP negotiation, channels, state projection, action mapping, snapshots/replay                                    | Depend on the shared port and AHP SDK, not legacy implementation details.                                                                   |
+| Relay ingress modules           | Distinct legacy and standard AHP routes/carriers                                                                 | Share only transport/auth/routing primitives; never reinterpret an established socket's protocol after a flag change.                       |
+| Frontend client adapters        | Separate legacy and AHP connections/state reducers, selected by one factory                                      | Expose a common UI-facing view/command contract. Keep protocol branches out of individual message/tool components.                          |
+
+Changing the Webchat selector affects new attachments. Existing connections stay
+on their negotiated protocol while draining; for a switch, detach the old adapter
+and attach the new one with the same durable session identity, then reconstruct
+its view from that protocol's history/snapshot. Do not copy stream cursors between
+protocols or recreate the runtime. Pending actions must be reconciled against
+shared durable admission receipts before a retry; loss of an acknowledgment must
+never trigger an automatic resend over the other protocol.
+
+Rollback first selects legacy for new first-party attachments. Disabling the AHP
+service stops new AHP admissions and drains existing attachments for a bounded
+interval, then explicitly closes them without cancelling daemon-owned work.
+AHP-only clients receive explicit unavailability and retry when service returns;
+they must never receive legacy frames as a fallback. Existing legacy observation
+and execution continue, and durable transcripts/session IDs remain compatible.
+An emergency immediate disconnect follows the same no-reinterpretation and
+no-duplicate-dispatch rules.
+
+Keep the legacy service deployable throughout rollout and the agreed rollback
+window. A later cleanup PR may remove it only after the acceptance gates and
+deprecation decision; introducing the switch is not authorization to delete the
+fallback path.
+
 ## 4. Resource and action mapping
 
 Start with one AHP Session and one default Chat per agent-scoped AgentConnect
@@ -186,14 +255,14 @@ addressing continue to use the existing `sessionId`.
 | Shared conversation across daemons       | Existing routing and merged-view composition                                              | One host's subscriptions do not aggregate other hosts automatically.                                  |
 | Daemon execution attempt/generation      | Internal fence plus an explicit projection mapping                                        | An AHP sequence number is not an execution lease.                                                     |
 
-| AHP interaction                                  | AgentConnect behavior to preserve                                                                                                                                 |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat/turnStarted`                               | Authorize the principal and admit through the current Webchat/session continuation path. Queue-full, paused, draining, and duplicate cases remain host decisions. |
-| `chat/turnCancelled`                             | Use current interruption and cleanup barriers before admitting conflicting work.                                                                                  |
-| `chat/toolCallConfirmed`                         | Use the existing approval policy and first-valid-answer settlement shared by all surfaces. Subscription alone confers no approval rights.                         |
-| `chat/inputRequested`, answer/completion actions | Project supported input requests; validate answers and settle through the existing request owner. Do not advertise unsupported input variants.                    |
-| `chat/responsePart`, `chat/delta`, tool actions  | Project already-masked output while retaining message boundaries, tools, and intermediate work.                                                                   |
-| Reconnect/subscription                           | Re-authorize access, then return a consistent replay or snapshot of authorized channels.                                                                          |
+| AHP interaction                                  | AgentConnect behavior to preserve                                                                                                                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat/turnStarted`                               | Authorize the principal and admit through the shared session application port, preserving current continuation behavior. Queue-full, paused, draining, and duplicate cases remain host decisions. |
+| `chat/turnCancelled`                             | Use current interruption and cleanup barriers before admitting conflicting work.                                                                                                                  |
+| `chat/toolCallConfirmed`                         | Use the existing approval policy and first-valid-answer settlement shared by all surfaces. Subscription alone confers no approval rights.                                                         |
+| `chat/inputRequested`, answer/completion actions | Project supported input requests; validate answers and settle through the existing request owner. Do not advertise unsupported input variants.                                                    |
+| `chat/responsePart`, `chat/delta`, tool actions  | Project already-masked output while retaining message boundaries, tools, and intermediate work.                                                                                                   |
+| Reconnect/subscription                           | Re-authorize access, then return a consistent replay or snapshot of authorized channels.                                                                                                          |
 
 Capabilities must be explicit. Do not claim arbitrary multi-chat creation,
 automation, filesystem, terminal, or MCP forwarding support simply because the
@@ -265,7 +334,10 @@ handling and for public interoperability acceptance.
 AHP standardizes the state model and wire contract; it does not make host-side
 state retention, transport reliability, or business logic disappear. The first
 phase adds code. The benefit is realized when old paths are retired and more
-than one client shares the replacement.
+than one client shares the replacement. During coexistence, simplification comes
+from extracting shared business behavior and containing protocol-specific code.
+Removal of legacy transport/recovery code requires a separate cleanup PR after
+the rollback window and deprecation decision in section 3.5.
 
 | Current surface                                                                                                                                                                                     | Proposed consolidation                                                 | What remains / deletion gate                                                                                                                                  |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -317,8 +389,9 @@ copied. This proposal adds no gateway code or dependency.
 
 ### Phase 0: shadow projection
 
-Create a proposed `packages/daemon/src/ahp/` projection alongside current output
-consumers. No client traffic or execution ownership changes. Use the existing
+First define the shared session application port and preserve the legacy adapter
+against it. Create a proposed `packages/daemon/src/ahp/` projection alongside current output
+consumers in `shadow` mode. No client traffic or execution ownership changes. Use the existing
 session's masked output and daemon lifecycle events, and compare state against
 current Webchat/transcript behavior.
 
@@ -331,16 +404,20 @@ Exit criteria:
   lifecycle state, with explicit treatment of interrupted work.
 - The identity map, unsupported capabilities, and extension requirements are
   recorded; no private ACP identifiers or secrets leak into public state.
-- An official-SDK client fixture consumes the projection without first-party
-  reducers; the public core contract and standard session-creation binding are
-  exercised before Webchat-specific integrations can hide interoperability gaps.
+- In an isolated test host, an official-SDK client fixture consumes the projection
+  without first-party reducers and exercises the public core contract and standard
+  session-creation binding. This test host does not enable endpoints or dispatch in
+  a production shadow deployment.
+- Legacy behavior passes with AHP `off`; `shadow` emits no commands and opens no
+  client endpoint. Dependency checks enforce the two services' import boundaries.
 
 ### Phase 1: shared AHP endpoint, with Webchat behind a flag
 
 Add the authorized relay carrier and AHP action adapter into existing execution
 entry points. Keep old clients supported during a bounded migration period.
-Roll back by selecting the old transport; never run the two paths as competing
-execution owners for one action.
+Use the independent services and controls in section 3.5. Select one frontend
+adapter at attachment time; never broadcast an action to both services. Keep
+both services available during the rollback window.
 
 Implement the public-shaped endpoint and the discovery/create/attach flow from
 section 3.4 now, even if access is initially restricted to a test deployment.
@@ -349,6 +426,16 @@ the latter must not import AgentConnect Webchat state or call private product
 APIs to run a basic conversation. Keep extensions disabled in a baseline test.
 
 Before default-on and deletion of old streaming code, cover:
+
+- Feature-control matrix: `off + legacy`, `shadow + legacy`, `on + legacy`
+  (including a simultaneous third-party AHP client), and `on + ahp`; invalid
+  configurations fail explicitly.
+- Flag changes during streaming, lost acknowledgments, pending approvals, and
+  reconnect preserve the same session and produce no duplicate execution.
+- Rollback drains or explicitly disconnects AHP attachments while the legacy
+  service remains usable; an AHP-only client never receives legacy frames.
+- Legacy and AHP services have separate protocol tests plus shared application
+  contract tests. Import-boundary checks prevent cross-protocol dependencies.
 
 | Scenario                                                 | Required observation                                                                            |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |

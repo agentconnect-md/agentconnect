@@ -1,18 +1,17 @@
 <svg
   xmlns="http://www.w3.org/2000/svg"
   width="1500"
-  height="1230"
-  viewBox="0 0 1500 1230"
+  height="1460"
+  viewBox="0 0 1500 1460"
   role="img"
   aria-labelledby="title description"
 >
-  <title id="title">Proposed open AHP v1 interface for AgentConnect</title>
+  <title id="title">Open AHP access with separate legacy and AHP services</title>
   <desc id="description">
-    First-party Webchat and compatible third-party AHP clients connect through a public authenticated relay to a
-    proposed AHP host inside the existing daemon. The host projects masked session events and delegates authorized
-    actions to the current session core. Existing storage, ACP execution, and platform renderers remain. Control Plane
-    links carry control and metadata, not live message content. Third-party interoperability is the primary goal; shared
-    synchronization simplifies clients.
+    Webchat selects a legacy or AHP adapter at attachment time. Third-party clients use the independently enabled public
+    AHP endpoint. Separate relay routes lead to sibling legacy and AHP services in the daemon. Both use a
+    protocol-neutral application port over one existing session core, store, and ACP runtime owner. Control Plane links
+    carry control and metadata. The feature switches are proposed configuration, with legacy as the default.
   </desc>
   <defs>
     <marker
@@ -95,101 +94,119 @@
       }
     </style>
   </defs>
-  <rect width="1500" height="1230" fill="#fff" />
+  <rect width="1500" height="1460" fill="#fff" />
   <text x="60" y="62" class="heading">Open AHP access to AgentConnect</text>
-  <text x="60" y="96" class="detail">First-party and third-party clients share one protocol and execution path</text>
+  <text x="60" y="98" class="detail">Separate protocol services · reversible client rollout · one execution owner</text>
   <rect x="1160" y="40" width="272" height="44" rx="22" fill="#f1edff" />
   <text x="1296" y="69" class="small" text-anchor="middle">PROPOSAL · DESIGN ONLY</text>
 
-  <rect x="70" y="140" width="340" height="90" rx="12" class="box" />
-  <text x="240" y="178" class="label" text-anchor="middle">Webchat / Console</text>
-  <text x="240" y="209" class="detail" text-anchor="middle">First-party AHP client</text>
-  <rect x="500" y="140" width="340" height="90" rx="12" class="box" />
-  <text x="670" y="178" class="label" text-anchor="middle">Third-party AHP clients</text>
-  <text x="670" y="209" class="detail" text-anchor="middle">VS Code / CLI / custom UI</text>
-  <rect x="1040" y="140" width="390" height="90" rx="12" class="box" />
-  <text x="1235" y="178" class="label" text-anchor="middle">Control Plane</text>
-  <text x="1235" y="209" class="detail" text-anchor="middle">Identity · routing · metadata</text>
+  <rect x="70" y="145" width="460" height="90" rx="12" class="box" />
+  <text x="300" y="183" class="label" text-anchor="middle">Webchat</text>
+  <text x="300" y="214" class="detail" text-anchor="middle">Common UI contract · separate adapters</text>
+  <rect x="650" y="145" width="400" height="90" rx="12" class="box" />
+  <text x="850" y="183" class="label" text-anchor="middle">Third-party AHP clients</text>
+  <text x="850" y="214" class="detail" text-anchor="middle">VS Code / CLI / custom UI</text>
+  <rect x="1100" y="145" width="330" height="90" rx="12" class="box" />
+  <text x="1265" y="183" class="label" text-anchor="middle">Control Plane</text>
+  <text x="1265" y="214" class="detail" text-anchor="middle">Identity · routing · metadata</text>
 
-  <path d="M 240 230 V 263 H 385 V 300" class="flow duplex" />
-  <path d="M 670 230 V 263 H 560 V 300" class="flow duplex" />
-  <text x="474" y="280" class="small" text-anchor="middle">AHP / JSON-RPC</text>
-  <path d="M 1040 185 H 940 V 340 H 680" class="control" />
-  <text x="805" y="325" class="small" text-anchor="middle">Routing / authorization</text>
-  <path d="M 1420 230 V 420" class="control" />
-  <text x="1396" y="314" class="small" text-anchor="end">Control RPCs</text>
-  <text x="1396" y="341" class="small" text-anchor="end">and metadata</text>
+  <path d="M 300 235 V 280" class="flow duplex" />
+  <rect x="70" y="280" width="460" height="90" rx="12" class="new" />
+  <text x="300" y="314" class="label" text-anchor="middle">Client protocol selector</text>
+  <text x="300" y="346" class="detail" text-anchor="middle">webchat.protocol: legacy | ahp</text>
+  <path d="M 300 370 V 440" class="flow duplex" />
+  <text x="278" y="417" class="small" text-anchor="end">Legacy (default)</text>
+  <path d="M 500 370 V 398 H 730 V 440" class="flow duplex" />
+  <text x="616" y="386" class="small" text-anchor="middle">AHP</text>
+  <path d="M 850 235 V 440" class="flow duplex" />
+  <text x="876" y="314" class="small">Public AHP / WSS</text>
+  <text x="876" y="343" class="small">Independent of Webchat</text>
+  <path d="M 1190 235 V 440" class="control" />
+  <text x="1210" y="317" class="small">Auth / routing</text>
+  <path d="M 1420 235 V 258 H 1470 V 612 H 1450" class="control" />
+  <text x="1398" y="563" class="small" text-anchor="end">Control RPCs / metadata</text>
 
-  <rect x="300" y="300" width="380" height="80" rx="12" class="box" />
-  <text x="490" y="333" class="label" text-anchor="middle">Relay / public WSS</text>
-  <text x="490" y="361" class="detail" text-anchor="middle">Authentication + frame forwarding</text>
+  <rect x="70" y="440" width="460" height="86" rx="12" class="box" />
+  <text x="300" y="475" class="label" text-anchor="middle">Relay · legacy route</text>
+  <text x="300" y="506" class="detail" text-anchor="middle">Existing protocol and client compatibility</text>
+  <rect x="650" y="440" width="780" height="86" rx="12" class="new" />
+  <text x="1040" y="475" class="label" text-anchor="middle">Relay · authenticated AHP endpoint</text>
+  <text x="1040" y="506" class="detail" text-anchor="middle">
+    Standard frames · authorized host routing · bounded forwarding
+  </text>
 
-  <rect x="50" y="420" width="1400" height="510" rx="18" class="group" />
-  <text x="82" y="456" class="section">AgentConnect daemon</text>
-  <path d="M 490 380 V 490" class="flow duplex" />
+  <rect x="50" y="590" width="1400" height="605" rx="18" class="group" />
+  <text x="82" y="627" class="section">AgentConnect daemon</text>
+  <path d="M 300 526 V 566 H 560 V 650" class="flow duplex" />
+  <path d="M 1040 526 V 650" class="flow duplex" />
+  <rect x="85" y="650" width="500" height="165" rx="14" class="box" />
+  <text x="335" y="686" class="section" text-anchor="middle">LegacyChatService</text>
+  <text x="335" y="722" class="detail" text-anchor="middle">Legacy wire + per-turn stream / replay</text>
+  <text x="335" y="752" class="detail" text-anchor="middle">Existing webchat/ adapter</text>
+  <text x="335" y="784" class="small" text-anchor="middle">Independent connections and lifecycle</text>
+  <rect x="650" y="650" width="780" height="165" rx="14" class="new" />
+  <text x="1040" y="686" class="section" text-anchor="middle">AhpChatService · AHP v1 host</text>
+  <text x="1040" y="722" class="detail" text-anchor="middle">
+    Negotiation · channels · action mapping · state projection
+  </text>
+  <text x="1040" y="752" class="detail" text-anchor="middle">
+    Separate subscriptions, snapshots, replay and lifecycle
+  </text>
+  <text x="1040" y="784" class="small" text-anchor="middle">ahp.mode: off | shadow | on</text>
 
-  <rect x="85" y="490" width="990" height="140" rx="14" class="new" />
-  <text x="580" y="525" class="section" text-anchor="middle">NEW · AHP host</text>
-  <text x="250" y="568" class="label" text-anchor="middle">Protocol endpoint</text>
-  <text x="250" y="600" class="detail" text-anchor="middle">Subscribe · replay · snapshot</text>
-  <text x="580" y="568" class="label" text-anchor="middle">State projection</text>
-  <text x="580" y="600" class="detail" text-anchor="middle">Session · Chat · Turn · ToolCall</text>
-  <text x="905" y="568" class="label" text-anchor="middle">Action adapter</text>
-  <text x="905" y="600" class="detail" text-anchor="middle">Existing execution entry points</text>
-  <line x1="415" y1="551" x2="415" y2="610" stroke="#c9bcec" />
-  <line x1="746" y1="551" x2="746" y2="610" stroke="#c9bcec" />
+  <path d="M 335 815 V 870" class="flow duplex" />
+  <path d="M 1040 815 V 870" class="flow duplex" />
+  <text x="690" y="848" class="small" text-anchor="middle">One service per incoming command</text>
+  <rect x="85" y="870" width="1345" height="80" rx="12" class="new" />
+  <text x="757" y="903" class="label" text-anchor="middle">
+    Shared session application port · protocol-neutral business types
+  </text>
+  <text x="757" y="934" class="detail" text-anchor="middle">
+    Authorized discovery / creation · admission / cancel / approve · masked events / lifecycle
+  </text>
+  <path d="M 385 950 V 1010" class="flow duplex" />
+  <path d="M 907 1010 V 950" class="flow" />
+  <text x="928" y="988" class="small">Read / reconstruct state</text>
 
-  <text x="1260" y="527" class="label" text-anchor="middle">Gateway reference</text>
-  <text x="1260" y="563" class="detail" text-anchor="middle">Mappings + host patterns</text>
-  <text x="1260" y="593" class="detail" text-anchor="middle">Interop test scenarios</text>
-  <text x="1260" y="623" class="small" text-anchor="middle">No second session owner</text>
+  <rect x="85" y="1010" width="600" height="110" rx="12" class="box" />
+  <text x="385" y="1045" class="label" text-anchor="middle">Existing session core</text>
+  <text x="385" y="1076" class="detail" text-anchor="middle">Admission · queues · tasks · recovery</text>
+  <text x="385" y="1103" class="detail" text-anchor="middle">Memory · context · tools · permissions</text>
+  <path d="M 685 1065 H 740" class="flow duplex" />
+  <rect x="740" y="1010" width="335" height="110" rx="12" class="box" />
+  <text x="907" y="1045" class="label" text-anchor="middle">Existing session store</text>
+  <text x="907" y="1077" class="detail" text-anchor="middle">Sessions + transcripts</text>
+  <text x="907" y="1104" class="small" text-anchor="middle">One durable business record</text>
+  <rect x="1150" y="1010" width="280" height="110" rx="12" class="box" />
+  <text x="1290" y="1045" class="label" text-anchor="middle">Platform adapters</text>
+  <text x="1290" y="1077" class="detail" text-anchor="middle">Ingress + renderers</text>
+  <text x="1290" y="1104" class="small" text-anchor="middle">Native edits / rate limits</text>
+  <path d="M 640 1120 V 1166 H 1200 V 1120" class="flow duplex" />
+  <text x="907" y="1154" class="small" text-anchor="middle">Existing platform delivery and routing</text>
 
-  <path d="M 245 630 V 725" class="flow" />
-  <text x="222" y="666" class="small" text-anchor="end">Send / cancel</text>
-  <text x="222" y="693" class="small" text-anchor="end">approve</text>
-  <path d="M 495 725 V 630" class="flow" />
-  <text x="518" y="666" class="small">Masked output</text>
-  <text x="518" y="693" class="small">+ lifecycle events</text>
-  <path d="M 900 725 V 630" class="flow" />
-  <text x="922" y="666" class="small">Rebuild</text>
-  <text x="922" y="693" class="small">projection</text>
+  <path d="M 385 1120 V 1260" class="flow duplex" />
+  <text x="410" y="1234" class="small">ACP</text>
+  <path d="M 1290 1120 V 1260" class="flow duplex" />
+  <text x="1315" y="1234" class="small">Platform APIs</text>
+  <rect x="170" y="1260" width="430" height="85" rx="12" class="box" />
+  <text x="385" y="1296" class="label" text-anchor="middle">Claude / Codex / ACP runtime</text>
+  <text x="385" y="1326" class="detail" text-anchor="middle">Local process or sandbox pod</text>
+  <rect x="1150" y="1260" width="280" height="85" rx="12" class="box" />
+  <text x="1290" y="1296" class="label" text-anchor="middle">Slack / Discord</text>
+  <text x="1290" y="1326" class="detail" text-anchor="middle">Telegram / other platforms</text>
+  <text x="730" y="1266" class="small">off: legacy only (default)</text>
+  <text x="730" y="1296" class="small">shadow: read-only projection</text>
+  <text x="730" y="1326" class="small">on: legacy + public AHP</text>
 
-  <rect x="85" y="725" width="600" height="110" rx="12" class="box" />
-  <text x="385" y="760" class="label" text-anchor="middle">Existing session core</text>
-  <text x="385" y="791" class="detail" text-anchor="middle">Admission · queues · tasks · recovery</text>
-  <text x="385" y="818" class="detail" text-anchor="middle">Memory · context · tools · permissions</text>
-  <path d="M 685 780 H 740" class="flow duplex" />
-  <rect x="740" y="725" width="335" height="110" rx="12" class="box" />
-  <text x="907" y="760" class="label" text-anchor="middle">Existing session store</text>
-  <text x="907" y="792" class="detail" text-anchor="middle">Sessions + transcripts</text>
-  <text x="907" y="819" class="small" text-anchor="middle">Durable business record</text>
-  <rect x="1150" y="725" width="280" height="110" rx="12" class="box" />
-  <text x="1290" y="760" class="label" text-anchor="middle">Platform adapters</text>
-  <text x="1290" y="792" class="detail" text-anchor="middle">Ingress + renderers</text>
-  <text x="1290" y="819" class="small" text-anchor="middle">Native edits / rate limits</text>
-  <path d="M 640 835 V 886 H 1200 V 835" class="flow duplex" />
-  <text x="907" y="874" class="small" text-anchor="middle">Existing platform delivery and routing</text>
-
-  <path d="M 385 835 V 1000" class="flow duplex" />
-  <text x="410" y="967" class="small">ACP</text>
-  <path d="M 1290 835 V 1000" class="flow duplex" />
-  <text x="1315" y="967" class="small">Platform APIs</text>
-  <rect x="170" y="1000" width="430" height="85" rx="12" class="box" />
-  <text x="385" y="1036" class="label" text-anchor="middle">Claude / Codex / ACP runtime</text>
-  <text x="385" y="1066" class="detail" text-anchor="middle">Local process or sandbox pod</text>
-  <rect x="1150" y="1000" width="280" height="85" rx="12" class="box" />
-  <text x="1290" y="1036" class="label" text-anchor="middle">Slack / Discord</text>
-  <text x="1290" y="1066" class="detail" text-anchor="middle">Telegram / other platforms</text>
-
-  <line x1="60" y1="1124" x2="1440" y2="1124" stroke="#dbe2ec" />
-  <rect x="60" y="1150" width="16" height="16" rx="3" class="new" />
-  <text x="89" y="1165" class="small">Proposed synchronization layer</text>
-  <path d="M 475 1159 H 530" class="flow" />
-  <text x="548" y="1165" class="small">Content / execution path</text>
-  <path d="M 899 1159 H 954" class="control" />
-  <text x="972" y="1165" class="small">Control / metadata path</text>
-  <text x="60" y="1204" class="small">
-    AHP endpoint authentication, relay framing, host restart fencing, and generation discard mappings remain
-    implementation gates.
+  <line x1="60" y1="1374" x2="1440" y2="1374" stroke="#dbe2ec" />
+  <rect x="60" y="1397" width="16" height="16" rx="3" class="new" />
+  <text x="89" y="1412" class="small">Proposed boundary</text>
+  <path d="M 430 1406 H 485" class="flow" />
+  <text x="503" y="1412" class="small">Content / execution path</text>
+  <path d="M 900 1406 H 955" class="control" />
+  <text x="973" y="1412" class="small">Control / metadata path</text>
+  <text x="60" y="1445" class="small">
+    Switch names are placeholders under features.*. Shadow opens no client endpoint. Gateway: reference + interop
+    fixture only.
   </text>
 </svg>
