@@ -1,11 +1,5 @@
-import type {
-  RdChatEvent,
-  RdWebchatPost,
-  WebchatDone,
-  WebchatOutput,
-  WebchatRemoteMcpEntitlement,
-  WebchatRuntimeConfig
-} from '@agentconnect.md/protocol'
+import type { RdChatEvent, WebchatDone, WebchatOutput } from '@agentconnect.md/protocol'
+import type { ChatTurnContext } from '../session/chat-turn.js'
 
 // A reconnectable turn keeps a bounded in-memory output window on the daemon,
 // where the stream originates. This survives a browser moving between relay
@@ -33,38 +27,7 @@ export interface BufferedWebchatEvent {
   bytes: number
 }
 
-export interface WebchatTurnContext {
-  conversationId: string
-  turnId: string
-  sink: WebchatSink
-  /** Sends the turn's completed reply as a canonical conversation post
-   * (`rd/webchat-post`) on the relay connection the turn arrived on, so the
-   * relay can fan it to the other participants' daemons as context
-   * (webchat-multi-agents.md §5.2). Absent on an older relay / synthetic turn. */
-  postSink?: (post: RdWebchatPost) => void
-  /** Set only for a post-only wake context built by {@link webchatWakeContext}: an
-   *  agent-initiated turn inside a webchat conversation, with no browser turn of its
-   *  own to stream to (#753). Carried onto the completed `RdWebchatPost` so the
-   *  browser knows this reply never streamed live and needs rendering from the post. */
-  initiator?: 'agent'
-  /** Session-targeted continuation (§5.2): the webchat stream is an ADDITIONAL sink —
-   *  turn output/status/failure still follow the origin platform's ordinary rules. */
-  continuation?: true
-  runtime?: WebchatRuntimeConfig
-  worktree?: boolean
-  /** Authority captured only from the relay's validated rd/msg envelope. It is
-   * consumed by the daemon host selector and never forwarded to ACP/model input. */
-  remoteMcp?: WebchatRemoteMcpEntitlement
-  doneSent?: boolean
-  /** The chat API this turn came through (shared-bot-relay.md §10.4); its caller may be handed the agent's questions. */
-  apiProtocol?: string
-  /** This turn is driven by the local evaluation harness, not a browser. Its
-   *  webchat shape is synthetic, so the session-visibility capture gate does NOT
-   *  treat it as a private Playground conversation — measuring memory capture is
-   *  the harness's whole purpose (session-visibility.md §4.2 applies to real
-   *  user conversations). */
-  evaluation?: boolean
-}
+export type WebchatTurnContext = ChatTurnContext
 
 /** One daemon-owned turn stream: `sink` is stable for the turn engine; the replay window is ephemeral and bounded. */
 export interface WebchatTurnStream extends WebchatTurnContext {

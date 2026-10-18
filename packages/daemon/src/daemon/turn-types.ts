@@ -31,7 +31,7 @@ import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
 import type { HookDispatchContext } from '../github/hook-coords.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
-import type { WebchatTurnContext } from '../webchat/types.js'
+import type { ChatTurnContext, ChatTurnOutput } from '../session/chat-turn.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 
 /** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth
@@ -311,7 +311,7 @@ export interface QueueEntry {
   // Stop startup chrome immediately while uncancellable initialization retains its cleanup fence.
   closeStartup?: () => void
   integrationId?: string
-  webchat?: WebchatTurnContext
+  webchat?: ChatTurnContext
   callMeta?: CallMeta
   hookContext?: HookDispatchContext
   // Model and repository selection share one collected snapshot for this session birth.
@@ -687,18 +687,8 @@ export interface Pending {
   attribution?: { blocks: unknown[]; key: string }
   /** Trusted call metadata of a `messageAgent`-started turn, kept out of the prompt. TODO(P4): move into QueueEntry (§6.9 #367). */
   callMeta?: CallMeta
-  /** Webchat streams ACP updates live and commits each completed reply segment at turn end. */
-  webchat?: WebchatTurnContext & {
-    index: number
-    replyText: string
-    // `committing` is the segment's one transcript write, started early by a shared image after it or at turn end.
-    replySegments: { postId: string; text: string; committing?: Promise<void> }[]
-    segmentIndex?: number
-    heldText: string
-    heldTextOffset?: number
-    messageId?: string
-    messageEmitted: boolean
-  }
+  // Human chat services share the execution accumulator, never their reconnect state.
+  webchat?: ChatTurnOutput
   /** Agent questions this turn has already told the channel it could not render (#1794), so a
    *  runtime re-raising the same unrenderable ask posts one notice rather than one per attempt. */
   declinedElicitNotices?: Set<string>
