@@ -9281,7 +9281,7 @@ export class Daemon {
     const itemId = meta?.firstLookReport
     if (!meta || itemId === undefined)
       throw new Error(
-        'propose is offered here only on the round a first look reports back; nothing was proposed. Answer in your ' +
+        'propose is offered here only on the round a getting-to-know task reports back; nothing was proposed. Answer in your ' +
           'reply instead.'
       )
     if (!ctx.integrationId || !this.hasCardSurface(ctx.integrationId))
@@ -9291,7 +9291,7 @@ export class Daemon {
     const refusal = firstLookProposalRefusal(input)
     if (refusal) throw new Error(refusal)
     const item = await this.store.assistantItems.get(agentId, itemId)
-    if (!item?.firstLook) throw new Error('this first look is gone; nothing was proposed')
+    if (!item?.firstLook) throw new Error('this getting-to-know task is gone; nothing was proposed')
     const round = meta.deliveryId
     const prior = this.roundProposals.get(round) ?? Promise.resolve()
     const next = prior
@@ -9300,7 +9300,7 @@ export class Daemon {
         const made = await this.store.assistantDrafts.countInRound(agentId, round)
         if (made >= FIRST_LOOK_MAX_PROPOSALS)
           throw new Error(
-            `a first look's report is offered at most ${FIRST_LOOK_MAX_PROPOSALS} proposals, and this round made them; ` +
+            `a getting-to-know report is offered at most ${FIRST_LOOK_MAX_PROPOSALS} proposals, and this round made them; ` +
               'nothing was proposed'
           )
         const { integrationId, target, destination, place } = await this.proposalPlace(agentId, item.origin)
@@ -9854,7 +9854,7 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((candidate) => candidate.id === ctx.integrationId)
     if (!agent || !int || !ctx.integrationId)
-      return { kind: 'refused', reason: 'not_here', message: 'No first look can run in this conversation.' }
+      return { kind: 'refused', reason: 'not_here', message: 'No getting-to-know task can run in this conversation.' }
     const refusal = firstLookPlaceRefusal(agent, int, { channel: ctx.channel, isDm: ctx.isDm })
     if (refusal) return { kind: 'refused', reason: refusal, message: FIRST_LOOK_REFUSALS[refusal] }
     const place = placeOfSession(ctx)
@@ -9863,7 +9863,7 @@ export class Daemon {
       return {
         kind: 'refused',
         reason: 'not_long_session',
-        message: 'Only this place’s ongoing conversation asks for a first look. Nothing was started.'
+        message: 'Only this place’s ongoing conversation asks to get to know it. Nothing was started.'
       }
     const asker = await this.assistantAskerFor(ctx)
     const result = await this.followUpChecks.requestFirstLook({

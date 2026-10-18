@@ -15,8 +15,8 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
-const LOOK_OPENING = 'You are taking a first look at'
-const ROUND_OPENING = '[first look] Your first look at'
+const LOOK_OPENING = 'You are getting to know'
+const ROUND_OPENING = '[getting to know] Your task getting to know'
 const REPORT = '## How this place works\nReleases are planned here.\n\n## Where I could help\nRelease notes.'
 const INTRO = 'Hi, I am bot-a. I read the release threads here; @-mention me.'
 
@@ -376,7 +376,9 @@ describe('a first look’s report round on a platform with cards', () => {
       'writeMemory, createMemoryEntry, updateMemoryEntry and recordCheck are AgentConnect tools and this task'
     )
     const report = textOf(dispatched.find((c) => c.msg.parentReport === true)!.msg)
-    expect(report).toContain('When a first look reports back (it has already written what it learned to memory):')
+    expect(report).toContain(
+      'When your getting-to-know task reports back (it has already written what it learned to memory):'
+    )
     for (const write of ['channels.md', 'organization.md', 'MemoryEntry']) expect(report).not.toContain(write)
     await daemon.stop()
   })
@@ -386,7 +388,7 @@ describe('a first look’s report round on a platform with cards', () => {
     await look()
     const longSession = registered.find((c) => isAppendCoordinate(c.thread))!
     await expect(executeTool(longSession, 'propose', TASK, deps)).rejects.toThrow(
-      'only on the round a first look reports back'
+      'only on the round a getting-to-know task reports back'
     )
     await daemon.stop()
   })

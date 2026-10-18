@@ -171,7 +171,7 @@ describe('the prompts', () => {
 
   it('fills the task prompt’s placeholders, and says "you are in" for one someone asked for', () => {
     const joined = firstLookPrompt({ ...facts, requested: false })
-    expect(joined).toMatch(/^You are taking a first look at "releases", a public channel you were just added to\./)
+    expect(joined).toMatch(/^You are getting to know "releases", a public channel you were just added to\./)
     expect(joined).toContain('the last 30 days or 500 messages, whichever\nis less')
     expect(joined).toContain('actually do with its tools: sendMessage, followUp.')
     // A check never sees a new message, so an event-shaped suggestion is put as a check on a schedule.
@@ -253,7 +253,7 @@ describe('the prompts', () => {
     for (const cards of [true, false]) {
       const handling = firstLookHandling('@-mention me', { external: false, cards })
       expect(handling).toContain(
-        'When a first look reports back (it has already written what it learned to memory):\n1. Post one short introduction'
+        'When your getting-to-know task reports back (it has already written what it learned to memory):\n1. Post one short introduction'
       )
       for (const write of [
         'Write "How this place works"',
@@ -278,9 +278,7 @@ describe('the prompts', () => {
       '\nIn everything people read, name a channel by its name or link, never by its raw id.\n'
     )
     // People hear what the agent did in plain words, never the internal term.
-    expect(handling).toMatch(
-      /\nTell people plainly that you read this place's recent messages to get to know it; never call it a "first look"\.$/
-    )
+    expect(handling).toMatch(/\nTell people plainly that you read this place's recent messages to get to know it\.$/)
     // Where the place has cards, step 2 offers the suggestions with propose, under the introduction.
     const cards = firstLookHandling('@-mention me', { external: false, cards: true })
     expect(cards).toContain(
@@ -291,7 +289,7 @@ describe('the prompts', () => {
     const external = firstLookHandling('@-mention me', { external: true })
     expect(external).not.toContain('Post one short introduction')
     expect(external).not.toContain('raw id')
-    expect(external).toContain('post nothing about this first look in it')
+    expect(external).toContain('post nothing about what you read in it')
   })
 
   it('tells step 2 in both forms that a follow-up needs a first check, and how to word an event-shaped one', () => {
@@ -311,7 +309,7 @@ describe('the prompts', () => {
       watch: undefined
     }
     expect(firstLookProposalRefusal({ followUp })).toBe(
-      'a follow-up offered after a first look needs followUp.nextCheck, since nothing else would wake it: set its ' +
+      'a follow-up offered after getting to know a place needs followUp.nextCheck, since nothing else would wake it: set its ' +
         'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'
     )
     expect(firstLookProposalRefusal({ followUp: { ...followUp, nextCheck: Date.parse('2099-01-01T10:00:00Z') } })).toBe(
