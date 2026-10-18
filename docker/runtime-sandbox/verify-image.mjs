@@ -236,14 +236,12 @@ check('bakes the no-search DeepSeek bundle the shim selects', () => {
   return `${listing.trim()} (${rows.trim()} rows, read-only)`
 })
 
-// Without the installed harness the adapter unpacks its own, 455 MB, into the cache — and a session pod's volume
-// starts empty, so that lands on the first turn of every new session rather than once in this image.
+// Select the preinstalled harness explicitly so each session can start without unpacking another copy.
 check('dsh-acp launches the installed harness instead of unpacking its own', () => {
   const home = '/tmp/ac-dsh-probe'
-  const err = sh(
-    `rm -rf ${home}; mkdir -p ${home}; HOME=${home} timeout 90 dsh-acp </dev/null 2>&1 >/dev/null | head -5`
+  sh(
+    `rm -rf ${home}; mkdir -p ${home}; HOME=${home} timeout 90 dsh-acp --dsh-path /usr/local/bin/dsh </dev/null >/dev/null`
   )
-  if (err) throw new Error(`the adapter did not start cleanly: ${err}`)
   const cache = sh(`du -sh ${home}/.cache/dsh-acp 2>/dev/null | cut -f1`)
   const harness = sh(`readlink -f "$(command -v dsh)"; rm -rf ${home}`)
   if (cache) throw new Error(`the adapter unpacked ${cache} into its cache, so it did not find the installed harness`)

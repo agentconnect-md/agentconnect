@@ -4,7 +4,7 @@
   { "id": "cline", "command": "cline", "args": ["--acp"] },
   { "id": "codex-acp", "command": "codex-acp", "args": [] },
   { "id": "devin", "command": "devin", "args": ["acp"] },
-  { "id": "dsh-acp", "command": "dsh-acp", "args": [] },
+  { "id": "dsh-acp", "command": "dsh-acp", "args": ["--dsh-path", "/usr/local/bin/dsh"] },
   { "id": "github-copilot-cli", "command": "copilot", "args": ["--acp"] },
   { "id": "grok-build", "command": "grok", "args": ["agent", "stdio"] },
   { "id": "muse-acp", "command": "muse-acp", "args": [] },

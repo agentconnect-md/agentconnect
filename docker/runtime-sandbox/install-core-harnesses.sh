@@ -12,7 +12,7 @@ npm install --global --no-fund --no-audit \
 npm cache clean --force
 # Unpack the vendored DeepSeek runtime once into the image, before session pods start.
 DSH_ACP_CACHE_DIR="$DSH_RUNTIME_DIR" timeout 300 dsh-acp < /dev/null > /dev/null
-# An ACP child's environment is an allowlist, so PATH is the only way to point the adapter at what it unpacked.
+# The runtime tables pass this stable path to the adapter through --dsh-path.
 ln -s $DSH_RUNTIME_DIR/*/node_modules/.bin/dsh /usr/local/bin/dsh
 DSH_ACP_CACHE_DIR="$DSH_RUNTIME_DIR" node /tmp/bake-dsh-preset.mjs /opt/agentconnect/dsh/agent-presets/standard-no-search
 # Shipping the archive as well would be the same tree twice, and a fallback that silently restores the unpack.
