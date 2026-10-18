@@ -596,6 +596,7 @@ export class AcpHost {
   private conn?: ClientConnection
   // Only sessions created or loaded by this host have a trusted runtime working directory.
   private live = new Map<string, string>()
+  private toolContexts = new Map<string, string>()
   // sessionIds currently mid-load: `session/load` makes the agent REPLAY its whole
   // history via session/update, which we must NOT forward to the platform (it would
   // re-post the entire conversation). Cleared when the load resolves.
@@ -1218,6 +1219,14 @@ export class AcpHost {
     return this.live.has(sessionId)
   }
 
+  sessionToolContext(sessionId: string): string | undefined {
+    return this.toolContexts.get(sessionId)
+  }
+
+  setSessionToolContext(sessionId: string, fingerprint: string): void {
+    this.toolContexts.set(sessionId, fingerprint)
+  }
+
   /** The working directory this host supplied to session/new or session/load. */
   sessionCwd(sessionId: string): string | undefined {
     return this.live.get(sessionId)
@@ -1236,6 +1245,7 @@ export class AcpHost {
     this.live.delete(sessionId)
     this.loadingSessions.delete(sessionId)
     this.sessionConfigs.delete(sessionId)
+    this.toolContexts.delete(sessionId)
   }
 
   /** Whether the agent advertised the `loadSession` capability (session/load is usable). */
@@ -1260,12 +1270,18 @@ export class AcpHost {
     mcpServers: McpServer[] = [],
     effortOverride?: string,
     systemAppend?: string,
-    additionalDirectories: string[] = []
+    additionalDirectories: string[] = [],
+    extraDisallowedTools: readonly string[] = []
   ): Promise<void> {
     this.loadingSessions.add(sessionId)
     try {
       await this.closing.get(sessionId)
-      const _meta = this.sessionMeta(effortOverride, systemAppend ?? this.opts.configPrefs?.systemPrompt)
+      const _meta = this.sessionMeta(
+        effortOverride,
+        systemAppend ?? this.opts.configPrefs?.systemPrompt,
+        undefined,
+        extraDisallowedTools
+      )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
         sessionId,
@@ -1356,6 +1372,7 @@ export class AcpHost {
   discardSession(sessionId: string): void {
     this.live.delete(sessionId)
     this.sessionConfigs.delete(sessionId)
+    this.toolContexts.delete(sessionId)
   }
 
   /** Stop the adapter child: stdin EOF + SIGTERM, then escalate to SIGKILL if it

@@ -357,22 +357,26 @@ describe('the daemon offers followUp by the agent’s switch', () => {
     try {
       const seam = daemon as unknown as {
         store: LocalStore
-        sessions: { deps: { mcpServersFor(input: unknown): { env: { name: string; value: string }[] }[] } }
+        sessions: {
+          deps: { toolContextFor(input: unknown): { mcpServers(): { env: { name: string; value: string }[] }[] } }
+        }
         mcp: {
           sessions: Map<string, SessionContext>
           deps: OpsDeps
         }
       }
       const registeredTools = (agent: Record<string, unknown>, thread = '1'): string[] => {
-        const [server] = seam.sessions.deps.mcpServersFor({
-          agent: { name: 'x', runtime: 'claude', integrations: [], mcpServers: [], ...agent },
-          platform: 'slack',
-          channel: 'C1',
-          thread,
-          deliveryThread: '1',
-          isDm: false,
-          sessionKey: `slack:C1:${thread}:${String(agent.id)}`
-        })
+        const [server] = seam.sessions.deps
+          .toolContextFor({
+            agent: { name: 'x', runtime: 'claude', integrations: [], mcpServers: [], ...agent },
+            platform: 'slack',
+            channel: 'C1',
+            thread,
+            deliveryThread: '1',
+            isDm: false,
+            sessionKey: `slack:C1:${thread}:${String(agent.id)}`
+          })
+          .mcpServers()
         const token = server!.env.find((entry) => entry.name === 'AC_MCP_TOKEN')!.value
         return seam.mcp.sessions.get(token)!.tools.map((tool) => tool.name)
       }

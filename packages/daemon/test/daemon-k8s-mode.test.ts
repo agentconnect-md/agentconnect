@@ -2532,13 +2532,15 @@ function mcpServersFor(
   instance: Daemon
 ): { command: string; args: string[]; env: { name: string; value: string }[] }[] {
   const agent = { id: 'a1', name: 'a1', runtime: 'claude', integrations: [], mcpServers: [] }
-  return (instance as any).sessions.deps.mcpServersFor({
-    agent,
-    platform: 'slack',
-    channel: 'C1',
-    thread: '1',
-    isDm: false
-  })
+  return (instance as any).sessions.deps
+    .toolContextFor({
+      agent,
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1',
+      isDm: false
+    })
+    .mcpServers()
 }
 
 /** A pool agent whose workspace could serve an isolated session, so only the tier rule decides its pod. */

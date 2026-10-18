@@ -11,7 +11,10 @@ an in-memory event lease for background tasks and runtime-initiated follow-up
 cycles. Automatic idle reclamation must not stop an ACP host while that lease
 reports live work.
 
-The lease protects automatic idle cleanup only. Explicit shutdown, agent
+The lease protects automatic idle cleanup and tool-context refresh. A tool-context
+change waits until a turn finds the session quiescent before closing and loading it;
+the previous fingerprint remains in place so that turn retries the refresh.
+Explicit shutdown, agent
 removal, configuration replacement, and the absolute host-lifetime safeguard
 may still stop the host and its background work.
 

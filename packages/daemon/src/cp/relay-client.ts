@@ -140,7 +140,7 @@ export class RelayClient {
   private stopped = false
   private fatal = false // 4401 — never redial this relay
   private reconnectTimer?: TimerHandle
-  private relayCapabilities = new Set<string>()
+  private relayCapabilities?: Set<string>
   private readonly seqByChat = new Map<string, number>() // per-chat monotonic rd/chat seq
 
   constructor(
@@ -183,7 +183,7 @@ export class RelayClient {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
     if (
       (payload.originCodeHostReplyTarget !== undefined || payload.codeHostReplyTarget !== undefined) &&
-      !this.relayCapabilities.has(RD_CODEHOST_REPLY_TARGET_V1)
+      !this.relayCapabilities?.has(RD_CODEHOST_REPLY_TARGET_V1)
     ) {
       return { deliveryId: payload.deliveryId, delivered: false, reason: 'unsupported' }
     }
@@ -195,8 +195,13 @@ export class RelayClient {
   }
 
   /** Did this relay advertise shared-image cards for its console? */
+  advertisesWebchatImages(): boolean | undefined {
+    return this.relayCapabilities?.has(RD_WEBCHAT_IMAGES_V1)
+  }
+
+  /** Can this connection carry shared-image cards now? */
   supportsWebchatImages(): boolean {
-    return this.isReady() && this.relayCapabilities.has(RD_WEBCHAT_IMAGES_V1)
+    return this.isReady() && this.advertisesWebchatImages() === true
   }
 
   /** Send one shared image's original-state change; the relay hands it to the conversation's browsers only. */
@@ -206,13 +211,13 @@ export class RelayClient {
 
   /** Did this relay advertise the routed-forward leg (`rd/route`, `rd/route/report`)? */
   supportsRoute(): boolean {
-    return this.isReady() && this.relayCapabilities.has(RD_DECISION_ROUTE_V1)
+    return this.isReady() && this.relayCapabilities?.has(RD_DECISION_ROUTE_V1) === true
   }
 
   /** One frozen router target to the relay, single-shot with a timeout above the relay's own forward bound. */
   async sendRoute(payload: RdRoute): Promise<RdRouteAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
-    if (!this.relayCapabilities.has(RD_DECISION_ROUTE_V1))
+    if (!this.relayCapabilities?.has(RD_DECISION_ROUTE_V1))
       return { deliveryId: payload.deliveryId, disposition: 'rejected', reason: 'unsupported' }
     const rep = await this.correlator.request(
       buildRelayDaemonFrame('rd/route', payload),
@@ -229,7 +234,7 @@ export class RelayClient {
   /** A finished selection's owner and participants, for the relay's rc/thread-assign / rc/thread-participant legs. */
   async sendRouteReport(payload: RdRouteReport): Promise<RdRouteReportAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
-    if (!this.relayCapabilities.has(RD_DECISION_ROUTE_V1)) return { accepted: false, reason: 'unsupported' }
+    if (!this.relayCapabilities?.has(RD_DECISION_ROUTE_V1)) return { accepted: false, reason: 'unsupported' }
     const rep = await this.correlator.request(
       buildRelayDaemonFrame('rd/route/report', payload),
       (e) => this.transport!.send(e),

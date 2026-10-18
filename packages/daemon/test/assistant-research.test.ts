@@ -212,7 +212,6 @@ async function world(
       return true
     },
     helloSettled: async () => settled,
-    researchPrompt: async () => 'RESEARCH PROMPT',
     dispatch: vi.fn(async (_agentId, msg, _integrationId, callMeta, onAdmission) => {
       dispatched.push({ msg: msg as never, callMeta })
       onAdmission({ accepted: true })
@@ -252,7 +251,7 @@ describe('onboarding', () => {
     expect(w.dispatched).toHaveLength(1)
     const [research] = w.dispatched
     expect(research!.msg.thread).toBe(researchThreadOf(row.taskKey!))
-    expect(research!.msg.turnBody?.prompt).toContain('RESEARCH PROMPT')
+    expect(research!.msg.turnBody?.prompt).toContain('current research instructions')
     // Its tools hold no sendMessage, so its input names no reply call.
     expect(research!.msg.turnBody?.prompt).not.toContain('replyToSession')
     expect(research!.callMeta).toMatchObject({
