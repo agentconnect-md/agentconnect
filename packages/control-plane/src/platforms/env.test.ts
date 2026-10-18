@@ -28,6 +28,9 @@ import { createGoogleChatCpProvider } from './googlechat/provider.js'
 /** Every supported deployment key. */
 const EXPECTED_KEYS = [
   'ACK_TIMEOUT_MS',
+  'AHP_MODE',
+  'AHP_PUBLIC_ACCESS',
+  'AHP_TEST_KEY_IDS',
   'API_KEY_PEPPER',
   'CORS_ORIGIN',
   'CRON_RUN_REAP_INTERVAL_SEC',
@@ -117,6 +120,7 @@ const EXPECTED_KEYS = [
   'VAULT_TRANSIT_ORG_KEY_PREFIX',
   'VAULT_TRANSIT_MOUNT',
   'WAITLIST_MODE',
+  'WEBCHAT_PROTOCOL',
   'WS_PATH'
 ] as const
 
