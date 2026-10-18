@@ -1447,7 +1447,7 @@ and an overdue follow-up is checked once.
 
 A change of state on a watched pull request or issue, such as a merge, a close, a reopen, an
 approval or requested changes, or finished CI, makes its follow-up due about a minute later.
-Comments, reviews and new commits make it due within half an hour, and only when no session of the
+Comments, reviews and new commits make it due within five minutes, and only when no session of the
 agent opened that pull request, since that session already answers them. A change that resumed
 the session which opened the pull request wakes none of that agent's follow-ups on it. A follow-up
 starts at most one woken check in 15 minutes, and only while a fifth of the day's budget is left;

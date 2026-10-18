@@ -230,12 +230,13 @@ describe('foldWake', () => {
     expect(pending.pendingKinds).toEqual(['merged', 'checks'])
   })
 
-  it('holds discussion 30 minutes from the first, and a change of state takes it along sooner', () => {
+  it('holds discussion five minutes from the first, and a change of state takes it along sooner', () => {
+    expect(DISCUSSION_MS).toBe(5 * 60_000)
     let pending = foldWake(EMPTY, 'comment', at(0))
-    pending = foldWake(pending, 'commits', at(20 * 60_000))
+    pending = foldWake(pending, 'commits', at(2 * 60_000))
     expect(pending.dueAt).toEqual(at(DISCUSSION_MS))
-    pending = foldWake(pending, 'approved', at(21 * 60_000))
-    expect(pending.dueAt).toEqual(at(21 * 60_000 + STATE_QUIET_MS))
+    pending = foldWake(pending, 'approved', at(3 * 60_000))
+    expect(pending.dueAt).toEqual(at(3 * 60_000 + STATE_QUIET_MS))
     expect(pending.pendingKinds).toEqual(['comment', 'commits', 'approved'])
     expect(pending.pendingSince).toEqual(at(0))
   })
