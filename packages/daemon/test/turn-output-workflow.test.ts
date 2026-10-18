@@ -689,7 +689,8 @@ describe('TurnOutputWorkflow', () => {
       expect.any(Array),
       undefined,
       undefined,
-      []
+      [],
+      undefined
     )
     expect(prompts).toHaveLength(1)
     const durableQuote = prompts[0]!.indexOf('[U2] durable quote: keep the compatibility branch')

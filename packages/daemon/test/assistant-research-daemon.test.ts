@@ -182,6 +182,23 @@ describe('the research task’s session', () => {
         sessionKey: 'slack:D_FAKE:append:1:bot-a'
       }
       const snapshot = (thread = at.thread) => d.sessions.deps.toolContextFor({ ...at, thread })
+      const quiescent = () => d.sessions.deps.sessionSdkQuiescent(agent.id, at.sessionKey, 'runtime-1')
+      const owner = d.sessionOwnerKey(agent.id, at.sessionKey)
+      expect(quiescent()).toBe(true)
+      await d.onSdkLifecycle(owner, 'runtime-1', {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'build',
+        subagent_type: 'worker'
+      })
+      expect(quiescent()).toBe(false)
+      await d.onSdkLifecycle(owner, 'runtime-1', {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'build',
+        patch: { status: 'completed' }
+      })
+      expect(quiescent()).toBe(true)
       const size = d.mcp.sessions.size
       const initial = snapshot()
       expect(snapshot().fingerprint).toBe(initial.fingerprint)

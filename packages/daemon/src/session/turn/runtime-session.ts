@@ -50,6 +50,8 @@ export interface OpenRuntimeSessionInput {
   workspaceDirectories: (cwd: string) => Promise<string[]>
   /** The effective tools and task instructions, sampled without connection side effects. */
   toolContext?: SessionToolContext
+  /** Automatic refresh must leave background work and its completion wakes alive. */
+  sessionQuiescent?: (sessionId: string) => boolean
   /** Trusted descriptors bound to an overridden host; dropped if the runtime rejects them. */
   additionalMcpServers?: McpServer[]
   /** Runtime built-ins a new session must not offer (a check's, which nobody can approve). */
@@ -111,8 +113,17 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   if (rec?.acpSessionId && input.toolContext && previousContext && previousContext !== input.toolContext.fingerprint) {
     // Closing releases the runtime's cached MCP connections while retaining native history.
     const sessionId = rec.acpSessionId
-    recreate = !(await abortable(() => host.closeSession(sessionId), signal))
-    host.discardSession(sessionId)
+    await abortable(async () => {
+      if (input.sessionQuiescent?.(sessionId) === false) return
+      try {
+        recreate = !(await host.closeSession(sessionId))
+      } catch {
+        if (signal?.aborted) throw interrupted(signal)
+        // A rejected close cannot guarantee fresh MCP connections on load; replay into a new session.
+        recreate = true
+      }
+      host.discardSession(sessionId)
+    }, signal)
   }
 
   const sessionStartEffort = async (): Promise<{ value?: string; chatSelected: boolean }> => {

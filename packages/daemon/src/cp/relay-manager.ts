@@ -24,6 +24,7 @@ import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
 export class RelayManager {
   private readonly clients = new Map<string, RelayClient>() // keyed by relayId
+  private webchatImagesAdvertised = false
 
   constructor(private readonly deps: RelayClientDeps) {}
 
@@ -54,6 +55,7 @@ export class RelayManager {
   async stop(): Promise<void> {
     await Promise.allSettled([...this.clients.values()].map((c) => c.stop()))
     this.clients.clear()
+    this.webchatImagesAdvertised = false
   }
 
   /** Number of relays currently being dialed (observability / tests). */
@@ -123,6 +125,15 @@ export class RelayManager {
   supportsWebchatImages(): boolean {
     const ready = [...this.clients.values()].filter((client) => client.isReady())
     return ready.length > 0 && ready.every((client) => client.supportsWebchatImages())
+  }
+
+  /** Retain the last known capability through disconnects and roster replacement until a handshake updates it. */
+  advertisesWebchatImages(): boolean {
+    const known = [...this.clients.values()]
+      .map((client) => client.advertisesWebchatImages())
+      .filter((capability) => capability !== undefined)
+    if (known.length > 0) this.webchatImagesAdvertised = known.every(Boolean)
+    return this.webchatImagesAdvertised
   }
 
   /** Fan one original-state change to every capable relay; whichever holds the conversation's browsers delivers it. */

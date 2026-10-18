@@ -280,6 +280,8 @@ export class SessionManager {
       now?: () => number
       /** Sandbox/runtime defaults used to detect config-file pointer conflicts, as at spawn. */
       runtimeEnvFor?: (agent: Agent) => Record<string, string>
+      /** Whether this session has no live SDK work or pending completion wake. */
+      sessionSdkQuiescent?: (agentId: string, sessionKey: string, acpSessionId: string) => boolean
       /** Snapshot effective tools and task rules in memory; materialize connections only on new/load. */
       toolContextFor?: (ctx: {
         agent: Agent
@@ -740,6 +742,7 @@ export class SessionManager {
         return directories
       },
       toolContext,
+      sessionQuiescent: (id) => this.deps.sessionSdkQuiescent?.(agentId, key, id) ?? true,
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
       // A check (assistant-mode.md §5.12) runs in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
       ...(isCheckCoordinate(thread) || isResearchCoordinate(thread)

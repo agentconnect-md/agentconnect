@@ -1989,7 +1989,8 @@ describe('Daemon idle sweep (#111/#118)', () => {
       expect.anything(),
       undefined,
       undefined,
-      expect.anything()
+      expect.anything(),
+      undefined
     )
     expect(host.newSession).toHaveBeenCalledTimes(2)
     expect(host.prompt).toHaveBeenLastCalledWith('acp-1', expect.anything())

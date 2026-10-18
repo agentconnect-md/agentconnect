@@ -229,8 +229,11 @@ fingerprint leaves the runtime session, MCP registration, and prompt prefix
 untouched. No filesystem or network lookup is needed for this comparison.
 
 A changed fingerprint closes and loads only that runtime session before its next
-prompt, installing the current tool list while preserving native history. If
-close/load is unavailable or loading fails, the existing recreation path restores
+quiescent turn, installing the current tool list while preserving native history.
+Live SDK background tasks or completion wakes defer the refresh and retain the old
+fingerprint for a later turn. Relay capability advertisements survive disconnects,
+so temporary relay unavailability does not invalidate the tool list. If
+close/load is unavailable or fails, the existing recreation path restores
 the conversation from its transcript. Organization research rules are standing
 instructions in this comparison, so rerunning an existing task receives current
 rules without repeating them on unchanged turns. The fingerprint belongs to the

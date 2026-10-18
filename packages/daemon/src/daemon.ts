@@ -4792,6 +4792,7 @@ export class Daemon {
         ...(this.agentRunsInSandbox(agent) ? this.cfg.sandbox.env : {}),
         ...Object.fromEntries((this.runtimes[agent.runtime]?.env ?? []).map((entry) => [entry.name, entry.value]))
       }),
+      sessionSdkQuiescent: (agentId, key, id) => this.sessionSdkQuiescent(this.sessionOwnerKey(agentId, key), id),
       // Compare pure tool snapshots each turn; register tokens and resolve executables only on attachment.
       toolContextFor: ({
         agent,
@@ -9527,7 +9528,7 @@ export class Daemon {
         !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
       currentPlatform: platform,
       // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
-      consoleImages: this.relays?.supportsWebchatImages?.() === true
+      consoleImages: this.relays?.advertisesWebchatImages?.() === true
     })
     // Static descriptor, dynamic authority: the call resolves the current daemon-private turn and fails closed elsewhere.
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]

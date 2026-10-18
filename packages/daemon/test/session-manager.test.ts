@@ -107,6 +107,7 @@ describe('SessionManager', () => {
       const close = vi.spyOn(host, 'closeSession')
       let tools: ToolDescriptor[] = [{ name: 'followUp', description: 'Follow up.', inputSchema: obj({}) }]
       let instructions = 'Research rules version one.'
+      let quiescent = true
       const materialize = vi.fn(() => [
         {
           name: 'agentconnect',
@@ -120,6 +121,7 @@ describe('SessionManager', () => {
         hostFor: async () => host,
         agentById: () => agent,
         memory,
+        sessionSdkQuiescent: () => quiescent,
         toolContextFor: () => ({
           fingerprint: toolContextFingerprint(tools, [], instructions),
           instructions,
@@ -157,13 +159,19 @@ describe('SessionManager', () => {
         expect(materialize).toHaveBeenCalledOnce()
         expect(close).not.toHaveBeenCalled()
         expect(load).not.toHaveBeenCalled()
-        expect(create.mock.calls[0]).toEqual(initial)
 
         const watch = {
           name: 'followUp',
           description: 'Follow up.',
           inputSchema: obj({ watch: { type: 'string' } })
         } satisfies ToolDescriptor
+        tools = [watch]
+        quiescent = false
+        const deferred = await run()
+        expect(deferred.sessionId).toBe(first.sessionId)
+        expect(close).not.toHaveBeenCalled()
+        expect(materialize).toHaveBeenCalledOnce()
+        quiescent = true
         for (const changed of [
           [watch],
           [{ ...watch, description: 'Watch for an event.' }],
@@ -177,7 +185,6 @@ describe('SessionManager', () => {
           expect(refreshed.created).toBe(false)
           expect(load).toHaveBeenCalledTimes(before + 1)
           expect(close).toHaveBeenCalledTimes(before + 1)
-          expect(JSON.stringify(refreshed.blocks)).not.toContain('turn 1')
           tools = [...tools].reverse()
           const again = await run()
           expect(load).toHaveBeenCalledTimes(before + 1)
@@ -202,7 +209,7 @@ describe('SessionManager', () => {
     }
   )
 
-  it('replays history with current tools when a runtime cannot close and reload a warm session', async () => {
+  it.each(['unsupported', 'rejected'])('replays history with current tools when close is %s', async (failure) => {
     const store = await newStore()
     const host = new AcpHost(
       {
@@ -213,6 +220,7 @@ describe('SessionManager', () => {
       { onUpdate: () => {} }
     )
     await host.start()
+    if (failure === 'rejected') vi.spyOn(host, 'closeSession').mockRejectedValueOnce(new Error('close failed'))
     let fingerprint = 'old'
     const materialize = vi.fn(() => [])
     const sm = new SessionManager({

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
-import { buildRelayDaemonFrame, type RdMsg, type RelayDaemonFrame } from '@agentconnect.md/protocol'
+import {
+  buildRelayDaemonFrame,
+  RD_WEBCHAT_IMAGES_V1,
+  type RdMsg,
+  type RelayDaemonFrame
+} from '@agentconnect.md/protocol'
 import { RelayManager } from '../../src/cp/relay-manager.js'
 import type { RelayClientDeps } from '../../src/cp/relay-client.js'
 import type { Logger } from '../../src/log.js'
@@ -17,11 +22,17 @@ class FakeTransport implements Transport {
   readonly subprotocol = 'rd'
   sent: RelayDaemonFrame[] = []
   private msgCb?: (t: string) => void
+  private closeCb?: (code: number, reason: string) => void
   onMessage(cb: (t: string) => void): void {
     this.msgCb = cb
   }
-  onClose(): void {}
+  onClose(cb: (code: number, reason: string) => void): void {
+    this.closeCb = cb
+  }
   close(): void {}
+  disconnect(): void {
+    this.closeCb?.(1006, 'disconnected')
+  }
   send(text: string): void {
     this.sent.push(JSON.parse(text) as RelayDaemonFrame)
   }
@@ -116,10 +127,10 @@ function readyManager() {
   return { mgr, transports }
 }
 
-async function toReady(t: FakeTransport, relayId: string): Promise<void> {
+async function toReady(t: FakeTransport, relayId: string, capabilities?: string[]): Promise<void> {
   await flush()
   const hello = [...t.sent].reverse().find((f) => f.type === 'rd/hello')!
-  t.inject(buildRelayDaemonFrame('rd/hello/ok', { relayId }, { corr: hello.id }))
+  t.inject(buildRelayDaemonFrame('rd/hello/ok', { relayId, capabilities }, { corr: hello.id }))
   await flush()
 }
 
@@ -138,6 +149,28 @@ const POST = {
 
 const RELAY_1 = '44444444-4444-4444-8444-444444444444'
 const RELAY_2 = '55555555-5555-4555-8555-555555555555'
+
+it('keeps advertised tools through relay disconnect and replacement, but accepts an explicit capability downgrade', async () => {
+  const { mgr, transports } = readyManager()
+  try {
+    expect(mgr.advertisesWebchatImages()).toBe(false)
+    mgr.converge([entry(RELAY_1, 'wss://relay.example.test')])
+    await toReady(transports.get('wss://relay.example.test')!, RELAY_1, [RD_WEBCHAT_IMAGES_V1])
+    expect(mgr.advertisesWebchatImages()).toBe(true)
+    expect(mgr.supportsWebchatImages()).toBe(true)
+    transports.get('wss://relay.example.test')!.disconnect()
+    expect(mgr.supportsWebchatImages()).toBe(false)
+    expect(mgr.advertisesWebchatImages()).toBe(true)
+    mgr.converge([])
+    expect(mgr.advertisesWebchatImages()).toBe(true)
+    mgr.converge([entry(RELAY_2, 'wss://replacement.example.test')])
+    expect(mgr.advertisesWebchatImages()).toBe(true)
+    await toReady(transports.get('wss://replacement.example.test')!, RELAY_2, [])
+    expect(mgr.advertisesWebchatImages()).toBe(false)
+  } finally {
+    await mgr.stop()
+  }
+})
 
 describe('RelayManager.sendWebchatPost (#753)', () => {
   it('broadcasts to every READY relay — only the one holding this conversation acts on it', async () => {
