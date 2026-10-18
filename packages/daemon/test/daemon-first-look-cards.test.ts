@@ -448,7 +448,7 @@ describe('a first look’s report round on a platform with cards', () => {
     expect(decision).toMatchObject({ result: 'decided', status: 'executing', failure: null })
     await settled()
     const task = dispatched.find((c) => isTaskCoordinate(c.msg.thread))!
-    expect(JSON.stringify(task.msg)).toContain('You proposed this after your first look at this place')
+    expect(JSON.stringify(task.msg)).toContain('You proposed this after reading this place’s recent messages')
     await daemon.stop()
   })
 

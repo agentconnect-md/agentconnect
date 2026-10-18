@@ -274,7 +274,13 @@ describe('the prompts', () => {
     expect(handling).toContain('Then post nothing\n   more on your own.')
     expect(handling).not.toContain('propose')
     // What people read names a channel, never its raw platform id.
-    expect(handling).toMatch(/\nIn everything people read, name a channel by its name or link, never by its raw id\.$/)
+    expect(handling).toContain(
+      '\nIn everything people read, name a channel by its name or link, never by its raw id.\n'
+    )
+    // People hear what the agent did in plain words, never the internal term.
+    expect(handling).toMatch(
+      /\nTell people plainly that you read this place's recent messages to get to know it; never call it a "first look"\.$/
+    )
     // Where the place has cards, step 2 offers the suggestions with propose, under the introduction.
     const cards = firstLookHandling('@-mention me', { external: false, cards: true })
     expect(cards).toContain(

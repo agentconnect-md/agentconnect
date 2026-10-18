@@ -509,7 +509,7 @@ describe.each([
   it('names a first look as one', async () => {
     wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true } }
     await open(SLACK_CHECK, { parent: OWNER })
-    expect(summary()?.textContent).toContain('First look')
+    expect(summary()?.textContent).toContain('Getting to know')
     expect(summary()?.textContent).not.toContain('Follow-up')
   })
 

@@ -798,7 +798,7 @@ export class FollowUpChecks {
             ? 'its place is shared with another organization'
             : 'its place has no conversation to report to'
       await this.host.items.schedule(agentId, item.id, { status: 'dropped', nextCheck: null }, now)
-      await this.observe(agentId, item.id, `No first look ran: ${why}.`)
+      await this.observe(agentId, item.id, `Did not get to know this place: ${why}.`)
       this.host.log.info(`first look ${item.taskKey}: ended without reading (${why})`)
       return 'no-place'
     }
@@ -1135,8 +1135,8 @@ export class FollowUpChecks {
       const failed = await this.host.checks.fail(agentId, itemId, key, now, item.nextCheck)
       if (!failed) return
       const note = failed.stopped
-        ? `First look failed (${verdict.why}), ${CHECK_MAX_FAILURES} times in a row; it ended without reporting.`
-        : `First look failed (${verdict.why}); the next attempt is in ${checkBackoffMs(failed.failures) / 60_000} minutes.`
+        ? `Getting to know this place failed (${verdict.why}), ${CHECK_MAX_FAILURES} times in a row; it ended without reporting.`
+        : `Getting to know this place failed (${verdict.why}); the next attempt is in ${checkBackoffMs(failed.failures) / 60_000} minutes.`
       if (state.runningCheck !== null)
         await this.host.checks.endCheck(agentId, itemId, state.runningCheck, {
           observation: note,
