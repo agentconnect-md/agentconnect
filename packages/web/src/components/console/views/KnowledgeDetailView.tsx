@@ -277,6 +277,11 @@ export default function KnowledgeDetailView() {
         <div className="hidden min-w-0 flex-1 desktop:block">
           <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
             <h1 className="ptitle truncate">{title}</h1>
+            {kind === 'organization' && (
+              <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                {recordFile(kind)}
+              </span>
+            )}
             <span className="badge bg-(--surface-active) text-(--text-secondary)">{revisionLabel}</span>
             {record.archivedAt && (
               <span className="badge bg-(--surface-sunken) text-(--text-disabled)">{t('archived')}</span>

@@ -2374,7 +2374,7 @@ recommended).
 | File              | Holds                                                                                                                   | Written by                                                                                               |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `organization.md` | a summary of at most ten lines first, then products and customers, how the organization works, repositories and systems | first looks and research; a public channel's session on a person's turn; owners on the Knowledge page    |
-| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | first looks; research adds the repository a place's release talk maps to, as "(inferred)"                |
+| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | first looks and research; `(inferred)` marks only a purpose guessed from the name, not read yet          |
 | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                                    | first looks and research; a public channel's session on a person's turn; the person, for their own entry |
 
 - **Where.** The organization record (§5.16): an assistant-mode agent's sessions read and write
@@ -2552,8 +2552,9 @@ AgentConnect, and only what the organization already granted.
     requests, counted by top-level path, say who owns what and whom to ask. That is a stronger
     signal than chat, and it goes into `members.md` (§5.17).
   - Release history and cadence, from the last 20 releases or tags, say which channel's release
-    talk maps to which repository. That goes into `channels.md`, marked "(inferred)", and into the
-    summary.
+    talk maps to which repository. That goes into `organization.md`'s repositories and systems,
+    marked "(inferred)", and into the summary; in `channels.md` "(inferred)" means only a purpose
+    guessed from a channel's name, which the console lists as not read yet.
 - **The read path.** Today a session's code-host read tools target only the agent's workspace
   repository, and a GitHub read goes through the `gh` wrapper in the runtime's shell (§9 Q21), which
   a credential-less launch does not have. Research needs reads the bridge serves. They widen the
@@ -2596,8 +2597,8 @@ disagree, keep the internal one beneath it; where two internal sources disagree,
 newer. Keep the summary at ten lines.
 - organization.md: what the organization is (the summary), products and customers, how it
   works (teams and what each owns, tools, where decisions and docs live), repositories and
-  systems (each repository you could read, what it is for, its system).
-- channels.md: which channel's release talk maps to which repository, as (inferred).
+  systems (each repository you could read, what it is for, its system, and which channel's
+  release talk maps to it, as (inferred)).
 - members.md: work facts only, one entry per person: role, areas, what they own, as people
   state them and as CODEOWNERS, maintainers and reviews show. Never opinions, judgments or
   anything personal. Skip anyone whose entry says they opted out.
@@ -4400,4 +4401,7 @@ chips, so the summary is now a paragraph, each section plain bullets ending in f
 the lines not confirmed yet are gathered at the end, and a sources rail beside the text lists
 each source with its number and how many lines cite it; the header carries one "Updated … by …"
 line instead of per-line dates. The agent page's Knowledge tab lists only the entries the agent
-reads and drops the "Reads it" / "Does not read it" labels.
+reads and drops the "Reads it" / "Does not read it" labels. Since Channels lists `(inferred)` lines
+as not read yet, research now writes which channel's release talk maps to which repository into
+`organization.md`'s repositories and systems, and `(inferred)` in `channels.md` means only a
+purpose guessed from the channel's name.
