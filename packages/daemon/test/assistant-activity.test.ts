@@ -180,7 +180,7 @@ describe('the Activity view: follow-ups in place of items', () => {
   it('marks a first look, which shows no next check while it waits for the scheduled-check slot', async () => {
     const { s, a, activity } = await setup()
     await createFollowUp(s, a, {
-      title: 'First look at support',
+      title: 'Getting to know support',
       doneWhen: undefined,
       nextCheck: 1_000,
       firstLook: 'joined'
@@ -190,7 +190,7 @@ describe('the Activity view: follow-ups in place of items', () => {
       expect.objectContaining({
         kind: 'follow-up',
         followUp: expect.objectContaining({
-          title: 'First look at support',
+          title: 'Getting to know support',
           status: 'waiting',
           nextCheck: null,
           firstLook: true

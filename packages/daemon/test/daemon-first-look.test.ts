@@ -204,7 +204,7 @@ describe('a first look someone asks for', () => {
     expect(prompt).toContain('the last 30 days or 500 messages, whichever')
     expect(prompt).toContain('Hand it back with recordCheck: a one-line observation, this report, and done set.')
     expect(prompt).toMatch(/actually do with its tools: .*sendMessage.*and your runtime’s own tools\./s)
-    expect(look!.msg.initialSessionTitle).toBe('First look at fake')
+    expect(look!.msg.initialSessionTitle).toBe('Getting to know fake')
     // Only the place's own reads, memory reads and writes, and recordCheck.
     const tools = registered.find((c) => isFirstLookCoordinate(c.thread))!.tools.map((t) => t.name)
     for (const present of ['getChannelHistory', 'writeMemory', 'createMemoryEntry', 'updateMemoryEntry', 'recordCheck'])
@@ -241,7 +241,7 @@ describe('a first look someone asks for', () => {
     ])
     const listed = (await executeTool(placeCtx(place), 'listTasks', {}, deps)) as any
     expect(listed.tasks).toEqual([
-      expect.objectContaining({ kind: 'first look', state: 'done', label: 'First look at fake' })
+      expect.objectContaining({ kind: 'first look', state: 'done', label: 'Getting to know fake' })
     ])
     const messaged = await d.collab.continueSubsession({
       callerAgentId: 'bot-a',
@@ -329,6 +329,7 @@ describe('a first look someone asks for', () => {
     expect(modelText(reports()[0]!.msg)).toContain(
       '[first look] The first look at "fake" that was asked for here failed 5'
     )
+    expect(modelText(reports()[0]!.msg)).toContain('never "first look"')
     await daemon.stop()
   })
 })
@@ -409,7 +410,7 @@ describe('the bot joining a place', () => {
       WAIT
     )
     const item = await d.store.assistantItems.latestFirstLook('bot-a', place(d))
-    expect(item).toMatchObject({ firstLook: 'joined', status: 'active', title: 'First look at fake' })
+    expect(item).toMatchObject({ firstLook: 'joined', status: 'active', title: 'Getting to know fake' })
     expect(item.asker).toMatch(/^slack:.+:U0INVITER$/)
     // Nobody spoke there yet, so its owner is the coordinate the place's first message would key.
     expect(await d.store.placeSession('bot-a', 'slack', 'C1', scopeOf(d))).toBeUndefined()
@@ -505,7 +506,7 @@ describe('the bot joining a place', () => {
     const ended = await d.store.assistantItems.get('bot-a', item.id)
     expect(ended.status).toBe('dropped')
     expect(ended.observations.at(-1).text).toBe(
-      'First look failed (error), 5 times in a row; it ended without reporting.'
+      'Getting to know this place failed (error), 5 times in a row; it ended without reporting.'
     )
     expect(reports()).toHaveLength(0)
     await daemon.stop()

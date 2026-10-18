@@ -103,7 +103,7 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
   const proposal = draft.proposal!
   const origin =
     item.firstLook !== null
-      ? 'You proposed this after your first look at this place'
+      ? 'You proposed this after reading this place’s recent messages'
       : 'A check of one of your follow-ups proposed this'
   return [
     `[approved proposal] ${origin}, and ${by.name ?? 'an approver'} ` +
@@ -115,7 +115,7 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
     `Proposed as: ${oneLine(proposal.sentence)}`,
     '',
     item.firstLook !== null
-      ? `First look: ${oneLine(item.title)}`
+      ? `Follow-up (ended after reading the place once): ${oneLine(item.title)}`
       : `Follow-up (${item.status === 'active' || item.status === 'waiting' ? 'open' : 'ended'}): ${oneLine(item.title)}`,
     `Done when: ${item.doneWhen === null ? 'not set' : oneLine(item.doneWhen)}`,
     `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,

@@ -9834,7 +9834,7 @@ export class Daemon {
   /** A first look's title, by its place's name where the platform gives one. */
   private async firstLookTitle(integrationId: string, channel: string): Promise<string> {
     const name = (await this.placeInfo(integrationId, channel))?.name?.trim()
-    return name ? `First look at ${name}` : 'First look'
+    return name ? `Getting to know ${name}` : 'Getting to know this place'
   }
 
   /** A first look's place as the platform describes it, its channel name kept so the place's sessions carry it: an HTTP bot's join lists no channels to learn it from. */

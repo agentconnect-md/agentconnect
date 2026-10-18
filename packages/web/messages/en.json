@@ -198,7 +198,7 @@
     },
     "followUp": {
       "kind": "Follow-up",
-      "firstLook": "First look",
+      "firstLook": "Getting to know",
       "status": {
         "waiting": "Waiting",
         "waitingNext": "Waiting · next check {time}",
@@ -4393,7 +4393,7 @@
     },
     "writers": {
       "research": "research",
-      "firstLook": "first look",
+      "firstLook": "getting to know",
       "conversation": "conversation",
       "person": "own entry"
     }

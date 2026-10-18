@@ -1394,7 +1394,7 @@ describe('a first look of a channel the bot just joined', () => {
       createdAt: '2026-10-09T09:00:00.000Z',
       kind: 'follow-up' as const,
       followUp: {
-        title: 'First look at release',
+        title: 'Getting to know release',
         doneWhen: null,
         status: 'checking' as const,
         nextCheck: null,
@@ -1424,7 +1424,7 @@ describe('a first look of a channel the bot just joined', () => {
       expect.objectContaining({
         sessionId: look,
         visible: true,
-        title: 'First look at release',
+        title: 'Getting to know release',
         parent: null,
         place: { platform: 'slack', channelName: 'release' }
       }),

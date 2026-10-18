@@ -219,7 +219,7 @@ const FOLLOW_UP_FORM: AssistantDraftDto = {
     sentence: 'I want to follow up the 2.6 release date because Ada is waiting on it.',
     why: 'Ada asked for a date on Monday.',
     itemId: 'item-look',
-    itemTitle: 'First look at support',
+    itemTitle: 'Getting to know support',
     followUp: { title: 'The 2.6 release date', doneWhen: 'A date is posted.', nextCheck: '2026-10-20T01:00:00.000Z' }
   }
 }
@@ -484,20 +484,20 @@ describe('follow-ups in Activity', () => {
   it('labels a first look as one', async () => {
     mocks.subsessions = [{ ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true, nextCheck: null } }]
     const host = await mount(false)
-    expect(meta(taskRow(host, 'sid-follow'))).toBe('#support · First look · Waiting · last Oct 15, 9:00 AM')
+    expect(meta(taskRow(host, 'sid-follow'))).toBe('#support · Getting to know · Waiting · last Oct 15, 9:00 AM')
   })
 
   // Its place's long session opens only once it reports, so while it runs its own session names the place.
   it('names a running first look’s place from its own session, then by its conversation once it reports', async () => {
     const look: AssistantSubsessionDto = {
       ...FOLLOW_UP,
-      title: 'First look at release',
+      title: 'Getting to know release',
       followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], firstLook: true }
     }
     mocks.subsessions = [{ ...look, parent: null, place: { platform: 'slack', channelName: 'release' } }]
     const running = await mount(false)
     const line = taskRow(running, 'sid-follow').querySelector('[data-meta-line]')!
-    expect(meta(taskRow(running, 'sid-follow'))).toBe('#release · First look · Checking')
+    expect(meta(taskRow(running, 'sid-follow'))).toBe('#release · Getting to know · Checking')
     expect(line.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
     // No conversation to open yet, so the place is not a link.
     expect(line.querySelector('[data-task-place]')).not.toBeNull()
@@ -508,7 +508,7 @@ describe('follow-ups in Activity', () => {
     mocks.subsessions = [{ ...look, parent: { ...SUPPORT, sessionId: 'sid-place', channelName: 'release' } }]
     const reported = await mount(false)
     const link = taskRow(reported, 'sid-follow').querySelector<HTMLAnchorElement>('[data-meta-line] a')!
-    expect(meta(taskRow(reported, 'sid-follow'))).toBe('#release · First look · Checking')
+    expect(meta(taskRow(reported, 'sid-follow'))).toBe('#release · Getting to know · Checking')
     expect(link.getAttribute('href')).toContain('/sessions/sid-place')
   })
 
@@ -516,14 +516,14 @@ describe('follow-ups in Activity', () => {
     mocks.subsessions = [
       {
         ...FOLLOW_UP,
-        title: 'First look at release',
+        title: 'Getting to know release',
         parent: null,
         place: { platform: 'slack', channelName: null },
         followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], firstLook: true }
       }
     ]
     const host = await mount(false)
-    expect(meta(taskRow(host, 'sid-follow'))).toBe('Conversation · First look · Checking')
+    expect(meta(taskRow(host, 'sid-follow'))).toBe('Conversation · Getting to know · Checking')
   })
 
   it('ends a follow-up after a confirmation, and reads the tasks again', async () => {

@@ -358,7 +358,7 @@ describe('the place a follow-up belongs to', () => {
 async function firstLook(s: LocalStore, agentId: string, nextCheck: number, now = 1) {
   return await s.assistantItems.create({
     agentId,
-    title: 'First look at general',
+    title: 'Getting to know general',
     nextCheck,
     origin: ORIGIN,
     taskKey: key(agentId, randomUUID(), firstLookCoordinate(randomUUID())),
@@ -560,7 +560,7 @@ async function seedChecks(s: LocalStore, a: string) {
   })
   const look = await s.assistantItems.create({
     agentId: a,
-    title: 'First look',
+    title: 'Getting to know this place',
     origin: ORIGIN,
     taskKey: key(a, 'l1', firstLookCoordinate('l1')),
     firstLook: 'joined',

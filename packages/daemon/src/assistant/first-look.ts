@@ -240,7 +240,8 @@ ${
    ${FOLLOW_UP_SCHEDULE}
 3. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
-In everything people read, name a channel by its name or link, never by its raw id.`
+In everything people read, name a channel by its name or link, never by its raw id.
+Tell people plainly that you read this place's recent messages to get to know it; never call it a "first look".`
 }
 
 /** Why a first look's report round refuses a proposal: a follow-up form without a first check would never run (§5.13). */
@@ -260,7 +261,8 @@ export function firstLookReportText(place: string, handling: string, report: str
 export function firstLookFailedText(place: string, attempts: number): string {
   return (
     `[first look] The first look at ${place} that was asked for here failed ${attempts} times in a row and has ` +
-    'ended without reading anything you can use. Tell the people here; they may ask for another.'
+    'ended without reading anything you can use. Tell the people here in plain words, such as "I could not ' +
+    'read this channel’s recent messages", never "first look"; they may ask for another.'
   )
 }
 

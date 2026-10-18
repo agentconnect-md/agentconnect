@@ -1531,9 +1531,10 @@ long session, which introduces the agent once and offers at most three ways it c
   conversation. Failures back off as a check's do. After five in a row, an automatic one ends
   without a word in the conversation, its page saying why; a requested one ends and the conversation
   is told once.
-- **As a task.** It is listed among the conversation's tasks, labelled "First look" in the Tasks
-  tab, the Activity view and its own page, and ends as Done after its one read, or Stopped.
-  `listTasks` lists it as a first look, `messageTask` to it is refused, and `stopTask` or the
+- **As a task.** It is listed among the conversation's tasks, titled "Getting to know #channel" and
+  labelled "Getting to know" (「了解频道」) in the Tasks tab, the Activity view and its own page, and
+  ends as Done after its one read, or Stopped. People never see the internal term "first look": the
+  agent says it read the channel's recent messages. `listTasks` lists it as a first look, `messageTask` to it is refused, and `stopTask` or the
   console's Stop ends it. The reminders of open follow-ups leave it out.
 
 ## Assistant-mode organization research
