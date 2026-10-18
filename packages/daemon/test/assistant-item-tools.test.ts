@@ -2,6 +2,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { normalizeSlackMessage } from '@agentconnect.md/message'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
@@ -19,6 +20,7 @@ import {
 } from '../src/mcp/ops/assistant-items.js'
 import { watchTarget } from '../src/assistant/follow-up-watches.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
+import { typedByPerson } from '../src/memory/layers.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -277,6 +279,28 @@ describe('askerIdentity', () => {
     expect(askerIdentity(message({ platform: 'webchat', sender: { id: 'a name', isBot: false } }), undefined)).toBe(
       undefined
     )
+  })
+})
+
+describe('a Slack post an app made with the person’s own token', () => {
+  const post = (over: Record<string, string>) =>
+    normalizeSlackMessage({ type: 'message', channel: 'D0ALICE', ts: '1760000000.000100', text: 'remind me', ...over })!
+  const args = { title: 'Ship the release notes', doneWhen: 'The notes are posted', nextCheck: '2026-10-09T09:00:00Z' }
+
+  it('is that person’s turn, so followUp takes it for them', async () => {
+    const msg = post({ user: 'U0ALICE', app_id: 'A0EXAMPLE' })
+    expect(typedByPerson(msg)).toBe(true)
+    const { call, askAs } = await setup()
+    askAs(askerIdentity(msg, 'T0EXAMPLE'))
+    expect(await call(ALICE_DM, 'followUp', args)).toMatchObject({ taskId: TASK_KEY })
+  })
+
+  it('stays a bot’s when posted as a bot identity, so followUp refuses it', async () => {
+    const msg = post({ user: 'U0BOTUSER', bot_id: 'B0EXAMPLE', app_id: 'A0EXAMPLE' })
+    expect(typedByPerson(msg)).toBe(false)
+    const { call, askAs } = await setup()
+    askAs(askerIdentity(msg, 'T0EXAMPLE'))
+    await expect(call(ALICE_DM, 'followUp', args)).rejects.toThrow(/not started by a person/)
   })
 })
 

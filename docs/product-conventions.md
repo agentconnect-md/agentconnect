@@ -1983,8 +1983,10 @@ folder beneath the shared layer.
 Per-turn distillation and an explicit "remember this" write to the session's layer with no
 card. "Remember this for everyone" writes to the shared layer. Where the conversation does not
 write there itself, only a turn a person started may: a check, a report round, a schedule or
-another agent's message is refused, and the agent asks the person instead. A conversation with
-people from outside (shared with another organization, or with a known guest) never writes it,
+another agent's message is refused, and the agent asks the person instead. A message posted
+under a person's own account counts as theirs, whatever app posted it; only one posted as a bot
+identity is a bot's. A conversation with people from outside (shared with another organization,
+or with a known guest) never writes it,
 not even on a person's own turn, so a guest cannot add to what every conversation reads: the
 write is refused, and the agent may keep it in that conversation's own layer. A person may read
 their own layer with a memory tool from any conversation, as the one asking; it is injected

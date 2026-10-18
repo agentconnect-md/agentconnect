@@ -547,6 +547,8 @@ context, not an instruction; no tool's parameters change, and instants the agent
 > **External**: an external place reads and posts like an internal one, for every agent (§5.5
 > "Replies in an external place"); its approvals go to an internal member, and a post into it from
 > elsewhere is a draft.
+> **A person's turn**: a message posted under a person's own account counts as theirs, whatever app
+> posted it; only one posted as a bot identity is a bot's (seventy-seventh revision).
 
 | Current place                | Readable sources                                             | Memory / knowledge | Output  |
 | ---------------------------- | ------------------------------------------------------------ | ------------------ | ------- |
@@ -4405,3 +4407,11 @@ reads and drops the "Reads it" / "Does not read it" labels. Since Channels lists
 as not read yet, research now writes which channel's release talk maps to which repository into
 `organization.md`'s repositories and systems, and `(inferred)` in `channels.md` means only a
 purpose guessed from the channel's name.
+
+**Seventy-seventh revision (2026-10-18)**: a message posted under a person's own account counts
+as theirs, whatever app posted it (issue #2810; §5.5). A Slack post an app made with the person's
+token carries the app's id but no bot id, and was read as a bot's, so `followUp`, a named
+shared-layer write and the people directory's conversation writes refused it. A Slack message is
+now a bot's only when it carries a bot id or is a `bot_message`, in the normalizer and in thread
+and channel history alike; the app id is still kept on the sender. The other platforms already
+judged by the sender's own identity, so nothing changed there.
