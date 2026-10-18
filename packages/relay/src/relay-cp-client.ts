@@ -278,7 +278,7 @@ export class RelayCpClient {
    * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
   async verify(
-    kind: Exclude<RcVerify['kind'], 'agent-chat-key'>,
+    kind: Exclude<RcVerify['kind'], 'agent-chat-key' | 'ahp-client-key'>,
     credential: string,
     daemonId?: string
   ): Promise<RcVerifyResult> {
@@ -312,6 +312,25 @@ export class RelayCpClient {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
     }
     return rep.payload
+  }
+
+  async verifyAhpCredential(
+    credential: string,
+    agentId: string,
+    kind: 'ahp-client-key' | 'webchat-token'
+  ): Promise<RcVerifyResult> {
+    const request: RcVerify =
+      kind === 'ahp-client-key'
+        ? { kind, credential, agentId }
+        : { kind, credential, agentId, protocol: 'ahp', conversationBinding: 'v1' }
+    const reply = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/verify', request),
+      'rc/verify ahp',
+      HANDOFF_WAIT_MS,
+      {}
+    )
+    if (reply.type !== 'rc/verify/ok') throw new WireError('INTERNAL', 'unexpected AHP authorization reply', false)
+    return reply.payload
   }
 
   /** One CP read that waits out a reconnect and is re-issued once only over a REPLACED link, never on the one that failed it. */

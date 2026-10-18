@@ -1,5 +1,6 @@
 import { RcCodeHostFeedback, RcCodeHostFeedbackResult, RcCodeHostFeedbackWatch } from './codehost-feedback.js'
 import { z } from 'zod'
+import { AhpGrant } from '../ahp.js'
 import { frameSchema } from '../envelope.js'
 import {
   CodeHostExternalId,
@@ -158,6 +159,11 @@ export const AGENT_CHAT_KEY_REFUSAL = {
 // relay's webchat dial without closing the relay's shared control connection.
 export const RcVerify = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('ahp-client-key'),
+    credential: z.string().min(1),
+    agentId: z.string().uuid()
+  }),
+  z.object({
     kind: z.literal('daemon-key'),
     credential: z.string().min(1)
   }),
@@ -172,7 +178,9 @@ export const RcVerify = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('webchat-token'),
     credential: z.string().min(1),
-    conversationBinding: z.literal('v1').optional()
+    conversationBinding: z.literal('v1').optional(),
+    protocol: z.literal('ahp').optional(),
+    agentId: z.string().uuid().optional()
   }),
   // An API key on the agent chat API (shared-bot-relay.md §10.4): the CP maps (key owner, agent, chat id) to its conversation.
   z.object({
@@ -208,6 +216,8 @@ export const RcWebchatParticipant = z.object({
 export type RcWebchatParticipant = z.infer<typeof RcWebchatParticipant>
 
 export const RcVerifyResult = z.object({
+  ahpGrant: AhpGrant.optional(),
+  callerRole: ChatCallerRole.optional(),
   ok: z.boolean(),
   reason: z.string().optional(),
   orgId: z.string().optional(),

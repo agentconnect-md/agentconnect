@@ -6,6 +6,14 @@ const CHAT = 'https://relay.example.test/ai-sdk/agents/agent-1/chat'
 const AG_UI_CHAT = 'https://relay.example.test/ag-ui/agents/agent-1/chat'
 
 describe('agentChatUrl', () => {
+  it('keeps AHP on its WebSocket endpoint and never supplies an HTTP example', () => {
+    expect(agentChatUrl('ahp', 'agent two', 'https://relay.example.test/')).toBe(
+      'wss://relay.example.test/ahp/agents/agent%20two'
+    )
+    expect(agentChatUrl('ahp', 'agent')).toBeNull()
+    expect(() => quickstartExamples('ahp', 'wss://relay.example.test/ahp/agents/agent')).toThrow('WebSocket client')
+  })
+
   it('uses the deployment relay and escapes the agent id', () => {
     expect(agentChatUrl('ai-sdk-ui', 'agent two', 'https://relay.example.test/')).toBe(
       'https://relay.example.test/ai-sdk/agents/agent%20two/chat'

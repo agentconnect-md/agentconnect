@@ -1,3 +1,11 @@
+import {
+  AhpSessionReserve,
+  AhpSessionFinalize,
+  AhpSessionResolve,
+  AhpSessionList,
+  AhpSessionResult,
+  AhpSessionListResult
+} from './ahp.js'
 import { MemoryTransactionReq, MemoryTransactionResult } from './frames/memory-transaction.js'
 import {
   MemoryEntriesWriteReq,
@@ -316,6 +324,15 @@ import {
  * an unknown `type` → `ErrorFrame{code:"UNKNOWN_FRAME"}` (a REP, not a close).
  */
 export const FRAME_SCHEMAS = {
+  'ahp/session/reserve': AhpSessionReserve,
+  'ahp/session/reserve/ok': AhpSessionResult,
+  'ahp/session/finalize': AhpSessionFinalize,
+  'ahp/session/finalize/ok': AhpSessionResult,
+  'ahp/session/resolve': AhpSessionResolve,
+  'ahp/session/resolve/ok': AhpSessionResult,
+  'ahp/session/list': AhpSessionList,
+  'ahp/session/list/ok': AhpSessionListResult,
+
   // ── auth / identity ──
   auth: AuthReq,
   'auth/ok': AuthOk,
@@ -718,6 +735,15 @@ function frame<T extends FrameType>(type: T, payload: (typeof FRAME_SCHEMAS)[T])
  * edge and the precise inferred type the handlers switch on.
  */
 export const AnyFrame = z.discriminatedUnion('type', [
+  frame('ahp/session/reserve', FRAME_SCHEMAS['ahp/session/reserve']),
+  frame('ahp/session/reserve/ok', FRAME_SCHEMAS['ahp/session/reserve/ok']),
+  frame('ahp/session/finalize', FRAME_SCHEMAS['ahp/session/finalize']),
+  frame('ahp/session/finalize/ok', FRAME_SCHEMAS['ahp/session/finalize/ok']),
+  frame('ahp/session/resolve', FRAME_SCHEMAS['ahp/session/resolve']),
+  frame('ahp/session/resolve/ok', FRAME_SCHEMAS['ahp/session/resolve/ok']),
+  frame('ahp/session/list', FRAME_SCHEMAS['ahp/session/list']),
+  frame('ahp/session/list/ok', FRAME_SCHEMAS['ahp/session/list/ok']),
+
   frame('auth', FRAME_SCHEMAS['auth']),
   frame('auth/ok', FRAME_SCHEMAS['auth/ok']),
   frame('register', FRAME_SCHEMAS['register']),

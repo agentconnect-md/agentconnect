@@ -5,6 +5,7 @@ import {
   AgentApiGateProjections,
   AgentApiProtocol,
   API_AG_UI_V1_FEATURE,
+  API_AHP_V1_FEATURE,
   ApiGateEvaluationsRequest
 } from './agent-api.js'
 import { RelayWebchatOp } from './frames/relay-daemon.js'
@@ -24,9 +25,9 @@ const projection = {
 }
 
 describe('chat API protocols on the wire', () => {
-  it('lists AG-UI, which alone needs a daemon feature', () => {
-    expect(AgentApiProtocol.options).toEqual(['ai-sdk-ui', 'ag-ui'])
-    expect(AGENT_API_PROTOCOL_FEATURE).toEqual({ 'ag-ui': API_AG_UI_V1_FEATURE })
+  it('gates AG-UI and AHP on their own daemon features', () => {
+    expect(AgentApiProtocol.options).toEqual(['ai-sdk-ui', 'ag-ui', 'ahp'])
+    expect(AGENT_API_PROTOCOL_FEATURE).toEqual({ 'ag-ui': API_AG_UI_V1_FEATURE, ahp: API_AHP_V1_FEATURE })
   })
 
   it('decodes a protocol this build does not know in every daemon-bound field', () => {
