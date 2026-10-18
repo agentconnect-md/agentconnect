@@ -1285,9 +1285,7 @@ export class RelayIngressManager {
     // A By decision routed conversation: every eligible human message goes once to its evaluation host.
     const routed = this.router.routedConversationFor(botId, msg)
     if (routed) {
-      const command = parseCommand(
-        commandText(msg.platform, msg.text, assignment?.botUserId ? [assignment.botUserId] : [])
-      )
+      const command = parseCommand(commandText(msg, assignment?.botUserId ? [assignment.botUserId] : []))
       // Commands, !queue included, are never judged (message-intake §5 step 2); they take the command path.
       if (!command) return await this.forwardRoutedToHost(botId, msg, sidecar, routed, strict)
       return await this.forwardRoutedCommand(botId, msg, sidecar, routed.decisionId, namesThisBot, strict)

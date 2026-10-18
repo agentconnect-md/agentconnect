@@ -1,4 +1,5 @@
 import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
+import { leadingMentions } from './command-text.js'
 
 /**
  * Minimal plain-object Discord view accepted by pure normalization. The daemon
@@ -117,6 +118,14 @@ export function normalizeDiscordMessage(
   // `thread` is the concrete thread within it. DMs and top-level guild messages have
   // no separate enclosing id, so their channel remains the provider channel id.
   const channel = message.isThread && message.parentChannelId ? message.parentChannelId : message.channelId
+  const text = humanizeDiscordText(message.content, message.mentionUserNames)
+  const leading = leadingMentions(
+    text,
+    [...message.content.matchAll(/<@!?(\d+)>/g)].map(([, id]) => ({
+      id: id!,
+      text: `@${message.mentionUserNames?.[id!] ?? id}`
+    }))
+  )
 
   return {
     msgId: `discord:${message.channelId}:${message.id}`,
@@ -138,9 +147,10 @@ export function normalizeDiscordMessage(
       isBot: message.authorIsBot,
       ...(message.authorAvatarUrl ? { avatarUrl: message.authorAvatarUrl } : {})
     },
-    text: humanizeDiscordText(message.content, message.mentionUserNames),
+    text,
     mentionedBots: message.mentionUserIds,
     mentionedUsers: [...new Set(message.mentionUserIds)].slice(0, 100),
+    ...(leading ? { leadingMentions: leading } : {}),
     ...(attachments.length ? { attachments } : {}),
     isDm,
     // §6.5 emission flip: the generic coordinate only — `discordTopLevel` retired.

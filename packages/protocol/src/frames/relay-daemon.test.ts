@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ELICIT_FORM_WIRE_FIELD_CAP,
   WireFeishuCardActionEvent,
+  WireNormalizedMessage,
   RdMsg,
   RdMsgWebchat,
   RdAck,
@@ -1102,5 +1103,23 @@ describe('By decision routing frames (message-intake.md §6)', () => {
 
   it('names the relay capability after the forward feature', () => {
     expect(RD_DECISION_ROUTE_V1).toBe('decision-routing-forward-v1')
+  })
+})
+
+describe('WireNormalizedMessage', () => {
+  it('carries the mentions a message opens with to the daemon', () => {
+    const msg = {
+      msgId: 'feishu:oc_1:om_1',
+      traceId: 't',
+      source: 'user',
+      platform: 'feishu',
+      channel: 'oc_1',
+      sender: { id: 'on_1', isBot: false },
+      text: '@Agent Bot !new',
+      mentionedBots: ['ou_bot'],
+      leadingMentions: [{ id: 'ou_bot', text: '@Agent Bot' }],
+      isDm: false
+    }
+    expect(WireNormalizedMessage.parse(msg).leadingMentions).toEqual([{ id: 'ou_bot', text: '@Agent Bot' }])
   })
 })
