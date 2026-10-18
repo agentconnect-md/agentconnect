@@ -7,6 +7,8 @@ import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { createMemoryEntryService } from '../src/memory/entries/factory.js'
+import { createMemoryEntriesReader, createMemoryEntriesWriter } from '../src/cp/memory-entries.js'
+import { createMemoryReader } from '../src/cp/memory-reader.js'
 import { organizationFileRefusal, type OrganizationFile } from '../src/memory/organization-files.js'
 import {
   RecordUnavailableError,
@@ -25,12 +27,15 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close()
 })
 
+/** When a revision was written: a real time, never derived from the revision counter. */
+const WRITTEN_AT = (revision: number) => new Date(Date.UTC(2026, 9, 17, 9, revision)).toISOString()
+
 /** The Control Plane's record, in memory: a revision per entry, a write refused when its base is stale. */
 class FakeRecord implements OrganizationRecordPort {
   readonly entries = new Map<OrganizationFile, RecordEntry>([
-    ['organization.md', { revision: 1, content: '# About', optOut: [] }],
-    ['channels.md', { revision: 1, content: '# Channels', optOut: [] }],
-    ['members.md', { revision: 1, content: '# People', optOut: [] }]
+    ['organization.md', { revision: 1, updatedAt: WRITTEN_AT(1), content: '# About', optOut: [] }],
+    ['channels.md', { revision: 1, updatedAt: WRITTEN_AT(1), content: '# Channels', optOut: [] }],
+    ['members.md', { revision: 1, updatedAt: WRITTEN_AT(1), content: '# People', optOut: [] }]
   ])
   readonly writes: (RecordWrite & { file: OrganizationFile })[] = []
   peopleHidden = false
@@ -48,8 +53,9 @@ class FakeRecord implements OrganizationRecordPort {
     if (current.revision !== write.baseRevision) return { conflict: current }
     this.writes.push({ file, ...write })
     const optOut = [...current.optOut.filter((k) => !write.optOut.lift.includes(k)), ...write.optOut.mark]
-    this.entries.set(file, { revision: current.revision + 1, content: write.content, optOut })
-    return { revision: current.revision + 1 }
+    const revision = current.revision + 1
+    this.entries.set(file, { revision, updatedAt: WRITTEN_AT(revision), content: write.content, optOut })
+    return { revision, updatedAt: WRITTEN_AT(revision) }
   }
 }
 
@@ -76,7 +82,7 @@ async function fixture(scope: Partial<MemoryScope> = {}, guard?: MemoryWriteGuar
     write: { source: 'tool', canWrite: () => true, check: organizationFileRefusal, ...(guard ? { guard } : {}) }
   })
   const refOf = async (label: string) => (await api.list({ limit: 100 })).entries.find((e) => e.label === label)?.ref
-  return { fs, record, provider, api, scope: full, refOf }
+  return { fs, db, record, provider, api, scope: full, refOf }
 }
 
 const CHANNELS = '# Channels\n- [slack] release: release trains and freezes (#release, 2026-10-17)'
@@ -158,6 +164,59 @@ describe('the record-backed shared layer', () => {
       code: 'UNAVAILABLE'
     })
     expect(await f.provider.standingContextAtSessionStart(f.scope)).not.toContain('channels.md')
+  })
+
+  it('dates a record entry by when its revision was written', async () => {
+    const f = await fixture()
+    const ref = (await f.refOf('channels'))!
+    const read = (await f.api.get({ ref }))!
+    expect(read.entry.updatedAt).toBe(WRITTEN_AT(1))
+    const updated = await f.api.update({ ref, revision: read.entry.revision, text: CHANNELS })
+    expect(updated.entry?.updatedAt).toBe(WRITTEN_AT(2))
+    expect((await f.provider.list(f.scope)).find((file) => file.name === 'channels.md')?.mtime).toBe(WRITTEN_AT(2))
+  })
+
+  it("keeps the record off the console's Memory page, entries and files alike", async () => {
+    const f = await fixture()
+    await f.fs.writeFile('memory/channels.md', '# Channels\n- [slack] old: a copy (#old, 2026-10-01)')
+    await f.fs.writeFile('memory/MEMORY.md', '- [channels](channels.md) — a line an older daemon wrote\n')
+    await f.api.create({ label: 'deploys', text: 'Deploys go out on Tuesdays.' })
+    const channelsRef = (await f.refOf('channels'))!
+    const read = createMemoryEntriesReader(f.provider, f.db, () => true)
+    const write = createMemoryEntriesWriter(f.provider, f.db, () => true)
+
+    const listed = await read({ agentId: 'agent', operation: 'list', request: { limit: 100 } })
+    expect(listed.operation === 'list' && listed.result.entries.map((e) => e.label)).toEqual(['deploys'])
+    const got = await read({ agentId: 'agent', operation: 'get', request: { ref: channelsRef, maxBytes: 4096 } })
+    expect(got).toEqual({ operation: 'get', result: null })
+    expect(
+      await write({ agentId: 'agent', operation: 'delete', request: { ref: channelsRef, revision: 'sha256:x' } })
+    ).toMatchObject({ operation: 'error', code: 'NOT_FOUND' })
+    expect(
+      await write({ agentId: 'agent', operation: 'create', request: { label: 'organization', text: '# About' } })
+    ).toMatchObject({
+      operation: 'error',
+      code: 'INVALID_ARGUMENT',
+      message: expect.stringContaining('Knowledge page')
+    })
+
+    const files = createMemoryReader(() => localMemoryHome(f.fs), {
+      adminSurfaceForAgent: () => f.provider.adminSurface()
+    })
+    expect((await files.list({ agentId: 'agent' })).entries.map((e) => e.name)).toEqual(['MEMORY.md', 'deploys.md'])
+    expect(await files.read({ agentId: 'agent', path: 'channels.md', offset: 0, limit: 4096 })).toMatchObject({
+      exists: false
+    })
+    const index = await files.read({ agentId: 'agent', path: 'MEMORY.md', offset: 0, limit: 4096 })
+    expect(index.exists && index.content).not.toMatch(/organization\.md|channels\.md|members\.md/)
+    await expect(files.write({ agentId: 'agent', path: 'channels.md', content: CHANNELS })).rejects.toThrow(
+      /Knowledge page/
+    )
+
+    // The agent's own view still reads the record, and the store's older copy is left where it was.
+    expect((await f.provider.read(f.scope, 'channels.md')).content).toBe('# Channels')
+    expect((await f.fs.readFile('memory/channels.md'))?.content).toContain('a copy')
+    expect(f.record.writes).toEqual([])
   })
 
   it("sends the person rules' opt-out changes with the People write", async () => {

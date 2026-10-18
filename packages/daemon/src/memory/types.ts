@@ -57,6 +57,8 @@ export interface MemoryScope {
   withOutsiders?: boolean
   /** Who a write of the organization record comes from; absent is a conversation's. */
   recordWriter?: import('@agentconnect.md/protocol').KnowledgeRecordWriterKind
+  /** The console's view: the organization record's names are left out of the shared layer, kept on the Knowledge page (assistant-mode.md §5.16). */
+  withoutRecord?: true
 }
 
 /** Result of the `readMemory` tool path — the whole file's text. */

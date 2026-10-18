@@ -10,6 +10,7 @@ import {
   PEOPLE_NOT_VISIBLE,
   PEOPLE_WITHHELD,
   RECORD_NOT_DELETED,
+  RECORD_ON_KNOWLEDGE_PAGE,
   RecordBackedMemoryFs,
   recordBody,
   titleOnly
@@ -303,7 +304,12 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
         .filter(Boolean)
         .join('\n\n')
       const overview = memoryUtf8Prefix(text, request.maxBytes)
-      const stale = inventory.some((row) => !indexes[row.layer] || row.mtime > indexes[row.layer]!.mtime)
+      // The record's index lines are written on read, so a record entry newer than the stored index leaves it current.
+      const stale = inventory.some(
+        (row) =>
+          !this.roots[row.layer]!.recordTopic?.(row.name) &&
+          (!indexes[row.layer] || row.mtime > indexes[row.layer]!.mtime)
+      )
       return {
         catalogRevision: memoryDigest([this.identity, inventory, indexes.map((index) => index?.content ?? null)]),
         freshness: stale ? 'cached' : 'current',
@@ -381,6 +387,10 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
       throw new MemoryEntriesError('UNSUPPORTED', 'memory entry mutations are unavailable')
     const root = this.roots[0]!
     const recordFile = root instanceof RecordBackedMemoryFs ? root.recordFile(`${MEMORY_DIRNAME}/${topic}`) : undefined
+    if (recordFile && !(root as RecordBackedMemoryFs).served)
+      throw mutation.operation === 'create'
+        ? new MemoryEntriesError('INVALID_ARGUMENT', RECORD_ON_KNOWLEDGE_PAGE(recordFile))
+        : new MemoryEntriesError('NOT_FOUND', 'memory entry does not exist')
     if (recordFile) return this.mutateRecord(root as RecordBackedMemoryFs, recordFile, topic, mutation)
     const result =
       root.atomicTransaction && root.stageTransactionFile && root.captureStatus
@@ -471,7 +481,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
         label: topic.replace(/\.md$/, ''),
         format: 'markdown' as const,
         byteSize: Buffer.byteLength(content),
-        updatedAt: new Date(written.revision * 1000).toISOString(),
+        updatedAt: written.updatedAt,
         revision: memoryDigest(content),
         origin: 'active' as const,
         editable: true

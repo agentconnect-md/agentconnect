@@ -6,7 +6,7 @@ import {
   type MemoryEntriesReadReq,
   type MemoryEntriesReadResult
 } from '@agentconnect.md/protocol'
-import type { MemoryProvider } from '../memory/provider.js'
+import type { MemoryProvider, MemoryScope } from '../memory/provider.js'
 import type { LocalStore } from '../store/local-store.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { MemoryEntriesError } from '../memory/entries/contract.js'
@@ -21,6 +21,13 @@ const consoleMembersGuard = async (topic: string): Promise<void> => {
   if (topic === MEMBERS_DIRECTORY_FILE) throw new MemoryEntriesError('FORBIDDEN', MEMBERS_CONSOLE_EDIT_REFUSED)
 }
 
+// The Memory page's scope: the organization record is on the Knowledge page, so its names are left out here.
+const consoleScope = (req: { agentId: string; channelKey?: string | undefined }): MemoryScope => ({
+  agentId: req.agentId,
+  ...(req.channelKey ? { channelKey: req.channelKey } : {}),
+  withoutRecord: true
+})
+
 export function createMemoryEntriesReader(
   provider: MemoryProvider,
   store: LocalStore,
@@ -31,7 +38,7 @@ export function createMemoryEntriesReader(
       const entries = await createMemoryEntryService({
         provider,
         store,
-        scope: { agentId: req.agentId, ...(req.channelKey ? { channelKey: req.channelKey } : {}) },
+        scope: consoleScope(req),
         write: { source: 'console', canWrite: () => canRead(req.agentId) },
         canRead: () => canRead(req.agentId)
       })
@@ -77,7 +84,7 @@ export function createMemoryEntriesWriter(
       const entries = await createMemoryEntryService({
         provider,
         store,
-        scope: { agentId: req.agentId, ...(req.channelKey ? { channelKey: req.channelKey } : {}) },
+        scope: consoleScope(req),
         canRead: () => canWrite(req.agentId),
         // A console write with no place layer lands in the shared one, where the organization files keep their shapes.
         write: {

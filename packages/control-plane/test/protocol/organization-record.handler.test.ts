@@ -95,13 +95,13 @@ describe('the organization record over the daemon connection', () => {
       })
     const written = await write(1)
     expect(written.type).toBe('knowledge/record/ok')
-    expect(written.payload).toMatchObject({ revision: 2 })
     const revision = await prisma.organizationKnowledgeRevision.findFirstOrThrow({ where: { revision: 2 } })
+    expect(written.payload).toMatchObject({ revision: 2, updatedAt: revision.createdAt.toISOString() })
     expect(revision).toMatchObject({ source: 'agent', sourceAgentId: agentId, writerKind: 'first_look' })
 
     const stale = await write(1, `${content}- [slack] ops: incidents (#ops, 2026-10-17)\n`)
     expect(stale.type).toBe('knowledge/record/conflict')
-    expect(stale.payload).toMatchObject({ revision: 2, content })
+    expect(stale.payload).toMatchObject({ revision: 2, updatedAt: revision.createdAt.toISOString(), content })
 
     const misshapen = await write(2, '# Channels\n#ops: incidents\n')
     if (!isFrame('error')(misshapen)) throw new Error('expected a refusal')

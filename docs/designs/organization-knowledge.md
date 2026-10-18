@@ -724,15 +724,16 @@ own memory and does not mention the record.
 
 `knowledge-record-v1`, advertised by both sides (§11):
 
-- `knowledge/record/read { agentId, file }` → `knowledge/record/ok { id, revision, content, optOut: string[] }`;
+- `knowledge/record/read { agentId, file }` → `knowledge/record/ok { id, revision, updatedAt, content, optOut: string[] }`;
 - `knowledge/record/write { agentId, file, baseRevision, content, writerKind, optOut: { mark: string[], lift: string[] } }`
-  → `knowledge/record/ok { id, revision }`, or `knowledge/record/conflict` with the current
+  → `knowledge/record/ok { id, revision, updatedAt }`, or `knowledge/record/conflict` with the current
   entry;
 - `knowledge/search` and `knowledge/list` gain the optional `withOutsiders` flag; both
   return entry content, so both apply the People audience rule.
 
 `file` is one of the three names; the Control Plane maps it to the
-organization's entry of that kind. No frame exceeds the 256 KiB limit: each file
+organization's entry of that kind. `updatedAt` is when the entry's current
+revision was written, the time the agent's memory tools show for that file. No frame exceeds the 256 KiB limit: each file
 is capped by its shape (`organization.md` at 16 KB) or by the existing knowledge
 body limit.
 

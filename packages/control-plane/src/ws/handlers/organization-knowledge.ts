@@ -199,6 +199,7 @@ export const handleKnowledgeRecordRead: Handler = async (frame, conn, deps) => {
   conn.replyTo(frame, 'knowledge/record/ok', {
     id: read.entry.id,
     revision: read.entry.currentRevision,
+    updatedAt: read.entry.revisionCreatedAt.toISOString(),
     content: read.entry.content,
     optOut: read.optOut
   })
@@ -245,12 +246,17 @@ export const handleKnowledgeRecordWrite: Handler = async (frame, conn, deps) => 
     conn.replyTo(frame, 'knowledge/record/conflict', {
       id: written.entry.id,
       revision: written.entry.currentRevision,
+      updatedAt: written.entry.revisionCreatedAt.toISOString(),
       content: written.entry.content,
       optOut: written.optOut
     })
     return
   }
-  conn.replyTo(frame, 'knowledge/record/ok', { id: written.entry.id, revision: written.entry.currentRevision })
+  conn.replyTo(frame, 'knowledge/record/ok', {
+    id: written.entry.id,
+    revision: written.entry.currentRevision,
+    updatedAt: written.entry.revisionCreatedAt.toISOString()
+  })
 }
 
 /** List or search accepted organization skills (metadata only) the requester's

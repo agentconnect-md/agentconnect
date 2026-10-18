@@ -20,9 +20,10 @@ import {
 } from './organization-files.js'
 import { MEMORY_DIRNAME } from './store.js'
 
-/** One record entry: its knowledge revision, its text, and the keys People's opt-out holds. */
+/** One record entry: its knowledge revision and when it was written, its text, and the keys People's opt-out holds. */
 export interface RecordEntry {
   revision: number
+  updatedAt: string
   content: string
   optOut: string[]
 }
@@ -39,7 +40,10 @@ export interface RecordWrite {
 export interface OrganizationRecordPort {
   read(file: OrganizationFile): Promise<RecordEntry>
   /** The new revision, or the current entry when `baseRevision` is stale. */
-  write(file: OrganizationFile, write: RecordWrite): Promise<{ revision: number } | { conflict: RecordEntry }>
+  write(
+    file: OrganizationFile,
+    write: RecordWrite
+  ): Promise<{ revision: number; updatedAt: string } | { conflict: RecordEntry }>
 }
 
 /** The Control Plane calls a port makes. */
@@ -74,19 +78,27 @@ export class OrganizationRecordCache implements OrganizationRecordPort {
     const cached = this.entries.get(file)
     if (cached && this.now() - cached.at < CACHE_MS) return cached.entry
     const ok = await this.client().knowledgeRecordRead({ agentId: this.agentId, file })
-    return this.keep(file, { revision: ok.revision, content: ok.content ?? '', optOut: ok.optOut ?? [] })
+    return this.keep(file, {
+      revision: ok.revision,
+      updatedAt: ok.updatedAt,
+      content: ok.content ?? '',
+      optOut: ok.optOut ?? []
+    })
   }
 
-  async write(file: OrganizationFile, write: RecordWrite): Promise<{ revision: number } | { conflict: RecordEntry }> {
+  async write(
+    file: OrganizationFile,
+    write: RecordWrite
+  ): Promise<{ revision: number; updatedAt: string } | { conflict: RecordEntry }> {
     this.entries.delete(file)
     const answer = await this.client().knowledgeRecordWrite({ agentId: this.agentId, file, ...write })
     if ('conflict' in answer) {
-      const { revision, content, optOut } = answer.conflict
-      return { conflict: this.keep(file, { revision, content, optOut }) }
+      const { revision, updatedAt, content, optOut } = answer.conflict
+      return { conflict: this.keep(file, { revision, updatedAt, content, optOut }) }
     }
     // People's opt-out changed with it, so the next read of any entry asks again.
     if (write.optOut.mark.length || write.optOut.lift.length) this.entries.clear()
-    return { revision: answer.ok.revision }
+    return { revision: answer.ok.revision, updatedAt: answer.ok.updatedAt }
   }
 
   private keep(file: OrganizationFile, entry: RecordEntry): RecordEntry {
@@ -125,6 +137,10 @@ async function readable(
   }
 }
 
+/** Refusal of a console change of a record name: the record lives on the Knowledge page, not the Memory page. */
+export const RECORD_ON_KNOWLEDGE_PAGE = (file: string) =>
+  `${file} is the organization record, kept on the Knowledge page rather than in the agent's memory. Nothing was saved.`
+
 /** Refusal of a deletion of a record entry: it is cleared, never deleted. */
 export const RECORD_NOT_DELETED = (file: string) =>
   `${file} is the organization record and is not deleted; remove the lines that are wrong with updateMemoryEntry instead. Nothing was saved.`
@@ -146,10 +162,7 @@ export function titleOnly(content: string): boolean {
   return lines.length <= 1 && (lines.length === 0 || /^#\s/.test(lines[0]!))
 }
 
-// A synthetic mtime that changes with the revision, so a listing tells two revisions apart.
-const mtimeOf = (revision: number) => new Date(revision * 1000).toISOString()
-
-/** The shared layer of an assistant-mode agent, with the three names served from the record; every other path is the store's. */
+/** The shared layer of an assistant-mode agent, with the three names served from the record, or hidden in the console's view; every other path is the store's. */
 export class RecordBackedMemoryFs implements MemoryFs {
   readonly key: string
   readonly root: string
@@ -161,7 +174,9 @@ export class RecordBackedMemoryFs implements MemoryFs {
   constructor(
     private readonly inner: MemoryFs,
     readonly record: OrganizationRecordPort,
-    readonly audience: RecordAudience
+    readonly audience: RecordAudience,
+    // False in the console's view: the three names are neither listed nor read, and every write of them is refused.
+    readonly served = true
   ) {
     this.key = inner.key
     this.root = inner.root
@@ -192,11 +207,12 @@ export class RecordBackedMemoryFs implements MemoryFs {
   async readFile(rel: string, encoding?: Parameters<MemoryFs['readFile']>[1]): Promise<MemoryFsFile | null> {
     const file = this.recordFile(rel)
     if (!file) return this.inner.readFile(rel, encoding)
+    if (!this.served) return null
     if (file === MEMBERS_FILE && this.audience.withOutsiders) throw new MemoryEntriesError('FORBIDDEN', PEOPLE_WITHHELD)
     const entry = await this.record.read(file).catch((err: unknown) => {
       throw file === MEMBERS_FILE && notVisible(err) ? new MemoryEntriesError('FORBIDDEN', PEOPLE_NOT_VISIBLE) : err
     })
-    return { content: entry.content, size: Buffer.byteLength(entry.content), mtime: mtimeOf(entry.revision) }
+    return { content: entry.content, size: Buffer.byteLength(entry.content), mtime: entry.updatedAt }
   }
 
   async readdir(rel: string): Promise<MemoryFsEntry[]> {
@@ -204,10 +220,11 @@ export class RecordBackedMemoryFs implements MemoryFs {
     if (rel.replace(/\/+$/, '') !== MEMORY_DIRNAME) return listed
     // A copy an older daemon left is the record's now, so the store's own file of that name is hidden.
     const own = listed.filter((entry) => !(entry.kind === 'file' && organizationFileOf(entry.name)))
+    if (!this.served) return own
     const records = await Promise.all(
       ORGANIZATION_FILES.map(async (name): Promise<MemoryFsEntry | undefined> => {
         const entry = await readable(this.record, name, this.audience.withOutsiders)
-        return entry && { name, kind: 'file', size: Buffer.byteLength(entry.content), mtime: mtimeOf(entry.revision) }
+        return entry && { name, kind: 'file', size: Buffer.byteLength(entry.content), mtime: entry.updatedAt }
       })
     )
     return [...own, ...records.filter((entry): entry is MemoryFsEntry => entry !== undefined)]
@@ -243,7 +260,7 @@ export class RecordBackedMemoryFs implements MemoryFs {
 
   private refuseWrite(rel: string): void {
     const file = this.recordFile(rel)
-    if (file) throw new Error(RECORD_ENTRY_TOOLS_ONLY(file))
+    if (file) throw new Error(this.served ? RECORD_ENTRY_TOOLS_ONLY(file) : RECORD_ON_KNOWLEDGE_PAGE(file))
   }
 }
 
@@ -279,9 +296,10 @@ export function recordSummary(file: OrganizationFile, content: string): string {
   return `who works on what, ${count} ${count === 1 ? 'person' : 'people'}`
 }
 
-/** The index a root shows its reader: the record's lines added where the root is the record-backed shared layer; a record that cannot be read adds none. */
+/** The index a root shows its reader: the record's lines added where the root is the record-backed shared layer, none in the console's view; a record that cannot be read adds none. */
 export async function indexWithRecord(fs: MemoryFs, index: string): Promise<string> {
   if (!(fs instanceof RecordBackedMemoryFs)) return index
+  if (!fs.served) return withRecordIndexLines(index, [])
   const lines = await recordIndexLines(fs.record, fs.audience.withOutsiders).catch(() => undefined)
   return lines ? withRecordIndexLines(index, lines) : index
 }
