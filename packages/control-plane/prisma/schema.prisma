@@ -1663,6 +1663,7 @@ model WebchatConversation {
   delegations    WebchatMcpDelegation[]
   mcpOperations  WebchatMcpOperation[]
   participants   WebchatConversationAgent[]
+  ahpBindings    AhpSessionBinding[]
 
   // Concurrent mints for one user/session converge on one browser conversation
   // (Postgres permits all-null targets, so standard rows are unconstrained).
@@ -1673,6 +1674,28 @@ model WebchatConversation {
   @@index([currentSessionId])
   @@index([apiKeyId])
   @@map("webchat_conversation")
+}
+
+// Durable protocol identity and interrupted-create reservation; never contains session content.
+model AhpSessionBinding {
+  reservationId  String   @id @db.Uuid
+  orgId          String
+  sessionUri     String   @db.VarChar(512)
+  operationId    String   @db.Uuid
+  agentId        String   @db.Uuid
+  userId         String
+  conversationId String   @db.Uuid
+  sessionId      String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  conversation WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, sessionUri])
+  @@unique([orgId, operationId])
+  @@unique([orgId, conversationId, agentId])
+  @@unique([orgId, sessionId])
+  @@index([orgId, agentId, userId, reservationId])
+  @@map("ahp_session_binding")
 }
 
 // One participant agent of a webchat conversation (webchat-multi-agents.md §3.1).

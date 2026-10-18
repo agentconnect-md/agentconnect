@@ -1839,6 +1839,59 @@ export interface FollowUpWatchRepo {
 // WebchatConversationRepo — browser conversation ownership metadata
 // ───────────────────────────────────────────────────────────────────────────
 
+export interface AhpSessionBindingRecord {
+  reservationId: string
+  orgId: string
+  sessionUri: string
+  operationId: string
+  agentId: string
+  userId: string
+  conversationId: string
+  sessionId: string | null
+}
+
+export interface AhpSessionWriter {
+  daemonId: string
+  duty?: { groupId: string; term: number }
+}
+
+export interface AhpSessionReservationInput {
+  orgId: string
+  agentId: string
+  userId: string
+  apiKeyId?: string
+  conversationId?: string
+  sessionUri: string
+  operationId: string
+  writer: AhpSessionWriter
+}
+
+export type AhpSessionWriteResult =
+  { ok: true; binding: AhpSessionBindingRecord } | { ok: false; reason: 'collision' | 'unavailable' | 'conflict' }
+
+export interface AhpSessionBindingRepo {
+  // Repeating the same internal operation is idempotent; a new public create uses a new operation ID.
+  reserve(input: AhpSessionReservationInput): Promise<AhpSessionWriteResult>
+  finalize(input: {
+    orgId: string
+    agentId: string
+    userId: string
+    reservationId: string
+    sessionId: string
+    writer: AhpSessionWriter
+  }): Promise<AhpSessionWriteResult>
+  get(orgId: string, sessionUri: string): Promise<AhpSessionBindingRecord | null>
+  forConversation(orgId: string, agentId: string, conversationId: string): Promise<AhpSessionBindingRecord | null>
+  // Pending creations are not discoverable; an interrupted reservation remains occupied indefinitely.
+  listOwned(input: {
+    orgId: string
+    agentId: string
+    userId: string
+    after?: string
+    limit: number
+  }): Promise<AhpSessionBindingRecord[]>
+}
+
 export interface WebchatConversationBinding {
   conversationId: string
   orgId: OrgId
