@@ -63,6 +63,8 @@ interface EntryListing {
   entries: MemoryEntrySummary[]
   cursor?: string
   paging?: boolean
+  /** The last next-page read failed; a filter stops following the cursor until Load more succeeds. */
+  pageFailed?: boolean
   error?: string
   errorCode?: string
 }
@@ -304,6 +306,32 @@ export function MemoryLayerBrowser({
       if (!personal || personal.status === 'failed') void loadPersonal()
     } else if (!listings[layer] || listings[layer].status === 'failed') void loadLayer(layer)
   }
+  const loadMore = useCallback(
+    async (layer: string, listing: EntryListing) => {
+      if (!listing.cursor) return
+      const id = listingGen.current[layer]
+      const live = () => alive.current && listingGen.current[layer] === id
+      setListings((old) => ({ ...old, [layer]: { ...listing, paging: true, pageFailed: false } }))
+      try {
+        const page = await listAgentMemoryEntries(agentId, channelKeyOf(layer), listing.cursor)
+        if (!live()) return
+        setListings((old) => ({
+          ...old,
+          [layer]: {
+            ...listing,
+            entries: [...listing.entries, ...page.entries],
+            cursor: page.nextCursor,
+            paging: false
+          }
+        }))
+      } catch (err) {
+        if (!live()) return
+        setListings((old) => ({ ...old, [layer]: { ...listing, paging: false, pageFailed: true } }))
+        setError(memoryEntryError(err))
+      }
+    },
+    [agentId]
+  )
   const filtering = query.trim().length > 0
   const readableKey = readable.map((entry) => entry.channelKey).join('\n')
   useEffect(() => {
@@ -317,7 +345,11 @@ export function MemoryLayerBrowser({
     ])
       if (!listings[layer]) void loadLayer(layer)
     if (!personal) void loadPersonal()
-  }, [filtering, readableKey, listings, personal, loadLayer, loadPersonal])
+    // A filter reads every page, so a file past the first one is never reported missing.
+    for (const [layer, listing] of Object.entries(listings))
+      if (listing.status === 'ready' && listing.cursor && !listing.paging && !listing.pageFailed)
+        void loadMore(layer, listing)
+  }, [filtering, readableKey, listings, personal, loadLayer, loadPersonal, loadMore])
 
   const resetReader = () => {
     ++readRequest.current
@@ -403,25 +435,6 @@ export function MemoryLayerBrowser({
       return next
     })
     if (opening) ensureLoaded(layer)
-  }
-
-  async function more(layer: string) {
-    const listing = listings[layer]
-    if (!listing?.cursor) return
-    const id = listingGen.current[layer]
-    setListings((old) => ({ ...old, [layer]: { ...listing, paging: true } }))
-    try {
-      const page = await listAgentMemoryEntries(agentId, channelKeyOf(layer), listing.cursor)
-      if (!alive.current || listingGen.current[layer] !== id) return
-      setListings((old) => ({
-        ...old,
-        [layer]: { ...listing, entries: [...listing.entries, ...page.entries], cursor: page.nextCursor, paging: false }
-      }))
-    } catch (err) {
-      if (!alive.current || listingGen.current[layer] !== id) return
-      setListings((old) => ({ ...old, [layer]: { ...listing, paging: false } }))
-      setError(memoryEntryError(err))
-    }
   }
 
   const refresh = async () => {
@@ -551,7 +564,7 @@ export function MemoryLayerBrowser({
     const entries = (listing?.status === 'ready' ? listing.entries : []).filter((entry) =>
       matches(entry.label, entry.description)
     )
-    if (filtering && listing?.status === 'ready' && !indexMatches && entries.length === 0) return
+    if (filtering && listing?.status === 'ready' && !listing.cursor && !indexMatches && entries.length === 0) return
     rows.push(
       <TreeRow
         key={layer}
@@ -622,10 +635,15 @@ export function MemoryLayerBrowser({
           onClick={() => void select({ kind: 'entry', layer, ref: entry.ref })}
         />
       )
-    if (listing.cursor && !filtering)
+    if (listing.cursor && (!filtering || listing.pageFailed))
       rows.push(
         <div key={`${layer}:more`} className="py-1 pl-11">
-          <Button variant="ghost" size="xs" disabled={listing.paging || saving} onClick={() => void more(layer)}>
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={listing.paging || saving}
+            onClick={() => void loadMore(layer, listing)}
+          >
             {listing.paging ? t('loading') : t('loadMore')}
           </Button>
         </div>
@@ -709,7 +727,10 @@ export function MemoryLayerBrowser({
     }
   }
   const settled =
-    Object.values(listings).every((listing) => listing.status !== 'loading') && personal?.status !== 'loading'
+    Object.values(listings).every(
+      (listing) =>
+        listing.status !== 'loading' && !(listing.status === 'ready' && listing.cursor && !listing.pageFailed)
+    ) && personal?.status !== 'loading'
   const noMatches = filtering && settled && fileRows === 0
 
   const newMemory = canCreate ? (
@@ -1075,6 +1096,7 @@ export function MemoryLayerBrowser({
                 <button
                   type="button"
                   className="iconbtn h-7 w-7 flex-none"
+                  disabled={editing && !blocked}
                   onClick={() => setMobileReader(false)}
                   title={tFiles('backToFiles')}
                   aria-label={tFiles('backToFiles')}

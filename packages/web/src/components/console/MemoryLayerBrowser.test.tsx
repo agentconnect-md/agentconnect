@@ -284,6 +284,34 @@ describe('MemoryLayerBrowser tree', () => {
     await type('nothing-like-this')
     expect(tree().textContent).toContain('No files match.')
   })
+
+  it('follows every page while filtering, so a file past the first page is found', async () => {
+    vi.mocked(api.listAgentMemoryEntries).mockImplementation(async (_agent, channelKey, cursor) =>
+      channelKey
+        ? { entries: [], consistency: 'live', order: 'topic' }
+        : cursor
+          ? { entries: [topic('late-ref', 'oncall-rota')], consistency: 'live', order: 'topic' }
+          : {
+              entries: [topic('shared-ref', 'hiring-plan')],
+              nextCursor: 'page-2',
+              consistency: 'live',
+              order: 'topic'
+            }
+    )
+    await render()
+    // Unfiltered, the second page waits behind Load more.
+    expect(button(tree(), 'Load more')).toBeTruthy()
+    expect(rowNames()).not.toContain('oncall-rota')
+    const input = tree().querySelector<HTMLInputElement>('input')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'oncall')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await settle()
+    expect(api.listAgentMemoryEntries).toHaveBeenCalledWith(AGENT, undefined, 'page-2')
+    expect(rowNames()).toEqual(['Shared', 'oncall-rota'])
+    expect(tree().textContent).not.toContain('No files match.')
+  })
 })
 
 describe('MemoryLayerBrowser unreadable layers', () => {
@@ -349,5 +377,19 @@ describe('MemoryLayerBrowser on mobile', () => {
     expect(reader().className).toContain('flex')
     await act(async () => reader().querySelector<HTMLButtonElement>('[aria-label="Back to files"]')?.click())
     expect(tree().className).not.toContain('hidden desktop')
+  })
+
+  it('keeps an open draft on screen: Back waits until the edit is saved or cancelled', async () => {
+    mocks.isMobile = true
+    await render()
+    await click(tree(), 'hiring-plan')
+    const back = () => reader().querySelector<HTMLButtonElement>('[aria-label="Back to files"]')!
+    expect(back().disabled).toBe(false)
+    await click(reader(), 'Edit')
+    expect(back().disabled).toBe(true)
+    await click(reader(), 'Cancel')
+    expect(back().disabled).toBe(false)
+    await click(host, 'New memory')
+    expect(back().disabled).toBe(true)
   })
 })
