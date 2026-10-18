@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { renderTablesForSlack, splitIntoSections } from '../src/slack/formatter.js'
+import {
+  renderTablesForSlack,
+  SLACK_MARKDOWN_BLOCK_LIMIT,
+  slackMarkdownBlockText,
+  splitIntoSections
+} from '../src/slack/formatter.js'
 
 describe('splitIntoSections', () => {
   it('returns no sections for whitespace-only input', () => {
@@ -126,5 +131,17 @@ describe('renderTablesForSlack', () => {
     const sections = splitIntoSections(table, 400)
     expect(sections.join('')).toBe(table)
     expect(sections.every((s) => renderTablesForSlack(s).length <= 400)).toBe(true)
+  })
+
+  it('falls back to a verbatim code block, then the raw text, when list items would overflow one block', () => {
+    const rows = (n: number) => Array.from({ length: n }, () => '| a | b |')
+    const table = (n: number) => ['| Implementation detail | Verification result |', '|---|---|', ...rows(n)].join('\n')
+    expect(slackMarkdownBlockText(table(2))).toBe(renderTablesForSlack(table(2)))
+    const coded = slackMarkdownBlockText(table(250))
+    expect(coded).toBe(['```', ...table(250).split('\n'), '```'].join('\n'))
+    expect(coded.length).toBeLessThanOrEqual(SLACK_MARKDOWN_BLOCK_LIMIT)
+    const full = table(1194)
+    expect(full.length).toBeLessThanOrEqual(SLACK_MARKDOWN_BLOCK_LIMIT)
+    expect(slackMarkdownBlockText(full)).toBe(full)
   })
 })

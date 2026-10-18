@@ -126,7 +126,7 @@ function tableItem(indent: string, headers: string[], cells: string[]): string |
 }
 
 /** Rewrite GFM tables outside fences (a `markdown` block drops them): each row becomes `- **Header:** cell · **Header:** cell`. */
-export function renderTablesForSlack(markdown: string): string {
+export function renderTablesForSlack(markdown: string, style: 'list' | 'code' = 'list'): string {
   if (!markdown.includes('|')) return markdown
   const lines = markdown.split('\n')
   const out: string[] = []
@@ -153,7 +153,10 @@ export function renderTablesForSlack(markdown: string): string {
     const indent = /^ */.exec(line)![0]
     let end = i + 2
     while (end < lines.length && lines[end]!.trim() && isTableRow(lines[end]!) && !FENCE.test(lines[end]!)) end += 1
-    const rows = lines.slice(i + 2, end).flatMap((row) => tableItem(indent, headers, tableCells(row)) ?? [])
+    const rows =
+      style === 'code'
+        ? ['```', ...lines.slice(i, end).map((row) => row.trim()), '```']
+        : lines.slice(i + 2, end).flatMap((row) => tableItem(indent, headers, tableCells(row)) ?? [])
     // A header-only table still says something: its names, as one item.
     if (rows.length === 0 && headers.some(Boolean)) rows.push(`${indent}- ${headers.filter(Boolean).join(' · ')}`)
     if (out.length > 0 && out.at(-1)!.trim()) out.push('')
@@ -162,4 +165,12 @@ export function renderTablesForSlack(markdown: string): string {
     i = end - 1
   }
   return out.join('\n')
+}
+
+/** A `markdown` block's text: tables as list items, else as verbatim code when that alone fits the block, else unchanged. */
+export function slackMarkdownBlockText(markdown: string): string {
+  const listed = renderTablesForSlack(markdown)
+  if (listed.length <= SLACK_MARKDOWN_BLOCK_LIMIT) return listed
+  const coded = renderTablesForSlack(markdown, 'code')
+  return coded.length <= SLACK_MARKDOWN_BLOCK_LIMIT ? coded : markdown
 }

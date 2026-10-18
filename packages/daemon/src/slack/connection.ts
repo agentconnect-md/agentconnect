@@ -38,7 +38,7 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
-import { renderTablesForSlack } from './formatter.js'
+import { slackMarkdownBlockText } from './formatter.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -813,14 +813,14 @@ interface MemberStanding {
 
 /** A chat.postMessage/update payload rendering `text` as one `markdown` block; `text` stays the raw notification fallback. */
 function markdownBlock(text: string): { text: string; blocks: { type: 'markdown'; text: string }[] } {
-  return { text, blocks: [{ type: 'markdown', text: renderTablesForSlack(text) }] }
+  return { text, blocks: [{ type: 'markdown', text: slackMarkdownBlockText(text) }] }
 }
 
 /** Rewrite the tables of every `markdown` block a caller built, so an edit shows what the first post did. */
 function renderMarkdownBlocks(blocks: unknown[]): unknown[] {
   return blocks.map((block) => {
     const b = block as { type?: unknown; text?: unknown }
-    return b?.type === 'markdown' && typeof b.text === 'string' ? { ...b, text: renderTablesForSlack(b.text) } : block
+    return b?.type === 'markdown' && typeof b.text === 'string' ? { ...b, text: slackMarkdownBlockText(b.text) } : block
   })
 }
 
