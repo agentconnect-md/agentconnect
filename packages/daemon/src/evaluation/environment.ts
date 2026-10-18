@@ -6,6 +6,7 @@
  * Policy code (authorization, call policy, hop limits, session keys) never branches on
  * `if (evaluation)`; the topology compiles into ordinary production policy instead.
  */
+import type { ReadAsker } from '../assistant/place-access.js'
 import type { AgentAuthorshipClaim, ChannelAgentsOk, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { IntegrationSchema, type BindRuleConfig, type Integration } from '../agents/agent-schema.js'
 import type { ChannelAgentsRequest, SessionContext } from '../mcp/ops.js'
@@ -59,6 +60,8 @@ export interface DaemonEvaluationEnvironment {
   collaborationRoutes: CollabRoutesSnapshot
   /** §6 evaluation tool registry — game-owned structured action tools. */
   tools?: readonly EvaluationToolDefinition[]
+  // Offline replacement for the CP identity directory; production place policy still judges access.
+  linkedMember?(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null>
 }
 
 // ─── §4 ingress payloads ────────────────────────────────────────────────────

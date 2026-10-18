@@ -10454,6 +10454,8 @@ export class Daemon {
 
   /** The member id the console user behind the asker linked in that bot's workspace, null for none or an older Control Plane; rejects when an answer fails. */
   private async linkedAccount(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null> {
+    const directory = this.opts.evaluation?.environment?.linkedMember
+    if (directory) return await directory(agentId, integrationId, asker)
     const cp = this.cpClient
     // A Control Plane that cannot name linked accounts leaves the console's own visibility to decide, as before.
     if (cp?.supportsServerFeature?.(READ_ACCESS_LINKED_V1_FEATURE) !== true) return null

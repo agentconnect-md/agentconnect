@@ -29,6 +29,12 @@ import {
 } from '../../packages/daemon/src/evaluation/index.js'
 import type { CompiledIntegrationSpec, CompiledTopology, WorldEventRecord } from './types.js'
 
+// Explicit synthetic people: account linkage is separate from conversation membership.
+export interface ArenaPerson {
+  id: string
+  accounts: { integrationId: string; userId: string; channels: readonly string[] }[]
+}
+
 export class ArenaWorld implements VirtualConnectionWorldPort {
   private sequence = 0
   private readonly effects: RecordedOutboundEffect[] = []
@@ -52,7 +58,10 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
    *  observe the post at its turn-final refresh and regenerate. */
   private readonly deliveredHooks = new Set<(effect: RecordedOutboundEffect) => void>()
 
-  constructor(readonly topology: CompiledTopology) {
+  constructor(
+    readonly topology: CompiledTopology,
+    readonly people: readonly ArenaPerson[] = []
+  ) {
     this.messageEpoch = 1_690_000_000 + (topology.seed % 9_999_999)
     for (const integration of topology.integrations) this.integrationsById.set(integration.integrationId, integration)
     for (const agent of topology.agents) this.agentAliasById.set(agent.agentId, agent.alias)
@@ -249,11 +258,19 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
   members(channel: string): readonly VirtualMember[] {
     const room = this.channelsById.get(channel)
     if (!room) return []
-    return [...room.memberAgentIds].map((agentId) => ({
-      id: agentId,
-      name: this.aliasOfAgent(agentId),
-      isBot: true
-    }))
+    return [...room.memberAgentIds]
+      .map((agentId) => ({
+        id: agentId,
+        name: this.aliasOfAgent(agentId),
+        isBot: true
+      }))
+      .concat(
+        this.people.flatMap((person) =>
+          person.accounts
+            .filter((account) => account.channels.includes(channel))
+            .map((account) => ({ id: account.userId, name: person.id, isBot: false }))
+        )
+      )
   }
 
   channels(integrationId: string): readonly VirtualChannelInfo[] {
@@ -342,6 +359,19 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     return {
       integrations,
       collaborationRoutes: topology.collabRoutes,
+      linkedMember: async (agentId, integrationId, asker) => {
+        const target = this.integrationsById.get(integrationId)
+        if (!target || target.agentId !== agentId) return null
+        const person = this.people.find((person) =>
+          asker.kind === 'console'
+            ? person.id === asker.userId
+            : this.integrationsById.get(asker.integrationId)?.platform === asker.platform &&
+              person.accounts.some(
+                (account) => account.integrationId === asker.integrationId && account.userId === asker.userId
+              )
+        )
+        return person?.accounts.find((account) => account.integrationId === integrationId)?.userId ?? null
+      },
       listAgents: async (request) => {
         // §8.5: mention addresses are conversation-specific. An explicit
         // channel filter wins; otherwise narrow to the caller's CURRENT
