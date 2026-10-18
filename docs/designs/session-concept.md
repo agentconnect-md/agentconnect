@@ -242,14 +242,18 @@ host's attachment: a cold resume always assembles the current tools.
 Installing the current tools is not enough on its own: a runtime may render the
 definitions a session's transcript recorded when that session started, and add
 only tools with new names, so a load keeps an earlier description or argument
-schema of a tool it already has. The session row therefore records a digest of
-each daemon tool's description and argument schema that its model received. A
-new session records the definitions it started with. Before a later turn, once
-the session's bridge serves the current tools, a digest that differs puts the
-current definitions of the changed and added tools, and the names of removed
-ones, at the head of that turn's prompt. A row without digests, from before they
-were recorded, gets every current definition once. The digests are recorded when
-the runtime takes that prompt, so a rejected prompt leaves the note due.
+schema of a tool it already has. A runtime declares this as
+`keepsSessionToolDefinitions` in its runtime definition; without a declaration
+the audited runtimes' default applies. The session row records a digest of each
+daemon tool's description and argument schema that its model received. A new
+session records the definitions it started with. Before a later turn, once the
+session's bridge serves the current tools, a digest that differs on a runtime
+that keeps definitions puts the current definitions of the changed and added
+tools, and the names of removed ones, at the head of that turn's prompt. A row
+without digests, from before they were recorded, gets every current definition
+once. The digests are recorded when the runtime takes that prompt, so a rejected
+prompt leaves the note due. On a runtime that lists the current tools on load,
+the row records the current digests and the prompt carries no note.
 
 Current fields identify the agent and source:
 

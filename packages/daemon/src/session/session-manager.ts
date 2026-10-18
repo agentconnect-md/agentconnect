@@ -282,6 +282,8 @@ export class SessionManager {
       runtimeEnvFor?: (agent: Agent) => Record<string, string>
       /** Whether this session has no live SDK work or pending completion wake. */
       sessionSdkQuiescent?: (agentId: string, sessionKey: string, acpSessionId: string) => boolean
+      /** Whether the runtime keeps a session's earlier tool definitions across a load, so changed ones are restated. */
+      keepsSessionToolDefinitions?: (runtimeId: string) => boolean
       /** Snapshot effective tools and task rules in memory; materialize connections only on new/load. */
       toolContextFor?: (ctx: {
         agent: Agent
@@ -1017,9 +1019,15 @@ export class SessionManager {
     const attachedTools = host.sessionToolContext?.(rec.acpSessionId!)
     const toolsAttached = attachedTools === undefined || attachedTools === toolContext?.fingerprint
     if (toolsNow && digestsNow !== undefined && toolsAttached && rec.toolDigests !== digestsNow) {
-      const block = toolDefinitionsBlock(rec.toolDigests, toolsNow)
-      if (block) promptPrelude.push({ type: 'text', text: block })
-      toolDigestsDue = digestsNow
+      if (this.deps.keepsSessionToolDefinitions?.(agent.runtime) === true) {
+        const block = toolDefinitionsBlock(rec.toolDigests, toolsNow)
+        if (block) promptPrelude.push({ type: 'text', text: block })
+        toolDigestsDue = digestsNow
+      } else {
+        // A runtime that lists the current tools on load already shows them; only the record follows.
+        await this.deps.store.setSessionToolDigests(key, digestsNow)
+        rec.toolDigests = digestsNow
+      }
     }
     let reminded = false
     if (opening) {

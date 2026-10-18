@@ -695,6 +695,7 @@ import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { sessionMcpServersScope } from './runtimes/session-mcp-servers.js'
+import { keepsSessionToolDefinitions } from './runtimes/session-tool-definitions.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
@@ -4793,6 +4794,7 @@ export class Daemon {
         ...Object.fromEntries((this.runtimes[agent.runtime]?.env ?? []).map((entry) => [entry.name, entry.value]))
       }),
       sessionSdkQuiescent: (agentId, key, id) => this.sessionSdkQuiescent(this.sessionOwnerKey(agentId, key), id),
+      keepsSessionToolDefinitions: (runtimeId) => keepsSessionToolDefinitions(runtimeId, this.runtimes[runtimeId]),
       // Compare pure tool snapshots each turn; register tokens and resolve executables only on attachment.
       toolContextFor: ({
         agent,

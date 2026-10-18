@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { SessionManager } from '../src/session/session-manager.js'
 import { toolDefinitionsBlock, toolDigests, type SessionToolContext } from '../src/session/turn/tool-context.js'
+import { keepsSessionToolDefinitions } from '../src/runtimes/session-tool-definitions.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
@@ -86,6 +87,9 @@ const context = (tools: ToolDescriptor[], fingerprint = 'tools'): SessionToolCon
   mcpServers: () => []
 })
 
+/** The runtime keeps a session's earlier tool definitions across a load. */
+const keeps = { keepsSessionToolDefinitions: () => true }
+
 async function newStore() {
   return await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-tooldefs-')), 'db.sqlite'))
 }
@@ -119,7 +123,45 @@ describe('toolDefinitionsBlock', () => {
   })
 })
 
+describe('keepsSessionToolDefinitions', () => {
+  it('follows a runtime’s declaration, else the audited runtime ids', () => {
+    expect(keepsSessionToolDefinitions('claude-acp')).toBe(true)
+    expect(keepsSessionToolDefinitions('codex-acp')).toBe(false)
+    expect(keepsSessionToolDefinitions('claude-acp', { keepsSessionToolDefinitions: false })).toBe(false)
+    expect(keepsSessionToolDefinitions('custom', { keepsSessionToolDefinitions: true })).toBe(true)
+  })
+})
+
 describe('tool definitions on a resumed session', () => {
+  it('records the current definitions for a runtime that lists them on load, and never restates them', async () => {
+    const store = await newStore()
+    const { memory, agent } = testAgent()
+    let tools = [track, list]
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => runtime(),
+      agentById: () => agent,
+      memory,
+      toolContextFor: () => context(tools),
+      keepsSessionToolDefinitions: () => false
+    })
+    await delivered(sm, '100.1')
+    expect((await store.getSession(KEY))?.toolDigests).toBe(toolDigests([track, list]))
+
+    // A row from before the digests were recorded gets them on its next turn, without a note.
+    await store.setSessionToolDigests(KEY, null)
+    const legacy = await delivered(sm, '100.2')
+    expect(notes(legacy.blocks)).toEqual([])
+    expect(legacy.toolDigests).toBeUndefined()
+    expect((await store.getSession(KEY))?.toolDigests).toBe(toolDigests([track, list]))
+
+    tools = [trackWithWatch, list]
+    const changed = await delivered(sm, '100.3')
+    expect(notes(changed.blocks)).toEqual([])
+    expect((await store.getSession(KEY))?.toolDigests).toBe(toolDigests([trackWithWatch, list]))
+    await store.close()
+  })
+
   it('tells the model once, after a restart, the definitions that changed since it got them', async () => {
     const store = await newStore()
     const { memory, agent } = testAgent()
@@ -128,7 +170,8 @@ describe('tool definitions on a resumed session', () => {
       hostFor: async () => runtime(),
       agentById: () => agent,
       memory,
-      toolContextFor: () => context([track, list])
+      toolContextFor: () => context([track, list]),
+      ...keeps
     })
     const first = await delivered(before, '100.1')
     expect(notes(first.blocks)).toEqual([])
@@ -141,7 +184,8 @@ describe('tool definitions on a resumed session', () => {
       hostFor: async () => host,
       agentById: () => agent,
       memory,
-      toolContextFor: () => context([trackWithWatch, list])
+      toolContextFor: () => context([trackWithWatch, list]),
+      ...keeps
     })
     const second = await delivered(after, '100.2')
     expect(host.loadSession).toHaveBeenCalledOnce()
@@ -159,7 +203,7 @@ describe('tool definitions on a resumed session', () => {
   it('adds nothing after a restart when the definitions are unchanged', async () => {
     const store = await newStore()
     const { memory, agent } = testAgent()
-    const deps = { store, agentById: () => agent, memory, toolContextFor: () => context([track, list]) }
+    const deps = { store, agentById: () => agent, memory, toolContextFor: () => context([track, list]), ...keeps }
     await delivered(new SessionManager({ ...deps, hostFor: async () => runtime() }), '100.1')
     const second = await delivered(new SessionManager({ ...deps, hostFor: async () => runtime() }), '100.2')
     expect(notes(second.blocks)).toEqual([])
@@ -170,7 +214,13 @@ describe('tool definitions on a resumed session', () => {
   it('restates every definition once to a session from before they were recorded', async () => {
     const store = await newStore()
     const { memory, agent } = testAgent()
-    const deps = { store, agentById: () => agent, memory, toolContextFor: () => context([trackWithWatch, list]) }
+    const deps = {
+      store,
+      agentById: () => agent,
+      memory,
+      toolContextFor: () => context([trackWithWatch, list]),
+      ...keeps
+    }
     await delivered(new SessionManager({ ...deps, hostFor: async () => runtime() }), '100.1')
     await store.setSessionToolDigests(KEY, null)
 
@@ -191,7 +241,8 @@ describe('tool definitions on a resumed session', () => {
       hostFor: async () => runtime(),
       agentById: () => agent,
       memory,
-      toolContextFor: () => context(tools)
+      toolContextFor: () => context(tools),
+      ...keeps
     })
     await delivered(sm, '100.1')
     tools = [trackWithWatch]
@@ -215,7 +266,8 @@ describe('tool definitions on a resumed session', () => {
       memory,
       toolContextFor: () => context(tools, fingerprint),
       // Background work keeps the session from reloading with the new tools.
-      sessionSdkQuiescent: () => false
+      sessionSdkQuiescent: () => false,
+      ...keeps
     })
     await delivered(sm, '100.1')
     tools = [trackWithWatch]
