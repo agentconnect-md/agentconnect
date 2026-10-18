@@ -10,23 +10,15 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 // friendly notice. A cluster agent's managed memory lives on its sandbox volume
 // (#1078), so the same 503 carrying the asleep code is answered by waking the pod.
 //
-// Left: the file list (index + topics). Right: the selected file, viewed as
-// markdown or edited through the same inline file-browser surface as Workspace.
+// A one-line settings summary sits above a tree of the layers the caller can see, beside the selected file.
 // The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import {
-  clearAgentMemoryChannel,
-  fetchAgentMemoryFull,
-  fetchAgentMemoryChannels,
-  type ManagedMemoryHome,
-  type MemoryChannelDto,
-  type MemoryDreamingConfig
-} from '@/lib/api'
+import { type ManagedMemoryHome, type MemoryDreamingConfig } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { Spinner } from '@/components/marks'
-import { Icon, Button } from '@/components/ui'
+import { Button } from '@/components/ui'
 import {
   ExternalMemoryBindingFields,
   type ExternalMemoryBindingDraft
@@ -49,11 +41,7 @@ import {
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
-import { PersonalMemoryPanel } from '@/components/console/PersonalMemoryPanel'
-import { placeLayerLabel } from '@/components/console/memory-place-label'
-
-// The layer picker's value for the signed-in user's own memory; a place layer's key never contains a colon.
-const YOUR_LAYER = ':yours'
+import { MemoryLayerBrowser } from '@/components/console/MemoryLayerBrowser'
 
 // The home is chosen one way (memory-evolution.md §3.2.1): `daemon` is offered only while it is the current value.
 function MemoryHomeField({
@@ -190,21 +178,6 @@ export function MemoryPanel({
 }) {
   const t = useTranslations('Agents.detail.memory')
   const { updateAgent } = useConsoleData()
-  // The layer being viewed: '' the shared layer, YOUR_LAYER the signed-in user's own, else a place layer's key.
-  const [channels, setChannels] = useState<MemoryChannelDto[]>([])
-  const [layer, setLayer] = useState('')
-  const selectedChannel = layer && layer !== YOUR_LAYER ? layer : undefined
-  // An owner's entry for a layer whose conversation shows them no session: named, never read, only cleared.
-  const hiddenLayer = channels.find((entry) => entry.channelKey === selectedChannel && entry.visible === false)
-  const [confirmingClear, setConfirmingClear] = useState(false)
-  const [clearingLayer, setClearingLayer] = useState(false)
-  const [clearError, setClearError] = useState<string | null>(null)
-  // The layers the caller reads come first; an owner's unreadable ones follow.
-  const pickerChannels = [
-    ...channels.filter((entry) => entry.visible !== false),
-    ...channels.filter((entry) => entry.visible === false)
-  ]
-
   // Existing-agent memory settings are one explicit draft. The content below
   // continues to reflect `persistedSettings` until Save succeeds, so selecting a
   // different backend can never make an unsaved choice look active.
@@ -232,9 +205,7 @@ export function MemoryPanel({
   const [returningHome, setReturningHome] = useState(false)
   const [homeReturnError, setHomeReturnError] = useState<string | null>(null)
   const homeMigrationPending = memoryHomeMigration === 'pending'
-  // The settings form is collapsed behind a one-line summary by default so the
-  // memory content itself stays the page's focus. Closing the form discards any
-  // unsaved draft — a closed form always summarizes the persisted settings.
+  // The settings form opens from the summary line; closing it discards the draft, so the line always shows what is saved.
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => {
@@ -373,7 +344,7 @@ export function MemoryPanel({
     setSettingsOpen(false)
   }
 
-  // One-line summary of the PERSISTED settings for the collapsed bar.
+  // The PERSISTED settings, one phrase each, for the summary line.
   const settingsSummary = (() => {
     switch (persistedProvider) {
       case 'managed': {
@@ -386,347 +357,299 @@ export function MemoryPanel({
           dreaming.enabled ? t('dreamingOn', { cadence: t(`dreamingCadence.${cadence}`) }) : t('dreamingOff'),
           ...(dreaming.enabled && dreaming.mineSkills === true ? [t('skillMiningOn')] : []),
           t('autoAccept', { state: dreaming.autoAdopt ? t('on') : t('off') })
-        ].join(' · ')
+        ]
       }
       case 'native':
-        return t('nativeSummary')
+        return [t('nativeSummary')]
       case 'external': {
         const { connectionId, recall, captureMode } = persistedSettings.external
         return [
           connectionId ? t('connectionNamed', { id: connectionId.slice(0, 8) }) : t('noConnection'),
           recall.mode === 'auto' ? t('recallEveryTurn') : t('recallToolOnly'),
           captureMode === 'turn' ? t('captureEveryTurn') : t('captureManual')
-        ].join(' · ')
+        ]
       }
       case 'none':
-        return t('persistentOff')
+        return [t('persistentOff')]
     }
   })()
 
   // Only a managed tree with a `daemon` home lives on the sandbox volume; a `control-plane` home is read through the
   // daemon's connection and a native/external/off backend reads nothing from a pod, so none of those wake it.
   const sandboxedMemory = sandboxed && persistedProvider === 'managed' && persistedSettings.home !== 'control-plane'
-  // A home change swaps the tree underneath, so nothing cached survives it; the selection resets first, never leaking across agents.
-  useEffect(() => {
-    setLayer('')
-    setConfirmingClear(false)
-    if (persistedProvider !== 'managed') {
-      setChannels([])
-      return
-    }
-    let live = true
-    void fetchAgentMemoryChannels(agentId)
-      .then((r) => {
-        if (live) setChannels(r.channels)
-      })
-      .catch(() => {
-        if (live) setChannels([])
-      })
-    return () => {
-      live = false
-    }
-  }, [agentId, persistedProvider, persistedSettings.home, homeMigrationPending])
-
-  const clearHiddenLayer = async () => {
-    if (!hiddenLayer || clearingLayer) return
-    setClearingLayer(true)
-    setClearError(null)
-    try {
-      await clearAgentMemoryChannel(agentId, hiddenLayer.channelKey)
-      setChannels((current) => current.filter((entry) => entry.channelKey !== hiddenLayer.channelKey))
-      setLayer('')
-      setConfirmingClear(false)
-    } catch (e) {
-      setClearError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setClearingLayer(false)
-    }
-  }
-
-  return (
-    <div className="p-4 desktop:p-0">
-      {/* Memory backend — a collapsed one-line summary; expanding it edits one
-          explicit draft. Closing without saving discards the draft, so the
-          summary and the content below always describe the persisted backend. */}
-      <section className="card mb-4 overflow-hidden max-desktop:rounded-lg">
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div className="flex min-w-0 flex-col gap-[3px]">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-sans text-[13px] font-semibold leading-normal">{t('backend')}</span>
-              <span className="badge bg-(--surface-active) text-(--text-secondary)">{persistedProviderLabel}</span>
-              {settingsChanged ? (
-                <span
-                  className="font-sans text-[11px] font-semibold leading-normal text-(--amber-500)"
-                  aria-live="polite"
-                >
-                  {t('unsavedChanges')}
-                </span>
-              ) : null}
-              {persistedProvider === 'managed' && homeMigrationPending ? (
-                <span
-                  data-memory-home-status
-                  className="inline-flex items-center gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
-                  aria-live="polite"
-                >
-                  <Spinner size={11} />
-                  {t('movingToControlPlane')}
-                </span>
-              ) : null}
-            </div>
-            <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {settingsSummary}
-            </span>
-          </div>
-          <Button
-            variant="secondary"
-            size="xs"
-            disabled={savingProvider}
-            onClick={() => (settingsOpen ? closeSettings() : setSettingsOpen(true))}
+  const summary = persistedProvider === 'external' ? [persistedProviderLabel, ...settingsSummary] : settingsSummary
+  const summaryLine = (end: ReactNode) => (
+    <div className="flex items-end gap-4">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-[6px] gap-y-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+        <span>
+          <span className="text-(--text-secondary)">{summary[0]}</span>
+          {summary.slice(1).map((part) => ` · ${part}`)}
+        </span>
+        {settingsChanged ? (
+          <span className="font-sans text-[11px] font-semibold leading-normal text-(--amber-500)" aria-live="polite">
+            {t('unsavedChanges')}
+          </span>
+        ) : null}
+        {persistedProvider === 'managed' && homeMigrationPending ? (
+          <span
+            data-memory-home-status
+            className="inline-flex items-center gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
+            aria-live="polite"
           >
-            {settingsOpen ? (
-              settingsChanged ? (
-                t('cancel')
-              ) : (
-                t('close')
-              )
-            ) : canEdit ? (
-              <>
-                <Icon name="pencil" size={13} />
-                {t('edit')}
-              </>
-            ) : (
-              t('details')
-            )}
-          </Button>
+            <Spinner size={11} />
+            {t('movingToControlPlane')}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          className="ml-1 cursor-pointer border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) underline decoration-(--border-strong) underline-offset-[3px] hover:text-(--text-primary) disabled:cursor-default"
+          aria-expanded={settingsOpen}
+          disabled={savingProvider}
+          onClick={() => (settingsOpen ? closeSettings() : setSettingsOpen(true))}
+        >
+          {settingsOpen ? (settingsChanged ? t('cancel') : t('close')) : canEdit ? t('change') : t('details')}
+        </button>
+      </div>
+      {end}
+    </div>
+  )
+  // The settings form edits one explicit draft; the content below keeps describing the persisted backend until Save.
+  const settingsForm = settingsOpen ? (
+    <section className="card overflow-hidden max-desktop:rounded-lg">
+      <div className="flex flex-col gap-4 px-4 py-4">
+        <div className="flex flex-col gap-2">
+          <span className="font-sans text-[13px] font-semibold leading-normal">{t('backend')}</span>
+          <MemoryProviderPicker
+            value={provider}
+            onChange={selectProvider}
+            disabled={!canEdit || savingProvider}
+            allowed={assistantMode ? ['managed'] : undefined}
+          />
+          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {provider === 'external'
+              ? t('externalDescription')
+              : provider === 'native'
+                ? t('nativeDescription')
+                : provider === 'none'
+                  ? t('noneDescription')
+                  : t('managedDescription')}
+          </span>
         </div>
 
-        {settingsOpen ? (
-          <div className="flex flex-col gap-4 border-t border-(--border-subtle) px-4 py-4">
-            <div className="flex flex-col gap-2">
-              <span className="font-sans text-[13px] font-semibold leading-normal">{t('backend')}</span>
-              <MemoryProviderPicker
-                value={provider}
-                onChange={selectProvider}
-                disabled={!canEdit || savingProvider}
-                allowed={assistantMode ? ['managed'] : undefined}
-              />
-              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                {provider === 'external'
-                  ? t('externalDescription')
-                  : provider === 'native'
-                    ? t('nativeDescription')
-                    : provider === 'none'
-                      ? t('noneDescription')
-                      : t('managedDescription')}
-              </span>
-            </div>
+        {provider === 'managed' ? (
+          <MemoryHomeField
+            home={settings.home}
+            persistedHome={persistedSettings.home}
+            canEdit={canEdit && !savingProvider}
+            memberSetPlaced={memberSetPlaced}
+            assistantMode={assistantMode}
+            pending={homeMigrationPending}
+            onChange={(next) => {
+              setSettings((current) => ({ ...current, home: next }))
+              setProviderError(null)
+            }}
+          />
+        ) : null}
 
-            {provider === 'managed' ? (
-              <MemoryHomeField
-                home={settings.home}
-                persistedHome={persistedSettings.home}
-                canEdit={canEdit && !savingProvider}
-                memberSetPlaced={memberSetPlaced}
-                assistantMode={assistantMode}
-                pending={homeMigrationPending}
-                onChange={(next) => {
-                  setSettings((current) => ({ ...current, home: next }))
+        {provider === 'managed' ? (
+          <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+            <input
+              type="checkbox"
+              checked={settings.autoDistill}
+              disabled={!canEdit || savingProvider}
+              onChange={() => {
+                setSettings((current) => ({ ...current, autoDistill: !current.autoDistill }))
+                setProviderError(null)
+              }}
+            />
+            {t('autoDistillLabel')}
+          </label>
+        ) : null}
+
+        {provider === 'managed' ? (
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+              <input
+                type="checkbox"
+                checked={canDream && settings.dreaming.enabled}
+                disabled={!canDream || !canEdit || savingProvider}
+                onChange={() => {
+                  setSettings((current) => ({
+                    ...current,
+                    dreaming: { ...current.dreaming, enabled: !current.dreaming.enabled }
+                  }))
                   setProviderError(null)
                 }}
               />
-            ) : null}
-
-            {provider === 'managed' ? (
-              <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                <input
-                  type="checkbox"
-                  checked={settings.autoDistill}
+              {t('enableDreaming')}
+            </label>
+            {canDream && settings.dreaming.enabled ? (
+              <div className="ml-6 flex flex-col gap-2">
+                <DreamScheduleFields
+                  value={settings.dreaming.schedule ?? ''}
+                  timezone={settings.dreaming.timezone ?? ''}
                   disabled={!canEdit || savingProvider}
-                  onChange={() => {
-                    setSettings((current) => ({ ...current, autoDistill: !current.autoDistill }))
+                  onChange={(schedule, timezone) => {
+                    setSettings((current) => ({
+                      ...current,
+                      dreaming: { ...current.dreaming, schedule, timezone }
+                    }))
                     setProviderError(null)
                   }}
                 />
-                {t('autoDistillLabel')}
-              </label>
-            ) : null}
-
-            {provider === 'managed' ? (
-              <div className="flex flex-col gap-2">
-                <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                  <input
-                    type="checkbox"
-                    checked={canDream && settings.dreaming.enabled}
-                    disabled={!canDream || !canEdit || savingProvider}
-                    onChange={() => {
-                      setSettings((current) => ({
-                        ...current,
-                        dreaming: { ...current.dreaming, enabled: !current.dreaming.enabled }
-                      }))
-                      setProviderError(null)
-                    }}
-                  />
-                  {t('enableDreaming')}
-                </label>
-                {canDream && settings.dreaming.enabled ? (
-                  <div className="ml-6 flex flex-col gap-2">
-                    <DreamScheduleFields
-                      value={settings.dreaming.schedule ?? ''}
-                      timezone={settings.dreaming.timezone ?? ''}
+                <div className="flex flex-col gap-1">
+                  <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                    <input
+                      type="checkbox"
+                      checked={settings.dreaming.autoAdopt}
                       disabled={!canEdit || savingProvider}
-                      onChange={(schedule, timezone) => {
+                      onChange={() => {
                         setSettings((current) => ({
                           ...current,
-                          dreaming: { ...current.dreaming, schedule, timezone }
+                          dreaming: { ...current.dreaming, autoAdopt: !current.dreaming.autoAdopt }
                         }))
                         setProviderError(null)
                       }}
                     />
-                    <div className="flex flex-col gap-1">
-                      <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                        <input
-                          type="checkbox"
-                          checked={settings.dreaming.autoAdopt}
-                          disabled={!canEdit || savingProvider}
-                          onChange={() => {
-                            setSettings((current) => ({
-                              ...current,
-                              dreaming: { ...current.dreaming, autoAdopt: !current.dreaming.autoAdopt }
-                            }))
-                            setProviderError(null)
-                          }}
-                        />
-                        {t('autoAdopt')}
-                      </label>
-                      {settings.dreaming.autoAdopt ? (
-                        <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">
-                          {t('autoAdoptWarning')}
-                        </div>
-                      ) : null}
+                    {t('autoAdopt')}
+                  </label>
+                  {settings.dreaming.autoAdopt ? (
+                    <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">
+                      {t('autoAdoptWarning')}
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                        <input
-                          type="checkbox"
-                          checked={settings.dreaming.mineSkills === true}
-                          disabled={!canEdit || savingProvider}
-                          onChange={() => {
-                            setSettings((current) => ({
-                              ...current,
-                              dreaming: { ...current.dreaming, mineSkills: current.dreaming.mineSkills !== true }
-                            }))
-                            setProviderError(null)
-                          }}
-                        />
-                        {t('mineSkills')}
-                      </label>
-                      {settings.dreaming.mineSkills === true ? (
-                        <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          {t('mineSkillsHint')}
-                        </div>
-                      ) : null}
-                    </div>
-                    <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      {t('instructions')}
-                      <textarea
-                        value={settings.dreaming.instructions}
-                        rows={2}
-                        maxLength={4096}
-                        placeholder={t('instructionsPlaceholder')}
-                        disabled={!canEdit || savingProvider}
-                        onChange={(e) => {
-                          const instructions = e.target.value
-                          setSettings((current) => ({ ...current, dreaming: { ...current.dreaming, instructions } }))
-                          setProviderError(null)
-                        }}
-                        className="resize-y rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] leading-[1.5] text-(--text-primary)"
-                      />
-                    </label>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {provider === 'external' ? (
-              <div className="flex flex-col gap-3">
-                <ExternalMemoryBindingFields
-                  value={settings.external}
-                  onChange={(external) => {
-                    setSettings((current) => ({ ...current, external }))
-                    setProviderError(null)
-                  }}
-                  disabled={!canEdit || savingProvider}
-                  emptySelectionDisabled={
-                    persistedProvider === 'external' && Boolean(persistedSettings.external.connectionId)
-                  }
-                />
-                {settingsBlocker ? (
-                  <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
-                    {t('settingsBlocker', { reason: settingsBlocker, provider: persistedProviderLabel })}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {providerError ? (
-              <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
-                {providerError}
-              </div>
-            ) : null}
-
-            {canEdit ? (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-(--border-subtle) pt-3">
-                <Button
-                  size="sm"
-                  disabled={savingProvider || !settingsChanged || Boolean(settingsBlocker)}
-                  onClick={() => void saveMemorySettings()}
-                >
-                  {savingProvider ? t('saving') : t('saveSettings')}
-                </Button>
-                <Button variant="ghost" size="sm" disabled={savingProvider} onClick={closeSettings}>
-                  {t('cancel')}
-                </Button>
-                {settingsChanged ? (
-                  <span
-                    className="font-sans text-[11.5px] font-normal leading-normal text-(--amber-500)"
-                    aria-live="polite"
-                  >
-                    {t('staysActiveUntilSave', { provider: persistedProviderLabel })}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-
-            {canEdit &&
-            persistedProvider === 'managed' &&
-            persistedSettings.home === 'control-plane' &&
-            !memberSetPlaced &&
-            !assistantMode &&
-            !homeMigrationPending ? (
-              <div className="flex flex-col gap-2 rounded-md border border-(--status-error-soft) px-3 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
-                <div className="flex min-w-0 flex-col gap-[3px]">
-                  <span className="font-sans text-[12.5px] font-semibold leading-normal">{t('moveBackToDaemon')}</span>
-                  <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    {t('moveBackWarning')}
-                  </span>
+                  ) : null}
                 </div>
-                <Button
-                  variant="danger"
-                  size="sm"
-                  disabled={savingProvider || returningHome}
-                  onClick={() => {
-                    setHomeReturnError(null)
-                    setConfirmingHomeReturn(true)
-                  }}
-                >
-                  {t('moveBackToDaemon')}
-                </Button>
+                <div className="flex flex-col gap-1">
+                  <label className="flex items-start gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                    <input
+                      type="checkbox"
+                      checked={settings.dreaming.mineSkills === true}
+                      disabled={!canEdit || savingProvider}
+                      onChange={() => {
+                        setSettings((current) => ({
+                          ...current,
+                          dreaming: { ...current.dreaming, mineSkills: current.dreaming.mineSkills !== true }
+                        }))
+                        setProviderError(null)
+                      }}
+                    />
+                    {t('mineSkills')}
+                  </label>
+                  {settings.dreaming.mineSkills === true ? (
+                    <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
+                      {t('mineSkillsHint')}
+                    </div>
+                  ) : null}
+                </div>
+                <label className="flex flex-col gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                  {t('instructions')}
+                  <textarea
+                    value={settings.dreaming.instructions}
+                    rows={2}
+                    maxLength={4096}
+                    placeholder={t('instructionsPlaceholder')}
+                    disabled={!canEdit || savingProvider}
+                    onChange={(e) => {
+                      const instructions = e.target.value
+                      setSettings((current) => ({ ...current, dreaming: { ...current.dreaming, instructions } }))
+                      setProviderError(null)
+                    }}
+                    className="resize-y rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] leading-[1.5] text-(--text-primary)"
+                  />
+                </label>
               </div>
             ) : null}
           </div>
         ) : null}
-      </section>
 
+        {provider === 'external' ? (
+          <div className="flex flex-col gap-3">
+            <ExternalMemoryBindingFields
+              value={settings.external}
+              onChange={(external) => {
+                setSettings((current) => ({ ...current, external }))
+                setProviderError(null)
+              }}
+              disabled={!canEdit || savingProvider}
+              emptySelectionDisabled={
+                persistedProvider === 'external' && Boolean(persistedSettings.external.connectionId)
+              }
+            />
+            {settingsBlocker ? (
+              <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
+                {t('settingsBlocker', { reason: settingsBlocker, provider: persistedProviderLabel })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {providerError ? (
+          <div className="font-sans text-[12px] font-normal leading-normal text-(--red-600)" role="alert">
+            {providerError}
+          </div>
+        ) : null}
+
+        {canEdit ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-(--border-subtle) pt-3">
+            <Button
+              size="sm"
+              disabled={savingProvider || !settingsChanged || Boolean(settingsBlocker)}
+              onClick={() => void saveMemorySettings()}
+            >
+              {savingProvider ? t('saving') : t('saveSettings')}
+            </Button>
+            <Button variant="ghost" size="sm" disabled={savingProvider} onClick={closeSettings}>
+              {t('cancel')}
+            </Button>
+            {settingsChanged ? (
+              <span
+                className="font-sans text-[11.5px] font-normal leading-normal text-(--amber-500)"
+                aria-live="polite"
+              >
+                {t('staysActiveUntilSave', { provider: persistedProviderLabel })}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {canEdit &&
+        persistedProvider === 'managed' &&
+        persistedSettings.home === 'control-plane' &&
+        !memberSetPlaced &&
+        !assistantMode &&
+        !homeMigrationPending ? (
+          <div className="flex flex-col gap-2 rounded-md border border-(--status-error-soft) px-3 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
+            <div className="flex min-w-0 flex-col gap-[3px]">
+              <span className="font-sans text-[12.5px] font-semibold leading-normal">{t('moveBackToDaemon')}</span>
+              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                {t('moveBackWarning')}
+              </span>
+            </div>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={savingProvider || returningHome}
+              onClick={() => {
+                setHomeReturnError(null)
+                setConfirmingHomeReturn(true)
+              }}
+            >
+              {t('moveBackToDaemon')}
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  ) : null
+
+  return (
+    <div className="flex flex-col gap-4 p-4 desktop:p-0">
+      {persistedProvider !== 'managed' || backendChanged ? (
+        <>
+          {summaryLine(null)}
+          {settingsForm}
+        </>
+      ) : null}
       {backendChanged ? (
         <div
           className="rounded-(--radius-lg) border border-(--border-subtle) bg-(--surface-sunken) p-5 font-sans"
@@ -756,78 +679,27 @@ export function MemoryPanel({
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-2 pb-3 font-sans text-[12px] leading-normal text-(--text-secondary)">
-            <span className="font-semibold">{t('layer')}</span>
-            <select
-              value={layer}
-              onChange={(event) => setLayer(event.target.value)}
-              aria-label={t('layerPicker')}
-              className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] text-(--text-primary)"
-            >
-              <option value="">{t('sharedLayer')}</option>
-              <option value={YOUR_LAYER}>{t('yourMemory')}</option>
-              {pickerChannels.map((entry) => (
-                <option key={entry.channelKey} value={entry.channelKey}>
-                  {entry.visible === false
-                    ? t('notVisibleToYou', { name: placeLayerLabel(entry) })
-                    : placeLayerLabel(entry)}
-                </option>
-              ))}
-            </select>
-          </div>
-          {layer === YOUR_LAYER ? (
-            <PersonalMemoryPanel
-              key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}`}
-              agentId={agentId}
-            />
-          ) : hiddenLayer ? (
-            <div
-              data-memory-hidden-layer
-              className="flex flex-col gap-3 rounded-(--radius-lg) border border-(--border-subtle) p-5 desktop:flex-row desktop:items-center desktop:justify-between"
-            >
-              <span className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">
-                {t('notVisibleBody')}
-              </span>
-              {hiddenLayer.clearable ? (
-                <Button
-                  variant="danger"
-                  size="sm"
-                  className="self-start desktop:self-auto"
-                  onClick={() => {
-                    setClearError(null)
-                    setConfirmingClear(true)
-                  }}
-                >
-                  {t('clearLayer')}
-                </Button>
-              ) : null}
-            </div>
-          ) : (
-            <UnifiedMemoryPanel
-              key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}:${selectedChannel}`}
-              agentId={agentId}
-              channelKey={selectedChannel}
-              canEdit={canEdit}
-              sandboxed={sandboxedMemory}
-              overview={{
-                read: () => fetchAgentMemoryFull(agentId, undefined, selectedChannel),
-                readTopic: (file) => fetchAgentMemoryFull(agentId, file, selectedChannel)
-              }}
-            />
-          )}
-          {/* Dreaming is managed-only and is secondary to the live memory
-              content, so it sits below the browser. Only render it when the
-              persisted policy is on; otherwise its trigger would be noise. */}
+          <MemoryLayerBrowser
+            key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}`}
+            agentId={agentId}
+            canEdit={canEdit}
+            sandboxed={sandboxedMemory}
+            header={(newMemory) => (
+              <>
+                {summaryLine(newMemory)}
+                {settingsForm}
+              </>
+            )}
+          />
+          {/* Dreaming sits below the browser, and only while the persisted policy is on. */}
           {persistedSettings.dreaming.enabled ? (
-            <div className="mt-4">
-              <DreamPanel
-                key={agentId}
-                agentId={agentId}
-                canEdit={canEdit}
-                autoAcceptMemory={persistedSettings.dreaming.autoAdopt}
-                sessionBasePath={sessionBasePath}
-              />
-            </div>
+            <DreamPanel
+              key={agentId}
+              agentId={agentId}
+              canEdit={canEdit}
+              autoAcceptMemory={persistedSettings.dreaming.autoAdopt}
+              sessionBasePath={sessionBasePath}
+            />
           ) : null}
         </>
       )}
@@ -859,22 +731,6 @@ export function MemoryPanel({
           onConfirm={() => void persistMemorySettings()}
         >
           <p className="m-0">{t('moveToControlPlaneBody')}</p>
-        </ConfirmationDialog>
-      ) : null}
-      {confirmingClear && hiddenLayer ? (
-        <ConfirmationDialog
-          title={t('clearLayerTitle')}
-          confirmLabel={t('clearLayer')}
-          busyLabel={t('clearingLayer')}
-          destructive
-          busy={clearingLayer}
-          error={clearError}
-          onClose={() => {
-            if (!clearingLayer) setConfirmingClear(false)
-          }}
-          onConfirm={() => void clearHiddenLayer()}
-        >
-          <p className="m-0">{t('clearLayerBody', { name: placeLayerLabel(hiddenLayer) })}</p>
         </ConfirmationDialog>
       ) : null}
       {confirmingHomeReturn ? (

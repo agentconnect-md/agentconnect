@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   updateAgent: vi.fn(),
-  // How many entry browsers have mounted: a home or migration change must remount it so it reads again.
+  // How many memory browsers have mounted: a home or migration change must remount it so it reads again.
   entryMounts: 0,
   isMobile: false,
   // What the wake answers; the panel presses it once when a memory read refuses as a sleeping sandbox.
@@ -32,9 +32,22 @@ vi.mock('@/components/console/UnifiedMemoryPanel', async () => {
   }
 })
 
-vi.mock('@/components/console/PersonalMemoryPanel', () => ({
-  PersonalMemoryPanel: (props: { agentId: string }) => <div data-testid="your-memory-view" data-agent={props.agentId} />
-}))
+vi.mock('@/components/console/MemoryLayerBrowser', async () => {
+  const { useEffect } = await import('react')
+  return {
+    MemoryLayerBrowser: (props: { sandboxed?: boolean; header?: (newMemory: ReactNode) => ReactNode }) => {
+      useEffect(() => {
+        mocks.entryMounts += 1
+      }, [])
+      return (
+        <>
+          {props.header?.(null)}
+          <div data-testid="layer-memory-view" data-sandboxed={String(props.sandboxed ?? '')} />
+        </>
+      )
+    }
+  }
+})
 
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
@@ -88,12 +101,9 @@ import {
   listAgentMemory,
   updateAgentMemory,
   fetchAgentMemoryChannels,
-  wakeAgent,
-  type MemoryChannelDto
+  wakeAgent
 } from '@/lib/api'
-import { NextIntlClientProvider } from 'next-intl'
 import type { ReactNode } from 'react'
-import chinese from '../../../messages/zh-CN.json'
 import { MemoryPanel } from './MemoryPanel'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
@@ -143,11 +153,11 @@ const recallPolicy = () => ({
   timeoutMs: 3000
 })
 
-/** The settings form is collapsed behind the summary bar; expand it. */
+/** The settings form opens from the summary line's Change link. */
 const openSettings = async (host: HTMLElement) => {
-  const editButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Edit')
-  expect(editButton).toBeTruthy()
-  await act(async () => editButton?.click())
+  const changeButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Change')
+  expect(changeButton).toBeTruthy()
+  await act(async () => changeButton?.click())
 }
 
 const clickButton = async (host: HTMLElement, label: string) => {
@@ -312,7 +322,7 @@ describe('MemoryPanel settings draft', () => {
     expect(container.textContent).toContain('Auto-accept on')
     expect(container.textContent).toContain('Skill mining on')
     expect(container.textContent).not.toContain('scope')
-    expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="layer-memory-view"]')).not.toBeNull()
 
     await openSettings(container)
     expect(container.querySelector('[data-memory-provider="managed"]')).not.toBeNull()
@@ -359,53 +369,6 @@ describe('MemoryPanel settings draft', () => {
     })
   })
 
-  it('offers the shared layer, your own memory and every place layer that holds memory, for any managed agent', async () => {
-    vi.mocked(fetchAgentMemoryChannels).mockResolvedValue({
-      channels: [
-        { channelKey: 'slack-C1-abc', channel: 'C1', transportScope: null },
-        { channelKey: 'slack-C2-def', channel: 'C2', transportScope: null }
-      ]
-    })
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-
-    await act(async () => {
-      root?.render(
-        <MemoryPanel
-          agentId="22222222-2222-4222-8222-222222222222"
-          canEdit
-          memoryProvider="managed"
-          autoDistill={false}
-        />
-      )
-    })
-    await act(async () => {
-      await Promise.resolve()
-    })
-
-    const selector = container.querySelector<HTMLSelectElement>('[aria-label="Memory layer"]')
-    expect(selector).not.toBeNull()
-    expect([...selector!.options].map((o) => o.textContent)).toEqual(['Shared', 'Your memory', 'C1', 'C2'])
-
-    await act(async () => {
-      selector!.value = 'slack-C2-def'
-      selector!.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    // The entry browser is remounted on the selected place layer's key.
-    expect(container.querySelector('[data-testid="entries-memory-view"]')?.getAttribute('data-channel')).toBe(
-      'slack-C2-def'
-    )
-
-    await act(async () => {
-      selector!.value = selector!.options[1]!.value
-      selector!.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    // Your own layer opens in its own read-only view, never through the shared entry browser.
-    expect(container.querySelector('[data-testid="your-memory-view"]')).not.toBeNull()
-    expect(container.querySelector('[data-testid="entries-memory-view"]')).toBeNull()
-  })
-
   it('hides the persisted memory session while a different backend is selected but unsaved', async () => {
     container = document.createElement('div')
     document.body.append(container)
@@ -422,12 +385,13 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
-    expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="layer-memory-view"]')).not.toBeNull()
     await openSettings(container)
     await act(async () => {
       container?.querySelector<HTMLButtonElement>('[data-memory-provider="external"]')?.click()
     })
 
+    expect(container.querySelector('[data-testid="layer-memory-view"]')).toBeNull()
     expect(container.querySelector('[data-testid="entries-memory-view"]')).toBeNull()
     expect(container.querySelector('[data-testid="record-memory-view"]')).toBeNull()
     expect(container.textContent).toContain('Save memory settings to switch to External and view its memory.')
@@ -437,8 +401,8 @@ describe('MemoryPanel settings draft', () => {
     )
     await act(async () => cancelButton?.click())
 
-    expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
-    // Cancelling also collapses the form back to the summary bar.
+    expect(container.querySelector('[data-testid="layer-memory-view"]')).not.toBeNull()
+    // Cancelling also collapses the form back to the summary line.
     expect(container.querySelector('[data-memory-provider="external"]')).toBeNull()
   })
 
@@ -541,13 +505,12 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
-    const memory = container.querySelector('[data-testid="entries-memory-view"]')
+    const memory = container.querySelector('[data-testid="layer-memory-view"]')
     const dreaming = container.querySelector('[data-testid="dream-memory-view"]')
     expect(memory).not.toBeNull()
     expect(dreaming).not.toBeNull()
     if (!memory || !dreaming) throw new Error('Expected memory and dreaming panels')
     expect(memory.compareDocumentPosition(dreaming) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(dreaming.parentElement?.className).toContain('mt-4')
   })
 
   it('resyncs on a timezone-only refresh, so a later save cannot restore the stale zone', async () => {
@@ -656,16 +619,17 @@ describe('MemoryPanel memory views', () => {
     return container
   }
   const entries = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-testid="entries-memory-view"]')
+  const layers = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-testid="layer-memory-view"]')
 
-  it('lets the entry browser wake the sandbox only for a managed tree that lives on it', async () => {
+  it('lets the layer browser wake the sandbox only for a managed tree that lives on it', async () => {
     let host = await mount({ sandboxed: true })
-    expect(entries(host)?.getAttribute('data-sandboxed')).toBe('true')
-    expect(entries(host)?.getAttribute('data-overview')).toBe('yes')
+    expect(layers(host)?.getAttribute('data-sandboxed')).toBe('true')
+    expect(entries(host)).toBeNull()
     await act(async () => root?.unmount())
     container?.remove()
     // A `control-plane` home is read through the daemon's connection; the pod has nothing to do with it.
     host = await mount({ sandboxed: true, memoryHome: 'control-plane' })
-    expect(entries(host)?.getAttribute('data-sandboxed')).toBe('false')
+    expect(layers(host)?.getAttribute('data-sandboxed')).toBe('false')
   })
 
   it('shows external memory through the entry browser alone', async () => {
@@ -677,6 +641,7 @@ describe('MemoryPanel memory views', () => {
       memoryCaptureMode: 'manual'
     })
     expect(entries(host)).not.toBeNull()
+    expect(layers(host)).toBeNull()
     expect(entries(host)?.getAttribute('data-sandboxed')).toBe('')
     expect(entries(host)?.getAttribute('data-overview')).toBe('no')
   })
@@ -684,6 +649,7 @@ describe('MemoryPanel memory views', () => {
   it('shows no memory contents for native memory, which the runtime keeps to itself', async () => {
     const host = await mount({ memoryProvider: 'native', memoryDreaming: { enabled: true } })
     expect(entries(host)).toBeNull()
+    expect(layers(host)).toBeNull()
     expect(host.querySelector('[data-testid="dream-memory-view"]')).toBeNull()
   })
 })
@@ -859,192 +825,5 @@ describe('MemoryPanel memory home', () => {
     })
     expect(host.querySelector('[data-memory-home-status]')).toBeNull()
     expect(mocks.entryMounts).toBeGreaterThan(mounts)
-  })
-
-  it('lists the channel folders again once a copy that refused the read has cleared', async () => {
-    // During the copy the daemon refuses the channel read; the picker must not stay empty after completion.
-    vi.mocked(fetchAgentMemoryChannels).mockRejectedValueOnce(new ApiError('memory unavailable', 503))
-    await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending' })
-    const before = vi.mocked(fetchAgentMemoryChannels).mock.calls.length
-    vi.mocked(fetchAgentMemoryChannels).mockResolvedValueOnce({
-      channels: [{ channelKey: 'slack:C1', channel: 'general', transportScope: null }]
-    })
-    await act(async () => {
-      root?.render(
-        <MemoryPanel
-          agentId={AGENT_ID}
-          canEdit
-          memoryProvider="managed"
-          autoDistill={false}
-          memoryHome="control-plane"
-        />
-      )
-    })
-    expect(vi.mocked(fetchAgentMemoryChannels).mock.calls.length).toBeGreaterThan(before)
-    expect(container?.textContent).toContain('general')
-  })
-})
-
-// Place layers are named by their conversation, and an owner's unreadable ones offer only a clear (product-conventions.md "Memory layers").
-describe('MemoryPanel place layers', () => {
-  const AGENT_ID = '22222222-2222-4222-8222-222222222222'
-  const HIDDEN: MemoryChannelDto = {
-    channelKey: 'slack-C0EXAMPLE6-6a6b6c',
-    channel: 'C0EXAMPLE6',
-    transportScope: null,
-    platform: 'slack',
-    name: 'secret-room',
-    visible: false,
-    clearable: true
-  }
-  const LAYERS: MemoryChannelDto[] = [
-    HIDDEN,
-    {
-      channelKey: 'slack-C0EXAMPLE1-1a1b1c',
-      channel: 'C0EXAMPLE1',
-      transportScope: null,
-      platform: 'slack',
-      name: 'launch-room',
-      visible: true,
-      clearable: true
-    },
-    {
-      channelKey: 'telegram-g1',
-      channel: '-1000000000001',
-      transportScope: null,
-      platform: 'telegram',
-      name: 'Ops group',
-      visible: true
-    },
-    {
-      channelKey: 'slack-D0EXAMPLE-2a2b',
-      channel: 'D0EXAMPLE',
-      transportScope: null,
-      platform: 'slack',
-      name: '@alex',
-      visible: true
-    },
-    // What an older Control Plane or daemon answers: the channel id alone, or not even that.
-    { channelKey: 'slack-C0EXAMPLE4-4a4b', channel: 'C0EXAMPLE4', transportScope: null },
-    { channelKey: 'scope-0example--C0EXAMPLE5-5a5b', channel: null, transportScope: null }
-  ]
-
-  const mount = async (channels: MemoryChannelDto[] = LAYERS, wrap?: (node: ReactNode) => ReactNode) => {
-    vi.mocked(fetchAgentMemoryChannels).mockResolvedValue({ channels })
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-    const panel = <MemoryPanel agentId={AGENT_ID} canEdit memoryProvider="managed" autoDistill={false} />
-    await act(async () => {
-      root?.render(wrap ? wrap(panel) : panel)
-    })
-    await act(async () => {
-      await Promise.resolve()
-    })
-    return container
-  }
-  const picker = (host: HTMLElement) => host.querySelector<HTMLSelectElement>('[aria-label="Memory layer"], select')!
-  const pick = async (host: HTMLElement, value: string) =>
-    act(async () => {
-      const select = picker(host)
-      select.value = value
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-  const hiddenPanel = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-memory-hidden-layer]')
-  const dialog = (host: HTMLElement) => host.querySelector<HTMLElement>('[role="dialog"]')
-  const dialogButton = (host: HTMLElement, label: string) =>
-    Array.from(dialog(host)?.querySelectorAll('button') ?? []).find((button) => button.textContent === label)
-
-  it('names each layer "#name · platform", falling back to the channel id and only then the key', async () => {
-    const host = await mount()
-    expect([...picker(host).options].map((o) => o.textContent)).toEqual([
-      'Shared',
-      'Your memory',
-      '#launch-room · Slack',
-      'Ops group · Telegram',
-      '@alex · Slack',
-      'C0EXAMPLE4',
-      'scope-0example--C0EXAMPLE5-5a5b',
-      // An owner's layer they may not read comes last, and says so.
-      '#secret-room · Slack — not visible to you'
-    ])
-  })
-
-  it('opens a readable layer in the entry browser, and an unreadable one in a panel that reads nothing', async () => {
-    const host = await mount()
-    await pick(host, 'slack-C0EXAMPLE1-1a1b1c')
-    expect(host.querySelector('[data-testid="entries-memory-view"]')?.getAttribute('data-channel')).toBe(
-      'slack-C0EXAMPLE1-1a1b1c'
-    )
-    await pick(host, HIDDEN.channelKey)
-    expect(host.querySelector('[data-testid="entries-memory-view"]')).toBeNull()
-    expect(hiddenPanel(host)?.textContent).toContain('You can’t see any of this conversation’s sessions')
-    expect(vi.mocked(fetchAgentMemoryFull)).not.toHaveBeenCalled()
-  })
-
-  it('clears an unreadable layer only after the confirmation, then drops it from the picker', async () => {
-    const host = await mount()
-    await pick(host, HIDDEN.channelKey)
-    const clear = Array.from(hiddenPanel(host)!.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Clear this layer'
-    )
-    await act(async () => clear?.click())
-    expect(clearAgentMemoryChannel).not.toHaveBeenCalled()
-    expect(dialog(host)?.textContent).toContain('Clear this memory layer?')
-    expect(dialog(host)?.textContent).toContain('Every file the agent keeps for #secret-room · Slack is deleted')
-
-    await act(async () => dialogButton(host, 'Clear this layer')?.click())
-    expect(clearAgentMemoryChannel).toHaveBeenCalledWith(AGENT_ID, HIDDEN.channelKey)
-    expect(dialog(host)).toBeNull()
-    expect([...picker(host).options].map((o) => o.value)).not.toContain(HIDDEN.channelKey)
-    expect(picker(host).value).toBe('')
-    expect(host.querySelector('[data-testid="entries-memory-view"]')?.getAttribute('data-channel')).toBe('')
-  })
-
-  it('keeps the confirmation open with the reason when the clear fails', async () => {
-    vi.mocked(clearAgentMemoryChannel).mockRejectedValueOnce(new ApiError('owning daemon is offline', 503))
-    const host = await mount()
-    await pick(host, HIDDEN.channelKey)
-    await act(async () =>
-      Array.from(hiddenPanel(host)!.querySelectorAll('button'))
-        .find((button) => button.textContent === 'Clear this layer')
-        ?.click()
-    )
-    await act(async () => dialogButton(host, 'Clear this layer')?.click())
-    expect(dialog(host)?.textContent).toContain('owning daemon is offline')
-    expect([...picker(host).options].map((o) => o.value)).toContain(HIDDEN.channelKey)
-  })
-
-  it('offers no clear when the caller may not clear the layer, as toward an older daemon', async () => {
-    const host = await mount([{ ...HIDDEN, clearable: false }])
-    await pick(host, HIDDEN.channelKey)
-    expect(hiddenPanel(host)).not.toBeNull()
-    expect(hiddenPanel(host)?.querySelector('button')).toBeNull()
-  })
-
-  it('renders the same panel and action on mobile, stacked, and draws it with theme tokens only', async () => {
-    mocks.isMobile = true
-    const host = await mount()
-    await pick(host, HIDDEN.channelKey)
-    const panel = hiddenPanel(host)!
-    // One responsive tree: stacked by default, a row from the desktop breakpoint.
-    expect(panel.className).toContain('flex-col')
-    expect(panel.className).toContain('desktop:flex-row')
-    expect(panel.textContent).toContain('Clear this layer')
-    // Every color is a token, so the dark theme's remap applies; no literal would survive it.
-    expect(panel.className).toContain('border-(--border-subtle)')
-    expect(panel.outerHTML).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
-  })
-
-  it('reads in Chinese with the zh-CN messages', async () => {
-    const host = await mount(LAYERS, (node) => (
-      <NextIntlClientProvider locale="zh-CN" messages={chinese} timeZone="UTC">
-        {node}
-      </NextIntlClientProvider>
-    ))
-    expect([...picker(host).options].at(-1)?.textContent).toBe('#secret-room · Slack — 你看不到')
-    await pick(host, HIDDEN.channelKey)
-    expect(hiddenPanel(host)?.textContent).toContain('这个对话的会话你都看不到')
-    expect(hiddenPanel(host)?.textContent).toContain('清空这一层')
   })
 })

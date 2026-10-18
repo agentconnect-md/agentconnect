@@ -24,6 +24,7 @@ import { readCompleteMemoryEntry } from '@/lib/memory-entry-content'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { memoryFileFromHref } from '@/components/console/memory-links'
+import { linkedMemoryRef, memoryEntryError } from '@/components/console/memory-entry-helpers'
 import { useSandboxWake, type SandboxReadState } from '@/components/console/sandbox-wake'
 import {
   MEMORY_SANDBOX_ASLEEP_NOTICE,
@@ -70,25 +71,6 @@ export interface OverviewSource {
 const GENERATED_OVERVIEW_MARKER = '<!-- generated from each topic'
 export function UnifiedMemoryPanel(props: Props) {
   return <Entries key={`${props.agentId}:${props.channelKey ?? ''}`} {...props} />
-}
-function errorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    if (error.code === 'CONFLICT' || error.code === 'STALE_BINDING')
-      return 'Memory changed. Your draft is kept; reload the saved version before editing again.'
-    if (error.code === 'CURSOR_EXPIRED') return 'This list expired. Refresh memory to start again.'
-    if (error.code === 'TOO_LARGE') return 'This change is too large to save here. Reduce its size and try again.'
-    if (error.code === 'AMBIGUOUS_WRITE')
-      return 'The change could not be confirmed. Check saved memory before making another change.'
-    if (error.status === 403) return 'You no longer have permission to change this memory.'
-    if (error.status === 503) return 'Memory is temporarily unavailable. Try loading it again.'
-  }
-  return error instanceof Error ? error.message : 'Memory is unavailable.'
-}
-// A Markdown link opens a sibling only through a ref the read already annotated; refs are never guessed.
-function linkedRef(document: MemoryEntryContent, name: string): string | undefined {
-  const label = name.replace(/\.md$/, '')
-  return [...(document.links ?? []), ...(document.backlinks ?? [])].find((edge) => edge.ref && edge.label === label)
-    ?.ref
 }
 // A topic keeps its mono name like a file; a nameless record shows its opening text instead.
 function EntryRow({
@@ -232,7 +214,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
           markUnsupported()
         else {
           setErrorCode(err instanceof ApiError ? err.code : undefined)
-          setError(errorMessage(err))
+          setError(memoryEntryError(err))
         }
       } finally {
         if (id === generation.current) setBusy(false)
@@ -257,7 +239,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       setEntries((old) => [...old, ...page.entries])
       setCursor(page.nextCursor)
     } catch (err) {
-      if (id === generation.current) setError(errorMessage(err))
+      if (id === generation.current) setError(memoryEntryError(err))
     } finally {
       if (id === generation.current) setPaging(false)
     }
@@ -277,7 +259,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         `${result.hits.length} ${result.hits.length === 1 ? 'hit' : 'hits'} · ${result.kind} search · ${result.coverage} coverage. A search is not a complete listing.`
       )
     } catch (err) {
-      if (id === generation.current) setError(errorMessage(err))
+      if (id === generation.current) setError(memoryEntryError(err))
     } finally {
       if (id === generation.current) setBusy(false)
     }
@@ -305,7 +287,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       setBlocked(false)
       if (!result) setError('This memory no longer exists. Refresh the list.')
     } catch (err) {
-      if (id === detailRequest.current) setError(errorMessage(err))
+      if (id === detailRequest.current) setError(memoryEntryError(err))
     } finally {
       if (id === detailRequest.current) setReading(false)
     }
@@ -354,7 +336,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       setError(
         uncertain
           ? 'The change could not be confirmed. Your draft is kept; check saved memory before making another change.'
-          : errorMessage(err)
+          : memoryEntryError(err)
       )
     } finally {
       setSaving(false)
@@ -392,7 +374,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       const result = await overview.read()
       if (id === overviewRequest.current) setOverviewDoc(result)
     } catch (err) {
-      if (id === overviewRequest.current) setError(errorMessage(err))
+      if (id === overviewRequest.current) setError(memoryEntryError(err))
     } finally {
       if (id === overviewRequest.current) setOverviewBusy(false)
     }
@@ -408,7 +390,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       const result = await overview.readTopic(file)
       if (id === overviewRequest.current) setOverviewTopic({ file, ...result })
     } catch (err) {
-      if (id === overviewRequest.current) setError(errorMessage(err))
+      if (id === overviewRequest.current) setError(memoryEntryError(err))
     } finally {
       if (id === overviewRequest.current) setOverviewTopicBusy(false)
     }
@@ -732,7 +714,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
                   href,
                   (candidate) => {
                     const name = memoryFileFromHref(candidate)
-                    const ref = name ? linkedRef(document, name) : undefined
+                    const ref = name ? linkedMemoryRef(document, name) : undefined
                     return name && ref ? { path: name, name, ref } : null
                   },
                   (target) => void open({ ref: target.ref })
