@@ -50,7 +50,7 @@ directly, since no one is here to approve a plan.`
 export const FIRST_LOOK_RECORD_CHECK_TOOL: ToolDescriptor = {
   name: 'recordCheck',
   description:
-    'Hand back this first look, once, after you have written what you learned to memory. `observation` is one ' +
+    'Hand back this getting-to-know task, once, after you have written what you learned to memory. `observation` is one ' +
     'line on what you read; `report` is your answer, in its sections; set `done: true`. Besides memory it is your ' +
     'only output: nothing else you write reaches the place.',
   inputSchema: obj(
@@ -67,7 +67,7 @@ export const FIRST_LOOK_RECORD_CHECK_TOOL: ToolDescriptor = {
         maxLength: ASSISTANT_ITEM_LIMITS.firstLookReport,
         description: 'Your whole answer, in its sections.'
       },
-      done: { type: 'boolean', description: 'True: this first look is finished.' }
+      done: { type: 'boolean', description: 'True: this getting-to-know task is finished.' }
     },
     ['observation', 'report']
   )
@@ -96,7 +96,7 @@ export function firstLookReadRefusal(
     (typeof args.integrationId === 'string' && args.integrationId !== ctx.integrationId) ||
     (typeof args.channel === 'string' && args.channel !== ctx.channel)
   return other
-    ? `${name}: a first look reads only its own place; leave out platform, integrationId and channel. Nothing was read.`
+    ? `${name}: a getting-to-know task reads only its own place; leave out platform, integrationId and channel. Nothing was read.`
     : undefined
 }
 
@@ -173,7 +173,7 @@ export function firstLookPrompt(input: FirstLookPrompt): string {
   const index = input.shared
     ? 'with "index: false" in its header so MEMORY.md leaves it out'
     : 'with a description header so MEMORY.md lists it'
-  return `You are taking a first look at ${input.place}, a ${input.kind} ${how}. Read it, write
+  return `You are getting to know ${input.place}, a ${input.kind} ${how}. Read it, write
 what you learned to memory, and report back. You cannot post or react: only your memory writes
 and your report leave this task.
 
@@ -186,7 +186,7 @@ stop changing your picture. Read only this place.
 
 Then write to memory, without a layer argument:
 1. A topic file named after the place, dated, ${index}.
-   If an earlier first look wrote one, update it. It says how the place works: what it is
+   If an earlier getting-to-know task wrote one, update it. It says how the place works: what it is
    for, in two sentences; who owns or decides what, as people here say it: roles, never
    opinions of people; how requests are made, where decisions are recorded, links people keep
    using, other bots and what they post. And what recurs: things that happened at least twice
@@ -225,9 +225,9 @@ const FOLLOW_UP_SCHEDULE = `A follow-up runs only at its next check or when mess
 /** What the long session is told to do with the report (§5.13); the first look wrote memory itself (§5.15), and step 2 offers `propose` cards where the platform has them, else the text form. */
 export function firstLookHandling(reach: string, opts: { external: boolean; cards?: boolean }): string {
   if (opts.external)
-    return `When a first look reports back:
-This place is now shared with another organization, so post nothing about this first look in it.`
-  return `When a first look reports back (it has already written what it learned to memory):
+    return `When your getting-to-know task reports back:
+This place is now shared with another organization, so post nothing about what you read in it.`
+  return `When your getting-to-know task reports back (it has already written what it learned to memory):
 1. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you (${reach}).
 ${
@@ -241,28 +241,28 @@ ${
 3. Ask at most one question, and only if the answer changes what you do. Then post nothing
    more on your own.
 In everything people read, name a channel by its name or link, never by its raw id.
-Tell people plainly that you read this place's recent messages to get to know it; never call it a "first look".`
+Tell people plainly that you read this place's recent messages to get to know it.`
 }
 
 /** Why a first look's report round refuses a proposal: a follow-up form without a first check would never run (§5.13). */
 export function firstLookProposalRefusal(input: Pick<ProposeInput, 'followUp'>): string | undefined {
   return input.followUp && input.followUp.nextCheck === undefined
-    ? 'a follow-up offered after a first look needs followUp.nextCheck, since nothing else would wake it: set its ' +
+    ? 'a follow-up offered after getting to know a place needs followUp.nextCheck, since nothing else would wake it: set its ' +
         'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'
     : undefined
 }
 
 /** The report round's text: the handling first, then the first look's report. */
 export function firstLookReportText(place: string, handling: string, report: string): string {
-  return `[first look] Your first look at ${place} reported back.\n\n${handling}\n\nIts report:\n\n${report}`
+  return `[getting to know] Your task getting to know ${place} reported back.\n\n${handling}\n\nIts report:\n\n${report}`
 }
 
 /** The one report of a requested first look that failed too often (§5.13); an automatic one ends without a word. */
 export function firstLookFailedText(place: string, attempts: number): string {
   return (
-    `[first look] The first look at ${place} that was asked for here failed ${attempts} times in a row and has ` +
-    'ended without reading anything you can use. Tell the people here in plain words, such as "I could not ' +
-    'read this channel’s recent messages", never "first look"; they may ask for another.'
+    `[getting to know] Your task getting to know ${place}, asked for here, failed ${attempts} times in a row and ` +
+    'has ended without reading anything you can use. Tell the people here in plain words, such as "I could not ' +
+    'read this channel’s recent messages"; they may ask for another.'
   )
 }
 
@@ -315,11 +315,11 @@ export const FIRST_LOOK_REFUSAL_REASONS: Record<FirstLookRefusal, string> = {
 
 /** What a first look refusal tells the agent. */
 export const FIRST_LOOK_REFUSALS: Record<FirstLookRefusal, string> = {
-  'assistant-mode-off': 'This agent is not in assistant mode, so it takes no first look.',
-  direct: 'A direct message has nothing to read, so it takes no first look.',
-  'no-history': 'This platform does not let a bot read history, so no first look can run here.',
-  external: 'This place is shared with another organization, so it takes no first look.',
-  off: 'This conversation is Off for the agent, so it takes no first look.'
+  'assistant-mode-off': 'This agent is not in assistant mode, so it does not get to know places.',
+  direct: 'A direct message has nothing to read, so there is nothing to get to know.',
+  'no-history': 'This platform does not let a bot read history, so you cannot get to know this place.',
+  external: 'This place is shared with another organization, so you do not get to know it.',
+  off: 'This conversation is Off for the agent, so you do not get to know it.'
 }
 
 /** What a join's place decides once the Control Plane lists it: take a first look, wait for its row, or none. */

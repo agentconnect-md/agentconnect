@@ -520,7 +520,7 @@ export class FollowUpChecks {
       return {
         kind: 'refused',
         reason: 'paused',
-        message: 'This agent is paused or draining, so no first look can run now. Nothing was started.'
+        message: 'This agent is paused or draining, so it cannot get to know this place now. Nothing was started.'
       }
     const lockKey = JSON.stringify(['first-look', agentId, place.platform, place.channel, place.transportScope ?? ''])
     type Decided = FirstLookRequestResult | { kind: 'start'; item: AssistantItem; admitted: Admission }
@@ -530,7 +530,7 @@ export class FollowUpChecks {
         return {
           kind: 'refused',
           reason: 'running',
-          message: 'A first look of this place is already running; its report comes here. Nothing was started.'
+          message: 'Getting to know this place is already running; its report comes here. Nothing was started.'
         }
       const now = this.host.now()
       const refusal = await this.overBudget(agentId, now, 'first look')
@@ -551,7 +551,7 @@ export class FollowUpChecks {
         return {
           kind: 'refused',
           reason: started === 'busy' ? 'busy' : 'parent_gone',
-          message: 'The first look could not start now. Nothing was started.'
+          message: 'Getting to know this place could not start now. Nothing was started.'
         }
       return { kind: 'start', item, admitted: started.admitted }
     })
@@ -562,7 +562,7 @@ export class FollowUpChecks {
     return {
       kind: 'refused',
       reason: admitted.reason ?? 'busy',
-      message: `The first look could not start now (${admitted.reason ?? 'busy'}); it runs as soon as it can.`
+      message: `Getting to know this place could not start now (${admitted.reason ?? 'busy'}); it runs as soon as it can.`
     }
   }
 
@@ -638,7 +638,7 @@ export class FollowUpChecks {
         kind: 'refused',
         reason: 'first_look',
         message:
-          'A first look takes no messages: it ends after its one read, and its report comes here. Nothing was sent; ' +
+          'A getting-to-know task takes no messages: it ends after its one read, and its report comes here. Nothing was sent; ' +
           'once it has ended, ask for another with firstLook.'
       }
     if (!followUpOpen(item))
@@ -736,7 +736,7 @@ export class FollowUpChecks {
       reason: 'budget',
       message:
         what === 'first look'
-          ? `This agent already ran its ${budget} checks of the last 24 hours, and a first look counts as one. ` +
+          ? `This agent already ran its ${budget} checks of the last 24 hours, and getting to know a place counts as one. ` +
             `Nothing was started; ask again after ${resets}, when the budget has room.`
           : `This agent already ran its ${budget} follow-up checks of the last 24 hours. Nothing was sent; message ` +
             `it again after ${resets}, when the budget has room.`

@@ -404,8 +404,8 @@ async function withSenderKeys<T extends { sender: string }>(
   })
 }
 
-const FIRST_LOOK_CAPPED = `This first look has read its ${FIRST_LOOK_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
-const FIRST_LOOK_WINDOW_END = `Older messages are past this first look's ${FIRST_LOOK_DAYS} days.`
+const FIRST_LOOK_CAPPED = `This task has read its ${FIRST_LOOK_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
+const FIRST_LOOK_WINDOW_END = `Older messages are past the ${FIRST_LOOK_DAYS} days this task reads.`
 const RESEARCH_CAPPED = `This round has read its ${FIRST_LOOK_MAX_MESSAGES} messages of this channel: read no more of it.`
 const RESEARCH_WINDOW_END = `Older messages are past research's ${FIRST_LOOK_DAYS} days.`
 

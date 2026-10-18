@@ -298,14 +298,14 @@ export const RECORD_CHECK_TOOL: ToolDescriptor = {
 export const PROPOSE_TOOL: ToolDescriptor = {
   name: 'propose',
   description:
-    'Ask for approval to act on the follow-up this check is for, or on what a first look found, when something ' +
+    'Ask for approval to act on the follow-up this check is for, or on what you found getting to know a place, when something ' +
     'should be done rather than only reported. `sentence` is the one plain sentence the approver reads first ("I ' +
     'want to do X because Y"); `why` is the reason; `task` is exactly what a background session with your normal ' +
     'permissions should do once approved, e.g. "rebase PR #12 onto main and push"; or, in place of `task`, ' +
     '`followUp` is the follow-up of that conversation an approval takes, with the approver as its asker. Nothing ' +
     'runs until a person approves it, within 24 hours; the approved proposal then reports back in the conversation ' +
     'the follow-up belongs to. Propose at most once per check and do not also report it; still record what you ' +
-    'saw with recordCheck. After a first look, propose at most three times, on the round its report arrives.',
+    'saw with recordCheck. After getting to know a place, propose at most three times, on the round its report arrives.',
   inputSchema: obj(
     {
       sentence: {
@@ -499,12 +499,12 @@ async function handBackFirstLook(
   port: NonNullable<NonNullable<AssistantItemDeps['assistantItems']>['check']>
 ): Promise<Record<string, unknown>> {
   if (input.report === undefined)
-    throw new Error('a first look hands back its whole answer as `report`; nothing was written')
+    throw new Error('a getting-to-know task hands back its whole answer as `report`; nothing was written')
   const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'check' })
-  if (!appended) throw new Error('this first look is gone; nothing was written')
+  if (!appended) throw new Error('this getting-to-know task is gone; nothing was written')
   if (!(await port.report(ctx, itemId, input.report)))
-    throw new Error('this first look has ended; the observation was written but the report was not kept')
-  return { ok: true, report: 'passed on when this first look ends; end your turn now' }
+    throw new Error('this getting-to-know task has ended; the observation was written but the report was not kept')
+  return { ok: true, report: 'passed on when this task ends; end your turn now' }
 }
 
 /** A check asks for approval to act (assistant-mode.md §5.10), as does a place's long session after a first look (§5.13); it runs nothing itself. */

@@ -115,7 +115,7 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
     `Proposed as: ${oneLine(proposal.sentence)}`,
     '',
     item.firstLook !== null
-      ? `Follow-up (ended after reading the place once): ${oneLine(item.title)}`
+      ? `Follow-up (getting to know, ended): ${oneLine(item.title)}`
       : `Follow-up (${item.status === 'active' || item.status === 'waiting' ? 'open' : 'ended'}): ${oneLine(item.title)}`,
     `Done when: ${item.doneWhen === null ? 'not set' : oneLine(item.doneWhen)}`,
     `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,

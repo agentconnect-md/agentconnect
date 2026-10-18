@@ -183,7 +183,7 @@ export function readerOnboardingMessage(input: {
 
 /** The daemon's own second round, once the first looks running at onboarding have reported. */
 export const SECOND_ROUND_MESSAGE =
-  'The first looks that were running when you started have reported. Read what they wrote in shared memory, merge ' +
+  'The getting-to-know tasks that were running when you started have reported. Read what they wrote in shared memory, merge ' +
   'it into organization.md, channels.md and members.md, and report again in the same four parts.'
 
 /** The prelude line every place turn carries while research runs (assistant-mode.md §5.15 "Replies never wait for research"). */

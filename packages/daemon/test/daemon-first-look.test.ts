@@ -22,7 +22,7 @@ const modelText = (msg: NormalizedMessage): string => msg.turnBody?.prompt ?? ms
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 const ON = { enabled: true }
 const DAY = 24 * 60 * 60_000
-const LOOK_OPENING = 'You are taking a first look at'
+const LOOK_OPENING = 'You are getting to know'
 
 function scaffold(opts: { budget?: number; bindRules?: unknown[] } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-first-look-'))
@@ -200,7 +200,7 @@ describe('a first look someone asks for', () => {
 
     const [look] = looks()
     const prompt = modelText(look!.msg)
-    expect(prompt).toContain('You are taking a first look at "fake", a channel you are in. Read it, write')
+    expect(prompt).toContain('You are getting to know "fake", a channel you are in. Read it, write')
     expect(prompt).toContain('the last 30 days or 500 messages, whichever')
     expect(prompt).toContain('Hand it back with recordCheck: a one-line observation, this report, and done set.')
     expect(prompt).toMatch(/actually do with its tools: .*sendMessage.*and your runtime’s own tools\./s)
@@ -227,7 +227,7 @@ describe('a first look someone asks for', () => {
     expect(report.thread).toBeUndefined()
     expect(report.sessionThread).toBe(place.coordinate)
     const text = modelText(report)
-    expect(text).toContain('[first look] Your first look at "fake" reported back.')
+    expect(text).toContain('[getting to know] Your task getting to know "fake" reported back.')
     expect(text).toContain('reach you (@-mention me).')
     // Slack has approval cards, so its suggestions are offered with propose (§5.13).
     expect(text).toContain('2. Under it, offer each "Where I could help" item with propose.')
@@ -241,7 +241,7 @@ describe('a first look someone asks for', () => {
     ])
     const listed = (await executeTool(placeCtx(place), 'listTasks', {}, deps)) as any
     expect(listed.tasks).toEqual([
-      expect.objectContaining({ kind: 'first look', state: 'done', label: 'Getting to know fake' })
+      expect.objectContaining({ kind: 'getting to know', state: 'done', label: 'Getting to know fake' })
     ])
     const messaged = await d.collab.continueSubsession({
       callerAgentId: 'bot-a',
@@ -292,7 +292,7 @@ describe('a first look someone asks for', () => {
     )
     const refused = (await executeTool(placeCtx(place), 'firstLook', {}, deps)) as any
     expect(refused).toMatchObject({ started: false, reason: 'budget' })
-    expect(refused.note).toMatch(/a first look counts as one\. Nothing was started; ask again after \d{4}-/)
+    expect(refused.note).toMatch(/getting to know a place counts as one\. Nothing was started; ask again after \d{4}-/)
     await daemon.stop()
   })
 
@@ -327,9 +327,9 @@ describe('a first look someone asks for', () => {
     expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'dropped' })
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain(
-      '[first look] The first look at "fake" that was asked for here failed 5'
+      '[getting to know] Your task getting to know "fake", asked for here, failed 5'
     )
-    expect(modelText(reports()[0]!.msg)).toContain('never "first look"')
+    expect(modelText(reports()[0]!.msg)).toContain('in plain words')
     await daemon.stop()
   })
 })
@@ -367,7 +367,7 @@ describe('what a first look may read', () => {
     expect(reads[1]).toMatchObject({ hasMore: false })
     expect(reads[1].note).toContain('has read its 500 messages')
     expect(reads[2].messages).toHaveLength(0)
-    expect(reads[3]).toContain('a first look reads only its own place')
+    expect(reads[3]).toContain('a getting-to-know task reads only its own place')
     expect(reads[4]).toContain('is not available')
     await daemon.stop()
   })
@@ -394,7 +394,7 @@ describe('what a first look may read', () => {
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
     expect(read.messages.map((m: any) => m.text)).toEqual(['recent'])
-    expect(read).toMatchObject({ hasMore: false, note: "Older messages are past this first look's 30 days." })
+    expect(read).toMatchObject({ hasMore: false, note: 'Older messages are past the 30 days this task reads.' })
     expect(read.nextCursor).toBeUndefined()
     await daemon.stop()
   })

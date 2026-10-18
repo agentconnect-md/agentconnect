@@ -1533,9 +1533,10 @@ long session, which introduces the agent once and offers at most three ways it c
   is told once.
 - **As a task.** It is listed among the conversation's tasks, titled "Getting to know #channel" and
   labelled "Getting to know" (「了解频道」) in the Tasks tab, the Activity view and its own page, and
-  ends as Done after its one read, or Stopped. People never see the internal term "first look": the
-  agent says it read the channel's recent messages. `listTasks` lists it as a first look, `messageTask` to it is refused, and `stopTask` or the
-  console's Stop ends it. The reminders of open follow-ups leave it out.
+  ends as Done after its one read, or Stopped. Neither people nor the agent see the internal term
+  "first look": the agent's tools and prompts call it getting to know the place, and the agent tells
+  people it read the channel's recent messages. `listTasks` lists it with kind `getting to know`,
+  `messageTask` to it is refused, and `stopTask` or the console's Stop ends it. The reminders of open follow-ups leave it out.
 
 ## Assistant-mode organization research
 

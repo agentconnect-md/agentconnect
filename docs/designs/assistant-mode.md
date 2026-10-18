@@ -1763,7 +1763,8 @@ under the introduction works. For a first look, `propose` changes in four ways:
   place's name its lookup returns is kept, so both sessions are named by it. A first look that ends without handing back a
   report counts as a failed check, and one whose check is stopped ends as stopped.
 - **Messages.** `messageTask` to a first look is refused while it runs as well as after it ended,
-  since its one check takes none. `listTasks` lists it as a first look.
+  since its one check takes none. `listTasks` lists it with kind `getting to know`, the name its
+  tools and prompts use.
 - **Console.** Activity's follow-up row carries `firstLook: true` and no next check; the console
   labels it "First look". Tool sizes: `firstLook` 433 characters with a 76-byte input schema, and a
   first look's `recordCheck` 244 characters with a 391-byte schema; since §5.15, 431 and 268
