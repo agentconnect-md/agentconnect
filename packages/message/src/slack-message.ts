@@ -154,6 +154,11 @@ export function toSlackAttachment(file: SlackFile | null | undefined): PlatformA
   }
 }
 
+// Posted as a bot identity; a person's own post through an app carries `app_id` but no `bot_id` and stays theirs.
+export function isSlackBotPost(message: { bot_id?: string; subtype?: string }): boolean {
+  return Boolean(message.bot_id) || message.subtype === 'bot_message'
+}
+
 export function normalizeSlackMessage(message: SlackMessage, context: { traceId: string }): NormalizedPlatformMessage
 export function normalizeSlackMessage(
   message: SlackMessageLike,
@@ -184,7 +189,7 @@ export function normalizeSlackMessage(
     thread: message.thread_ts ?? message.ts,
     sender: {
       id: message.user ?? message.bot_id ?? 'unknown',
-      isBot: Boolean(message.bot_id || appId),
+      isBot: isSlackBotPost(message),
       ...(appId ? { appId } : {}),
       ...(avatarUrl ? { avatarUrl } : {})
     },

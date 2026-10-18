@@ -17,6 +17,7 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   extractSlackMessageText,
+  isSlackBotPost,
   isSlackSystemMessage,
   normalizeSlackResponseFinalization,
   slackEnvelopeExternallyShared,
@@ -682,6 +683,7 @@ export type AppLike = {
           bot_profile?: { app_id?: string }
           ts?: string
           text?: string
+          subtype?: string
           blocks?: unknown
           attachments?: unknown
           thread_ts?: string
@@ -2222,7 +2224,7 @@ export class SlackConnection implements PlatformConnection {
             ...(appId ? { appId } : {}),
             ts: m.ts,
             text: extractSlackMessageText(m),
-            isBot: Boolean(m.bot_id || appId),
+            isBot: isSlackBotPost(m),
             // A settled chrome stream carries the marker its stop stamped; one still open
             // carries none, so its `streaming_state` / placeholder body answers for it.
             chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE || isSlackStreamChromeMessage(m),
@@ -2279,7 +2281,7 @@ export class SlackConnection implements PlatformConnection {
             sender: m.bot_id ?? m.user ?? 'unknown',
             ts: m.ts,
             text: extractSlackMessageText(m),
-            isBot: Boolean(m.bot_id || appId),
+            isBot: isSlackBotPost(m),
             ...(m.thread_ts ? { threadTs: m.thread_ts } : {}),
             ...(replyCount !== undefined ? { replyCount } : {}),
             ...(link ? { link } : {})
