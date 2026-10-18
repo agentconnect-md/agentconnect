@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - feat/ahp-*
   # Release calls this workflow as its quality gate for main/release pushes.
   # Keeping the jobs here avoids duplicating CI logic between PRs and releases.
   workflow_call:
