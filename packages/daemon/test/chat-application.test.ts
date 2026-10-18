@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentSchema } from '../src/agents/agent-schema.js'
 import { ChatSessionApplication } from '../src/session/chat-application.js'
-import { transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
-import { WebchatTransport, type WebchatHost } from '../src/webchat/transport.js'
+import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
+import { WebchatTransport, type WebchatHost, type WebchatReplyConnection } from '../src/webchat/transport.js'
 import { memoryStoreDatabase, openTestStore } from './store-support.js'
 
 const agentId = 'bot-a'
@@ -30,6 +30,7 @@ async function fixture() {
       }
     ]
   ])
+  const connections = new Map<string, WebchatReplyConnection>()
   const host: WebchatHost = {
     info: vi.fn(),
     warn: vi.fn(),
@@ -52,8 +53,8 @@ async function fixture() {
     activeGateEntries: () => new Map(),
     interruptTurn: vi.fn(async () => {}),
     dispatch: vi.fn(async () => null),
-    integrationIdForSessionTransport: () => undefined,
-    connForIntegration: () => undefined,
+    integrationIdForSessionTransport: () => (connections.has('origin') ? 'origin' : undefined),
+    connForIntegration: (id) => connections.get(id),
     botUserIds: () => ({}),
     resolveCpAgent: () => null,
     sendWebchatPost: vi.fn(),
@@ -77,7 +78,7 @@ async function fixture() {
       [agentId],
       { postId, at: 100 }
     )
-  return { store, host, application, transport, sink, send, agents, admission }
+  return { store, host, application, transport, sink, send, agents, admission, connections }
 }
 
 describe('shared chat application with the legacy adapter', () => {
@@ -160,5 +161,114 @@ describe('shared chat application with the legacy adapter', () => {
     admission.full = true
     await expect(send('turn-a')).resolves.toEqual({ accepted: false, turnId: 'turn-a', reason: 'busy' })
     expect(host.dispatch).not.toHaveBeenCalled()
+  })
+})
+
+async function continuationFixture(platform = 'slack') {
+  const f = await fixture()
+  const key = sessionKey(platform, 'channel', 'thread', agentId, 'account')
+  await f.store.upsertSession({
+    key,
+    agentId,
+    platform,
+    channel: 'channel',
+    thread: 'thread',
+    transportScope: 'account',
+    sessionId: 'outward',
+    acpSessionId: 'runtime-private',
+    state: 'idle',
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  const postAsAuthor = vi.fn<() => Promise<{ ts: string; text: string } | undefined>>(async () => ({
+    ts: '200',
+    text: 'continued'
+  }))
+  const finalizeResponse = vi.fn(async () => true)
+  f.connections.set('origin', { postAsAuthor, finalizeResponse } as unknown as WebchatReplyConnection)
+  const send = () =>
+    f.transport.dispatchWebchatContinuationTurn(
+      agentId,
+      conversationId,
+      'outward',
+      'continued',
+      author,
+      f.sink,
+      'continuation-turn'
+    )
+  return { ...f, key, postAsAuthor, finalizeResponse, send }
+}
+
+describe('shared continuation behind the legacy adapter', () => {
+  it('reserves admission before the origin mirror and releases execution only after proven delivery', async () => {
+    const { host, send, postAsAuthor, finalizeResponse, key } = await continuationFixture()
+    const order: string[] = []
+    vi.mocked(host.dispatch).mockImplementation(async (_agent, message, integration, context, _meta, options) => {
+      expect(sessionKey(message.platform, message.channel, message.thread!, agentId, message.transportScope)).toBe(key)
+      expect(message.adoptedSession).toBe(true)
+      expect(integration).toBe('origin')
+      expect(context?.continuation).toBe(true)
+      order.push('admit')
+      options?.onAdmission?.({ accepted: true })
+      if (await options?.admissionWait) order.push('execute')
+      return null
+    })
+    postAsAuthor.mockImplementation(async () => {
+      order.push('mirror')
+      return { ts: '200', text: 'continued' }
+    })
+    await expect(send()).resolves.toEqual({ accepted: true, turnId: 'continuation-turn' })
+    expect(order).toEqual(['admit', 'mirror', 'execute'])
+    expect(finalizeResponse).toHaveBeenCalledOnce()
+    expect(host.dispatch).toHaveBeenCalledOnce()
+  })
+
+  it('refuses execution and drops only its stream when the provider cannot prove mirror delivery', async () => {
+    const { host, send, postAsAuthor, transport } = await continuationFixture()
+    let executed = false
+    vi.mocked(host.dispatch).mockImplementation(async (_agent, _message, _integration, _context, _meta, options) => {
+      options?.onAdmission?.({ accepted: true })
+      executed = await options!.admissionWait!
+      return null
+    })
+    postAsAuthor.mockResolvedValue(undefined)
+    await expect(send()).resolves.toEqual({
+      accepted: false,
+      turnId: 'continuation-turn',
+      reason: 'integration_delivery_failed'
+    })
+    expect(executed).toBe(false)
+    expect(transport.probeWebchatStream(agentId, conversationId)).toEqual({
+      accepted: false,
+      reason: 'stream_not_found'
+    })
+  })
+
+  it('never mirrors a turn refused by the shared execution gate', async () => {
+    const { host, send, postAsAuthor } = await continuationFixture()
+    vi.mocked(host.dispatch).mockImplementation(async (_agent, _message, _integration, _context, _meta, options) => {
+      options?.onAdmission?.({ accepted: false, reason: 'draining' })
+      expect(await options?.admissionWait).toBe(false)
+      return null
+    })
+    await expect(send()).resolves.toMatchObject({ accepted: false, reason: 'draining' })
+    expect(postAsAuthor).not.toHaveBeenCalled()
+  })
+
+  it('continues a hook transcript once without requiring or invoking a platform integration', async () => {
+    const { host, send, connections, postAsAuthor } = await continuationFixture('hook')
+    connections.clear()
+    await expect(send()).resolves.toMatchObject({ accepted: true })
+    expect(host.dispatch).toHaveBeenCalledOnce()
+    const call = vi.mocked(host.dispatch).mock.calls[0]!
+    expect(call[1]).toMatchObject({
+      platform: 'hook',
+      channel: 'channel',
+      thread: 'thread',
+      transportScope: 'account'
+    })
+    expect(call[2]).toBeUndefined()
+    expect(call[3]?.continuation).toBeUndefined()
+    expect(postAsAuthor).not.toHaveBeenCalled()
   })
 })

@@ -17,17 +17,12 @@ import type {
   WebchatRemoteMcpEntitlement,
   WebchatRuntimeConfig
 } from '@agentconnect.md/protocol'
-import { continuableOrigin, originKindOf } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { webchatContinuationDecision } from '../router/routing-table.js'
 import { continuationScope } from './narrowed-scope.js'
 import type { RoutingRule } from '../router/routing-rule.js'
-import { SlackConnection } from '../slack/connection.js'
-import type { TelegramConnection } from '../telegram/connection.js'
-import type { DiscordConnection } from '../discord/connection.js'
-import type { FeishuConnection } from '../feishu/connection.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import { knownTimeZone } from '../messages/time-zone.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
@@ -41,6 +36,8 @@ import {
 } from '../session/chat-application.js'
 import { LifecycleCleanupBlockedError, type CallMeta, type Pending, type QueueEntry } from '../daemon/turn-types.js'
 import { appendWebchatTextRow } from './turn-output.js'
+import { ChatSessionContinuation, type ChatReplyConnection } from '../session/chat-continuation.js'
+import type { ChatDispatchOptions } from '../session/chat-turn.js'
 import {
   UUID_RE,
   WEBCHAT_REPLAY_MAX_BYTES,
@@ -73,24 +70,8 @@ export function webchatAuthorOf(op: {
   }
 }
 
-/** Any platform connection a continuation mirror can post through. */
-export type WebchatReplyConnection = SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
-
-/** Extra dispatch options the webchat transport needs; a subset of the daemon's own. */
-export interface WebchatDispatchOptions {
-  /** A rendezvous-backed activation must not go terminal without a durable row. */
-  requireDurable?: boolean
-  /** Stable target-scoped inbox id for one physical event delivered to several local agents. */
-  deliveryId?: string
-  /** Steer into the live turn or refuse `busy`; never queue (#1847). */
-  steerOnly?: boolean
-  /** Synchronous admission barrier, settled before any turn can start. */
-  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean; steered?: boolean }) => void
-  /** Hold an admitted entry before execution; false drops only that entry. */
-  admissionWait?: Promise<boolean>
-  /** Delay observed-inbound persistence until admissionWait succeeds. */
-  deferObservedInbound?: boolean
-}
+export type WebchatReplyConnection = ChatReplyConnection
+export type WebchatDispatchOptions = ChatDispatchOptions
 
 /** Exactly what the webchat transport touches on the Daemon — nothing wider. */
 export interface WebchatHost {
@@ -151,6 +132,7 @@ export class WebchatTransport {
   private readonly pendingSteerAdmissions = new Map<string, Promise<WebchatAck>>()
 
   private readonly application: ChatSessionApplication
+  private readonly continuation: ChatSessionContinuation
 
   constructor(
     private readonly host: WebchatHost,
@@ -163,6 +145,14 @@ export class WebchatTransport {
         queueFull: (key) =>
           host.inflight().has(key) && (host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION
       })
+    this.continuation = new ChatSessionContinuation(
+      {
+        ...host,
+        dispatch: (agentId, message, integrationId, context, options) =>
+          host.dispatch(agentId, message, integrationId, context, undefined, options)
+      },
+      this.application
+    )
   }
 
   dispose(): void {
@@ -313,41 +303,7 @@ export class WebchatTransport {
     return { accepted: true, turnId: stream.turnId, ...(verdict.steered ? { steered: true } : {}) }
   }
 
-  /** The live platform transport a chat-origin continuation mirrors through, plus the bot identity
-   *  the mirrored turn addresses. `undefined` ⇒ this session's integration is not connected here. */
-  private continuationIntegration(
-    agentId: string,
-    local: { platform: string; transportScope?: string | null }
-  ): { integrationId: string; conn: WebchatReplyConnection; botUserId?: string } | undefined {
-    const integrationId = this.host.integrationIdForSessionTransport(
-      agentId,
-      local.platform,
-      local.transportScope ?? undefined
-    )
-    const conn = integrationId ? this.host.connForIntegration(integrationId) : undefined
-    if (!integrationId || !conn) return undefined
-    const botUserId =
-      this.host.botUserIds()[integrationId] ?? this.host.resolveCpAgent(agentId, local.platform)?.botUserId
-    return { integrationId, conn, ...(botUserId ? { botUserId } : {}) }
-  }
-
-  /**
-   * Session-targeted continuation turn (webchat-cross-integration-continuation.md
-   * §5.2/§6.4/§9): dispatch one browser turn INTO an existing session on its own
-   * local coordinates — the `replyToSession` local shape with a human sender —
-   * with the webchat stream attached as a sink.
-   *
-   * A CHAT-origin session keeps its platform connection as a second sink: the
-   * human turn is mirrored to the origin thread BEFORE dispatch, so platform
-   * participants never miss input that changed the agent's context, and a failed
-   * mirror refuses the turn. The crash window between a delivered mirror and the
-   * committed dispatch is the ordinary projection-failure boundary (not atomic).
-   *
-   * A HOOK-origin session (GitHub, GitLab, a generic webhook) has no platform
-   * connection and no thread that would read a human turn, so the console is its
-   * only surface: no mirror, no renderer, and the browser stream is the whole
-   * output path — the same null-connection seam an ordinary webchat turn takes.
-   */
+  // Keep protocol stream ownership separate from shared continuation admission and mirroring.
   async dispatchWebchatContinuationTurn(
     agentId: string,
     chatId: string,
@@ -359,161 +315,26 @@ export class WebchatTransport {
     post?: { postId: string; at: number }
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
-    if (!this.host.agents().has(agentId)) {
-      const startFailure = this.host.startFailure(agentId)
-      if (startFailure) return { accepted: false, turnId, reason: 'start_failed', detail: startFailure }
-      return { accepted: false, turnId, reason: 'no_agent' }
-    }
-    // The console names the target session outwardly (session-concept.md §1.1). Resolve
-    // agent-scoped, and use ONLY the local row's coordinates. A miss means the CP verdict is
-    // stale (retention GC / metadata replacement) — fail closed.
-    const local = await this.host.store().getSessionByOutwardId(targetSessionId, agentId)
-    if (!local || !continuableOrigin(local.platform)) return { accepted: false, turnId, reason: 'not_found' }
-    if (this.host.paused(agentId)) return { accepted: false, turnId, reason: 'paused' }
-    if (this.host.safetyDraining(agentId)) return { accepted: false, turnId, reason: 'busy' }
-    if (this.host.draining() || this.host.agentDraining(agentId)) return { accepted: false, turnId, reason: 'draining' }
-    // Hook origin has nobody to mirror to and no transport to reach: `null` IS that console-only branch, `undefined` a chat session whose integration is not connected here.
-    const integration = originKindOf(local.platform) === 'hook' ? null : this.continuationIntegration(agentId, local)
-    if (integration === undefined) return { accepted: false, turnId, reason: 'integration_offline' }
-    await this.application.rememberAuthorName(author)
-    // One console line sent to several hook members is one post (#2500): its shared id and time let co-hosted members share a row and the merged view dedupe the rest; a chat session keeps its mirror-ordered row.
-    const shared = integration === null ? post : undefined
-    const msg: NormalizedMessage = {
-      msgId: `webchat-cont:${chatId}:${turnId}`,
-      traceId: turnId,
-      source: 'user',
-      platform: local.platform,
-      channel: local.channel,
-      ...(local.thread ? { thread: local.thread } : {}),
-      ...(local.transportScope ? { transportScope: local.transportScope } : {}),
-      // Ordered as NEW content in the origin session (the replyToSession rule).
-      transcriptTs: shared ? String(shared.at) : monotonicTs(),
-      ...(shared ? { transcriptPostId: shared.postId } : {}),
-      sender: { id: author.id, isBot: false, name: author.name },
-      ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
+    const prepared = await this.continuation.prepare({
+      agentId,
+      conversationId: chatId,
+      targetSessionId,
+      turnId,
       text,
-      mentionedBots: integration?.botUserId ? [integration.botUserId] : [],
-      isDm: local.conversationKind === 'dm',
-      trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
-      // The CP authorized THIS session and the key below must rebuild its stored one, so the source gate reads the turn as the session's own; on the MESSAGE, so a restart replays it with the same standing.
-      adoptedSession: true
-    }
-    // The synthesized coordinates must rebuild the EXACT stored key, or dispatch
-    // would mint a sibling session instead of continuing this one.
-    const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
-    if (key !== local.key) {
-      this.host.warn(`webchat continuation: key mismatch for session ${targetSessionId} (${key} != ${local.key})`)
-      return { accepted: false, turnId, reason: 'not_found' }
-    }
-    // Serial/queue preflight on the TARGET session's own key.
-    if (this.host.inflight().has(key) && (this.host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
-      return { accepted: false, turnId, reason: 'busy' }
-    }
+      author,
+      post
+    })
+    if (!prepared.accepted) return { ...prepared, turnId }
+    const admission = this.application.checkAdmission(prepared.turn)
+    if (!admission.accepted) return { ...admission, turnId }
     this.pruneWebchatStreams()
-    if (this.webchatStreams.has(this.webchatStreamKey(turnId, agentId))) {
+    if (this.webchatStreams.has(this.webchatStreamKey(turnId, agentId)))
       return { accepted: false, turnId, reason: 'busy' }
-    }
     const stream = this.createWebchatTurnStream(agentId, chatId, turnId, sink)
-    // Console-only: leaving `continuation` unset takes the ordinary webchat shape — the reply is recorded once into THIS session's transcript and streamed to the browser, with no renderer and no mirror to admit behind.
-    if (!integration) {
-      void this.host.dispatch(agentId, msg, undefined, stream).catch((err) => {
-        if (!(err instanceof LifecycleCleanupBlockedError))
-          this.host.error(`webchat continuation dispatch failed for agent "${agentId}": ${formatErr(err)}`)
-      })
-      this.host.info(
-        `webchat continuation: ${author.name} → hook session ${local.key} (conversation ${chatId}, turn ${turnId})`
-      )
-      return { accepted: true, turnId }
-    }
-    const conn = integration.conn
-    stream.continuation = true
-    let settleMirror!: (mirrored: boolean) => void
-    const mirrorAdmission = new Promise<boolean>((resolve) => {
-      settleMirror = resolve
-    })
-    let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
-    const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
-      settleAdmission = resolve
-    })
-    const turn = this.host.dispatch(agentId, msg, integration.integrationId, stream, undefined, {
-      admissionWait: mirrorAdmission,
-      deferObservedInbound: true,
-      onAdmission: (result) => settleAdmission(result)
-    })
-    void turn.catch((err) => {
-      if (!(err instanceof LifecycleCleanupBlockedError))
-        this.host.error(`webchat continuation dispatch failed for agent "${agentId}": ${formatErr(err)}`)
-      // A dispatch that rejected before admission settled must still release this barrier.
-      settleAdmission({ accepted: false, reason: 'error' })
-    })
-    const admission = await admitted
-    if (!admission.accepted) {
-      settleMirror(false)
+    const verdict = await this.continuation.dispatch(prepared.turn, stream, () =>
       this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
-      return { accepted: false, turnId, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
-    }
-    // Admission owns a serial-queue slot before mirroring and waits for its result before execution.
-    // Slack posts the bare body under the author's own name and avatar and falls back to the
-    // attributed body atomically when it cannot customize the identity; every other platform
-    // posts the attributed body, so the human's words are never rendered as the agent's.
-    const attributedText = `[${author.name} via console] ${text}`
-    // The mirror takes the SAME two-step shape an ordinary agent reply does:
-    // an attributed body post, then a finalizing chat.update stamping the
-    // trusted routing claim (author = the target agent, root depth, unaddressed
-    // final). The `message_changed` finalization is the ONE event every Slack
-    // ingress admits before its own-bot echo suppression, so same-app/shared-bot
-    // participants route it exactly like different-app observers do: thread
-    // peers activate exactly-once via the durable rendezvous under their own
-    // connection-fenced rules, and the author is excluded (it gets the targeted
-    // dispatch). Platforms without a metadata claim degrade to transcript-only
-    // peers, like agent replies there.
-    let slackMirror: { conn: SlackConnection; ts: string; text: string } | undefined
-    try {
-      // A post resolves undefined when the provider swallows a send failure
-      // (Discord/Feishu) or lands nothing (Slack) — only a returned message id
-      // proves the mirror is visible, so undefined takes the failure path too.
-      let mirrorId: string | undefined
-      if (local.platform === 'slack') {
-        const slackConn = conn as SlackConnection
-        const landed = await slackConn.postAsAuthor(
-          local.channel,
-          local.thread || undefined,
-          { text, attributedText },
-          { name: author.name, ...(author.pictureUrl ? { iconUrl: author.pictureUrl } : {}) },
-          { agentAuthorId: agentId }
-        )
-        mirrorId = landed?.ts
-        if (landed) slackMirror = { conn: slackConn, ts: landed.ts, text: landed.text }
-      } else {
-        mirrorId = await conn.postMessage(local.channel, attributedText, local.thread || undefined)
-      }
-      if (!mirrorId) throw new Error('provider returned no message id')
-      settleMirror(true)
-    } catch (err) {
-      this.host.warn(`webchat continuation: mirror post failed for ${local.key}: ${formatErr(err)}`)
-      this.removeWebchatStream(this.webchatStreamKey(turnId, agentId), stream)
-      settleMirror(false)
-      return { accepted: false, turnId, reason: 'integration_delivery_failed' }
-    }
-    // Routing finalization is best-effort AFTER the proven post, mirroring
-    // turn-output's contract: a failed update degrades to unrouted peers,
-    // never to a hidden or mis-routed input. Duck-typed for test fakes.
-    if (slackMirror && typeof slackMirror.conn.finalizeResponse === 'function') {
-      const finalized = await slackMirror.conn.finalizeResponse(
-        local.channel,
-        slackMirror.ts,
-        [{ type: 'markdown', text: slackMirror.text }],
-        slackMirror.text,
-        agentId,
-        { responseId: msg.msgId, deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
-      )
-      if (!finalized)
-        this.host.warn(`webchat continuation: mirror finalization failed for ${local.key} (peers unrouted)`)
-    }
-    this.host.info(
-      `webchat continuation: ${author.name} → session ${local.key} (conversation ${chatId}, turn ${turnId})`
     )
-    return { accepted: true, turnId }
+    return { ...verdict, turnId }
   }
 
   /** Handle a webchat conversation close (relay `close` op). No live resources are
