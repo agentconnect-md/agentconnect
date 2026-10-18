@@ -29,13 +29,15 @@ import { ErrorDto } from '../dto/index.js'
 import { webchatAuthorIdentity } from '../../registry/agentChatKeyVerification.js'
 import { everyTurnReachesItsContent as turnsReachContent } from '../../registry/webchatVerification.js'
 import { Tag } from '../plugins/openapi.js'
+import { WebchatProtocol, WebchatAttachmentDto, webchatAttachment } from '../webchat-attachment.js'
 
 const Params = z.object({ orgId: z.string(), agentId: z.string().uuid() })
 const Body = z.object({
+  protocol: WebchatProtocol.optional(),
   // Resume an existing conversation; omitted ⇒ the CP mints a fresh id.
   conversationId: z.string().uuid().optional()
 })
-const WebchatTokenDto = z.object({
+const WebchatTokenDto = WebchatAttachmentDto.extend({
   token: z.string(),
   relayUrl: z.string(),
   conversationId: z.string(),
@@ -55,6 +57,7 @@ const WEBCHAT_ROSTER_CAP = 8
 // entry = primary, webchat-multi-agents.md §3.1), `conversationId` resumes.
 const ConversationBody = z
   .object({
+    protocol: WebchatProtocol.optional(),
     conversationId: z.string().uuid().optional(),
     agentIds: z.array(z.string().uuid()).min(1).max(8).optional()
   })
@@ -171,6 +174,11 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     }
     const everyTurnReachesItsContent = (orgId: OrgId, currentSessionIds: Array<SessionId | null>) =>
       turnsReachContent(contentReach, orgId, currentSessionIds)
+    const AHP_UNAVAILABLE = {
+      error: 'Service Unavailable',
+      statusCode: 503,
+      message: 'AHP attachment is not available for every participant'
+    }
     const AGENT_MOVED = { error: 'Conflict', statusCode: 409, message: 'the agent moved since this conversation ran' }
 
     r.post(
@@ -215,9 +223,16 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           if (!(await everyTurnReachesItsContent(agent.orgId, resumable.currentSessionIds))) {
             return reply.code(409).send(AGENT_MOVED)
           }
-        } else {
-          await deps.repos.webchatConversation.create(binding)
         }
+        const attachment = await webchatAttachment(deps, {
+          orgId: agent.orgId,
+          primaryAgentId: agent.id,
+          conversationId,
+          protocol: req.body.protocol,
+          ...(req.body.conversationId ? {} : { agentIds: [agent.id] })
+        })
+        if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
+        if (!req.body.conversationId) await deps.repos.webchatConversation.create(binding)
         const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
@@ -225,7 +240,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           orgId: agent.orgId,
           conversationId
         })
-        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
+        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString(), ...attachment })
       }
     )
 
@@ -244,6 +259,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
             'Mints a short-lived token the browser presents to the relay pool to continue an existing session from the console composer — a chat thread (the human turn is mirrored back to it) or a hook-origin session such as a GitHub or GitLab event, whose only surface is the console. Requires continuation authorization, un-purged content, a daemon that can still serve the session content (its recorder, or a live member of the shared store it was written to), and continuation-capable daemon and relay pool.',
           operationId: 'mintWebchatSessionToken',
           params: z.object({ orgId: z.string(), sessionId: z.string() }),
+          body: z.object({ protocol: WebchatProtocol.optional() }).nullish(),
           response: { 200: WebchatTokenDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
@@ -295,6 +311,21 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           s.id
         )
         const conversationPeers = await hookConversationPeers(req, s)
+        const ahpSelected = (req.body?.protocol ?? deps.config.WEBCHAT_PROTOCOL ?? 'legacy') === 'ahp'
+        const peerSessions = ahpSelected
+          ? await Promise.all(
+              conversationPeers.map((peer) => deps.repos.session.get(orgOf(req), SessionId(peer.sessionId)))
+            )
+          : []
+        if (peerSessions.some((peer) => !peer)) return refuse(409, 'conversation participant unavailable')
+        const attachment = await webchatAttachment(deps, {
+          orgId: agent.orgId,
+          primaryAgentId: agent.id,
+          conversationId,
+          protocol: req.body?.protocol,
+          agentIds: [agent.id, ...peerSessions.map((peer) => peer!.agentId)]
+        })
+        if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
         const { token, expiresAt } = await deps.webchatTokens.mint({
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
@@ -304,7 +335,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           ...(s.visibility === 'private' && s.ownerIdentity ? { privateSessionOwnerIdentity: s.ownerIdentity } : {}),
           ...(conversationPeers.length > 0 ? { conversationPeers } : {})
         })
-        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
+        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString(), ...attachment })
       }
     )
 
@@ -358,6 +389,13 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           if (!(await everyTurnReachesItsContent(orgId, resumable.currentSessionIds))) {
             return reply.code(409).send(AGENT_MOVED)
           }
+          const attachment = await webchatAttachment(deps, {
+            orgId,
+            primaryAgentId: primary.id,
+            conversationId,
+            protocol: req.body.protocol
+          })
+          if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
           const { token, expiresAt } = await deps.webchatTokens.mint({
             userId,
             ...(await authorIdentity(userId, req.principal!.email)),
@@ -365,7 +403,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
             orgId,
             conversationId
           })
-          return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
+          return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString(), ...attachment })
         }
 
         const agentIds = [...new Set(req.body.agentIds!)]
@@ -391,6 +429,14 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         }
         const conversationId = randomUUID()
         const [primary, ...members] = agents
+        const attachment = await webchatAttachment(deps, {
+          orgId,
+          primaryAgentId: primary!.id,
+          conversationId,
+          protocol: req.body.protocol,
+          agentIds
+        })
+        if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
         await deps.repos.webchatConversation.create(
           { conversationId, userId, agentId: primary!.id, orgId },
           members.map((a) => a.id)
@@ -402,7 +448,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           orgId,
           conversationId
         })
-        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString() })
+        return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString(), ...attachment })
       }
     )
 

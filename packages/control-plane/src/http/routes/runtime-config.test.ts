@@ -4,6 +4,21 @@ import { installZod } from '../plugins/zod.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
 
 describe('runtime config route', () => {
+  it('publishes the server-selected Webchat protocol without credentials', async () => {
+    const app = Fastify()
+    installZod(app)
+    await app.register(runtimeConfigRoutes({ webchatProtocol: 'ahp' }), { prefix: '/api/v1' })
+    const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
+    expect(response.json()).toEqual({
+      schemaVersion: '1',
+      webchatProtocol: 'ahp',
+      revision: null,
+      config: null,
+      fileTransfer: null
+    })
+    await app.close()
+  })
+
   it('returns only the explicit secret-free auth projection', async () => {
     const app = Fastify()
     installZod(app)
@@ -28,6 +43,7 @@ describe('runtime config route', () => {
     expect(response.statusCode).toBe(200)
     expect(response.json()).toEqual({
       schemaVersion: '1',
+      webchatProtocol: 'legacy',
       revision: 7,
       config: {
         auth: {
@@ -55,6 +71,7 @@ describe('runtime config route', () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
     expect(response.json()).toEqual({
       schemaVersion: '1',
+      webchatProtocol: 'legacy',
       revision: null,
       config: { auth: null, gitlab: { instanceUrl: 'https://gitlab.example.test' } },
       fileTransfer: null
@@ -66,7 +83,13 @@ describe('runtime config route', () => {
     installZod(app)
     await app.register(runtimeConfigRoutes({}), { prefix: '/api/v1' })
     const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
-    expect(response.json()).toEqual({ schemaVersion: '1', revision: null, config: null, fileTransfer: null })
+    expect(response.json()).toEqual({
+      schemaVersion: '1',
+      webchatProtocol: 'legacy',
+      revision: null,
+      config: null,
+      fileTransfer: null
+    })
   })
 
   it('tells the console it may transfer files, and the cap, without any other deployment config', async () => {
@@ -76,6 +99,7 @@ describe('runtime config route', () => {
     const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
     expect(response.json()).toEqual({
       schemaVersion: '1',
+      webchatProtocol: 'legacy',
       revision: null,
       config: null,
       fileTransfer: { maxBytes: 1024 }
