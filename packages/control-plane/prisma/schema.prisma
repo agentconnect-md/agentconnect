@@ -3900,7 +3900,7 @@ enum OrganizationKnowledgeKind {
 // What kind of writer an agent's record write came from (§15.2).
 enum OrganizationKnowledgeWriterKind {
   research
-  first_look   @map("first-look")
+  getting_to_know @map("getting-to-know")
   conversation
   person
 }

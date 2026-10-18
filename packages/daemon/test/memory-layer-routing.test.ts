@@ -22,7 +22,7 @@ import {
 import { openTestStore } from './store-support.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { appendCoordinate } from '../src/session/append-coordinate.js'
-import { firstLookCoordinate, researchCoordinate } from '../src/session/subsession-coordinate.js'
+import { gettingToKnowCoordinate, researchCoordinate } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const AGENT = 'bot-a'
@@ -153,15 +153,15 @@ const ROUNDS = {
   schedule: { source: 'cron', sender: { id: 'cron:daily', isBot: false }, isDm: false }
 }
 
-// assistant-mode.md §5.13: memory gets only what the place's long session writes from a first look's report.
-describe('a first look’s own session', () => {
+// assistant-mode.md §5.13: memory gets only what the place's long session writes from a getting-to-know task's report.
+describe('a getting-to-know task’s own session', () => {
   it('captures nothing, where the same place’s long session would', async () => {
     const { daemon, captured } = world({ snapshot: PUBLIC }, { assistant: true })
     expect(await captured()).toBeDefined()
     const rowOf = daemon.store.getSession
     daemon.store.getSession = vi.fn(async (k: string) => {
       const row = await rowOf(k)
-      return row && { ...row, thread: firstLookCoordinate('1') }
+      return row && { ...row, thread: gettingToKnowCoordinate('1') }
     })
     expect(await captured()).toBeUndefined()
   })
@@ -678,7 +678,7 @@ describe('the people directory, members.md in the shared layer', () => {
 
 // assistant-mode.md §5.17: a builder writes about the people whose messages its round read, in internal public channels only.
 describe("a directory builder's round", () => {
-  const LOOK = firstLookCoordinate('d-1')
+  const LOOK = gettingToKnowCoordinate('d-1')
   const CHECK = { ...ROUNDS.check, msgId: 'check-1' }
   function builder(place: Place) {
     const w = world(place)
@@ -728,7 +728,7 @@ describe("a directory builder's round", () => {
     expect(grant('C1', 300)).toBe(300)
   })
 
-  it('records nobody read in a private place, and refuses a first look there', async () => {
+  it('records nobody read in a private place, and refuses a getting-to-know task there', async () => {
     const b = builder({ snapshot: { isPrivate: true }, lookup: { isPrivate: true } })
     expect(await b.read(['U1'])).toBeUndefined()
     expect(await b.daemon.membersWriter(b.ctx)).toMatchObject({ kind: 'refused' })

@@ -573,7 +573,7 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
     userId: z.string().min(1),
     externallyShared: z.boolean().optional()
   }),
-  // The bot itself joined a channel; the owning daemon may take a first look (assistant-mode.md §5.13).
+  // The bot itself joined a channel; the owning daemon may take a getting-to-know task (assistant-mode.md §5.13).
   z.object({ kind: z.literal('bot-joined'), channelId: z.string().min(1), inviter: z.string().min(1).optional() }),
   z.object({ kind: z.literal('open-config'), triggerId: z.string().min(1) }),
   z.object({

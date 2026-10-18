@@ -72,7 +72,7 @@ export async function standingSummaryFor(
   // Follow-ups are internal, so a conversation shared with another organization is not told of them (#2979, B4).
   if (sharedWithOutsiders(agent, place)) return undefined
   const visibleFrom = { platform: place.platform, channel: place.channel, transportScope: place.transportScope ?? null }
-  // A first look is no commitment to remind anyone of (assistant-mode.md §5.13).
+  // A getting-to-know task is no commitment to remind anyone of (assistant-mode.md §5.13).
   const items = await ledger.list(agent.id, {
     status: ['active', 'waiting'],
     visibleFrom,

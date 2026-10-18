@@ -325,9 +325,9 @@ async function followUpOf(
     title: item.title,
     doneWhen: item.doneWhen,
     status,
-    // A first look waits for the scheduled-check slot, not a time it set (assistant-mode.md §5.13).
-    nextCheck: open && item.nextCheck !== null && !item.firstLook ? iso(item.nextCheck) : null,
-    ...(item.firstLook ? { firstLook: true } : {}),
+    // A getting-to-know task waits for the scheduled-check slot, not a time it set (assistant-mode.md §5.13).
+    nextCheck: open && item.nextCheck !== null && !item.gettingToKnow ? iso(item.nextCheck) : null,
+    ...(item.gettingToKnow ? { gettingToKnow: true } : {}),
     // What it watches and what started each check (assistant-mode.md §5.14).
     ...(item.watch
       ? {

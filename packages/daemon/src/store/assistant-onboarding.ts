@@ -4,7 +4,7 @@ import type { StoreQueryResult, StoreTx } from './store-database.js'
 /** `greeting` until research opens in the onboarding DM, then `researching`; `skipped` when nobody could be reached. */
 export type AssistantOnboardingState = 'greeting' | 'researching' | 'skipped'
 
-/** The daemon's own round after the first looks that ran at onboarding: still `pending`, `sent`, or `none` to send. */
+/** The daemon's own round after the getting-to-know tasks that ran at onboarding: still `pending`, `sent`, or `none` to send. */
 export type AssistantSecondRound = 'pending' | 'sent' | 'none'
 
 export interface AssistantOnboardingRow {
@@ -25,8 +25,8 @@ export interface AssistantOnboardingRow {
   /** Whom the hello addresses, and whether that is the person who switched the mode on. */
   person: string | null
   enabler: boolean
-  /** The first looks running at onboarding, by follow-up id; research's second round waits on them. */
-  firstLooks: string[]
+  /** The getting-to-know tasks running at onboarding, by follow-up id; research's second round waits on them. */
+  gettingToKnowTasks: string[]
   secondRound: AssistantSecondRound
   /** Which attempt the second round's submission is; a definite refusal moves to the next, so a freed slot is tried again. */
   secondRoundAttempt: number
@@ -50,7 +50,7 @@ export const ASSISTANT_ONBOARDING_SCHEMA = `
         taskKey TEXT,
         person TEXT,
         enabler INTEGER NOT NULL DEFAULT 0,
-        firstLooks TEXT NOT NULL DEFAULT '[]',
+        gettingToKnowTasks TEXT NOT NULL DEFAULT '[]',
         secondRound TEXT NOT NULL DEFAULT 'pending' CHECK (secondRound IN ('pending', 'sent', 'none')),
         secondRoundAttempt INTEGER NOT NULL DEFAULT 0,
         reason TEXT,
@@ -63,7 +63,7 @@ type Row = Record<string, unknown>
 
 const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value))
 
-function firstLooksOf(value: unknown): string[] {
+function gettingToKnowTasksOf(value: unknown): string[] {
   try {
     const parsed: unknown = JSON.parse(String(value ?? '[]'))
     return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
@@ -87,7 +87,7 @@ function rowOf(row: Row): AssistantOnboardingRow {
     taskKey: text(row.taskKey),
     person: text(row.person),
     enabler: Number(row.enabler ?? 0) === 1,
-    firstLooks: firstLooksOf(row.firstLooks),
+    gettingToKnowTasks: gettingToKnowTasksOf(row.gettingToKnowTasks),
     secondRound: String(row.secondRound ?? 'pending') as AssistantSecondRound,
     secondRoundAttempt: Number(row.secondRoundAttempt ?? 0),
     reason: text(row.reason),
@@ -115,7 +115,7 @@ export type AssistantOnboardingClaim = Pick<AssistantOnboardingRow, 'agentId' | 
       | 'taskKey'
       | 'person'
       | 'enabler'
-      | 'firstLooks'
+      | 'gettingToKnowTasks'
       | 'reason'
     >
   > & { state: 'greeting' | 'skipped'; now: number }
@@ -135,7 +135,7 @@ export class AssistantOnboardingLedger {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_onboarding
          (agentId, enabledAt, state, platform, channel, transportScope, integrationId, parentKey, parentThread,
-          parentSessionId, taskKey, person, enabler, firstLooks, secondRound, reason, createdAt, updatedAt)
+          parentSessionId, taskKey, person, enabler, gettingToKnowTasks, secondRound, reason, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.agentId,
@@ -151,7 +151,7 @@ export class AssistantOnboardingLedger {
         input.taskKey ?? null,
         input.person ?? null,
         input.enabler ? 1 : 0,
-        JSON.stringify(input.firstLooks ?? []),
+        JSON.stringify(input.gettingToKnowTasks ?? []),
         input.state === 'skipped' ? 'none' : 'pending',
         input.reason ?? null,
         input.now,

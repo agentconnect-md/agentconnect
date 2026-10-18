@@ -168,7 +168,7 @@ does not pretend to defend against effects it cannot defend against.
 
 Shipped (§5.13 "As shipped").
 
-- **It takes a first look.** Added to a channel or group chat, it reads that place once: the last
+- **It takes a getting-to-know task.** Added to a channel or group chat, it reads that place once: the last
   30 days or 500 messages, whichever is less, and nothing else. It remembers how the place works:
   what it is for, who decides what as people there say it, how requests are made, what recurs. It
   does not remember what is in flight, or anything about a person beyond their role there.
@@ -179,11 +179,11 @@ Shipped (§5.13 "As shipped").
 - **Nothing is taken without a yes.** Something someone is visibly waiting on may be offered as a
   follow-up; a regular rhythm may be offered as a timed check of the place.
 - **Only new places, by itself.** Places it was already in when assistant mode was switched on
-  get a first look only when someone there asks ("take a first look"), so switching the mode on
+  get a getting-to-know task only when someone there asks ("get to know this channel"), so switching the mode on
   posts nothing in old channels. Never in a 1:1 DM, not yet in a place shared with another
   organization, and only where the platform lets a bot read history (Slack, Discord, Lark/Feishu;
   not Telegram).
-- What it read and reported is on the first look's task page, for whoever may see that place.
+- What it read and reported is on the getting-to-know task's task page, for whoever may see that place.
 
 ### 1.10 What it knows about the organization
 
@@ -204,7 +204,7 @@ Proposed (§5.15).
   Knowledge page, one set for the whole organization (§5.16): About (a short summary first, then
   its products, how it works, and its repositories and systems), Channels (its places and what
   each is for) and People (who works on what, §1.11). Whatever learns something writes
-  them: a first look, a public channel where someone states a fact or corrects it, the research.
+  them: a getting-to-know task, a public channel where someone states a fact or corrects it, the research.
   The first agent switched into the mode researches once for the organization; one switched on
   later reads what exists. Every agent of the organization can find About and Channels;
   People is read by the assistant-mode agents unless an owner changes its readers. An owner
@@ -247,7 +247,7 @@ The terms as this design uses them, each with the section that defines it.
 | Delegated task              | A sub-session a session starts with `delegateTask`, messages with `messageTask` and stops with `stopTask`; that session is its owning session                    | §5.6                                                            |
 | Follow-up                   | A task of the place it was taken in, woken by time or by its place's message, each round of which is a check                                                     | §5.12                                                           |
 | Check                       | One read-only round of a follow-up: it records what it saw, when to look again, and at most a report                                                             | §5.9                                                            |
-| First look                  | A one-check follow-up the daemon takes when the agent joins a place or someone there asks: it reads the place once, writes what it learned to memory and reports | §5.13                                                           |
+| Getting-to-know task        | A one-check follow-up the daemon takes when the agent joins a place or someone there asks: it reads the place once, writes what it learned to memory and reports | §5.13                                                           |
 | Approved proposal           | Work the agent proposed with `propose` and a person approved, run once with the agent's own permissions                                                          | §5.10                                                           |
 | Report round                | A turn of a long session that delivers a task's report, which that session then speaks for                                                                       | §5.7                                                            |
 | The responsible user        | The member asked when no person is behind a draft, a proposal or a task's permission request; derived when asked, never stored                                   | §5.1                                                            |
@@ -758,7 +758,7 @@ member (below).
   confirms internal, the person's layer from their DM or console conversation, the place's own
   layer anywhere else. The shared layer therefore never holds what a DM, a private place or a
   place with outsiders said, unless a person in a DM or a private place asks on their own turn to
-  remember it for everyone; a check, a first look's or a task's report and a wake are refused that
+  remember it for everyone; a check, a getting-to-know task's or a task's report and a wake are refused that
   write, and a place with outsiders is refused it on every round. The
   per-person memory space this section planned for P1 is the person layer, built for every
   agent; "allow for this session" is gone for every agent. Runtime native memory must be
@@ -1126,8 +1126,8 @@ item, at most once per check; nothing else here changes.
 doneWhen, nextCheck? }` in place of `task`. Approving it takes that follow-up of the proposal's
 place, with the approver as its asker; the approver is someone who could ask the agent there, so the
 approval is the confirmation `followUp` requires. It runs no task and counts against no limit. A
-first look's report round also offers `propose`, at most three times, and its proposals point at the
-first look, whose having ended refuses none of them.
+getting-to-know task's report round also offers `propose`, at most three times, and its proposals point at the
+getting-to-know task, whose having ended refuses none of them.
 
 **The card** (Slack; _decided_ by the owner, 2026-10-17). It reads as the agent talking, since the
 bot is already its sender.
@@ -1362,17 +1362,17 @@ else, and nobody but its own conversation is told of it.
   carries no id, so it cannot be stopped from the console before its first check, and the page
   shows only the session it belongs to.
 
-### 5.13 First look
+### 5.13 Getting-to-know task
 
 **Status:** Shipped (2026-10-16). What is marked _decided_ is the product owner's (2026-10-16),
-who confirmed every recommendation below the same day. The first look, the read ports' topic,
+who confirmed every recommendation below the same day. The getting-to-know task, the read ports' topic,
 description and message links, and the `propose` changes ("Cards") have shipped. Pins are left out
 of v1 (§9 Q12), and Lark/Feishu's join waits for its module to listen for the bot being added (§9
 Q15). How it shipped is under "As shipped" at the end of this section. Since 2026-10-17 the first
 look writes memory itself (§5.15): what step 1 of the long session's handling did is now the task's.
 
 **Why.** Added to a channel, an assistant-mode agent does nothing until someone @-mentions it, and
-then knows nothing of how the place works. A first look reads the place once as the agent arrives,
+then knows nothing of how the place works. A getting-to-know task reads the place once as the agent arrives,
 remembers how it works, introduces the agent and offers at most three concrete ways to help. It is
 the first part of the agent's proactivity: a timed check of the place is offered through it as a
 follow-up (below), and waking on platform events is later work (§7).
@@ -1439,7 +1439,7 @@ source but its own place.
    - Something in flight becomes a follow-up (§5.12) only if someone is visibly waiting on it, and
      only as an offer, never taken silently.
 
-The first look's own session is excluded from memory capture, as a private session is, so neither
+The getting-to-know task's own session is excluded from memory capture, as a private session is, so neither
 per-turn distillation nor a dream mines what it read: memory gets only what the task writes
 explicitly (§5.15), and an explicit write is not capture. The report itself arrives as a report
 round of the long session, which a dream of the shared layer mines as it mines every report round
@@ -1449,7 +1449,7 @@ in such a channel.
 on 2026-10-17). The task's prompt, in English as product text:
 
 ```text
-You are taking a first look at {place}, a {kind} you were just added to. Read it, write
+You are getting to know {place}, a {kind} you were just added to. Read it, write
 what you learned to memory, and report back. You cannot post or react: only your memory writes
 and your report leave this task.
 
@@ -1465,7 +1465,7 @@ stop changing your picture. Read only this place.
 
 Then write to memory, without a layer argument:
 1. A topic file named after the place, dated, with a description header so MEMORY.md lists it.
-   If an earlier first look wrote one, update it. It says how the place works: what it is
+   If an earlier getting-to-know task wrote one, update it. It says how the place works: what it is
    for, in two sentences; who owns or decides what, as people here say it: roles, never
    opinions of people; how requests are made, where decisions are recorded, links people keep
    using, other bots and what they post. And what recurs: things that happened at least twice
@@ -1532,7 +1532,7 @@ The long session's handling arrives with the report, as a `[follow-up]` report's
 in a tool description:
 
 ```text
-When a first look reports back (it has already written what it learned to memory):
+When a getting-to-know task reports back (it has already written what it learned to memory):
 1. Post one short introduction in the place: who you are, one line on what you saw, how to
    reach you ({reach}).
 2. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a
@@ -1550,10 +1550,10 @@ Changed from the agreed drafts, each to fit a verified fact:
 - "Link every claim" adds "(its link, or its time where it has none)". History pages carry a link
   only where the platform can form one (below), and elsewhere a link the model made up would be
   worse than a time.
-- "Offer only what your tools can actually do" names the place's tools, `{tools}`. The first look
+- "Offer only what your tools can actually do" names the place's tools, `{tools}`. The getting-to-know task
   itself has only reads, so "your tools" would rule out everything.
 - A last line hands the answer back with `recordCheck`, a check's only output (§5.12).
-- A first look someone asked for in a place the agent was already in reads "a {kind} you are in"
+- A getting-to-know task someone asked for in a place the agent was already in reads "a {kind} you are in"
   instead of "you were just added to".
 - The introduction's "how to reach you" names the place's trigger, `{reach}` ("@-mention me", "I
   read every message"). A report round carries no mention to infer it from.
@@ -1578,13 +1578,13 @@ Changed from the agreed drafts, each to fit a verified fact:
 - What is new about the organization (_decided_ by the owner, 2026-10-17), first a report section,
   "About the organization", and since §5.15 the task's own merge into `organization.md`. Each
   place's file said how that place works, and nothing recorded what the organization does or aims
-  for. The task merges only what the file does not already say, so it builds up one first look at
+  for. The task merges only what the file does not already say, so it builds up one getting-to-know task at
   a time.
 - The task writes the organization files only where the conversation writes the shared layer: an
   internal public channel, the one place whose writes land in the layer every
   conversation reads. A private channel, a group chat or an external place gets no such step.
   Its content must never reach the shared layer, and its writes go to its own layer unless a
-  person asks to remember something for everyone. The name is fixed, so every first look updates
+  person asks to remember something for everyone. The name is fixed, so every getting-to-know task updates
   the same file and its one index line.
 - In that channel, the task also keeps the shared index short (_decided_ by the owner,
   2026-10-17). The shared `MEMORY.md` is injected into every session, and a line per public
@@ -1594,7 +1594,7 @@ Changed from the agreed drafts, each to fit a verified fact:
   `[[name]]`: nothing else points to it once it is out of the index. A later session of the place
   (after `!new` or a rollover) sees only the shared index, which leads it to `channels.md` and
   from there to its own notes. A place layer is unchanged: its file is that layer's only topic.
-- Several places' first looks can run at once, and a full rewrite of `channels.md`,
+- Several places' getting-to-know tasks can run at once, and a full rewrite of `channels.md`,
   `organization.md` or `members.md` would drop another place's update. So the task saves them only
   through the memory entry tools with the revision it read, and reads and merges again on a
   conflict. The
@@ -1603,15 +1603,15 @@ Changed from the agreed drafts, each to fit a verified fact:
   one included, is checked against the file's shape. A whole-file `writeMemory` is left to the
   prompt.
 
-**Machinery: a follow-up the daemon takes** (recommended). A first look is a follow-up of its place,
-marked as a first look, that the daemon takes instead of `followUp` and that ends after one check.
+**Machinery: a follow-up the daemon takes** (recommended). A getting-to-know task is a follow-up of its place,
+marked as a getting-to-know task, that the daemon takes instead of `followUp` and that ends after one check.
 It reuses the read-only check and its layers (§5.9), the one scheduled-check slot,
 `dailyCheckBudget`, backoff, recovery, the report path into the place's long session, and the
-console's follow-up rows, labelled "First look", in the Tasks tab, Activity and its own page. A new
+console's follow-up rows, labelled "Getting to know", in the Tasks tab, Activity and its own page. A new
 task kind would repeat all of that for a run that differs only in what the marker decides:
 
 - **Who takes it.** The daemon, on a join or a request (below). `followUp`'s confirmation protects
-  people from commitments made in their name; a first look commits to nothing and posts nothing.
+  people from commitments made in their name; a getting-to-know task commits to nothing and posts nothing.
 - **Its asker.** The person who invited the bot where the platform names one, else the person who
   asked for it, else nobody. It reads only its own place, which every turn may read (§5.5), so the
   asker changes nothing it reads.
@@ -1623,28 +1623,28 @@ task kind would repeat all of that for a run that differs only in what the marke
 
 Nothing found needs more than the marker. Outside the follow-up machinery, `propose` and the read
 ports change (below). A new place has no long session until its first message (§5.2), and a report
-needs one, so a first look's report opens it on the coordinate that first message would key.
+needs one, so a getting-to-know task's report opens it on the coordinate that first message would key.
 
 **Triggers** (recommended).
 
 - **A new join, automatically.** The platform reports that the bot itself joined a conversation,
   and the conversation becomes a place of an assistant-mode agent: its row is listed and not Off.
-  The daemon holding the agent's duty then takes a first look. A join that leaves the row Off takes
+  The daemon holding the agent's duty then takes a getting-to-know task. A join that leaves the row Off takes
   none, such as one a person confirmed so the agent could read or post there once ("Joining a public
   channel" in product-conventions.md) or a restricted agent's: §5.3 already says it is no place.
 - **Everything else, on request.** A place the agent was already in when the mode was switched on,
   a platform that reports no join, and a second look all wait for a person there to ask ("take a
-  first look"); the long session then calls `getToKnow`, a tool offered only to a place's long
-  session where a first look could run. Switching the mode on therefore posts no introduction in
+  getting-to-know task"); the long session then calls `getToKnow`, a tool offered only to a place's long
+  session where a getting-to-know task could run. Switching the mode on therefore posts no introduction in
   old channels, however many the agent is in.
 - A paused agent takes it on the join and runs it once resumed, as an overdue check does.
 
-**Platforms** (verified 2026-10-16). Whether a first look can run is the platform's declaration,
+**Platforms** (verified 2026-10-16). Whether a getting-to-know task can run is the platform's declaration,
 never its name ([integration-plugin-architecture.md](integration-plugin-architecture.md)): it runs
 only where the platform's read ports declare `channelHistory`. Thread replies, bookmarks and pins
 are read where their ports exist; the rest goes under "Not covered".
 
-| Platform        | Reports the bot's own join                    | History                          | Thread replies | `propose` card           | First look                                  |
+| Platform        | Reports the bot's own join                    | History                          | Thread replies | `propose` card           | Getting-to-know task                        |
 | --------------- | --------------------------------------------- | -------------------------------- | -------------- | ------------------------ | ------------------------------------------- |
 | Slack           | Yes: its own `member_joined_channel`, handled | Yes                              | Yes            | Yes, and one in a thread | On join and on request                      |
 | Discord         | No: a bot joins a server, not a channel       | Yes                              | No port        | No                       | On request                                  |
@@ -1666,26 +1666,26 @@ The read ports this adds, each declared by the platform's own module:
 - A connection callback for the bot's own join. Slack's handler already sees the event; a
   Lark/Feishu module would raise it from its bot-added event. Shipped for Slack as `onBotJoined`.
 
-**Repeats** (recommended). Once per place, automatically. The first look's follow-up row, kept like
+**Repeats** (recommended). Once per place, automatically. The getting-to-know task's follow-up row, kept like
 other settled rows until the agent is removed, records it per agent and place: a rejoin finds it and
 takes none, nor does switching the mode off and on take one. A person asks for another with `getToKnow`,
 which runs a new one; its handling updates the same topic file. One runs at a time per place, and
 asking while one runs is refused with that reason.
 
-**External places** (recommended): no first look in v1, automatic or requested, and `getToKnow` is
+**External places** (recommended): no getting-to-know task in v1, automatic or requested, and `getToKnow` is
 not offered there. A card in an external place goes to an internal member's DM (§5.5 "Drafts"), so
 its suggestions would leave the place, which output 3 exists to avoid; and what an introduction
-should tell people from outside is undecided (§9). A place that turns external while a first look
+should tell people from outside is undecided (§9). A place that turns external while a getting-to-know task
 runs gets a handling that posts nothing; what the task already wrote stays in the layer it was
 written to.
 
 **Cards** (verified, then recommended). Only Slack has a `propose` card surface (`DraftCardPort`);
 elsewhere a proposal is carded to the responsible user's DM or waits in Activity (§5.10). Slack's
 card takes a thread, as a proposal's card does today in a long session that lives in one, so a card
-under the introduction works. For a first look, `propose` changes in four ways:
+under the introduction works. For a getting-to-know task, `propose` changes in four ways:
 
 1. **Offered in the report round.** The place's long session is offered `propose` on the round that
-   delivers a first look's report, at most three times, and only where the platform has a card
+   delivers a getting-to-know task's report, at most three times, and only where the platform has a card
    surface; elsewhere step 3 is text, as above. Approvers and expiry are unchanged (§5.10): whoever
    could ask the agent in the place, for 24 hours.
 2. **Under the introduction.** The round's reply posts at the place's top level. The daemon holds
@@ -1698,10 +1698,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
    its card says it was taken. This is how something in flight becomes a follow-up, and how a
    "Recurring" rhythm becomes a timed check of the place: a follow-up whose checks each set the
    next one, not a cron.
-4. **The first look has ended.** Its proposals point at the first look's follow-up, which ends after
+4. **The getting-to-know task has ended.** Its proposals point at the getting-to-know task's follow-up, which ends after
    its check by design, so "its follow-up ended" refuses none of them; every other refusal stands.
 
-**Budget** (recommended). A first look counts as one check against `dailyCheckBudget`.
+**Budget** (recommended). A getting-to-know task counts as one check against `dailyCheckBudget`.
 
 - An automatic one waits for the agent's one scheduled-check slot, and takes it only when no
   follow-up's check is due, so an agent added to twenty channels at once delays no existing
@@ -1709,19 +1709,19 @@ under the introduction works. For a first look, `propose` changes in four ways:
 - A requested one starts at once, as a messaged check does; past the budget it is refused with the
   time the budget resets.
 - Its turn is bounded by the read cap above and the 1,500-word report.
-- Failures back off as a check's do. After five, an automatic first look ends without a word in the
+- Failures back off as a check's do. After five, an automatic getting-to-know task ends without a word in the
   place, its page saying why; a requested one is reported once, as a check is.
 
 **As shipped.** Choices the text above leaves open:
 
-- **The marker.** A first look is a follow-up row with `firstLook` set to `joined` or `requested`
+- **The marker.** A getting-to-know task is a follow-up row with `gettingToKnow` set to `joined` or `requested`
   (local store version 55). Its session is `subsession:check-look-<id>` in its place, a check's
   coordinate, so every rule of a check holds for it, and the coordinate alone narrows its tools,
   turns its reads to its own place and keeps its session out of memory capture and dreams. Its
-  title is "First look at <name>".
+  title is "Getting to know <name>".
 - **Its bounds.** A history row counts by its own time; a page that reaches past 30 days ends the
   read there. The 500 messages count history and thread replies together, per check, so a retry
-  after a failure starts again. A first look's reads take no `platform`, `integrationId` or other
+  after a failure starts again. A getting-to-know task's reads take no `platform`, `integrationId` or other
   `channel`.
 - **Its prompt.** `{place}` is the conversation's name in quotes, `{kind}` is public channel,
   private channel, group chat or channel, as the platform tells, and `{tools}` names the AgentConnect
@@ -1730,7 +1730,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
   Its second paragraph says the runtime's read-only mode restricts native tools only, and names the
   memory writes the task may make and `recordCheck` as outputs that mode leaves alone, as a check's
   last rule and distillation's and dreams' prompts already do. The task still runs in that mode
-  (§5.12), so its native shell and file tools stay read-only. Without the paragraph, a first look
+  (§5.12), so its native shell and file tools stay read-only. Without the paragraph, a getting-to-know task
   that also had the organization files to write sometimes read plan mode's reminder as forbidding
   every write, and ended with no memory written and no report handed back.
 - **A join.** It rides the genuine-join detection the agent's "Introduce on channel join" already
@@ -1742,10 +1742,10 @@ under the introduction works. For a first look, `propose` changes in four ways:
   Plane listing the conversation in the integration's session modes, as `append`; a join waits up
   to ten minutes for that, in memory, so a restart in between takes none. Lark/Feishu's bot-added
   event is not yet subscribed.
-- **The join introduction.** Where a first look will run for a join, the agent's "Introduce on
-  channel join" introduction to the other agents there is not sent: the first look's introduction
+- **The join introduction.** Where a getting-to-know task will run for a join, the agent's "Introduce on
+  channel join" introduction to the other agents there is not sent: the getting-to-know task's introduction
   replaces it. Where none will (not assistant mode, an external place, no history), it is sent as
-  before. Whether a first look will run is judged at the join; one that waits for a row the Control
+  before. Whether a getting-to-know task will run is judged at the join; one that waits for a row the Control
   Plane then lists as Off ends with neither.
 - **A request.** `getToKnow` is offered on a place's appending long session only and checked again
   on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
@@ -1755,24 +1755,24 @@ under the introduction works. For a first look, `propose` changes in four ways:
   (`index: false`, `channels.md`, `organization.md`, `members.md`) only where the place's memory
   layer is the shared one when the task starts. Where the place has no long session yet, the
   report opens one on its append coordinate as the place's own: a root session bound to the conversation's people as a person's
-  first message there would bind it, and not kept out of memory capture. The first look stays its
+  first message there would bind it, and not kept out of memory capture. The getting-to-know task stays its
   child; recorded as the opened session's creator, each named the other as its parent, and the
-  Control Plane never settled who may see either. Until that report, a first look in such a place
+  Control Plane never settled who may see either. Until that report, a getting-to-know task in such a place
   has no session to take its audience from, so it binds the place's own and is reported as the
   place's own row, still the long session's child: the place's people see it while it runs. The
-  place's name its lookup returns is kept, so both sessions are named by it. A first look that ends without handing back a
+  place's name its lookup returns is kept, so both sessions are named by it. A getting-to-know task that ends without handing back a
   report counts as a failed check, and one whose check is stopped ends as stopped.
-- **Messages.** `messageTask` to a first look is refused while it runs as well as after it ended,
+- **Messages.** `messageTask` to a getting-to-know task is refused while it runs as well as after it ended,
   since its one check takes none. `listTasks` lists it with kind `getting to know`, the name its
   tools and prompts use.
-- **Console.** Activity's follow-up row carries `firstLook: true` and no next check; the console
-  labels it "First look". Tool sizes: `getToKnow` 433 characters with a 76-byte input schema, and a
-  first look's `recordCheck` 244 characters with a 391-byte schema; since §5.15, 431 and 268
+- **Console.** Activity's follow-up row carries `gettingToKnow: true` and no next check; the console
+  labels it "Getting to know". Tool sizes: `getToKnow` 433 characters with a 76-byte input schema, and a
+  getting-to-know task's `recordCheck` 244 characters with a 391-byte schema; since §5.15, 431 and 268
   characters, the schemas unchanged.
 - **The report round's `propose`.** A session's tools are fixed when it starts, so `propose` is
   listed beside `getToKnow` on a place's long session wherever the place's integration has a card
-  surface, and a call is refused unless its turn is a first look's report round. The report's
-  delivery marks that round's call metadata with the first look, which a replay keeps. A round
+  surface, and a call is refused unless its turn is a getting-to-know task's report round. The report's
+  delivery marks that round's call metadata with the getting-to-know task, which a replay keeps. A round
   makes at most three proposals, numbered in the order made; a fourth is refused with that reason. A
   place no longer confirmed internal refuses them, since its cards would leave it.
 - **Holding the cards.** Each proposal is recorded at once, its approver chosen as §5.10 chooses
@@ -1794,13 +1794,13 @@ under the introduction works. For a first look, `propose` changes in four ways:
   settles it as succeeded when the follow-up exists, else as failed. The card shows what the
   follow-up will do (its `doneWhen`) and its first check (§5.10 "The card"), and once approved says
   it was taken. Local store version 56.
-- **A first check.** On a first look's report round, a follow-up form without `nextCheck` is
+- **A first check.** On a getting-to-know task's report round, a follow-up form without `nextCheck` is
   refused, saying it needs one since nothing else would wake it, and counts toward no limit. A
   follow-up runs only at its next check or when messaged, and nothing in the place messages one on
   its own. `followUp` itself still takes one with no schedule, for a person who says they will ask.
-- **Its proposals after it ended.** A proposal whose follow-up is a first look is not refused for
+- **Its proposals after it ended.** A proposal whose follow-up is a getting-to-know task is not refused for
   that follow-up having ended, in either form; every other refusal stands. An approved task's prompt
-  says it was proposed after the first look.
+  says it was proposed after the getting-to-know task.
 - **Console.** Activity's "Waiting for approval" and a webchat conversation's pending requests show
   a follow-up form as the follow-up it takes: its title, what counts as done and its first check.
   Approved in Activity, its outcome links to the conversation the follow-up belongs to, whose Tasks
@@ -1829,7 +1829,7 @@ the lag only by spending the budget faster. The event that would answer the ques
 AgentConnect, but only an agent with a hook rule on that repository hears of it, as a hook turn the
 follow-up never sees, and the session that opened a pull request, which is resumed on its reviews
 and failed checks to fix it ([codehost-pr-feedback.md](codehost-pr-feedback.md)) but never told it
-merged. Event wake is the third form of proactivity, after the first look (§5.13) and
+merged. Event wake is the third form of proactivity, after the getting-to-know task (§5.13) and
 timed checks (§5.12).
 
 **In one line.** A follow-up may name one pull request, merge request or issue it watches. An event
@@ -2320,20 +2320,20 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
 
 ### 5.15 Organization research and the organization files
 
-**Status:** Partly shipped. The organization files' shapes, a first look that writes memory
+**Status:** Partly shipped. The organization files' shapes, a getting-to-know task that writes memory
 itself and organization research shipped on 2026-10-17 (the two "As shipped" blocks below);
 `members.md`'s entry rules and the other writers are proposed. What is marked _decided_ is the product owner's, settled
 while reviewing this proposal on 2026-10-17: the organization files are the organization record,
 three knowledge entries shared by the organization's assistant-mode agents (§5.16, decided later
 the same day after live tests, replacing the memory-only decision taken that morning); there is no
-home session; a first look and organization research write memory themselves;
+home session; a getting-to-know task and organization research write memory themselves;
 and research is a delegated task of the conversation that switched the mode on. Everything else is
 a recommendation for the owner to confirm, and what is marked _undecided_ is listed in §9
 (Q22–Q31). The owner asked for research, the code-host reads included, to be built as written.
 
 **Why.**
 
-- **A first look is narrow by design.** One place, 30 days or 500 messages, about two minutes
+- **A getting-to-know task is narrow by design.** One place, 30 days or 500 messages, about two minutes
   (§5.13). What the organization does, what it sells and what its public docs say live in no single
   channel, so "what does this team build?" is answered from whatever was said in the room it is
   asked in.
@@ -2341,11 +2341,11 @@ a recommendation for the owner to confirm, and what is marked _undecided_ is lis
   say which systems exist and who owns them; its site and docs say what it does. No session reads
   them for memory.
 - **Who works on what has no file.** #3074 gave the shared layer `organization.md` and
-  `channels.md`, merged by each public channel's first look; people have nothing yet (§5.17).
+  `channels.md`, merged by each public channel's getting-to-know task; people have nothing yet (§5.17).
 
 **In one line.** Three files, `organization.md`, `channels.md` and `members.md`, written through
 the agent's shared layer and kept as the organization record in knowledge (§5.16), are written
-directly by whatever learns something: a first look, an internal public channel's long session on
+directly by whatever learns something: a getting-to-know task, an internal public channel's long session on
 a person's turn, and _organization research_, a delegated task of the conversation that first
 switched the mode on in the organization, which reads the organization's own sources, its code
 hosts and the public web once at that onboarding and again when that conversation asks. No reply
@@ -2367,25 +2367,25 @@ because each piece was machinery for a job the existing mechanisms already do:
 - **A place for editors' organization-level asks.** The one that remained, "research again", belongs
   to the onboarding conversation (below).
 - **Receiving research's result.** A session to merge it was needed only while research was
-  read-only. The owner decided it need not be: a first look's and research's output _is_ memory, and
+  read-only. The owner decided it need not be: a getting-to-know task's and research's output _is_ memory, and
   the read-only guarantee exists for follow-up checks, which promise to change nothing while nobody
   is around (§5.9).
 
 **The organization files** (the files and their shapes shipped 2026-10-17; their other writers are
 recommended).
 
-| File              | Holds                                                                                                                   | Written by                                                                                               |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `organization.md` | a summary of at most ten lines first, then products and customers, how the organization works, repositories and systems | first looks and research; a public channel's session on a person's turn; owners on the Knowledge page    |
-| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | first looks and research; `(inferred)` marks only a purpose guessed from the name, not read yet          |
-| `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                                    | first looks and research; a public channel's session on a person's turn; the person, for their own entry |
+| File              | Holds                                                                                                                   | Written by                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `organization.md` | a summary of at most ten lines first, then products and customers, how the organization works, repositories and systems | getting-to-know tasks and research; a public channel's session on a person's turn; owners on the Knowledge page    |
+| `channels.md`     | one line per place the agent is in, `- [<platform>] <name>: what it is for`                                             | getting-to-know tasks and research; `(inferred)` marks only a purpose guessed from the name, not read yet          |
+| `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                                    | getting-to-know tasks and research; a public channel's session on a person's turn; the person, for their own entry |
 
 - **Where.** The organization record (§5.16): an assistant-mode agent's sessions read and write
   them under these names in the shared layer, each with the one index line #3074 gives it, bodies
   read when a session needs them, and the daemon serves them from the record. They are shown on
   the Knowledge page under Handbook, with their revisions.
 - **Who writes.** Whatever learns the fact, with the memory tools every session has:
-  - a first look, into its place's layer, so into these files only where that place is an internal
+  - a getting-to-know task, into its place's layer, so into these files only where that place is an internal
     public channel (below);
   - an internal public channel's long session, when someone states a fact about the organization or
     a person's work, or corrects the agent. Its own layer is the shared one, so no `layer` is named.
@@ -2421,17 +2421,17 @@ recommended).
     by commas, then at most ten lines, each starting with `Role:`, `Works on:`, `Knows about:` or
     `Ask about:` and ending as a fact line.
 - **Merging.** The files are saved only through revision-checked entry writes, re-read and merged
-  on a conflict, as #3074 does, so several first looks at once lose nothing. Between two internal
+  on a conflict, as #3074 does, so several getting-to-know tasks at once lose nothing. Between two internal
   sources the newer wins; an internal source wins over the web, and a web statement an internal one
   contradicts stays beneath it as "Public sources say …" only when it adds something. "(inferred)"
   is kept.
 
-**A first look writes memory itself** (shipped 2026-10-17; it moved step 1 of §5.13's handling
+**A getting-to-know task writes memory itself** (shipped 2026-10-17; it moved step 1 of §5.13's handling
 into the task). The task holds the place's whole history; the long session gets a 1,500-word
 report. So the task writes what it learned, and the long session only speaks:
 
 - Its tools gain the memory writes, bound to its place's layer as every session's are: an internal
-  public channel's first look writes the shared layer, any other place's its place layer. It writes
+  public channel's getting-to-know task writes the shared layer, any other place's its place layer. It writes
   the place's topic file (`index: false` in the shared layer, #3074), and, where its place writes
   the shared layer, merges "About the organization" into `organization.md`, its line into
   `channels.md`, and the roles people there state into `members.md` (§5.17). Its prompt gains the
@@ -2442,7 +2442,7 @@ report. So the task writes what it learned, and the long session only speaks:
 - Unchanged: its coordinate, its bounds, its reads of its own place only, its capture exclusion (an
   explicit write is not capture), its budget, and when it runs. It still cannot post or react.
 
-**As shipped** (2026-10-17: the shapes and the first look's writes).
+**As shipped** (2026-10-17: the shapes and the getting-to-know task's writes).
 
 - **The check** is one module, `memory/organization-files.ts`: a parser per file that refuses with
   `<file> line <n> "<the line>" <what is wrong>. Nothing was saved; fix that line and save again.`,
@@ -2463,7 +2463,7 @@ report. So the task writes what it learned, and the long session only speaks:
   checked.
 - **Files written before.** A `channels.md` written by #3074's handling has lines with no source and
   date. Its next write is refused, naming the first such line, until each line carries them.
-- **The first look's tools** gain `writeMemory`, `createMemoryEntry` and `updateMemoryEntry`, never
+- **The getting-to-know task's tools** gain `writeMemory`, `createMemoryEntry` and `updateMemoryEntry`, never
   `deleteMemoryEntry`. Its writes resolve to its place's layer as its long session's would, so no
   binding changed, and its session stays out of capture.
 - **Its prompt** carries step 1, the place's topic file, everywhere, and step 2, the three shared
@@ -2472,8 +2472,9 @@ report. So the task writes what it learned, and the long session only speaks:
   place is for, which the introduction's "one line on what you saw" rests on, then "In flight",
   "Where I could help" and "Not covered". The handling keeps the introduction, the offers and the
   one question as steps 1 to 3; a place that turned external meanwhile is told to post nothing.
-- **Tool sizes.** `getToKnow` 431 characters (433 before) with its 76-byte schema; a first look's
-  `recordCheck` 268 characters (244 before) with its 391-byte schema. The memory writes it now gets
+- **Tool sizes.** `getToKnow` 431 characters (433 before) with its 76-byte schema; a getting-to-know task's
+  `recordCheck` 268 characters (244 before) with its 391-byte schema. Since the getting-to-know wording, `getToKnow` is
+  421 characters and `recordCheck` 278. The memory writes it now gets
   are unchanged: `writeMemory` 1,609 characters, `createMemoryEntry` 478 and `updateMemoryEntry` 399. Each is within Claude Code's 2,048-character cap.
 - **Not yet:** `members.md`'s entry rules (who an entry may be about, the opt-out marker, a person's
   own entry) and the memory guidance an internal public channel's session gets. Research shipped
@@ -2482,7 +2483,7 @@ report. So the task writes what it learned, and the long session only speaks:
 **Organization research** (recommended).
 
 - **Shape** (_decided_: a delegated task of the conversation that switched the mode on). The daemon
-  opens it as it opens a first look, owned by the DM long session of the person who switched the
+  opens it as it opens a getting-to-know task, owned by the DM long session of the person who switched the
   mode on: their DM with the agent on a platform they linked, else the responsible user's (§5.1);
   with neither, none runs (§9 Q24). Delegated tasks are every agent's (§5.6), so nothing is new in
   kind: an owning session, a round report, `messageTask` for another round in the retained context,
@@ -2491,7 +2492,7 @@ report. So the task writes what it learned, and the long session only speaks:
   - The DM, because onboarding is a conversation with the person who switched the mode on: a
     welcome, the research, a report with what it needs.
 - **The onboarding conversation.** Switching the mode on sends that DM's long session a
-  daemon-authored message, opening the session if there is none, as a first look's report opens its
+  daemon-authored message, opening the session if there is none, as a getting-to-know task's report opens its
   place's. Hello comes first, as a hard rule, before any research: who it is, that it will read the
   public channels it is in and look up the organization, and that it will be back in a few minutes.
   Then the task runs. When its round report arrives, the session says, in four parts: what it
@@ -2500,7 +2501,7 @@ report. So the task writes what it learned, and the long session only speaks:
 - **Again.** The person says so in that DM, and the session gives the task another round with
   `messageTask`; while a round runs, the message waits for the next (§5.6). A person who asks in a
   channel is pointed to that person or an editor. The daemon also gives the task one more round of
-  its own, within a day of onboarding, once the first looks that were running then have reported,
+  its own, within a day of onboarding, once the getting-to-know tasks that were running then have reported,
   so research reads what they wrote; a source still empty after that waits for the next ask.
   Periodic rounds are _undecided_ (§9 Q25).
 - **Memory binding.** A DM's task writes the person layer; research must write the shared layer.
@@ -2533,7 +2534,7 @@ report. So the task writes what it learned, and the long session only speaks:
   history (sixty-fourth revision): the last 30 days or 500 messages of each channel per round,
   threads included, to learn who works on what and to confirm what each channel is for. Only a
   channel the bot is already in; research never joins one, and a private, group or shared channel
-  is refused. A place's first look still owns its place file and its introduction.
+  is refused. A place's getting-to-know task still owns its place file and its introduction.
 - The code hosts the organization connected, within the agent's own access (Code hosts, below).
 - The public web: the organization's site, docs, blog and news. It starts from hints the daemon
   passes it: the organization's name in AgentConnect, its chat workspaces' names, the email domains
@@ -2650,7 +2651,7 @@ every conversation. Four guards:
   the local time (§5.4 ④): "Organization research is running since 14:05; what is known about the
   organization may be incomplete." A question about the organization meanwhile is answered
   with what is known, saying plainly that research is still running.
-- A first look does not wait for research, nor research for first looks: research gets its second
+- A getting-to-know task does not wait for research, nor research for getting-to-know tasks: research gets its second
   round once they have reported (above).
 
 **Budget** (recommended). Research counts against `maxConcurrentSubsessions` as a delegated task,
@@ -2711,9 +2712,9 @@ any task's failure is (§5.7), in the DM.
   always shared.
 - **The prompt** is the one above, with the files' shapes, the sources its tools reach and the
   hints filled by the daemon; one without a code-host read says so under what it could not read.
-- **The second round.** At onboarding the daemon records the first looks running then. Within a
+- **The second round.** At onboarding the daemon records the getting-to-know tasks running then. Within a
   day, once none of them still runs and research's own round has ended, it messages the task
-  once, as the owning session would, to read what they wrote; with no first look running at
+  once, as the owning session would, to read what they wrote; with no getting-to-know task running at
   onboarding there is none.
 - **The prelude line** rides every turn of a non-task session of the agent while a research round
   is open, right after the local time and in its zone: "Organization research is running since
@@ -2789,13 +2790,13 @@ it does, from a fixed set or by its own choice, and how many.
 
 **Rollout** (recommended).
 
-1. #3074's per-place merge, shipped; its step 1 moved into the first look's task in step 2.
-2. Daemon: the organization files' shapes on the write path, and the first look's memory writes
+1. #3074's per-place merge, shipped; its step 1 moved into the getting-to-know task's task in step 2.
+2. Daemon: the organization files' shapes on the write path, and the getting-to-know task's memory writes
    with its handling without step 1, shipped (2026-10-17); `members.md`'s entry rules and §5.17's
    person-scoped reads and writes, to come.
 3. Research: the onboarding message and the research-marked delegated task, its shared-layer
    binding and credential-less launch, the code-host bridge reads and the read grant's
-   `pull_requests: read`, the prelude line, and the second round after first looks, shipped
+   `pull_requests: read`, the prelude line, and the second round after getting-to-know tasks, shipped
    (2026-10-17), with each runtime's web tools checked live under the mode ("Web access").
 
 4. The organization record in knowledge (§5.16), in its three changes: the files leave each
@@ -2837,12 +2838,12 @@ first entry **About**; this design keeps "the organization record" as its term f
 | People   | `members.md`      | one entry per person: role, works on, knows about, ask about (§5.17)                                        | `selected`: the organization's assistant-mode agents, until edited by hand | withheld in a conversation with people from outside, whatever its visibility |
 
 - **One set per organization**, not per agent. Every assistant-mode agent writes the same three
-  entries, and the revision-checked merges that let several first looks write one file (§5.15
+  entries, and the revision-checked merges that let several getting-to-know tasks write one file (§5.15
   "Merging") are what let several agents write one record.
 - **The shapes, sources and dates, the people-directory rules and the opt-out are unchanged**
   (§5.15 "Shapes", §5.17). The record is the same three files with a different home.
 - **Channels keeps purposes only** (_decided_). Its lines name no agent's place files: those
-  stay in each agent's memory, written by its own first looks, and the `[[name]]` link a first
+  stay in each agent's memory, written by its own getting-to-know tasks, and the `[[name]]` link a first
   look adds today is dropped from the record's line. A line reads
   `- [slack] release: release trains and freezes (#release, 2026-10-17)`.
 
@@ -2892,13 +2893,13 @@ result. A conversation
 whose audience cannot be told yet, as right after a restart before the platform answers, is
 treated as having outsiders, the same fail-closed reading the memory layers take for an
 unconfirmed channel. A DM never turns external (§5.3), so the directory is always read there. A
-first look, a check or a report round takes its place's audience.
+getting-to-know task, a check or a report round takes its place's audience.
 
 **The write path** (_decided_). Only these three entries are written directly by agents; every
 other knowledge entry keeps the suggestion-and-review path, with no agent publish tool
 (knowledge design §2). The agents write them through the memory tools they have,
 `createMemoryEntry`, `updateMemoryEntry`, `listMemoryEntries` and `getMemoryEntry`, under the
-three names in the shared layer, exactly as they do today: research and first looks write them
+three names in the shared layer, exactly as they do today: research and getting-to-know tasks write them
 bound to the shared layer, an internal public channel's session writes them on a person's turn, a
 person writes their own People entry from their DM, and every rule of §5.15 and §5.17 keeps
 running on the daemon, which knows the turn's people, before a write leaves it. What changes is
@@ -2911,7 +2912,7 @@ where the write lands.
   entry's revision is the knowledge revision: `updateMemoryEntry` sends the revision the model
   read, the Control Plane refuses a stale one with the current entry, and the daemon re-reads and
   merges as it does for a shared-layer conflict today, so the tool behaves as before. Each write
-  records its writer kind on the revision, `research`, `first-look`, `conversation` or `person`,
+  records its writer kind on the revision, `research`, `getting-to-know`, `conversation` or `person`,
   with the agent, in the provenance the knowledge design already keeps per revision (`source`
   gains `agent` beside `manual` and `dream`). The Control Plane proves the agent is placed on the
   daemon and is in assistant mode, runs the shape check again as defence in depth, and otherwise
@@ -2944,7 +2945,7 @@ A daemon that reads `research: false` greets the person as it does today, but th
 hello says the organization record exists, names the agent that researched it and when, and that
 this agent has read it; it opens no research task, and "research again" in that DM is pointed to
 the agent that holds the research task. The claiming agent keeps everything §5.15 gives research:
-the task, its rounds on request and the daemon's second round after first looks. Whether any
+the task, its rounds on request and the daemon's second round after getting-to-know tasks. Whether any
 assistant-mode agent's DM may later ask for a round of its own is _undecided_ (§9 Q32).
 
 **Injection** (_decided_). An assistant-mode agent keeps the standing injection of the three
@@ -3141,7 +3142,7 @@ smallest choice made for it:
   one. The record keeps the text without a frontmatter header. `writeMemory` of the three names is
   refused with the entry tools' procedure, and `deleteMemoryEntry` with "remove the lines
   instead".
-- **Writer kinds**: research, a first look, a person's own conversation (`person`) and any other
+- **Writer kinds**: research, a getting-to-know task, a person's own conversation (`person`) and any other
   conversation (`conversation`). The daily leaving sweep writes as `conversation`, and a person's
   relinking as `person`.
 - **Who reads People.** People is read only where the audience is confirmed to be the
@@ -3213,12 +3214,12 @@ could keep, so this section says what one may hold, who sees it, and how its sub
 
 **Two tiers** (recommended).
 
-|            | The directory: People, written as `members.md`                                                                  | A person's own layer                                                                                                |
-| ---------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Holds      | per person: role, what they work on, what they know about, who to ask for what                                  | what the agent learns in that person's own DM or console conversation: preferences, how they like to be told things |
-| Built from | internal public channels, the code hosts' ownership and reviews, organization knowledge, the person's own edits | that person's own DMs and console conversations, as today (product conventions, "Memory layers")                    |
-| Read       | by the agents People is visible to (its assistant-mode agents by default), never with outsiders present (§5.16) | only in that person's own DM or console conversation                                                                |
-| Written by | first looks, research, and public channels' sessions on a person's turn; the person, for their own entry        | that person's sessions, as today                                                                                    |
+|            | The directory: People, written as `members.md`                                                                     | A person's own layer                                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| Holds      | per person: role, what they work on, what they know about, who to ask for what                                     | what the agent learns in that person's own DM or console conversation: preferences, how they like to be told things |
+| Built from | internal public channels, the code hosts' ownership and reviews, organization knowledge, the person's own edits    | that person's own DMs and console conversations, as today (product conventions, "Memory layers")                    |
+| Read       | by the agents People is visible to (its assistant-mode agents by default), never with outsiders present (§5.16)    | only in that person's own DM or console conversation                                                                |
+| Written by | getting-to-know tasks, research, and public channels' sessions on a person's turn; the person, for their own entry | that person's sessions, as today                                                                                    |
 
 - **The person layer never feeds the directory**, by default or on a dream: what someone said in
   their own DM stays theirs. A person who wants a work fact in their entry writes it there
@@ -3237,7 +3238,7 @@ could keep, so this section says what one may hold, who sees it, and how its sub
   review"), sensitive personal attributes (health, family, religion, politics, ethnicity,
   sexuality, finances, immigration status, where they live), absences and their reasons, or
   anything from a private place.
-- **The prompt** carries both lists wherever an entry is written: the first look's prompt,
+- **The prompt** carries both lists wherever an entry is written: the getting-to-know task's prompt,
   research's prompt, and the memory guidance an internal public channel's session gets.
 - **The write** keeps the entry's shape. An entry is a heading with the person's display name and
   handles, ending in their identity key in backticks (Identity, below), then at most ten lines in four fields, each ending in its source and date: `Role:`,
@@ -3246,7 +3247,7 @@ could keep, so this section says what one may hold, who sees it, and how its sub
   internal and public, or a repository the agent may not read. The entry's person must be a member
   (the lookup of §5.3) and not opted out (below); on a conversation's turn they must also be on
   it, a sender or someone a message mentions, so the model cannot write about someone who is not
-  there. A first look and research, which no turn carries people for, write only about the
+  there. A getting-to-know task and research, which no turn carries people for, write only about the
   people whose messages their round read, by the places they read them in. A shape cannot see an opinion phrased as a fact. That
   residual is accepted, and the prompt and the person's own view of their entry guard it. The
   entry's shape is checked since 2026-10-17 (§5.15 "As shipped"), and the rules on its person since
@@ -3262,7 +3263,7 @@ Ask about: release dates and freezes (#release-train, 2026-10-15) (inferred)
 
 **How it is built** (recommended).
 
-- **As the agent goes.** A first look in an internal public channel writes the roles people there
+- **As the agent goes.** A getting-to-know task in an internal public channel writes the roles people there
   state (§5.15). That channel's long session writes a work fact someone states in conversation
   ("@alice now owns billing") on that turn, sourced `self` when the person said it of themselves
   and by the place's name otherwise, with the checks above. Organization research adds what the
@@ -3370,17 +3371,17 @@ is not built.
   field of the normalized message that Slack, Discord and Lark/Feishu fill. A builder writes with
   no turn to be on (below). A distillation, a dream, a report round, a check, a schedule, another agent's message, a
   private place and a place with outsiders are refused. Every refusal ends "Nothing was saved."
-- **A builder** (sixty-fourth revision) is a first look of an internal public channel, or
+- **A builder** (sixty-fourth revision) is a getting-to-know task of an internal public channel, or
   organization research. An entry it adds must be about someone whose messages its round read,
   and every line it adds is sourced by a place where it read them; an entry already there also
   keeps taking the code-host and knowledge sources it had. `self` is never a builder's source.
   Its round is its session and the turn it is on: each history read of an internal public channel
   records the people who typed there, by every key they are known by, and shows each one's key as
   `senderKey`; a bot's or an agent's message, and a private, group or external place, record no
-  one. A refusal lists the round's people and where it read them. A first look of any other place
+  one. A refusal lists the round's people and where it read them. A getting-to-know task of any other place
   is refused like that place. Research reads a bounded slice of each internal public channel the
   bot is in (§5.15 "What it reads"), so it adds the people of the channels the bot was in before
-  the mode was turned on, which no first look reads.
+  the mode was turned on, which no getting-to-know task reads.
 - **A person's own conversation.** Their DM or console conversation of an assistant-mode agent gets
   one standing line naming their key, re-asserted on resume. Writing with `layer: "shared"` on
   their own turn, it changes their entry alone, sourced `self`, under their console key when they
@@ -3446,16 +3447,16 @@ is not built.
 
 ## 7. Phases
 
-| Phase                             | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prerequisites                     | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                                                                                                                                                                                                                                                                                                  |
-| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `getToKnow` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Organization research and files   | §5.15–§5.17. Shipped (2026-10-17): the shapes of three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), checked on every write, and first looks that write them. Proposed: the files also written directly by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode. Revised (sixty-ninth revision): the three files become the organization record, knowledge entries with agent visibility, one set per organization (§5.16) |
-| P2 — cost and events              | Event wake (§5.14, being built): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Phase                                 | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prerequisites                         | §4.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **P0a — continuity and one mind**     | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **P0b — tasks**                       | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| P1 — while nobody is around           | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                                                                                                                                                                                                                                                                                                            |
+| Getting-to-know task (partly shipped) | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `getToKnow` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Organization research and files       | §5.15–§5.17. Shipped (2026-10-17): the shapes of three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), checked on every write, and getting-to-know tasks that write them. Proposed: the files also written directly by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode. Revised (sixty-ninth revision): the three files become the organization record, knowledge entries with agent visibility, one set per organization (§5.16) |
+| P2 — cost and events                  | Event wake (§5.14, being built): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| P3                                    | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ---
 
@@ -3517,19 +3518,19 @@ is not built.
     rules ([session-concept.md](session-concept.md) §2.3). Claude applies them on load and gets no
     block. A session whose context changes while its runtime stays up keeps what it has until it
     next resumes.
-11. **First look in external places** (§5.13): none in v1. Whether to allow one on request, with its
+11. **Getting-to-know task in external places** (§5.13): none in v1. Whether to allow one on request, with its
     suggestions as text in the place, once what an introduction may tell people from outside is
     decided.
 12. **Slack pins** (§5.13): reading them needs `pins:read`, a scope every workspace must grant again.
-    Whether to add it with the first look, or ship without pins and list them under "Not covered".
+    Whether to add it with the getting-to-know task, or ship without pins and list them under "Not covered".
     Decided 2026-10-16: v1 ships without pins.
-13. **The first look's window and threshold** (§5.13): whether 30 days or 500 messages, and
-    "resting on two or more messages", give useful first looks. Measure one first look's cost and the
+13. **The getting-to-know task's window and threshold** (§5.13): whether 30 days or 500 messages, and
+    "resting on two or more messages", give useful getting-to-know tasks. Measure one getting-to-know task's cost and the
     share that offer nothing before widening either.
 14. **Group DMs on Slack** (§5.13): whether Slack reports the bot added to a group DM as its own
-    `member_joined_channel`. Unverified; one it does not report gets a first look only on request.
+    `member_joined_channel`. Unverified; one it does not report gets a getting-to-know task only on request.
 15. **Lark/Feishu's own join** (§5.13): its module does not yet listen for the bot being added to a
-    chat, so a Lark/Feishu place takes a first look only on request until it does.
+    chat, so a Lark/Feishu place takes a getting-to-know task only on request until it does.
 16. **The `watch` field** (§5.14): its name, a URL rather than a structure, and its place on
     `followUp`, `propose` and `recordCheck` change agent-facing tools. Decided 2026-10-17: as
     proposed.
@@ -3554,8 +3555,8 @@ is not built.
     `sendMessage` is unchanged. Shipped as written on 2026-10-17, at the owner's request: the
     marker is the `subsession:research-` coordinate, and the two reads measure 313 and 400
     characters with 76- and 346-byte schemas (§5.15 "As shipped").
-23. **First looks asked for in the onboarding DM** (§5.15), _undecided_: whether the person who
-    switched the mode on may ask there for first looks of the places the agent was already in,
+23. **Getting-to-know tasks asked for in the onboarding DM** (§5.15), _undecided_: whether the person who
+    switched the mode on may ask there for getting-to-know tasks of the places the agent was already in,
     which posts an introduction in each, and whether research's report should offer it.
 24. **Research with nobody to report to** (§5.15): an agent switched on through the API by a
     principal with no DM, and no responsible user with one, takes no research. Whether to run it
@@ -4075,14 +4076,14 @@ caller's own person layer and the place-layer listing from its own tables, and c
 layer there, under the same per-caller rules, so the forty-sixth revision's remaining gap is
 closed. A console edit still goes through the agent's daemon, which owns the write path.
 
-**Forty-eighth revision (2026-10-16)**: §5.13 proposes a first look (issue #2810; §1.9, §2, §7,
+**Forty-eighth revision (2026-10-16)**: §5.13 proposes a getting-to-know task (issue #2810; §1.9, §2, §7,
 §9). Added to a channel, an assistant-mode agent did nothing until someone @-mentioned it. The
-product owner decided what a first look is: a read-only task of the place reads its last 30 days or
+product owner decided what a getting-to-know task is: a read-only task of the place reads its last 30 days or
 500 messages, whichever is less, and reports to the place's long session. That session writes how
 the place works to the layer that conversation writes (the shared layer for an internal public
 channel, else the place layer), introduces the agent once, and offers at most three suggestions as
 `propose` cards under the introduction, none being a fine outcome. The two prompts are recorded
-with the changes made to fit verified facts. Recommended for the owner to confirm: a first look is
+with the changes made to fit verified facts. Recommended for the owner to confirm: a getting-to-know task is
 a follow-up the daemon takes and ends after one check, reusing the follow-up machinery, not a new
 task kind. It runs on a new join automatically and otherwise on request (`getToKnow`), only where
 the platform declares channel history (Slack, Discord, Lark/Feishu; not Telegram), once per place,
@@ -4097,7 +4098,7 @@ Lark/Feishu's carry none, since no stable one can be formed. `channelHistory` al
 exactly Slack, Discord and Lark/Feishu.
 
 **Fiftieth revision (2026-10-16)**: §5.13 partly ships (issue #2810; §1.9). The owner confirmed
-every recommendation. A first look is a follow-up marked as one, on a check's coordinate, that the
+every recommendation. A getting-to-know task is a follow-up marked as one, on a check's coordinate, that the
 daemon takes when the genuine-join detection of "Introduce on channel join" sees the bot join a
 listed, not-Off, internal Slack conversation, then sending no join introduction there, or that a
 place's long session asks for with `getToKnow`. It reads only its place, at most 30 days and 500
@@ -4107,12 +4108,12 @@ automatic, and its own session feeds no memory. The suggestions are text until t
 changes; Lark/Feishu's join and pins come later.
 
 **Fifty-first revision (2026-10-16)**: §5.13 ships its `propose` changes (issue #2810; §5.10). On
-the round a first look's report arrives in, the place's long session may call `propose` at most
+the round a getting-to-know task's report arrives in, the place's long session may call `propose` at most
 three times where the place's integration has approval cards; elsewhere step 3 stays text. The
 round's cards wait until its reply has posted and are then threaded under it in the order proposed,
 or posted where the place's cards go when no reply posted. `propose` gains a follow-up form,
 available wherever it is offered: approving it takes that follow-up of the place with the approver
-as its asker, running no task. A first look's proposals are not refused because the first look has
+as its asker, running no task. A getting-to-know task's proposals are not refused because the getting-to-know task has
 ended. The console shows what a follow-up form would take and links an approved one to its
 conversation. §5.13 is marked shipped; pins and Lark/Feishu's join stay open in §9.
 
@@ -4121,16 +4122,16 @@ policy that still carries it is read without it. The console labels `dailyPatrol
 checks per day", and the key keeps its name until the internal rename (issue #2810).
 
 **Fifty-third revision (2026-10-16)**: the internals follow the names (issue #2810). The budget is
-`dailyCheckBudget`, a check's session is `subsession:check-<id>` and a first look's
+`dailyCheckBudget`, a check's session is `subsession:check-<id>` and a getting-to-know task's
 `subsession:check-look-<id>`, and the daemon's check state is `assistant_check_state`. The local
 store's version 57 renames the table and rewrites every stored coordinate, and a Control Plane
 migration moves the budget key and the stored threads, with no older names read.
 
 **Fifty-fourth revision (2026-10-16)**: two fixes from §5.13's first live test (issue #2810). In a
-private channel an HTTP-mode bot joined, the first look's cards went to the responsible user's DM:
+private channel an HTTP-mode bot joined, the getting-to-know task's cards went to the responsible user's DM:
 the daemon judged who could ask the agent there by routing rules the relay keeps, so it found none.
 A one-agent HTTP bot's place now counts its people wherever the conversation is open. The long
-session the report opened recorded the first look as its creator while being the first look's
+session the report opened recorded the getting-to-know task as its creator while being the getting-to-know task's
 parent, so neither settled its visibility and the console hid both from the channel's own member.
 The report now opens it as the place's own root, bound to the channel's people.
 
@@ -4166,10 +4167,10 @@ Plane receives once and serves both, and admission is the lane's per provider, s
 of the fifty-sixth revision is dropped. The agent does not offer a follow-up when it opens a pull
 request (§8).
 
-**Fifty-eighth revision (2026-10-17)**: a first look in a busy public channel, and two changes the
+**Fifty-eighth revision (2026-10-17)**: a getting-to-know task in a busy public channel, and two changes the
 owner then decided (issue #2810; §1, §5.10, §5.13).
 
-- **Follow-ups that never run.** Both of the first look's suggested follow-ups were shaped by events
+- **Follow-ups that never run.** Both of the getting-to-know task's suggested follow-ups were shaped by events
   and offered with no first check, so approving either would have taken a follow-up nothing wakes.
   The task prompt and step 3 of the handling now say a follow-up runs only at its next check or
   when messaged, so an event-shaped suggestion is worded as a check on a schedule. The report round
@@ -4189,14 +4190,14 @@ owner then decided (issue #2810; §1, §5.10, §5.13).
   `followUp` is unchanged.
 
 **Fifty-ninth revision (2026-10-17)**: §5.15–§5.17 propose organization research, the organization
-files it and first looks write, and people profiles (issue #2810; §1.10, §1.11, §2, §5.13, §7, §8,
+files it and getting-to-know tasks write, and people profiles (issue #2810; §1.10, §1.11, §2, §5.13, §7, §8,
 §9 Q21–Q31), from ideas the product owner raised the same day and settled in review of the same
 revision. All of it is recommended for the owner to confirm, except what is marked decided or
 undecided.
 
 - **The files** are three in the agent's shared layer, `organization.md`, `channels.md` and
   `members.md`, each in a fixed shape of dated, sourced lines the daemon checks on every write, a
-  line from the web marked as such. Whatever learns a fact writes it: a first look, now with memory
+  line from the web marked as such. Whatever learns a fact writes it: a getting-to-know task, now with memory
   writes of its own so the task that holds the place's history writes what it learned and its
   place's long session only speaks (step 1 of §5.13's handling moves into the task); an internal
   public channel's long session on a turn a person typed; and research. Concurrent writers are
@@ -4210,7 +4211,7 @@ undecided.
   argument is untouched, and launches it without the agent's tool credentials. It reads the shared
   layer, knowledge, the channel listing, the code hosts the organization connected, within the
   agent's own access through new bridge reads with the repository as a checked argument, and the
-  public web. Memory records only what is fine to say anywhere. No reply or first look waits for it.
+  public web. Memory records only what is fine to say anywhere. No reply or getting-to-know task waits for it.
 - **Not chosen** (considered the same day): a home session belonging to no place as the files'
   single writer, fed by a `sendMessage` action, then a tool, with a tool to start research and an
   Organization section of the console. Each piece did a job the existing mechanisms already do, and
@@ -4232,14 +4233,14 @@ undecided.
   permission request, which research as a delegated task escapes; what stays to verify per runtime
   is that the web tools run under the agent's mode and under a credential-less launch.
 
-**Sixtieth revision (2026-10-17)**: the organization files' shapes and a first look that writes
+**Sixtieth revision (2026-10-17)**: the organization files' shapes and a getting-to-know task that writes
 memory itself ship, the first part of §5.15's rollout step 2 (issue #2810; §2, §5.13, §5.15, §5.17,
 §7, §9 Q22).
 
 - **Shapes.** Every write of `organization.md`, `channels.md` or `members.md` into the shared layer,
   from a memory tool, the entry writer or the Memory page, is checked against the file's grammar
   (§5.15 "Shapes") and refused with one line naming the line that failed.
-- **The first look writes.** Its tools gain `writeMemory`, `createMemoryEntry` and
+- **The getting-to-know task writes.** Its tools gain `writeMemory`, `createMemoryEntry` and
   `updateMemoryEntry`. Its prompt writes the place's topic file and, where the place writes the
   shared layer, the three organization files with their shapes, §5.17's two lists and
   revision-checked entry writes. Its report keeps "In flight", "Where I could help" and "Not
@@ -4251,7 +4252,7 @@ a person's own entry, linking, leaving and the console (issue #2810; §5.17 "As 
 heading ends in its person's identity key. The rules run inside the revision-checked entry write: a
 conversation writes only about a member on its turn, who did not opt out, sourced `self` for a
 sender and by the place's name otherwise; a person's own conversation changes only their entry;
-a first look checks membership and the marker alone. Clearing an entry, in a DM or the console,
+a getting-to-know task checks membership and the marker alone. Clearing an entry, in a DM or the console,
 marks its person out in a marker beside the person layers, which linking carries to both keys and
 only the person's own write lifts. A daily sweep drops the entries of people who left. Owners clear
 any entry, audited without content. The deeper pass waits for a later change.
@@ -4262,7 +4263,7 @@ any entry, audited without content. The deeper pass waits for a later change.
 - **Onboarding.** The first switch-on is recorded once on the agent row, with research's hints, and
   rides the spec. The daemon greets the person who switched the mode on in their DM, else the
   responsible user, else nobody; research opens as that DM's delegated task once the hello's turn
-  has ended, and gets one round of the daemon's own after the first looks running then report.
+  has ended, and gets one round of the daemon's own after the getting-to-know tasks running then report.
 - **The task.** Its own coordinate, tools narrowed at dispatch to memory, knowledge, the channel
   listing and the code-host reads, memory bound to the live shared layer, a host of its own
   launched without the agent's tool credentials and without OpenCode's `read-only` agent, and no
@@ -4273,41 +4274,41 @@ any entry, audited without content. The deeper pass waits for a later change.
 - **Verified live.** Claude Code, Codex and OpenCode each opened a public page under the mode with
   no permission request (§5.15 "Web access", §9 Q29).
 
-**Sixty-third revision (2026-10-17)**: a first look's writes under the read-only mode (issue #2810;
+**Sixty-third revision (2026-10-17)**: a getting-to-know task's writes under the read-only mode (issue #2810;
 §5.13).
 
-- **Found on test.** A requested first look in an internal public channel failed twice, "nothing
+- **Found on test.** A requested getting-to-know task in an internal public channel failed twice, "nothing
   recorded": the model read Claude Code's plan-mode reminder as forbidding every write, so it wrote
-  no memory and never called `recordCheck`. An earlier first look in the same channel had written
+  no memory and never called `recordCheck`. An earlier getting-to-know task in the same channel had written
   memory, so the refusal was intermittent.
 - **The fix.** The task's prompt now says, in its second paragraph, that the read-only mode
   restricts native tools only, and names its memory writes and `recordCheck` as outputs the mode
   leaves alone, as a check's prompt, distillation and dreams already do. The task keeps the
   read-only mode (§5.12). Disallowing the native write tools in place of the mode was not chosen:
-  each runtime would need its own way to do it, and a first look would leave the one read-only
+  each runtime would need its own way to do it, and a getting-to-know task would leave the one read-only
   mode that checks, distillation and dreams share.
 
 **Sixty-fourth revision (2026-10-17)**: a directory builder adds the people its round read (issue
-#2810; §5.17). The product owner decided that a first look or organization research may create
+#2810; §5.17). The product owner decided that a getting-to-know task or organization research may create
 entries for the people whose messages that round read. The daemon records, per round, each person
 who typed in an internal public channel the round's history reads returned, by key and place, and
 shows their key in the results; a builder's new entry must be one of them and each line it adds is
-sourced by a place it read them in. A first look of a private, group or external place is no
+sourced by a place it read them in. A getting-to-know task of a private, group or external place is no
 longer a builder. Research gains a bounded read of each internal public channel the bot is
 already in, at most 30 days or 500 messages per channel per round and never a join, so the
 channels the bot was in before the mode was turned on fill the directory too, and a `channels.md`
 purpose guessed from a channel's name is replaced by one the channel shows (§5.15).
 
-**Sixty-fifth revision (2026-10-17)**: a running first look of a just-joined channel, and the
+**Sixty-fifth revision (2026-10-17)**: a running getting-to-know task of a just-joined channel, and the
 Activity row's wording (issue #2810; §5.13).
 
-- **Found on test.** While a first look ran in an internal public channel the bot had just joined,
+- **Found on test.** While a getting-to-know task ran in an internal public channel the bot had just joined,
   Activity showed it as "Not visible to you" to a member of that channel, and named its place by
-  the long session's title once it ended. The place's long session is opened by the first look's
-  report, so while the first look ran it waited to inherit an audience from a session the Control
+  the long session's title once it ended. The place's long session is opened by the getting-to-know task's
+  report, so while the getting-to-know task ran it waited to inherit an audience from a session the Control
   Plane did not have yet, and was hidden from everyone. An HTTP bot's join lists no channels, so
   nothing had named the channel either.
-- **The fix.** A first look whose place has no long session yet binds the place's own audience and
+- **The fix.** A getting-to-know task whose place has no long session yet binds the place's own audience and
   is reported as the place's own row, and the channel name its lookup returns is kept. The console
   never shows a session's title as a place: with no name known, the platform's mark and
   "Conversation" stand in. A follow-up's done-when line shows the sentence alone, in the meta
@@ -4391,12 +4392,12 @@ gains a Knowledge tab beside Tools, and the Memory page's directory card, list a
 **Seventy-fifth revision (2026-10-18)**: a `channels.md` line names its platform (issue #2810;
 §5.15 "Shapes", §5.16 "File views"). A line is now `- [<platform>] <name>: what it is for
 (<source>, <date>)`, the name as the platform shows it with no sigil, and the shape check refuses
-an unknown platform, a leading sigil and the old `#name:` line; the first look's and research's
+an unknown platform, a leading sigil and the old `#name:` line; the getting-to-know task's and research's
 prompts teach it, and a trailing dash on a purpose is dropped when read. The console's Channels
 view shows each row's platform mark and naming, shows the source chip only when another place is
 the source, moves the date to the row's hover title, and lists the places guessed from their name
 last under "Not read yet" instead of tagging each one; the Handbook row adds how many places were
-read. Nothing was released, so earlier lines are not migrated: the next first look or research
+read. Nothing was released, so earlier lines are not migrated: the next getting-to-know task or research
 round rewrites them.
 
 **Seventy-sixth revision (2026-10-18)**: About reads as a document (issue #2810; §5.16 "File

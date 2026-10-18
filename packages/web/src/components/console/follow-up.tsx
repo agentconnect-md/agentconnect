@@ -24,9 +24,9 @@ export function followUpOf(row: AssistantSubsessionDto): AssistantFollowUpDto | 
   return row.kind === 'follow-up' && row.followUp ? row.followUp : null
 }
 
-/** The label a follow-up row wears: a first look reads its place once (assistant-mode.md §5.13). */
-export function followUpKindKey(followUp: AssistantFollowUpDto): 'kind' | 'firstLook' {
-  return followUp.firstLook ? 'firstLook' : 'kind'
+/** The label a follow-up row wears: a getting-to-know task reads its place once (assistant-mode.md §5.13). */
+export function followUpKindKey(followUp: AssistantFollowUpDto): 'kind' | 'gettingToKnow' {
+  return followUp.gettingToKnow ? 'gettingToKnow' : 'kind'
 }
 
 /** A follow-up runs only while it checks; any other task while it is open. */

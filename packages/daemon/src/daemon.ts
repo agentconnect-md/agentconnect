@@ -342,7 +342,7 @@ import {
   memberAskerIdentity,
   placeOfSession,
   proposalWork,
-  type FirstLookRequest,
+  type GettingToKnowRequest,
   type ProposeInput
 } from './mcp/ops/assistant-items.js'
 import {
@@ -381,24 +381,24 @@ import {
   FollowUpChecks,
   CHECK_SWEEP_INTERVAL_MS,
   checkTools,
-  type FirstLookFacts,
+  type GettingToKnowFacts,
   type CheckParent
 } from './assistant/follow-up-checks.js'
 import { FollowUpWatches, watchTarget } from './assistant/follow-up-watches.js'
 import {
-  FIRST_LOOK_MAX_MESSAGES,
-  FIRST_LOOK_MAX_PROPOSALS,
-  FIRST_LOOK_REFUSAL_REASONS,
-  FIRST_LOOK_REFUSALS,
-  FIRST_LOOK_WINDOW_MS,
-  firstLookPlaceRefusal,
-  firstLookProposalRefusal,
-  firstLookReach,
-  firstLookTools,
+  GETTING_TO_KNOW_MAX_MESSAGES,
+  GETTING_TO_KNOW_MAX_PROPOSALS,
+  GETTING_TO_KNOW_REFUSAL_REASONS,
+  GETTING_TO_KNOW_REFUSALS,
+  GETTING_TO_KNOW_WINDOW_MS,
+  gettingToKnowPlaceRefusal,
+  gettingToKnowProposalRefusal,
+  gettingToKnowReach,
+  gettingToKnowTools,
   joinVerdict,
-  PendingFirstLooks
-} from './assistant/first-look.js'
-import { firstLookToolsFor } from './mcp/ops/first-look.js'
+  PendingGettingToKnowTasks
+} from './assistant/getting-to-know.js'
+import { gettingToKnowToolsFor } from './mcp/ops/getting-to-know.js'
 import type { ToolDescriptor } from './tool-schema/descriptor.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
 import type { AssistantItem, AssistantPlace } from './store/assistant-items.js'
@@ -945,7 +945,7 @@ import {
 } from './messages/normalized.js'
 import { appendCoordinate, isAppendCoordinate } from './session/append-coordinate.js'
 import {
-  isFirstLookCoordinate,
+  isGettingToKnowCoordinate,
   isCheckCoordinate,
   isResearchCoordinate,
   isResearchSessionKey,
@@ -1259,7 +1259,7 @@ function liveSdkLease(l: {
   return l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running'
 }
 
-/** An agent's delivery whose coordinates may not bind its conversation's audience: not observed on the platform there, not opening its place's long session, not a first look of a place without one. */
+/** An agent's delivery whose coordinates may not bind its conversation's audience: not observed on the platform there, not opening its place's long session, not a getting-to-know task of a place without one. */
 function postlessCall(callMeta: CallMeta | undefined): boolean {
   return (
     callMeta !== undefined &&
@@ -2689,8 +2689,8 @@ export class Daemon {
       onInbound: (msg, srcIntegrationIds) => this.onInbound(msg, srcIntegrationIds),
       srcIntegrationIds: (conn) => this.srcIntegrationIds(conn),
       placeTrust: () => this.placeTrust,
-      firstLookOnJoin: (agentId, integrationId, channel, inviter) =>
-        this.firstLookOnJoin(agentId, integrationId, channel, inviter),
+      gettingToKnowOnJoin: (agentId, integrationId, channel, inviter) =>
+        this.gettingToKnowOnJoin(agentId, integrationId, channel, inviter),
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
@@ -4381,10 +4381,10 @@ export class Daemon {
       assistantItems: {
         ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
         askerFor: (ctx) => this.assistantAskerFor(ctx),
-        // A first look of the session's place, as its long session asked (§5.13).
-        firstLook: (ctx) => this.requestFirstLook(ctx),
-        // The place's long session offers a first look's suggestions as cards, on its report's round (§5.13).
-        proposeAfterFirstLook: (ctx, input) => this.proposeAfterFirstLook(ctx, input),
+        // A getting-to-know task of the session's place, as its long session asked (§5.13).
+        gettingToKnow: (ctx) => this.requestGettingToKnow(ctx),
+        // The place's long session offers a getting-to-know task's suggestions as cards, on its report's round (§5.13).
+        proposeAfterGettingToKnow: (ctx, input) => this.proposeAfterGettingToKnow(ctx, input),
         // Its watches (§5.14), offered only toward a Control Plane that takes them.
         watches: () =>
           this.followUpWatches.offered()
@@ -4661,13 +4661,13 @@ export class Daemon {
       // Research reads only internal public channels its bot is in, each bounded per round (assistant-mode.md §5.15).
       researchHistory: {
         refusal: (ctx, read) => this.researchReadRefusal(ctx, read),
-        since: () => this.clock.now() - FIRST_LOOK_WINDOW_MS,
+        since: () => this.clock.now() - GETTING_TO_KNOW_WINDOW_MS,
         grant: (ctx, read, want) => this.grantResearchHistory(ctx, read, want)
       },
-      // A first look's reads stop at its window and its message cap (assistant-mode.md §5.13).
-      firstLookHistory: {
-        since: () => this.clock.now() - FIRST_LOOK_WINDOW_MS,
-        grant: (ctx, want) => this.grantFirstLookHistory(ctx, want)
+      // A getting-to-know task's reads stop at its window and its message cap (assistant-mode.md §5.13).
+      gettingToKnowHistory: {
+        since: () => this.clock.now() - GETTING_TO_KNOW_WINDOW_MS,
+        grant: (ctx, want) => this.grantGettingToKnowHistory(ctx, want)
       },
       maxAttachmentBytes: cfg.limits.maxAttachmentBytes
     })
@@ -4816,8 +4816,8 @@ export class Daemon {
         // §5.15: organization research gets memory, knowledge, the channel listing and the code-host reads, nothing that posts.
         const research = isResearchCoordinate(thread)
         const narrowed = check || research
-        // A first look (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
-        if (isFirstLookCoordinate(thread)) tools = firstLookTools(tools)
+        // A getting-to-know task (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
+        if (isGettingToKnowCoordinate(thread)) tools = gettingToKnowTools(tools)
         else if (check) tools = checkTools(tools, { watch: this.followUpWatches.offered() })
         else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
         // Collaboration Arena §6: game-owned structured action tools, appended
@@ -8404,10 +8404,10 @@ export class Daemon {
     return ports.live
   }
 
-  /** A session that builds the directory with no person behind its rounds: research, or a first look of an internal public channel; a first look anywhere else is refused. */
+  /** A session that builds the directory with no person behind its rounds: research, or a getting-to-know task of an internal public channel; a getting-to-know task anywhere else is refused. */
   private async directoryBuilder(ctx: SessionContext): Promise<'builder' | 'refused' | undefined> {
     if (isResearchCoordinate(ctx.thread)) return 'builder'
-    if (!isFirstLookCoordinate(ctx.thread)) return undefined
+    if (!isGettingToKnowCoordinate(ctx.thread)) return undefined
     const audience = await this.conversationAudience(ctx, this.sessionKeyOf(ctx))
     return audience.layer === 'shared' && !audience.external ? 'builder' : 'refused'
   }
@@ -8423,7 +8423,7 @@ export class Daemon {
     ctx: SessionContext,
     read: { platform: string; integrationId: string | undefined; channel: string; senders: readonly string[] }
   ): Promise<ReadonlyMap<string, string> | undefined> {
-    if (!isFirstLookCoordinate(ctx.thread) && !isResearchCoordinate(ctx.thread)) return undefined
+    if (!isGettingToKnowCoordinate(ctx.thread) && !isResearchCoordinate(ctx.thread)) return undefined
     const round = this.directoryRound(ctx)
     const integrationId = read.integrationId ?? ctx.integrationId
     if (!round || !integrationId) return undefined
@@ -8959,9 +8959,9 @@ export class Daemon {
       subsessions: this.store.assistantSubsessions,
       directMessage: (agentId, consoleUserId) => this.onboardingDirectMessage(agentId, consoleUserId),
       parentFor: (agentId, place) => this.checkParent(agentId, place, { open: true, isDm: true }),
-      firstLooksRunning: async (agentId) =>
+      gettingToKnowTasksRunning: async (agentId) =>
         (await this.store.assistantItems.list(agentId, { status: ['active', 'waiting'] }))
-          .filter((item) => item.firstLook !== null)
+          .filter((item) => item.gettingToKnow !== null)
           .map((item) => item.id),
       greet: async (row, text, settled) =>
         (
@@ -9273,12 +9273,12 @@ export class Daemon {
   /** One round's proposals at a time, so the cap of three and their order hold when calls overlap. */
   private readonly roundProposals = new Map<string, Promise<unknown>>()
 
-  /** The place's long session offers a first look's suggestions (assistant-mode.md §5.13): on its report's round only, where the place has cards, at most three; each card waits for the round's reply. */
-  private async proposeAfterFirstLook(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>> {
+  /** The place's long session offers a getting-to-know task's suggestions (assistant-mode.md §5.13): on its report's round only, where the place has cards, at most three; each card waits for the round's reply. */
+  private async proposeAfterGettingToKnow(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>> {
     const agentId = ctx.agentId
     const key = this.sessionKeyOf(ctx)
     const meta = this.activeTurnCallMeta.get(key)
-    const itemId = meta?.firstLookReport
+    const itemId = meta?.gettingToKnowReport
     if (!meta || itemId === undefined)
       throw new Error(
         'propose is offered here only on the round a getting-to-know task reports back; nothing was proposed. Answer in your ' +
@@ -9288,19 +9288,19 @@ export class Daemon {
       throw new Error(
         'this conversation has no approval cards; list the suggestions in your reply. Nothing was proposed.'
       )
-    const refusal = firstLookProposalRefusal(input)
+    const refusal = gettingToKnowProposalRefusal(input)
     if (refusal) throw new Error(refusal)
     const item = await this.store.assistantItems.get(agentId, itemId)
-    if (!item?.firstLook) throw new Error('this getting-to-know task is gone; nothing was proposed')
+    if (!item?.gettingToKnow) throw new Error('this getting-to-know task is gone; nothing was proposed')
     const round = meta.deliveryId
     const prior = this.roundProposals.get(round) ?? Promise.resolve()
     const next = prior
       .catch(() => undefined)
       .then(async () => {
         const made = await this.store.assistantDrafts.countInRound(agentId, round)
-        if (made >= FIRST_LOOK_MAX_PROPOSALS)
+        if (made >= GETTING_TO_KNOW_MAX_PROPOSALS)
           throw new Error(
-            `a getting-to-know report is offered at most ${FIRST_LOOK_MAX_PROPOSALS} proposals, and this round made them; ` +
+            `a getting-to-know report is offered at most ${GETTING_TO_KNOW_MAX_PROPOSALS} proposals, and this round made them; ` +
               'nothing was proposed'
           )
         const { integrationId, target, destination, place } = await this.proposalPlace(agentId, item.origin)
@@ -9348,7 +9348,7 @@ export class Daemon {
     }
   }
 
-  /** A first look report round's held cards (§5.13): under its reply once that posted, else where the place's cards go. */
+  /** A getting-to-know task report round's held cards (§5.13): under its reply once that posted, else where the place's cards go. */
   private async releaseRoundCards(agentId: string, round: string, replyTs: string | undefined): Promise<void> {
     const held = await this.store.assistantDrafts.heldInRound(agentId, round)
     const first = held[0]
@@ -9369,7 +9369,7 @@ export class Daemon {
       if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
         continue
       await this.releaseRoundCards(agentId, round, undefined).catch((err) =>
-        this.log.warn(`first look cards of ${round}: not posted: ${formatErr(err)}`)
+        this.log.warn(`getting-to-know task cards of ${round}: not posted: ${formatErr(err)}`)
       )
     }
   }
@@ -9393,7 +9393,7 @@ export class Daemon {
     reportId: string,
     replyThread?: string | null,
     opens?: string,
-    firstLook?: string
+    gettingToKnow?: string
   ): Promise<boolean> {
     const report = {
       agentId,
@@ -9403,7 +9403,7 @@ export class Daemon {
       reportId,
       ...(replyThread !== undefined ? { replyThread } : {}),
       ...(opens !== undefined ? { opens } : {}),
-      ...(firstLook !== undefined ? { firstLook } : {})
+      ...(gettingToKnow !== undefined ? { gettingToKnow } : {})
     }
     return (await this.collab.deliverDaemonReport(report)).admitted
   }
@@ -9453,8 +9453,8 @@ export class Daemon {
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread, opens, firstLook) =>
-        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens, firstLook),
+      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread, opens, gettingToKnow) =>
+        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens, gettingToKnow),
       endedSession: async (agentId, key) => {
         if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
           return undefined
@@ -9469,7 +9469,7 @@ export class Daemon {
         }
       },
       stopSession: (key, actor) => this.stopSessionByKey(key, actor),
-      firstLookFacts: (agentId, item) => this.firstLookFacts(agentId, item),
+      gettingToKnowFacts: (agentId, item) => this.gettingToKnowFacts(agentId, item),
       proposals: {
         proposedFrom: (agentId, key, since) => this.store.assistantDrafts.proposedFrom(agentId, key, since),
         propose: (run, input) => this.proposeFromCheck(run, input)
@@ -9551,10 +9551,10 @@ export class Daemon {
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]
     // Assistant mode's follow-ups (assistant-mode.md §5.12); each call re-checks the mode, since this list is fixed per session.
     tools = [...tools, ...followUpToolsFor(agent, { watch: this.followUpWatches.offered() })]
-    // A first look on request (§5.13), only to a place's long session where one could run, with `propose` for its report round where the place has cards.
+    // A getting-to-know task on request (§5.13), only to a place's long session where one could run, with `propose` for its report round where the place has cards.
     tools = [
       ...tools,
-      ...firstLookToolsFor(agent, at, {
+      ...gettingToKnowToolsFor(agent, at, {
         cards: integrationId !== undefined && this.hasCardSurface(integrationId),
         watch: this.followUpWatches.offered()
       })
@@ -9574,7 +9574,7 @@ export class Daemon {
     return tools
   }
 
-  /** The long session of a follow-up's place, which owns it and takes its reports; with `open`, a place nobody spoke in yet gets the one its first message would key (a first look's, §5.13). */
+  /** The long session of a follow-up's place, which owns it and takes its reports; with `open`, a place nobody spoke in yet gets the one its first message would key (a getting-to-know task's, §5.13). */
   private async checkParent(
     agentId: string,
     place: AssistantPlace,
@@ -9633,15 +9633,15 @@ export class Daemon {
     }
   }
 
-  /** What a first look of this place names (assistant-mode.md §5.13), or why it may no longer take one; a place turned external is named so its handling keeps step 1 alone. */
-  private async firstLookFacts(agentId: string, item: AssistantItem): Promise<FirstLookFacts> {
+  /** What a getting-to-know task of this place names (assistant-mode.md §5.13), or why it may no longer take one; a place turned external is named so its handling keeps step 1 alone. */
+  private async gettingToKnowFacts(agentId: string, item: AssistantItem): Promise<GettingToKnowFacts> {
     const agent = this.agents.get(agentId)
     const { platform, channel, transportScope } = item.origin
     const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
     const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
     if (!agent || !int || !integrationId) return { refused: 'the agent no longer reaches this place' }
-    const refusal = firstLookPlaceRefusal(agent, int, { channel })
-    if (refusal && refusal !== 'external') return { refused: FIRST_LOOK_REFUSAL_REASONS[refusal] }
+    const refusal = gettingToKnowPlaceRefusal(agent, int, { channel })
+    if (refusal && refusal !== 'external') return { refused: GETTING_TO_KNOW_REFUSAL_REASONS[refusal] }
     const info = await this.placeInfo(integrationId, channel)
     const name = info?.name?.trim()
     // The place's own tools, as its long session is offered them; any appending coordinate names that session.
@@ -9669,7 +9669,12 @@ export class Daemon {
               : 'channel',
       platform,
       tools,
-      reach: firstLookReach(this.mergedRulesForSource([integrationId]), { agentId, integrationId, platform, channel }),
+      reach: gettingToKnowReach(this.mergedRulesForSource([integrationId]), {
+        agentId,
+        integrationId,
+        platform,
+        channel
+      }),
       external: refusal === 'external',
       cards: this.hasCardSurface(integrationId),
       // Only a place that writes the shared layer adds to the organization's file; an unknown layer adds nothing.
@@ -9706,7 +9711,7 @@ export class Daemon {
     return audience?.layer === 'shared' && !audience.external ? undefined : refused
   }
 
-  /** How many of `want` more messages of one channel this research round may read, at most the first look's cap. */
+  /** How many of `want` more messages of one channel this research round may read, at most the getting-to-know task's cap. */
   private grantResearchHistory(
     ctx: SessionContext,
     read: { integrationId: string | undefined; channel: string },
@@ -9716,7 +9721,7 @@ export class Daemon {
     if (!round) return 0
     const key = `${round}\u001f${read.integrationId ?? ctx.integrationId ?? ''}\u001f${read.channel}`
     const taken = this.researchReads.get(key) ?? 0
-    const granted = Math.max(0, Math.min(want, FIRST_LOOK_MAX_MESSAGES - taken))
+    const granted = Math.max(0, Math.min(want, GETTING_TO_KNOW_MAX_MESSAGES - taken))
     this.researchReads.delete(key)
     this.researchReads.set(key, taken + granted)
     if (this.researchReads.size > 4096) this.researchReads.delete(this.researchReads.keys().next().value!)
@@ -9764,19 +9769,19 @@ export class Daemon {
     const audience = await this.conversationAudience(ctx, key)
     return {
       withOutsiders: withholdsPeople(audience),
-      recordWriter: isFirstLookCoordinate(ctx.thread)
-        ? 'first-look'
+      recordWriter: isGettingToKnowCoordinate(ctx.thread)
+        ? 'getting-to-know'
         : audience.layer === 'person'
           ? 'person'
           : 'conversation'
     }
   }
 
-  /** Bot joins waiting for their place's row before a first look (assistant-mode.md §5.13). */
-  private readonly pendingFirstLooks = new PendingFirstLooks()
+  /** Bot joins waiting for their place's row before a getting-to-know task (assistant-mode.md §5.13). */
+  private readonly pendingGettingToKnowTasks = new PendingGettingToKnowTasks()
 
-  /** A genuine join of the agent's bot to a conversation (§5.13): where a first look will run, it waits for the place's row and takes one; true then. */
-  private async firstLookOnJoin(
+  /** A genuine join of the agent's bot to a conversation (§5.13): where a getting-to-know task will run, it waits for the place's row and takes one; true then. */
+  private async gettingToKnowOnJoin(
     agentId: string,
     integrationId: string,
     channel: string,
@@ -9785,59 +9790,61 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
     if (!agent || !int || !this.servesAgent(agentId)) return false
-    if (firstLookPlaceRefusal(agent, int, { channel }) !== undefined) return false
+    if (gettingToKnowPlaceRefusal(agent, int, { channel }) !== undefined) return false
     const place: AssistantPlace = {
       platform: int.platform,
       channel,
       transportScope: this.transportScopeForIntegration(int) || null
     }
-    // The first look's row is the place's record, so a rejoin takes none.
-    if (await this.store.assistantItems.latestFirstLook(agentId, place)) return false
-    this.pendingFirstLooks.note({
+    // The getting-to-know task's row is the place's record, so a rejoin takes none.
+    if (await this.store.assistantItems.latestGettingToKnow(agentId, place)) return false
+    this.pendingGettingToKnowTasks.note({
       agentId,
       integrationId,
       channel,
       ...(inviter ? { inviter } : {}),
       at: this.clock.now()
     })
-    void this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look on join failed: ${formatErr(err)}`))
+    void this.takeJoinedGettingToKnowTasks().catch((err) =>
+      this.log.warn(`getting-to-know task on join failed: ${formatErr(err)}`)
+    )
     return true
   }
 
-  /** Joins whose place is now listed take a first look, once per place; the rest wait for a later sweep. */
-  private async takeJoinedFirstLooks(): Promise<void> {
-    for (const join of this.pendingFirstLooks.waiting(this.clock.now())) {
+  /** Joins whose place is now listed take a getting-to-know task, once per place; the rest wait for a later sweep. */
+  private async takeJoinedGettingToKnowTasks(): Promise<void> {
+    for (const join of this.pendingGettingToKnowTasks.waiting(this.clock.now())) {
       const agent = this.agents.get(join.agentId)
       const int = agent?.integrations.find((candidate) => candidate.id === join.integrationId)
       const verdict = int ? joinVerdict(agent, int, join.channel) : 'drop'
-      if (verdict === 'wait' || !this.pendingFirstLooks.done(join) || verdict === 'drop' || !int) continue
+      if (verdict === 'wait' || !this.pendingGettingToKnowTasks.done(join) || verdict === 'drop' || !int) continue
       const place: AssistantPlace = {
         platform: int.platform,
         channel: join.channel,
         transportScope: this.transportScopeForIntegration(int) || null
       }
-      // The first look's row is the place's record, so a rejoin or a mode switch takes none.
-      if (await this.store.assistantItems.latestFirstLook(join.agentId, place)) continue
+      // The getting-to-know task's row is the place's record, so a rejoin or a mode switch takes none.
+      if (await this.store.assistantItems.latestGettingToKnow(join.agentId, place)) continue
       const asker = join.inviter
         ? memberAskerIdentity(int.platform, await this.tenantScopeForIntegration(int), join.inviter)
         : undefined
-      await this.followUpChecks.takeFirstLook({
+      await this.followUpChecks.takeGettingToKnow({
         agentId: join.agentId,
         place,
         trigger: 'joined',
-        title: await this.firstLookTitle(int.id, join.channel),
+        title: await this.gettingToKnowTitle(int.id, join.channel),
         ...(asker !== undefined ? { asker } : {})
       })
     }
   }
 
-  /** A first look's title, by its place's name where the platform gives one. */
-  private async firstLookTitle(integrationId: string, channel: string): Promise<string> {
+  /** A getting-to-know task's title, by its place's name where the platform gives one. */
+  private async gettingToKnowTitle(integrationId: string, channel: string): Promise<string> {
     const name = (await this.placeInfo(integrationId, channel))?.name?.trim()
     return name ? `Getting to know ${name}` : 'Getting to know this place'
   }
 
-  /** A first look's place as the platform describes it, its channel name kept so the place's sessions carry it: an HTTP bot's join lists no channels to learn it from. */
+  /** A getting-to-know task's place as the platform describes it, its channel name kept so the place's sessions carry it: an HTTP bot's join lists no channels to learn it from. */
   private async placeInfo(integrationId: string, channel: string) {
     const info = await this.gatewayForIntegration(integrationId)
       ?.getChannelInfo(channel)
@@ -9848,15 +9855,15 @@ export class Daemon {
     return info
   }
 
-  /** `getToKnow` (assistant-mode.md §5.13): only from its place's long session, where a first look could run. */
-  private async requestFirstLook(ctx: SessionContext): Promise<FirstLookRequest> {
+  /** `getToKnow` (assistant-mode.md §5.13): only from its place's long session, where a getting-to-know task could run. */
+  private async requestGettingToKnow(ctx: SessionContext): Promise<GettingToKnowRequest> {
     const agentId = ctx.agentId
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((candidate) => candidate.id === ctx.integrationId)
     if (!agent || !int || !ctx.integrationId)
       return { kind: 'refused', reason: 'not_here', message: 'No getting-to-know task can run in this conversation.' }
-    const refusal = firstLookPlaceRefusal(agent, int, { channel: ctx.channel, isDm: ctx.isDm })
-    if (refusal) return { kind: 'refused', reason: refusal, message: FIRST_LOOK_REFUSALS[refusal] }
+    const refusal = gettingToKnowPlaceRefusal(agent, int, { channel: ctx.channel, isDm: ctx.isDm })
+    if (refusal) return { kind: 'refused', reason: refusal, message: GETTING_TO_KNOW_REFUSALS[refusal] }
     const place = placeOfSession(ctx)
     const rec = await this.store.placeSession(agentId, place.platform, place.channel, place.transportScope)
     if (rec?.key !== this.sessionKeyOf(ctx))
@@ -9866,17 +9873,17 @@ export class Daemon {
         message: 'Only this place’s ongoing conversation asks to get to know it. Nothing was started.'
       }
     const asker = await this.assistantAskerFor(ctx)
-    const result = await this.followUpChecks.requestFirstLook({
+    const result = await this.followUpChecks.requestGettingToKnow({
       agentId,
       place,
-      title: await this.firstLookTitle(ctx.integrationId, ctx.channel),
+      title: await this.gettingToKnowTitle(ctx.integrationId, ctx.channel),
       ...(asker !== undefined ? { asker } : {})
     })
     return result.kind === 'started' ? { kind: 'started', taskId: result.item.taskKey } : result
   }
 
-  /** How many more history rows a first look's running check may read (assistant-mode.md §5.13). */
-  private async grantFirstLookHistory(ctx: SessionContext, want: number): Promise<number> {
+  /** How many more history rows a getting-to-know task's running check may read (assistant-mode.md §5.13). */
+  private async grantGettingToKnowHistory(ctx: SessionContext, want: number): Promise<number> {
     const state = await this.store.assistantChecks.byRunningKey(ctx.agentId, this.sessionKeyOf(ctx))
     if (!state || state.runningCheck === null) return 0
     return await this.store.assistantChecks.takeHistory(
@@ -9884,7 +9891,7 @@ export class Daemon {
       state.itemId,
       state.runningCheck,
       want,
-      FIRST_LOOK_MAX_MESSAGES
+      GETTING_TO_KNOW_MAX_MESSAGES
     )
   }
 
@@ -9892,11 +9899,13 @@ export class Daemon {
   private armCheckSweep(): void {
     this.checkSweepTimer = this.clock.setTimeout(async () => {
       this.checkSweepTimer = undefined
-      await this.takeJoinedFirstLooks().catch((err) => this.log.warn(`first look sweep failed: ${formatErr(err)}`))
+      await this.takeJoinedGettingToKnowTasks().catch((err) =>
+        this.log.warn(`getting-to-know task sweep failed: ${formatErr(err)}`)
+      )
       // Onboarding's hello, research's start and its second round (assistant-mode.md §5.15).
       await this.research.sweep().catch((err) => this.log.warn(`organization research sweep failed: ${formatErr(err)}`))
       await this.releaseStrandedRounds().catch((err) =>
-        this.log.warn(`first look card sweep failed: ${formatErr(err)}`)
+        this.log.warn(`getting-to-know task card sweep failed: ${formatErr(err)}`)
       )
       await this.followUpChecks.sweep().catch((err) => this.log.warn(`follow-up check sweep failed: ${formatErr(err)}`))
       await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
@@ -10591,8 +10600,8 @@ export class Daemon {
     if (!output.trim()) return
     // The turn goes to its conversation's layer (unified-memory-interface.md §6); a session with no row has none.
     const rec = session ? await this.store.getSession(session.key) : undefined
-    // A first look's or research's own session feeds no capture; memory gets only what it writes explicitly (assistant-mode.md §5.15).
-    if (isFirstLookCoordinate(rec?.thread) || isResearchCoordinate(rec?.thread)) return
+    // A getting-to-know task's or research's own session feeds no capture; memory gets only what it writes explicitly (assistant-mode.md §5.15).
+    if (isGettingToKnowCoordinate(rec?.thread) || isResearchCoordinate(rec?.thread)) return
     const placed = await this.memoryLayerOfSession(agentId, rec, msg)
     if (!placed) return
     // The shared layer never takes a capture-excluded turn, checked before distillation and the external outbox alike.
@@ -13487,7 +13496,7 @@ export class Daemon {
     }
     // The HTTP arm of the bot's own join (assistant-mode.md §5.13).
     if (payload.kind === 'bot-joined') {
-      await this.firstLookOnJoin(agent.id, integration.id, payload.channelId, payload.inviter)
+      await this.gettingToKnowOnJoin(agent.id, integration.id, payload.channelId, payload.inviter)
       return { msgId: msg.msgId, accepted: true }
     }
     // The HTTP arm of a member join (assistant-mode.md §5.3), looked up for every agent.
@@ -19716,10 +19725,10 @@ export class Daemon {
     // notice. Release before local metadata cleanup so even a cleanup exception
     // cannot strand the connection lease forever.
     releaseReplyConn()
-    // A first look's report round: its held cards go under the reply it posted, else where the place's cards go (§5.13).
-    if (callMeta?.firstLookReport !== undefined)
+    // A getting-to-know task's report round: its held cards go under the reply it posted, else where the place's cards go (§5.13).
+    if (callMeta?.gettingToKnowReport !== undefined)
       await this.releaseRoundCards(agentId, callMeta.deliveryId, p.reply.firstResponse).catch((err) =>
-        this.log.warn(`first look cards of ${callMeta.deliveryId}: not posted: ${formatErr(err)}`)
+        this.log.warn(`getting-to-know task cards of ${callMeta.deliveryId}: not posted: ${formatErr(err)}`)
       )
     this.clearIdle(p)
     this.clearFeishuStream(p)

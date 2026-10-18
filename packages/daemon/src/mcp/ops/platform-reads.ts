@@ -2,8 +2,8 @@ import { z } from 'zod'
 import { WORKSPACE_UPLOADS_DIR } from '@agentconnect.md/protocol'
 import type { PlatformThreadMessage } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
-import { FIRST_LOOK_DAYS, FIRST_LOOK_MAX_MESSAGES, withinWindow } from '../../assistant/first-look.js'
-import { isFirstLookCoordinate, isResearchCoordinate } from '../../session/subsession-coordinate.js'
+import { GETTING_TO_KNOW_DAYS, GETTING_TO_KNOW_MAX_MESSAGES, withinWindow } from '../../assistant/getting-to-know.js'
+import { isGettingToKnowCoordinate, isResearchCoordinate } from '../../session/subsession-coordinate.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
   ambiguousIntegrations,
@@ -100,8 +100,8 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
     since(): number
     grant(ctx: SessionContext, read: { integrationId: string | undefined; channel: string }, want: number): number
   }
-  /** A first look's history bound (assistant-mode.md §5.13): the oldest time it may read, and how many more rows its check may take, at most `want`. */
-  firstLookHistory?: {
+  /** A getting-to-know task's history bound (assistant-mode.md §5.13): the oldest time it may read, and how many more rows its check may take, at most `want`. */
+  gettingToKnowHistory?: {
     since(): number
     grant(ctx: SessionContext, want: number): Promise<number>
   }
@@ -350,16 +350,16 @@ export async function getUserProfile(
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
 }
 
-/** A first look's rows (§5.13), or research's per channel (§5.15): none older than the window or past the message cap; `ended` once a page crossed either. */
-async function firstLookRows<T extends { ts: string }>(
+/** A getting-to-know task's rows (§5.13), or research's per channel (§5.15): none older than the window or past the message cap; `ended` once a page crossed either. */
+async function gettingToKnowRows<T extends { ts: string }>(
   ctx: SessionContext,
   deps: PlatformReadDeps,
   rows: readonly T[],
   read: { integrationId: string | undefined; channel: string }
 ): Promise<{ rows: T[]; ended: boolean; capped: boolean; research: boolean } | undefined> {
   const research = isResearchCoordinate(ctx.thread)
-  if (!isFirstLookCoordinate(ctx.thread) && !research) return undefined
-  const look = deps.firstLookHistory
+  if (!isGettingToKnowCoordinate(ctx.thread) && !research) return undefined
+  const look = deps.gettingToKnowHistory
   const bound = research ? deps.researchHistory : look
   if (!bound) throw new Error('history reads are unavailable to this task on this daemon')
   const { kept, ended } = withinWindow(rows, bound.since())
@@ -404,10 +404,10 @@ async function withSenderKeys<T extends { sender: string }>(
   })
 }
 
-const FIRST_LOOK_CAPPED = `This task has read its ${FIRST_LOOK_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
-const FIRST_LOOK_WINDOW_END = `Older messages are past the ${FIRST_LOOK_DAYS} days this task reads.`
-const RESEARCH_CAPPED = `This round has read its ${FIRST_LOOK_MAX_MESSAGES} messages of this channel: read no more of it.`
-const RESEARCH_WINDOW_END = `Older messages are past research's ${FIRST_LOOK_DAYS} days.`
+const GETTING_TO_KNOW_CAPPED = `This task has read its ${GETTING_TO_KNOW_MAX_MESSAGES} messages: read no more, and hand back your report with recordCheck.`
+const GETTING_TO_KNOW_WINDOW_END = `Older messages are past the ${GETTING_TO_KNOW_DAYS} days this task reads.`
+const RESEARCH_CAPPED = `This round has read its ${GETTING_TO_KNOW_MAX_MESSAGES} messages of this channel: read no more of it.`
+const RESEARCH_WINDOW_END = `Older messages are past research's ${GETTING_TO_KNOW_DAYS} days.`
 
 /** Read one bounded page of a channel: this session's own by default, or another one the read rule lets the asker see. */
 export async function getChannelHistory(
@@ -435,7 +435,7 @@ export async function getChannelHistory(
     ...(parsed.latest ? { latest: parsed.latest } : {})
   })
   const read = { platform, integrationId: parsed.integrationId, channel }
-  const bounded = await firstLookRows(ctx, deps, page.messages, read)
+  const bounded = await gettingToKnowRows(ctx, deps, page.messages, read)
   const messages = await withSenderKeys(ctx, deps, read, bounded?.rows ?? page.messages, (row) => !row.isBot)
   if (bounded)
     return {
@@ -449,10 +449,10 @@ export async function getChannelHistory(
             note: bounded.capped
               ? bounded.research
                 ? RESEARCH_CAPPED
-                : FIRST_LOOK_CAPPED
+                : GETTING_TO_KNOW_CAPPED
               : bounded.research
                 ? RESEARCH_WINDOW_END
-                : FIRST_LOOK_WINDOW_END
+                : GETTING_TO_KNOW_WINDOW_END
           }
         : {})
     }
@@ -521,7 +521,7 @@ export async function getThreadHistory(
     readState
   })
   const shown = messages.filter((m) => !m.chrome)
-  const bounded = await firstLookRows(ctx, deps, shown, { integrationId: parsed.integrationId, channel })
+  const bounded = await gettingToKnowRows(ctx, deps, shown, { integrationId: parsed.integrationId, channel })
   const keyed = await withSenderKeys(
     ctx,
     deps,
@@ -538,7 +538,7 @@ export async function getThreadHistory(
       ...(projectThreadMessage(m) as object),
       ...(m.senderKey ? { senderKey: m.senderKey } : {})
     })),
-    ...(bounded?.capped ? { note: bounded.research ? RESEARCH_CAPPED : FIRST_LOOK_CAPPED } : {})
+    ...(bounded?.capped ? { note: bounded.research ? RESEARCH_CAPPED : GETTING_TO_KNOW_CAPPED } : {})
   }
 }
 

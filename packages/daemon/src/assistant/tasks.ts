@@ -92,9 +92,9 @@ export interface AssistantTasksHost {
   draining(): boolean
 }
 
-/** A follow-up a proposal may still act on: open, or a first look, which ends after its one check by design (§5.13). */
-const actsOn = (item: Pick<AssistantItem, 'status' | 'firstLook'>): boolean =>
-  item.status === 'active' || item.status === 'waiting' || item.firstLook !== null
+/** A follow-up a proposal may still act on: open, or a getting-to-know task, which ends after its one check by design (§5.13). */
+const actsOn = (item: Pick<AssistantItem, 'status' | 'gettingToKnow'>): boolean =>
+  item.status === 'active' || item.status === 'waiting' || item.gettingToKnow !== null
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
@@ -102,7 +102,7 @@ const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { name: string | null }): string {
   const proposal = draft.proposal!
   const origin =
-    item.firstLook !== null
+    item.gettingToKnow !== null
       ? 'You proposed this after reading this place’s recent messages'
       : 'A check of one of your follow-ups proposed this'
   return [
@@ -114,7 +114,7 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
     `Why: ${proposal.why.trim() === '' ? 'not given' : proposal.why.trim()}`,
     `Proposed as: ${oneLine(proposal.sentence)}`,
     '',
-    item.firstLook !== null
+    item.gettingToKnow !== null
       ? `Follow-up (getting to know, ended): ${oneLine(item.title)}`
       : `Follow-up (${item.status === 'active' || item.status === 'waiting' ? 'open' : 'ended'}): ${oneLine(item.title)}`,
     `Done when: ${item.doneWhen === null ? 'not set' : oneLine(item.doneWhen)}`,

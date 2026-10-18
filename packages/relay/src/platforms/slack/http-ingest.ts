@@ -102,7 +102,7 @@ export interface HttpSlackAssistantThreadStarted extends HttpSlackInteractionRec
   userId?: string
 }
 
-/** The bot itself joined a channel; the owning daemon may take a first look of it. */
+/** The bot itself joined a channel; the owning daemon may take a getting-to-know task of it. */
 export interface HttpSlackBotJoined extends HttpSlackInteractionReceipt {
   channelId: string
   /** Who added the bot, where the event names them. */

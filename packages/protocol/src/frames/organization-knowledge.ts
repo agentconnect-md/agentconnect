@@ -97,7 +97,7 @@ export const KnowledgeRecordFile = z.enum(['organization.md', 'channels.md', 'me
 export type KnowledgeRecordFile = z.infer<typeof KnowledgeRecordFile>
 
 /** What kind of writer a record write comes from, kept on the revision. */
-export const KnowledgeRecordWriterKind = z.enum(['research', 'first-look', 'conversation', 'person'])
+export const KnowledgeRecordWriterKind = z.enum(['research', 'getting-to-know', 'conversation', 'person'])
 export type KnowledgeRecordWriterKind = z.infer<typeof KnowledgeRecordWriterKind>
 
 /** A record body is capped well under the 256 KiB frame limit. */

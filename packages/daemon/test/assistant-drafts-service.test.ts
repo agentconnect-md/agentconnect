@@ -801,7 +801,7 @@ describe('recovery', () => {
   })
 })
 
-describe('a first look report round’s held cards (assistant-mode.md §5.13)', () => {
+describe('a getting-to-know task report round’s held cards (assistant-mode.md §5.13)', () => {
   const GENERAL: ProposalPlace = { integrationId: INT, channel: 'C0GENERAL' }
   const ROUND = 'assistant-report:round-1'
 

@@ -453,8 +453,8 @@ describe('the assistant Activity routes', () => {
         state: 'open',
         createdAt: '2026-10-09T07:00:00.000Z',
         kind: 'follow-up',
-        // A first look keeps its label wherever its row is listed (assistant-mode.md §5.13).
-        followUp: { ...followUp('Renew the certificate'), firstLook: true }
+        // A getting-to-know task keeps its label wherever its row is listed (assistant-mode.md §5.13).
+        followUp: { ...followUp('Renew the certificate'), gettingToKnow: true }
       },
       {
         sessionId: null,
@@ -492,7 +492,7 @@ describe('the assistant Activity routes', () => {
           nextCheck: '2026-10-10T09:00:00.000Z',
           doneWhen: null,
           recentChecks: [],
-          firstLook: true
+          gettingToKnow: true
         }
       }),
       expect.objectContaining({ state: 'done', kind: 'delegated' })
@@ -1346,12 +1346,12 @@ describe('the Activity of an agent outside assistant mode', () => {
   })
 })
 
-describe('a first look of a channel the bot just joined', () => {
-  // assistant-mode.md §5.13: the place's long session is opened only by the first look's report, so while it runs it has no row.
+describe('a getting-to-know task of a channel the bot just joined', () => {
+  // assistant-mode.md §5.13: the place's long session is opened only by the getting-to-know task's report, so while it runs it has no row.
   it('is shown to the channel’s members while it runs, and to no one else', async () => {
     await seedAssistant({ features: [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE] })
-    const member = await makeUser(`first-look-member-${randomUUID()}`, 'collaborator')
-    const outsider = await makeUser(`first-look-outsider-${randomUUID()}`, 'collaborator')
+    const member = await makeUser(`getting-to-know-member-${randomUUID()}`, 'collaborator')
+    const outsider = await makeUser(`getting-to-know-outsider-${randomUUID()}`, 'collaborator')
     const repo = new PgSessionRepo(prisma)
     await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
     const [place, look, waiting] = [randomUUID(), randomUUID(), randomUUID()]
@@ -1399,7 +1399,7 @@ describe('a first look of a channel the bot just joined', () => {
         status: 'checking' as const,
         nextCheck: null,
         recentChecks: [],
-        firstLook: true
+        gettingToKnow: true
       }
     })
     control.subsessions = [row(look), row(waiting)]

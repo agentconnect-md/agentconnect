@@ -162,7 +162,7 @@ describe('the prompts', () => {
 async function world(
   over: {
     dm?: 'enabler' | 'responsible' | 'nobody' | 'unreachable'
-    firstLooks?: string[]
+    gettingToKnowTasks?: string[]
     settled?: boolean
     limit?: number
     now?: number
@@ -170,7 +170,7 @@ async function world(
 ) {
   const store = await LocalStore.open(join(mkdtempSync(join(tmpdir(), 'ac-research-')), 'store.sqlite'))
   let now = over.now ?? NOW
-  const firstLooks = new Set(over.firstLooks ?? [])
+  const gettingToKnowTasks = new Set(over.gettingToKnowTasks ?? [])
   const greeted: string[] = []
   const dispatched: { msg: { thread?: string; text: string; turnBody?: { prompt?: string } }; callMeta: unknown }[] = []
   const messaged: string[] = []
@@ -206,7 +206,7 @@ async function world(
       integrationId: 'int-a',
       inherited: {}
     }),
-    firstLooksRunning: async () => [...firstLooks],
+    gettingToKnowTasksRunning: async () => [...gettingToKnowTasks],
     greet: async (_row, text) => {
       greeted.push(text)
       return true
@@ -233,7 +233,7 @@ async function world(
     greeted,
     dispatched,
     messaged,
-    firstLooks,
+    gettingToKnowTasks,
     parentKey,
     setNow: (at: number) => (now = at),
     settle: (value: boolean) => (settled = value)
@@ -329,14 +329,14 @@ describe('onboarding', () => {
 })
 
 describe('the second round', () => {
-  it('waits for the first looks running at onboarding and for research’s own round, then sends once', async () => {
-    const w = await world({ firstLooks: ['look-1'] })
+  it('waits for the getting-to-know tasks running at onboarding and for research’s own round, then sends once', async () => {
+    const w = await world({ gettingToKnowTasks: ['look-1'] })
     await w.research.sweep()
     const taskKey = (await w.store.assistantOnboarding.get('bot-a'))!.taskKey!
-    // The first look still runs, and so does research's own round.
+    // The getting-to-know task still runs, and so does research's own round.
     await w.research.sweep()
     expect(w.messaged).toHaveLength(0)
-    w.firstLooks.clear()
+    w.gettingToKnowTasks.clear()
     await w.research.sweep()
     expect(w.messaged).toHaveLength(0)
     await w.store.assistantSubsessions.finish('bot-a', taskKey, 'done')
@@ -348,10 +348,10 @@ describe('the second round', () => {
   })
 
   it('asks anew after a definite refusal, so a freed task slot still gets the round', async () => {
-    const w = await world({ firstLooks: ['look-1'] })
+    const w = await world({ gettingToKnowTasks: ['look-1'] })
     await w.research.sweep()
     const taskKey = (await w.store.assistantOnboarding.get('bot-a'))!.taskKey!
-    w.firstLooks.clear()
+    w.gettingToKnowTasks.clear()
     await w.store.assistantSubsessions.finish('bot-a', taskKey, 'done')
     const submissions: string[] = []
     vi.mocked(w.host.messageTask).mockImplementation(async (row, _text, submissionId) => {
@@ -373,20 +373,20 @@ describe('the second round', () => {
     expect((await w.store.assistantOnboarding.get('bot-a'))!.secondRound).toBe('sent')
   })
 
-  it('is none to send with no first look at onboarding, past the window, or once the task is gone', async () => {
+  it('is none to send with no getting-to-know task at onboarding, past the window, or once the task is gone', async () => {
     const none = await world()
     await none.research.sweep()
     await none.research.sweep()
     expect((await none.store.assistantOnboarding.get('bot-a'))!.secondRound).toBe('none')
-    const late = await world({ firstLooks: ['look-1'] })
+    const late = await world({ gettingToKnowTasks: ['look-1'] })
     await late.research.sweep()
     late.setNow(NOW + ONBOARDING_WINDOW_MS + 1)
     await late.research.sweep()
     expect((await late.store.assistantOnboarding.get('bot-a'))!.secondRound).toBe('none')
     expect(late.messaged).toHaveLength(0)
-    const gone = await world({ firstLooks: ['look-1'] })
+    const gone = await world({ gettingToKnowTasks: ['look-1'] })
     await gone.research.sweep()
-    gone.firstLooks.clear()
+    gone.gettingToKnowTasks.clear()
     await gone.store.assistantSubsessions.finish(
       'bot-a',
       (await gone.store.assistantOnboarding.get('bot-a'))!.taskKey!,

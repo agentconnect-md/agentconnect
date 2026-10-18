@@ -6,7 +6,7 @@ import { externalMemoryTools } from '../src/memory/tools.js'
 import { FOLLOW_UP_WATCH_TOOL, PROPOSE_WATCH_TOOL, RECORD_CHECK_WATCH_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
-import { FIRST_LOOK_TOOL } from '../src/mcp/ops/first-look.js'
+import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
@@ -79,7 +79,7 @@ const advertised: ToolDescriptor[] = [
   ...CODE_HOST_RESEARCH_TOOLS,
   // The widest form each is advertised in: with `watch`, toward a Control Plane that takes it (assistant-mode.md §5.14).
   FOLLOW_UP_WATCH_TOOL,
-  FIRST_LOOK_TOOL,
+  GETTING_TO_KNOW_TOOL,
   RECORD_CHECK_WATCH_TOOL,
   PROPOSE_WATCH_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,

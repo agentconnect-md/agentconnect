@@ -24,7 +24,7 @@ export { MEMBERS_DIRECTORY_FILE, withoutMembersEntries }
 
 /** Who is writing the directory, from trusted session facts only. */
 export type MembersWriter =
-  /** A first look of an internal public channel, or organization research: it writes about the people whose messages its round read, by the places it read them in. */
+  /** A getting-to-know task of an internal public channel, or organization research: it writes about the people whose messages its round read, by the places it read them in. */
   | { kind: 'builder'; seen: ReadonlyMap<string, ReadonlySet<string>> }
   /** An internal public channel's long session on a turn a person typed: the keys of who sent it and who it mentions. */
   | { kind: 'conversation'; senders: ReadonlySet<string>; mentioned: ReadonlySet<string>; place?: string }

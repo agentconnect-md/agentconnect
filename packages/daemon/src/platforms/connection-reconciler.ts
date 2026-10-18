@@ -179,8 +179,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   srcIntegrationIds(conn: unknown): string[]
   /** Where a platform's finding that a place is external goes (assistant-mode.md §5.3). */
   placeTrust(): PlaceTrust
-  /** A genuine join of the agent's bot to a conversation: true when a first look takes it, which replaces the join introduction (assistant-mode.md §5.13). */
-  firstLookOnJoin(agentId: string, integrationId: string, channel: string, inviter?: string): Promise<boolean>
+  /** A genuine join of the agent's bot to a conversation: true when a getting-to-know task takes it, which replaces the join introduction (assistant-mode.md §5.13). */
+  gettingToKnowOnJoin(agentId: string, integrationId: string, channel: string, inviter?: string): Promise<boolean>
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>
   observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
@@ -1251,7 +1251,7 @@ export class ConnectionReconciler {
    * socket reconnect that re-lists every channel never fires intros. State is
    * marked BEFORE dispatch, so a failed turn is simply skipped (never retried in a
    * loop). Not opted in ⇒ no seeding either, so enabling it later baselines cleanly.
-   * An assistant-mode agent's genuine join takes a first look instead where one will run (assistant-mode.md §5.13).
+   * An assistant-mode agent's genuine join takes a getting-to-know task instead where one will run (assistant-mode.md §5.13).
    */
   async maybeIntroduceOnJoin(
     platform: string,
@@ -1274,9 +1274,9 @@ export class ConnectionReconciler {
     if (plan.markSeeded) await store.markChannelIntroSeeded(integrationId, now)
     for (const ch of plan.introduce) {
       await store.markChannelIntro(agent.id, platform, ch, now)
-      // A first look's own introduction replaces this one where it will run.
+      // A getting-to-know task's own introduction replaces this one where it will run.
       const inviter = joined?.channel === ch ? joined.inviter : undefined
-      if (await this.host.firstLookOnJoin(agent.id, integrationId, ch, inviter).catch(() => false)) continue
+      if (await this.host.gettingToKnowOnJoin(agent.id, integrationId, ch, inviter).catch(() => false)) continue
       if (!agent.introduceOnJoin) continue
       this.log.info(`intro: agent "${agent.id}" self-introducing in channel ${ch}`)
       const traceId = randomUUID()

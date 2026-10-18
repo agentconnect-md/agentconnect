@@ -117,8 +117,8 @@ export const AssistantActivityFollowUp = z.object({
   nextCheck: time.nullable(),
   /** Newest first. */
   recentChecks: z.array(AssistantActivityCheck).max(ASSISTANT_ACTIVITY_CHECKS_MAX),
-  /** A first look of its place (assistant-mode.md §5.13), which ends after one check. */
-  firstLook: z.boolean().optional(),
+  /** A getting-to-know task of its place (assistant-mode.md §5.13), which ends after one check. */
+  gettingToKnow: z.boolean().optional(),
   /** The one object it watches (§5.14): its URL, its label once taken, and why it is not watched. */
   watch: z
     .object({

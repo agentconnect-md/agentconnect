@@ -29,8 +29,8 @@ import type { InterceptedPost } from '../assistant/drafts.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
-import { isFirstLookCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
-import { firstLookReadRefusal } from '../assistant/first-look.js'
+import { isGettingToKnowCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
+import { gettingToKnowReadRefusal } from '../assistant/getting-to-know.js'
 import { ToolArgumentError } from './ops/args.js'
 import { describeToolArgumentFailure } from './ops/argument-error.js'
 import type { Logger } from '../log.js'
@@ -155,7 +155,7 @@ import { resolveChannelArg } from './ops/channel-names.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
 import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
-import { FIRST_LOOK_ARGS, firstLook } from './ops/first-look.js'
+import { GETTING_TO_KNOW_ARGS, gettingToKnow } from './ops/getting-to-know.js'
 import {
   ASSISTANT_REMINDER_ARG_SCHEMAS,
   ASSISTANT_REMINDER_HANDLERS,
@@ -319,7 +319,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['updateCanvas', updateCanvas],
   ['recall', recall],
   ...ASSISTANT_ITEM_HANDLERS,
-  ['getToKnow', firstLook],
+  ['getToKnow', gettingToKnow],
   ...ASSISTANT_REMINDER_HANDLERS,
   ...ASSISTANT_SUBSESSION_HANDLERS
 ])
@@ -391,7 +391,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['recall', RECALL_ARGS],
   ['getToolGuide', GET_TOOL_GUIDE_ARGS],
   ...ASSISTANT_ITEM_ARG_SCHEMAS,
-  ['getToKnow', FIRST_LOOK_ARGS],
+  ['getToKnow', GETTING_TO_KNOW_ARGS],
   ...ASSISTANT_REMINDER_ARG_SCHEMAS,
   ...ASSISTANT_SUBSESSION_ARG_SCHEMAS,
   // The session's own conversation is read from trusted context alone — no arguments.
@@ -418,8 +418,8 @@ export async function executeTool(
   // assistant-mode.md §5.15: organization research reads and writes memory only; nothing it calls posts, whatever name the runtime sends.
   if (isResearchCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
     throw new Error(`${name} is not available to organization research, which cannot post or act anywhere`)
-  // assistant-mode.md §5.13: a first look reads only its own place, whatever the arguments name.
-  const elsewhere = isFirstLookCoordinate(ctx.thread) ? firstLookReadRefusal(ctx, name, args) : undefined
+  // assistant-mode.md §5.13: a getting-to-know task reads only its own place, whatever the arguments name.
+  const elsewhere = isGettingToKnowCoordinate(ctx.thread) ? gettingToKnowReadRefusal(ctx, name, args) : undefined
   if (elsewhere) throw new Error(elsewhere)
   // Collaboration Arena evaluation tools (collaboration-arena.md §6): game-owned
   // structured actions merged into the session tool set at composition time.

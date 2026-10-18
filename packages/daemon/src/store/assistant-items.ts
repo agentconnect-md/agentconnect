@@ -6,9 +6,9 @@ import type { StoreQueryResult, StoreTx } from './store-database.js'
 export const ASSISTANT_ITEM_STATUSES = ['active', 'waiting', 'done', 'dropped'] as const
 export type AssistantItemStatus = (typeof ASSISTANT_ITEM_STATUSES)[number]
 
-/** How a first look (assistant-mode.md §5.13) was started: the bot joined the place, or someone there asked. */
-export const ASSISTANT_FIRST_LOOK_TRIGGERS = ['joined', 'requested'] as const
-export type AssistantFirstLookTrigger = (typeof ASSISTANT_FIRST_LOOK_TRIGGERS)[number]
+/** How a getting-to-know task (assistant-mode.md §5.13) was started: the bot joined the place, or someone there asked. */
+export const ASSISTANT_GETTING_TO_KNOW_TRIGGERS = ['joined', 'requested'] as const
+export type AssistantGettingToKnowTrigger = (typeof ASSISTANT_GETTING_TO_KNOW_TRIGGERS)[number]
 
 /** Whether a follow-up's watch (assistant-mode.md §5.14) is taken, waits for the Control Plane to confirm it, was refused, or ended. */
 export const ASSISTANT_WATCH_STATES = ['pending', 'watching', 'refused', 'ended'] as const
@@ -54,8 +54,8 @@ export interface AssistantItem {
   shared: boolean
   /** The platform thread it was taken in, where its reports reply; null when taken outside one. */
   replyThread: string | null
-  /** Set on a first look of its place (assistant-mode.md §5.13), which ends after one check; null on a follow-up. */
-  firstLook: AssistantFirstLookTrigger | null
+  /** Set on a getting-to-know task of its place (assistant-mode.md §5.13), which ends after one check; null on a follow-up. */
+  gettingToKnow: AssistantGettingToKnowTrigger | null
   /** What it watches (§5.14); null when it is woken by time and messages only. */
   watch: AssistantItemWatch | null
   summary: string
@@ -87,7 +87,7 @@ export interface AssistantItemCreate {
   asker?: string
   shared?: boolean
   replyThread?: string
-  firstLook?: AssistantFirstLookTrigger
+  gettingToKnow?: AssistantGettingToKnowTrigger
   summary?: string
   now?: number
 }
@@ -98,7 +98,7 @@ export interface AssistantItemFilter {
   origin?: AssistantPlace
   /** Items this place may see listed: its own, and every shared one. */
   visibleFrom?: AssistantPlace
-  /** Follow-ups alone, leaving first looks out. */
+  /** Follow-ups alone, leaving getting-to-know tasks out. */
   followUpsOnly?: boolean
   limit?: number
 }
@@ -124,8 +124,8 @@ export const ASSISTANT_ITEM_LIMITS = {
   author: 512,
   refId: 256,
   taskKey: 1_024,
-  /** A first look's report: room for its 1,500 words in any language (assistant-mode.md §5.13). */
-  firstLookReport: 16_000,
+  /** A getting-to-know task's report: room for its 1,500 words in any language (assistant-mode.md §5.13). */
+  gettingToKnowReport: 16_000,
   /** A watched object's URL (assistant-mode.md §5.14). */
   watchUrl: 500
 } as const
@@ -146,7 +146,7 @@ export const ASSISTANT_ITEM_SCHEMA = `
         asker TEXT,
         shared INTEGER NOT NULL DEFAULT 0,
         replyThread TEXT,
-        firstLook TEXT,
+        gettingToKnow TEXT,
         watchUrl TEXT,
         watchTarget TEXT,
         watchState TEXT,
@@ -201,7 +201,7 @@ interface ItemRow {
   asker: string | null
   shared: number
   replyThread: string | null
-  firstLook: string | null
+  gettingToKnow: string | null
   watchUrl: string | null
   watchTarget: string | null
   watchState: string | null
@@ -241,7 +241,7 @@ const ITEM_COLUMNS = [
   'asker',
   'shared',
   'replyThread',
-  'firstLook',
+  'gettingToKnow',
   'watchUrl',
   'watchTarget',
   'watchState',
@@ -270,12 +270,12 @@ export class AssistantItemLedger {
     checkStatus(status)
     checkNextCheck(input.nextCheck)
     checkPlace(input.origin)
-    if (input.firstLook !== undefined && !ASSISTANT_FIRST_LOOK_TRIGGERS.includes(input.firstLook))
-      throw new Error(`assistant item firstLook is not one of ${ASSISTANT_FIRST_LOOK_TRIGGERS.join(', ')}`)
+    if (input.gettingToKnow !== undefined && !ASSISTANT_GETTING_TO_KNOW_TRIGGERS.includes(input.gettingToKnow))
+      throw new Error(`assistant item gettingToKnow is not one of ${ASSISTANT_GETTING_TO_KNOW_TRIGGERS.join(', ')}`)
     const id = input.id ?? randomUUID()
     await this.db.query(
       `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
-         originTransportScope, taskKey, asker, shared, replyThread, firstLook, summary, observationVersion, version,
+         originTransportScope, taskKey, asker, shared, replyThread, gettingToKnow, summary, observationVersion, version,
          createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
       [
@@ -292,7 +292,7 @@ export class AssistantItemLedger {
         input.asker ?? null,
         input.shared === true ? 1 : 0,
         input.replyThread ?? null,
-        input.firstLook ?? null,
+        input.gettingToKnow ?? null,
         input.summary ?? '',
         now,
         now
@@ -320,13 +320,13 @@ export class AssistantItemLedger {
     return row ? await this.withObservations(agentId, row) : undefined
   }
 
-  /** The place's newest first look, in any state: the record that it had one (assistant-mode.md §5.13). */
-  async latestFirstLook(agentId: string, place: AssistantPlace): Promise<AssistantItemOverview | undefined> {
+  /** The place's newest getting-to-know task, in any state: the record that it had one (assistant-mode.md §5.13). */
+  async latestGettingToKnow(agentId: string, place: AssistantPlace): Promise<AssistantItemOverview | undefined> {
     const rows = (
       await this.db.query(
         `SELECT ${itemColumns('i.')} FROM assistant_item i
          WHERE i.agentId = ? AND i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?
-           AND i.firstLook IS NOT NULL
+           AND i.gettingToKnow IS NOT NULL
          ORDER BY i.createdAt DESC, i.id LIMIT 1`,
         [agentId, place.platform, place.channel, scopeOf(place)]
       )
@@ -352,7 +352,7 @@ export class AssistantItemLedger {
       where.push('(i.shared = 1 OR (i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?))')
       params.push(filter.visibleFrom.platform, filter.visibleFrom.channel, scopeOf(filter.visibleFrom))
     }
-    if (filter.followUpsOnly === true) where.push('i.firstLook IS NULL')
+    if (filter.followUpsOnly === true) where.push('i.gettingToKnow IS NULL')
     const limit = Math.min(
       Math.max(1, Math.floor(filter.limit ?? ASSISTANT_ITEM_LIST_DEFAULT)),
       ASSISTANT_ITEM_LIST_MAX
@@ -427,7 +427,7 @@ export class AssistantItemLedger {
     const { changes } = await this.db.query(
       `UPDATE assistant_item SET watchUrl = ?, watchTarget = ?, watchState = ?, watchReason = ?, watchRepoId = ?,
          updatedAt = ?
-       WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting') AND firstLook IS NULL`,
+       WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting') AND gettingToKnow IS NULL`,
       [
         watch?.url ?? null,
         watch?.target ?? null,
@@ -447,7 +447,7 @@ export class AssistantItemLedger {
     const rows = (
       await this.db.query(
         `SELECT id, watchUrl FROM assistant_item
-         WHERE agentId = ? AND status IN ('active', 'waiting') AND firstLook IS NULL AND watchUrl IS NOT NULL
+         WHERE agentId = ? AND status IN ('active', 'waiting') AND gettingToKnow IS NULL AND watchUrl IS NOT NULL
            AND watchState IN ('pending', 'watching')
          ORDER BY createdAt, id`,
         [agentId]
@@ -558,7 +558,7 @@ export class AssistantItemLedger {
       asker: row.asker ?? null,
       shared: Number(row.shared) === 1,
       replyThread: row.replyThread ?? null,
-      firstLook: triggerOf(row.firstLook),
+      gettingToKnow: triggerOf(row.gettingToKnow),
       watch: watchOf(row),
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
@@ -605,8 +605,8 @@ const watchOf = (row: ItemRow): AssistantItemWatch | null => {
     : null
 }
 
-const triggerOf = (value: string | null | undefined): AssistantFirstLookTrigger | null =>
-  ASSISTANT_FIRST_LOOK_TRIGGERS.find((trigger) => trigger === value) ?? null
+const triggerOf = (value: string | null | undefined): AssistantGettingToKnowTrigger | null =>
+  ASSISTANT_GETTING_TO_KNOW_TRIGGERS.find((trigger) => trigger === value) ?? null
 
 // Stored as '' like append_reservation and thread_participation, so equality needs no NULL handling.
 const scopeOf = (place: AssistantPlace): string => place.transportScope ?? ''

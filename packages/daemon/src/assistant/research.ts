@@ -23,7 +23,7 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import type { CheckParent } from './follow-up-checks.js'
-import { FIRST_LOOK_DAYS, FIRST_LOOK_MAX_MESSAGES } from './first-look.js'
+import { GETTING_TO_KNOW_DAYS, GETTING_TO_KNOW_MAX_MESSAGES } from './getting-to-know.js'
 
 /** A switch-on older than this greets nobody, and the daemon's second round is given only within it. */
 export const ONBOARDING_WINDOW_MS = 24 * 60 * 60_000
@@ -96,7 +96,7 @@ the shared layer: never pass a layer.
 
 Start from what the organization already says about itself: ${input.sources}. ${codeHosts}
 Read each internal public channel you are in with getChannelHistory and getThreadHistory,
-passing its channel: newest first, at most the last ${FIRST_LOOK_DAYS} days or ${FIRST_LOOK_MAX_MESSAGES} messages of each, threads
+passing its channel: newest first, at most the last ${GETTING_TO_KNOW_DAYS} days or ${GETTING_TO_KNOW_MAX_MESSAGES} messages of each, threads
 included, to learn who works on what and what each channel is for. A private, group or shared
 channel, or one you are not in, is refused, and you never join one.
 Then search the public web from these hints: ${input.hints}, preferring the organization's
@@ -181,7 +181,7 @@ export function readerOnboardingMessage(input: {
   ].join('\n\n')
 }
 
-/** The daemon's own second round, once the first looks running at onboarding have reported. */
+/** The daemon's own second round, once the getting-to-know tasks running at onboarding have reported. */
 export const SECOND_ROUND_MESSAGE =
   'The getting-to-know tasks that were running when you started have reported. Read what they wrote in shared memory, merge ' +
   'it into organization.md, channels.md and members.md, and report again in the same four parts.'
@@ -221,8 +221,8 @@ export interface OrganizationResearchHost {
   directMessage(agentId: string, consoleUserId: string | undefined): Promise<OnboardingDirectMessage | undefined>
   /** The DM's long session, or the one its first message would key. */
   parentFor(agentId: string, place: AssistantPlace): Promise<CheckParent | undefined>
-  /** The first looks running now, by follow-up id. */
-  firstLooksRunning(agentId: string): Promise<string[]>
+  /** The getting-to-know tasks running now, by follow-up id. */
+  gettingToKnowTasksRunning(agentId: string): Promise<string[]>
   /** The hello into the DM's long session, at most once; true once admitted. `settled` runs when its turn ends. */
   greet(row: AssistantOnboardingRow, text: string, settled: () => void): Promise<boolean>
   /** Whether the DM's long session has nothing left to run, the hello's turn included. */
@@ -314,7 +314,7 @@ export class OrganizationResearch {
       taskKey,
       person: dm.name,
       enabler: enabler !== undefined,
-      firstLooks: await this.host.firstLooksRunning(agent.id),
+      gettingToKnowTasks: await this.host.gettingToKnowTasksRunning(agent.id),
       now
     })
     if (!claimed) return
@@ -430,16 +430,16 @@ export class OrganizationResearch {
       })
   }
 
-  /** The daemon's one round of its own, within the window, once the first looks running at onboarding have reported. */
+  /** The daemon's one round of its own, within the window, once the getting-to-know tasks running at onboarding have reported. */
   private async secondRound(agent: OnboardingAgent, row: AssistantOnboardingRow): Promise<void> {
     if (row.secondRound !== 'pending' || !row.taskKey) return
     const now = this.host.now()
-    if (row.firstLooks.length === 0 || now - row.enabledAt > ONBOARDING_WINDOW_MS) {
+    if (row.gettingToKnowTasks.length === 0 || now - row.enabledAt > ONBOARDING_WINDOW_MS) {
       await this.host.onboarding.settleSecondRound(agent.id, 'none', now)
       return
     }
-    const running = new Set(await this.host.firstLooksRunning(agent.id))
-    if (row.firstLooks.some((itemId) => running.has(itemId))) return
+    const running = new Set(await this.host.gettingToKnowTasksRunning(agent.id))
+    if (row.gettingToKnowTasks.some((itemId) => running.has(itemId))) return
     const task = await this.host.subsessions.get(agent.id, row.taskKey)
     if (!task) {
       await this.host.onboarding.settleSecondRound(agent.id, 'none', now)

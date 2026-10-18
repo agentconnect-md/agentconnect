@@ -72,7 +72,7 @@ async function fixture(scope: Partial<MemoryScope> = {}, guard?: MemoryWriteGuar
     undefined,
     () => record
   )
-  const full: MemoryScope = { agentId: 'agent', withOutsiders: false, recordWriter: 'first-look', ...scope }
+  const full: MemoryScope = { agentId: 'agent', withOutsiders: false, recordWriter: 'getting-to-know', ...scope }
   await provider.ensure(full, 'agent')
   const api = await createMemoryEntryService({
     provider,
@@ -101,7 +101,12 @@ describe('the record-backed shared layer', () => {
     const created = await f.api.create({ label: 'channels', text: CHANNELS })
     expect(created.state).toBe('completed')
     expect(f.record.writes).toEqual([
-      expect.objectContaining({ file: 'channels.md', baseRevision: 1, writerKind: 'first-look', content: CHANNELS })
+      expect.objectContaining({
+        file: 'channels.md',
+        baseRevision: 1,
+        writerKind: 'getting-to-know',
+        content: CHANNELS
+      })
     ])
     await expect(f.api.create({ label: 'channels', text: CHANNELS })).rejects.toMatchObject({ code: 'CONFLICT' })
 

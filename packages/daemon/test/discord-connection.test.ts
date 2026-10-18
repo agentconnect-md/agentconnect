@@ -130,7 +130,7 @@ describe('DiscordConnection gateway options', () => {
     expect(page.messages.map((m) => m.link)).toEqual(['https://discord.com/channels/@me/dm-1/500'])
   })
 
-  // assistant-mode.md §5.13: a first look reads the channel's topic; a channel without one reports none.
+  // assistant-mode.md §5.13: a getting-to-know task reads the channel's topic; a channel without one reports none.
   it('reports a channel topic', async () => {
     const connection = new DiscordConnection({
       group: { botToken: 'token', integrations: [] },

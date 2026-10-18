@@ -1220,7 +1220,7 @@ describe('executeTool: read tools', () => {
     expect(res).not.toHaveProperty('description')
   })
 
-  // assistant-mode.md §5.13: a first look reads the place's own topic and description.
+  // assistant-mode.md §5.13: a getting-to-know task reads the place's own topic and description.
   it('getCurrentChannel reports the topic and description the platform keeps', async () => {
     const getChannelInfo = vi.fn(async (id: string) => ({
       id,

@@ -412,7 +412,7 @@ export function BackgroundTaskRow({
   const parts: ReactNode[] = followUp
     ? [
         place,
-        followUp.firstLook ? tf(followUpKindKey(followUp)) : null,
+        followUp.gettingToKnow ? tf(followUpKindKey(followUp)) : null,
         <span key="state" data-subsession-state="">
           {followUp.status === 'waiting' && followUp.nextCheck
             ? tf('nextCheck', { time: shortTime(followUp.nextCheck) })

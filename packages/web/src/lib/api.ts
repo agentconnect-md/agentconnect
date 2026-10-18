@@ -3987,8 +3987,8 @@ export interface AssistantFollowUpDto {
   doneWhen: string | null
   /** Newest first, at most five; empty where the row is not visible. */
   recentChecks: AssistantFollowUpCheckDto[]
-  /** A first look of its conversation (assistant-mode.md §5.13), which ends after one check. */
-  firstLook?: boolean
+  /** A getting-to-know task of its conversation (assistant-mode.md §5.13), which ends after one check. */
+  gettingToKnow?: boolean
   /** What it watches; only where the row is visible. */
   watch?: AssistantFollowUpWatchDto
 }
@@ -4005,7 +4005,7 @@ export interface AssistantSubsessionDto {
   /** The viewer may stop its current turn, or end a follow-up. */
   canStop: boolean
   parent: { sessionId: string; title: string | null; platform: string | null; channelName: string | null } | null
-  /** Where it runs, from its own session, while its conversation has no session yet (a first look before it reports). */
+  /** Where it runs, from its own session, while its conversation has no session yet (a getting-to-know task before it reports). */
   place?: { platform: string | null; channelName: string | null }
   /** Absent from a daemon without `follow-up-tasks-v1`. */
   kind?: 'delegated' | 'follow-up' | 'approved-proposal'
@@ -6979,7 +6979,7 @@ export async function runCronNow(id: string): Promise<void> {
 export type KnowledgeKind = 'entry' | 'organization' | 'channels' | 'people'
 export type KnowledgeVisibility = 'all' | 'selected'
 export type KnowledgeSource = 'manual' | 'dream' | 'agent' | 'migration'
-export type KnowledgeWriterKind = 'research' | 'first-look' | 'conversation' | 'person'
+export type KnowledgeWriterKind = 'research' | 'getting-to-know' | 'conversation' | 'person'
 
 export interface OrganizationKnowledgeDto {
   id: string

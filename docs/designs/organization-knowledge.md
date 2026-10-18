@@ -355,7 +355,7 @@ OrganizationKnowledge
 
 OrganizationKnowledgeRevision
   knowledgeId, revision, content, summary, tags, digest,
-  source(manual|dream|agent|migration), writerKind(research|first-look|conversation|person),
+  source(manual|dream|agent|migration), writerKind(research|getting-to-know|conversation|person),
   sourceAgent/Dream/candidate/sessionIds,
   createdByUserId, reviewedByUserId, createdAt
 
@@ -635,7 +635,7 @@ no agent's place files.
 agents: the organization's assistant-mode agents write them through the memory
 tools they already have (`createMemoryEntry`, `updateMemoryEntry`,
 `listMemoryEntries`, `getMemoryEntry`) under the three names in the shared
-layer, as organization research, first looks, internal public channels'
+layer, as organization research, getting-to-know tasks, internal public channels'
 sessions on a person's turn, and a person for their own People entry do today.
 The daemon resolves the names to the record and issues `knowledge/record/read`
 and `knowledge/record/write` (§15.6); the entry's revision is the knowledge
@@ -644,7 +644,7 @@ re-reads and merges as it does for a shared-layer conflict. Every rule the
 daemon runs today (the shapes, §5.17's person and builder rules, the opt-out)
 runs before the write leaves it. The Control Plane proves the agent is placed on
 the daemon and in assistant mode, runs the shape check again, and records the
-writer kind (`research`, `first-look`, `conversation`, `person`) and the agent on
+writer kind (`research`, `getting-to-know`, `conversation`, `person`) and the agent on
 the revision as `source: agent`. The shape parser for `organization.md` and
 `channels.md` moves to the protocol package beside `members-directory.ts`, so a
 console edit is checked the same way. A Dream never updates a record entry: an

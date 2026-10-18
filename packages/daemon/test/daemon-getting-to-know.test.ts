@@ -1,4 +1,4 @@
-// The first look (assistant-mode.md §5.13): a follow-up of its place that reads the place once, within its bounds, and reports to the place's long session.
+// The getting-to-know task (assistant-mode.md §5.13): a follow-up of its place that reads the place once, within its bounds, and reports to the place's long session.
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -6,12 +6,12 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'
-import { FIRST_LOOK_TOOL } from '../src/mcp/ops/first-look.js'
+import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { LIST_TASKS_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { NO_FOLLOW_UPS, standingSummaryFor } from '../src/assistant/standing-summary.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { isAppendCoordinate } from '../src/session/append-coordinate.js'
-import { isFirstLookCoordinate } from '../src/session/subsession-coordinate.js'
+import { isGettingToKnowCoordinate } from '../src/session/subsession-coordinate.js'
 import { CHECK_MAX_FAILURES } from '../src/store/assistant-checks.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -25,7 +25,7 @@ const DAY = 24 * 60 * 60_000
 const LOOK_OPENING = 'You are getting to know'
 
 function scaffold(opts: { budget?: number; bindRules?: unknown[] } = {}): string {
-  const root = mkdtempSync(join(tmpdir(), 'ac-first-look-'))
+  const root = mkdtempSync(join(tmpdir(), 'ac-know-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
@@ -79,7 +79,7 @@ async function boot(root: string, pages: HistoryPage[] = []) {
         if (!JSON.stringify(blocks).includes(LOOK_OPENING)) return 'end_turn'
         if (behavior.look === 'throw') throw new Error('the runtime exited')
         if (behavior.look === 'hang') return await new Promise((resolve) => (cancelled = () => resolve('cancelled')))
-        const ctx = [...registered].reverse().find((c) => isFirstLookCoordinate(c.thread))!
+        const ctx = [...registered].reverse().find((c) => isGettingToKnowCoordinate(c.thread))!
         await behavior.look(ctx)
         return 'end_turn'
       }),
@@ -128,7 +128,7 @@ async function boot(root: string, pages: HistoryPage[] = []) {
     dispatched.push({ msg, callMeta, turn: turn.catch(() => undefined) })
     return turn
   }
-  const looks = () => dispatched.filter((c) => isFirstLookCoordinate(c.msg.thread))
+  const looks = () => dispatched.filter((c) => isGettingToKnowCoordinate(c.msg.thread))
   const reports = () => dispatched.filter((c) => c.msg.parentReport === true)
   const settled = async () => {
     for (let seen = -1; seen !== dispatched.length;) {
@@ -143,7 +143,7 @@ async function boot(root: string, pages: HistoryPage[] = []) {
 
 const scopeOf = (d: any): string => d.transportScopeForIntegrationIds(['int-bot-a'])
 
-/** C1's long session, which asks for a first look and hears its report. */
+/** C1's long session, which asks for a getting-to-know task and hears its report. */
 async function seedPlace(d: any) {
   const scope = scopeOf(d)
   const coordinate = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1)
@@ -173,12 +173,12 @@ const placeCtx = (place: { coordinate: string; scope: string }): SessionContext 
   channel: 'C1',
   thread: place.coordinate,
   deliveryThread: '100.1',
-  tools: [FIRST_LOOK_TOOL, LIST_TASKS_TOOL]
+  tools: [GETTING_TO_KNOW_TOOL, LIST_TASKS_TOOL]
 })
 
 const REPORT = '## How this place works\nReleases are planned here.\n\n## Recurring\nA weekly sync.'
 
-/** A first look that hands back its report. */
+/** A getting-to-know task that hands back its report. */
 const handsBack = (deps: any) => async (ctx: SessionContext) => {
   await executeTool(ctx, 'recordCheck', { observation: 'Read 2 weeks of the place.', report: REPORT, done: true }, deps)
 }
@@ -187,7 +187,7 @@ const slackTs = (ms: number): string => `${Math.floor(ms / 1000)}.000100`
 const messages = (count: number, startMs: number) =>
   Array.from({ length: count }, (_, i) => ({ ts: slackTs(startMs - i * 60_000), user: 'U1', text: `message ${i}` }))
 
-describe('a first look someone asks for', () => {
+describe('a getting-to-know task someone asks for', () => {
   it('reads its own place once, read-only, and reports to the long session with what to do next', async () => {
     const { daemon, d, behavior, registered, looks, reports, settled, deps } = await boot(scaffold())
     const place = await seedPlace(d)
@@ -206,7 +206,7 @@ describe('a first look someone asks for', () => {
     expect(prompt).toMatch(/actually do with its tools: .*sendMessage.*and your runtime’s own tools\./s)
     expect(look!.msg.initialSessionTitle).toBe('Getting to know fake')
     // Only the place's own reads, memory reads and writes, and recordCheck.
-    const tools = registered.find((c) => isFirstLookCoordinate(c.thread))!.tools.map((t) => t.name)
+    const tools = registered.find((c) => isGettingToKnowCoordinate(c.thread))!.tools.map((t) => t.name)
     for (const present of ['getChannelHistory', 'writeMemory', 'createMemoryEntry', 'updateMemoryEntry', 'recordCheck'])
       expect(tools).toContain(present)
     for (const absent of [
@@ -233,9 +233,9 @@ describe('a first look someone asks for', () => {
     expect(text).toContain('2. Under it, offer each "Where I could help" item with propose.')
     expect(text).toContain(`Its report:\n\n${REPORT}`)
 
-    // One check ends it as done; it is listed as a first look and takes no messages.
+    // One check ends it as done; it is listed as a getting-to-know task and takes no messages.
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
-    expect(item).toMatchObject({ firstLook: 'requested', status: 'done', nextCheck: null })
+    expect(item).toMatchObject({ gettingToKnow: 'requested', status: 'done', nextCheck: null })
     expect(await d.store.assistantChecks.checks('bot-a', item.id, 5)).toEqual([
       expect.objectContaining({ observation: 'Read 2 weeks of the place.', reported: true })
     ])
@@ -253,7 +253,7 @@ describe('a first look someone asks for', () => {
       text: 'Look again.',
       submissionId: randomUUID()
     })
-    expect(messaged).toMatchObject({ delivered: false, reason: 'first_look' })
+    expect(messaged).toMatchObject({ delivered: false, reason: 'getting_to_know' })
     // The standing list leaves it out: it is no commitment.
     const summary = await standingSummaryFor(d.store.assistantItems, d.agents.get('bot-a'), {
       platform: 'slack',
@@ -334,7 +334,7 @@ describe('a first look someone asks for', () => {
   })
 })
 
-describe('what a first look may read', () => {
+describe('what a getting-to-know task may read', () => {
   it('reads only its own place, back at most 30 days and 500 messages in all', async () => {
     const now = Date.now()
     const pages: HistoryPage[] = [
@@ -401,16 +401,16 @@ describe('what a first look may read', () => {
 })
 
 describe('the bot joining a place', () => {
-  it('takes one first look once the row is listed, and its report opens the place’s long session', async () => {
+  it('takes one getting-to-know task once the row is listed, and its report opens the place’s long session', async () => {
     const { daemon, d, behavior, looks, reports, settled, deps } = await boot(scaffold())
     behavior.look = handsBack(deps)
     await joins(d, 'C1', 'U0INVITER')
     await vi.waitFor(
-      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
+      async () => expect(await d.store.assistantItems.latestGettingToKnow('bot-a', place(d))).toBeDefined(),
       WAIT
     )
-    const item = await d.store.assistantItems.latestFirstLook('bot-a', place(d))
-    expect(item).toMatchObject({ firstLook: 'joined', status: 'active', title: 'Getting to know fake' })
+    const item = await d.store.assistantItems.latestGettingToKnow('bot-a', place(d))
+    expect(item).toMatchObject({ gettingToKnow: 'joined', status: 'active', title: 'Getting to know fake' })
     expect(item.asker).toMatch(/^slack:.+:U0INVITER$/)
     // Nobody spoke there yet, so its owner is the coordinate the place's first message would key.
     expect(await d.store.placeSession('bot-a', 'slack', 'C1', scopeOf(d))).toBeUndefined()
@@ -425,12 +425,12 @@ describe('the bot joining a place', () => {
     expect(opened?.thread).toBe(reports()[0]!.msg.sessionThread)
     expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'done' })
 
-    // A rejoin takes none: the first look's row is the place's record.
+    // A rejoin takes none: the getting-to-know task's row is the place's record.
     await d.store.db.prepare('DELETE FROM channel_intro WHERE agentId = ?').run('bot-a')
     await joins(d, 'C1')
-    await d.takeJoinedFirstLooks()
+    await d.takeJoinedGettingToKnowTasks()
     const rows = await d.store.assistantItems.list('bot-a', {})
-    expect(rows.filter((row: any) => row.firstLook !== null)).toHaveLength(1)
+    expect(rows.filter((row: any) => row.gettingToKnow !== null)).toHaveLength(1)
     await daemon.stop()
   })
 
@@ -450,13 +450,13 @@ describe('the bot joining a place', () => {
     })
     expect(answer).toEqual({ msgId: 'm-join', accepted: true })
     await vi.waitFor(
-      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
+      async () => expect(await d.store.assistantItems.latestGettingToKnow('bot-a', place(d))).toBeDefined(),
       WAIT
     )
     await daemon.stop()
   })
 
-  it('replaces the agent’s join introduction where a first look will run, and keeps it where none will', async () => {
+  it('replaces the agent’s join introduction where a getting-to-know task will run, and keeps it where none will', async () => {
     const { daemon, d, dispatched } = await boot(scaffold())
     const agent = d.agents.get('bot-a')
     agent.introduceOnJoin = true
@@ -464,11 +464,11 @@ describe('the bot joining a place', () => {
     const intros = () => dispatched.filter((c) => c.msg.msgId.startsWith('intro:')).map((c) => c.msg.channel)
     await joins(d, 'C1')
     await vi.waitFor(
-      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
+      async () => expect(await d.store.assistantItems.latestGettingToKnow('bot-a', place(d))).toBeDefined(),
       WAIT
     )
     expect(intros()).toEqual([])
-    // A place shared with another organization takes no first look, so the introduction stays.
+    // A place shared with another organization takes no getting-to-know task, so the introduction stays.
     await joins(d, 'C2')
     expect(intros()).toEqual(['C2'])
     await daemon.stop()
@@ -477,7 +477,7 @@ describe('the bot joining a place', () => {
   it('takes none for a conversation the Control Plane has not listed', async () => {
     const { daemon, d } = await boot(scaffold())
     await joins(d, 'C9')
-    await d.takeJoinedFirstLooks()
+    await d.takeJoinedGettingToKnowTasks()
     expect(await d.store.assistantItems.list('bot-a', {})).toEqual([])
     await daemon.stop()
   })
@@ -487,10 +487,10 @@ describe('the bot joining a place', () => {
     behavior.look = 'throw'
     await joins(d, 'C1')
     await vi.waitFor(
-      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place(d))).toBeDefined(),
+      async () => expect(await d.store.assistantItems.latestGettingToKnow('bot-a', place(d))).toBeDefined(),
       WAIT
     )
-    const item = await d.store.assistantItems.latestFirstLook('bot-a', place(d))
+    const item = await d.store.assistantItems.latestGettingToKnow('bot-a', place(d))
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()

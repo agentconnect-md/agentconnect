@@ -40,7 +40,7 @@ export function TagChips({ values, max }: { values: string[]; max?: number }) {
 
 const WRITER_KEYS = {
   research: 'research',
-  'first-look': 'firstLook',
+  'getting-to-know': 'gettingToKnow',
   conversation: 'conversation',
   person: 'person'
 } as const
