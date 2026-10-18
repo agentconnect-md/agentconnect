@@ -2412,7 +2412,8 @@ recommended).
     `discord`, `feishu`, `googlechat` or `qq`), and `<name>` is the place's name as the platform
     shows it, with no sigil; an unknown platform and a name starting with `#` or `@` are refused.
     A place is its platform and its name, the name compared without case. A trailing dash on the
-    purpose is dropped when the line is read.
+    purpose is dropped when the line is read. A line carrying a `[[link]]` is refused: Channels
+    keeps purposes only.
   - **`members.md`**: entries only, each `## <display name> (<handles>)` with its handles separated
     by commas, then at most ten lines, each starting with `Role:`, `Works on:`, `Knows about:` or
     `Ask about:` and ending as a fact line.
@@ -2554,7 +2555,7 @@ AgentConnect, and only what the organization already granted.
   - Release history and cadence, from the last 20 releases or tags, say which channel's release
     talk maps to which repository. That goes into `organization.md`'s repositories and systems,
     marked "(inferred)", and into the summary; in `channels.md` "(inferred)" means only a purpose
-    guessed from a channel's name, which the console lists as not read yet.
+    guessed from a channel's name, which the console lists under "Guessed from the name".
 - **The read path.** Today a session's code-host read tools target only the agent's workspace
   repository, and a GitHub read goes through the `gh` wrapper in the runtime's shell (§9 Q21), which
   a credential-less launch does not have. Research needs reads the bridge serves. They widen the
@@ -2984,8 +2985,8 @@ there; the Memory page does not show them (Console, below).
   "Updated <relative time> by <agent>". On a phone the rail follows the text.
 - **Channels** is a list: the platform mark, the place's name as its platform writes it, its
   purpose, and the source chip only when another place is the source. The places read come
-  first; those whose purpose is guessed from the name (`(inferred)`) follow under "Not read yet",
-  with no tag. The date is the row's hover title.
+  first; those whose purpose is guessed from the name (`(inferred)`) follow under "Guessed from
+  the name", with no tag. The date is the row's hover title.
 - **People** is cards: display name, handles, and the four fields with their sources. A person's
   own card carries Edit and Remove; removing it is the opt-out (§5.17). Nobody else's card shows
   an edit control to them.
@@ -4405,3 +4406,11 @@ reads and drops the "Reads it" / "Does not read it" labels. Since Channels lists
 as not read yet, research now writes which channel's release talk maps to which repository into
 `organization.md`'s repositories and systems, and `(inferred)` in `channels.md` means only a
 purpose guessed from the channel's name.
+
+**Seventy-seventh revision (2026-10-18)**: Channels keeps links out (issue #2810; §5.15 "Shapes").
+On test, research added `see [[name]]` links to the agent's own place files to Channels lines,
+following the general memory guidance to link liberally. The shape check now refuses a
+`channels.md` line carrying a `[[link]]`, telling the model to drop it; the prompts that teach the
+line ask for none. The Channels view's group of places guessed from their name is headed
+"Guessed from the name" (it was "Not read yet"), in quiet sentence case, saying why their purposes
+may be wrong rather than what the agent did.

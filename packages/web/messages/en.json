@@ -4344,7 +4344,7 @@
       "emptyPeople": "No one recorded yet",
       "places": "{count, plural, one {# place} other {# places}}",
       "placesRead": "{places} · {read} read",
-      "notReadYet": "Not read yet",
+      "guessedFromName": "Guessed from the name",
       "people": "{count, plural, one {# person} other {# people}}",
       "sections": {
         "products": "Products and customers",
