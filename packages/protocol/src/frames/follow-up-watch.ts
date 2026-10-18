@@ -35,7 +35,7 @@ const STATE_EVENTS: ReadonlySet<FollowUpEventKind> = new Set([
   'checks'
 ])
 
-/** A change of state wakes after one quiet minute; discussion waits 30 minutes (§5.14 Events). */
+/** A change of state wakes after one quiet minute; discussion waits five minutes (§5.14 Events). */
 export function isFollowUpStateEvent(kind: FollowUpEventKind): boolean {
   return STATE_EVENTS.has(kind)
 }

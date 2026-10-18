@@ -29,7 +29,7 @@ import type {
 
 export const STATE_QUIET_MS = 60_000
 export const STATE_CAP_MS = 10 * 60_000
-export const DISCUSSION_MS = 30 * 60_000
+export const DISCUSSION_MS = 5 * 60_000
 const RETRY_MS = 10_000
 const CLAIM_MS = 60_000
 const MAX_PER_TICK = 20
@@ -69,7 +69,7 @@ export interface FollowUpObjectEvent {
   feedback: boolean
 }
 
-/** Fold one event into a pending wake: a change of state after one quiet minute, at most ten after the first; discussion 30 minutes after it arrived. */
+/** Fold one event into a pending wake: a change of state after one quiet minute, at most ten after the first; discussion five minutes after it arrived. */
 export function foldWake(pending: FollowUpPendingWake, kind: FollowUpEventKind, at: Date): FollowUpPendingWake {
   const state = isFollowUpStateEvent(kind)
   const stateSince = pending.pendingStateSince ?? (state ? at : null)

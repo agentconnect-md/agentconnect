@@ -2032,7 +2032,7 @@ follow_up_watch { orgId, agentId, followUpId,
 
 **Events** (recommended). Two kinds, from deliveries the relay already verifies:
 
-| Watched object       | Wakes after one quiet minute: a change of state                                             | Wakes after 30 minutes: discussion                           |
+| Watched object       | Wakes after one quiet minute: a change of state                                             | Wakes after five minutes: discussion                         |
 | -------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | GitHub pull request  | merged, closed, reopened; a review approving or requesting changes; a check suite completed | a comment, a review comment, a review with text, new commits |
 | GitHub issue         | closed, reopened                                                                            | a comment                                                    |
@@ -2041,7 +2041,7 @@ follow_up_watch { orgId, agentId, followUpId,
 
 - A change of state is what people wait for. One quiet minute folds the burst a single action sends:
   a merge closes the pull request and completes its suites, and one review sends its comments.
-- Discussion waits 30 minutes, folding a conversation into one check, unless a change of state wakes
+- Discussion waits five minutes, folding a quick exchange into one check, unless a change of state wakes
   the follow-up sooner and takes it along; and it wakes a follow-up only where no session of the
   agent opened the pull request ("Two watchers", above).
 - **Admission is the lane's**, per provider, so one rule serves both consumers. On GitHub a comment
@@ -2211,7 +2211,7 @@ Gitea implements the same seam and has a feedback lane, but has no event wake in
   session opened the pull request is not woken by feedback or by discussion, and is woken by any
   change of state that is not feedback.
 - **Windows.** A change of state is due one minute after the latest, and at most ten after the
-  first; discussion 30 minutes after the first. A change of state brings a pending discussion wake
+  first; discussion five minutes after the first. A change of state brings a pending discussion wake
   along.
 - **Spacing and the budget floor are the daemon's.** The Control Plane sends a wake as its window
   closes; the 15-minute spacing and the fifth of the day's budget are applied where checks start,
@@ -4424,3 +4424,9 @@ shared-layer write and the people directory's conversation writes refused it. A 
 now a bot's only when it carries a bot id or is a `bot_message`, in the normalizer and in thread
 and channel history alike; the app id is still kept on the sender. The other platforms already
 judged by the sender's own identity, so nothing changed there.
+
+**Seventy-ninth revision (2026-10-18)**: discussion on a watched object wakes its follow-up five
+minutes after the first comment instead of 30 (issue #2810; §5.14 "Events"). A reply to a comment
+came half an hour later, which read as stalled to the person who wrote it and to the agent; five
+minutes still folds a quick exchange into one check. A change of state keeps its quiet minute and
+ten-minute cap, and the 15-minute spacing and the budget floor are unchanged.
