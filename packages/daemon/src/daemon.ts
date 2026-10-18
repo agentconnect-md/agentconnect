@@ -9848,7 +9848,7 @@ export class Daemon {
     return info
   }
 
-  /** `firstLook` (assistant-mode.md §5.13): only from its place's long session, where a first look could run. */
+  /** `getToKnow` (assistant-mode.md §5.13): only from its place's long session, where a first look could run. */
   private async requestFirstLook(ctx: SessionContext): Promise<FirstLookRequest> {
     const agentId = ctx.agentId
     const agent = this.agents.get(agentId)

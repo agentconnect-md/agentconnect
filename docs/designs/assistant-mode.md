@@ -1634,7 +1634,7 @@ needs one, so a first look's report opens it on the coordinate that first messag
   channel" in product-conventions.md) or a restricted agent's: §5.3 already says it is no place.
 - **Everything else, on request.** A place the agent was already in when the mode was switched on,
   a platform that reports no join, and a second look all wait for a person there to ask ("take a
-  first look"); the long session then calls `firstLook`, a tool offered only to a place's long
+  first look"); the long session then calls `getToKnow`, a tool offered only to a place's long
   session where a first look could run. Switching the mode on therefore posts no introduction in
   old channels, however many the agent is in.
 - A paused agent takes it on the join and runs it once resumed, as an overdue check does.
@@ -1668,11 +1668,11 @@ The read ports this adds, each declared by the platform's own module:
 
 **Repeats** (recommended). Once per place, automatically. The first look's follow-up row, kept like
 other settled rows until the agent is removed, records it per agent and place: a rejoin finds it and
-takes none, nor does switching the mode off and on take one. A person asks for another with `firstLook`,
+takes none, nor does switching the mode off and on take one. A person asks for another with `getToKnow`,
 which runs a new one; its handling updates the same topic file. One runs at a time per place, and
 asking while one runs is refused with that reason.
 
-**External places** (recommended): no first look in v1, automatic or requested, and `firstLook` is
+**External places** (recommended): no first look in v1, automatic or requested, and `getToKnow` is
 not offered there. A card in an external place goes to an internal member's DM (§5.5 "Drafts"), so
 its suggestions would leave the place, which output 3 exists to avoid; and what an introduction
 should tell people from outside is undecided (§9). A place that turns external while a first look
@@ -1747,7 +1747,7 @@ under the introduction works. For a first look, `propose` changes in four ways:
   replaces it. Where none will (not assistant mode, an external place, no history), it is sent as
   before. Whether a first look will run is judged at the join; one that waits for a row the Control
   Plane then lists as Off ends with neither.
-- **A request.** `firstLook` is offered on a place's appending long session only and checked again
+- **A request.** `getToKnow` is offered on a place's appending long session only and checked again
   on the call. One whose start is refused stays due, and the scheduled-check slot runs it.
 - **Its report.** One report round at the place's top level carries the handling, then the report;
   step 2 is the `propose` wording where the place's integration has an approval card surface, else
@@ -1766,11 +1766,11 @@ under the introduction works. For a first look, `propose` changes in four ways:
   since its one check takes none. `listTasks` lists it with kind `getting to know`, the name its
   tools and prompts use.
 - **Console.** Activity's follow-up row carries `firstLook: true` and no next check; the console
-  labels it "First look". Tool sizes: `firstLook` 433 characters with a 76-byte input schema, and a
+  labels it "First look". Tool sizes: `getToKnow` 433 characters with a 76-byte input schema, and a
   first look's `recordCheck` 244 characters with a 391-byte schema; since §5.15, 431 and 268
   characters, the schemas unchanged.
 - **The report round's `propose`.** A session's tools are fixed when it starts, so `propose` is
-  listed beside `firstLook` on a place's long session wherever the place's integration has a card
+  listed beside `getToKnow` on a place's long session wherever the place's integration has a card
   surface, and a call is refused unless its turn is a first look's report round. The report's
   delivery marks that round's call metadata with the first look, which a replay keeps. A round
   makes at most three proposals, numbered in the order made; a fourth is refused with that reason. A
@@ -2472,7 +2472,7 @@ report. So the task writes what it learned, and the long session only speaks:
   place is for, which the introduction's "one line on what you saw" rests on, then "In flight",
   "Where I could help" and "Not covered". The handling keeps the introduction, the offers and the
   one question as steps 1 to 3; a place that turned external meanwhile is told to post nothing.
-- **Tool sizes.** `firstLook` 431 characters (433 before) with its 76-byte schema; a first look's
+- **Tool sizes.** `getToKnow` 431 characters (433 before) with its 76-byte schema; a first look's
   `recordCheck` 268 characters (244 before) with its 391-byte schema. The memory writes it now gets
   are unchanged: `writeMemory` 1,609 characters, `createMemoryEntry` 478 and `updateMemoryEntry` 399. Each is within Claude Code's 2,048-character cap.
 - **Not yet:** `members.md`'s entry rules (who an entry may be about, the opt-out marker, a person's
@@ -3452,7 +3452,7 @@ is not built.
 | **P0a — continuity and one mind** | Switch and admission; gating derivation and trust levels (enabled means internal, with a warning; Slack Connect detected external); Slack DM `append`; the ledger, the standing summary, `recall` and the permission rules (read, write); drafts in external places and posts to other places (the approval record, "post" only); memory bypass closed; "ask me in a DM". **No tasks**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **P0b — tasks**                   | Minimal: direct self-delegation, now `delegateTask` (own `subsession:` coordinate, inherited visibility, no nesting, the persistent parent–child index); a daemon failure report when a task ends without reporting; a concurrency cap that refuses. Deferred until needed: the persistent outbox, recovery order, the daily budget, queueing over the cap; listing (`listTasks`), stop and steering have shipped (§5.6, §5.8)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | P1 — while nobody is around       | Shipped: minimal patrol (§5.9, #2887), `propose` from patrols (§5.10, #2895), Activity with console decisions (#2876, #2880), the webchat tasks panel and read-only task pages (#2885, #2893), per-asker recall in the asker's DM (§5.5, #2901), `remind` (§5.9), tasks' permission requests routed to their conversation under the wait cap (§5.6), stopping a delegated task from the session that delegated it (§5.8), follow-ups in place of the ledger and patrols (§5.12; console rows #3055). Next: the target check (after per-runtime tests) on the credential-less host; `handoff`; identity links pushed to the daemon. The per-person memory space shipped as memory layers for every agent                                                                                                                                                                                                                                                                                                                                  |
-| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `firstLook` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| First look (partly shipped)       | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `getToKnow` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Organization research and files   | §5.15–§5.17. Shipped (2026-10-17): the shapes of three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), checked on every write, and first looks that write them. Proposed: the files also written directly by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode. Revised (sixty-ninth revision): the three files become the organization record, knowledge entries with agent visibility, one set per organization (§5.16) |
 | P2 — cost and events              | Event wake (§5.14, being built): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | P3                                | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -4084,7 +4084,7 @@ channel, else the place layer), introduces the agent once, and offers at most th
 `propose` cards under the introduction, none being a fine outcome. The two prompts are recorded
 with the changes made to fit verified facts. Recommended for the owner to confirm: a first look is
 a follow-up the daemon takes and ends after one check, reusing the follow-up machinery, not a new
-task kind. It runs on a new join automatically and otherwise on request (`firstLook`), only where
+task kind. It runs on a new join automatically and otherwise on request (`getToKnow`), only where
 the platform declares channel history (Slack, Discord, Lark/Feishu; not Telegram), once per place,
 and never in an external place in v1. `propose` gains the report round, cards held until the
 introduction posts, and a follow-up form that turns an approval into a follow-up. It counts as one
@@ -4100,7 +4100,7 @@ exactly Slack, Discord and Lark/Feishu.
 every recommendation. A first look is a follow-up marked as one, on a check's coordinate, that the
 daemon takes when the genuine-join detection of "Introduce on channel join" sees the bot join a
 listed, not-Off, internal Slack conversation, then sending no join introduction there, or that a
-place's long session asks for with `firstLook`. It reads only its place, at most 30 days and 500
+place's long session asks for with `getToKnow`. It reads only its place, at most 30 days and 500
 messages, reports with the handling into the long session, opening it where there was none, and ends
 after one check. It counts against `dailyPatrolBudget`, yields to due follow-up checks when
 automatic, and its own session feeds no memory. The suggestions are text until the `propose`

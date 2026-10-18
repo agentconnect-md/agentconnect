@@ -196,7 +196,7 @@ describe('the research task’s session', () => {
           'createMemoryEntry'
         ])
       )
-      for (const posting of ['sendMessage', 'followUp', 'firstLook', 'listTasks', 'addReaction'])
+      for (const posting of ['sendMessage', 'followUp', 'getToKnow', 'listTasks', 'addReaction'])
         expect(names).not.toContain(posting)
       expect(ctx.memoryBinding).toEqual({
         source: 'tool',

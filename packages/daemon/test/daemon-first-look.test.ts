@@ -193,7 +193,7 @@ describe('a first look someone asks for', () => {
     const place = await seedPlace(d)
     behavior.look = handsBack(deps)
 
-    const started = (await executeTool(placeCtx(place), 'firstLook', {}, deps)) as any
+    const started = (await executeTool(placeCtx(place), 'getToKnow', {}, deps)) as any
     expect(started).toMatchObject({ started: true })
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
@@ -268,16 +268,16 @@ describe('a first look someone asks for', () => {
     const { daemon, d, behavior, looks, settled, deps } = await boot(scaffold())
     const place = await seedPlace(d)
     behavior.look = 'hang'
-    expect(await executeTool(placeCtx(place), 'firstLook', {}, deps)).toMatchObject({ started: true })
+    expect(await executeTool(placeCtx(place), 'getToKnow', {}, deps)).toMatchObject({ started: true })
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
-    expect(await executeTool(placeCtx(place), 'firstLook', {}, deps)).toMatchObject({
+    expect(await executeTool(placeCtx(place), 'getToKnow', {}, deps)).toMatchObject({
       started: false,
       reason: 'running'
     })
     await d.interruptAgentTurns('bot-a', 'stop')
     await settled()
     behavior.look = handsBack(deps)
-    expect(await executeTool(placeCtx(place), 'firstLook', {}, deps)).toMatchObject({ started: true })
+    expect(await executeTool(placeCtx(place), 'getToKnow', {}, deps)).toMatchObject({ started: true })
     await vi.waitFor(() => expect(looks()).toHaveLength(2), WAIT)
     await settled()
     await daemon.stop()
@@ -290,7 +290,7 @@ describe('a first look someone asks for', () => {
       'INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)',
       ['bot-a', 'an-earlier-check', Date.now() - 60_000]
     )
-    const refused = (await executeTool(placeCtx(place), 'firstLook', {}, deps)) as any
+    const refused = (await executeTool(placeCtx(place), 'getToKnow', {}, deps)) as any
     expect(refused).toMatchObject({ started: false, reason: 'budget' })
     expect(refused.note).toMatch(/getting to know a place counts as one\. Nothing was started; ask again after \d{4}-/)
     await daemon.stop()
@@ -300,7 +300,7 @@ describe('a first look someone asks for', () => {
     const { daemon, d, deps } = await boot(scaffold())
     const place = await seedPlace(d)
     const thread = { ...placeCtx(place), thread: '1700000000.000100' }
-    expect(await executeTool(thread, 'firstLook', {}, deps)).toMatchObject({
+    expect(await executeTool(thread, 'getToKnow', {}, deps)).toMatchObject({
       started: false,
       reason: 'not_long_session'
     })
@@ -311,7 +311,7 @@ describe('a first look someone asks for', () => {
     const { daemon, d, behavior, looks, reports, settled, deps } = await boot(scaffold())
     const place = await seedPlace(d)
     behavior.look = 'throw'
-    const started = (await executeTool(placeCtx(place), 'firstLook', {}, deps)) as any
+    const started = (await executeTool(placeCtx(place), 'getToKnow', {}, deps)) as any
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
@@ -358,7 +358,7 @@ describe('what a first look may read', () => {
       reads.push(await executeTool(ctx, 'recall', { query: 'anything' }, deps).catch((e: Error) => e.message))
       await handsBack(deps)(ctx)
     }
-    await executeTool(placeCtx(place), 'firstLook', {}, deps)
+    await executeTool(placeCtx(place), 'getToKnow', {}, deps)
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
     expect(reads[0]).toMatchObject({ hasMore: true, nextCursor: 'c2' })
@@ -390,7 +390,7 @@ describe('what a first look may read', () => {
       read = await executeTool(ctx, 'getChannelHistory', {}, deps)
       await handsBack(deps)(ctx)
     }
-    await executeTool(placeCtx(place), 'firstLook', {}, deps)
+    await executeTool(placeCtx(place), 'getToKnow', {}, deps)
     await vi.waitFor(() => expect(looks()).toHaveLength(1), WAIT)
     await settled()
     expect(read.messages.map((m: any) => m.text)).toEqual(['recent'])

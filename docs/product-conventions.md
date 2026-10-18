@@ -1488,7 +1488,7 @@ long session, which introduces the agent once and offers at most three ways it c
   listing), take none. Where a first look runs for a join, it replaces the agent's "Introduce on
   channel join" introduction to the other agents there; elsewhere that introduction is unchanged. A conversation the agent was
   already in, a platform that reports no join, and a second look wait for someone there to ask; the
-  long session then calls `firstLook`. The first look's row is the conversation's record, so
+  long session then calls `getToKnow`. The first look's row is the conversation's record, so
   rejoining, or switching assistant mode off and on, takes none. Never in a 1:1 DM or a conversation
   shared with another organization, and only where the platform lets a bot read history (Slack,
   Discord, Lark/Feishu; not Telegram, QQ or Google Chat). A paused agent runs it once resumed.
@@ -1526,7 +1526,7 @@ long session, which introduces the agent once and offers at most three ways it c
   look's own session feeds no capture: no per-turn distillation and no dream reads it.
 - **Budget and failures.** It counts as one check against `dailyCheckBudget`. An automatic one
   waits for the agent's one scheduled-check slot, runs only when no follow-up's check is due, and
-  past the budget waits for it to reset. A requested one starts at once; past the budget `firstLook`
+  past the budget waits for it to reset. A requested one starts at once; past the budget `getToKnow`
   is refused with the time the budget resets, and it is refused while another runs in that
   conversation. Failures back off as a check's do. After five in a row, an automatic one ends
   without a word in the conversation, its page saying why; a requested one ends and the conversation
