@@ -191,6 +191,8 @@ function parseChannels(text: string): ChannelLine[] {
         content,
         `writes "${name}" with a sigil; write the name as the platform shows it, without "${name![0]}"`
       )
+    if (content.includes('[['))
+      throw lineError(line, content, 'carries a [[link]]; Channels keeps purposes only, so drop the link')
     const key = `${platform}:${name!.toLowerCase()}`
     const earlier = lines.get(key)
     if (earlier !== undefined)

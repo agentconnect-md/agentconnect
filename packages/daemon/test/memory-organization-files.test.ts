@@ -184,8 +184,14 @@ describe('the organization files’ shapes', () => {
         `${CHANNELS}- [discord] release-train: again (#release-train, 2026-10-17)\n`
       )
     ).toBeUndefined()
-    expect(organizationFileRefusal('channels.md', `${CHANNELS}- [slack] ops: incidents — [[ops]]\n`)).toContain(
-      'line 7 "- [slack] ops: incidents — [[ops]]" does not end with its source and date'
+    expect(organizationFileRefusal('channels.md', `${CHANNELS}- [slack] ops: incidents\n`)).toContain(
+      'line 7 "- [slack] ops: incidents" does not end with its source and date'
+    )
+    // A link to an agent's own place file never reaches Channels, which keeps purposes only.
+    expect(
+      organizationFileRefusal('channels.md', `${CHANNELS}- [slack] ops: incidents, see [[ops]] (#ops, 2026-10-15)\n`)
+    ).toContain(
+      'line 7 "- [slack] ops: incidents, see [[ops]] (#ops, 2026-10-15)" carries a [[link]]; Channels keeps purposes only, so drop the link'
     )
   })
 

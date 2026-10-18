@@ -1759,8 +1759,8 @@ Deleting an agent removes it from every list; a Selected list left empty reads "
   and how many lines cite it; Channels as a list with each place's platform mark, its name as that
   platform writes it and its purpose, with a source chip only when another place is the source
   and the date on hover, the places the agent has read first and those it only guessed from the
-  name after them under "Not read yet"; People as cards with the name, handles and the four fields with
-  their sources. A person's own card carries Edit and Remove; no other card shows them a control.
+  name after them under "Guessed from the name"; People as cards with the name, handles and the
+  four fields with their sources. A person's own card carries Edit and Remove; no other card shows them a control.
   Owners edit and clear any entry. Revisions are listed beside the view, as on any entry page.
 - **The agent page** has a Knowledge tab with two groups, Handbook (the record entries this agent
   reads, and a link to the Knowledge page) and Library (the entries this agent reads, shown only

@@ -365,8 +365,8 @@ describe('knowledge entry page', () => {
     expect(rows[1]!.textContent).toBe('Field Teamsite visits#release')
     expect(rows[2]!.textContent).toBe('#opsincidents')
     const content = host.textContent ?? ''
-    expect(content.indexOf('Not read yet')).toBeGreaterThan(content.indexOf('site visits'))
-    expect(content.indexOf('Not read yet')).toBeLessThan(content.indexOf('incidents'))
+    expect(content.indexOf('Guessed from the name')).toBeGreaterThan(content.indexOf('site visits'))
+    expect(content.indexOf('Guessed from the name')).toBeLessThan(content.indexOf('incidents'))
     expect(content).not.toContain('inferred')
   })
 
