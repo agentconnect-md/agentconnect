@@ -23,7 +23,7 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { webchatContinuationDecision } from '../router/routing-table.js'
 import { continuationScope } from './narrowed-scope.js'
 import type { RoutingRule } from '../router/routing-rule.js'
-import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import type { NormalizedMessage } from '../messages/normalized.js'
 import { knownTimeZone } from '../messages/time-zone.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
@@ -38,6 +38,7 @@ import { LifecycleCleanupBlockedError, type CallMeta, type Pending, type QueueEn
 import { appendWebchatTextRow } from './turn-output.js'
 import { ChatSessionContinuation, type ChatReplyConnection } from '../session/chat-continuation.js'
 import type { ChatDispatchOptions } from '../session/chat-turn.js'
+import { decodeChatAttachments } from '../session/chat-attachments.js'
 import {
   UUID_RE,
   WEBCHAT_REPLAY_MAX_BYTES,
@@ -192,25 +193,7 @@ export class WebchatTransport {
       mentions,
       post,
       steer,
-      attachments: [
-        ...(inlineImages ?? []).map((image, index): Attachment => {
-          const inlineData = Buffer.from(image.data, 'base64')
-          return {
-            id: `webchat:${turnId}:${index}`,
-            name: image.name,
-            mimeType: image.mimeType,
-            size: inlineData.byteLength,
-            inlineData
-          }
-        }),
-        ...(uploadedFiles ?? []).map((file): Attachment => ({
-          id: `webchat:${turnId}:file:${file.uploadId}`,
-          name: file.name,
-          mimeType: file.mimeType,
-          size: file.size,
-          transfer: { uploadId: file.uploadId, sha256: file.sha256 }
-        }))
-      ]
+      attachments: decodeChatAttachments(turnId, { images: inlineImages, files: uploadedFiles })
     }
     const result = await this.application.prepareTurn(request)
     if (!result.accepted) return { ...result, turnId }
