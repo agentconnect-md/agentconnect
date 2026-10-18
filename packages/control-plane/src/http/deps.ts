@@ -129,6 +129,8 @@ import type { RuntimeConfigRouteDeps } from './routes/runtime-config.js'
 import type { ProviderKeyProvider } from '@agentconnect.md/protocol'
 
 export interface HttpServerConfig extends HumanAuthConfig {
+  AHP_MODE?: 'off' | 'shadow' | 'on'
+  WEBCHAT_PROTOCOL?: 'legacy' | 'ahp'
   SLACK_INSTALL_TTL_SEC?: number
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
   NODE_ENV?: 'development' | 'test' | 'production'

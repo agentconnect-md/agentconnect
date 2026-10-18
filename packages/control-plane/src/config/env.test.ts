@@ -160,3 +160,25 @@ describe('daemon pool switch (DAEMON_POOL_ENABLED)', () => {
     expect(() => loadConfig({ ...base, DAEMON_POOL_ENABLED: '1' })).toThrow()
   })
 })
+
+describe('AHP rollout switches', () => {
+  const base = { DATABASE_URL: 'postgresql://localhost/agentconnect', API_KEY_PEPPER: 'a'.repeat(32) }
+  it('keeps legacy as the default and scopes the experimental audience separately', () => {
+    expect(loadConfig(base)).toMatchObject({
+      AHP_MODE: 'off',
+      WEBCHAT_PROTOCOL: 'legacy',
+      AHP_PUBLIC_ACCESS: false,
+      AHP_TEST_KEY_IDS: []
+    })
+    expect(
+      loadConfig({ ...base, AHP_MODE: 'on', AHP_TEST_KEY_IDS: 'one, two', AHP_PUBLIC_ACCESS: 'true' })
+    ).toMatchObject({
+      WEBCHAT_PROTOCOL: 'legacy',
+      AHP_PUBLIC_ACCESS: true,
+      AHP_TEST_KEY_IDS: ['one', 'two']
+    })
+  })
+  it.each(['off', 'shadow'])('rejects AHP Webchat while the host is %s', (AHP_MODE) => {
+    expect(() => loadConfig({ ...base, AHP_MODE, WEBCHAT_PROTOCOL: 'ahp' })).toThrow('AHP_MODE=on')
+  })
+})
