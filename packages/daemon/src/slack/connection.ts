@@ -38,6 +38,7 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
+import { renderTablesForSlack } from './formatter.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -810,14 +811,17 @@ interface MemberStanding {
   fullMember: boolean
 }
 
-/**
- * Build a chat.postMessage/update payload that renders the body as a Block Kit
- * `markdown` block — Slack renders standard CommonMark there natively, so the agent's
- * markdown is sent verbatim (no markdown→mrkdwn conversion). `text` is kept as the
- * notification/accessibility fallback. Callers pre-chunk to SLACK_MARKDOWN_BLOCK_LIMIT.
- */
+/** A chat.postMessage/update payload rendering `text` as one `markdown` block; `text` stays the raw notification fallback. */
 function markdownBlock(text: string): { text: string; blocks: { type: 'markdown'; text: string }[] } {
-  return { text, blocks: [{ type: 'markdown', text }] }
+  return { text, blocks: [{ type: 'markdown', text: renderTablesForSlack(text) }] }
+}
+
+/** Rewrite the tables of every `markdown` block a caller built, so an edit shows what the first post did. */
+function renderMarkdownBlocks(blocks: unknown[]): unknown[] {
+  return blocks.map((block) => {
+    const b = block as { type?: unknown; text?: unknown }
+    return b?.type === 'markdown' && typeof b.text === 'string' ? { ...b, text: renderTablesForSlack(b.text) } : block
+  })
 }
 
 /** Slack Web API platform errors carry rejected OAuth scopes in `data.needed`.
@@ -1726,7 +1730,7 @@ export class SlackConnection implements PlatformConnection {
           channel,
           thread_ts: threadTs,
           text,
-          blocks,
+          blocks: renderMarkdownBlocks(blocks),
           unfurl_links: false,
           unfurl_media: false,
           // Block Kit chrome (status bar, cards) — mark it so the backfill skips it.
@@ -1785,7 +1789,7 @@ export class SlackConnection implements PlatformConnection {
           channel,
           ts,
           text,
-          blocks,
+          blocks: renderMarkdownBlocks(blocks),
           unfurl_links: false,
           unfurl_media: false,
           ...slackMessageMetadata({ agentAuthorId, response })
@@ -1816,7 +1820,7 @@ export class SlackConnection implements PlatformConnection {
           channel,
           ts,
           ...(text !== undefined ? { text } : {}),
-          blocks,
+          blocks: renderMarkdownBlocks(blocks),
           unfurl_links: false,
           unfurl_media: false,
           ...slackMessageMetadata({ chrome, agentAuthorId, chromeOwnerAgentId })

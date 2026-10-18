@@ -1,16 +1,4 @@
-/**
- * Last-mile Slack formatting (§9.1 / §9.3). One pure helper:
- *  - splitIntoSections: break a message into <= maxLen sections.
- *
- * The chunking algorithm itself is platform-neutral and lives in
- * messages/split-sections.ts; this module supplies the Slack-specific parts — the block
- * limit, which spans are indivisible, and the error raised when one cannot fit.
- *
- * The daemon posts the agent's reply as a Block Kit `markdown` block (which renders
- * standard CommonMark natively), so NO markdown→mrkdwn conversion happens here — the
- * agent's text is sent verbatim. We only chunk it: a single `markdown` block caps at
- * 12000 chars, so a long body is split across blocks/messages on line boundaries.
- */
+/** Last-mile Slack formatting: split a reply into `markdown` blocks and rewrite the pipe tables such a block drops. */
 
 import { splitIntoSections as splitTextIntoSections } from '../messages/split-sections.js'
 
@@ -83,24 +71,95 @@ export class UnsplittableAddressError extends Error {
   }
 }
 
-/**
- * Split text into sections no longer than maxLen, preferring line boundaries;
- * a single line longer than maxLen is hard-cut. Whitespace-only input yields no
- * sections. Content is never lost across sections — `sections.join('')` reproduces the
- * input byte for byte, including boundary newlines and the whitespace around a mention.
- *
- * A boundary that would fall INSIDE a platform address (or a caller-supplied shared-bot
- * address) is moved back to the start of that address, so the following section begins
- * with the complete token (§5.3). Moving back can only shorten a section, never grow one
- * past `maxLen`. Throws {@link UnsplittableAddressError} if a single address cannot fit.
- */
+/** Split on line boundaries into sections that fit `maxLen` once rendered, never inside an address; `join('')` is the input. */
 export function splitIntoSections(
   text: string,
   maxLen = SLACK_MARKDOWN_BLOCK_LIMIT,
   extraAddresses: readonly string[] = []
 ): string[] {
-  return splitTextIntoSections(text, maxLen, {
+  return splitFitting(text, maxLen, maxLen, extraAddresses)
+}
+
+/** Split at `cap`, halving it for any section whose rendered tables outgrow `maxLen`. */
+function splitFitting(text: string, maxLen: number, cap: number, extraAddresses: readonly string[]): string[] {
+  const sections = splitTextIntoSections(text, cap, {
     protectedSpans: protectedSpans(text, extraAddresses),
     unsplittable: (address) => new UnsplittableAddressError(address)
   })
+  return sections.flatMap((section) =>
+    cap > 1 && renderTablesForSlack(section).length > maxLen
+      ? splitFitting(section, maxLen, Math.floor(cap / 2), extraAddresses)
+      : [section]
+  )
+}
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+const TABLE_DELIMITER = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/
+
+/** Does `line` close the fence opened by `marker`: same character, at least as long, alone on its line. */
+function closesFence(line: string, marker: string): boolean {
+  const [, run = '', rest = ''] = FENCE.exec(line) ?? []
+  return run !== '' && run[0] === marker[0] && run.length >= marker.length && !rest.trim()
+}
+
+/** A row's cells, split on unescaped pipes, with `\|` unescaped as GFM does. */
+function tableCells(line: string): string[] {
+  let row = line.trim()
+  if (row.startsWith('|')) row = row.slice(1)
+  if (row.endsWith('|') && !row.endsWith('\\|')) row = row.slice(0, -1)
+  return row.split(/(?<!\\)\|/).map((cell) => cell.trim().replaceAll('\\|', '|'))
+}
+
+/** Can `line` open a table: a piped row, not indented code or a quote. */
+function isTableRow(line: string): boolean {
+  return line.includes('|') && /^ {0,3}[^ >]/.test(line)
+}
+
+/** One data row as a list item labelled by its headers; empty cells are left out. */
+function tableItem(indent: string, headers: string[], cells: string[]): string | undefined {
+  const pairs = cells.flatMap((cell, i) => {
+    if (!cell) return []
+    const name = (headers[i] ?? '').replaceAll('**', '').replace(/:$/, '').trim()
+    return [name ? `**${name}:** ${cell}` : cell]
+  })
+  return pairs.length > 0 ? `${indent}- ${pairs.join(' · ')}` : undefined
+}
+
+/** Rewrite GFM tables outside fences (a `markdown` block drops them): each row becomes `- **Header:** cell · **Header:** cell`. */
+export function renderTablesForSlack(markdown: string): string {
+  if (!markdown.includes('|')) return markdown
+  const lines = markdown.split('\n')
+  const out: string[] = []
+  let fence: string | undefined
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!
+    if (fence) {
+      out.push(line)
+      if (closesFence(line, fence)) fence = undefined
+      continue
+    }
+    const opening = FENCE.exec(line)
+    if (opening) {
+      fence = opening[1]!
+      out.push(line)
+      continue
+    }
+    const delimiter = lines[i + 1] ?? ''
+    const headers = isTableRow(line) && TABLE_DELIMITER.test(delimiter) ? tableCells(line) : undefined
+    if (!headers || !delimiter.includes('|') || tableCells(delimiter).length !== headers.length) {
+      out.push(line)
+      continue
+    }
+    const indent = /^ */.exec(line)![0]
+    let end = i + 2
+    while (end < lines.length && lines[end]!.trim() && isTableRow(lines[end]!) && !FENCE.test(lines[end]!)) end += 1
+    const rows = lines.slice(i + 2, end).flatMap((row) => tableItem(indent, headers, tableCells(row)) ?? [])
+    // A header-only table still says something: its names, as one item.
+    if (rows.length === 0 && headers.some(Boolean)) rows.push(`${indent}- ${headers.filter(Boolean).join(' · ')}`)
+    if (out.length > 0 && out.at(-1)!.trim()) out.push('')
+    out.push(...rows)
+    if (end < lines.length && lines[end]!.trim()) out.push('')
+    i = end - 1
+  }
+  return out.join('\n')
 }
