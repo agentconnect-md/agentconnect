@@ -108,7 +108,7 @@
   <text x="850" y="214" class="detail" text-anchor="middle">VS Code / CLI / custom UI</text>
   <rect x="1100" y="145" width="330" height="90" rx="12" class="box" />
   <text x="1265" y="183" class="label" text-anchor="middle">Control Plane</text>
-  <text x="1265" y="214" class="detail" text-anchor="middle">Identity · routing · metadata</text>
+  <text x="1265" y="214" class="detail" text-anchor="middle">Identity · registry · credentials</text>
 
   <path d="M 300 235 V 280" class="flow duplex" />
   <rect x="70" y="280" width="460" height="90" rx="12" class="new" />
@@ -124,7 +124,7 @@
   <path d="M 1190 235 V 440" class="control" />
   <text x="1210" y="317" class="small">Auth / routing</text>
   <path d="M 1420 235 V 258 H 1470 V 612 H 1450" class="control" />
-  <text x="1398" y="563" class="small" text-anchor="end">Control RPCs / metadata</text>
+  <text x="1398" y="563" class="small" text-anchor="end">Create / bind / metadata</text>
 
   <rect x="70" y="440" width="460" height="86" rx="12" class="box" />
   <text x="300" y="475" class="label" text-anchor="middle">Relay · legacy route</text>
@@ -132,7 +132,7 @@
   <rect x="650" y="440" width="780" height="86" rx="12" class="new" />
   <text x="1040" y="475" class="label" text-anchor="middle">Relay · authenticated AHP endpoint</text>
   <text x="1040" y="506" class="detail" text-anchor="middle">
-    Standard frames · authorized host routing · bounded forwarding
+    Standard frames · auth / audience / daemon capability gates
   </text>
 
   <rect x="50" y="590" width="1400" height="605" rx="18" class="group" />
@@ -162,7 +162,7 @@
     Shared session application port · protocol-neutral business types
   </text>
   <text x="757" y="934" class="detail" text-anchor="middle">
-    Authorized discovery / creation · admission / cancel / approve · masked events / lifecycle
+    CP-backed discovery / creation · admission / cancel / approve · masked events / lifecycle
   </text>
   <path d="M 385 950 V 1010" class="flow duplex" />
   <path d="M 907 1010 V 950" class="flow" />
@@ -196,7 +196,7 @@
   <text x="1290" y="1326" class="detail" text-anchor="middle">Telegram / other platforms</text>
   <text x="730" y="1266" class="small">off: legacy only (default)</text>
   <text x="730" y="1296" class="small">shadow: read-only projection</text>
-  <text x="730" y="1326" class="small">on: legacy + public AHP</text>
+  <text x="730" y="1326" class="small">on: legacy + authorized AHP</text>
 
   <line x1="60" y1="1374" x2="1440" y2="1374" stroke="#dbe2ec" />
   <rect x="60" y="1397" width="16" height="16" rx="3" class="new" />

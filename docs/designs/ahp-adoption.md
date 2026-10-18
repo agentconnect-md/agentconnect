@@ -130,9 +130,11 @@ The published interface must support the following client journey independently
 of the AgentConnect Web UI. Organization setup, agent configuration, and issuing
 credentials may remain administrative workflows outside AHP.
 
-1. **Connect:** configure a documented WSS endpoint and supported credential
-   mechanism. Publish token/OAuth bootstrap, scopes, expiry, and revocation
-   behavior; a CLI client must not require Webchat cookies or a private SDK.
+1. **Connect:** configure the per-agent WSS endpoint and CP-issued credential
+   profile below. The relay verifies it through the existing `rc/verify` control
+   path; neither relay nor daemon owns a credential store. Publish credential
+   provisioning, permissions, expiry, and revocation behavior; a CLI client must
+   not require Webchat cookies or a private SDK.
    Connection authentication and AHP resource/provider authentication are distinct
    concerns; an AHP `clientId` or provider credential grants no organization access.
 2. **Negotiate:** use standard `initialize` version/capability negotiation.
@@ -143,10 +145,14 @@ credentials may remain administrative workflows outside AHP.
    identities. `listSessions` returns only visible sessions in this endpoint's
    scope. Selecting a provider selects the configured AgentConnect agent and its
    existing memory/tools/policies, not an independent raw runtime.
-4. **Create or attach:** use standard `createSession` for a new conversation, or
-   subscribe to a listed session and its default chat. A new conversation enters
-   normal daemon admission/session creation. Client-supplied workspace settings
-   cannot expand the agent's existing workspace or sandbox authority.
+4. **Create or attach:** use standard `createSession` for a new single-agent
+   Webchat conversation, or subscribe to a listed session and its default chat.
+   The daemon's application port calls CP control RPCs to register the conversation
+   ownership and AHP URI binding, following section 4; it does not create a second
+   local registry. The daemon still mints the outward session identity and owns
+   execution. Webchat and AHP attach to that same conversation/session under the
+   existing authorization policy. Client-supplied workspace settings cannot expand
+   the agent's existing workspace or sandbox authority.
 5. **Interact:** send turns, receive text/tools/state, cancel, and settle supported
    approvals/input requests through standard AHP actions subject to existing
    permissions. No private roster or Webchat request is required for a basic
@@ -155,12 +161,43 @@ credentials may remain administrative workflows outside AHP.
    Generic clients and first-party clients must converge to the same authorized
    state without a private reducer or replay API.
 
-Publish endpoint scope as part of this contract. A stable logical host address
-must hide physical daemon/pod addresses and resolve to the current owner through
-the relay. Initial endpoints may expose a documented subset of agents/sessions;
-they must not advertise an organization-wide catalog that cannot be served on
-that connection. Transparent aggregation across independent hosts is separate
-work: provider discovery, channel routing, and sequence/replay scope must agree.
+The initial endpoint is per agent, provisionally
+`<PUBLIC_RELAY_URL>/ahp/agents/:agentId`. Its provider catalog exposes only that
+authorized agent; its session catalog is limited to that agent's authorized
+sessions. The relay resolves current placement without exposing daemon/pod
+addresses, and refuses a placement that cannot serve the existing session.
+It must not advertise an organization-wide catalog on this connection.
+Transparent aggregation across independent hosts is separate work: provider
+discovery, channel routing, and sequence/replay scope must agree.
+
+**Credential profile.** Reuse the CP's existing personal/service-account API-key
+family, hash lookup, membership and agent-visibility checks from
+[the agent chat API](shared-bot-relay.md#104-agent-chat-api) and
+[key permissions](daemon-api-key-auth.md#key-permissions-and-agent-selection).
+The initial full AHP profile accepts CP-issued `full` API keys in the WSS
+`Authorization: Bearer` header, still subject to the holder's role, session
+audience, continuation/approval policy, and the agent's enabled AHP API entry.
+It does not bypass authorization merely because the key is `full`.
+Today's `agent:chat` profile covers a narrower turn API; it must not silently gain
+catalog/history, cancellation, configuration, or other Webchat operations.
+Reject `read` and `agent:chat` keys for this initial profile; a later restricted
+AHP profile needs its own explicit action-permission matrix. The AI SDK and AG-UI
+routes keep their existing permissions. This is a third protocol on the same
+CP/relay auth seam, not a parallel credential system.
+
+Add a proposed `ahp-client-key` verification kind to `rc/verify`, reusing those
+CP services. Each verification re-reads organization membership, agent visibility,
+credential validity, the enabled AHP API entry, and rollout audience. Cache an
+allow verdict for at most 60 seconds and never past credential expiry, scoped to
+the credential hash, organization, agent, and authorization context. Long-lived
+AHP sockets revalidate before the grant expires; on failure, stop new reads/actions
+and close the attachment without cancelling already-admitted daemon work. During
+a CP outage, no expired grant may be extended and no new authority may be created.
+No secret enters logs, URLs, or telemetry. Browser integrations keep long-lived
+keys on a trusted backend which forwards standard AHP frames; first-party
+conversation-bound attachments can retain the existing short-lived CP token and
+`rc/verify(webchat-token)` path, with its existing scope and no extra create rights.
+OAuth is not part of the initial public profile.
 
 Public release requires endpoint and credential documentation, a capability
 matrix, and a working minimal client example using only the official AHP SDK.
@@ -174,12 +211,12 @@ state, replay policy, and lifecycle. Both call the same protocol-neutral session
 application port. Starting both services creates two client interfaces, not two
 runtime/session owners; one incoming command is dispatched through one service.
 
-The initial composition can host both modules inside the daemon, with separate
-relay ingress routes and independently managed listeners/subscriptions. Separate
-service processes are also compatible with this boundary if they use a scoped
-internal port to the owning daemon; they must not independently open ACP sessions,
-write transcripts, or compete for execution leases. Process separation is not
-required to achieve code separation and does not change the ownership model.
+This proposal defines both service modules inside the owning daemon, with
+separate relay ingress routes and independently managed listeners/subscriptions.
+Out-of-process hosting is out of scope. A later design would need to specify the
+additional data-plane hop, authorization, fencing, backpressure, and failure
+recovery before introducing it. Module separation delivers the required code
+isolation without adding a second process or execution owner in this change.
 
 Proposed controls (names are design placeholders, not existing configuration):
 
@@ -193,18 +230,35 @@ rollout cohort, and pin it for each client attachment. The second control must
 not disable third-party AHP access: Webchat can use legacy while a third-party
 client uses the enabled AHP endpoint against the same authorized session.
 
+`on` enables the service, not unrestricted exposure. The CP's rollout audience
+initially admits only explicitly allowed first-party/test credentials; widening
+it to public-profile credentials is a separate rollout decision. Require an
+explicit per-agent AHP API entry, following the existing `apiProtocols` model.
+Both gates apply even when Webchat selects AHP, and clients cannot self-assert
+membership in the first-party/test audience.
+
+The relay must also check the selected daemon's advertised AHP service/version
+capability before opening an attachment, including a first-party AHP attachment.
+Use the existing `AGENT_API_PROTOCOL_FEATURE` / `API_AG_UI_V1_FEATURE` gating
+pattern from [`agent-api.ts`](../../packages/protocol/src/agent-api.ts), with a
+new AHP capability rather than treating AG-UI support as sufficient. Re-check
+after re-resolution or reconnect. A cohort flag cannot make an older self-hosted
+daemon capable: return explicit unavailability for AHP, preserve the legacy
+route, and never send AHP frames to an unadvertised service.
+
 Keep switch evaluation at composition, bootstrap, and route-selection boundaries.
 Legacy handlers must not import AHP SDK/reducers, and AHP handlers must not import
 `WebchatTransport` or depend on `WebchatTurnStream`/`Pending` internals. Shared
 business types must contain no legacy frame or AHP SDK types.
 
-| Proposed boundary               | Owns                                                                                                             | Isolation rule                                                                                                                              |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon session application port | Authorized discovery/create/read, admission, cancel, approval/config actions, and masked domain/lifecycle events | Reuse one business implementation. Extract admission/continuation/mirroring currently embedded in Webchat once; do not duplicate it in AHP. |
-| Existing `webchat/` service     | Legacy encoding, sink, per-turn stream/replay, connection cleanup                                                | Preserve legacy behavior behind its adapter; no AHP conditionals in its state machine.                                                      |
-| New `ahp/` service              | AHP negotiation, channels, state projection, action mapping, snapshots/replay                                    | Depend on the shared port and AHP SDK, not legacy implementation details.                                                                   |
-| Relay ingress modules           | Distinct legacy and standard AHP routes/carriers                                                                 | Share only transport/auth/routing primitives; never reinterpret an established socket's protocol after a flag change.                       |
-| Frontend client adapters        | Separate legacy and AHP connections/state reducers, selected by one factory                                      | Expose a common UI-facing view/command contract. Keep protocol branches out of individual message/tool components.                          |
+| Proposed boundary               | Owns                                                                                                                                       | Isolation rule                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CP registry / auth services     | Conversation ownership, AHP URI reservations/bindings and collisions, credential verification, rollout grants                              | Control metadata only. Reach these services through scoped control RPCs; no content or AHP reducer state is stored here.                                     |
+| Daemon session application port | CP-backed authorized discovery/create, local session reads, admission, cancel, approval/config actions, and masked domain/lifecycle events | Orchestrate registry calls; do not own their facts. Extract admission/continuation/mirroring currently embedded in Webchat once; do not duplicate it in AHP. |
+| Existing `webchat/` service     | Legacy encoding, sink, per-turn stream/replay, connection cleanup                                                                          | Preserve legacy behavior behind its adapter; no AHP conditionals in its state machine.                                                                       |
+| New `ahp/` service              | AHP negotiation, channels, state projection, action mapping, snapshots/replay                                                              | Depend on the shared port and AHP SDK, not legacy implementation details.                                                                                    |
+| Relay ingress modules           | Distinct legacy and standard AHP routes/carriers                                                                                           | Share only transport/auth/routing primitives; never reinterpret an established socket's protocol after a flag change.                                        |
+| Frontend client adapters        | Separate legacy and AHP connections/state reducers, selected by one factory                                                                | Expose a common UI-facing view/command contract. Keep protocol branches out of individual message/tool components.                                           |
 
 Changing the Webchat selector affects new attachments. Existing connections stay
 on their negotiated protocol while draining; for a switch, detach the old adapter
@@ -236,14 +290,50 @@ session. This avoids changing execution ownership to match protocol vocabulary.
 The `ahp-session:/` and `ahp-chat:/` schemes below are the v1 wire shapes, not
 invented schemes. Their binding to AgentConnect identifiers is our proposal.
 The [v1 Session specification](https://github.com/microsoft/agent-host-protocol/blob/spec/v1.0.0/docs/specification/session-channel.md)
-lets the client choose the session URI for `createSession`. Persist a stable
-binding from that URI to the daemon-minted outward `sessionId`; the client must
-not have to obtain a private AgentConnect ID before making the standard request.
-Reject collisions with `SessionAlreadyExists`; a supplied URI never confers
-ownership of an existing session. Already-existing sessions can be exported at
-`ahp-session:/<sessionId>`. Once published, either form remains stable across
-restarts and is the URI returned by discovery. Deep links and internal outward
-addressing continue to use the existing `sessionId`.
+lets the client choose the session URI for `createSession`; the client must not
+obtain a private AgentConnect ID first. **The CP registry persists the stable URI
+binding and answers collisions**, alongside existing outward session metadata.
+The proposed uniqueness key is `(orgId, canonical AHP session URI)`, independent
+of daemon placement and credential identity; the row binds `agentId`, owner,
+`conversationId`, and the daemon-minted outward `sessionId`. This deliberately
+uses an organization-wide namespace even though the first endpoint is per agent.
+An atomic registry reservation arbitrates concurrent creates, including requests
+through different relays/daemons. Return `SessionAlreadyExists` for an occupied
+URI, without disclosing its owner or content; supplying a URI never grants access.
+
+Creation uses a metadata-only control flow, following
+[Webchat ownership](shared-bot-relay.md#103-hooks-and-webchat):
+
+1. The shared application port asks CP to authorize and atomically reserve the
+   URI, allocate a conversation ID, and persist the ownership tuple
+   `(conversationId, userId, agentId, orgId)`. The result is a single-agent Webchat
+   conversation with an agent-scoped session, not a bare daemon-local conversation.
+2. The owning daemon resolves that conversation's session slot and mints/persists
+   its outward `sessionId` before any runtime launch, as specified by
+   [session identity](session-concept.md#11-session-identity). It then finalizes
+   the CP binding through a control RPC fenced to the reservation and current
+   placement. CP remains the registry authority; the daemon keeps the execution
+   and transcript record. No prompt or AHP snapshot crosses this control path.
+3. Return successful `createSession` only after the binding is committed. Durable
+   reservation identity and idempotent internal RPCs reconcile an interrupted
+   create; they must not allocate another conversation, outward ID, or runtime.
+   A duplicate public create still follows the standard collision rule; an
+   authorized client recovers a lost success response through standard discovery.
+   Unfinished reservations stay unavailable until reconciled rather than being
+   reallocated while an old daemon might still own a slot.
+
+New creates and binding changes require CP availability; they fail closed during
+an outage. Already-admitted work follows the existing
+[authority lifetimes](high-availability.md#authority-lifetimes), including duty
+self-fencing for member-set daemons. A daemon-local cache cannot become a second
+registry. Webchat attaches through the same CP conversation record, so switching
+clients neither copies a transcript nor starts a second runtime.
+
+Already-existing sessions can be exported at `ahp-session:/<sessionId>` only
+after CP registers that alias through the same uniqueness check; never shadow a
+client-reserved URI. Once published, the binding remains stable across restarts
+and is returned by discovery. Existing non-Webchat sessions retain their current
+continuation rules. Deep links and outward addressing continue to use `sessionId`.
 
 | AgentConnect concept                     | Proposed AHP representation                                                               | Boundary                                                                                              |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -430,6 +520,18 @@ Before default-on and deletion of old streaming code, cover:
 - Feature-control matrix: `off + legacy`, `shadow + legacy`, `on + legacy`
   (including a simultaneous third-party AHP client), and `on + ahp`; invalid
   configurations fail explicitly.
+- An older or non-advertising daemon never receives AHP frames, including after
+  placement changes. `on` with a restricted rollout audience refuses outside
+  credentials; explicit public enablement still requires the agent's API entry.
+- CP credential verification, membership/entry revocation, and grant expiry are
+  tested during both reconnect and long-lived subscriptions. An `agent:chat` key
+  cannot gain the initial full AHP profile's broader operations.
+- Concurrent URI creates through two daemons converge on one CP reservation;
+  collision, alias registration, lost finalize replies, and crashes between
+  reservation and binding cannot create a second session owner. CP outage creates
+  no new registry facts, while admitted work respects its existing authority.
+- A third-party-created session opens in Webchat through the same CP-owned
+  conversation and daemon-owned outward session, including before the first turn.
 - Flag changes during streaming, lost acknowledgments, pending approvals, and
   reconnect preserve the same session and produce no duplicate execution.
 - Rollback drains or explicitly disconnects AHP attachments while the legacy
