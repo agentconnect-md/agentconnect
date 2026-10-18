@@ -86,6 +86,38 @@ describe('makeSessionAccessResolver', () => {
     ).toBe(true)
   })
 
+  it('expands a trusted API principal through the same verified provider identities as HTTP', async () => {
+    const plugin: SessionAccessPlugin = {
+      provider: 'feishu',
+      available: true,
+      addViewerIdentities: async ({ request, identitySet }) => {
+        expect(request.oidcSubject).toBe('verified-subject')
+        identitySet.add('feishu:lark:cli_custom_bot:on_member')
+      },
+      resolve: async () => ({ allowedScopes: [], degraded: false })
+    }
+    const deps = {
+      repos: {
+        session: {
+          getExternalScopes: async () => [],
+          getExternalAccessPolicy: async () => null
+        }
+      },
+      clock: { now: () => 1000 },
+      sessionAccessPlugins: [plugin]
+    } as unknown as HttpDeps
+    const access = await makeSessionAccessResolver(deps).forPrincipal(
+      {
+        orgId: OrgId('org-1'),
+        userId: 'user-1',
+        oidcSubject: 'verified-subject',
+        log: request().log
+      },
+      [{ visibility: 'private', externalProvider: 'feishu', externalScopeId: scope.id }]
+    )
+    expect(access.identitySet).toEqual(new Set(['user:user-1', 'feishu:lark:cli_custom_bot:on_member']))
+  })
+
   it('passes the login union_id to the Bot-app group membership resolver', async () => {
     const getExternalScopes = vi.fn(async (ids: readonly string[]) => (ids.length > 0 ? [scope] : []))
     const resolve = vi.fn(async (scopes: readonly ExternalScopeRecord[], viewer) => {

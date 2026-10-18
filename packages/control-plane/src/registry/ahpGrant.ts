@@ -11,7 +11,12 @@ const Claims = z
     user: z.string(),
     apiKeyId: z.string().optional(),
     conversationId: z.string().uuid().optional(),
-    privateSessionOwnerIdentity: z.string().optional()
+    privateSessionOwnerIdentity: z.string().optional(),
+    targetSessionId: z.string().min(1).max(256).optional(),
+    conversationPeers: z
+      .array(z.object({ sessionId: z.string().min(1).max(256), privateOwnerIdentity: z.string().optional() }))
+      .max(15)
+      .optional()
   })
   .refine((value) => Boolean(value.apiKeyId) !== Boolean(value.conversationId))
 export type AhpGrantClaims = z.infer<typeof Claims>

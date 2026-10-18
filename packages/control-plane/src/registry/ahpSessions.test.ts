@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AhpSessionBindingRepo } from '../persistence/ports.js'
+import type { AhpGrantClaims } from './ahpGrant.js'
 import { AhpSessionService } from './ahpSessions.js'
 
 const binding = {
@@ -14,7 +15,7 @@ const binding = {
 }
 const request = { orgId: 'org', agentId: 'agent', grant: 'signed', sessionUri: binding.sessionUri }
 function fixture(conversationId?: string) {
-  const claims = {
+  const claims: AhpGrantClaims = {
     orgId: 'org',
     agentId: 'agent',
     userId: 'owner',
@@ -26,6 +27,11 @@ function fixture(conversationId?: string) {
     reserve: vi.fn(async (_input: Parameters<AhpSessionBindingRepo['reserve']>[0]) => ({ ok: true, binding })),
     finalize: vi.fn(async () => ({ ok: true, binding })),
     get: vi.fn(async () => binding),
+    forSession: vi.fn(async () => binding),
+    bindExisting: vi.fn(async (_input: Parameters<AhpSessionBindingRepo['bindExisting']>[0]) => ({
+      ok: true,
+      binding
+    })),
     forConversation: vi.fn(async () => binding),
     listOwned: vi.fn(async () => [binding])
   }
@@ -33,7 +39,7 @@ function fixture(conversationId?: string) {
     repo,
     authorizeGrant,
     service: new AhpSessionService({
-      authorization: { authorizeGrant },
+      authorization: { authorizeGrant, authorizeBinding: async () => 'owner' },
       bindings: repo as unknown as AhpSessionBindingRepo
     })
   }
@@ -69,7 +75,8 @@ describe('AHP session control service', () => {
       reservationId: 'reservation',
       conversationId: 'conversation',
       sessionUri: binding.sessionUri,
-      sessionId: 'outward'
+      sessionId: 'outward',
+      callerRole: 'owner'
     })
     expect(result).not.toHaveProperty('userId')
     expect(result).not.toHaveProperty('operationId')
@@ -143,5 +150,35 @@ describe('AHP session control service', () => {
       after: 'previous',
       limit: 10
     })
+  })
+  it('exports an authorized continuation as the same outward session without creating a conversation or runtime slot', async () => {
+    const f = fixture('new-attachment-conversation')
+    f.authorizeGrant.mockResolvedValue({
+      orgId: 'org',
+      agentId: 'agent',
+      userId: 'other-authorized-member',
+      user: 'Member',
+      conversationId: 'new-attachment-conversation',
+      targetSessionId: 'outward'
+    })
+    expect(await f.service.reserve({ ...request, operationId: 'ignored' }, 'daemon')).toMatchObject({
+      ok: true,
+      sessionUri: binding.sessionUri,
+      sessionId: 'outward',
+      conversationId: 'new-attachment-conversation'
+    })
+    expect(f.repo.bindExisting).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'outward', sessionUri: 'ahp-session:/outward' })
+    )
+    expect(f.repo.reserve).not.toHaveBeenCalled()
+    expect(await f.service.resolve(request)).toMatchObject({
+      ok: true,
+      sessionId: 'outward',
+      conversationId: 'new-attachment-conversation'
+    })
+    expect(
+      await f.service.finalize({ ...request, reservationId: binding.reservationId, sessionId: 'replacement' }, 'daemon')
+    ).toEqual({ ok: false, reason: 'forbidden' })
+    expect(f.repo.finalize).not.toHaveBeenCalled()
   })
 })

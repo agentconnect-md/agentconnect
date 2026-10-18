@@ -104,7 +104,8 @@ export const AhpSessionBinding = z.strictObject({
   reservationId: z.string().uuid(),
   conversationId: z.string().uuid(),
   sessionUri: AhpSessionUri,
-  sessionId: z.string().min(1).max(256).optional()
+  sessionId: z.string().min(1).max(256).optional(),
+  callerRole: ChatCallerRole.optional()
 })
 export type AhpSessionBinding = z.infer<typeof AhpSessionBinding>
 const RegistryRefusal = z.strictObject({

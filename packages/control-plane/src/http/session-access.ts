@@ -9,6 +9,7 @@ import type {
   SessionMetaRecord
 } from '../persistence/ports.js'
 import { identitySetOf } from '../authorization/policy.js'
+import type { OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
 import type { SessionAccessIssue, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 import { ctxOf, orgOf } from './rbac.js'
@@ -26,7 +27,18 @@ export interface ResolvedSessionAccess {
   refreshFailedAt?: Date
 }
 
+export interface SessionAccessPrincipal {
+  orgId: OrgId
+  userId: string
+  oidcSubject?: string
+  log: FastifyRequest['log']
+}
+
 export interface SessionAccessResolver {
+  forPrincipal(
+    principal: SessionAccessPrincipal,
+    sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
+  ): Promise<ResolvedSessionAccess>
   forQuery(req: FastifyRequest, query: SessionFilterQuery): Promise<ResolvedSessionAccess>
   forSessions(
     req: FastifyRequest,
@@ -157,24 +169,25 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
   const pluginFor = new Map(plugins.map((plugin) => [plugin.provider, plugin]))
   const providers = [...pluginFor.keys()]
 
-  const viewerFor = async (req: FastifyRequest): Promise<SessionAccessViewer> => {
-    const viewer = {
-      request: req,
-      orgId: orgOf(req),
-      userId: ctxOf(req).userId,
-      identitySet: identitySetOf(ctxOf(req))
-    }
+  const expandViewer = async (viewer: SessionAccessViewer): Promise<SessionAccessViewer> => {
     await Promise.all(
       plugins.map(async (plugin) => {
         try {
           await plugin.addViewerIdentities?.(viewer)
         } catch (err) {
-          req.log.warn({ err, provider: plugin.provider }, 'viewer identity lookup failed')
+          viewer.request.log.warn({ err, provider: plugin.provider }, 'viewer identity lookup failed')
         }
       })
     )
     return viewer
   }
+  const viewerFor = (req: FastifyRequest) =>
+    expandViewer({
+      request: req,
+      orgId: orgOf(req),
+      userId: ctxOf(req).userId,
+      identitySet: identitySetOf(ctxOf(req))
+    })
 
   const readPolicies = (orgId: SessionAccessViewer['orgId']): Promise<PolicySnapshot> =>
     Promise.all(providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider)))
@@ -298,6 +311,33 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     return { ...access, identitySet: new Set(access.identitySet) }
   }
 
+  const forViewerSessions = async (
+    viewer: SessionAccessViewer,
+    sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
+  ): Promise<ResolvedSessionAccess> => {
+    const ids = [
+      ...new Set(sessions.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
+    ]
+    const [scopes, policies] = await Promise.all([
+      deps.repos.session.getExternalScopes(ids),
+      readPolicies(viewer.orgId)
+    ])
+    const accessIds = new Set(
+      sessions
+        .filter((session) => session.visibility === 'external')
+        .map((session) => session.externalScopeId)
+        .filter((id): id is string => id !== null)
+    )
+    const access = await cachedForScopes(
+      scopes.filter((scope) => accessIds.has(scope.id)),
+      viewer,
+      policies
+    )
+    // Private rows use scope metadata for provider branding only. Their
+    // authorization remains exact owner identity and never reaches a plugin.
+    return { ...access, externalScopes: scopes }
+  }
+
   return {
     async forQuery(req: FastifyRequest, query: SessionFilterQuery): Promise<ResolvedSessionAccess> {
       const viewer = await viewerFor(req)
@@ -310,32 +350,17 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
       ])
       return cachedForScopes(scopes, viewer, policies)
     },
-    async forSessions(
-      req: FastifyRequest,
-      sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
-    ): Promise<ResolvedSessionAccess> {
-      const viewer = await viewerFor(req)
-      const ids = [
-        ...new Set(sessions.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
-      ]
-      const [scopes, policies] = await Promise.all([
-        deps.repos.session.getExternalScopes(ids),
-        readPolicies(viewer.orgId)
-      ])
-      const accessIds = new Set(
-        sessions
-          .filter((session) => session.visibility === 'external')
-          .map((session) => session.externalScopeId)
-          .filter((id): id is string => id !== null)
-      )
-      const access = await cachedForScopes(
-        scopes.filter((scope) => accessIds.has(scope.id)),
-        viewer,
-        policies
-      )
-      // Private rows use scope metadata for provider branding only. Their
-      // authorization remains exact owner identity and never reaches a plugin.
-      return { ...access, externalScopes: scopes }
+    async forSessions(req, sessions) {
+      return forViewerSessions(await viewerFor(req), sessions)
+    },
+    async forPrincipal(principal, sessions) {
+      const viewer = await expandViewer({
+        request: { log: principal.log, ...(principal.oidcSubject ? { oidcSubject: principal.oidcSubject } : {}) },
+        orgId: principal.orgId,
+        userId: principal.userId,
+        identitySet: new Set([`user:${principal.userId}`])
+      })
+      return forViewerSessions(viewer, sessions)
     }
   }
 }
