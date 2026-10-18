@@ -106,7 +106,10 @@ beforeEach(() => {
   vi.mocked(api.listAgentMemoryEntries).mockImplementation(async (_agent, channelKey) => ({
     entries:
       channelKey === LAUNCH
-        ? [topic('launch-ref', 'q1-priorities', 'Enterprise tier first')]
+        ? [
+            topic('launch-ref', 'q1-priorities', 'Enterprise tier first'),
+            { ...topic('shared-ref', 'hiring-plan'), origin: 'inherited' as const, editable: false }
+          ]
         : [topic('shared-ref', 'hiring-plan', 'Two backend engineers')],
     consistency: 'live',
     order: 'topic'
@@ -202,6 +205,8 @@ describe('MemoryLayerBrowser tree', () => {
 
     await click(tree(), '#launch-room')
     expect(api.listAgentMemoryEntries).toHaveBeenCalledWith(AGENT, LAUNCH)
+    // The place lists only its own files; the inherited shared one stays under Shared.
+    expect(rowNames().filter((name) => name === 'hiring-plan')).toHaveLength(1)
     await click(tree(), 'q1-priorities')
     expect(api.getAgentMemoryEntry).toHaveBeenCalledWith(AGENT, 'launch-ref', LAUNCH, undefined)
     expect(reader().textContent).toContain('#launch-room')

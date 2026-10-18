@@ -118,7 +118,7 @@ function TreeRow({
   return (
     <button
       type="button"
-      className={`flex h-[30px] w-full items-center gap-[6px] border-0 pr-3 text-left [font:inherit] hover:bg-(--surface-hover) disabled:cursor-default disabled:opacity-60 ${
+      className={`flex h-[30px] w-full cursor-pointer items-center gap-[6px] border-0 pr-3 text-left [font:inherit] hover:bg-(--surface-hover) disabled:cursor-default disabled:opacity-60 ${
         selected ? 'bg-(--surface-sunken) shadow-[inset_2px_0_0_var(--brand)]' : 'bg-transparent'
       } ${className}`}
       style={{ paddingLeft: 12 + depth * 16 }}
@@ -561,8 +561,9 @@ export function MemoryLayerBrowser({
     const listing = listings[layer]
     const shown = isOpen(layer)
     const indexMatches = matches(t('memoryFile'))
-    const entries = (listing?.status === 'ready' ? listing.entries : []).filter((entry) =>
-      matches(entry.label, entry.description)
+    // An inherited entry is the Shared layer's own file, already listed there.
+    const entries = (listing?.status === 'ready' ? listing.entries : []).filter(
+      (entry) => entry.origin !== 'inherited' && matches(entry.label, entry.description)
     )
     if (filtering && listing?.status === 'ready' && !listing.cursor && !indexMatches && entries.length === 0) return
     rows.push(
