@@ -50,7 +50,7 @@ the picture it draws.
 
 ### Webchat and console
 
-- **(proposal)** [ahp-adoption.md](designs/ahp-adoption.md) — AHP v1 client synchronization on the daemon: architecture, gateway reuse boundaries, code consolidation, and phased adoption.
+- **(proposal)** [ahp-adoption.md](designs/ahp-adoption.md) — An open AHP v1 interface for third-party clients: daemon architecture, interoperability contract, gateway reuse, and code consolidation.
 - [webchat-multi-agents.md](designs/webchat-multi-agents.md) — Multi-agent webchat conversations: roster, primary agent, activation.
 - [webchat-generated-images.md](designs/webchat-generated-images.md) — Runtime-generated workspace images, explicit publication through `shareFile`, and retained inline previews in webchat.
 - [webchat-side-panels.md](designs/webchat-side-panels.md) — The session-detail right dock.

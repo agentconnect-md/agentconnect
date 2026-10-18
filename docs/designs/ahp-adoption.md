@@ -1,4 +1,4 @@
-# AHP v1 adoption: daemon-owned client session synchronization
+# AHP v1 adoption: an open client interface for AgentConnect
 
 > **Status:** Proposal; no implementation or dependency changes in this PR.
 > **Related:** [#1339](https://github.com/agentconnect-md/agentconnect/issues/1339).
@@ -9,17 +9,30 @@
 
 ## 1. Decision proposed
 
-Add an AHP host inside the existing daemon, initially as a shadow projection,
-then as the client-facing protocol for Webchat. Keep AgentConnect's execution,
+**Primary goal:** expose AgentConnect as an AHP host that any third-party client
+supporting the published protocol version, transport, and authentication profile
+can connect to. A client should be able to discover authorized agents and
+sessions, create or continue a conversation, observe execution, and perform
+permitted actions without an AgentConnect-specific client SDK or Webchat protocol.
+
+Add the host inside the existing daemon. Keep AgentConnect's execution,
 authorization, durable session identity, and transcript ownership unchanged.
-Console live views and external AHP clients can reuse that host later.
+Webchat is the initial first-party consumer and a migration vehicle; simplifying
+its synchronization code is a secondary benefit. Third-party interoperability
+is an acceptance requirement from the start, even if public availability ships
+after the internal rollout.
+
+"Any client" means interoperability within that published compatibility
+contract, not support for every optional AHP feature or every client's required
+authentication mechanism. Product-specific enhancements must be optional; the
+core conversation flow must work with a generic compatible client.
 
 Use the official AHP SDK for protocol types, negotiation, and reducers where
 applicable. Evaluate `ahp-acp-gateway` as a reference for the host implementation
 and its interoperability tests. Do not deploy its default session store and ACP
 process manager as a second owner of AgentConnect sessions.
 
-This narrows #1339 to client synchronization. It does not unify AgentConnect's
+This scopes #1339 to an open client interface and shared synchronization. It does not unify AgentConnect's
 business session model with the protocol's similarly named resources, replace
 ACP, or move collaboration routing into AHP.
 
@@ -80,9 +93,11 @@ Browsers cannot generally dial NAT-bound self-hosted daemons or cluster-internal
 pool daemons directly. The existing relay route is the proposed carrier, but
 `rd/*` is not itself a standard AHP WebSocket endpoint. Phase 1 must define the
 AHP frame envelope, connection identity, routing, authenticated principal
-propagation, backpressure, and either-hop failure signaling. An IDE integration
-also needs a compatible public AHP endpoint and an explicit credential flow;
-pointing VS Code at today's relay is not sufficient.
+propagation, backpressure, and either-hop failure signaling. Clients see standard
+AHP JSON-RPC over WebSocket at the published endpoint; the relay-to-daemon
+envelope is internal. Endpoint authentication and provider/session discovery are
+core design requirements for all clients, not a later VS Code-specific adapter.
+Pointing a third-party client at today's relay is not sufficient.
 
 This proposal removes neither CP control dependencies nor every BFF operation.
 Bounded transcript/workspace/memory reads can remain; replacing live transcript
@@ -102,20 +117,74 @@ work according to AgentConnect's recovery policy rather than synthesizing a
 successful or still-running turn. Snapshot size, historical pagination, action
 retention, and crash-safe sequence allocation are implementation gates.
 
+### 3.4 Public client contract
+
+The published interface must support the following client journey independently
+of the AgentConnect Web UI. Organization setup, agent configuration, and issuing
+credentials may remain administrative workflows outside AHP.
+
+1. **Connect:** configure a documented WSS endpoint and supported credential
+   mechanism. Publish token/OAuth bootstrap, scopes, expiry, and revocation
+   behavior; a CLI client must not require Webchat cookies or a private SDK.
+   Connection authentication and AHP resource/provider authentication are distinct
+   concerns; an AHP `clientId` or provider credential grants no organization access.
+2. **Negotiate:** use standard `initialize` version/capability negotiation.
+   Publish the supported core profile and explicit limitations. Treat unknown
+   optional capabilities according to AHP compatibility rules.
+3. **Discover:** expose authorized AgentConnect agents through the AHP root
+   provider catalog, with stable public provider identifiers mapped to agent
+   identities. `listSessions` returns only visible sessions in this endpoint's
+   scope. Selecting a provider selects the configured AgentConnect agent and its
+   existing memory/tools/policies, not an independent raw runtime.
+4. **Create or attach:** use standard `createSession` for a new conversation, or
+   subscribe to a listed session and its default chat. A new conversation enters
+   normal daemon admission/session creation. Client-supplied workspace settings
+   cannot expand the agent's existing workspace or sandbox authority.
+5. **Interact:** send turns, receive text/tools/state, cancel, and settle supported
+   approvals/input requests through standard AHP actions subject to existing
+   permissions. No private roster or Webchat request is required for a basic
+   single-agent conversation.
+6. **Recover:** reconnect and recover state through the same public protocol.
+   Generic clients and first-party clients must converge to the same authorized
+   state without a private reducer or replay API.
+
+Publish endpoint scope as part of this contract. A stable logical host address
+must hide physical daemon/pod addresses and resolve to the current owner through
+the relay. Initial endpoints may expose a documented subset of agents/sessions;
+they must not advertise an organization-wide catalog that cannot be served on
+that connection. Transparent aggregation across independent hosts is separate
+work: provider discovery, channel routing, and sequence/replay scope must agree.
+
+Public release requires endpoint and credential documentation, a capability
+matrix, and a working minimal client example using only the official AHP SDK.
+Publishing the endpoint means authenticated access, not anonymous session access.
+
 ## 4. Resource and action mapping
 
 Start with one AHP Session and one default Chat per agent-scoped AgentConnect
 session. This avoids changing execution ownership to match protocol vocabulary.
 
-| AgentConnect concept                     | Proposed AHP representation                              | Boundary                                                                                              |
-| ---------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Stable outward `sessionId`               | `ahp-session:/<sessionId>`                               | Preserve existing deep links and external addressing.                                                 |
-| One agent's conversation in that session | Stable `ahp-chat:/<chatId>` in its `defaultChat`/catalog | Persist or deterministically derive a non-sensitive chat identifier; independent of runtime restarts. |
-| Runtime `acpSessionId`                   | Host-private binding                                     | Never use it as the public channel identity.                                                          |
-| Dispatch `sessionKey`                    | No public mapping                                        | Keep platform coordinates and queue serialization private.                                            |
-| Multi-agent Webchat conversation         | Existing roster plus N Session/Chat subscriptions        | Preserve each agent's context, visibility, and continuation rules.                                    |
-| Shared conversation across daemons       | Existing routing and merged-view composition             | One host's subscriptions do not aggregate other hosts automatically.                                  |
-| Daemon execution attempt/generation      | Internal fence plus an explicit projection mapping       | An AHP sequence number is not an execution lease.                                                     |
+The `ahp-session:/` and `ahp-chat:/` schemes below are the v1 wire shapes, not
+invented schemes. Their binding to AgentConnect identifiers is our proposal.
+The [v1 Session specification](https://github.com/microsoft/agent-host-protocol/blob/spec/v1.0.0/docs/specification/session-channel.md)
+lets the client choose the session URI for `createSession`. Persist a stable
+binding from that URI to the daemon-minted outward `sessionId`; the client must
+not have to obtain a private AgentConnect ID before making the standard request.
+Reject collisions with `SessionAlreadyExists`; a supplied URI never confers
+ownership of an existing session. Already-existing sessions can be exported at
+`ahp-session:/<sessionId>`. Once published, either form remains stable across
+restarts and is the URI returned by discovery. Deep links and internal outward
+addressing continue to use the existing `sessionId`.
+
+| AgentConnect concept                     | Proposed AHP representation                                                               | Boundary                                                                                              |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Stable outward `sessionId`               | Stable AHP session URI bound to that ID; `ahp-session:/<sessionId>` for existing sessions | Honor client-chosen URIs at creation; preserve outward identity and existing deep links.              |
+| One agent's conversation in that session | Stable `ahp-chat:/<chatId>` in its `defaultChat`/catalog                                  | Persist or deterministically derive a non-sensitive chat identifier; independent of runtime restarts. |
+| Runtime `acpSessionId`                   | Host-private binding                                                                      | Never use it as the public channel identity.                                                          |
+| Dispatch `sessionKey`                    | No public mapping                                                                         | Keep platform coordinates and queue serialization private.                                            |
+| Multi-agent Webchat conversation         | Existing roster plus N Session/Chat subscriptions                                         | Preserve each agent's context, visibility, and continuation rules.                                    |
+| Shared conversation across daemons       | Existing routing and merged-view composition                                              | One host's subscriptions do not aggregate other hosts automatically.                                  |
+| Daemon execution attempt/generation      | Internal fence plus an explicit projection mapping                                        | An AHP sequence number is not an execution lease.                                                     |
 
 | AHP interaction                                  | AgentConnect behavior to preserve                                                                                                                                 |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -128,9 +197,10 @@ session. This avoids changing execution ownership to match protocol vocabulary.
 
 Capabilities must be explicit. Do not claim arbitrary multi-chat creation,
 automation, filesystem, terminal, or MCP forwarding support simply because the
-SDK defines their types. Session creation and multi-agent roster management
-can remain existing product APIs in the first migration; IDE discovery and
-creation are later interoperability work.
+SDK defines their types. Standard agent/session discovery and single-agent
+session creation belong to the required public core. Multi-agent roster
+management and other AgentConnect-specific workflows can remain product APIs
+or optional, negotiated extensions.
 
 ## 5. Consistency, authorization, and generation boundaries
 
@@ -161,6 +231,8 @@ an unfinished live reply merely because its prompt was persisted.
   unrelated log. Before Phase 1, specify durable sequencing or a negotiated
   host-incarnation mechanism with forced reinitialization/snapshot recovery.
   Do not assume v1 supplies an AgentConnect-compatible epoch field.
+  A generic client must still recover through standard connection/reconnect
+  behavior; understanding a private epoch extension cannot be a public-core prerequisite.
 - Keep durable admission/idempotency separate from client optimistic-action
   reconciliation. Lost acknowledgments and resubmitted actions must not cause
   duplicate prompts or approvals.
@@ -180,10 +252,13 @@ messages, but actual model-context injection remains a runtime capability.
 
 The projection must define how discarded output disappears or is retained as
 intermediate work in every client, including one reconnecting during discard.
-Evaluate standard v1 actions/reducers first. If a product-specific extension is
-necessary, negotiate it and document fallback behavior for generic clients.
-An arbitrary private reducer is not interoperable AHP. This mapping and a
-no-stale-output test are prerequisites for deleting `superseded` handling.
+Require a correct baseline using standard v1 actions/reducers and test it with
+an unmodified generic client. Product-specific extensions may enhance presentation,
+but must be optional and negotiated. A private reducer cannot be required to
+avoid stale output. If a correct standard representation is not yet possible,
+resolve that protocol/mapping gap before declaring the public core ready. This
+mapping and a no-stale-output test are prerequisites for deleting `superseded`
+handling and for public interoperability acceptance.
 
 ## 6. What code can become simpler
 
@@ -192,14 +267,14 @@ state retention, transport reliability, or business logic disappear. The first
 phase adds code. The benefit is realized when old paths are retired and more
 than one client shares the replacement.
 
-| Current surface                                                                                                                                                          | Proposed consolidation                                                 | What remains / deletion gate                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`webchat/transport.ts`](../../packages/daemon/src/webchat/transport.ts): `bufferWebchatStreamEvent`, `probeWebchatStream`, `resumeWebchatStream`, `pruneWebchatStreams` | One AHP subscription/replay/snapshot implementation                    | Keep admission, continuation, cancellation, deduplication, and platform mirroring. Remove only the old streaming recovery machinery after parity and rollout. |
-| [`frames/webchat.ts`](../../packages/protocol/src/frames/webchat.ts): output/done envelopes, per-turn indices, `lastIndex`                                               | Standard action envelopes and projected Chat state                     | Product-specific ingress/roster/attachment contracts and mixed-version compatibility still need adapters.                                                     |
-| [`PlaygroundProvider.tsx`](../../packages/web/src/components/console/PlaygroundProvider.tsx) and stream consumers                                                        | Shared AHP client/reducer rather than independent event reconciliation | Keep rendering, merged multi-agent views, message identity, saved-history reconciliation, and extension fallback.                                             |
-| [`webchat-daemon-bridge.ts`](../../packages/relay/src/webchat-daemon-bridge.ts)                                                                                          | Forward a defined AHP stream carrier                                   | Keep authentication, daemon routing, connection cleanup, flow control, and failure propagation.                                                               |
-| Console live transcript invalidation/refetch                                                                                                                             | Subscribe to the same projection in Phase 2                            | Metadata lists and unrelated bounded BFF reads remain; do not remove all SSE or read APIs.                                                                    |
-| New IDE/CLI clients                                                                                                                                                      | Reuse Session/Chat/ToolCall state and protocol recovery                | Each client still needs UI, endpoint discovery, credentials, and capability handling.                                                                         |
+| Current surface                                                                                                                                                                                     | Proposed consolidation                                                 | What remains / deletion gate                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`webchat/transport.ts`](../../packages/daemon/src/webchat/transport.ts): `WebchatTransport` methods `bufferWebchatStreamEvent`, `probeWebchatStream`, `resumeWebchatStream`, `pruneWebchatStreams` | One AHP subscription/replay/snapshot implementation                    | Keep admission, continuation, cancellation, deduplication, and platform mirroring. Remove only the old streaming recovery machinery after parity and rollout. |
+| [`frames/webchat.ts`](../../packages/protocol/src/frames/webchat.ts): output/done envelopes, per-turn indices, `lastIndex`                                                                          | Standard action envelopes and projected Chat state                     | Product-specific ingress/roster/attachment contracts and mixed-version compatibility still need adapters.                                                     |
+| [`PlaygroundProvider.tsx`](../../packages/web/src/components/console/PlaygroundProvider.tsx) and stream consumers                                                                                   | Shared AHP client/reducer rather than independent event reconciliation | Keep rendering, merged multi-agent views, message identity, saved-history reconciliation, and extension fallback.                                             |
+| [`webchat-daemon-bridge.ts`](../../packages/relay/src/webchat-daemon-bridge.ts)                                                                                                                     | Forward a defined AHP stream carrier                                   | Keep authentication, daemon routing, connection cleanup, flow control, and failure propagation.                                                               |
+| Console live transcript invalidation/refetch                                                                                                                                                        | Subscribe to the same projection in Phase 2                            | Metadata lists and unrelated bounded BFF reads remain; do not remove all SSE or read APIs.                                                                    |
+| New IDE/CLI clients                                                                                                                                                                                 | Reuse Session/Chat/ToolCall state and protocol recovery                | Each client still needs UI, endpoint discovery, credentials, and capability handling.                                                                         |
 
 Do not replace platform renderers, collaboration routing, task orchestration,
 memory, sandboxing, or ACP lifecycle with AHP. Avoid claiming a line-count saving
@@ -256,13 +331,22 @@ Exit criteria:
   lifecycle state, with explicit treatment of interrupted work.
 - The identity map, unsupported capabilities, and extension requirements are
   recorded; no private ACP identifiers or secrets leak into public state.
+- An official-SDK client fixture consumes the projection without first-party
+  reducers; the public core contract and standard session-creation binding are
+  exercised before Webchat-specific integrations can hide interoperability gaps.
 
-### Phase 1: Webchat behind a flag
+### Phase 1: shared AHP endpoint, with Webchat behind a flag
 
 Add the authorized relay carrier and AHP action adapter into existing execution
 entry points. Keep old clients supported during a bounded migration period.
 Roll back by selecting the old transport; never run the two paths as competing
 execution owners for one action.
+
+Implement the public-shaped endpoint and the discovery/create/attach flow from
+section 3.4 now, even if access is initially restricted to a test deployment.
+Both Webchat and an independent official-SDK client must exercise that endpoint;
+the latter must not import AgentConnect Webchat state or call private product
+APIs to run a basic conversation. Keep extensions disabled in a baseline test.
 
 Before default-on and deletion of old streaming code, cover:
 
@@ -278,16 +362,30 @@ Before default-on and deletion of old streaming code, cover:
 | Multi-agent and cross-platform continuation              | Preserve roster/scope, reply attribution, origin mirroring, and merged-history behavior.        |
 | Old/new clients during rollout                           | Explicit capability negotiation and working fallback; no silent unsupported action success.     |
 
-### Phase 2: additional clients and optional Console migration
+### Phase 2: publish third-party access; optional Console migration
 
-Reuse the same host for live Console views, then validate a real external AHP
-client against the authenticated relay endpoint. Define provider/session
-discovery and creation semantics explicitly. Do not promise full VS Code
-feature parity from Chat support alone.
+Third-party access is a required product milestone, not an optional follow-up.
+Publish the endpoint, authentication profile, supported capabilities, and
+minimal client example. Validate a real independently maintained AHP client
+(for example, VS Code) in addition to the SDK fixture, and record the tested
+client/version and any compatibility limits. It must discover an authorized
+agent, create a new session, resume an existing one, stream output, cancel,
+settle a permitted approval, and reconnect without an AgentConnect-specific
+plugin. A client that requires unsupported optional features is documented as
+outside the supported profile; do not promise full IDE feature parity from
+Chat support alone.
+
+First-party Webchat and third-party clients must also observe the same existing
+session concurrently. Passing internal Webchat tests alone does not satisfy
+this goal, and testing a standalone gateway's separate sessions does not count.
+
+Console live-view migration is optional: if adopted, its content flows through
+browser -> relay -> daemon, while the CP BFF retains bounded reads. No live AHP
+state is routed through the CP WebSocket or persisted in CP tables.
 
 Retire only the live-view polling/invalidation paths whose replacements are
 proven. Existing metadata and bounded workspace/memory APIs remain independently
-useful. If Phase 2 does not justify its cost, Phases 0-1 stand alone.
+useful. Console migration can be deferred independently of public client access.
 
 ## 9. References and scope of this change
 

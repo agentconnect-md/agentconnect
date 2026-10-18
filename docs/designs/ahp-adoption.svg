@@ -6,12 +6,13 @@
   role="img"
   aria-labelledby="title description"
 >
-  <title id="title">Proposed AgentConnect AHP v1 architecture</title>
+  <title id="title">Proposed open AHP v1 interface for AgentConnect</title>
   <desc id="description">
-    Webchat and external AHP clients connect through an authenticated relay to a proposed AHP host inside the existing
-    daemon. The host projects masked session events and delegates authorized actions to the current session core.
-    Existing storage, ACP execution, and platform renderers remain. Control Plane links carry control and metadata, not
-    live message content. Protocol and state synchronization are the proposed consolidation boundary.
+    First-party Webchat and compatible third-party AHP clients connect through a public authenticated relay to a
+    proposed AHP host inside the existing daemon. The host projects masked session events and delegates authorized
+    actions to the current session core. Existing storage, ACP execution, and platform renderers remain. Control Plane
+    links carry control and metadata, not live message content. Third-party interoperability is the primary goal; shared
+    synchronization simplifies clients.
   </desc>
   <defs>
     <marker
@@ -95,24 +96,24 @@
     </style>
   </defs>
   <rect width="1500" height="1230" fill="#fff" />
-  <text x="60" y="62" class="heading">AgentConnect + AHP v1</text>
-  <text x="60" y="96" class="detail">Proposed client synchronization layer · execution remains daemon-owned</text>
+  <text x="60" y="62" class="heading">Open AHP access to AgentConnect</text>
+  <text x="60" y="96" class="detail">First-party and third-party clients share one protocol and execution path</text>
   <rect x="1160" y="40" width="272" height="44" rx="22" fill="#f1edff" />
   <text x="1296" y="69" class="small" text-anchor="middle">PROPOSAL · DESIGN ONLY</text>
 
   <rect x="70" y="140" width="340" height="90" rx="12" class="box" />
   <text x="240" y="178" class="label" text-anchor="middle">Webchat / Console</text>
-  <text x="240" y="209" class="detail" text-anchor="middle">Shared AHP client state</text>
+  <text x="240" y="209" class="detail" text-anchor="middle">First-party AHP client</text>
   <rect x="500" y="140" width="340" height="90" rx="12" class="box" />
-  <text x="670" y="178" class="label" text-anchor="middle">VS Code / other clients</text>
-  <text x="670" y="209" class="detail" text-anchor="middle">Later interoperability phase</text>
+  <text x="670" y="178" class="label" text-anchor="middle">Third-party AHP clients</text>
+  <text x="670" y="209" class="detail" text-anchor="middle">VS Code / CLI / custom UI</text>
   <rect x="1040" y="140" width="390" height="90" rx="12" class="box" />
   <text x="1235" y="178" class="label" text-anchor="middle">Control Plane</text>
   <text x="1235" y="209" class="detail" text-anchor="middle">Identity · routing · metadata</text>
 
   <path d="M 240 230 V 263 H 385 V 300" class="flow duplex" />
   <path d="M 670 230 V 263 H 560 V 300" class="flow duplex" />
-  <text x="474" y="280" class="small" text-anchor="middle">AHP</text>
+  <text x="474" y="280" class="small" text-anchor="middle">AHP / JSON-RPC</text>
   <path d="M 1040 185 H 940 V 340 H 680" class="control" />
   <text x="805" y="325" class="small" text-anchor="middle">Routing / authorization</text>
   <path d="M 1420 230 V 420" class="control" />
@@ -120,8 +121,8 @@
   <text x="1396" y="341" class="small" text-anchor="end">and metadata</text>
 
   <rect x="300" y="300" width="380" height="80" rx="12" class="box" />
-  <text x="490" y="333" class="label" text-anchor="middle">Relay</text>
-  <text x="490" y="361" class="detail" text-anchor="middle">Authenticated frame forwarding</text>
+  <text x="490" y="333" class="label" text-anchor="middle">Relay / public WSS</text>
+  <text x="490" y="361" class="detail" text-anchor="middle">Authentication + frame forwarding</text>
 
   <rect x="50" y="420" width="1400" height="510" rx="18" class="group" />
   <text x="82" y="456" class="section">AgentConnect daemon</text>
