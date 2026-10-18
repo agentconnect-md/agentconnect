@@ -176,7 +176,7 @@ describe('a proposal on the approval record', () => {
 
 const FORM = { title: 'Release notes for 2.6', doneWhen: 'The notes are posted in the channel.', nextCheck: 5_000 }
 
-describe('a first look’s proposals and the follow-up form (assistant-mode.md §5.13)', () => {
+describe('a getting-to-know task’s proposals and the follow-up form (assistant-mode.md §5.13)', () => {
   it('records the follow-up form bound to its follow-up, with its title as its text', async () => {
     const s = await open()
     const a = agent()

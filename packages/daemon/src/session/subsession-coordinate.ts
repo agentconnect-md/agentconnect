@@ -24,17 +24,17 @@ export function isCheckCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(CHECK_COORDINATE_PREFIX)
 }
 
-// A first look (assistant-mode.md §5.13) is a follow-up's check with a narrower reach, so its segment is a check's too.
-export const FIRST_LOOK_COORDINATE_PREFIX = `${CHECK_COORDINATE_PREFIX}look-`
+// A getting-to-know task (assistant-mode.md §5.13) is a follow-up's check with a narrower reach, so its segment is a check's too.
+export const GETTING_TO_KNOW_COORDINATE_PREFIX = `${CHECK_COORDINATE_PREFIX}look-`
 
-/** The coordinate of the sub-session a first look reads its place in. */
-export function firstLookCoordinate(deliveryId: string): string {
-  return `${FIRST_LOOK_COORDINATE_PREFIX}${deliveryId}`
+/** The coordinate of the sub-session a getting-to-know task reads its place in. */
+export function gettingToKnowCoordinate(deliveryId: string): string {
+  return `${GETTING_TO_KNOW_COORDINATE_PREFIX}${deliveryId}`
 }
 
-/** Whether a session's thread segment is a first look's: only its own place's reads and memory writes, bounded, and no memory capture. */
-export function isFirstLookCoordinate(thread: string | null | undefined): boolean {
-  return typeof thread === 'string' && thread.startsWith(FIRST_LOOK_COORDINATE_PREFIX)
+/** Whether a session's thread segment is a getting-to-know task's: only its own place's reads and memory writes, bounded, and no memory capture. */
+export function isGettingToKnowCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(GETTING_TO_KNOW_COORDINATE_PREFIX)
 }
 
 // An approved proposal (assistant-mode.md §5.10) runs in a sub-session of its own kind, never replayed after a cut (§5.7 step 1).

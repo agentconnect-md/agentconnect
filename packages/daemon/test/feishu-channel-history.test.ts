@@ -92,7 +92,7 @@ describe('FeishuConnection.getChannelHistory', () => {
   })
 })
 
-// assistant-mode.md §5.13: a first look reads the chat's description; a chat without one reports none.
+// assistant-mode.md §5.13: a getting-to-know task reads the chat's description; a chat without one reports none.
 describe('FeishuConnection.getChannelInfo', () => {
   it('reports the chat description', async () => {
     const chats: Record<string, { name?: string; description?: string; chatMode?: string }> = {

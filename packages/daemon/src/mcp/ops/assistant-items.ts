@@ -22,8 +22,8 @@ import { parseArgs, requiredString } from './args.js'
 /** The ledger calls a check's tools make. */
 export type AssistantItemLedgerPort = Pick<AssistantItemLedger, 'get' | 'appendObservation' | 'schedule'>
 
-/** What a request for a first look says back. */
-export type FirstLookRequest =
+/** What a request for a getting-to-know task says back. */
+export type GettingToKnowRequest =
   { kind: 'started'; taskId: string } | { kind: 'refused'; reason: string; message: string }
 
 /** What `followUp` asks the daemon to take. */
@@ -58,10 +58,10 @@ export interface AssistantItemDeps {
     askerFor(ctx: SessionContext): Promise<string | undefined>
     /** Take a follow-up of the session's place (assistant-mode.md §5.12). */
     take?(ctx: SessionContext, input: FollowUpInput): Promise<AssistantItem>
-    /** Start a first look of the session's place, as its long session asked (assistant-mode.md §5.13). */
-    firstLook?(ctx: SessionContext): Promise<FirstLookRequest>
-    /** A proposal of the place's long session on the round a first look reports back (§5.13); refused on any other. */
-    proposeAfterFirstLook?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
+    /** Start a getting-to-know task of the session's place, as its long session asked (assistant-mode.md §5.13). */
+    gettingToKnow?(ctx: SessionContext): Promise<GettingToKnowRequest>
+    /** A proposal of the place's long session on the round a getting-to-know task reports back (§5.13); refused on any other. */
+    proposeAfterGettingToKnow?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
     /** The follow-ups' watches; absent when the Control Plane takes none, so `watch` is refused. */
     watches?(): FollowUpWatchToolPort | undefined
     /** A check's side, in the follow-up's own session. */
@@ -137,8 +137,8 @@ export const MIN_NEXT_CHECK_MS = 5 * 60_000
 /** A check's `recordCheck` (assistant-mode.md §5.12): what it saw, always, its schedule, and an optional report. */
 export const RECORD_CHECK_ARGS = z.object({
   observation: boundedString('observation', ASSISTANT_ITEM_LIMITS.observation),
-  // A first look's report is longer; a follow-up's is held to an observation's length below.
-  report: optionalBoundedString('report', ASSISTANT_ITEM_LIMITS.firstLookReport, 1),
+  // A getting-to-know task's report is longer; a follow-up's is held to an observation's length below.
+  report: optionalBoundedString('report', ASSISTANT_ITEM_LIMITS.gettingToKnowReport, 1),
   nextCheck: nextCheckArg,
   done: z
     .boolean('argument done must be a boolean')
@@ -294,7 +294,7 @@ export const RECORD_CHECK_TOOL: ToolDescriptor = {
   )
 }
 
-/** A check's third outcome (assistant-mode.md §5.10), and a first look's suggestions (§5.13): ask for approval to act. */
+/** A check's third outcome (assistant-mode.md §5.10), and a getting-to-know task's suggestions (§5.13): ask for approval to act. */
 export const PROPOSE_TOOL: ToolDescriptor = {
   name: 'propose',
   description:
@@ -450,7 +450,7 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   const itemId = port ? await port.itemFor(ctx) : undefined
   if (!port || itemId === undefined) throw new Error('this check has ended; nothing was written')
   const item = await ledger.get(ctx.agentId, itemId)
-  if (item?.firstLook) return await handBackFirstLook(ctx, input, itemId, ledger, port)
+  if (item?.gettingToKnow) return await handBackGettingToKnow(ctx, input, itemId, ledger, port)
   if (input.report !== undefined && input.report.length > ASSISTANT_ITEM_LIMITS.observation)
     throw new Error(
       `argument report must be at most ${ASSISTANT_ITEM_LIMITS.observation} characters; nothing was written`
@@ -490,8 +490,8 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   }
 }
 
-/** A first look hands back its one report (assistant-mode.md §5.13); its check's end delivers it and marks it done. */
-async function handBackFirstLook(
+/** A getting-to-know task hands back its one report (assistant-mode.md §5.13); its check's end delivers it and marks it done. */
+async function handBackGettingToKnow(
   ctx: SessionContext,
   input: z.infer<typeof RECORD_CHECK_ARGS>,
   itemId: string,
@@ -507,16 +507,16 @@ async function handBackFirstLook(
   return { ok: true, report: 'passed on when this task ends; end your turn now' }
 }
 
-/** A check asks for approval to act (assistant-mode.md §5.10), as does a place's long session after a first look (§5.13); it runs nothing itself. */
+/** A check asks for approval to act (assistant-mode.md §5.10), as does a place's long session after a getting-to-know task (§5.13); it runs nothing itself. */
 export const propose: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
-  const afterFirstLook = deps.assistantItems?.proposeAfterFirstLook
+  const afterGettingToKnow = deps.assistantItems?.proposeAfterGettingToKnow
   const check = isCheckCoordinate(ctx.thread)
-  if (!check && (!afterFirstLook || !ctx.tools.some((tool) => tool.name === 'propose')))
+  if (!check && (!afterGettingToKnow || !ctx.tools.some((tool) => tool.name === 'propose')))
     throw new Error('propose is available only in a follow-up’s check')
   const input = parseArgs(PROPOSE_ARGS, args)
   ledgerOf(ctx, deps)
   if (input.followUp?.watch !== undefined) watchesOf(deps).check(input.followUp.watch)
-  if (!check) return await afterFirstLook!(ctx, input)
+  if (!check) return await afterGettingToKnow!(ctx, input)
   const port = deps.assistantItems?.check
   if (!port?.propose) throw new Error('this check has ended; nothing was proposed')
   return await port.propose(ctx, input)

@@ -117,7 +117,7 @@ describe('the read-port registry', () => {
       expect(reportsSharedConversations(platform), platform).toBe(false)
   })
 
-  // assistant-mode.md §5.13: a first look runs only where the platform declares channel history.
+  // assistant-mode.md §5.13: a getting-to-know task runs only where the platform declares channel history.
   it('declares channel history exactly where the adapter reads it', () => {
     for (const [platform, ctor] of [
       ['slack', SlackConnection],

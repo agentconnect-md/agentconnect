@@ -250,8 +250,8 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
         const state = followUpState(row, item)
         return {
           taskId: row.childSessionKey,
-          // A first look is a follow-up that reads its place once and takes no messages (assistant-mode.md §5.13).
-          kind: item.firstLook ? 'getting to know' : kind,
+          // A getting-to-know task is a follow-up that reads its place once and takes no messages (assistant-mode.md §5.13).
+          kind: item.gettingToKnow ? 'getting to know' : kind,
           label: oneLine(item.title),
           state,
           startedAt: new Date(row.createdAt).toISOString(),

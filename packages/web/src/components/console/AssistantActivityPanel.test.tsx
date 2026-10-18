@@ -210,7 +210,7 @@ const PROPOSAL: AssistantDraftDto = {
   createdAt: '2026-10-09T09:00:00.000Z',
   expiresAt: '2026-10-10T09:00:00.000Z'
 }
-/** A first look's follow-up form: approving takes this follow-up instead of running a task (assistant-mode.md §5.13). */
+/** A getting-to-know task's follow-up form: approving takes this follow-up instead of running a task (assistant-mode.md §5.13). */
 const FOLLOW_UP_FORM: AssistantDraftDto = {
   ...PROPOSAL,
   id: 'proposal-2',
@@ -480,19 +480,19 @@ describe('follow-ups in Activity', () => {
     expect(line.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
   })
 
-  // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
-  it('labels a first look as one', async () => {
-    mocks.subsessions = [{ ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true, nextCheck: null } }]
+  // assistant-mode.md §5.13: a getting-to-know task is a follow-up row labelled as one.
+  it('labels a getting-to-know task as one', async () => {
+    mocks.subsessions = [{ ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, gettingToKnow: true, nextCheck: null } }]
     const host = await mount(false)
     expect(meta(taskRow(host, 'sid-follow'))).toBe('#support · Getting to know · Waiting · last Oct 15, 9:00 AM')
   })
 
   // Its place's long session opens only once it reports, so while it runs its own session names the place.
-  it('names a running first look’s place from its own session, then by its conversation once it reports', async () => {
+  it('names a running getting-to-know task’s place from its own session, then by its conversation once it reports', async () => {
     const look: AssistantSubsessionDto = {
       ...FOLLOW_UP,
       title: 'Getting to know release',
-      followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], firstLook: true }
+      followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], gettingToKnow: true }
     }
     mocks.subsessions = [{ ...look, parent: null, place: { platform: 'slack', channelName: 'release' } }]
     const running = await mount(false)
@@ -512,14 +512,14 @@ describe('follow-ups in Activity', () => {
     expect(link.getAttribute('href')).toContain('/sessions/sid-place')
   })
 
-  it('never names a running first look’s place by its title when its channel has no name', async () => {
+  it('never names a running getting-to-know task’s place by its title when its channel has no name', async () => {
     mocks.subsessions = [
       {
         ...FOLLOW_UP,
         title: 'Getting to know release',
         parent: null,
         place: { platform: 'slack', channelName: null },
-        followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], firstLook: true }
+        followUp: { ...FOLLOW_UP.followUp!, status: 'checking', nextCheck: null, recentChecks: [], gettingToKnow: true }
       }
     ]
     const host = await mount(false)

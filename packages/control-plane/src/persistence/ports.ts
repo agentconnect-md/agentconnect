@@ -6787,7 +6787,7 @@ export type OrganizationArtifactSource = 'manual' | 'dream' | 'agent' | 'migrati
 export type OrganizationKnowledgeKind = 'entry' | 'organization' | 'channels' | 'people'
 export type OrganizationRecordKind = Exclude<OrganizationKnowledgeKind, 'entry'>
 export type OrganizationKnowledgeVisibility = 'all' | 'selected'
-export type OrganizationKnowledgeWriterKind = 'research' | 'first-look' | 'conversation' | 'person'
+export type OrganizationKnowledgeWriterKind = 'research' | 'getting-to-know' | 'conversation' | 'person'
 /** The agent an organization read is served for, and whether its conversation holds outsiders (§15.3). */
 export interface KnowledgeReader {
   agentId: string

@@ -152,7 +152,7 @@ export interface ProposalInput {
   task?: string
   /** The follow-up form (§5.13): the follow-up an approval takes in place of a task. */
   followUp?: AssistantProposalFollowUp
-  /** A first look report round's proposal (§5.13): recorded now, carded once the round's reply posts. */
+  /** A getting-to-know task report round's proposal (§5.13): recorded now, carded once the round's reply posts. */
   hold?: { round: string; seq: number }
   sentence: string
   why: string
@@ -344,7 +344,7 @@ export class AssistantDrafts {
     }
   }
 
-  /** A check's proposal (§5.10): carded in its follow-up's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, else Activity); a first look report round's waits for {@link releaseRound}. */
+  /** A check's proposal (§5.10): carded in its follow-up's conversation, decided on a webchat conversation's page, else carded like a draft with no asker (the responsible user, else Activity); a getting-to-know task report round's waits for {@link releaseRound}. */
   async propose(input: ProposalInput): Promise<{ draft: AssistantDraft; approver: string | null }> {
     const id = randomUUID()
     const ledger = this.host.ledger()
@@ -374,12 +374,12 @@ export class AssistantDrafts {
       ? { rung: 'place', approver: placeApprover(place.integrationId, place.channel) }
       : await this.route(input.agentId, id, undefined)
     const draft = await record(routed?.approver ?? null)
-    // A first look report round's cards wait for its reply, so they land in that reply's thread (§5.13).
+    // A getting-to-know task report round's cards wait for its reply, so they land in that reply's thread (§5.13).
     if (input.hold) return { draft, approver: routed ? APPROVER_LABEL[routed.rung] : null }
     return await this.cardProposal(draft, routed, place?.thread)
   }
 
-  /** A first look report round's held cards (§5.13), in the order proposed: in `thread`, its reply's once that posted, else where the place's cards go. */
+  /** A getting-to-know task report round's held cards (§5.13), in the order proposed: in `thread`, its reply's once that posted, else where the place's cards go. */
   async releaseRound(agentId: string, round: string, thread: string | undefined): Promise<void> {
     const ledger = this.host.ledger()
     for (const held of await ledger.heldInRound(agentId, round)) {

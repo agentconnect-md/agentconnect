@@ -193,7 +193,7 @@ describe('an opt-out across linked identities', () => {
   })
 })
 
-describe('a first look or research', () => {
+describe('a getting-to-know task or research', () => {
   const bob = file(entry('Bob', BOB, 'Role: billing owner (#release-train, 2026-10-17)'))
 
   it('adds someone whose messages its round read, sourced by a place it read them in', async () => {

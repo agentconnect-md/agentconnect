@@ -1,4 +1,4 @@
-// A first look's suggestions as cards (assistant-mode.md §5.13 "Cards"): offered on its report's round, held until the reply posts, threaded under it, and the follow-up form.
+// A getting-to-know task's suggestions as cards (assistant-mode.md §5.13 "Cards"): offered on its report's round, held until the reply posts, threaded under it, and the follow-up form.
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -6,10 +6,10 @@ import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'
-import { FIRST_LOOK_TOOL } from '../src/mcp/ops/first-look.js'
+import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { isAppendCoordinate } from '../src/session/append-coordinate.js'
-import { isFirstLookCoordinate, isTaskCoordinate } from '../src/session/subsession-coordinate.js'
+import { isGettingToKnowCoordinate, isTaskCoordinate } from '../src/session/subsession-coordinate.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -21,7 +21,7 @@ const REPORT = '## How this place works\nReleases are planned here.\n\n## Where 
 const INTRO = 'Hi, I am bot-a. I read the release threads here; @-mention me.'
 
 function scaffold(): string {
-  const root = mkdtempSync(join(tmpdir(), 'ac-first-look-cards-'))
+  const root = mkdtempSync(join(tmpdir(), 'ac-know-cards-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
@@ -61,7 +61,7 @@ type RoundTurn = (ctx: SessionContext, say: (text: string) => void) => Promise<v
 async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>; teamId?: string } = {}) {
   const behavior: { round: RoundTurn; look?: (ctx: SessionContext) => Promise<void> } = { round: async () => {} }
   const registered: SessionContext[] = []
-  // The permission modes the host was given, and the first looks' runtime sessions.
+  // The permission modes the host was given, and the getting-to-know tasks' runtime sessions.
   const modes: [sessionId: string, mode: string][] = []
   const lookSessions: string[] = []
   // The daemon's tool deps, known once it has started.
@@ -80,7 +80,7 @@ async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>;
         const text = JSON.stringify(blocks)
         if (text.includes(LOOK_OPENING)) {
           lookSessions.push(sessionId)
-          const ctx = [...registered].reverse().find((c) => isFirstLookCoordinate(c.thread))!
+          const ctx = [...registered].reverse().find((c) => isGettingToKnowCoordinate(c.thread))!
           await behavior.look?.(ctx)
           await executeTool(
             ctx,
@@ -184,9 +184,9 @@ async function boot(opts: { seeded?: boolean; channel?: Record<string, unknown>;
     channel: 'C1',
     thread: coordinate,
     deliveryThread: '100.1',
-    tools: [FIRST_LOOK_TOOL]
+    tools: [GETTING_TO_KNOW_TOOL]
   }
-  /** Ask for a first look and wait until its report round has run and settled. */
+  /** Ask for a getting-to-know task and wait until its report round has run and settled. */
   const look = async () => {
     expect(await executeTool(placeCtx, 'getToKnow', {}, deps)).toMatchObject({ started: true })
     await vi.waitFor(() => expect(dispatched.some((c) => c.msg.parentReport === true)).toBe(true), WAIT)
@@ -228,7 +228,7 @@ const PIN = {
   task: 'Pin the release checklist.'
 }
 
-describe('a first look’s report round on a platform with cards', () => {
+describe('a getting-to-know task’s report round on a platform with cards', () => {
   it('offers propose three times, holds the cards and threads them under the reply in the order proposed', async () => {
     const { daemon, d, behavior, registered, posts, cards, deps, look } = await boot()
     const results: unknown[] = []
@@ -328,7 +328,7 @@ describe('a first look’s report round on a platform with cards', () => {
     await daemon.stop()
   })
 
-  it('in a public internal channel, the first look keeps the organization files itself and its long session only speaks', async () => {
+  it('in a public internal channel, the getting-to-know task keeps the organization files itself and its long session only speaks', async () => {
     const { daemon, d, behavior, dispatched, deps, look, modes, lookSessions } = await boot({
       channel: { id: 'C1', name: 'release-train', is_private: false, is_ext_shared: false }
     })
@@ -402,12 +402,12 @@ describe('a first look’s report round on a platform with cards', () => {
     }
     await look()
     expect(cards()).toHaveLength(1)
-    const lookItem = await d.store.assistantItems.latestFirstLook('bot-a', {
+    const lookItem = await d.store.assistantItems.latestGettingToKnow('bot-a', {
       platform: 'slack',
       channel: 'C1',
       transportScope: scope
     })
-    // The first look has ended by design; its proposal is not refused for that.
+    // The getting-to-know task has ended by design; its proposal is not refused for that.
     expect(lookItem.status).toBe('done')
     await d.drafts.handleChoice({
       requestId: proposalId,
@@ -422,7 +422,7 @@ describe('a first look’s report round on a platform with cards', () => {
       doneWhen: 'A date is posted here.',
       status: 'active',
       nextCheck: Date.parse('2099-01-01T09:00:00Z'),
-      firstLook: null,
+      gettingToKnow: null,
       origin: { platform: 'slack', channel: 'C1' }
     })
     expect(taken.asker).toMatch(/^slack:.+:U0ADA$/)
@@ -433,7 +433,7 @@ describe('a first look’s report round on a platform with cards', () => {
     await daemon.stop()
   })
 
-  it('runs an approved task proposal of the ended first look in its place', async () => {
+  it('runs an approved task proposal of the ended getting-to-know task in its place', async () => {
     const { daemon, d, behavior, dispatched, deps, look, settled } = await boot()
     let proposalId = ''
     behavior.round = async (ctx, say) => {
@@ -478,7 +478,7 @@ describe('a first look’s report round on a platform with cards', () => {
   })
 })
 
-describe('a first look’s report round on a platform without cards', () => {
+describe('a getting-to-know task’s report round on a platform without cards', () => {
   it('keeps the text form of step 2 and offers no propose', async () => {
     const { daemon, d, behavior, registered, dispatched, deps, look } = await boot()
     d.hasCardSurface = () => false
@@ -501,7 +501,7 @@ describe('a first look’s report round on a platform without cards', () => {
   })
 })
 
-describe('a first look of a private channel an HTTP bot joined before anyone spoke there', () => {
+describe('a getting-to-know task of a private channel an HTTP bot joined before anyone spoke there', () => {
   it('opens the place’s long session as the place’s own and threads the cards under its introduction', async () => {
     const { daemon, d, behavior, registered, dispatched, posts, cards, settled, deps } = await boot({
       seeded: false,
@@ -529,7 +529,7 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     expect(joined).toEqual({ msgId: 'm-join', accepted: true })
     const place = { platform: 'slack', channel: 'C1', transportScope: scope }
     await vi.waitFor(
-      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place)).toBeDefined(),
+      async () => expect(await d.store.assistantItems.latestGettingToKnow('bot-a', place)).toBeDefined(),
       WAIT
     )
     expect(await d.store.placeSession('bot-a', 'slack', 'C1', scope)).toBeUndefined()
@@ -556,8 +556,8 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
       externalIntegrationId: 'int-bot-a'
     })
     expect(await d.store.isCaptureExcluded('bot-a', key)).toBe(false)
-    // The first look stays the long session's child, so the two never name each other.
-    const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
+    // The getting-to-know task stays the long session's child, so the two never name each other.
+    const lookCtx = registered.find((c) => isGettingToKnowCoordinate(c.thread))!
     const look = await d.store.getSession(sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope))
     expect(look.originSessionId).toBe(opened.sessionId)
     // A private channel writes its own layer, so nothing of it is merged into the organization's shared file.
@@ -566,7 +566,7 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     await daemon.stop()
   })
 
-  it('shows the running first look to the channel’s people, and names the channel on both of its sessions', async () => {
+  it('shows the running getting-to-know task to the channel’s people, and names the channel on both of its sessions', async () => {
     const { daemon, d, behavior, registered, dispatched, settled } = await boot({
       seeded: false,
       channel: { id: 'C1', name: 'release', is_private: false, is_ext_shared: false },
@@ -576,7 +576,7 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     core.mode = 'shared'
     core.bindRules = []
     const scope: string = d.transportScopeForIntegrationIds(['int-bot-a'])
-    // What the first look's session carries while it runs, before any long session of the place exists.
+    // What the getting-to-know task's session carries while it runs, before any long session of the place exists.
     let running: { classification: unknown; placeSession: unknown; listed: unknown } | undefined
     behavior.look = async (ctx) => {
       const key = sessionKey('slack', 'C1', ctx.thread, 'bot-a', scope)
@@ -598,7 +598,7 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     })
     const place = { platform: 'slack', channel: 'C1', transportScope: scope }
     await vi.waitFor(
-      async () => expect(await d.store.assistantItems.latestFirstLook('bot-a', place)).toBeDefined(),
+      async () => expect(await d.store.assistantItems.latestGettingToKnow('bot-a', place)).toBeDefined(),
       WAIT
     )
     await d.followUpChecks.sweep()
@@ -622,20 +622,20 @@ describe('a first look of a private channel an HTTP bot joined before anyone spo
     expect(await d.sessionMetadataOutbox.sessionListProjection(opened.sessionId, 'bot-a')).toMatchObject({
       channelName: 'release'
     })
-    // Its first look stays the long session's child.
-    const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
+    // Its getting-to-know task stays the long session's child.
+    const lookCtx = registered.find((c) => isGettingToKnowCoordinate(c.thread))!
     const look = await d.store.getSession(sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope))
     expect(look.originSessionId).toBe(opened.sessionId)
     await daemon.stop()
   })
 
-  it('lets a first look inherit from the place’s long session where one exists', async () => {
+  it('lets a getting-to-know task inherit from the place’s long session where one exists', async () => {
     const { daemon, d, registered, look, scope } = await boot({
       channel: { id: 'C1', name: 'release', is_private: false, is_ext_shared: false },
       teamId: 'T0EXAMPLE'
     })
     await look()
-    const lookCtx = registered.find((c) => isFirstLookCoordinate(c.thread))!
+    const lookCtx = registered.find((c) => isGettingToKnowCoordinate(c.thread))!
     const classification = await d.store.getSessionClassificationByKey(
       sessionKey('slack', 'C1', lookCtx.thread, 'bot-a', scope)
     )

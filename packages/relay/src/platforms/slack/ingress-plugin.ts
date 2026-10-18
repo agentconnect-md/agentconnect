@@ -298,7 +298,7 @@ export function forwardAssistantThreadStarted(
 }
 
 // Another member's join goes to the channel's owning daemon, which looks them up for every agent (assistant-mode.md §5.3).
-/** The bot's own join reaches the channel's owning daemon, which may take a first look (assistant-mode.md §5.13). */
+/** The bot's own join reaches the channel's owning daemon, which may take a getting-to-know task (assistant-mode.md §5.13). */
 export function forwardBotJoined(host: RelayIngressHost, botId: string, joined: HttpSlackBotJoined): void {
   const route = host.directory.resolveTarget(botId, { channelId: joined.channelId })
   if (!route) return
@@ -320,7 +320,7 @@ export function forwardBotJoined(host: RelayIngressHost, botId: string, joined: 
       ...(joined.inviter ? { inviter: joined.inviter } : {})
     }
   }
-  // A daemon predating the action refuses it as unsupported, which costs only the first look.
+  // A daemon predating the action refuses it as unsupported, which costs only the getting-to-know task.
   void host
     .forwardAction(rd, route)
     .then((ack) => {

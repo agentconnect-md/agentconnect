@@ -155,10 +155,10 @@ export interface DaemonReport {
   messageId?: string | undefined
   /** A follow-up's or task's report replies in this thread of an appending place, else (null) where its latest turn replied. */
   replyThread?: string | null | undefined
-  /** The coordinate a place with no session yet opens its long session at, as its first message would (a first look's, assistant-mode.md §5.13). */
+  /** The coordinate a place with no session yet opens its long session at, as its first message would (a getting-to-know task's, assistant-mode.md §5.13). */
   opens?: string | undefined
-  /** A first look's report (§5.13), by its follow-up: the round it starts may propose. */
-  firstLook?: string | undefined
+  /** A getting-to-know task's report (§5.13), by its follow-up: the round it starts may propose. */
+  gettingToKnow?: string | undefined
   /** Called once the turn the report started has ended, however it ended (the onboarding hello's, §5.15). */
   settled?: (() => void) | undefined
 }
@@ -1008,7 +1008,7 @@ export class CollabCoordinator {
         this.host.activeGateEntries().get(callerKey)?.githubReply
       ),
       originCoords: { platform: caller.platform, channel: caller.channel, thread: caller.thread },
-      ...(report.firstLook !== undefined ? { firstLookReport: report.firstLook } : {}),
+      ...(report.gettingToKnow !== undefined ? { gettingToKnowReport: report.gettingToKnow } : {}),
       // The session it opens is the place's own root, never the reporting sub-session's child, which is the place's.
       ...(opening ? { opensPlace: true as const } : {}),
       ...(externalOrigin ? { externalOrigin } : {}),

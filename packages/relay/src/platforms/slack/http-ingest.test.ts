@@ -748,7 +748,7 @@ describe('SlackHttpIngest events', () => {
     expect(d.onMessage).not.toHaveBeenCalled()
   })
 
-  // assistant-mode.md §5.13: the bot's own join also goes to the owning daemon, which may take a first look.
+  // assistant-mode.md §5.13: the bot's own join also goes to the owning daemon, which may take a getting-to-know task.
   it('forwards the bot joining, with who added it, besides re-listing its channels', async () => {
     const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'deploys' }] }))
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }

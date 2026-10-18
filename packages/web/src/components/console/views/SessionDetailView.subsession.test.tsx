@@ -505,9 +505,9 @@ describe.each([
     expect(checks?.querySelector('[data-follow-up-check-trigger]')?.textContent).toBe('Woken: merged')
   })
 
-  // assistant-mode.md §5.13: a first look's page names it as one.
-  it('names a first look as one', async () => {
-    wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, firstLook: true } }
+  // assistant-mode.md §5.13: a getting-to-know task's page names it as one.
+  it('names a getting-to-know task as one', async () => {
+    wire.task = { ...FOLLOW_UP, followUp: { ...FOLLOW_UP.followUp!, gettingToKnow: true } }
     await open(SLACK_CHECK, { parent: OWNER })
     expect(summary()?.textContent).toContain('Getting to know')
     expect(summary()?.textContent).not.toContain('Follow-up')

@@ -19,7 +19,7 @@ import {
   nextAppendCoordinate
 } from '../session/append-coordinate.js'
 import {
-  FIRST_LOOK_COORDINATE_PREFIX,
+  GETTING_TO_KNOW_COORDINATE_PREFIX,
   isSubsessionCoordinate,
   checkCoordinate
 } from '../session/subsession-coordinate.js'
@@ -1309,7 +1309,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 62
+export const SCHEMA_VERSION = 63
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1937,12 +1937,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   async (db, store) => await migrateItemsToFollowUps(db, store.postgres),
   // v54 keeps the thread a follow-up was taken in, where its reports reply (assistant-mode.md §5.12).
   async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'replyThread', 'TEXT'),
-  // v55 marks a place's first look and counts the history each of its checks read (assistant-mode.md §5.13).
+  // v55 marks a place's getting-to-know task and counts the history each of its checks read (assistant-mode.md §5.13).
   async (db, store) => {
     await addColumn(db, store.postgres, 'assistant_item', 'firstLook', 'TEXT')
     await addColumn(db, store.postgres, 'assistant_check', 'historyRead', 'INTEGER NOT NULL DEFAULT 0')
   },
-  // v56 keeps a proposal's follow-up form, the first look report round it was made in and whether its card waits for that round's reply (§5.13).
+  // v56 keeps a proposal's follow-up form, the getting-to-know task report round it was made in and whether its card waits for that round's reply (§5.13).
   async (db, store) => {
     for (const [column, type] of [
       ['followUpTitle', 'TEXT'],
@@ -2059,7 +2059,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     await addColumn(db, store.postgres, 'assistant_draft', 'followUpWatch', 'TEXT')
   },
   // v62 keeps a watched object's repository id, which a check's code-host reads aim at (assistant-mode.md §5.14).
-  async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'watchRepoId', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'watchRepoId', 'TEXT'),
+  // v63 names a first look a getting-to-know task (assistant-mode.md §5.13): its marker, onboarding's list and a queued report round.
+  async (db, store) => await migrateFirstLookToGettingToKnow(db, store.postgres)
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -2226,6 +2228,24 @@ async function migratePatrolsToChecks(db: StoreTx, postgres: boolean): Promise<v
         `UPDATE ${table} SET ${column} = replace(${column}, 'subsession:patrol-', 'subsession:check-')
           WHERE ${column} LIKE '%subsession:patrol-%'`
       )
+}
+
+/** A first look became a getting-to-know task: the item marker, onboarding's running list and a queued report round's call meta take the new names. */
+async function migrateFirstLookToGettingToKnow(db: StoreTx, postgres: boolean): Promise<void> {
+  for (const [table, from, to] of [
+    ['assistant_item', 'firstLook', 'gettingToKnow'],
+    ['assistant_onboarding', 'firstLooks', 'gettingToKnowTasks']
+  ] as const) {
+    if (!(await columnExists(db, postgres, table, from))) continue
+    // Both exist only when an earlier step re-added the old column to a store already on the new schema; the old one is empty.
+    if (await columnExists(db, postgres, table, to)) await db.exec(`ALTER TABLE ${table} DROP COLUMN ${from}`)
+    else await db.exec(`ALTER TABLE ${table} RENAME COLUMN ${from} TO ${to}`)
+  }
+  if (await tableExists(db, postgres, 'inbox'))
+    await db.exec(
+      `UPDATE inbox SET callMeta = replace(callMeta, '"firstLookReport":', '"gettingToKnowReport":')
+        WHERE callMeta LIKE '%"firstLookReport":%'`
+    )
 }
 
 /** Whether a table has a column, on either dialect. */
@@ -5804,7 +5824,7 @@ export class LocalStore {
     ).map((row) => this.dreamFromRow(row))
   }
 
-  /** Newest-first addressable sessions to mine as dream transcript sources, never a first look's (assistant-mode.md §5.13); `skipPrivate` leaves out capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
+  /** Newest-first addressable sessions to mine as dream transcript sources, never a getting-to-know task's (assistant-mode.md §5.13); `skipPrivate` leaves out capture-excluded, DM and group-DM sessions and, with `places`, a place's session unless its conversation is open. */
   async dreamSessionSources(
     agentId: string,
     limit: number,
@@ -5839,7 +5859,7 @@ export class LocalStore {
          ${placeFilter}
          ORDER BY updatedAt DESC LIMIT ?`
       )
-      .all(agentId, `${FIRST_LOOK_COORDINATE_PREFIX}%`, ...placePlatforms, ...open, limit)) as {
+      .all(agentId, `${GETTING_TO_KNOW_COORDINATE_PREFIX}%`, ...placePlatforms, ...open, limit)) as {
       sessionId: string
       key: string
       channel: string

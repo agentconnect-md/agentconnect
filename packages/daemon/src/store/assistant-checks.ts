@@ -184,7 +184,7 @@ const CLEAR_RUNNING =
 export class AssistantCheckLedger {
   constructor(private readonly db: AssistantCheckDatabase) {}
 
-  /** Open follow-ups whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; follow-ups before first looks, then earliest first. */
+  /** Open follow-ups whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; follow-ups before getting-to-know tasks, then earliest first. */
   async due(agentId: string, now: number, limit: number, staleBefore = 0): Promise<AssistantCheckDue[]> {
     const rows = (
       await this.db.query(
@@ -195,7 +195,7 @@ export class AssistantCheckLedger {
               (p.checkedNextCheck IS NULL OR p.checkedNextCheck <> i.nextCheck)
               AND (p.retryAt IS NULL OR p.retryAt <= ?)
               AND p.stopped = 0 AND (p.runningKey IS NULL OR p.runningSince < ?)))
-          ORDER BY CASE WHEN i.firstLook IS NULL THEN 0 ELSE 1 END, i.nextCheck, i.id LIMIT ?`,
+          ORDER BY CASE WHEN i.gettingToKnow IS NULL THEN 0 ELSE 1 END, i.nextCheck, i.id LIMIT ?`,
         [agentId, now, now, staleBefore, limit]
       )
     ).rows as Row[]
@@ -214,7 +214,7 @@ export class AssistantCheckLedger {
       await this.db.query(
         `SELECT p.itemId FROM assistant_check_state p
            JOIN assistant_item i ON i.agentId = p.agentId AND i.id = p.itemId
-          WHERE p.agentId = ? AND i.status IN ('active', 'waiting') AND i.firstLook IS NULL
+          WHERE p.agentId = ? AND i.status IN ('active', 'waiting') AND i.gettingToKnow IS NULL
             AND p.wakeAt IS NOT NULL AND p.wakeAt <= ?
             AND (p.retryAt IS NULL OR p.retryAt <= ?) AND p.stopped = 0
             AND (p.runningKey IS NULL OR p.runningSince < ?)

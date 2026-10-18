@@ -1423,7 +1423,7 @@ export const OrganizationKnowledgeKindDto = z
 export const OrganizationKnowledgeVisibilityDto = z
   .enum(['all', 'selected'])
   .describe('Which agents read the entry: every agent of the organization, or the agents in `readers`.')
-export const OrganizationKnowledgeWriterKindDto = z.enum(['research', 'first-look', 'conversation', 'person'])
+export const OrganizationKnowledgeWriterKindDto = z.enum(['research', 'getting-to-know', 'conversation', 'person'])
 
 export const OrganizationKnowledgeDto = z.object({
   id: z.string().uuid(),

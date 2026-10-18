@@ -15,9 +15,9 @@ import {
   type ProposeInput
 } from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
-import { firstLookCoordinate, checkCoordinate } from '../session/subsession-coordinate.js'
+import { gettingToKnowCoordinate, checkCoordinate } from '../session/subsession-coordinate.js'
 import type {
-  AssistantFirstLookTrigger,
+  AssistantGettingToKnowTrigger,
   AssistantItem,
   AssistantItemLedger,
   AssistantPlace
@@ -33,7 +33,12 @@ import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
-import { firstLookFailedText, firstLookHandling, firstLookPrompt, firstLookReportText } from './first-look.js'
+import {
+  gettingToKnowFailedText,
+  gettingToKnowHandling,
+  gettingToKnowPrompt,
+  gettingToKnowReportText
+} from './getting-to-know.js'
 import type { ReadAsker } from './place-access.js'
 import { callerOfMessage, type TaskCaller } from './tasks.js'
 import { watchReasonText, type FollowUpWatches } from './follow-up-watches.js'
@@ -122,7 +127,7 @@ export interface CheckParent {
   thread: string
   transportScope: string | null
   integrationId?: string
-  /** Not opened yet: the place's first message, or a first look's report, opens it. */
+  /** Not opened yet: the place's first message, or a getting-to-know task's report, opens it. */
   opening?: true
   inherited: Pick<CallMeta, 'parentPrivate' | 'externalOrigin' | 'originCodeHostReplyTarget'>
 }
@@ -144,8 +149,8 @@ interface CheckMessage {
 export type FollowUpMessageResult =
   { kind: 'started' } | { kind: 'queued' } | { kind: 'refused'; reason: string; message: string }
 
-/** What a first look's prompt and handling name (assistant-mode.md §5.13), or why its place may no longer take one. */
-export type FirstLookFacts =
+/** What a getting-to-know task's prompt and handling name (assistant-mode.md §5.13), or why its place may no longer take one. */
+export type GettingToKnowFacts =
   | {
       place: string
       kind: string
@@ -158,8 +163,8 @@ export type FirstLookFacts =
     }
   | { refused: string }
 
-/** What a requested first look says back to the session that asked for it. */
-export type FirstLookRequestResult =
+/** What a requested getting-to-know task says back to the session that asked for it. */
+export type GettingToKnowRequestResult =
   { kind: 'started'; item: AssistantItem } | { kind: 'refused'; reason: string; message: string }
 
 type Admission = Promise<{ accepted: boolean; reason?: string }>
@@ -177,14 +182,14 @@ export interface FollowUpChecksHost {
   draining(): boolean
   items: Pick<
     AssistantItemLedger,
-    'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestFirstLook' | 'setWatch'
+    'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestGettingToKnow' | 'setWatch'
   >
   checks: AssistantCheckLedger
   subsessions: Pick<AssistantSubsessionIndex, 'openFollowUp' | 'checking' | 'adoptFollowUps' | 'finish' | 'get'>
-  /** The place's one long session; with `open`, else the one its first message would key (a first look's, §5.13); undefined when it has none. */
+  /** The place's one long session; with `open`, else the one its first message would key (a getting-to-know task's, §5.13); undefined when it has none. */
   parentFor(agentId: string, place: AssistantPlace, opts?: { open?: boolean }): Promise<CheckParent | undefined>
-  /** What a first look of this follow-up names now, or why its place may no longer take one. */
-  firstLookFacts?(agentId: string, item: AssistantItem): Promise<FirstLookFacts>
+  /** What a getting-to-know task of this follow-up names now, or why its place may no longer take one. */
+  gettingToKnowFacts?(agentId: string, item: AssistantItem): Promise<GettingToKnowFacts>
   /** Whether the place is a public channel, so every internal place lists its follow-ups. */
   sharedPlace?(agentId: string, place: AssistantPlace): Promise<boolean>
   dispatch(
@@ -194,7 +199,7 @@ export interface FollowUpChecksHost {
     callMeta: CallMeta,
     onAdmission: (result: { accepted: boolean; reason?: string }) => void
   ): Promise<unknown>
-  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. A first look's report names its follow-up in `firstLook`. */
+  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. A getting-to-know task's report names its follow-up in `gettingToKnow`. */
   reportToParent(
     agentId: string,
     caller: TaskCaller,
@@ -203,7 +208,7 @@ export interface FollowUpChecksHost {
     reportId: string,
     replyThread?: string | null,
     opens?: string,
-    firstLook?: string
+    gettingToKnow?: string
   ): Promise<boolean>
   /** Where a check's session sits once its turn neither runs nor awaits replay here; `missing` when it never started, undefined while it runs. */
   endedSession(agentId: string, key: string): Promise<TaskCaller | 'missing' | undefined>
@@ -465,11 +470,11 @@ export class FollowUpChecks {
     return item
   }
 
-  /** A first look of a place (assistant-mode.md §5.13): a follow-up marked as one, due at once, owned by the place's long session, which its report opens if nobody spoke there yet. */
-  async takeFirstLook(input: {
+  /** A getting-to-know task of a place (assistant-mode.md §5.13): a follow-up marked as one, due at once, owned by the place's long session, which its report opens if nobody spoke there yet. */
+  async takeGettingToKnow(input: {
     agentId: string
     place: AssistantPlace
-    trigger: AssistantFirstLookTrigger
+    trigger: AssistantGettingToKnowTrigger
     title: string
     asker?: string
   }): Promise<AssistantItem | undefined> {
@@ -480,7 +485,7 @@ export class FollowUpChecks {
     const taskKey = sessionKey(
       place.platform,
       place.channel,
-      firstLookCoordinate(monotonicTs()),
+      gettingToKnowCoordinate(monotonicTs()),
       agentId,
       place.transportScope
     )
@@ -494,7 +499,7 @@ export class FollowUpChecks {
       taskKey,
       ...(input.asker !== undefined ? { asker: input.asker } : {}),
       shared,
-      firstLook: input.trigger,
+      gettingToKnow: input.trigger,
       now
     })
     await this.host.subsessions.openFollowUp({
@@ -504,17 +509,17 @@ export class FollowUpChecks {
       parentSessionKey: owner.key,
       now
     })
-    this.host.log.info(`first look: agent ${agentId} took ${item.id} (${taskKey}, ${input.trigger})`)
+    this.host.log.info(`getting-to-know task: agent ${agentId} took ${item.id} (${taskKey}, ${input.trigger})`)
     return item
   }
 
-  /** A first look someone asked for (§5.13): one at a time per place, counted against the budget, and started at once. */
-  async requestFirstLook(input: {
+  /** A getting-to-know task someone asked for (§5.13): one at a time per place, counted against the budget, and started at once. */
+  async requestGettingToKnow(input: {
     agentId: string
     place: AssistantPlace
     title: string
     asker?: string
-  }): Promise<FirstLookRequestResult> {
+  }): Promise<GettingToKnowRequestResult> {
     const { agentId, place } = input
     if (!this.host.mayCheck(agentId) || this.host.draining())
       return {
@@ -522,10 +527,16 @@ export class FollowUpChecks {
         reason: 'paused',
         message: 'This agent is paused or draining, so it cannot get to know this place now. Nothing was started.'
       }
-    const lockKey = JSON.stringify(['first-look', agentId, place.platform, place.channel, place.transportScope ?? ''])
-    type Decided = FirstLookRequestResult | { kind: 'start'; item: AssistantItem; admitted: Admission }
+    const lockKey = JSON.stringify([
+      'getting-to-know',
+      agentId,
+      place.platform,
+      place.channel,
+      place.transportScope ?? ''
+    ])
+    type Decided = GettingToKnowRequestResult | { kind: 'start'; item: AssistantItem; admitted: Admission }
     const decided = await this.withLock(lockKey, async (): Promise<Decided> => {
-      const latest = await this.host.items.latestFirstLook(agentId, place)
+      const latest = await this.host.items.latestGettingToKnow(agentId, place)
       if (latest && followUpOpen(latest))
         return {
           kind: 'refused',
@@ -533,9 +544,9 @@ export class FollowUpChecks {
           message: 'Getting to know this place is already running; its report comes here. Nothing was started.'
         }
       const now = this.host.now()
-      const refusal = await this.overBudget(agentId, now, 'first look')
+      const refusal = await this.overBudget(agentId, now, 'getting-to-know task')
       if (refusal?.kind === 'refused') return refusal
-      const item = await this.takeFirstLook({ ...input, trigger: 'requested' })
+      const item = await this.takeGettingToKnow({ ...input, trigger: 'requested' })
       if (!item)
         return {
           kind: 'refused',
@@ -633,10 +644,10 @@ export class FollowUpChecks {
     item: AssistantItem,
     input: { text: string; askers: CheckAskers }
   ): Promise<FollowUpMessageResult> {
-    if (item.firstLook !== null)
+    if (item.gettingToKnow !== null)
       return {
         kind: 'refused',
-        reason: 'first_look',
+        reason: 'getting_to_know',
         message:
           'A getting-to-know task takes no messages: it ends after its one read, and its report comes here. Nothing was sent; ' +
           'once it has ended, ask for another with getToKnow.'
@@ -724,7 +735,7 @@ export class FollowUpChecks {
   private async overBudget(
     agentId: string,
     now: number,
-    what: 'message' | 'first look' = 'message'
+    what: 'message' | 'getting-to-know task' = 'message'
   ): Promise<FollowUpMessageResult | undefined> {
     const agent = [...this.host.agents()].find((a) => a.id === agentId)
     const budget = agent?.assistantMode?.limits?.dailyCheckBudget ?? DEFAULT_DAILY_CHECK_BUDGET
@@ -735,7 +746,7 @@ export class FollowUpChecks {
       kind: 'refused',
       reason: 'budget',
       message:
-        what === 'first look'
+        what === 'getting-to-know task'
           ? `This agent already ran its ${budget} checks of the last 24 hours, and getting to know a place counts as one. ` +
             `Nothing was started; ask again after ${resets}, when the budget has room.`
           : `This agent already ran its ${budget} follow-up checks of the last 24 hours. Nothing was sent; message ` +
@@ -786,10 +797,10 @@ export class FollowUpChecks {
     const item = await this.host.items.get(agentId, itemId)
     if (!item || !followUpOpen(item) || (due && item.nextCheck !== due.nextCheck)) return 'busy'
     const thread = threadOf(item)
-    const parent = await this.host.parentFor(agentId, item.origin, item.firstLook ? { open: true } : undefined)
-    // A first look whose place may no longer take one ends without reading (§5.13).
-    const facts = item.firstLook ? await this.host.firstLookFacts?.(agentId, item) : undefined
-    if (item.firstLook && (!facts || 'refused' in facts || facts.external || !parent || !thread)) {
+    const parent = await this.host.parentFor(agentId, item.origin, item.gettingToKnow ? { open: true } : undefined)
+    // A getting-to-know task whose place may no longer take one ends without reading (§5.13).
+    const facts = item.gettingToKnow ? await this.host.gettingToKnowFacts?.(agentId, item) : undefined
+    if (item.gettingToKnow && (!facts || 'refused' in facts || facts.external || !parent || !thread)) {
       const why = !facts
         ? 'its place could not be described'
         : 'refused' in facts
@@ -799,7 +810,7 @@ export class FollowUpChecks {
             : 'its place has no conversation to report to'
       await this.host.items.schedule(agentId, item.id, { status: 'dropped', nextCheck: null }, now)
       await this.observe(agentId, item.id, `Did not get to know this place: ${why}.`)
-      this.host.log.info(`first look ${item.taskKey}: ended without reading (${why})`)
+      this.host.log.info(`getting-to-know task ${item.taskKey}: ended without reading (${why})`)
       return 'no-place'
     }
     if (!parent || !thread) {
@@ -866,13 +877,13 @@ export class FollowUpChecks {
           replyRequested: false
         },
         facts && !('refused' in facts)
-          ? firstLookPrompt({ ...facts, requested: item.firstLook === 'requested' })
+          ? gettingToKnowPrompt({ ...facts, requested: item.gettingToKnow === 'requested' })
           : checkPrompt(item, due, messages, begun.events)
       ),
       mentionedBots: [],
       isDm: false,
       headless: true,
-      initialSessionTitle: item.firstLook
+      initialSessionTitle: item.gettingToKnow
         ? quote(item.title).slice(0, 80)
         : `Follow-up: ${quote(item.title).slice(0, 80)}`
     }
@@ -889,8 +900,8 @@ export class FollowUpChecks {
         thread: parent.thread
       },
       ...parent.inherited,
-      // A first look whose place has no long session yet has no audience to inherit, so it takes the place's.
-      ...(item.firstLook && parent.opening ? { placeAudience: true as const } : {})
+      // A getting-to-know task whose place has no long session yet has no audience to inherit, so it takes the place's.
+      ...(item.gettingToKnow && parent.opening ? { placeAudience: true as const } : {})
     }
     let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
     const admitted: Admission = new Promise((resolve) => (settleAdmission = resolve))
@@ -991,12 +1002,12 @@ export class FollowUpChecks {
     }
   }
 
-  /** Whether the check added an observation since it started, and a first look also kept its report. */
+  /** Whether the check added an observation since it started, and a getting-to-know task also kept its report. */
   private async recorded(agentId: string, state: AssistantCheckState): Promise<boolean> {
     const baseline = state.runningObservationVersion
     if (baseline === null) return true
     const item = await this.host.items.get(agentId, state.itemId)
-    if (item?.firstLook && state.runningReport === null) return false
+    if (item?.gettingToKnow && state.runningReport === null) return false
     return !item || item.observationVersion > baseline
   }
 
@@ -1013,7 +1024,7 @@ export class FollowUpChecks {
     const row = await this.host.subsessions.get(agentId, key)
     const item = await this.host.items.get(agentId, itemId)
     const stops = verdict.kind === 'failed' && state.failures + 1 >= CHECK_MAX_FAILURES
-    if (item?.firstLook) return await this.concludeFirstLook(agentId, key, caller, state, verdict, item, stops)
+    if (item?.gettingToKnow) return await this.concludeGettingToKnow(agentId, key, caller, state, verdict, item, stops)
     // People read this in the console, so the follow-up is named by its title, never its key.
     const name = item ? `the follow-up "${quote(item.title)}"` : 'one of your follow-ups'
     // Its reports reply in the thread it was taken in (assistant-mode.md §5.12).
@@ -1068,8 +1079,8 @@ export class FollowUpChecks {
     }
   }
 
-  /** A first look's one check (§5.13): its report and handling reach the place's top level, and it ends as done; after five failures it ends, said once only when someone asked for it. */
-  private async concludeFirstLook(
+  /** A getting-to-know task's one check (§5.13): its report and handling reach the place's top level, and it ends as done; after five failures it ends, said once only when someone asked for it. */
+  private async concludeGettingToKnow(
     agentId: string,
     key: string,
     caller: TaskCaller | undefined,
@@ -1081,18 +1092,18 @@ export class FollowUpChecks {
     const { itemId, runningReport: report } = state
     const check = state.runningCheck ?? 0
     const row = await this.host.subsessions.get(agentId, key)
-    const facts = await this.host.firstLookFacts?.(agentId, item).catch(() => undefined)
+    const facts = await this.host.gettingToKnowFacts?.(agentId, item).catch(() => undefined)
     const known = facts && !('refused' in facts) ? facts : undefined
     const place = known?.place ?? quote(item.title)
     // A place nobody spoke in yet has its long session opened by this report (§5.13).
     const opens = (await this.host.parentFor(agentId, item.origin, { open: true }).catch(() => undefined))?.thread
     let reported = false
     if (verdict.kind === 'completed' && report !== null && row && caller) {
-      const handling = firstLookHandling(known?.reach ?? '@-mention me', {
+      const handling = gettingToKnowHandling(known?.reach ?? '@-mention me', {
         external: known?.external ?? false,
         cards: known?.cards ?? false
       })
-      const text = firstLookReportText(place, handling, report)
+      const text = gettingToKnowReportText(place, handling, report)
       const reportId = `check:${key}:${check}:report`
       // Its round may propose, where the place has cards (§5.13).
       const delivered = await this.deliver(
@@ -1109,8 +1120,8 @@ export class FollowUpChecks {
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
     }
-    if (stops && item.firstLook === 'requested' && row && caller) {
-      const text = firstLookFailedText(place, CHECK_MAX_FAILURES)
+    if (stops && item.gettingToKnow === 'requested' && row && caller) {
+      const text = gettingToKnowFailedText(place, CHECK_MAX_FAILURES)
       const reportId = `check:${key}:${check}:stopped`
       const sent = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, undefined, opens)
       if (sent === 'draining') return
@@ -1154,7 +1165,7 @@ export class FollowUpChecks {
     const agent = [...this.host.agents()].find((candidate) => candidate.id === agentId)
     const item = assistantModeOn(agent) ? await this.host.items.get(agentId, req.followUpId) : undefined
     const watched = item?.watch && (item.watch.state === 'watching' || item.watch.state === 'pending')
-    if (!item || !followUpOpen(item) || item.firstLook !== null || !watched)
+    if (!item || !followUpOpen(item) || item.gettingToKnow !== null || !watched)
       return { accepted: false, reason: 'not_found' }
     const now = this.host.now()
     if (req.ended) {
@@ -1199,10 +1210,10 @@ export class FollowUpChecks {
     parentSessionId: string,
     reportId: string,
     text: string,
-    // Undefined posts at the place's top level, as a first look's report does.
+    // Undefined posts at the place's top level, as a getting-to-know task's report does.
     replyThread?: string | null,
     opens?: string,
-    firstLook?: string
+    gettingToKnow?: string
   ): Promise<'delivered' | 'refused' | 'draining'> {
     if (this.host.draining()) return 'draining'
     let delivered = false
@@ -1215,7 +1226,7 @@ export class FollowUpChecks {
         reportId,
         replyThread,
         opens,
-        firstLook
+        gettingToKnow
       )
     } catch (err) {
       this.host.log.warn(`follow-up report for ${itemId} failed: ${(err as Error).message}`)

@@ -1475,9 +1475,9 @@ mode, and anything that would ask for approval is refused, never asked. It still
 agent's own host, with the agent's credentials and workspace: the runtime's read-only mode is what
 keeps it from writing there, and reads over the network that need no approval stay possible.
 
-## Assistant-mode first look
+## Assistant-mode getting-to-know task
 
-When an agent in assistant mode is added to a channel or group chat, it takes a first look: a task
+When an agent in assistant mode is added to a channel or group chat, it takes a getting-to-know task: a task
 reads that conversation once, writes what it learned to memory, and reports to the conversation's
 long session, which introduces the agent once and offers at most three ways it could help.
 
@@ -1485,10 +1485,10 @@ long session, which introduces the agent once and offers at most three ways it c
   agent's duty, once the Control Plane lists the conversation for the agent and it is not Off; a
   join whose conversation is not listed within ten minutes takes none. Conversations the bot is in
   when the agent's daemon first lists them, and several joined at once (more than three in one
-  listing), take none. Where a first look runs for a join, it replaces the agent's "Introduce on
+  listing), take none. Where a getting-to-know task runs for a join, it replaces the agent's "Introduce on
   channel join" introduction to the other agents there; elsewhere that introduction is unchanged. A conversation the agent was
   already in, a platform that reports no join, and a second look wait for someone there to ask; the
-  long session then calls `getToKnow`. The first look's row is the conversation's record, so
+  long session then calls `getToKnow`. The getting-to-know task's row is the conversation's record, so
   rejoining, or switching assistant mode off and on, takes none. Never in a 1:1 DM or a conversation
   shared with another organization, and only where the platform lets a bot read history (Slack,
   Discord, Lark/Feishu; not Telegram, QQ or Google Chat). A paused agent runs it once resumed.
@@ -1503,8 +1503,8 @@ long session, which introduces the agent once and offers at most three ways it c
   reach it: "@-mention me" or "I read every message") at the conversation's top level; offer each
   way it could help, and something in flight only if someone is visibly waiting on it; ask at most
   one question; then post nothing more on its own. The long session writes no memory for it: the
-  first look already has. A conversation with no long session yet gets one, as its first message
-  would have opened it. One that became shared with another organization while the first look ran
+  getting-to-know task already has. A conversation with no long session yet gets one, as its first message
+  would have opened it. One that became shared with another organization while the getting-to-know task ran
   is told to post nothing about it.
 - **Its offers.** On Slack each offer is a proposal card (see "Assistant-mode proposals"), at most
   three, posted in the thread under the introduction in the order offered once the introduction has
@@ -1514,7 +1514,7 @@ long session, which introduces the agent once and offers at most three ways it c
   check, since nothing else would wake it; one offered without is refused. On a platform without
   cards, the introduction lists each offer in one line instead, and the agent acts on one when
   someone there asks.
-- **Memory.** The first look writes what it learned itself, in the layer that conversation writes:
+- **Memory.** The getting-to-know task writes what it learned itself, in the layer that conversation writes:
   a dated topic file named after the place, on how it works and what recurs, never what is in
   flight or a request still open. In an internal public channel only, which writes the shared
   layer, that file stays out of the shared index. Instead the conversation gets one line in
@@ -1534,7 +1534,7 @@ long session, which introduces the agent once and offers at most three ways it c
 - **As a task.** It is listed among the conversation's tasks, titled "Getting to know #channel" and
   labelled "Getting to know" (「了解频道」) in the Tasks tab, the Activity view and its own page, and
   ends as Done after its one read, or Stopped. Neither people nor the agent see the internal term
-  "first look": the agent's tools and prompts call it getting to know the place, and the agent tells
+  "getting-to-know task": the agent's tools and prompts call it getting to know the place, and the agent tells
   people it read the channel's recent messages. `listTasks` lists it with kind `getting to know`,
   `messageTask` to it is refused, and `stopTask` or the console's Stop ends it. The reminders of open follow-ups leave it out.
 
@@ -1558,7 +1558,7 @@ as a task of that conversation.
 - **The report.** When the task's round ends, the DM's session tells the person, in their
   language, what it learned, what it wrote, what it could not read, and at most two things it
   needs. Asking it there to research again gives the task another round; it also takes one round
-  of its own within the day, once the first looks running at the switch-on have reported.
+  of its own within the day, once the getting-to-know tasks running at the switch-on have reported.
 - **What it reads.** The agent's shared memory, the organization's knowledge, the names of the
   channels it is in (never their history), the code-host repositories it may read (each one's
   description, README, CODEOWNERS, who reviewed which area in the last 90 days, and releases), and
@@ -1582,7 +1582,7 @@ A check that finds something worth doing asks for approval with `propose`: one p
 ("I want to do X because Y"), the reason, and the work it would carry out once approved, such
 as "rebase PR #12 onto main and push". A check proposes at most once and runs nothing itself. The
 only other session offered `propose` is a conversation's long session on Slack, on the round a first
-look's report arrives in, at most three times (see "Assistant-mode first look"); no agent outside
+look's report arrives in, at most three times (see "Assistant-mode getting-to-know task"); no agent outside
 assistant mode is offered it.
 
 Instead of work to carry out, a proposal may offer a follow-up to take: what it would follow up,
@@ -1626,8 +1626,8 @@ check's read-only mode. It reports back once: its own report, or the daemon's "e
 when it ends without one. It counts toward the agent's concurrent tasks; while that is
 full the approval is refused with the reason, nothing runs and the proposal keeps waiting. A proposal whose record changed after it was written, whose follow-up
 ended, whose conversation has no long session, or whose agent left assistant mode is
-refused and never runs. A first look's proposals are the exception to the follow-up having ended,
-since a first look ends after its one read by design. When a restart or handover cuts the approved proposal short before it reports, it is
+refused and never runs. A getting-to-know task's proposals are the exception to the follow-up having ended,
+since a getting-to-know task ends after its one read by design. When a restart or handover cuts the approved proposal short before it reports, it is
 never run again: the conversation is told once that it is not sure this went through and should
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
 without reporting, uncertain) is recorded on the follow-up.
@@ -1661,7 +1661,7 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
 - **Tasks** are listed for everyone who can view the agent, running ones first, each
   with its state and start; delegated tasks, follow-ups and approved proposals are listed together. Its title, a
   link to its session and the conversation that started it appear only to someone who may view
-  that conversation. A first look that runs before its conversation's long session exists names
+  that conversation. A getting-to-know task that runs before its conversation's long session exists names
   that conversation by its own place, unlinked. A follow-up is listed under its conversation's current long session, with its
   status (waiting, checking, paused after five failed checks until it is messaged, done or stopped)
   and next check; what counts as done and its newest checks (when, what it saw, and whether it was
@@ -1723,7 +1723,7 @@ listed under Handbook on the Knowledge page.
   [Memory layers](#memory-layers), whoever writes it.
 - **Who writes it.** Only the organization's assistant-mode agents, through their memory tools
   under the names `organization.md`, `channels.md` and `members.md`: organization research, a
-  first look in an internal public channel, that channel's conversation when a person states a
+  getting-to-know task in an internal public channel, that channel's conversation when a person states a
   fact, and a person for their own People entry. Every other knowledge entry is published by an
   owner or accepted from a suggestion; no agent publishes one. Owners edit any of the three on
   the Knowledge page, line by line, and may clear one; a save that does not fit the shape is

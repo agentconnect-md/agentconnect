@@ -1,21 +1,21 @@
-// The first look's rules (assistant-mode.md §5.13): which places take one, its prompts, its reach and its bounds.
+// The getting-to-know task's rules (assistant-mode.md §5.13): which places take one, its prompts, its reach and its bounds.
 import { describe, expect, it } from 'vitest'
 import type { Integration } from '../src/agents/agent-schema.js'
 import {
-  FIRST_LOOK_JOIN_WAIT_MS,
-  firstLookHandling,
-  firstLookPlaceRefusal,
-  firstLookPrompt,
-  firstLookProposalRefusal,
-  firstLookReach,
-  firstLookReadRefusal,
-  firstLookTools,
+  GETTING_TO_KNOW_JOIN_WAIT_MS,
+  gettingToKnowHandling,
+  gettingToKnowPlaceRefusal,
+  gettingToKnowPrompt,
+  gettingToKnowProposalRefusal,
+  gettingToKnowReach,
+  gettingToKnowReadRefusal,
+  gettingToKnowTools,
   historyTsMs,
   joinVerdict,
-  PendingFirstLooks,
+  PendingGettingToKnowTasks,
   withinWindow
-} from '../src/assistant/first-look.js'
-import { FIRST_LOOK_TOOL, firstLookToolsFor } from '../src/mcp/ops/first-look.js'
+} from '../src/assistant/getting-to-know.js'
+import { GETTING_TO_KNOW_TOOL, gettingToKnowToolsFor } from '../src/mcp/ops/getting-to-know.js'
 import { PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
 import type { RoutingRule } from '../src/router/routing-rule.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
@@ -35,14 +35,14 @@ const integration = (over: Record<string, unknown> = {}, platform = 'slack'): In
 
 const tool = (name: string): ToolDescriptor => ({ name, description: name, inputSchema: obj({}) })
 
-describe('which places take a first look', () => {
+describe('which places take a getting-to-know task', () => {
   it('is an internal channel or group chat of an assistant-mode agent, on a platform with history, that is not Off', () => {
-    expect(firstLookPlaceRefusal(ON, integration(), { channel: 'C1' })).toBeUndefined()
-    expect(firstLookPlaceRefusal(OFF, integration(), { channel: 'C1' })).toBe('assistant-mode-off')
-    expect(firstLookPlaceRefusal(ON, integration(), { channel: 'D1', isDm: true })).toBe('direct')
-    expect(firstLookPlaceRefusal(ON, integration({}, 'telegram'), { channel: '-100' })).toBe('no-history')
-    expect(firstLookPlaceRefusal(ON, integration({ externalChannels: ['C1'] }), { channel: 'C1' })).toBe('external')
-    expect(firstLookPlaceRefusal(ON, integration({ mutedChannels: ['C1'] }), { channel: 'C1' })).toBe('off')
+    expect(gettingToKnowPlaceRefusal(ON, integration(), { channel: 'C1' })).toBeUndefined()
+    expect(gettingToKnowPlaceRefusal(OFF, integration(), { channel: 'C1' })).toBe('assistant-mode-off')
+    expect(gettingToKnowPlaceRefusal(ON, integration(), { channel: 'D1', isDm: true })).toBe('direct')
+    expect(gettingToKnowPlaceRefusal(ON, integration({}, 'telegram'), { channel: '-100' })).toBe('no-history')
+    expect(gettingToKnowPlaceRefusal(ON, integration({ externalChannels: ['C1'] }), { channel: 'C1' })).toBe('external')
+    expect(gettingToKnowPlaceRefusal(ON, integration({ mutedChannels: ['C1'] }), { channel: 'C1' })).toBe('off')
   })
 
   it('takes one on a join once the row is listed appending, waits while it is not listed, and takes none for an Off row', () => {
@@ -54,33 +54,33 @@ describe('which places take a first look', () => {
     expect(joinVerdict(ON, integration({}, 'telegram'), 'C1')).toBe('drop')
   })
 
-  it('offers firstLook only to such a place’s long session', () => {
+  it('offers gettingToKnow only to such a place’s long session', () => {
     const agent = { ...ON, integrations: [integration()] }
     const at = { channel: 'C1', thread: APPEND, integrationId: 'int-a', isDm: false }
-    expect(firstLookToolsFor(agent, at)).toEqual([FIRST_LOOK_TOOL])
-    expect(firstLookToolsFor(agent, { ...at, thread: '1700000000.000100' })).toEqual([])
-    expect(firstLookToolsFor(agent, { ...at, channel: 'D1', isDm: true })).toEqual([])
-    expect(firstLookToolsFor({ ...OFF, integrations: [integration()] }, at)).toEqual([])
-    expect(firstLookToolsFor({ ...ON, integrations: [integration({ externalChannels: ['C1'] })] }, at)).toEqual([])
-    expect(firstLookToolsFor(agent, { ...at, integrationId: 'int-other' })).toEqual([])
+    expect(gettingToKnowToolsFor(agent, at)).toEqual([GETTING_TO_KNOW_TOOL])
+    expect(gettingToKnowToolsFor(agent, { ...at, thread: '1700000000.000100' })).toEqual([])
+    expect(gettingToKnowToolsFor(agent, { ...at, channel: 'D1', isDm: true })).toEqual([])
+    expect(gettingToKnowToolsFor({ ...OFF, integrations: [integration()] }, at)).toEqual([])
+    expect(gettingToKnowToolsFor({ ...ON, integrations: [integration({ externalChannels: ['C1'] })] }, at)).toEqual([])
+    expect(gettingToKnowToolsFor(agent, { ...at, integrationId: 'int-other' })).toEqual([])
   })
 
   it('offers that long session propose for its report round only where the place has cards', () => {
     const agent = { ...ON, integrations: [integration()] }
     const at = { channel: 'C1', thread: APPEND, integrationId: 'int-a', isDm: false }
-    expect(firstLookToolsFor(agent, at, { cards: true })).toEqual([FIRST_LOOK_TOOL, PROPOSE_TOOL])
-    expect(firstLookToolsFor(agent, at, { cards: false })).toEqual([FIRST_LOOK_TOOL])
-    expect(firstLookToolsFor(agent, { ...at, thread: '1700000000.000100' }, { cards: true })).toEqual([])
+    expect(gettingToKnowToolsFor(agent, at, { cards: true })).toEqual([GETTING_TO_KNOW_TOOL, PROPOSE_TOOL])
+    expect(gettingToKnowToolsFor(agent, at, { cards: false })).toEqual([GETTING_TO_KNOW_TOOL])
+    expect(gettingToKnowToolsFor(agent, { ...at, thread: '1700000000.000100' }, { cards: true })).toEqual([])
     expect(
-      firstLookToolsFor({ ...ON, integrations: [integration({ externalChannels: ['C1'] })] }, at, { cards: true })
+      gettingToKnowToolsFor({ ...ON, integrations: [integration({ externalChannels: ['C1'] })] }, at, { cards: true })
     ).toEqual([])
   })
 
   it('keeps each tool within the runtimes’ limits', () => {
     for (const descriptor of [
-      FIRST_LOOK_TOOL,
+      GETTING_TO_KNOW_TOOL,
       PROPOSE_TOOL,
-      ...firstLookTools([]).filter((t) => t.name === 'recordCheck')
+      ...gettingToKnowTools([]).filter((t) => t.name === 'recordCheck')
     ]) {
       // A top-level oneOf would be flattened by the runtime and grow the description; none is used.
       expect('oneOf' in descriptor.inputSchema).toBe(false)
@@ -90,9 +90,9 @@ describe('which places take a first look', () => {
   })
 })
 
-describe('what a first look may read', () => {
+describe('what a getting-to-know task may read', () => {
   it('keeps its place’s own reads, memory reads and writes and its own recordCheck, and nothing that posts or reacts', () => {
-    const names = firstLookTools(
+    const names = gettingToKnowTools(
       [
         'getCurrentChannel',
         'getChannelHistory',
@@ -147,11 +147,15 @@ describe('what a first look may read', () => {
 
   it('refuses any argument naming another conversation, bot or platform', () => {
     const ctx = { platform: 'slack', channel: 'C1', integrationId: 'int-a' }
-    expect(firstLookReadRefusal(ctx, 'getChannelHistory', {})).toBeUndefined()
-    expect(firstLookReadRefusal(ctx, 'getChannelHistory', { channel: 'C1' })).toBeUndefined()
-    expect(firstLookReadRefusal(ctx, 'getChannelHistory', { channel: 'C2' })).toContain('reads only its own place')
-    expect(firstLookReadRefusal(ctx, 'getReactions', { integrationId: 'int-b' })).toContain('reads only its own place')
-    expect(firstLookReadRefusal(ctx, 'getUserProfile', { platform: 'discord' })).toContain('reads only its own place')
+    expect(gettingToKnowReadRefusal(ctx, 'getChannelHistory', {})).toBeUndefined()
+    expect(gettingToKnowReadRefusal(ctx, 'getChannelHistory', { channel: 'C1' })).toBeUndefined()
+    expect(gettingToKnowReadRefusal(ctx, 'getChannelHistory', { channel: 'C2' })).toContain('reads only its own place')
+    expect(gettingToKnowReadRefusal(ctx, 'getReactions', { integrationId: 'int-b' })).toContain(
+      'reads only its own place'
+    )
+    expect(gettingToKnowReadRefusal(ctx, 'getUserProfile', { platform: 'discord' })).toContain(
+      'reads only its own place'
+    )
   })
 
   it('reads platform timestamps in seconds or milliseconds, and ends a page at its window', () => {
@@ -170,7 +174,7 @@ describe('the prompts', () => {
   const flat = (text: string) => text.replace(/\s+/g, ' ')
 
   it('fills the task prompt’s placeholders, and says "you are in" for one someone asked for', () => {
-    const joined = firstLookPrompt({ ...facts, requested: false })
+    const joined = gettingToKnowPrompt({ ...facts, requested: false })
     expect(joined).toMatch(/^You are getting to know "releases", a public channel you were just added to\./)
     expect(joined).toContain('the last 30 days or 500 messages, whichever\nis less')
     expect(joined).toContain('actually do with its tools: sendMessage, followUp.')
@@ -180,17 +184,17 @@ describe('the prompts', () => {
     )
     expect(joined).toMatch(/Hand it back with recordCheck: a one-line observation, this report, and done set\.$/)
     expect(joined).not.toContain('{')
-    expect(firstLookPrompt({ ...facts, requested: true })).toContain('a public channel you are in. Read it')
+    expect(gettingToKnowPrompt({ ...facts, requested: true })).toContain('a public channel you are in. Read it')
   })
 
   it('keeps the read-only mode and names every write it may make, and recordCheck, as outputs that mode leaves alone', () => {
     // Every memory write the tool filter keeps, plus recordCheck: what a plan-mode reminder must not talk it out of.
-    const outputs = firstLookTools(Object.keys(MEMORY_TOOL_ACCESS_MODES).map(tool))
+    const outputs = gettingToKnowTools(Object.keys(MEMORY_TOOL_ACCESS_MODES).map(tool))
       .map((t) => t.name)
       .filter((name) => MEMORY_TOOL_ACCESS_MODES[name] !== 'read')
     expect(outputs).toEqual(['createMemoryEntry', 'updateMemoryEntry', 'writeMemory', 'recordCheck'])
     for (const shared of [false, true]) {
-      const prompt = flat(firstLookPrompt({ ...facts, requested: false, shared }))
+      const prompt = flat(gettingToKnowPrompt({ ...facts, requested: false, shared }))
       expect(prompt).toContain(
         'This session runs under a read-only or plan permission mode, which restricts your native shell and file tools only.'
       )
@@ -203,7 +207,7 @@ describe('the prompts', () => {
   })
 
   it('writes the place’s own topic file itself, and reports only what the long session acts on', () => {
-    const prompt = firstLookPrompt({ ...facts, requested: false })
+    const prompt = gettingToKnowPrompt({ ...facts, requested: false })
     expect(prompt).toContain('You cannot post or react: only your memory writes\nand your report leave this task.')
     expect(prompt).toContain(
       'Then write to memory, without a layer argument:\n1. A topic file named after the place, dated, with a description header so MEMORY.md lists it.'
@@ -219,7 +223,7 @@ describe('the prompts', () => {
   })
 
   it('in a place that writes the shared layer, also keeps the organization files in their shapes', () => {
-    const prompt = firstLookPrompt({ ...facts, requested: false, shared: true })
+    const prompt = gettingToKnowPrompt({ ...facts, requested: false, shared: true })
     expect(prompt).toContain(
       '1. A topic file named after the place, dated, with "index: false" in its header so MEMORY.md leaves it out.'
     )
@@ -249,9 +253,9 @@ describe('the prompts', () => {
     expect(prompt.match(/^## .+$/gm)).toEqual(['## In flight', '## Where I could help', '## Not covered'])
   })
 
-  it('tells the long session only to speak, since the first look wrote memory itself', () => {
+  it('tells the long session only to speak, since the getting-to-know task wrote memory itself', () => {
     for (const cards of [true, false]) {
-      const handling = firstLookHandling('@-mention me', { external: false, cards })
+      const handling = gettingToKnowHandling('@-mention me', { external: false, cards })
       expect(handling).toContain(
         'When your getting-to-know task reports back (it has already written what it learned to memory):\n1. Post one short introduction'
       )
@@ -267,7 +271,7 @@ describe('the prompts', () => {
   })
 
   it('tells the long session what to do, step 2 as text, and nothing to post once the place turned external', () => {
-    const handling = firstLookHandling('I read every message', { external: false })
+    const handling = gettingToKnowHandling('I read every message', { external: false })
     expect(handling).toContain('how to\n   reach you (I read every message).')
     expect(handling).toContain('2. In the same message, list each "Where I could help" item in one line')
     expect(handling).toContain('3. Ask at most one question')
@@ -280,13 +284,13 @@ describe('the prompts', () => {
     // People hear what the agent did in plain words, never the internal term.
     expect(handling).toMatch(/\nTell people plainly that you read this place's recent messages to get to know it\.$/)
     // Where the place has cards, step 2 offers the suggestions with propose, under the introduction.
-    const cards = firstLookHandling('@-mention me', { external: false, cards: true })
+    const cards = gettingToKnowHandling('@-mention me', { external: false, cards: true })
     expect(cards).toContain(
       '2. Under it, offer each "Where I could help" item with propose. Offer an "In flight" item as a\n   follow-up only if someone is visibly waiting on it.'
     )
     expect(cards).not.toContain('In the same message')
-    expect(firstLookHandling('@-mention me', { external: true, cards: true })).not.toContain('propose')
-    const external = firstLookHandling('@-mention me', { external: true })
+    expect(gettingToKnowHandling('@-mention me', { external: true, cards: true })).not.toContain('propose')
+    const external = gettingToKnowHandling('@-mention me', { external: true })
     expect(external).not.toContain('Post one short introduction')
     expect(external).not.toContain('raw id')
     expect(external).toContain('post nothing about what you read in it')
@@ -294,7 +298,9 @@ describe('the prompts', () => {
 
   it('tells step 2 in both forms that a follow-up needs a first check, and how to word an event-shaped one', () => {
     for (const cards of [true, false]) {
-      const step2 = firstLookHandling('@-mention me', { external: false, cards }).split('\n2. ')[1]!.split('\n3. ')[0]!
+      const step2 = gettingToKnowHandling('@-mention me', { external: false, cards })
+        .split('\n2. ')[1]!
+        .split('\n3. ')[0]!
       expect(step2).toContain(
         'A follow-up runs only at its next check or when messaged, so give each one a first check,\n   and word one that must notice new messages as a check on a schedule ("each weekday at 10:00'
       )
@@ -308,14 +314,14 @@ describe('the prompts', () => {
       nextCheck: undefined,
       watch: undefined
     }
-    expect(firstLookProposalRefusal({ followUp })).toBe(
+    expect(gettingToKnowProposalRefusal({ followUp })).toBe(
       'a follow-up offered after getting to know a place needs followUp.nextCheck, since nothing else would wake it: set its ' +
         'first check, and word one that must notice new messages as a check on a schedule; nothing was proposed'
     )
-    expect(firstLookProposalRefusal({ followUp: { ...followUp, nextCheck: Date.parse('2099-01-01T10:00:00Z') } })).toBe(
-      undefined
-    )
-    expect(firstLookProposalRefusal({ followUp: undefined })).toBeUndefined()
+    expect(
+      gettingToKnowProposalRefusal({ followUp: { ...followUp, nextCheck: Date.parse('2099-01-01T10:00:00Z') } })
+    ).toBe(undefined)
+    expect(gettingToKnowProposalRefusal({ followUp: undefined })).toBeUndefined()
   })
 
   it('names how people reach the agent there from its trigger', () => {
@@ -330,20 +336,22 @@ describe('the prompts', () => {
       ...over
     })
     const place = { agentId: 'agent-a', integrationId: 'int-a', platform: 'slack', channel: 'C1' }
-    expect(firstLookReach([rule({ kind: 'mention' })], place)).toBe('@-mention me')
-    expect(firstLookReach([rule({ kind: 'auto' }, { scope: { channel: 'C1' } })], place)).toBe('I read every message')
+    expect(gettingToKnowReach([rule({ kind: 'mention' })], place)).toBe('@-mention me')
+    expect(gettingToKnowReach([rule({ kind: 'auto' }, { scope: { channel: 'C1' } })], place)).toBe(
+      'I read every message'
+    )
   })
 })
 
 describe('joins waiting for their row', () => {
   it('settles each join once, and forgets one that waited too long', () => {
-    const joins = new PendingFirstLooks()
+    const joins = new PendingGettingToKnowTasks()
     const join = { agentId: 'a', integrationId: 'int-a', channel: 'C1', at: 0 }
     joins.note(join)
     joins.note({ ...join, channel: 'C2' })
     expect(joins.waiting(1).map((j) => j.channel)).toEqual(['C1', 'C2'])
     expect(joins.done(join)).toBe(true)
     expect(joins.done(join)).toBe(false)
-    expect(joins.waiting(FIRST_LOOK_JOIN_WAIT_MS + 1)).toEqual([])
+    expect(joins.waiting(GETTING_TO_KNOW_JOIN_WAIT_MS + 1)).toEqual([])
   })
 })

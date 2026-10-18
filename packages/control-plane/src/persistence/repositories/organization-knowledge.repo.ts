@@ -51,7 +51,7 @@ function prismaBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
 }
 
 const writerKindOf = (value: OrganizationKnowledgeRevision['writerKind']) =>
-  value === 'first_look' ? ('first-look' as const) : value
+  value === 'getting_to_know' ? ('getting-to-know' as const) : value
 
 function toKnowledgeRevision(row: OrganizationKnowledgeRevision): OrganizationKnowledgeRevisionRecord {
   return {

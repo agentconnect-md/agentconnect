@@ -36,11 +36,11 @@ export function recordKindOfFile(file: KnowledgeRecordFile): OrganizationRecordK
   return file === 'organization.md' ? 'organization' : file === 'channels.md' ? 'channels' : 'people'
 }
 
-/** The prisma enum spells `first-look` as `first_look`. */
+/** The prisma enum spells `getting-to-know` as `getting_to_know`. */
 export function writerKindColumn(
   kind: KnowledgeRecordWriterKind
-): 'research' | 'first_look' | 'conversation' | 'person' {
-  return kind === 'first-look' ? 'first_look' : kind
+): 'research' | 'getting_to_know' | 'conversation' | 'person' {
+  return kind === 'getting-to-know' ? 'getting_to_know' : kind
 }
 
 const sha256 = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`

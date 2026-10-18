@@ -101,7 +101,7 @@ export interface SlackTurn {
      *  because chat.update REPLACES content, so closing the response means re-sending what
      *  is already displayed. */
     lastResponse?: { ts: string; text: string }
-    /** ts of the FIRST agent-authored body posted this turn, the message a first look's cards thread under. */
+    /** ts of the FIRST agent-authored body posted this turn, the message a getting-to-know task's cards thread under. */
     firstResponse?: string
     /** Routing facts of the COMPLETE response, resolved by the host before the final body
      *  flush (§5.5): the recipient set, the addressed-anyone bit, whether any peer agent

@@ -110,8 +110,8 @@ const FollowUpDto = z.object({
   doneWhen: z.string().nullable(),
   /** Its newest finished checks, newest first: when, what it saw, whether its report reached the conversation, and what started it. */
   recentChecks: z.array(AssistantActivityCheck),
-  /** A first look of its conversation, which reads the place once and ends after one check. */
-  firstLook: z.boolean().optional(),
+  /** A getting-to-know task of its conversation, which reads the place once and ends after one check. */
+  gettingToKnow: z.boolean().optional(),
   /** The one pull request, merge request or issue whose events wake it, where the row is `visible`. */
   watch: AssistantActivityFollowUp.shape.watch
 })
@@ -129,7 +129,7 @@ const SubsessionDto = z.object({
   canStop: z.boolean(),
   /** The conversation that opened it, when the caller may see it. */
   parent: ConversationDto.nullable(),
-  /** Where it runs, from its own session, while its conversation has no session yet and the caller may view it (a first look before it reports). */
+  /** Where it runs, from its own session, while its conversation has no session yet and the caller may view it (a getting-to-know task before it reports). */
   place: z.object({ platform: z.string().nullable(), channelName: z.string().nullable() }).optional(),
   /** Which kind of task it is; absent from an agent version that does not say. */
   kind: AssistantActivityTaskKind.optional(),
@@ -455,7 +455,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         visible,
         canStop: s.state === 'open' && (child ? mayContinue(child) : byId && mayContinue(parent)),
         parent: conversationOf(parent),
-        // A first look runs before its place's long session exists, so its own row names the place; never its title.
+        // A getting-to-know task runs before its place's long session exists, so its own row names the place; never its title.
         ...(!parent && child ? { place: { platform: child.platform, channelName: child.channelName } } : {}),
         ...(s.kind ? { kind: s.kind } : {}),
         ...(followUp
@@ -466,7 +466,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
                 nextCheck: followUp.nextCheck,
                 doneWhen: visible ? followUp.doneWhen : null,
                 recentChecks: visible ? followUp.recentChecks : [],
-                ...(followUp.firstLook ? { firstLook: true } : {}),
+                ...(followUp.gettingToKnow ? { gettingToKnow: true } : {}),
                 // What it watches, like its title, only where its conversation may be seen.
                 ...(visible && followUp.watch ? { watch: followUp.watch } : {})
               }

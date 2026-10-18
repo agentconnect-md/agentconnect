@@ -95,7 +95,7 @@ export interface AssistantProposal {
   itemVersion: number
   /** Set on the follow-up form, whose approval takes this follow-up and runs no task. */
   followUp: AssistantProposalFollowUp | null
-  /** The first look report round it was proposed in (§5.13), whose reply its card waits for. */
+  /** The getting-to-know task report round it was proposed in (§5.13), whose reply its card waits for. */
   round: string | null
   /** Its card waits for the round's reply to post. */
   held: boolean
@@ -168,7 +168,7 @@ export interface AssistantTaskCreate {
   approver?: AssistantDraftApprover | null
   /** The follow-up form; `task` is then its title. */
   followUp?: AssistantProposalFollowUp
-  /** A first look report round's proposal, numbered in the round; its card is held until the round's reply posts. */
+  /** A getting-to-know task report round's proposal, numbered in the round; its card is held until the round's reply posts. */
   round?: { id: string; seq: number }
   now?: number
 }
@@ -487,7 +487,7 @@ export class AssistantDraftLedger {
     return await this.insert(id, row)
   }
 
-  /** How many proposals a first look report round made (§5.13). */
+  /** How many proposals a getting-to-know task report round made (§5.13). */
   async countInRound(agentId: string, round: string): Promise<number> {
     const rows = (
       await this.db.query('SELECT COUNT(*) AS n FROM assistant_draft WHERE agentId = ? AND reportRound = ?', [

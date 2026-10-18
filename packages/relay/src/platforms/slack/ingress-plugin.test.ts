@@ -274,7 +274,7 @@ describe('slack ingress plugin — review-pinned regressions', () => {
     expect(vi.mocked(h.forwardAction).mock.calls[0]![1]).toEqual(ROUTE)
   })
 
-  // assistant-mode.md §5.13: the bot's own join reaches the channel's owning daemon, which may take a first look.
+  // assistant-mode.md §5.13: the bot's own join reaches the channel's owning daemon, which may take a getting-to-know task.
   it('forwards the bot joining to the owning daemon, with who added it', () => {
     const h = host()
     forwardBotJoined(h, 'bot-1', { channelId: 'C1', inviter: 'U-ALICE', interactionId: 'Ev-join' })

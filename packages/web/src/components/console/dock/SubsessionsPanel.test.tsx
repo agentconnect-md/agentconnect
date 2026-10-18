@@ -389,9 +389,11 @@ describe('SubsessionsPanel', () => {
     expect(last()).toEqual({ settled: true, count: 1, running: 1, finished: 0, failed: false })
   })
 
-  // assistant-mode.md §5.13: a first look is a follow-up row labelled as one.
-  it('labels a first look as one', async () => {
-    wire.pages = [page([followUp('waiting', { title: 'The release channel' }, { firstLook: true, nextCheck: null })])]
+  // assistant-mode.md §5.13: a getting-to-know task is a follow-up row labelled as one.
+  it('labels a getting-to-know task as one', async () => {
+    wire.pages = [
+      page([followUp('waiting', { title: 'The release channel' }, { gettingToKnow: true, nextCheck: null })])
+    ]
     await render()
     expect(rows()[0]?.textContent).toContain('Getting to know')
     expect(rows()[0]?.textContent).not.toContain('Follow-up')
