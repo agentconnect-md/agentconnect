@@ -12,6 +12,8 @@
 import type { ApiProvider, CallApiContextParams, CallApiOptionsParams, ProviderResponse } from 'promptfoo'
 import { resolve, sep } from 'node:path'
 import { runQuotaCounting, runSameRoomCounting } from '../games/engine.js'
+import { runCrossPlatformRelay } from '../games/cross-platform-relay.js'
+import { RELAY_VARIANTS, type RelayVariant } from '../games/relay-feedback.js'
 import type { CountingVariant } from '../games/counting.js'
 import type { GameSubjectSpec } from '../games/subject.js'
 import {
@@ -21,7 +23,7 @@ import {
   type CollaborationGameResult
 } from '../../packages/daemon/src/evaluation/index.js'
 
-export interface GameCase {
+export interface CountingCase {
   kind: 'game'
   id: string
   game: 'counting'
@@ -38,6 +40,20 @@ export interface GameCase {
   timeoutMs?: number
 }
 
+export interface RelayCase {
+  kind: 'game'
+  id: string
+  game: 'relay'
+  scenario: 'cross-platform'
+  variant: RelayVariant
+  seed: number
+  target: number
+  agentIds: string[]
+  timeoutMs?: number
+}
+
+export type GameCase = CountingCase | RelayCase
+
 /** Validate a §12 game case (hand-rolled: `zod` is not resolvable from the
  *  repo-root evals tree; wire-schema validation stays in the daemon package). */
 export function parseGameCase(raw: unknown): GameCase {
@@ -45,6 +61,37 @@ export function parseGameCase(raw: unknown): GameCase {
   const record = raw as Record<string, unknown>
   if (record.kind !== 'game') throw new Error('game case requires kind: "game"')
   if (typeof record.id !== 'string' || record.id.length === 0) throw new Error('game case requires a non-empty id')
+  if (record.game === 'relay') {
+    const variant = record.variant ?? 'clean'
+    if (!RELAY_VARIANTS.includes(variant as RelayVariant)) throw new Error('unsupported relay variant')
+    if ((record.scenario ?? 'cross-platform') !== 'cross-platform') throw new Error('unsupported relay scenario')
+    const seed = record.seed ?? 42
+    if (typeof seed !== 'number' || !Number.isSafeInteger(seed) || seed < 0)
+      throw new Error('seed must be a non-negative safe integer')
+    const timeoutMs = record.timeoutMs
+    if (
+      timeoutMs !== undefined &&
+      (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 1_800_000)
+    ) {
+      throw new Error('timeoutMs must be an integer in [1, 1800000]')
+    }
+    if (record.target !== undefined || record.agentIds !== undefined || record.quotaPerAgent !== undefined) {
+      throw new Error(
+        'relay has fixed bridge/reviewer seats and three stages; target, agentIds and quotaPerAgent are not supported'
+      )
+    }
+    return {
+      kind: 'game',
+      id: record.id,
+      game: 'relay',
+      scenario: 'cross-platform',
+      variant: variant as RelayVariant,
+      seed,
+      target: 3,
+      agentIds: ['bridge', 'reviewer'],
+      ...(timeoutMs !== undefined ? { timeoutMs } : {})
+    }
+  }
   if (record.game !== 'counting') throw new Error(`unsupported game: ${String(record.game)}`)
   if ((record.scenario ?? 'same-room') !== 'same-room') {
     throw new Error(`unsupported counting scenario: ${String(record.scenario)}`)
@@ -123,6 +170,7 @@ interface CollaborationGameProviderOptions {
 export interface CollaborationGameProviderDependencies {
   /** Test seams; production runs the real engine. */
   runGame?: (options: Parameters<typeof runSameRoomCounting>[0]) => Promise<CollaborationGameResult>
+  runRelayGame?: (options: Parameters<typeof runCrossPlatformRelay>[0]) => Promise<CollaborationGameResult>
   runQuotaGame?: (options: Parameters<typeof runQuotaCounting>[0]) => Promise<CollaborationGameResult>
 }
 
@@ -212,28 +260,36 @@ export default class CollaborationGameProvider implements ApiProvider {
         throw new Error('collaboration game artifact directory escaped the configured artifact root')
       }
       const result =
-        gameCase.variant === 'quota'
-          ? await (this.dependencies.runQuotaGame ?? runQuotaCounting)({
+        gameCase.game === 'relay'
+          ? await (this.dependencies.runRelayGame ?? runCrossPlatformRelay)({
               seed: gameCase.seed,
-              agents: gameCase.agentIds,
-              ...(gameCase.quotaPerAgent !== undefined ? { quotaPerAgent: gameCase.quotaPerAgent } : {}),
-              artifactDir,
-              subject,
-              ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
-            })
-          : await (this.dependencies.runGame ?? runSameRoomCounting)({
-              seed: gameCase.seed,
-              target: gameCase.target,
-              agents: gameCase.agentIds,
               variant: gameCase.variant,
               artifactDir,
               subject,
               ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
             })
+          : gameCase.variant === 'quota'
+            ? await (this.dependencies.runQuotaGame ?? runQuotaCounting)({
+                seed: gameCase.seed,
+                agents: gameCase.agentIds,
+                ...(gameCase.quotaPerAgent !== undefined ? { quotaPerAgent: gameCase.quotaPerAgent } : {}),
+                artifactDir,
+                subject,
+                ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
+              })
+            : await (this.dependencies.runGame ?? runSameRoomCounting)({
+                seed: gameCase.seed,
+                target: gameCase.target,
+                agents: gameCase.agentIds,
+                variant: gameCase.variant,
+                artifactDir,
+                subject,
+                ...(gameCase.timeoutMs !== undefined ? { timeoutMs: gameCase.timeoutMs } : {})
+              })
       const metadata = {
         schemaVersion: 'agentconnect.promptfoo/v1',
         caseId: gameCase.id,
-        game: 'counting',
+        game: gameCase.game,
         scenario: gameCase.scenario,
         variant: gameCase.variant,
         subjectKind: subject.kind,

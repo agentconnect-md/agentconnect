@@ -1,0 +1,259 @@
+- description: Relay · clean · seed 7
+  metadata:
+    game: relay
+    variant: clean
+    seed: 7
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-clean-seed7-v1", "game": "relay", "variant": "clean", "seed": 7}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · stale · seed 7
+  metadata:
+    game: relay
+    variant: stale
+    seed: 7
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-stale-seed7-v1", "game": "relay", "variant": "stale", "seed": 7}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · duplicate · seed 7
+  metadata:
+    game: relay
+    variant: duplicate
+    seed: 7
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-duplicate-seed7-v1", "game": "relay", "variant": "duplicate", "seed": 7}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · conflict · seed 7
+  metadata:
+    game: relay
+    variant: conflict
+    seed: 7
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-conflict-seed7-v1", "game": "relay", "variant": "conflict", "seed": 7}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · clean · seed 13
+  metadata:
+    game: relay
+    variant: clean
+    seed: 13
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-clean-seed13-v1", "game": "relay", "variant": "clean", "seed": 13}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · stale · seed 13
+  metadata:
+    game: relay
+    variant: stale
+    seed: 13
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-stale-seed13-v1", "game": "relay", "variant": "stale", "seed": 13}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · duplicate · seed 13
+  metadata:
+    game: relay
+    variant: duplicate
+    seed: 13
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-duplicate-seed13-v1", "game": "relay", "variant": "duplicate", "seed": 13}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · conflict · seed 13
+  metadata:
+    game: relay
+    variant: conflict
+    seed: 13
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-conflict-seed13-v1", "game": "relay", "variant": "conflict", "seed": 13}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · clean · seed 42
+  metadata:
+    game: relay
+    variant: clean
+    seed: 42
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-clean-seed42-v1", "game": "relay", "variant": "clean", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · stale · seed 42
+  metadata:
+    game: relay
+    variant: stale
+    seed: 42
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-stale-seed42-v1", "game": "relay", "variant": "stale", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · duplicate · seed 42
+  metadata:
+    game: relay
+    variant: duplicate
+    seed: 42
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-duplicate-seed42-v1", "game": "relay", "variant": "duplicate", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · conflict · seed 42
+  metadata:
+    game: relay
+    variant: conflict
+    seed: 42
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-conflict-seed42-v1", "game": "relay", "variant": "conflict", "seed": 42}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · clean · seed 101
+  metadata:
+    game: relay
+    variant: clean
+    seed: 101
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-clean-seed101-v1", "game": "relay", "variant": "clean", "seed": 101}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · stale · seed 101
+  metadata:
+    game: relay
+    variant: stale
+    seed: 101
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-stale-seed101-v1", "game": "relay", "variant": "stale", "seed": 101}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · duplicate · seed 101
+  metadata:
+    game: relay
+    variant: duplicate
+    seed: 101
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-duplicate-seed101-v1", "game": "relay", "variant": "duplicate", "seed": 101}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · conflict · seed 101
+  metadata:
+    game: relay
+    variant: conflict
+    seed: 101
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-conflict-seed101-v1", "game": "relay", "variant": "conflict", "seed": 101}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · clean · seed 2026
+  metadata:
+    game: relay
+    variant: clean
+    seed: 2026
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-clean-seed2026-v1", "game": "relay", "variant": "clean", "seed": 2026}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · stale · seed 2026
+  metadata:
+    game: relay
+    variant: stale
+    seed: 2026
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-stale-seed2026-v1", "game": "relay", "variant": "stale", "seed": 2026}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · duplicate · seed 2026
+  metadata:
+    game: relay
+    variant: duplicate
+    seed: 2026
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-duplicate-seed2026-v1", "game": "relay", "variant": "duplicate", "seed": 2026}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
+
+- description: Relay · conflict · seed 2026
+  metadata:
+    game: relay
+    variant: conflict
+    seed: 2026
+  vars:
+    case: |
+      {"kind": "game", "id": "relay-conflict-seed2026-v1", "game": "relay", "variant": "conflict", "seed": 2026}
+  assert:
+    - type: javascript
+      value: file://assertions/game-result.ts
+      metric: game
