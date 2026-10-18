@@ -1852,7 +1852,7 @@ export interface AhpSessionBindingRecord {
 
 export interface AhpSessionWriter {
   daemonId: string
-  duty?: { groupId: string; term: number }
+  duty?: { groupId: string; term: string }
 }
 
 export interface AhpSessionReservationInput {

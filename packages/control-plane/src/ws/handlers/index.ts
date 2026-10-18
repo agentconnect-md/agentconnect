@@ -1,3 +1,4 @@
+import { handleAhpSession } from './ahp-session.js'
 import { handleDecisionRead } from './decisions.js'
 import {
   handleMemoryTransaction,
@@ -92,6 +93,10 @@ export class FrameRouter {
 
   constructor(overrides: Partial<Record<FrameType, Handler>> = {}) {
     this.table = {
+      'ahp/session/reserve': handleAhpSession,
+      'ahp/session/finalize': handleAhpSession,
+      'ahp/session/resolve': handleAhpSession,
+      'ahp/session/list': handleAhpSession,
       auth: handleAuth,
       'daemon/bootstrap/result': handleDaemonBootstrapResult,
       'daemon/lifecycle/progress': handleDaemonLifecycleProgress,

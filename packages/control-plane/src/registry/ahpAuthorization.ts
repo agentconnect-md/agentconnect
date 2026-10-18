@@ -116,10 +116,14 @@ export class AhpAuthorization {
       },
       expiry * 1000
     )
+    const { targetSessionId: primaryTarget, ...browserVerdict } = verdict
+    const targetSessionId = agentId === claims.agentId ? primaryTarget : participant?.targetSessionId
     return {
-      ...verdict,
+      ...browserVerdict,
       agentId,
       daemonId: access.daemonId,
+      apiProtocols: ['ahp'],
+      ...(targetSessionId ? { targetSessionId } : {}),
       ahpGrant,
       callerRole: participant?.callerRole ?? chatCallerRole(canEdit(access.agent, access.viewer), false),
       callerApproves: canEdit(access.agent, access.viewer) || chatApprovalsAllowed(access.agent)

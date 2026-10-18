@@ -141,4 +141,27 @@ describe('AHP client authority', () => {
       ok: false
     })
   })
+  it('scopes a multi-agent browser attachment to the selected participant API entry', async () => {
+    const f = fixture()
+    const peer = '33333333-3333-4333-8333-333333333333'
+    const originalAgent = f.deps.agents.getUnscoped
+    f.deps.agents.getUnscoped = async (id) => ({ ...(await originalAgent(id))!, id })
+    f.deps.conversations.participants = async () => [
+      { agentId: AGENT as never, role: 'primary' },
+      { agentId: peer as never, role: 'member' }
+    ]
+    f.deps.apiEntries.listForAgent = async (id) => (id === peer ? [{ protocol: 'ahp' }] : [])
+    const browser = await f.tokens.mint({
+      orgId: 'org',
+      agentId: AGENT,
+      userId: 'user',
+      user: 'User',
+      conversationId: CONVERSATION
+    })
+    expect(await f.auth.verifyBrowser({ credential: browser.token, agentId: peer })).toMatchObject({
+      ok: true,
+      agentId: peer,
+      apiProtocols: ['ahp']
+    })
+  })
 })

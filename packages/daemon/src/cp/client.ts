@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { DecisionControlDeps } from './control/decision.js'
 import {
+  AhpSessionResult,
+  AhpSessionListResult,
+  type AhpSessionReserve,
+  type AhpSessionFinalize,
+  type AhpSessionResolve,
+  type AhpSessionList,
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
@@ -1183,6 +1189,42 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected codehost/review-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as CodeHostReviewResultOk
+  }
+
+  async ahpSessionReserve(payload: AhpSessionReserve): Promise<AhpSessionResult> {
+    this.requireReady('ahp/session/reserve')
+    const rep = await this.request('ahp/session/reserve', payload, payload.orgId)
+    if (rep.type !== 'ahp/session/reserve/ok') {
+      throw new WireError('INTERNAL', `expected ahp/session/reserve/ok, got ${rep.type}`, false)
+    }
+    return AhpSessionResult.parse(rep.payload)
+  }
+
+  async ahpSessionFinalize(payload: AhpSessionFinalize): Promise<AhpSessionResult> {
+    this.requireReady('ahp/session/finalize')
+    const rep = await this.request('ahp/session/finalize', payload, payload.orgId)
+    if (rep.type !== 'ahp/session/finalize/ok') {
+      throw new WireError('INTERNAL', `expected ahp/session/finalize/ok, got ${rep.type}`, false)
+    }
+    return AhpSessionResult.parse(rep.payload)
+  }
+
+  async ahpSessionResolve(payload: AhpSessionResolve): Promise<AhpSessionResult> {
+    this.requireReady('ahp/session/resolve')
+    const rep = await this.request('ahp/session/resolve', payload, payload.orgId)
+    if (rep.type !== 'ahp/session/resolve/ok') {
+      throw new WireError('INTERNAL', `expected ahp/session/resolve/ok, got ${rep.type}`, false)
+    }
+    return AhpSessionResult.parse(rep.payload)
+  }
+
+  async ahpSessionList(payload: AhpSessionList): Promise<AhpSessionListResult> {
+    this.requireReady('ahp/session/list')
+    const rep = await this.request('ahp/session/list', payload, payload.orgId)
+    if (rep.type !== 'ahp/session/list/ok') {
+      throw new WireError('INTERNAL', `expected ahp/session/list/ok, got ${rep.type}`, false)
+    }
+    return AhpSessionListResult.parse(rep.payload)
   }
 
   async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued> {

@@ -12,6 +12,7 @@ import type { AgentMemoryTransactionService } from '../agent-memory/transaction.
  *
  * Grows per phase: secrets/watchdog/full-orchestrator deps join in Phase 3.
  */
+import type { AhpSessionService } from '../registry/ahpSessions.js'
 import type { DaemonAuth, DaemonRegistry } from '../ports.js'
 import type {
   SessionRepo,
@@ -93,6 +94,7 @@ export interface WsConfig {
 }
 
 export interface DaemonWsDeps {
+  ahpSessions?: AhpSessionService
   /** Structured server log sink for failures handled at the daemon WS edge. */
   log: {
     error: (obj: Record<string, unknown>, message: string) => void
