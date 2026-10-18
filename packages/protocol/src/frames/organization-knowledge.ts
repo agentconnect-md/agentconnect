@@ -124,11 +124,12 @@ export const KnowledgeRecordWriteReq = z
   .strict()
 export type KnowledgeRecordWriteReq = z.infer<typeof KnowledgeRecordWriteReq>
 
-/** C→D: a read's entry with its opt-out keys, or a write's new revision. */
+/** C→D: a read's entry with its opt-out keys, or a write's new revision; `updatedAt` is when that revision was written. */
 export const KnowledgeRecordOk = z
   .object({
     id: z.string().uuid(),
     revision: z.number().int().positive(),
+    updatedAt: z.string().datetime(),
     content: z.string().max(KNOWLEDGE_RECORD_MAX_BYTES).optional(),
     optOut: RecordOptOutKeys.optional()
   })
@@ -140,6 +141,7 @@ export const KnowledgeRecordConflict = z
   .object({
     id: z.string().uuid(),
     revision: z.number().int().positive(),
+    updatedAt: z.string().datetime(),
     content: z.string().max(KNOWLEDGE_RECORD_MAX_BYTES),
     optOut: RecordOptOutKeys
   })

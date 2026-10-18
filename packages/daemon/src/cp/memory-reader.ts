@@ -191,9 +191,10 @@ export function createMemoryReader(
     // A console user's own layer, alone: the CP names only the signed-in caller, and never beside a place layer.
     if (personUserId) {
       if (channelKey) throw new MemoryViolationError('a memory read names one layer')
-      return { agentId, personKey: memoryPersonKey(`user:${personUserId}`), alone: true }
+      return { agentId, personKey: memoryPersonKey(`user:${personUserId}`), alone: true, withoutRecord: true }
     }
-    return { agentId, ...(channelKey ? { channelKey } : {}) }
+    // The organization record is on the Knowledge page, so the console's view leaves its names out.
+    return { agentId, ...(channelKey ? { channelKey } : {}), withoutRecord: true }
   }
 
   return {

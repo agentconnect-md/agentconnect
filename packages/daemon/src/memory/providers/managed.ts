@@ -78,10 +78,12 @@ export class ManagedMemoryProvider implements MemoryProvider {
     const ports = this.portsFor(scope.agentId)
     const record = this.organizationRecordFor(scope.agentId)
     const base = record
-      ? new RecordBackedMemoryFs(ports.live, record, {
-          withOutsiders: scope.withOutsiders ?? true,
-          writerKind: scope.recordWriter ?? 'conversation'
-        })
+      ? new RecordBackedMemoryFs(
+          ports.live,
+          record,
+          { withOutsiders: scope.withOutsiders ?? true, writerKind: scope.recordWriter ?? 'conversation' },
+          !scope.withoutRecord
+        )
       : ports.live
     const own = scope.channelKey
       ? channelMemoryRoot(base, scope.channelKey)
