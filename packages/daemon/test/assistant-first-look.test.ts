@@ -166,7 +166,7 @@ describe('what a first look may read', () => {
 })
 
 describe('the prompts', () => {
-  const facts = { place: '"releases"', kind: 'public channel', tools: 'sendMessage, followUp' }
+  const facts = { place: '"releases"', kind: 'public channel', platform: 'slack', tools: 'sendMessage, followUp' }
   const flat = (text: string) => text.replace(/\s+/g, ' ')
 
   it('fills the task prompt’s placeholders, and says "you are in" for one someone asked for', () => {
@@ -227,9 +227,9 @@ describe('the prompts', () => {
     expect(flat(prompt)).toContain(
       "Add an entry only for someone whose messages you read here, keyed exactly as the history's senderKey shows it"
     )
-    // The place's file is out of the index, so its line in channels.md is how later sessions there find it.
+    // The place's line names its platform, so the console shows that platform's mark and naming.
     expect(flat(prompt)).toContain(
-      '- channels.md: one line for this place, linking the file above: "#name: what it is for — [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]] (#release-train, 2026-10-17)".'
+      '- channels.md: one line for this place, "- [slack] <name>: what it is for (#<name>, date)", its name as the platform shows it with no "#", e.g. "- [slack] release-train: release decisions (#release-train, 2026-10-17)".'
     )
     expect(flat(prompt)).toContain('Merge it into its sections, not as a new block; write nothing when nothing is new.')
     expect(flat(prompt)).toContain(

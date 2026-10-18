@@ -1754,8 +1754,10 @@ Deleting an agent removes it from every list; a Selected list left empty reads "
   again" button anywhere.
 - **The three file views**, opened from the Handbook rows, render the entry rather than its
   Markdown: About by section, each line with its source as a chip and an inferred line
-  dimmed and tagged; Channels as a list with the platform mark, the name, the purpose and the
-  source chip or inferred tag; People as cards with the name, handles and the four fields with
+  dimmed and tagged; Channels as a list with each place's platform mark, its name as that
+  platform writes it and its purpose, with a source chip only when another place is the source
+  and the date on hover, the places the agent has read first and those it only guessed from the
+  name after them under "Not read yet"; People as cards with the name, handles and the four fields with
   their sources. A person's own card carries Edit and Remove; no other card shows them a control.
   Owners edit and clear any entry. Revisions are listed beside the view, as on any entry page.
 - **The agent page** has a Knowledge tab with two groups, Handbook (the three entries, whether
@@ -2001,7 +2003,9 @@ them. Every fact is one line ending in its source and date, such
 as `(#release-train, 2026-10-17)`: an internal channel by name, a knowledge entry by its title in
 quotes, a repository by its path, `self` for a person's own words, or a web address, whose line
 also says `(web)`. `organization.md` holds a summary of at most ten lines and three fixed sections
-within 16 KB, `channels.md` one line per place, and `members.md` one entry per person of at most
+within 16 KB, `channels.md` one line per place naming its platform and the place's name as that
+platform shows it, such as `- [slack] release-train: release decisions (#release-train,
+2026-10-17)`, and `members.md` one entry per person of at most
 ten lines in four fields. A save that does not fit is refused, naming the line that failed, and
 nothing is saved. A place or person layer's files of those names are not checked.
 

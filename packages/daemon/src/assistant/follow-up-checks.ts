@@ -149,6 +149,7 @@ export type FirstLookFacts =
   | {
       place: string
       kind: string
+      platform: string
       tools: string
       reach: string
       external: boolean

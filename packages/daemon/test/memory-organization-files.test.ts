@@ -46,8 +46,8 @@ const CHANNELS = `---
 description: where this agent is and what each place is for
 ---
 
-#release-train: release decisions — [[release-train]] (#release-train, 2026-10-17)
-#support: customer questions — [[support]] (#support, 2026-10-12)
+- [slack] release-train: release decisions (#release-train, 2026-10-17)
+- [slack] support: customer questions (#support, 2026-10-12)
 `
 
 const MEMBERS = `---
@@ -165,15 +165,27 @@ describe('the organization files’ shapes', () => {
     )
   })
 
-  it('keeps channels.md to one sourced line per place', () => {
-    expect(organizationFileRefusal('channels.md', `${CHANNELS}- #ops: incidents (#ops, 2026-10-15)\n`)).toContain(
-      'line 7 "- #ops: incidents (#ops, 2026-10-15)" is not one place\'s line'
+  it('keeps channels.md to one sourced line per place, each naming its platform', () => {
+    expect(organizationFileRefusal('channels.md', `${CHANNELS}#ops: incidents (#ops, 2026-10-15)\n`)).toContain(
+      'line 7 "#ops: incidents (#ops, 2026-10-15)" is not one place\'s line, "- [<platform>] <name>: what it is for'
+    )
+    expect(organizationFileRefusal('channels.md', `${CHANNELS}- [irc] ops: incidents (#ops, 2026-10-15)\n`)).toContain(
+      'names "[irc]", which is no platform; a place\'s platform is one of slack, telegram, discord, feishu, googlechat, qq'
     )
     expect(
-      organizationFileRefusal('channels.md', `${CHANNELS}#Release-Train: again (#release-train, 2026-10-17)\n`)
-    ).toContain('repeats #Release-Train from line 5; keep one line per place')
-    expect(organizationFileRefusal('channels.md', `${CHANNELS}#ops: incidents — [[ops]]\n`)).toContain(
-      'line 7 "#ops: incidents — [[ops]]" does not end with its source and date'
+      organizationFileRefusal('channels.md', `${CHANNELS}- [slack] #ops: incidents (#ops, 2026-10-15)\n`)
+    ).toContain('writes "#ops" with a sigil; write the name as the platform shows it, without "#"')
+    expect(
+      organizationFileRefusal('channels.md', `${CHANNELS}- [slack] Release-Train: again (#release-train, 2026-10-17)\n`)
+    ).toContain('repeats Release-Train on slack from line 5; keep one line per place')
+    expect(
+      organizationFileRefusal(
+        'channels.md',
+        `${CHANNELS}- [discord] release-train: again (#release-train, 2026-10-17)\n`
+      )
+    ).toBeUndefined()
+    expect(organizationFileRefusal('channels.md', `${CHANNELS}- [slack] ops: incidents — [[ops]]\n`)).toContain(
+      'line 7 "- [slack] ops: incidents — [[ops]]" does not end with its source and date'
     )
   })
 
@@ -222,15 +234,17 @@ describe('the entry writer checks the final text', () => {
       canRead: () => true,
       write: { source: 'tool', canWrite: () => true, check: organizationFileRefusal }
     })
-    await expect(api.create({ label: 'channels', text: '#ops: incidents\n' })).rejects.toMatchObject({
+    await expect(api.create({ label: 'channels', text: '- [slack] ops: incidents\n' })).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
-      message: expect.stringContaining('channels.md line 1 "#ops: incidents" does not end with its source and date')
+      message: expect.stringContaining(
+        'channels.md line 1 "- [slack] ops: incidents" does not end with its source and date'
+      )
     })
     expect(await fs.readFile('memory/channels.md')).toBeNull()
 
     const created = await api.create({ label: 'channels', text: CHANNELS })
     const { ref, revision } = created.entry!
-    await expect(api.update({ ref, revision, text: `${CHANNELS}#ops: incidents\n` })).rejects.toMatchObject({
+    await expect(api.update({ ref, revision, text: `${CHANNELS}- [slack] ops: incidents\n` })).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT'
     })
     // An exact edit is checked on the file it would leave, which only the writer sees.
@@ -239,10 +253,10 @@ describe('the entry writer checks the final text', () => {
     ).rejects.toMatchObject({
       code: 'INVALID_ARGUMENT',
       // The stored file's header carries its name and modified time too, so its line numbers are the stored file's.
-      message: expect.stringContaining('line 8 "#support: customer')
+      message: expect.stringContaining('line 8 "- [slack] support: customer')
     })
     expect((await fs.readFile('memory/channels.md'))!.content).toContain(
-      '#support: customer questions — [[support]] (#support'
+      '- [slack] support: customer questions (#support'
     )
     // Any other topic, and a place layer's own files, pass.
     await expect(api.create({ label: 'release-train', text: 'anything' })).resolves.toMatchObject({
@@ -304,13 +318,13 @@ describe('the memory tools check what they write into the shared layer', () => {
   it('checks a bound session only when its binding names the shared layer', async () => {
     const { deps: d, home } = await deps({ agentId: 'agent' })
     const staged = { source: 'tool' as const, scope: { agentId: 'agent', root: home.fs } }
-    const bad = { path: 'channels.md', content: '#ops: incidents\n' }
+    const bad = { path: 'channels.md', content: '- [slack] ops: incidents\n' }
     await expect(executeTool(ctx({ memoryBinding: staged }), 'writeMemory', bad, d)).resolves.toMatchObject({
       ok: true
     })
     await expect(
       executeTool(ctx({ memoryBinding: { ...staged, layer: 'shared' } }), 'writeMemory', bad, d)
-    ).rejects.toThrow('channels.md line 1 "#ops: incidents" does not end with its source and date')
+    ).rejects.toThrow('channels.md line 1 "- [slack] ops: incidents" does not end with its source and date')
   })
 })
 

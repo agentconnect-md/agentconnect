@@ -9667,6 +9667,7 @@ export class Daemon {
             : info?.isPrivate === false
               ? 'public channel'
               : 'channel',
+      platform,
       tools,
       reach: firstLookReach(this.mergedRulesForSource([integrationId]), { agentId, integrationId, platform, channel }),
       external: refusal === 'external',

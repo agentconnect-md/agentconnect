@@ -128,16 +128,20 @@ export interface FirstLookPrompt {
   kind: string
   tools: string
   requested: boolean
+  /** The place's platform id, which its line in channels.md names. */
+  platform: string
   /** The place writes the shared layer (an internal public channel), so its first look also keeps the organization files (§5.15). */
   shared?: boolean
 }
 
 // Only a place that writes the shared layer keeps the organization files (§5.15); each save checks the revision it read.
-const SHARED_FILES = `2. Three shared files every conversation reads. Give each a description header when you
+const sharedFiles = (
+  platform: string
+) => `2. Three shared files every conversation reads. Give each a description header when you
    create it, so MEMORY.md lists it:
-   - ${CHANNELS_FILE}: one line for this place, linking the file above: "#name: what it is for —
-     [[file name]] (#name, date)", e.g. "#release-train: release decisions — [[release-train]]
-     (#release-train, 2026-10-17)". This place's later sessions find its notes through that link.
+   - ${CHANNELS_FILE}: one line for this place, "- [${platform}] <name>: what it is for (#<name>, date)",
+     its name as the platform shows it with no "#", e.g. "- [${platform}] release-train: release
+     decisions (#release-train, 2026-10-17)".
    - ${ORGANIZATION_FILE}: only what this place shows about the organization as a whole that the
      file does not already say: what it builds or does, its products and customers, teams, stated
      goals and priorities, key systems, and terms people use. Merge it into its sections, not as
@@ -187,7 +191,7 @@ Then write to memory, without a layer argument:
    opinions of people; how requests are made, where decisions are recorded, links people keep
    using, other bots and what they post. And what recurs: things that happened at least twice
    on a rhythm, and when.
-${input.shared ? SHARED_FILES : ''}Write nothing in flight, no request still open wherever it appears, and nothing you would
+${input.shared ? sharedFiles(input.platform) : ''}Write nothing in flight, no request still open wherever it appears, and nothing you would
 not say in every conversation that reads this memory.
 
 Then report, in the place's main language: one line on what this place is for, then these

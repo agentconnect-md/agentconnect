@@ -79,12 +79,15 @@ async function fixture(scope: Partial<MemoryScope> = {}, guard?: MemoryWriteGuar
   return { fs, record, provider, api, scope: full, refOf }
 }
 
-const CHANNELS = '# Channels\n#release: release trains and freezes (#release, 2026-10-17)'
+const CHANNELS = '# Channels\n- [slack] release: release trains and freezes (#release, 2026-10-17)'
 
 describe('the record-backed shared layer', () => {
   it('lists the record entries, fills a title-only entry on create, and writes by revision', async () => {
     const f = await fixture()
-    await f.fs.writeFile('memory/channels.md', '# Channels\n#old: a copy an older daemon left (#old, 2026-10-01)')
+    await f.fs.writeFile(
+      'memory/channels.md',
+      '# Channels\n- [slack] old: a copy an older daemon left (#old, 2026-10-01)'
+    )
     const labels = (await f.api.list({ limit: 100 })).entries.map((e) => e.label)
     expect(labels).toEqual(expect.arrayContaining(['organization', 'channels', 'members']))
     expect(labels.filter((label) => label === 'channels')).toHaveLength(1)
@@ -99,7 +102,7 @@ describe('the record-backed shared layer', () => {
     const ref = (await f.refOf('channels'))!
     const read = (await f.api.get({ ref }))!
     expect(read.text).toBe(CHANNELS)
-    const more = `${CHANNELS}\n#ops: incidents (#ops, 2026-10-17)`
+    const more = `${CHANNELS}\n- [slack] ops: incidents (#ops, 2026-10-17)`
     await f.api.update({ ref, revision: read.entry.revision, text: more })
     expect(f.record.entries.get('channels.md')).toMatchObject({ revision: 3, content: more })
     await expect(f.api.update({ ref, revision: read.entry.revision, text: CHANNELS })).rejects.toMatchObject({
@@ -145,7 +148,7 @@ describe('the record-backed shared layer', () => {
 
   it('refuses the three names with one line, never the shared layer, when the record is not available', async () => {
     const f = await fixture()
-    await f.fs.writeFile('memory/channels.md', '# Channels\n#old: a copy (#old, 2026-10-01)')
+    await f.fs.writeFile('memory/channels.md', '# Channels\n- [slack] old: a copy (#old, 2026-10-01)')
     f.record.unavailable = true
     expect((await f.api.list({ limit: 100 })).entries.map((e) => e.label)).not.toContain('channels')
     await expect(f.provider.read(f.scope, 'channels.md')).rejects.toThrow(
