@@ -3192,7 +3192,7 @@
         "clearEntryBody": "{name} 的条目会从 members.md 中删除。在此人自己重新写入之前，Agent 不会再在其中记录关于此人的内容。",
         "filterFiles": "筛选文件",
         "noFilesMatch": "没有匹配的文件。",
-        "layersYouCanSee": "你能看到 {count} 层",
+        "layersYouCanSee": "{count, plural, other {你能看到 # 层}}",
         "updated": "更新于 {date}",
         "change": "更改",
         "delete": "删除",
