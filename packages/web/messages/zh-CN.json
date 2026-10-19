@@ -4591,6 +4591,10 @@
       "loadingMore": "加载中…",
       "endOfLedger": "已到达账单末尾",
       "modelShare": "{name} — {amount}",
+      "chargeCount": "{count} 笔扣费",
+      "chargeStats": "{count} 笔扣费 · 平均 {avg} · 最高 {max}",
+      "spendByHour": "按小时用量",
+      "postedFrom": "起始 {time}",
       "expand": "展开",
       "collapse": "收起"
     }

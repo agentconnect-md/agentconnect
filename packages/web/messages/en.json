@@ -4591,6 +4591,10 @@
       "loadingMore": "Loading…",
       "endOfLedger": "end of ledger",
       "modelShare": "{name} — {amount}",
+      "chargeCount": "{count, plural, one {# charge} other {# charges}}",
+      "chargeStats": "{count, plural, one {# charge} other {# charges}} · avg {avg} · max {max}",
+      "spendByHour": "Spend by hour",
+      "postedFrom": "from {time}",
       "expand": "Expand",
       "collapse": "Collapse"
     }
