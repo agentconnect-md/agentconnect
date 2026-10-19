@@ -394,6 +394,35 @@ describe('AHP carrier binding', () => {
     expect(sink).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the replacement attachment listener when its predecessor is removed', async () => {
+    const { conn, transport } = await ready()
+    const old = vi.fn()
+    const current = vi.fn()
+    const removeOld = conn.listenAhp(attachmentId, old)
+    const removeCurrent = conn.listenAhp(attachmentId, current)
+    removeOld()
+    transport.feedRaw(JSON.stringify(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' })))
+    expect(old).not.toHaveBeenCalled()
+    expect(current).toHaveBeenCalledOnce()
+    removeCurrent()
+    transport.feedRaw(JSON.stringify(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' })))
+    expect(current).toHaveBeenCalledOnce()
+  })
+
+  it('notifies every attachment once when the daemon closes, even if another listener throws', async () => {
+    const { conn, transport } = await ready()
+    const first = vi.fn(() => {
+      throw new Error('listener failed')
+    })
+    const second = vi.fn()
+    conn.listenAhp(attachmentId, first)
+    conn.listenAhp(RELAY_ID, second)
+    conn.close(1001, 'shutdown')
+    transport.close(1001, 'duplicate close')
+    expect(first).toHaveBeenCalledExactlyOnceWith({ attachmentId, reason: 'unavailable' })
+    expect(second).toHaveBeenCalledExactlyOnceWith({ attachmentId: RELAY_ID, reason: 'unavailable' })
+  })
+
   it('rejects a mismatched receipt and refuses a saturated daemon socket without affecting legacy delivery', async () => {
     let buffered = 0
     const { conn, transport } = await ready(() => buffered)
