@@ -1392,8 +1392,8 @@ The orchestration triple `startOrchestration` / `getOrchestration` /
 records, correlation recording on worker reports, and the re-armed deadline wake. Its send
 half duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with
 `toAgent.needsReply`) and its status half duplicated `viewSessionStatus`. A session that
-still calls one of the names gets the ordinary unknown-tool error. The store keeps the
-unused `orchestration` and `orchestration_subtask` tables until a schema step drops them.
+still calls one of the names gets the ordinary unknown-tool error. Store v65 drops the
+unused `orchestration` and `orchestration_subtask` tables.
 
 `listAgents` is **org**-scoped, not channel-scoped: it issues `channel/agents` with
 no channel and gets back every peer in the organization that the directional call
