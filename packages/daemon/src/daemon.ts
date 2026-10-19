@@ -15946,6 +15946,7 @@ export class Daemon {
         : await this.store.appendInbox(row)
       if (!inserted && !options.adoptExisting) return 'existing'
       entry.inboxId = id
+      if (inserted && options.receiptId) entry.receiptId = options.receiptId
       this.liveInboxIds.add(id)
       return inserted ? 'inserted' : 'adopted'
     } catch (err) {
@@ -16206,6 +16207,18 @@ export class Daemon {
       await this.store.removeInbox(entry.inboxId)
     } catch (err) {
       this.log.warn(`durable inbox: remove failed for ${entry.inboxId}: ${(err as Error).message}`)
+    }
+  }
+
+  /** A never-run admission gives its receipt back so a retry of the same delivery admits fresh. */
+  private async releaseReceipt(entry: QueueEntry): Promise<void> {
+    const receiptId = entry.receiptId
+    if (!receiptId) return
+    entry.receiptId = undefined
+    try {
+      await this.store.removeInbox(receiptId)
+    } catch (err) {
+      this.log.warn(`durable inbox: receipt release failed for ${receiptId}: ${(err as Error).message}`)
     }
   }
 
@@ -17274,6 +17287,7 @@ export class Daemon {
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
+            await this.releaseReceipt(entry)
             entry.resolve(null)
           }
         } catch (err) {
