@@ -168,15 +168,35 @@ describe('AHP session registry (real Postgres)', () => {
   it('converges two authorized continuation conversations on one pre-existing outward identity', async () => {
     const f = await fixture()
     const sessionId = randomUUID()
-    await seedSessionMeta(prisma, sessionId, f.input.agentId, { platform: 'slack', daemonId: f.input.writer.daemonId, channel: 'C1', thread: 'T1' })
+    await seedSessionMeta(prisma, sessionId, f.input.agentId, {
+      platform: 'slack',
+      daemonId: f.input.writer.daemonId,
+      channel: 'C1',
+      thread: 'T1'
+    })
     const conversations = new PgWebchatConversationRepo(prisma)
-    const first = await conversations.upsertSessionTargeted({ orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: DEFAULT_OWNER_ID }, sessionId)
+    const first = await conversations.upsertSessionTargeted(
+      { orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: DEFAULT_OWNER_ID },
+      sessionId
+    )
     const secondUser = await prisma.user.create({ data: { email: 'other@example.test' } })
-    const second = await conversations.upsertSessionTargeted({ orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: secondUser.id }, sessionId)
-    const input = { ...f.input, conversationId: first.conversationId, sessionId, sessionUri: `ahp-session:/${sessionId}` }
+    const second = await conversations.upsertSessionTargeted(
+      { orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: secondUser.id },
+      sessionId
+    )
+    const input = {
+      ...f.input,
+      conversationId: first.conversationId,
+      sessionId,
+      sessionUri: `ahp-session:/${sessionId}`
+    }
     const [a, b] = await Promise.all([
       f.repo.bindExisting(input),
-      new PgAhpSessionBindingRepo(prisma).bindExisting({ ...input, conversationId: second.conversationId, operationId: randomUUID() })
+      new PgAhpSessionBindingRepo(prisma).bindExisting({
+        ...input,
+        conversationId: second.conversationId,
+        operationId: randomUUID()
+      })
     ])
     expect(a).toEqual(b)
     expect(a).toMatchObject({ ok: true, binding: { sessionId } })
@@ -192,11 +212,18 @@ describe('AHP session registry (real Postgres)', () => {
     await reserved(f)
     const sessionId = randomUUID()
     await seedSessionMeta(prisma, sessionId, f.input.agentId, { platform: 'slack', daemonId: f.input.writer.daemonId })
-    const { conversationId } = await new PgWebchatConversationRepo(prisma).upsertSessionTargeted({
-      orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: DEFAULT_OWNER_ID
-    }, sessionId)
-    expect(await f.repo.bindExisting({ ...f.input, conversationId, sessionId, operationId: randomUUID() })).toEqual({ ok: false, reason: 'collision' })
+    const { conversationId } = await new PgWebchatConversationRepo(prisma).upsertSessionTargeted(
+      {
+        orgId: DEF_ORG,
+        agentId: AgentId(f.input.agentId),
+        userId: DEFAULT_OWNER_ID
+      },
+      sessionId
+    )
+    expect(await f.repo.bindExisting({ ...f.input, conversationId, sessionId, operationId: randomUUID() })).toEqual({
+      ok: false,
+      reason: 'collision'
+    })
     expect((await f.repo.get(DEF_ORG, f.input.sessionUri))?.sessionId).toBeNull()
   })
-
 })
