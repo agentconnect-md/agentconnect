@@ -2136,15 +2136,15 @@
       0 18px 44px rgba(17, 22, 29, 0.1);
     background: var(--surface-card);
     width: 100%;
-    max-width: 1044px;
-    min-height: 620px;
+    max-width: 860px;
+    min-height: 520px;
   }
   .brand {
-    width: 404px;
+    width: 340px;
     flex: none;
     background: var(--surface-inverse);
     color: #fff;
-    padding: 40px 38px;
+    padding: 34px 32px;
     display: flex;
     flex-direction: column;
     position: relative;
@@ -2161,7 +2161,7 @@
   }
   .form {
     flex: 1;
-    padding: 52px 60px;
+    padding: 40px 48px;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -2222,7 +2222,7 @@
   }
 
   /* ── Auth page, mobile (≤768px) ──────────────────────────────────────────────
-   The desktop sign-in is a centered two-pane card (404px dark brand rail + form).
+   The desktop sign-in is a centered two-pane card (340px dark brand rail + form).
    On a phone that rail is wider than the screen, so the design stacks it into a
    full-bleed column: a compact dark brand header on top, the SSO form below.
    Driven by CSS so the first paint is already correct (no useIsMobile flash). */

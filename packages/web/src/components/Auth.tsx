@@ -21,9 +21,7 @@ function BrandPanel() {
         />
       </div>
       <div className="brand-lead relative z-1 mt-auto">
-        <div className="max-w-[300px] font-sans text-[27px] font-semibold leading-[1.25] tracking-[-.02em]">
-          {t('brandLead')}
-        </div>
+        <div className="font-sans text-[24px] font-semibold leading-[1.25] tracking-[-.02em]">{t('brandLead')}</div>
         <div className="brand-desc mt-[14px] max-w-[300px] font-sans text-[14px] font-normal leading-[1.6] text-(--text-inverse-dim)">
           {t('brandDescription')}
         </div>

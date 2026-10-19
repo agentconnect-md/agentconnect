@@ -40,11 +40,11 @@ describe('SocialLoginButtons regional preference', () => {
   })
 })
 
-describe('SocialLoginButtons more options', () => {
+describe('SocialLoginButtons layout', () => {
   const labels = () =>
     [...container.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent)
 
-  it('shows the first four buttons and the rest behind More sign-in options', async () => {
+  it('shows the first four buttons and the rest in a compact row', async () => {
     await act(async () => {
       root.render(<SocialLoginButtons providers={selectEnabledProviders('*')} onContinue={vi.fn()} />)
     })
@@ -54,21 +54,11 @@ describe('SocialLoginButtons more options', () => {
       'Continue with Slack',
       'Continue with GitHub',
       'Continue with GitLab',
-      'More sign-in options'
-    ])
-
-    const more = [...container.querySelectorAll('button')].find((b) => b.textContent === 'More sign-in options')
-    await act(async () => more?.click())
-    expect(labels().slice(5)).toEqual([
       'Continue with Lark',
-      'Switch to Feishu',
+      'Continue with Feishu',
       'Continue with Discord',
       'Continue with Telegram'
     ])
-    expect(labels()).toContain('Fewer options')
-
-    await act(async () => more?.click())
-    expect(labels()).not.toContain('Continue with Telegram')
   })
 
   it('moves the next provider up when one of the first four is not enabled', async () => {
