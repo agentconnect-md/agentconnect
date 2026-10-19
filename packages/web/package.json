@@ -27,6 +27,7 @@
     "@iconify-icons/ph": "^2.0.0",
     "@iconify/react": "^6.0.2",
     "@logto/browser": "^3.1.1",
+    "@microsoft/agent-host-protocol": "1.0.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/context-zone": "^2.11.0",
     "@opentelemetry/core": "^2.11.0",
