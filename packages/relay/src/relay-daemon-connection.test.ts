@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayDaemonFrame,
+  API_AHP_V1_FEATURE,
   RELAY_DAEMON_SUBPROTOCOL,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
@@ -60,6 +61,7 @@ function build(
     onRoute?: RelayDaemonConnDeps['onRoute']
     onRouteReport?: RelayDaemonConnDeps['onRouteReport']
     onWebchatImageUpdate?: RelayDaemonConnDeps['onWebchatImageUpdate']
+    bufferedAmount?: () => number
   } = {}
 ) {
   const verify = vi.fn(opts.verify ?? (async () => ({ ok: true, daemonId: DAEMON_ID, orgId: 'org-1' })))
@@ -79,7 +81,8 @@ function build(
     onRouteReport: opts.onRouteReport ?? (() => ({ accepted: true })),
     onReady,
     onClosed,
-    log: silentLog
+    log: silentLog,
+    ...(opts.bufferedAmount ? { bufferedAmount: opts.bufferedAmount } : {})
   })
   conn.start()
   return { conn, transport, clock, verify, onReady, onClosed }
@@ -327,5 +330,120 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
       reason: 'offline'
     })
     expect(transport.lastRep('rd/route/report/ack')!.payload).toEqual({ accepted: false, reason: 'not_host' })
+  })
+})
+
+describe('AHP carrier binding', () => {
+  const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const authorization = {
+    orgId: RELAY_ID,
+    agentId: OTHER_DAEMON,
+    userId: 'user',
+    user: 'User',
+    callerRole: 'owner' as const,
+    callerApproves: true,
+    grant: { token: 'signed', expiresAtMs: Date.now() + 60_000 }
+  }
+
+  async function ready(bufferedAmount?: () => number) {
+    const h = build(bufferedAmount ? { bufferedAmount } : {})
+    h.transport.feed('rd/hello', { apiKey: 'key', daemonId: DAEMON_ID, capabilities: [API_AHP_V1_FEATURE] })
+    await Promise.resolve()
+    await Promise.resolve()
+    return h
+  }
+
+  it('never opens an attachment on an older daemon', async () => {
+    const { conn, transport } = build()
+    transport.feed('rd/hello', { apiKey: 'key', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(await conn.authorizeAhp({ attachmentId, authorization }, true)).toBe(false)
+    expect(transport.lastRep('rd/ahp/open')).toBeUndefined()
+  })
+
+  it('correlates open and refresh receipts, and routes only the registered attachment', async () => {
+    const { conn, transport } = await ready()
+    const sink = vi.fn()
+    const remove = conn.listenAhp(attachmentId, sink)
+    for (const initial of [true, false]) {
+      const pending = conn.authorizeAhp({ attachmentId, authorization }, initial)
+      const sent = transport.lastRep(initial ? 'rd/ahp/open' : 'rd/ahp/authorize')!
+      transport.feedRaw(
+        JSON.stringify(
+          buildRelayDaemonFrame(
+            initial ? 'rd/ahp/opened' : 'rd/ahp/authorized',
+            {
+              attachmentId,
+              accepted: true
+            },
+            { corr: sent.id }
+          )
+        )
+      )
+      expect(await pending).toBe(true)
+    }
+    transport.feedRaw(
+      JSON.stringify(buildRelayDaemonFrame('rd/ahp/message', { attachmentId: RELAY_ID, message: 'wrong' }))
+    )
+    expect(sink).not.toHaveBeenCalled()
+    transport.feedRaw(JSON.stringify(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' })))
+    expect(sink).toHaveBeenCalledWith({ attachmentId, message: '{}' })
+    remove()
+    transport.feedRaw(JSON.stringify(buildRelayDaemonFrame('rd/ahp/close', { attachmentId, reason: 'unavailable' })))
+    expect(sink).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the replacement attachment listener when its predecessor is removed', async () => {
+    const { conn, transport } = await ready()
+    const old = vi.fn()
+    const current = vi.fn()
+    const removeOld = conn.listenAhp(attachmentId, old)
+    const removeCurrent = conn.listenAhp(attachmentId, current)
+    removeOld()
+    transport.feedRaw(JSON.stringify(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' })))
+    expect(old).not.toHaveBeenCalled()
+    expect(current).toHaveBeenCalledOnce()
+    removeCurrent()
+    transport.feedRaw(JSON.stringify(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' })))
+    expect(current).toHaveBeenCalledOnce()
+  })
+
+  it('notifies every attachment once when the daemon closes, even if another listener throws', async () => {
+    const { conn, transport } = await ready()
+    const first = vi.fn(() => {
+      throw new Error('listener failed')
+    })
+    const second = vi.fn()
+    conn.listenAhp(attachmentId, first)
+    conn.listenAhp(RELAY_ID, second)
+    conn.close(1001, 'shutdown')
+    transport.close(1001, 'duplicate close')
+    expect(first).toHaveBeenCalledExactlyOnceWith({ attachmentId, reason: 'unavailable' })
+    expect(second).toHaveBeenCalledExactlyOnceWith({ attachmentId: RELAY_ID, reason: 'unavailable' })
+  })
+
+  it('rejects a mismatched receipt and refuses a saturated daemon socket without affecting legacy delivery', async () => {
+    let buffered = 0
+    const { conn, transport } = await ready(() => buffered)
+    const pending = conn.authorizeAhp({ attachmentId, authorization }, true)
+    const sent = transport.lastRep('rd/ahp/open')!
+    transport.feedRaw(
+      JSON.stringify(
+        buildRelayDaemonFrame(
+          'rd/ahp/opened',
+          {
+            attachmentId: RELAY_ID,
+            accepted: true
+          },
+          { corr: sent.id }
+        )
+      )
+    )
+    expect(await pending).toBe(false)
+    buffered = 1024 * 1024
+    expect(() => conn.sendAhp({ attachmentId, message: '{}' })).toThrow('overloaded')
+    expect(conn.state).toBe('READY')
+    expect(transport.lastRep('rd/ahp/message')).toBeUndefined()
   })
 })

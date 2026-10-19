@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { RdAhpOpen, RdAhpOpened, RdAhpAuthorize, RdAhpAuthorized, RdAhpMessage, RdAhpClose } from '../ahp.js'
 import { CodeHostReplyTarget } from '../code-host.js'
 import { ExternalSessionAudience } from './telemetry.js'
 import {
@@ -1283,6 +1284,12 @@ export type RdWebchatImageUpdate = z.infer<typeof RdWebchatImageUpdate>
 
 /** `type` string → payload schema for the relay↔daemon wire. */
 export const RELAY_DAEMON_SCHEMAS = {
+  'rd/ahp/open': RdAhpOpen,
+  'rd/ahp/opened': RdAhpOpened,
+  'rd/ahp/authorize': RdAhpAuthorize,
+  'rd/ahp/authorized': RdAhpAuthorized,
+  'rd/ahp/message': RdAhpMessage,
+  'rd/ahp/close': RdAhpClose,
   'rd/hello': RdHello,
   'rd/hello/ok': RdHelloOk,
   'rd/msg': RdMsg,
@@ -1308,6 +1315,13 @@ export const RELAY_DAEMON_FRAME_TYPES = Object.keys(RELAY_DAEMON_SCHEMAS) as Rel
 
 /** The discriminated union of every fully-validated relay↔daemon frame. */
 export const RelayDaemonFrame = z.discriminatedUnion('type', [
+  frameSchema('rd/ahp/open', RELAY_DAEMON_SCHEMAS['rd/ahp/open']),
+  frameSchema('rd/ahp/opened', RELAY_DAEMON_SCHEMAS['rd/ahp/opened']),
+  frameSchema('rd/ahp/authorize', RELAY_DAEMON_SCHEMAS['rd/ahp/authorize']),
+  frameSchema('rd/ahp/authorized', RELAY_DAEMON_SCHEMAS['rd/ahp/authorized']),
+  frameSchema('rd/ahp/message', RELAY_DAEMON_SCHEMAS['rd/ahp/message']),
+  frameSchema('rd/ahp/close', RELAY_DAEMON_SCHEMAS['rd/ahp/close']),
+
   frameSchema('rd/hello', RELAY_DAEMON_SCHEMAS['rd/hello']),
   frameSchema('rd/hello/ok', RELAY_DAEMON_SCHEMAS['rd/hello/ok']),
   frameSchema('rd/msg', RELAY_DAEMON_SCHEMAS['rd/msg']),

@@ -42,11 +42,13 @@ export function agentApiRelayUrl(): string | undefined {
   )
 }
 
-const CHAT_PATH_PREFIX: Record<AgentApiProtocol, string> = { 'ai-sdk-ui': 'ai-sdk', 'ag-ui': 'ag-ui' }
+const CHAT_PATH_PREFIX: Record<Exclude<AgentApiProtocol, 'ahp'>, string> = { 'ai-sdk-ui': 'ai-sdk', 'ag-ui': 'ag-ui' }
 
 /** The relay route a turn is posted to with an API key, or null when the deployment names no relay. */
-export function agentChatUrl(protocol: AgentApiProtocol, agentId: string, relayUrl?: string): string | null {
+export function agentChatUrl(protocol: AgentApiProtocol | 'ahp', agentId: string, relayUrl?: string): string | null {
   const relay = relayUrl?.replace(/\/+$/, '')
+  if (protocol === 'ahp')
+    return relay ? `${relay.replace(/^http/, 'ws')}/ahp/agents/${encodeURIComponent(agentId)}` : null
   return relay ? `${relay}/${CHAT_PATH_PREFIX[protocol]}/agents/${encodeURIComponent(agentId)}/chat` : null
 }
 
@@ -61,9 +63,10 @@ export interface QuickstartFile {
 
 /** The Quickstart's examples for a protocol: a raw request, a Node client, and a browser page behind a same-origin route that adds the key. */
 export function quickstartExamples(
-  protocol: AgentApiProtocol,
+  protocol: AgentApiProtocol | 'ahp',
   chatUrl: string
 ): Record<QuickstartTab, QuickstartFile[]> {
+  if (protocol === 'ahp') throw new Error('AHP requires a WebSocket client; HTTP chat examples are unavailable.')
   return protocol === 'ag-ui' ? agUiExamples(chatUrl) : aiSdkExamples(chatUrl)
 }
 

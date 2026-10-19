@@ -259,3 +259,5 @@ export * from './frames/memory-transaction.js'
 export * from './frames/codehost-feedback.js'
 
 export * from './frames/follow-up-watch.js'
+
+export * from './ahp.js'

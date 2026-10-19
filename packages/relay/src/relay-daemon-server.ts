@@ -113,7 +113,10 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
     wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {
       trackAlive(raw)
       const remoteAddr = req.socket.remoteAddress ?? 'unknown'
-      new RelayDaemonConnection(new WsServerTransport(raw, remoteAddr), connDeps).start()
+      new RelayDaemonConnection(new WsServerTransport(raw, remoteAddr), {
+        ...connDeps,
+        bufferedAmount: () => raw.bufferedAmount
+      }).start()
     })
   })
 

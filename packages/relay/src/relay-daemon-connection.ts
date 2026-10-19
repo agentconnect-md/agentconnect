@@ -16,6 +16,10 @@
  */
 import {
   buildRelayDaemonFrame,
+  API_AHP_V1_FEATURE,
+  type RdAhpOpen,
+  type RdAhpMessage,
+  type RdAhpClose,
   decodeRelayDaemonFrame,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
@@ -82,6 +86,7 @@ export interface RelayDaemonConnDeps {
   /** An evaluation host's owner/participant report, bound the same way. */
   onRouteReport: (fromDaemonId: string, msg: RdRouteReport) => RdRouteReportAck | Promise<RdRouteReportAck>
   log: Logger
+  bufferedAmount?: () => number
 }
 
 export class RelayDaemonConnection {
@@ -101,6 +106,7 @@ export class RelayDaemonConnection {
   private capabilities: ReadonlySet<string> = new Set()
 
   private readonly correlator: ReqRep<RelayDaemonFrame>
+  private readonly ahpListeners = new Map<string, (event: RdAhpMessage | RdAhpClose) => void>()
   private readonly closeListeners = new Set<() => void>()
 
   constructor(
@@ -168,6 +174,38 @@ export class RelayDaemonConnection {
     return rep.payload
   }
 
+  // Binding lives on this authenticated daemon socket, never on a caller-supplied daemon id.
+  listenAhp(attachmentId: string, listener: (event: RdAhpMessage | RdAhpClose) => void): () => void {
+    this.ahpListeners.set(attachmentId, listener)
+    return () => {
+      if (this.ahpListeners.get(attachmentId) === listener) this.ahpListeners.delete(attachmentId)
+    }
+  }
+
+  async authorizeAhp(payload: RdAhpOpen, initial = false): Promise<boolean> {
+    if (this.state !== 'READY' || !this.supports(API_AHP_V1_FEATURE)) return false
+    const frame = buildRelayDaemonFrame(initial ? 'rd/ahp/open' : 'rd/ahp/authorize', payload)
+    const reply = await this.correlator.request(frame, (text) => this.sendAhpText(text), { maxTries: 1 })
+    const expected = initial ? 'rd/ahp/opened' : 'rd/ahp/authorized'
+    if (reply.type !== expected) return false
+    return reply.payload.attachmentId === payload.attachmentId && reply.payload.accepted
+  }
+
+  sendAhp(payload: RdAhpMessage | RdAhpClose): void {
+    const type = 'message' in payload ? 'rd/ahp/message' : 'rd/ahp/close'
+    this.sendAhpText(JSON.stringify(buildRelayDaemonFrame(type, payload)))
+  }
+
+  private sendAhpText(text: string): void {
+    if (this.state !== 'READY' || !this.supports(API_AHP_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'AHP service unavailable', true)
+    }
+    if ((this.deps.bufferedAmount?.() ?? 0) + Buffer.byteLength(text) > 1024 * 1024) {
+      throw new WireError('INTERNAL', 'AHP carrier overloaded', true)
+    }
+    this.transport.send(text)
+  }
+
   private async onText(text: string): Promise<void> {
     const decoded = decodeRelayDaemonFrame(text)
     if (!decoded.ok) {
@@ -187,6 +225,10 @@ export class RelayDaemonConnection {
     }
     try {
       switch (frame.type) {
+        case 'rd/ahp/message':
+        case 'rd/ahp/close':
+          this.ahpListeners.get(frame.payload.attachmentId)?.(frame.payload)
+          return
         case 'rd/hello':
           await this.handleHello(frame, frame.payload)
           return
@@ -258,6 +300,8 @@ export class RelayDaemonConnection {
       case 'READY':
         // rd/ack + rd/agentmsg/ack settle above
         return (
+          type === 'rd/ahp/message' ||
+          type === 'rd/ahp/close' ||
           type === 'rd/chat' ||
           type === 'rd/webchat-post' ||
           type === 'rd/webchat-image-update' ||
@@ -399,6 +443,15 @@ export class RelayDaemonConnection {
   private fireClosed(): void {
     const listeners = [...this.closeListeners]
     this.closeListeners.clear()
+    const attachments = [...this.ahpListeners]
+    this.ahpListeners.clear()
+    for (const [attachmentId, listener] of attachments) {
+      try {
+        listener({ attachmentId, reason: 'unavailable' })
+      } catch {
+        this.deps.log.warn('AHP attachment close listener failed')
+      }
+    }
     for (const listener of listeners) listener()
   }
 }

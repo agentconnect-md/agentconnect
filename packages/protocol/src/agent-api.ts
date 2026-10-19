@@ -15,7 +15,7 @@ import {
 import { encodedBytes } from './wire-slice.js'
 
 // A chat API an agent accepts calls on once its owner adds it under Integrations.
-export const AgentApiProtocol = z.enum(['ai-sdk-ui', 'ag-ui'])
+export const AgentApiProtocol = z.enum(['ai-sdk-ui', 'ag-ui', 'ahp'])
 export type AgentApiProtocol = z.infer<typeof AgentApiProtocol>
 export const AGENT_API_PROTOCOLS = AgentApiProtocol.options
 // A protocol named on a frame a daemon parses: a string, so a newer peer's protocol never fails an older daemon's decode.
@@ -23,9 +23,12 @@ export const AgentApiProtocolName = z.string().min(1).max(64)
 
 // The daemon takes AG-UI turns and gates; it advertises this to the CP and on `rd/hello`, and neither sends it one without.
 export const API_AG_UI_V1_FEATURE = 'api-ag-ui-v1'
+// The daemon accepts standard AHP v1 attachments over the isolated rd/ahp carrier.
+export const API_AHP_V1_FEATURE = 'api-ahp-v1'
 // The daemon feature a protocol needs beyond the chat API itself; `ai-sdk-ui` shipped with it.
 export const AGENT_API_PROTOCOL_FEATURE: Readonly<Partial<Record<AgentApiProtocol, string>>> = {
-  'ag-ui': API_AG_UI_V1_FEATURE
+  'ag-ui': API_AG_UI_V1_FEATURE,
+  ahp: API_AHP_V1_FEATURE
 }
 
 // Protocols whose stream hands the agent's questions to the caller and whose next request answers them.
