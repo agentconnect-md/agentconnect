@@ -4,7 +4,7 @@ import { DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { PgAhpSessionBindingRepo } from '../../src/persistence/repositories/ahp-session-binding.repo.js'
 import { PgWebchatConversationRepo } from '../../src/persistence/repositories/webchat-conversation.repo.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
-import { DEF_ORG, seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
+import { DEF_ORG, seedAgent, seedDaemon, seedDutyGroup, seedSessionMeta } from '../fixtures/seed.js'
 import { prisma } from '../setup.db.js'
 
 async function fixture() {
@@ -163,6 +163,67 @@ describe('AHP session registry (real Postgres)', () => {
     })
     await prisma.dutyGroup.update({ where: { id: groupId }, data: { expiresAt: new Date(0) } })
     expect(await f.repo.finalize(input)).toEqual({ ok: false, reason: 'unavailable' })
+    expect((await f.repo.get(DEF_ORG, f.input.sessionUri))?.sessionId).toBeNull()
+  })
+  it('converges two authorized continuation conversations on one pre-existing outward identity', async () => {
+    const f = await fixture()
+    const sessionId = randomUUID()
+    await seedSessionMeta(prisma, sessionId, f.input.agentId, {
+      platform: 'slack',
+      daemonId: f.input.writer.daemonId,
+      channel: 'C1',
+      thread: 'T1'
+    })
+    const conversations = new PgWebchatConversationRepo(prisma)
+    const first = await conversations.upsertSessionTargeted(
+      { orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: DEFAULT_OWNER_ID },
+      sessionId
+    )
+    const secondUser = await prisma.user.create({ data: { email: 'other@example.test' } })
+    const second = await conversations.upsertSessionTargeted(
+      { orgId: DEF_ORG, agentId: AgentId(f.input.agentId), userId: secondUser.id },
+      sessionId
+    )
+    const input = {
+      ...f.input,
+      conversationId: first.conversationId,
+      sessionId,
+      sessionUri: `ahp-session:/${sessionId}`
+    }
+    const [a, b] = await Promise.all([
+      f.repo.bindExisting(input),
+      new PgAhpSessionBindingRepo(prisma).bindExisting({
+        ...input,
+        conversationId: second.conversationId,
+        operationId: randomUUID()
+      })
+    ])
+    expect(a).toEqual(b)
+    expect(a).toMatchObject({ ok: true, binding: { sessionId } })
+    expect(await prisma.ahpSessionBinding.count()).toBe(1)
+    expect(await prisma.sessionMeta.count()).toBe(1)
+    expect(await prisma.webchatConversation.count()).toBe(2)
+    await prisma.sessionMeta.update({ where: { id: sessionId }, data: { contentPurgedAt: new Date() } })
+    expect(await f.repo.bindExisting(input)).toEqual({ ok: false, reason: 'unavailable' })
+  })
+
+  it('never shadows a client-reserved URI when publishing an existing-session alias', async () => {
+    const f = await fixture()
+    await reserved(f)
+    const sessionId = randomUUID()
+    await seedSessionMeta(prisma, sessionId, f.input.agentId, { platform: 'slack', daemonId: f.input.writer.daemonId })
+    const { conversationId } = await new PgWebchatConversationRepo(prisma).upsertSessionTargeted(
+      {
+        orgId: DEF_ORG,
+        agentId: AgentId(f.input.agentId),
+        userId: DEFAULT_OWNER_ID
+      },
+      sessionId
+    )
+    expect(await f.repo.bindExisting({ ...f.input, conversationId, sessionId, operationId: randomUUID() })).toEqual({
+      ok: false,
+      reason: 'collision'
+    })
     expect((await f.repo.get(DEF_ORG, f.input.sessionUri))?.sessionId).toBeNull()
   })
 })

@@ -1875,6 +1875,16 @@ export interface AhpSessionBindingRepo {
     writer: AhpSessionWriter
   }): Promise<AhpSessionWriteResult>
   get(orgId: string, sessionUri: string): Promise<AhpSessionBindingRecord | null>
+  forSession(orgId: string, sessionId: string): Promise<AhpSessionBindingRecord | null>
+  bindExisting(input: {
+    orgId: string
+    agentId: string
+    conversationId: string
+    sessionId: string
+    sessionUri: string
+    operationId: string
+    writer: AhpSessionWriter
+  }): Promise<AhpSessionWriteResult>
   forConversation(orgId: string, agentId: string, conversationId: string): Promise<AhpSessionBindingRecord | null>
   // Pending creations are not discoverable; an interrupted reservation remains occupied indefinitely.
   listOwned(input: {

@@ -222,6 +222,7 @@ import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpSessionService } from './registry/ahpSessions.js'
+import { makeSessionAccessResolver } from './http/session-access.js'
 import { AhpAuthorization } from './registry/ahpAuthorization.js'
 import { AhpGrantService } from './registry/ahpGrant.js'
 import { createWebchatTokenVerifier, everyTurnReachesItsContent } from './registry/webchatVerification.js'
@@ -2649,6 +2650,19 @@ export function buildContainer(
     ...(iconStore ? { iconStore } : {}),
     config,
     now: () => clock.now(),
+    sessionAccess: async (claims, session) => {
+      const oidcSubject = await repos.user.getOidcSubject(claims.userId)
+      return makeSessionAccessResolver(httpDeps).forPrincipal(
+        { orgId: OrgId(claims.orgId), userId: claims.userId, log: http.log, ...(oidcSubject ? { oidcSubject } : {}) },
+        [
+          {
+            visibility: session.visibility,
+            externalProvider: session.externalProvider ?? null,
+            externalScopeId: session.externalScopeId ?? null
+          }
+        ]
+      )
+    },
     reachesContent: (orgId, ids) =>
       everyTurnReachesItsContent(
         { sessions: repos.session, agents: repos.agent, placement: placementResolver, memberSets: repos.memberSet },

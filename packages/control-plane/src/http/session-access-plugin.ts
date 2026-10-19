@@ -30,7 +30,7 @@ export interface SessionAccessIssue {
 }
 
 export interface SessionAccessViewer {
-  request: FastifyRequest
+  request: Pick<FastifyRequest, 'oidcSubject' | 'log'>
   orgId: OrgId
   userId: string
   identitySet: Set<string>

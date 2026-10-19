@@ -137,6 +137,53 @@ export class PgAhpSessionBindingRepo implements AhpSessionBindingRepo {
     return this.db.ahpSessionBinding.findUnique({ where: { orgId_sessionUri: { orgId, sessionUri } } })
   }
 
+  forSession(orgId: string, sessionId: string): Promise<AhpSessionBindingRecord | null> {
+    return this.db.ahpSessionBinding.findUnique({ where: { orgId_sessionId: { orgId, sessionId } } })
+  }
+
+  bindExisting(input: Parameters<AhpSessionBindingRepo['bindExisting']>[0]): Promise<AhpSessionWriteResult> {
+    return withAmbientTx(this.db, async (tx) => {
+      if (!(await lockWriter(tx, input.orgId, input.agentId, input.writer))) return { ok: false, reason: 'unavailable' }
+      // A continuation's target and its peer must still share the exact physical conversation.
+      const [conversation] = await tx.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
+        SELECT c."userId" FROM "webchat_conversation" c
+        JOIN "session_meta" target ON target.id = c."targetSessionId"
+        JOIN "session_meta" s ON s.id = ${input.sessionId} AND s."orgId" = c."orgId"
+          AND s."agentId" = ${input.agentId}::uuid AND s."contentPurgedAt" IS NULL
+        WHERE c.id = ${input.conversationId}::uuid AND c."orgId" = ${input.orgId}
+          AND target."contentPurgedAt" IS NULL
+          AND (target.id = s.id OR (target.platform = s.platform
+            AND target."tenantScope" IS NOT DISTINCT FROM s."tenantScope"
+            AND target.channel IS NOT DISTINCT FROM s.channel AND target.thread IS NOT DISTINCT FROM s.thread))
+        FOR SHARE OF c, target, s
+      `)
+      if (!conversation) return { ok: false, reason: 'unavailable' }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['ahp-id', input.orgId, input.sessionId])}, 0))`
+      const existing = await tx.ahpSessionBinding.findUnique({
+        where: { orgId_sessionId: { orgId: input.orgId, sessionId: input.sessionId } }
+      })
+      if (existing) return { ok: true, binding: existing }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['ahp-uri', input.orgId, input.sessionUri])}, 0))`
+      const occupied = await tx.ahpSessionBinding.findUnique({
+        where: { orgId_sessionUri: { orgId: input.orgId, sessionUri: input.sessionUri } }
+      })
+      if (occupied) return { ok: false, reason: 'collision' }
+      const binding = await tx.ahpSessionBinding.create({
+        data: {
+          reservationId: randomUUID(),
+          orgId: input.orgId,
+          agentId: input.agentId,
+          sessionUri: input.sessionUri,
+          sessionId: input.sessionId,
+          operationId: input.operationId,
+          conversationId: input.conversationId,
+          userId: conversation.userId
+        }
+      })
+      return { ok: true, binding }
+    })
+  }
+
   forConversation(orgId: string, agentId: string, conversationId: string): Promise<AhpSessionBindingRecord | null> {
     return this.db.ahpSessionBinding.findUnique({
       where: { orgId_conversationId_agentId: { orgId, agentId, conversationId } }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { API_AHP_V1_FEATURE } from '@agentconnect.md/protocol'
+import { API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnect.md/protocol'
 import { AhpAuthorization, type AhpAuthorizationDeps } from './ahpAuthorization.js'
+import { AhpSessionService } from './ahpSessions.js'
+import type { AhpSessionBindingRepo } from '../persistence/ports.js'
 import { AhpGrantService } from './ahpGrant.js'
 import { WebchatTokenService } from './webchatToken.js'
 
@@ -65,6 +67,9 @@ function fixture() {
     daemons: { get: () => ({ state: 'READY', capabilities: { features: state.feature ? [API_AHP_V1_FEATURE] : [] } }) },
     placement: { dispatchDaemon: async () => 'daemon' },
     users: { getProfile: async () => null },
+    reachesContent: async () => true,
+    sessions: { getUnscoped: async () => null },
+    sessionAccess: async () => ({ identitySet: new Set(['user:user', 'slack:T:U']) }),
     conversations: {
       target: async () => ({ targetSessionId: null, ownerUserId: state.owner }),
       resumeBinding: async () => ({ primaryAgentId: AGENT, ownerUserId: state.owner, currentSessionIds: [null] }),
@@ -163,5 +168,174 @@ describe('AHP client authority', () => {
       agentId: peer,
       apiProtocols: ['ahp']
     })
+  })
+  it('keeps a session continuation target in the signed grant and rechecks purge before registry access', async () => {
+    const f = fixture()
+    const session = {
+      orgId: 'org',
+      agentId: AGENT,
+      platform: 'slack',
+      daemonId: 'daemon',
+      contentSetId: null,
+      contentStoreId: null,
+      visibility: 'org',
+      ownerIdentity: null,
+      contentPurgedAt: null as Date | null
+    }
+    f.deps.sessions = { getUnscoped: async () => session }
+    f.deps.memberSets = { sharedStoreMemberIdsOf: async () => [] }
+    f.deps.conversations.target = async () => ({ targetSessionId: 'existing-outward', ownerUserId: 'user' })
+    f.deps.conversations.resumeBinding = async () => ({
+      primaryAgentId: AGENT as never,
+      ownerUserId: 'user',
+      currentSessionIds: ['existing-outward' as never]
+    })
+    f.deps.daemons.get = () => ({
+      state: 'READY',
+      capabilities: {
+        platforms: [],
+        runtimes: [],
+        acp: true,
+        features: [API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE]
+      }
+    })
+    const browser = await f.tokens.mint({
+      orgId: 'org',
+      agentId: AGENT,
+      userId: 'user',
+      user: 'User',
+      conversationId: CONVERSATION
+    })
+    const result = await f.auth.verifyBrowser({ credential: browser.token, agentId: AGENT })
+    if (!result.ok || !result.ahpGrant) throw new Error('expected continuation grant')
+    expect(await f.grants.verify(result.ahpGrant.token)).toMatchObject({ targetSessionId: 'existing-outward' })
+    expect(await f.auth.authorizeGrant(result.ahpGrant.token, { orgId: 'org', agentId: AGENT })).not.toBeNull()
+    session.contentPurgedAt = new Date()
+    expect(await f.auth.authorizeGrant(result.ahpGrant.token, { orgId: 'org', agentId: AGENT })).toBeNull()
+  })
+  it('rechecks an ordinary conversation visibility when another member refreshes their grant', async () => {
+    const f = fixture()
+    f.state.owner = 'creator'
+    const session = {
+      orgId: 'org',
+      agentId: AGENT,
+      platform: 'webchat',
+      daemonId: 'daemon',
+      contentSetId: null,
+      contentStoreId: null,
+      visibility: 'org',
+      ownerIdentity: 'user:creator',
+      contentPurgedAt: null
+    }
+    f.deps.sessions = { getUnscoped: async () => session }
+    f.deps.conversations.resumeBinding = async () => ({
+      primaryAgentId: AGENT as never,
+      ownerUserId: 'creator',
+      currentSessionIds: ['session' as never]
+    })
+    const browser = await f.tokens.mint({
+      orgId: 'org',
+      agentId: AGENT,
+      userId: 'user',
+      user: 'User',
+      conversationId: CONVERSATION
+    })
+    const first = await f.auth.verifyBrowser({ credential: browser.token })
+    if (!first.ok || !first.ahpGrant) throw new Error('expected org-visible grant')
+    session.visibility = 'private'
+    expect(await f.auth.verifyBrowser({ credential: browser.token })).toMatchObject({ ok: false })
+    expect(await f.auth.authorizeGrant(first.ahpGrant.token, { orgId: 'org', agentId: AGENT })).toBeNull()
+  })
+  it.each(['private-owner', 'viewer', 'purged', 'missing', 'store-moved', 'external-revoked'])(
+    'rechecks API alias authority after %s changes, including list and resolve',
+    async (change) => {
+      const f = fixture()
+      const session = {
+        orgId: 'org',
+        agentId: AGENT,
+        platform: 'slack',
+        daemonId: 'daemon',
+        contentSetId: null,
+        contentStoreId: null,
+        visibility: 'org',
+        externalProvider: null as string | null,
+        ownerIdentity: 'slack:T:U',
+        contentPurgedAt: null as Date | null
+      }
+      f.deps.sessions.getUnscoped = async () => session
+      f.deps.conversations.target = async () => ({ targetSessionId: 'outward', ownerUserId: 'user' })
+      f.deps.daemons.get = () => ({
+        state: 'READY',
+        capabilities: {
+          platforms: [],
+          runtimes: [],
+          acp: true,
+          features: [API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE]
+        }
+      })
+      const binding = {
+        orgId: 'org',
+        agentId: AGENT,
+        userId: 'user',
+        conversationId: CONVERSATION,
+        reservationId: 'reservation',
+        operationId: 'operation',
+        sessionUri: 'ahp-session:/outward',
+        sessionId: 'outward'
+      }
+      const service = new AhpSessionService({
+        authorization: f.auth,
+        bindings: {
+          get: async () => binding,
+          listOwned: async () => [binding]
+        } as unknown as AhpSessionBindingRepo
+      })
+      const signed = await grant(f)
+      const req = { orgId: 'org', agentId: AGENT, grant: signed.token, sessionUri: binding.sessionUri }
+      expect(await service.resolve(req)).toMatchObject({ ok: true })
+      expect(await service.list({ ...req, limit: 10 })).toMatchObject({
+        sessions: [{ sessionUri: binding.sessionUri }]
+      })
+      if (change === 'private-owner') {
+        session.visibility = 'private'
+        session.ownerIdentity = 'slack:T:OTHER'
+      }
+      if (change === 'viewer') f.state.role = 'viewer'
+      if (change === 'purged') session.contentPurgedAt = new Date()
+      if (change === 'missing') f.deps.sessions.getUnscoped = async () => null
+      if (change === 'store-moved') f.deps.reachesContent = async () => false
+      if (change === 'external-revoked') {
+        session.visibility = 'external'
+        session.externalProvider = 'slack'
+      }
+      expect(await service.resolve(req)).toEqual({ ok: false, reason: 'not_found' })
+      expect(await service.list({ ...req, limit: 10 })).toEqual({ ok: true, sessions: [] })
+    }
+  )
+
+  it('derives owner authority only for the native empty conversation, never from the API key alone', async () => {
+    const f = fixture()
+    f.state.role = 'viewer'
+    const result = await f.auth.verifyKey({ credential: 'key', agentId: AGENT })
+    expect(result).toMatchObject({ ok: true, callerRole: 'participant' })
+    const claims = { orgId: 'org', agentId: AGENT, userId: 'user', user: 'User', apiKeyId: 'key' }
+    const binding = {
+      orgId: 'org',
+      agentId: AGENT,
+      userId: 'user',
+      conversationId: CONVERSATION,
+      reservationId: 'reservation',
+      operationId: 'operation',
+      sessionUri: 'ahp-session:/empty',
+      sessionId: 'outward'
+    }
+    expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
+    f.deps.conversations.participants = async () => [
+      { agentId: AGENT as never, role: 'primary', currentSessionId: null },
+      { agentId: CONVERSATION as never, role: 'member', currentSessionId: 'peer-already-started' }
+    ]
+    expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
+    f.deps.conversations.target = async () => ({ targetSessionId: 'outward', ownerUserId: 'user' })
+    expect(await f.auth.authorizeBinding(claims, binding)).toBeNull()
   })
 })
