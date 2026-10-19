@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ActionType } from '@microsoft/agent-host-protocol'
 import { AhpActionJournal } from '../../src/ahp/action-journal.js'
 
-const action = { type: ActionType.ChatTurnCancelled, turnId: 'turn' } as const
+const action = { type: ActionType.ChatTurnCancelled, turnId: 'turn', duration: 0 } as const
 const channel = 'ahp-chat:/one/main'
 const scopes = new Set([channel])
 function allocator() {
