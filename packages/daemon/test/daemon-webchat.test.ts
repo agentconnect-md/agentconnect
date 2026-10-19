@@ -1,3 +1,4 @@
+import type { ChatOutput } from '../src/session/chat-turn.js'
 import { withStartupPhase } from '../src/session/startup-progress.js'
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -162,7 +163,7 @@ describe('Webchat workspace file links', () => {
   const fileUrl = 'https://console.example.test/sessions/session-1?file=report.md'
   const resolveFileLink = (target: string) => (target.startsWith('/workspace/') ? fileUrl : undefined)
   const live = () => {
-    const events: WebchatOutput[] = []
+    const events: ChatOutput[] = []
     const wc: WebchatTurnOutput = {
       conversationId: CONV,
       turnId: 'turn-1',
