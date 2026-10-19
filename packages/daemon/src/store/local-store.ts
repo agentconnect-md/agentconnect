@@ -341,6 +341,8 @@ export interface SessionRecord {
   replyThread?: string | null
   // A digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null on a session from before it was recorded.
   standingDigest?: string | null
+  // The digests of the tool definitions its model last received, a JSON object written by `setSessionToolDigests`; null on a session from before it was recorded.
+  toolDigests?: string | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1309,7 +1311,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 63
+export const SCHEMA_VERSION = 65
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2061,7 +2063,14 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v62 keeps a watched object's repository id, which a check's code-host reads aim at (assistant-mode.md §5.14).
   async (db, store) => await addColumn(db, store.postgres, 'assistant_item', 'watchRepoId', 'TEXT'),
   // v63 names a first look a getting-to-know task (assistant-mode.md §5.13): its marker, onboarding's list and a queued report round.
-  async (db, store) => await migrateFirstLookToGettingToKnow(db, store.postgres)
+  async (db, store) => await migrateFirstLookToGettingToKnow(db, store.postgres),
+  // v64 keeps digests of the tool definitions a session's model last received, so a runtime that kept earlier ones is told the current ones.
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'toolDigests', 'TEXT'),
+  // v65 drops the orchestration tables, unused since the orchestration tools were removed.
+  async (db) => {
+    await db.exec('DROP TABLE IF EXISTS orchestration_subtask')
+    await db.exec('DROP TABLE IF EXISTS orchestration')
+  }
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -2700,7 +2709,7 @@ export class LocalStore {
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
         onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
-        standingDigest TEXT
+        standingDigest TEXT, toolDigests TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -3034,36 +3043,6 @@ export class LocalStore {
         trippedAt INTEGER,
         reason TEXT
       );
-      -- Unused since the orchestration tools were removed; kept until a schema step drops them.
-      CREATE TABLE IF NOT EXISTS orchestration (
-        orchestrationId TEXT PRIMARY KEY,
-        mainSessionKey TEXT NOT NULL,
-        mainAgentId TEXT NOT NULL,
-        platform TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        thread TEXT NOT NULL,
-        integrationId TEXT,
-        replyTarget TEXT,
-        deadline INTEGER,
-        status TEXT NOT NULL,
-        createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS orchestration_active ON orchestration (status);
-      CREATE TABLE IF NOT EXISTS orchestration_subtask (
-        orchestrationId TEXT NOT NULL,
-        correlationId TEXT NOT NULL,
-        idx INTEGER NOT NULL,
-        toAgentId TEXT NOT NULL,
-        text TEXT NOT NULL,
-        status TEXT NOT NULL,
-        result TEXT,
-        deliveryReason TEXT,
-        updatedAt TEXT NOT NULL,
-        PRIMARY KEY (orchestrationId, correlationId)
-      );
-      CREATE INDEX IF NOT EXISTS orchestration_subtask_by_orch
-        ON orchestration_subtask (orchestrationId, idx);
       -- Self-introduce-on-join (issue #536). channel_intro is the durable set of
       -- channels an agent has already introduced itself into (or adopted as the
       -- silent baseline), so an intro fires at most once per (agent, platform,
@@ -4385,6 +4364,11 @@ export class LocalStore {
   /** The digest of the standing context this session's model holds, or null for none yet; compared when the session resumes. */
   async setSessionStandingDigest(key: string, digest: string | null): Promise<void> {
     await this.db.prepare('UPDATE sessions SET standingDigest = ? WHERE key = ?').run(digest, key)
+  }
+
+  /** The digests of the tool definitions this session's model holds, or null for unknown; compared before each turn. */
+  async setSessionToolDigests(key: string, digests: string | null): Promise<void> {
+    await this.db.prepare('UPDATE sessions SET toolDigests = ? WHERE key = ?').run(digests, key)
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):
