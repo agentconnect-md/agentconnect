@@ -20,7 +20,7 @@ const FILE = {
   name: 'spec.pdf',
   mimeType: 'application/pdf',
   size: 12,
-  sha256: 'a'.repeat(64)
+  sha256: Buffer.from('a'.repeat(64), 'hex').toString('base64')
 }
 
 function scaffold(): string {
