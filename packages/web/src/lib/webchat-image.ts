@@ -49,7 +49,9 @@ function webpName(name: string): string {
 }
 
 /** Rasterize a browser-readable image into one bounded WebP attachment. */
-export async function prepareWebchatImage(file: File): Promise<SessionImage> {
+export async function prepareWebchatImage(file: File, maxBytes = WEBCHAT_IMAGE_MAX_BYTES): Promise<SessionImage> {
+  if (!Number.isFinite(maxBytes) || maxBytes < 1 || maxBytes > WEBCHAT_IMAGE_MAX_BYTES)
+    throw new Error('Invalid image size limit.')
   if (file.size > WEBCHAT_IMAGE_MAX_SOURCE_BYTES) {
     throw new Error('Choose an image smaller than 20 MB.')
   }
@@ -79,7 +81,7 @@ export async function prepareWebchatImage(file: File): Promise<SessionImage> {
       ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
 
       const blob = await canvasBlob(canvas, quality)
-      if (blob.size <= WEBCHAT_IMAGE_MAX_BYTES) {
+      if (blob.size <= maxBytes) {
         return {
           name: webpName(file.name),
           mimeType: 'image/webp',
@@ -90,7 +92,7 @@ export async function prepareWebchatImage(file: File): Promise<SessionImage> {
       if (quality > 0.5) {
         quality = Math.max(0.5, quality - 0.12)
       } else {
-        const shrink = Math.max(0.5, Math.min(0.88, Math.sqrt(WEBCHAT_IMAGE_MAX_BYTES / blob.size) * 0.92))
+        const shrink = Math.max(0.5, Math.min(0.88, Math.sqrt(maxBytes / blob.size) * 0.92))
         scale *= shrink
       }
     }
