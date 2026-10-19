@@ -396,6 +396,8 @@ export interface HandledTurnSession {
   additionalMcpServersAttached?: boolean
   /** The digest of the standing context the blocks carry inline, recorded once the runtime answers the prompt. */
   standingDigest?: string
+  /** The tool digests the blocks bring the model up to, recorded once the runtime answers the prompt. */
+  toolDigests?: string
 }
 
 /** The handles every `dispatchOne` phase shares: the entry being run, the pure plan for it,

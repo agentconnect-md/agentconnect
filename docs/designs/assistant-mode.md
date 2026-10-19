@@ -373,13 +373,11 @@ assistant mode panel names that person read-only. Whatever cannot reach them by 
 waits in the agent's Activity view, where an Agent editor decides it. There is no fallback
 conversation.
 
-The stored keys go in two steps, since a rollout runs both Control Plane versions on one database
-([high-availability.md](high-availability.md)). Now: a row an older Control Plane wrote may keep
-`responsibleUserId` and `fallbackConversation`; this one reads past them, never writes them, serves
-the policy without them, and projects them to daemons unchanged, so a daemon that still requires
-one keeps validating an agent nobody edited. A daemon likewise reads past them in an agent.json an
-older daemon wrote, so that agent still loads after the upgrade. Follow-up: drop the two stored keys
-in the next release, once no Control Plane that reads them is serving.
+The stored keys went in two steps, since a rollout runs both Control Plane versions on one database
+([high-availability.md](high-availability.md)). v2.4.0 stopped writing `responsibleUserId` and
+`fallbackConversation` and read past them; the release after v2.5.0 removes them from stored rows
+with a migration, and a daemon no longer reads past them in an agent.json. A daemon must be on
+v2.4.0 or later before its Control Plane takes this step.
 
 ### 5.2 Places and long conversations
 
