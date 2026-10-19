@@ -97,6 +97,21 @@ const CoreConfigShape = {
   // show the request_url to paste. Unset ⇒ the webchat mint 503s and HTTP-mode Slack
   // installs are unavailable.
   PUBLIC_RELAY_URL: z.string().url().optional(),
+  AHP_MODE: z.enum(['off', 'shadow', 'on']).default('off'),
+  WEBCHAT_PROTOCOL: z.enum(['legacy', 'ahp']).default('legacy'),
+  AHP_PUBLIC_ACCESS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AHP_TEST_KEY_IDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+    ),
   // ── Usage report interface — the non-daemon ingress ──
   // Deployment-shared secret authenticating the batch usage endpoint, which records
   // `gateway`-source reports for an upstream that meters sessions outside any daemon.
@@ -380,7 +395,13 @@ function validateSessionAccess(
 
 /** Cross-field checks the flat schema can't express — fail-fast at boot, before
  *  the first secret write could silently land plaintext next to sealed rows. */
-const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher).superRefine(validateSessionAccess)
+const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
+  .superRefine(validateSessionAccess)
+  .superRefine((config, ctx) => {
+    if (config.WEBCHAT_PROTOCOL === 'ahp' && config.AHP_MODE !== 'on') {
+      ctx.addIssue({ code: 'custom', path: ['WEBCHAT_PROTOCOL'], message: 'AHP Webchat requires AHP_MODE=on' })
+    }
+  })
 
 const BootstrapConfigSchema = z
   .object({

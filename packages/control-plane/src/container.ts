@@ -109,6 +109,7 @@ import {
   PgSessionUsageRepo,
   PgAgentApiEntryRepo,
   PgWebchatConversationRepo,
+  PgAhpSessionBindingRepo,
   PgWebchatMcpDelegationRepo,
   PgWebchatMcpAccessGrantRepo,
   PgWebchatMcpOperationRepo,
@@ -220,6 +221,8 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
+import { AhpAuthorization } from './registry/ahpAuthorization.js'
+import { AhpGrantService } from './registry/ahpGrant.js'
 import { createWebchatTokenVerifier, everyTurnReachesItsContent } from './registry/webchatVerification.js'
 import { createAgentChatKeyVerifier } from './registry/agentChatKeyVerification.js'
 import { WebchatRemoteMcpService } from './registry/webchatRemoteMcpService.js'
@@ -486,6 +489,7 @@ export function buildContainer(
     sessionUsage: new PgSessionUsageRepo(prisma),
     agentApiEntry: new PgAgentApiEntryRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
+    ahpSessionBinding: new PgAhpSessionBindingRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
     webchatMcpAccessGrant: new PgWebchatMcpAccessGrantRepo(prisma),
     webchatMcpOperation: new PgWebchatMcpOperationRepo(prisma),
@@ -2789,8 +2793,35 @@ export function buildContainer(
     relayPublicBase,
     webAppUrl
   )
+  const ahpAuthorization = new AhpAuthorization({
+    grants: new AhpGrantService(config.API_KEY_PEPPER, () => clock.now()),
+    tokens: webchatTokens,
+    keys: apiKeys,
+    keyRows: repos.apiKey,
+    agents: repos.agent,
+    daemons: connReg,
+    conversations: repos.webchatConversation,
+    apiEntries: repos.agentApiEntry,
+    sessions: repos.session,
+    memberSets: repos.memberSet,
+    orgs: repos.org,
+    remoteMcp: webchatRemoteMcp,
+    placement: placementResolver,
+    users: repos.user,
+    ...(iconStore ? { iconStore } : {}),
+    config,
+    now: () => clock.now(),
+    reachesContent: (orgId, ids) =>
+      everyTurnReachesItsContent(
+        { sessions: repos.session, agents: repos.agent, placement: placementResolver, memberSets: repos.memberSet },
+        orgId,
+        ids
+      )
+  })
   const relayWsDeps: RelayWsServerDeps = {
     auth: relayAuth,
+    verifyAhpKey: (req) => ahpAuthorization.verifyKey(req),
+    verifyAhpBrowser: (req) => ahpAuthorization.verifyBrowser(req),
     relays: repos.relay,
     relayReg,
     clock,
@@ -3283,6 +3314,8 @@ export function httpServerConfigFrom(
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
     SLACK_INSTALL_TTL_SEC: config.SLACK_INSTALL_TTL_SEC,
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
+    AHP_MODE: config.AHP_MODE,
+    WEBCHAT_PROTOCOL: config.WEBCHAT_PROTOCOL,
     ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),
     USAGE_COLLECTOR_SERVICE_ACCOUNT: config.USAGE_COLLECTOR_SERVICE_ACCOUNT,
     ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
