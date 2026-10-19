@@ -23,7 +23,7 @@ const PERMISSION: RequestPermissionRequest = {
   ]
 }
 
-function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
+function world(apiProtocol: string | undefined = 'ai-sdk-ui', platform = 'webchat') {
   const store = {
     getSessionByAcpIdForAgent: async () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: async () => new Map<string, string>(),
@@ -37,7 +37,7 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
     plan: {
       sessionKey: 'sess-key',
       agentId: AGENT,
-      platform: 'webchat',
+      platform,
       channel: CONV,
       statusThread: CONV,
       transcriptChannel: CONV,
@@ -403,9 +403,8 @@ describe('scoped chat input settlement', () => {
 
 describe('passive platform permission and input observation', () => {
   function native() {
-    const w = world()
+    const w = world(undefined, 'fixture')
     delete w.p.webchat
-    w.p.plan = { ...w.p.plan, platform: 'fixture' }
     w.p.conn = {} as never
     const observed: ChatEvent[] = []
     w.host.chatObservation = (p) =>
