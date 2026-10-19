@@ -13,6 +13,7 @@ export function observeChatTurn<T extends ChatTurnContext>(
 ): T {
   let generation = observation.generation
   let segmentId: string | undefined
+  const tools = new Map<string, { title: string; status: 'pending' | 'running' | 'completed' | 'failed' }>()
   const base = () => ({
     sessionId: observation.sessionId,
     turnId: context.turnId,
@@ -35,6 +36,7 @@ export function observeChatTurn<T extends ChatTurnContext>(
           emit({ ...base(), kind: 'discarded', nextGeneration: e.generation })
           generation = e.generation
           segmentId = undefined
+          tools.clear()
         } else if (e?.kind === 'message') {
           if (segmentId && e.segmentId && segmentId !== e.segmentId) emit({ ...base(), kind: 'boundary' })
           segmentId = e.segmentId
@@ -42,13 +44,21 @@ export function observeChatTurn<T extends ChatTurnContext>(
         } else if (e?.kind === 'thinking') {
           emit({ ...base(), kind: 'reasoning', text: e.text })
         } else if (e?.kind === 'tool_call' || e?.kind === 'tool_update') {
+          const previous = tools.get(e.toolCallId)
           const status =
-            e.status === 'completed' || e.status === 'failed' || e.status === 'pending' ? e.status : 'running'
+            e.status === 'completed' || e.status === 'failed' || e.status === 'pending'
+              ? e.status
+              : e.status === 'in_progress' || e.status === 'running'
+                ? 'running'
+                : (previous?.status ?? 'pending')
+          const title = e.title ?? previous?.title ?? e.toolCallId
+          tools.set(e.toolCallId, { title, status })
+          if (tools.size > 256) tools.delete(tools.keys().next().value!)
           emit({
             ...base(),
             kind: 'tool',
             id: e.toolCallId,
-            title: e.title ?? e.toolCallId,
+            title,
             status,
             ...(e.input !== undefined ? { input: e.input } : {}),
             ...(e.output !== undefined ? { output: e.output } : {})
@@ -59,10 +69,13 @@ export function observeChatTurn<T extends ChatTurnContext>(
         context.sink.output(output)
       },
       done(completion) {
+        tools.clear()
         emit({
           ...base(),
           kind: 'finished',
-          outcome: completion.error ? 'failed' : completion.stopReason === 'cancelled' ? 'cancelled' : 'complete',
+          outcome:
+            completion.outcome ??
+            (completion.error ? 'failed' : completion.stopReason === 'cancelled' ? 'cancelled' : 'complete'),
           ...(completion.error ? { error: completion.error } : {})
         })
         context.sink.done(completion)

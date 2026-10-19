@@ -37,7 +37,7 @@ import {
 import { LifecycleCleanupBlockedError, type CallMeta, type Pending, type QueueEntry } from '../daemon/turn-types.js'
 import { appendWebchatTextRow } from './turn-output.js'
 import { ChatSessionContinuation, type ChatReplyConnection } from '../session/chat-continuation.js'
-import { legacyChatOutput } from './chat-output.js'
+import { legacyChatOutput, legacyChatCompletion } from './chat-output.js'
 import type { ChatDispatchOptions } from '../session/chat-turn.js'
 import { decodeChatAttachments } from '../session/chat-attachments.js'
 import {
@@ -367,7 +367,7 @@ export class WebchatTransport {
       sink: {
         output: (output) =>
           this.publishWebchatStreamEvent(stream, { kind: 'output', output: legacyChatOutput(output) }),
-        done: (done) => this.publishWebchatStreamEvent(stream, { kind: 'done', done })
+        done: (done) => this.publishWebchatStreamEvent(stream, { kind: 'done', done: legacyChatCompletion(done) })
       },
       replay: [],
       replayBytes: 0,

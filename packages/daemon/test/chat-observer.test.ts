@@ -3,7 +3,7 @@ import { observeChatTurn } from '../src/session/chat-observer.js'
 import type { MaskedChatEvent } from '../src/session/chat-events.js'
 import type { ChatTurnContext, ChatTurnOutput } from '../src/session/chat-turn.js'
 import { emitChatUpdate } from '../src/session/chat-output.js'
-import { legacyChatOutput } from '../src/webchat/chat-output.js'
+import { legacyChatOutput, legacyChatCompletion } from '../src/webchat/chat-output.js'
 
 function fixture() {
   const events: MaskedChatEvent[] = []
@@ -114,5 +114,47 @@ describe('shared masked chat observation', () => {
     )
     context.sink.done({ conversationId: 'c', turnId: 't' })
     expect(sink.done).toHaveBeenCalledOnce()
+  })
+  it('observes explicit cancellation independently of its human-facing error wording', () => {
+    const w = fixture()
+    const completion = {
+      conversationId: 'conv',
+      turnId: 'turn',
+      outcome: 'cancelled' as const,
+      error: 'Stopped by user'
+    }
+    w.context.sink.done(completion)
+    expect(w.events[0]).toMatchObject({ kind: 'finished', outcome: 'cancelled', error: 'Stopped by user' })
+    expect(legacyChatCompletion(completion)).toEqual({
+      conversationId: 'conv',
+      turnId: 'turn',
+      error: 'Stopped by user'
+    })
+  })
+  it('retains passive source input observations without creating legacy continuation controls', () => {
+    const output = {
+      conversationId: 'c',
+      turnId: 't',
+      index: 5,
+      event: {
+        kind: 'elicitation_resolved' as const,
+        requestId: 'r',
+        outcome: 'accepted' as const,
+        observationOnly: true as const,
+        answers: { value: 'answer' }
+      }
+    }
+    expect(legacyChatOutput(output)).toEqual({ conversationId: 'c', turnId: 't', index: 5 })
+  })
+  it('does not reopen completed tools or forget titles on partial runtime updates', () => {
+    const w = fixture()
+    for (const event of [
+      { kind: 'tool_call', toolCallId: 'read', title: 'Read file', status: 'in_progress' },
+      { kind: 'tool_update', toolCallId: 'read', status: 'completed' },
+      { kind: 'tool_update', toolCallId: 'read', title: 'Read README', status: '' }
+    ] as const)
+      w.context.sink.output({ conversationId: 'conv', turnId: 'turn', index: w.events.length, event })
+    expect(w.events[1]).toMatchObject({ kind: 'tool', title: 'Read file', status: 'completed' })
+    expect(w.events[2]).toMatchObject({ kind: 'tool', title: 'Read README', status: 'completed' })
   })
 })
