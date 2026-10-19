@@ -193,7 +193,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
    *  expectation predating the pool was written against. */
   function makeOrch(
     platforms = PLATFORMS,
-    placement?: Pick<PlacementResolver, 'routableDaemon'>,
+    placement?: Pick<PlacementResolver, 'routableDaemon'> & Partial<Pick<PlacementResolver, 'dispatchDaemon'>>,
     gatedDmSeeds?: GatedDmSeedResolver
   ): HttpBotOrchestrator {
     const agents: Record<string, AgentRecord> = {
@@ -424,7 +424,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
             }
           : {})
       }),
-      placement ?? undefined,
+      // No live member to rendezvous at unless a test names one: dispatch falls back to the routable member.
+      placement ? { dispatchDaemon: placement.routableDaemon, ...placement } : undefined,
       gatedDmSeeds,
       {
         routings: {
@@ -785,6 +786,22 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       routes: []
     })
     expect(upserts).toEqual([])
+  })
+
+  it('addresses a vacant pool agent at a live member, which claims it on receipt, instead of dropping it', async () => {
+    // A rollout's drain release leaves the lease vacant until a successor is granted it; the DM must still route.
+    channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
+    unplacedAgents = new Set([ALICE, BOB])
+    const orch = makeOrch(PLATFORMS, {
+      routableDaemon: async () => null,
+      dispatchDaemon: async (a) => (a.id === ALICE ? DaemonId(D2) : null)
+    })
+    await orch.syncBot(BOT)
+    const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+    expect(assign.members).toEqual([{ daemonId: D2, agentIds: [ALICE] }])
+    expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toMatchObject([{ agentId: ALICE, daemonId: D2 }])
+    expect(assign.mutedChannels ?? []).not.toContain('D42')
+    expect(assign.defaultAgentId).toBe(ALICE)
   })
 
   it('assigns the bot to a relay and compiles channel-owner + keyword routes + default', async () => {
