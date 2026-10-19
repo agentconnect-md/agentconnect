@@ -1148,11 +1148,12 @@ import {
   type TurnRun,
   type TurnSettlement
 } from './daemon/turn-types.js'
-import { UUID_RE, type WebchatSink, type WebchatTurnContext } from './webchat/types.js'
+import { UUID_RE, type WebchatSink } from './webchat/types.js'
+import type { ChatTurnContext } from './session/chat-turn.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
-import * as webchatTurnOutput from './webchat/turn-output.js'
+import * as chatTurnOutput from './session/chat-output.js'
 import {
   WEBCHAT_ROUTING_UPDATE_TEXT,
   foldWebchatRouting,
@@ -15739,7 +15740,7 @@ export class Daemon {
       iconUrl?: string
       platform: string
       isDm: boolean
-      webchat?: WebchatTurnContext
+      webchat?: ChatTurnContext
       replyConn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
       /** The turn's integration, for a platform whose failure sink resolves its own transport. */
       integrationId?: string
@@ -16397,7 +16398,7 @@ export class Daemon {
     agentId: string,
     msg: NormalizedMessage,
     integrationId?: string,
-    webchat?: WebchatTurnContext,
+    webchat?: ChatTurnContext,
     callMeta?: CallMeta,
     opts?: {
       isQueueCmd?: boolean
@@ -19317,7 +19318,7 @@ export class Daemon {
     segment: { postId: string; text: string; committing?: Promise<void> },
     hopCount?: number
   ): Promise<void> {
-    return webchatTurnOutput.commitSegmentOnce(segment, () => this.commitWebchatSegment(p, segment, hopCount))
+    return chatTurnOutput.commitSegmentOnce(segment, () => this.commitWebchatSegment(p, segment, hopCount))
   }
 
   /** Persist one finished reply segment and send its canonical post; `hopCount` makes it the activating post. */
@@ -19329,7 +19330,7 @@ export class Daemon {
     if (!p.webchat) return
     const agentId = p.entry.agentId
     const scope = hopCount !== undefined ? (p.webchatRouting ?? initialWebchatRouting(p.entry)).scope : undefined
-    const replyTs = await webchatTurnOutput.appendWebchatTextRow(
+    const replyTs = await chatTurnOutput.appendChatTextRow(
       this.store,
       p.plan.transcriptChannel,
       p.plan.statusThread,
@@ -19378,7 +19379,7 @@ export class Daemon {
     } else if (trimmedWebchatReply) {
       // A real reply that never diverged from the sentinel prefix mid-stream
       // (shorter than the sentinel) is still held — release it before commit.
-      webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
+      chatTurnOutput.flushHeldChatText(p.webchat, p.resolveFileLink)
       p.reply.text = p.webchat.replyText
       if (!p.webchat.continuation) await this.publishWebchatReply(p, run, true)
     }
@@ -19596,12 +19597,12 @@ export class Daemon {
       // Continuation: release any held stream text; the platform branch below owns the
       // visible notice + transcript, and the terminal-error `done` waits behind its
       // apply-chain drain so the console cannot admit a next turn mid-flush.
-      webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
+      chatTurnOutput.flushHeldChatText(p.webchat, p.resolveFileLink)
     } else if (p.webchat) {
       // Release a held partial reply before surfaceTurnFailure closes the browser stream.
       const trimmedPartialReply = p.webchat.replyText.trim()
       if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
-        webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
+        chatTurnOutput.flushHeldChatText(p.webchat, p.resolveFileLink)
       }
       await this.surfaceTurnFailure(err, {
         agentId,
@@ -22209,7 +22210,7 @@ export class Daemon {
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
-    if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update, p.resolveFileLink)
+    if (p.webchat) chatTurnOutput.emitChatUpdate(p.webchat, update, p.resolveFileLink)
     this.projectNativeIntegration(p, update)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
       const startsWork = p.workBoundary.opens(update)
