@@ -4,6 +4,7 @@ import {
   MEMORY_CONTINUATION_MAX_BYTES
 } from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
+import { AHP_STATE_SCHEMA, AhpStateStore, type AhpCheckpointWrite } from './ahp-state.js'
 import { ASSISTANT_DRAFT_SCHEMA, AssistantDraftLedger } from './assistant-drafts.js'
 import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js'
 import { ASSISTANT_CHECK_SCHEMA, AssistantCheckLedger } from './assistant-checks.js'
@@ -1311,7 +1312,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 65
+export const SCHEMA_VERSION = 66
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2070,7 +2071,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   async (db) => {
     await db.exec('DROP TABLE IF EXISTS orchestration_subtask')
     await db.exec('DROP TABLE IF EXISTS orchestration')
-  }
+  },
+  // v66 stores derived AHP recovery state and durable host sequence allocation.
+  async () => {}
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -2584,6 +2587,7 @@ export class LocalStore {
   readonly placeTimeZones: PlaceTimeZones
   /** The messages each session received and sent, with their reply obligations (send-message-guide.md §9.3). */
   readonly sessionMessages: SessionMessages
+  private readonly ahpState: AhpStateStore
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
   /** Per-(orgId, channel) insert counter arming the §8 rule 2 sweep. */
@@ -2624,6 +2628,10 @@ export class LocalStore {
     this.assistantOnboarding = new AssistantOnboardingLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
+    this.ahpState = new AhpStateStore({
+      query: (sql, params) => this.db.query(sql, params),
+      transaction: (fn) => this.transaction(fn)
+    })
   }
 
   /**
@@ -2674,6 +2682,28 @@ export class LocalStore {
     return store
   }
 
+  reserveAhpSequenceBlock(orgId: string, agentId: string, size: number): Promise<{ start: number; end: number }> {
+    return this.ahpState.reserve(orgId, agentId, size)
+  }
+
+  loadAhpCheckpoint(orgId: string, agentId: string, sessionId: string): Promise<string | undefined> {
+    return this.ahpState.load(orgId, agentId, sessionId)
+  }
+
+  saveAhpCheckpoint(input: AhpCheckpointWrite): Promise<void> {
+    return this.ahpState.save(input)
+  }
+
+  ahpTurnPage(
+    orgId: string,
+    agentId: string,
+    sessionId: string,
+    cursorTurnId: string,
+    maxBytes?: number
+  ): Promise<{ values: string[]; nextCursor?: string }> {
+    return this.ahpState.page(orgId, agentId, sessionId, cursorTurnId, maxBytes)
+  }
+
   private async initializeSchema(): Promise<void> {
     // Decided BEFORE the CREATE block, which is what makes an empty file
     // indistinguishable from an old one a moment later.
@@ -2692,6 +2722,7 @@ export class LocalStore {
       ${ASSISTANT_ONBOARDING_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}
+      ${AHP_STATE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -3338,6 +3369,18 @@ export class LocalStore {
    * another, which is the very failure this column exists to end. So the row is re-read after the
    * UPDATE, and where it disagrees the stage is settled onto it.
    */
+  async outwardSessionIdFor(key: string, agentId: string): Promise<string | undefined> {
+    const row = (await this.db
+      .prepare(
+        `SELECT COALESCE(
+      (SELECT sessionId FROM sessions WHERE key = ? AND agentId = ?),
+      (SELECT sessionId FROM session_outward_ids WHERE key = ? AND agentId = ?)
+    ) AS sessionId`
+      )
+      .get(key, agentId, key, agentId)) as { sessionId: string | null }
+    return row.sessionId ?? undefined
+  }
+
   async ensureOutwardSessionId(key: string, agentId?: string, now = Date.now()): Promise<string> {
     const onSession = (
       (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
