@@ -1,10 +1,13 @@
 import { z } from 'zod'
 import { ChatCallerRole } from './frames/agent.js'
+import { AHP_MAX_MESSAGE_BYTES } from './ahp-constants.js'
 
-export const AHP_GRANT_MAX_AGE_MS = 60_000
-export const AHP_MAX_MESSAGE_BYTES = 64 * 1024
-export const AHP_WEBSOCKET_PROTOCOL = 'ahp'
-export const AHP_WEBCHAT_TOKEN_PREFIX = 'agentconnect.ahp-token.'
+export {
+  AHP_GRANT_MAX_AGE_MS,
+  AHP_MAX_MESSAGE_BYTES,
+  AHP_WEBSOCKET_PROTOCOL,
+  AHP_WEBCHAT_TOKEN_PREFIX
+} from './ahp-constants.js'
 
 export const AhpMode = z.enum(['off', 'shadow', 'on'])
 export type AhpMode = z.infer<typeof AhpMode>
