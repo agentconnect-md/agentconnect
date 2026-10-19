@@ -34,7 +34,9 @@ export const RuntimeDefSchema = z.object({
   // disposable isolated HOME). A sandboxing strategy refuses it outright.
   externalExecution: z.boolean().optional(),
   // Scope of session/new|load mcpServers: 'per-session' (default), 'per-process' (the last session's serve them all, so each session gets its own host), or 'unsupported' (rejected: sessions run without MCP tools, as on OpenClaw).
-  sessionMcpServers: z.enum(['per-session', 'per-process', 'unsupported']).optional()
+  sessionMcpServers: z.enum(['per-session', 'per-process', 'unsupported']).optional(),
+  // A loaded session keeps the tool definitions it started with, so the daemon restates changed ones in the conversation.
+  keepsSessionToolDefinitions: z.boolean().optional()
 })
 export type RuntimeDef = z.infer<typeof RuntimeDefSchema>
 

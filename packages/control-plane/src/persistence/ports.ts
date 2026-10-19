@@ -837,12 +837,6 @@ export interface AgentCreator {
   email: string
 }
 
-/** A stored assistant mode policy: a row an older CP wrote may keep two routing keys, projected to daemons unchanged until dropped (assistant-mode.md §5.1). */
-export type StoredAssistantModePolicy = AssistantModePolicy & {
-  responsibleUserId?: unknown
-  fallbackConversation?: unknown
-}
-
 export interface AgentRecord {
   id: AgentId
   orgId: OrgId
@@ -876,7 +870,7 @@ export interface AgentRecord {
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: string[] // accepted managed_skill ids ([] ⇒ none)
   memory: AgentMemoryBinding | null // runtimeOverrides.memory
-  assistantMode?: StoredAssistantModePolicy // assistant-mode.md §5.1; absent ⇒ never configured, off
+  assistantMode?: AssistantModePolicy // assistant-mode.md §5.1; absent ⇒ never configured, off
   assistantOnboarding?: AssistantOnboarding // assistant-mode.md §5.15: the first switch-on; absent ⇒ none recorded
   status: 'active' | 'inactive' | 'paused'
   /** What placement NAMES (domain/placement.ts): `daemon` resolves through `daemonId`, `set`

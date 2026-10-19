@@ -2159,13 +2159,6 @@
     opacity: 0.16;
     transform: rotate(8deg);
   }
-  .brand-foot {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    position: relative;
-    z-index: 1;
-  }
   .form {
     flex: 1;
     padding: 52px 60px;
@@ -2266,12 +2259,9 @@
       font-size: 21px !important;
       max-width: 290px;
     }
-    /* drop the longer Slack/Telegram blurb on the compact mobile header */
+    /* drop the longer description on the compact mobile header */
     .brand-desc {
       display: none;
-    }
-    .brand-foot {
-      margin-top: 14px !important;
     }
     .brand .facet {
       right: -80px;
