@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { API_CALLER_ANSWER_TIMEOUT_MS } from '@agentconnect.md/protocol'
+import { WEBCHAT_ELICIT_SURFACE } from '../src/slack/render.js'
+import type { ChatEvent } from '../src/session/chat-turn.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
@@ -21,7 +23,7 @@ const PERMISSION: RequestPermissionRequest = {
   ]
 }
 
-function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
+function world(apiProtocol: string | undefined = 'ai-sdk-ui', platform = 'webchat') {
   const store = {
     getSessionByAcpIdForAgent: async () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: async () => new Map<string, string>(),
@@ -35,7 +37,7 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
     plan: {
       sessionKey: 'sess-key',
       agentId: AGENT,
-      platform: 'webchat',
+      platform,
       channel: CONV,
       statusThread: CONV,
       transcriptChannel: CONV,
@@ -98,7 +100,7 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui') {
     chatActor: async () => 'allowed' as const
   }
   const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
-  return { store, events, timers, cancelTurn, coordinator: new PermissionCoordinator(host) }
+  return { p, host, store, events, timers, cancelTurn, coordinator: new PermissionCoordinator(host) }
 }
 
 /** Wait for the stream to carry the caller's approval and hand back its request id. */
@@ -112,7 +114,7 @@ describe("an API turn's runtime approval", () => {
     const w = world()
     const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
     const requestId = await handedOut(w)
-    expect(w.events()[0]).toEqual({ kind: 'permission', requestId, tool: 'Bash', detail: 'rm -rf build' })
+    expect(w.events()[0]).toMatchObject({ kind: 'permission', requestId, tool: 'Bash', detail: 'rm -rf build' })
     expect(w.coordinator.awaitsApiCaller(CONV)).toBe(true)
     w.coordinator.handleCallerPermissionChoice({ requestId, allow: false, mayAllow: false, conversationId: CONV })
     await expect(outcome).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
@@ -184,7 +186,7 @@ describe("an API turn's runtime approval", () => {
     const w = world('ag-ui')
     void w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
     await vi.waitFor(() => expect(w.store.createPermissionRequest).toHaveBeenCalledTimes(1))
-    expect(w.events().some((e) => e.kind === 'permission')).toBe(false)
+    expect(w.events().filter((e) => e.kind === 'permission')).toMatchObject([{ editorOnly: true }])
     expect(w.timers).toEqual([])
   })
 
@@ -221,5 +223,285 @@ describe("an API turn's question", () => {
     await expect(outcome).resolves.toMatchObject({ action: 'accept', content: { branch: 'dev' } })
     w.timers[0]!.fn()
     expect(w.cancelTurn).not.toHaveBeenCalled()
+  })
+})
+
+describe('scoped chat permission settlement', () => {
+  const scope = (requestId: string) => ({
+    agentId: AGENT,
+    conversationId: CONV,
+    outwardSessionId: 'outward-1',
+    turnId: 'turn-1',
+    requestId,
+    allow: true,
+    mayAllow: true,
+    callerRole: 'owner' as const,
+    userId: 'user-1',
+    user: 'User'
+  })
+
+  it('rejects foreign scope and takes one exact offered caller choice', async () => {
+    const w = world('ahp')
+    const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
+    const requestId = await handedOut(w)
+    for (const wrong of [
+      { agentId: 'other' },
+      { conversationId: 'other' },
+      { outwardSessionId: 'other' },
+      { turnId: 'other' },
+      { userId: '' }
+    ]) {
+      expect(await w.coordinator.handleChatPermissionChoice({ ...scope(requestId), ...wrong })).toBe(false)
+    }
+    expect(await w.coordinator.handleChatPermissionChoice({ ...scope(requestId), selectedOptionId: 'no' })).toBe(false)
+    expect(await w.coordinator.handleChatPermissionChoice({ ...scope(requestId), selectedOptionId: 'always' })).toBe(
+      true
+    )
+    expect(await w.coordinator.handleChatPermissionChoice(scope(requestId))).toBe(false)
+    await expect(outcome).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'always' } })
+    expect(w.events().at(-1)).toMatchObject({
+      kind: 'permission_resolved',
+      requestId,
+      outcome: 'allowed',
+      selectedOptionId: 'always'
+    })
+  })
+
+  it('does not treat escalation as approval and requires an editor for its new gate', async () => {
+    const w = world('ahp')
+    const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
+    const requestId = await handedOut(w)
+    expect(await w.coordinator.handleChatPermissionChoice({ ...scope(requestId), mayAllow: false })).toBe(true)
+    await vi.waitFor(() => expect(w.store.createPermissionRequest).toHaveBeenCalledOnce())
+    expect(w.events().filter((e) => e.kind === 'permission_resolved')).toEqual([])
+    const editorRequestId = (w.store.createPermissionRequest.mock.calls as unknown as [[{ id: string }]])[0][0].id
+    expect(await w.coordinator.handleChatPermissionChoice(scope(editorRequestId))).toBe(false)
+    expect(
+      await w.coordinator.handleChatPermissionChoice({ ...scope(editorRequestId), callerRole: 'editor', allow: false })
+    ).toBe(true)
+    await expect(outcome).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
+    expect(w.events().filter((e) => e.kind === 'permission_resolved')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requestId, outcome: 'denied' }),
+        expect.objectContaining({ requestId: editorRequestId, outcome: 'denied' })
+      ])
+    )
+  })
+
+  it('retains the editor gate for continuation even if mayAllow is true', async () => {
+    const w = world('ahp')
+    w.p.webchat!.continuation = true
+    const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
+    await vi.waitFor(() => expect(w.store.createPermissionRequest).toHaveBeenCalledOnce())
+    const requestId = (w.store.createPermissionRequest.mock.calls as unknown as [[{ id: string }]])[0][0].id
+    expect(await w.coordinator.handleChatPermissionChoice(scope(requestId))).toBe(false)
+    expect(await w.coordinator.handleChatPermissionChoice({ ...scope(requestId), callerRole: 'editor' })).toBe(true)
+    await expect(outcome).resolves.toMatchObject({ outcome: { outcome: 'selected', optionId: 'yes' } })
+  })
+
+  it('does not let an old request answer a replacement turn', async () => {
+    const w = world('ahp')
+    const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
+    const requestId = await handedOut(w)
+    w.p.webchat!.turnId = 'replacement'
+    expect(await w.coordinator.handleChatPermissionChoice(scope(requestId))).toBe(false)
+    await w.coordinator.releaseApprovals(OWNER, ACP_SESSION)
+    await expect(outcome).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+})
+
+describe('scoped chat input settlement', () => {
+  const scope = (requestId: string) => ({
+    agentId: AGENT,
+    conversationId: CONV,
+    outwardSessionId: 'outward-1',
+    turnId: 'turn-1',
+    requestId
+  })
+  const ask = {
+    mode: 'form',
+    message: 'Which branch?',
+    requestedSchema: { type: 'object', properties: { branch: { type: 'string', enum: ['main', 'dev'] } } }
+  } as unknown as CreateElicitationRequest
+  async function question(w: ReturnType<typeof world>) {
+    await vi.waitFor(() => expect(w.events().some((e) => e.kind === 'elicitation')).toBe(true))
+    return w.events().find((e) => e.kind === 'elicitation')!.requestId as string
+  }
+
+  it('exposes only the exact live card and identifies the one valid settlement', async () => {
+    const w = world('ahp')
+    const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, ask)
+    const requestId = await question(w)
+    expect(w.coordinator.chatElicitation(scope(requestId))).toMatchObject({ turnId: 'turn-1', card: { requestId } })
+    for (const wrong of [
+      { agentId: 'other' },
+      { conversationId: 'other' },
+      { outwardSessionId: 'other' },
+      { turnId: 'other' }
+    ]) {
+      expect(w.coordinator.chatElicitation({ ...scope(requestId), ...wrong })).toBeUndefined()
+    }
+    const args = { ...scope(requestId), webchatConversationId: CONV }
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, value: 'unoffered' })).toBe(false)
+    const results = await Promise.all([
+      w.coordinator.handleCallerElicitChoice({ ...args, value: 'dev' }),
+      w.coordinator.handleCallerElicitChoice({ ...args, value: 'main' })
+    ])
+    expect(results).toEqual([true, false])
+    await expect(outcome).resolves.toMatchObject({ action: 'accept', content: { branch: 'dev' } })
+    expect(w.events().at(-1)).toMatchObject({ kind: 'elicitation_resolved', requestId, answers: { value: 'dev' } })
+    expect(w.coordinator.chatElicitation(scope(requestId))).toBeUndefined()
+  })
+
+  it('emits masked typed accepted answers without changing the runtime response', async () => {
+    const w = world('ahp')
+    const typed = {
+      mode: 'form',
+      message: 'Options',
+      requestedSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' }, enabled: { type: 'boolean' }, count: { type: 'integer' } }
+      }
+    } as unknown as CreateElicitationRequest
+    const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, typed)
+    const requestId = await question(w)
+    w.host.maskAgentSecrets = <T>(_agent: string, payload: T): T =>
+      JSON.parse(JSON.stringify(payload).replaceAll('secret-value', '[REDACTED]'))
+    expect(
+      await w.coordinator.handleCallerElicitChoice({
+        ...scope(requestId),
+        webchatConversationId: CONV,
+        value: { name: 'secret-value', enabled: 'true', count: 3 }
+      })
+    ).toBe(true)
+    await expect(outcome).resolves.toMatchObject({ content: { name: 'secret-value', enabled: true, count: 3 } })
+    expect(w.events().at(-1)).toMatchObject({ answers: { name: '[REDACTED]', enabled: true, count: 3 } })
+    expect(JSON.stringify(w.events().at(-1))).not.toContain('secret-value')
+  })
+
+  it('accepts only the offered URL and returns false once another path settled it', async () => {
+    const w = world('ahp')
+    const url = {
+      mode: 'url',
+      message: 'Open consent',
+      elicitationId: 'flow',
+      url: 'https://example.test/consent'
+    } as unknown as CreateElicitationRequest
+    const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, url)
+    const requestId = await question(w)
+    const args = { ...scope(requestId), webchatConversationId: CONV }
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, value: 'https://other.test/' })).toBe(false)
+    await w.coordinator.handleElicitChoice({
+      requestId,
+      webchatConversationId: CONV,
+      value: 'https://example.test/consent'
+    })
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, value: null })).toBe(false)
+    await expect(outcome).resolves.toEqual({ action: 'accept' })
+  })
+})
+
+describe('passive platform permission and input observation', () => {
+  function native() {
+    const w = world(undefined, 'fixture')
+    delete w.p.webchat
+    w.p.conn = {} as never
+    const observed: ChatEvent[] = []
+    w.host.chatObservation = (p) =>
+      p === w.p ? { turnId: 'native-turn', emit: (event) => observed.push(event) } : undefined
+    w.host.elicitCardFacet = () => ({
+      platform: 'fixture',
+      reduction: WEBCHAT_ELICIT_SURFACE,
+      build: () => ({}),
+      send: async () => 'card-1',
+      settle: vi.fn()
+    })
+    return { ...w, observed }
+  }
+  const scope = (requestId: string) => ({
+    agentId: AGENT,
+    conversationId: 'verified-alias',
+    outwardSessionId: 'outward-1',
+    turnId: 'native-turn',
+    requestId,
+    callerRole: 'editor' as const,
+    userId: 'user-1'
+  })
+
+  it('observes the existing editor gate without adding a chat context or allowing alias-owner escalation', async () => {
+    const w = native()
+    const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
+    await vi.waitFor(() => expect(w.store.createPermissionRequest).toHaveBeenCalledOnce())
+    const requestId = w.observed.find((e) => e.kind === 'permission')!.requestId
+    const args = { ...scope(requestId), allow: true, mayAllow: true }
+    expect(await w.coordinator.handleChatPermissionChoice({ ...args, callerRole: 'owner' })).toBe(false)
+    expect(await w.coordinator.handleChatPermissionChoice({ ...args, turnId: 'foreign' })).toBe(false)
+    expect(await w.coordinator.handleChatPermissionChoice(args)).toBe(true)
+    await expect(outcome).resolves.toMatchObject({ outcome: { optionId: 'yes' } })
+    expect(w.observed.at(-1)).toMatchObject({ kind: 'permission_resolved', outcome: 'allowed' })
+    expect(w.p.webchat).toBeUndefined()
+  })
+
+  it('validates the platform card literal through its existing option mapping and resolver', async () => {
+    const w = native()
+    const ask = {
+      mode: 'form',
+      message: 'Branch?',
+      requestedSchema: { type: 'object', properties: { branch: { type: 'string', enum: ['main', 'dev'] } } }
+    } as unknown as CreateElicitationRequest
+    const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, ask)
+    await vi.waitFor(() => expect(w.observed.some((e) => e.kind === 'elicitation')).toBe(true))
+    const requestId = w.observed.find((e) => e.kind === 'elicitation')!.requestId
+    const args = { ...scope(requestId), webchatConversationId: 'verified-alias', value: 'dev' }
+    expect(w.coordinator.chatElicitation(scope(requestId))).toMatchObject({
+      turnId: 'native-turn',
+      card: { requestId }
+    })
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, callerRole: 'owner' })).toBe(false)
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, value: 'foreign' })).toBe(false)
+    expect(await w.coordinator.handleCallerElicitChoice(args)).toBe(true)
+    await expect(outcome).resolves.toMatchObject({ action: 'accept', content: { branch: 'dev' } })
+    expect(w.observed.at(-1)).toMatchObject({ kind: 'elicitation_resolved', answers: { value: 'dev' } })
+    expect(w.p.webchat).toBeUndefined()
+  })
+
+  it('uses the same form validator for a single native text field and masks the accepted observation', async () => {
+    const w = native()
+    const ask = {
+      mode: 'form',
+      message: 'Name?',
+      requestedSchema: { type: 'object', properties: { name: { type: 'string', minLength: 3 } } }
+    } as unknown as CreateElicitationRequest
+    const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, ask)
+    await vi.waitFor(() => expect(w.observed.some((e) => e.kind === 'elicitation')).toBe(true))
+    const requestId = w.observed.find((e) => e.kind === 'elicitation')!.requestId
+    w.host.maskAgentSecrets = <T>(_agent: string, payload: T): T =>
+      JSON.parse(JSON.stringify(payload).replaceAll('valid name', '[REDACTED]'))
+    const args = { ...scope(requestId), webchatConversationId: 'verified-alias' }
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, value: 'x' })).toBe(false)
+    expect(await w.coordinator.handleCallerElicitChoice({ ...args, value: 'valid name' })).toBe(true)
+    await expect(outcome).resolves.toMatchObject({ action: 'accept', content: { name: 'valid name' } })
+    expect(w.observed.at(-1)).toMatchObject({ answers: { value: '[REDACTED]' } })
+  })
+  it('observes cancellation from the original platform resolver and refuses a later answer', async () => {
+    const w = native()
+    const ask = {
+      mode: 'form',
+      message: 'Branch?',
+      requestedSchema: { type: 'object', properties: { branch: { type: 'string', enum: ['main', 'dev'] } } }
+    } as unknown as CreateElicitationRequest
+    const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, ask)
+    await vi.waitFor(() => expect(w.observed.some((e) => e.kind === 'elicitation')).toBe(true))
+    const requestId = w.observed.find((e) => e.kind === 'elicitation')!.requestId
+    await w.coordinator.releaseElicits(OWNER, ACP_SESSION)
+    await expect(outcome).resolves.toEqual({ action: 'cancel' })
+    expect(w.observed.at(-1)).toMatchObject({ kind: 'elicitation_resolved', outcome: 'cancelled' })
+    expect(
+      await w.coordinator.handleCallerElicitChoice({
+        ...scope(requestId),
+        webchatConversationId: 'verified-alias',
+        value: 'dev'
+      })
+    ).toBe(false)
   })
 })

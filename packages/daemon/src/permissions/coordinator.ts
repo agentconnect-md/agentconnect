@@ -18,6 +18,7 @@ import type {
   ApprovalRouteTarget,
   AssistantActivityPermission,
   ElicitCard,
+  ChatCallerRole,
   ElicitOutcome
 } from '@agentconnect.md/protocol'
 import {
@@ -85,7 +86,8 @@ import type {
   SubsessionNoticeView
 } from '../platforms/approval-card.js'
 import { sessionLinkSourceFor } from '../platforms/link-source.js'
-import { consolePermissionOptions } from './editor-options.js'
+import type { ChatEvent } from '../session/chat-turn.js'
+import { consolePermissionOptions, isAllowOption } from './editor-options.js'
 import {
   choiceById,
   elicitationApprovalChoices,
@@ -156,6 +158,8 @@ export interface ApprovalWait {
 
 /** Process-wide daemon state the permission path reads. */
 export interface PermissionCoreHost {
+  // A read-only view of the existing platform turn; absence never creates a chat execution context.
+  chatObservation?(p: Pending): { turnId: string; emit(event: ChatEvent): void } | undefined
   log(): Logger
   clock(): Clock
   store(): LocalStore
@@ -339,6 +343,8 @@ function consentedUrlKey(owner: HostKey, elicitationId: string): string {
 
 /** One outstanding `elicitation/create` awaiting a human answer. */
 type PendingElicit = PendingElicitSurface & {
+  observe?: (event: ChatEvent) => void
+  chatScope?: ChatRequestIdentity
   owner: HostKey
   agentId: string
   sessionId: string
@@ -490,6 +496,7 @@ interface SubsessionWait {
 
 /** One approval every surface settles through (§11.1): the console always, plus whichever cards it was offered on. */
 interface ApprovalEntry<P, R> {
+  chatScope?: ChatRequestIdentity
   owner: HostKey
   agentId: string
   sessionId: string
@@ -549,11 +556,25 @@ const WEBCHAT_OWNER_APPROVAL_NOTICE =
 type Decider = { resolvedBy: string | null; resolvedByName: string | null }
 
 /** One runtime approval handed to an API caller (shared-bot-relay.md §10.4); an editor sees it only when the caller allows what it may not. */
+export interface ChatRequestScope {
+  agentId: string
+  conversationId: string
+  outwardSessionId: string
+  turnId: string
+  requestId: string
+}
+
+type ChatRequestIdentity = Omit<ChatRequestScope, 'requestId' | 'conversationId'> & { conversationId?: string }
+
+type PermissionResult = Pick<Extract<ChatEvent, { kind: 'permission_resolved' }>, 'outcome' | 'selectedOptionId'>
+
 interface CallerApproval {
+  scope: ChatRequestIdentity
+  options?: { id: string; label: string; allow: boolean }[]
   owner: HostKey
   sessionId: string
   conversationId: string
-  answer(allow: boolean, mayAllow: boolean): void
+  answer(allow: boolean, mayAllow: boolean, selectedOptionId?: string): boolean
   /** The turn ended unanswered. */
   cancel(): void
 }
@@ -791,7 +812,11 @@ export class PermissionCoordinator {
   /** Whether this turn's caller answers the agent's questions: an API turn over a protocol whose stream carries them. */
   private callerAnswers(p: Pending): p is CallerTurn {
     const wc = p.webchat
-    return wc?.apiProtocol !== undefined && !wc.continuation && API_CALLER_ANSWER_PROTOCOLS.has(wc.apiProtocol)
+    return (
+      wc?.apiProtocol !== undefined &&
+      !wc.continuation &&
+      (wc.apiProtocol === 'ahp' || API_CALLER_ANSWER_PROTOCOLS.has(wc.apiProtocol))
+    )
   }
 
   /** Whether an API caller in this conversation still holds a question the turn waits on. */
@@ -819,21 +844,32 @@ export class PermissionCoordinator {
     p: CallerTurn,
     sessionId: string,
     parts: ApprovalRequestParts,
-    settle: { allow: () => T; deny: () => T; escalate: () => Promise<T>; cancelled: T }
+    settle: {
+      allow: (optionId?: string) => T
+      deny: (optionId?: string) => T
+      escalate: () => Promise<T>
+      cancelled: T
+      outcome: (result: T) => PermissionResult
+      options?: { id: string; label: string; allow: boolean }[]
+    }
   ): Promise<T> {
     const requestId = randomUUID()
     const wc = p.webchat
     let resolve!: (res: T | Promise<T>) => void
     const result = new Promise<T>((r) => (resolve = r))
-    const done = (res: () => T | Promise<T>): void => {
-      if (!this.pendingCallerApprovals.delete(requestId)) return
+    const done = (res: () => T | Promise<T>): boolean => {
+      if (!this.pendingCallerApprovals.delete(requestId)) return false
       resolve(res())
+      return true
     }
     this.pendingCallerApprovals.set(requestId, {
       owner: p.hostKey,
       sessionId,
       conversationId: wc.conversationId,
-      answer: (allow, mayAllow) => done(!allow ? settle.deny : mayAllow ? settle.allow : settle.escalate),
+      scope: this.chatScope(p)!,
+      options: settle.options,
+      answer: (allow, mayAllow, optionId) =>
+        done(!allow ? () => settle.deny(optionId) : mayAllow ? () => settle.allow(optionId) : settle.escalate),
       cancel: () => done(() => settle.cancelled)
     })
     try {
@@ -841,7 +877,13 @@ export class PermissionCoordinator {
         conversationId: wc.conversationId,
         turnId: wc.turnId,
         index: wc.index++,
-        event: { kind: 'permission', requestId, tool: parts.tool, detail: parts.detail }
+        event: {
+          kind: 'permission',
+          requestId,
+          tool: parts.tool,
+          detail: parts.detail,
+          ...(settle.options ? { options: settle.options } : {})
+        }
       })
     } catch (err) {
       this.pendingCallerApprovals.delete(requestId)
@@ -849,7 +891,9 @@ export class PermissionCoordinator {
       return settle.cancelled
     }
     this.armCallerDeadline(p, () => this.pendingCallerApprovals.has(requestId))
-    return await this.trackHumanApprovalWait(p, result)
+    const resolved = await this.trackHumanApprovalWait(p, result)
+    this.emitChatEvent(p, { kind: 'permission_resolved', requestId, ...settle.outcome(resolved) })
+    return resolved
   }
 
   /** An API caller's answer to a runtime approval it was handed, confined to its own conversation. */
@@ -859,12 +903,136 @@ export class PermissionCoordinator {
     mayAllow: boolean
     conversationId: string
     actor?: InteractionActor
-  }): void {
+    outwardSessionId?: string
+    turnId?: string
+    selectedOptionId?: string
+  }): boolean {
     const pending = this.pendingCallerApprovals.get(a.requestId)
-    if (!pending || pending.conversationId !== a.conversationId) return
+    if (
+      !pending ||
+      pending.conversationId !== a.conversationId ||
+      (a.outwardSessionId !== undefined && pending.scope.outwardSessionId !== a.outwardSessionId) ||
+      (a.turnId !== undefined && pending.scope.turnId !== a.turnId)
+    )
+      return false
+    if (
+      a.selectedOptionId !== undefined &&
+      !pending.options?.some((o) => o.id === a.selectedOptionId && o.allow === a.allow)
+    )
+      return false
     const verb = !a.allow ? 'denied' : a.mayAllow ? 'allowed' : 'referred to an Agent editor'
     this.host.logSessionAction(`permission:${verb} (API caller)`, pending.sessionId, a.actor)
-    pending.answer(a.allow, a.mayAllow)
+    return pending.answer(a.allow, a.mayAllow, a.selectedOptionId)
+  }
+
+  private chatScope(p: Pending): ChatRequestIdentity | undefined {
+    const turnId = p.webchat?.turnId ?? this.host.chatObservation?.(p)?.turnId
+    return turnId
+      ? {
+          agentId: p.plan.agentId,
+          ...(p.webchat ? { conversationId: p.webchat.conversationId } : {}),
+          outwardSessionId: p.outwardSessionId,
+          turnId
+        }
+      : undefined
+  }
+
+  private matchesChatScope(scope: ChatRequestIdentity | undefined, a: ChatRequestScope): boolean {
+    return (
+      !!scope &&
+      scope.agentId === a.agentId &&
+      (scope.conversationId === undefined || scope.conversationId === a.conversationId) &&
+      scope.outwardSessionId === a.outwardSessionId &&
+      scope.turnId === a.turnId
+    )
+  }
+
+  private liveChatRequest(rec: { owner: HostKey; sessionId: string }, a: ChatRequestScope): boolean {
+    const p = this.host.pending().get(pendingTurnKey(rec.owner, rec.sessionId))
+    return !!p && !p.outputSuppressed && this.matchesChatScope(this.chatScope(p), a)
+  }
+
+  // Authority is CP-verified by ingress; a conversation owner never inherits the editor gate.
+  async handleChatPermissionChoice(
+    a: ChatRequestScope & {
+      allow: boolean
+      mayAllow: boolean
+      callerRole: ChatCallerRole
+      userId: string
+      user?: string
+      selectedOptionId?: string
+    }
+  ): Promise<boolean> {
+    if (!a.userId || !['owner', 'editor', 'participant'].includes(a.callerRole)) return false
+    const caller = this.pendingCallerApprovals.get(a.requestId)
+    if (caller) {
+      if (!this.matchesChatScope(caller.scope, a) || !this.liveChatRequest(caller, a)) return false
+      return this.handleCallerPermissionChoice({
+        ...a,
+        actor: { userId: a.userId, ...(a.user ? { name: a.user } : {}) }
+      })
+    }
+    const editor = this.pendingApprovals.get(a.requestId) ?? this.pendingElicits.get(a.requestId)
+    if (
+      a.callerRole !== 'editor' ||
+      !editor ||
+      ('approval' in editor && !editor.approval) ||
+      !this.matchesChatScope(editor.chatScope, a) ||
+      !this.liveChatRequest(editor, a)
+    )
+      return false
+    return (
+      await this.decideEditorPermission({
+        agentId: a.agentId,
+        requestId: a.requestId,
+        decision: a.allow ? 'allow' : 'deny',
+        ...(a.selectedOptionId !== undefined ? { optionId: a.selectedOptionId } : {}),
+        decidedBy: `user:${a.userId}`,
+        ...(a.user ? { decidedByName: a.user } : {})
+      })
+    ).ok
+  }
+
+  private emitChatEvent(p: Pending, event: ChatEvent): void {
+    const wc = p.webchat
+    try {
+      if (wc) wc.sink.output({ conversationId: wc.conversationId, turnId: wc.turnId, index: wc.index++, event })
+      else this.host.chatObservation?.(p)?.emit(this.host.maskAgentSecrets(p.plan.agentId, event))
+    } catch (err) {
+      this.host.log().warn(`chat request observation failed: ${formatErr(err)}`)
+    }
+  }
+
+  private permissionResult(result: RequestPermissionResponse, params: RequestPermissionRequest): PermissionResult {
+    if (result.outcome.outcome !== 'selected') return { outcome: 'cancelled' }
+    const selectedOptionId = result.outcome.optionId
+    const selected = params.options.find((o) => o.optionId === selectedOptionId)
+    return {
+      outcome: selected && isAllowOption(selected) ? 'allowed' : 'denied',
+      selectedOptionId: result.outcome.optionId
+    }
+  }
+
+  private observeEditorPermission<T>(
+    p: Pending,
+    requestId: string,
+    parts: ApprovalRequestParts,
+    result: Promise<T>,
+    outcome: (result: T) => PermissionResult
+  ): void {
+    this.emitChatEvent(p, {
+      kind: 'permission',
+      requestId,
+      tool: parts.tool,
+      detail: parts.detail,
+      editorOnly: true,
+      options: this.pendingPermissionOptions(p.plan.agentId, requestId)?.map((o) => ({
+        id: o.optionId,
+        label: o.name,
+        allow: isAllowOption(o)
+      }))
+    })
+    void result.then((value) => this.emitChatEvent(p, { kind: 'permission_resolved', requestId, ...outcome(value) }))
   }
 
   private async awaitEditorPermission(
@@ -883,6 +1051,7 @@ export class PermissionCoordinator {
     // that window must find this entry or the agent waits on a resolver nobody can reach.
     const entry: PermissionApproval = {
       kind: 'permission',
+      chatScope: this.chatScope(p),
       owner: p.hostKey,
       agentId,
       sessionId,
@@ -893,6 +1062,7 @@ export class PermissionCoordinator {
     }
     this.pendingApprovals.set(id, entry)
     const parts = permissionRequestParts(params)
+    this.observeEditorPermission(p, id, parts, result, (value) => this.permissionResult(value, params))
     if (route) this.armSubsessionWait(id, entry, p, route, parts)
     this.syncApprovalActivity(p.hostKey, sessionId)
     // The human wait starts when the request becomes answerable, not when its row lands — the
@@ -933,6 +1103,7 @@ export class PermissionCoordinator {
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
     const entry: ElicitationApproval = {
       kind: 'elicitation',
+      chatScope: this.chatScope(p),
       owner: p.hostKey,
       agentId,
       sessionId,
@@ -943,6 +1114,9 @@ export class PermissionCoordinator {
     }
     this.pendingApprovals.set(id, entry)
     const parts = elicitationApprovalParts(params)
+    this.observeEditorPermission(p, id, parts, result, (value) => ({
+      outcome: value.action === 'accept' ? 'allowed' : value.action === 'decline' ? 'denied' : 'cancelled'
+    }))
     if (route) this.armSubsessionWait(id, entry, p, route, parts)
     this.syncApprovalActivity(p.hostKey, sessionId)
     const wait = this.trackHumanApprovalWait(p, result)
@@ -989,6 +1163,7 @@ export class PermissionCoordinator {
     }
     this.pendingApprovals.set(requestId, {
       kind: 'permission',
+      chatScope: this.chatScope(p),
       owner: p.hostKey,
       agentId,
       sessionId,
@@ -998,6 +1173,9 @@ export class PermissionCoordinator {
       chat,
       resolve: resolveResult
     })
+    this.observeEditorPermission(p, requestId, permissionRequestParts(params), result, (value) =>
+      this.permissionResult(value, params)
+    )
     this.syncApprovalActivity(p.hostKey, sessionId)
     const recorded = this.noteEditorPermissionRequest(
       requestId,
@@ -1015,6 +1193,7 @@ export class PermissionCoordinator {
       this.pendingApprovals.delete(requestId)
       this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
       this.recordedWrites.delete(requestId)
+      resolveResult({ outcome: { outcome: 'cancelled' } })
       throw err
     }
     this.recordedWrites.delete(requestId)
@@ -2324,8 +2503,12 @@ export class PermissionCoordinator {
         return o ? { outcome: { outcome: 'selected', optionId: o.optionId } } : { outcome: { outcome: 'cancelled' } }
       }
       return await this.askCaller(p, sessionId, permissionRequestParts(params), {
-        allow: () => select(option('allow_once', 'allow_always')),
-        deny: () => select(option('reject_once', 'reject_always')),
+        allow: (id) =>
+          select(id ? params.options.find((o) => o.optionId === id) : option('allow_once', 'allow_always')),
+        deny: (id) =>
+          select(id ? params.options.find((o) => o.optionId === id) : option('reject_once', 'reject_always')),
+        options: params.options.map((o) => ({ id: o.optionId, label: o.name, allow: isAllowOption(o) })),
+        outcome: (value) => this.permissionResult(value, params),
         escalate: () => this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p),
         cancelled: { outcome: { outcome: 'cancelled' } }
       })
@@ -2434,6 +2617,9 @@ export class PermissionCoordinator {
       return await this.askCaller<CreateElicitationResponse>(p, sessionId, elicitationApprovalParts(params), {
         allow: () => ({ action: 'accept' }),
         deny: () => ({ action: 'decline' }),
+        outcome: (value) => ({
+          outcome: value.action === 'accept' ? 'allowed' : value.action === 'decline' ? 'denied' : 'cancelled'
+        }),
         escalate: () => this.awaitEditorElicitation(agentId, sessionId, params, p, elicitationApprovalChoices(params)),
         cancelled: { action: 'cancel' }
       })
@@ -2530,6 +2716,7 @@ export class PermissionCoordinator {
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
     this.pendingElicits.set(requestId, {
+      chatScope: this.chatScope(p),
       owner: p.hostKey,
       agentId,
       sessionId,
@@ -2561,6 +2748,21 @@ export class PermissionCoordinator {
           )),
       resolve: resolveResult
     })
+    const observed = this.pendingElicits.get(requestId)!
+    if (isApproval) {
+      this.observeEditorPermission(p, requestId, elicitationApprovalParts(params), result, (value) => ({
+        outcome: value.action === 'accept' ? 'allowed' : value.action === 'decline' ? 'denied' : 'cancelled'
+      }))
+    } else if (observed.row) {
+      observed.observe = (event) =>
+        this.emitChatEvent(
+          p,
+          event.kind === 'elicitation' || event.kind === 'elicitation_resolved'
+            ? { ...event, observationOnly: true }
+            : event
+        )
+      observed.observe({ kind: 'elicitation', ...observed.row.card })
+    }
     this.syncApprovalActivity(p.hostKey, sessionId)
     if (isApproval) {
       const recorded = this.noteEditorPermissionRequest(
@@ -2578,6 +2780,7 @@ export class PermissionCoordinator {
         this.pendingElicits.delete(requestId)
         this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
         this.recordedWrites.delete(requestId)
+        resolveResult({ action: 'cancel' })
         throw err
       }
       this.recordedWrites.delete(requestId)
@@ -2729,6 +2932,7 @@ export class PermissionCoordinator {
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
     this.pendingElicits.set(requestId, {
+      chatScope: this.chatScope(p),
       owner: p.hostKey,
       agentId,
       sessionId,
@@ -2786,6 +2990,7 @@ export class PermissionCoordinator {
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
     const card = elicitUrlCardPayload(requestId, message, url.url)
     this.pendingElicits.set(requestId, {
+      chatScope: this.chatScope(p),
       owner: p.hostKey,
       agentId,
       sessionId,
@@ -2873,7 +3078,7 @@ export class PermissionCoordinator {
   private async handleUrlElicitConsent(
     requestId: string,
     rec: PendingElicit & { url: NonNullable<PendingElicit['url']> },
-    a: { value: ElicitAnswer; webchatConversationId?: string }
+    a: { value: ElicitAnswer; webchatConversationId?: string; onSettled?: () => void }
   ): Promise<void> {
     // A card settles only from its own surface: its webchat conversation, or a Slack tap (no conversation).
     if (rec.surface === 'webchat') {
@@ -2885,7 +3090,10 @@ export class PermissionCoordinator {
     // webchat's card carries the URL itself.
     const consented = a.value === (rec.surface === 'chat' ? elicitOptionToken(0) : rec.url.url)
     if (!consented && a.value !== null) return
+    if (this.pendingElicits.get(requestId) !== rec && this.pendingElicits.get(requestId)?.resolve !== rec.resolve)
+      return
     this.pendingElicits.delete(requestId)
+    a.onSettled?.()
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: requestId, allowed: consented })
     this.settleUrlElicit(rec, requestId, consented ? 'accepted' : 'dismissed')
     if (consented) this.rememberConsentedUrlElicit(requestId, rec)
@@ -2941,14 +3149,21 @@ export class PermissionCoordinator {
     rec: Extract<PendingElicit, { surface: 'webchat' }>,
     requestId: string,
     outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed',
-    label?: string
+    label?: string,
+    answers?: Record<string, string | number | boolean | string[]>
   ): void {
     try {
       rec.wc.sink.output({
         conversationId: rec.wc.conversationId,
         turnId: rec.wc.turnId,
         index: rec.wc.index++,
-        event: { kind: 'elicitation_resolved', requestId, outcome, ...(label !== undefined ? { label } : {}) }
+        event: this.host.maskAgentSecrets(rec.agentId, {
+          kind: 'elicitation_resolved' as const,
+          requestId,
+          outcome,
+          ...(label !== undefined ? { label } : {}),
+          ...(answers ? { answers } : {})
+        })
       })
     } catch (err) {
       this.host.log().warn(`webchat elicitation card not settled for ${requestId}: ${formatErr(err)}`)
@@ -3077,6 +3292,70 @@ export class PermissionCoordinator {
     return await this.submitElicitForm({ requestId: a.requestId, fields, ...(a.actor ? { actor: a.actor } : {}) })
   }
 
+  // Reads the already-rendered, masked card; never reconstructs a broader form for an observer.
+  chatElicitation(
+    scope: Omit<ChatRequestScope, 'turnId'> & { turnId?: string }
+  ): { card: ElicitCard; turnId: string } | undefined {
+    const rec = this.pendingElicits.get(scope.requestId)
+    const requestScope = { ...scope, turnId: scope.turnId ?? rec?.chatScope?.turnId ?? '' }
+    if (
+      !rec ||
+      !rec.row ||
+      !this.matchesChatScope(rec.chatScope, requestScope) ||
+      !this.liveChatRequest(rec, requestScope)
+    )
+      return undefined
+    return { card: this.host.maskAgentSecrets(scope.agentId, rec.row.card), turnId: rec.chatScope!.turnId }
+  }
+
+  callerElicitation(
+    conversationId: string,
+    requestId: string,
+    scope: { agentId?: string; outwardSessionId: string; turnId: string }
+  ): ElicitCard | undefined {
+    const rec = this.pendingElicits.get(requestId)
+    if (!rec) return undefined
+    return this.chatElicitation({ ...scope, agentId: scope.agentId ?? rec.agentId, conversationId, requestId })?.card
+  }
+
+  async handleCallerElicitChoice(
+    a: Omit<ChatRequestScope, 'conversationId'> & {
+      webchatConversationId: string
+      value: ElicitAnswer
+      callerRole?: ChatCallerRole
+      userId?: string
+    }
+  ): Promise<boolean> {
+    const scope = { ...a, conversationId: a.webchatConversationId }
+    if (!this.chatElicitation(scope)) return false
+    const rec = this.pendingElicits.get(a.requestId)!
+    if (rec.surface === 'chat' && (a.callerRole !== 'editor' || !a.userId || rec.approval)) return false
+    let value = a.value
+    if (rec.surface === 'chat' && value !== null) {
+      if (rec.url) {
+        if (value !== rec.url.url) return false
+        value = elicitOptionToken(0)
+      } else if (rec.form?.length === 1 && !isFormAnswer(value)) {
+        value = { [rec.form[0]!.propName]: value }
+      } else if (!rec.form && typeof value === 'string') {
+        const target = elicitTarget(rec.params, surfaceOf(rec))
+        const index = target?.options.findIndex((option) => option.value === value) ?? -1
+        if (index < 0) return false
+        value = elicitOptionToken(index)
+      }
+    }
+    let settled = false
+    await this.handleElicitChoice({
+      requestId: a.requestId,
+      value,
+      ...(rec.surface === 'webchat' ? { webchatConversationId: a.webchatConversationId } : {}),
+      onSettled: () => {
+        settled = true
+      }
+    })
+    return settled
+  }
+
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (a LIST of them for a multi-select, a real number
    *  for a numeric field, a RECORD of value-per-field for a form, under the field name(s)), or
@@ -3091,6 +3370,7 @@ export class PermissionCoordinator {
      *  card nor another conversation's. Kept alongside the unguessable request id rather than
      *  replaced by it: an id is a secret, and a scope is a rule. */
     webchatConversationId?: string
+    onSettled?: () => void
   }): Promise<string | undefined> {
     // A DM elicitation card's request lives on the editor path (§2/§6.4).
     const editor = this.pendingApprovals.get(a.requestId)
@@ -3241,12 +3521,23 @@ export class PermissionCoordinator {
       )
         return
     }
+    if (this.pendingElicits.get(a.requestId) !== rec) return
     this.pendingElicits.delete(a.requestId)
+    a.onSettled?.()
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: a.requestId, allowed: answer !== null })
     const outcome = answer === null ? 'dismissed' : 'accepted'
-    this.settleElicitRow(rec, outcome, answered)
+    const content =
+      res.action === 'accept'
+        ? (res.content as Record<string, string | number | boolean | string[]> | undefined)
+        : undefined
+    const typedAnswers = content
+      ? rec.row?.card.fields
+        ? content
+        : { value: content[form?.[0]?.propName ?? rec.propName]! }
+      : undefined
+    this.settleElicitRow(rec, outcome, answered, typedAnswers)
     if (rec.surface === 'webchat') {
-      this.emitWebchatElicitResolved(rec, a.requestId, outcome, answered)
+      this.emitWebchatElicitResolved(rec, a.requestId, outcome, answered, typedAnswers)
     } else {
       const text = decider ? `${decisionText} — ${decider}` : decisionText
       this.settleChatCard(rec, a.requestId, false, { mark, text, fallback: 'Input received' })
@@ -3317,8 +3608,23 @@ export class PermissionCoordinator {
 
   /** Say on the card's own row how it ended, so a reader loading the conversation later sees the
    *  settled card rather than one that still looks open. */
-  private settleElicitRow(rec: PendingElicit, outcome: ElicitOutcome, answerLabel?: string): void {
+  private settleElicitRow(
+    rec: PendingElicit,
+    outcome: ElicitOutcome,
+    answerLabel?: string,
+    answers?: Record<string, string | number | boolean | string[]>
+  ): void {
     if (!rec.row) return
+    if (outcome !== 'unrenderable')
+      rec.observe?.(
+        this.host.maskAgentSecrets(rec.agentId, {
+          kind: 'elicitation_resolved' as const,
+          requestId: rec.row.card.requestId,
+          outcome,
+          ...(answerLabel !== undefined ? { label: answerLabel } : {}),
+          ...(answers ? { answers } : {})
+        })
+      )
     this.writeElicitRow(rec.row, { outcome, ...(answerLabel !== undefined ? { answerLabel } : {}) })
   }
 

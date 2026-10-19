@@ -19,9 +19,10 @@ export type ChatEvent =
   | { kind: 'superseded'; generation: number }
   | { kind: 'notice'; text: string; standing?: boolean }
   | { kind: 'plan'; entries: PlanEntry[] }
-  | ({ kind: 'elicitation' } & ElicitCard)
+  | ({ kind: 'elicitation'; observationOnly?: true } & ElicitCard)
   | {
       kind: 'elicitation_resolved'
+      observationOnly?: true
       requestId: string
       outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
       label?: string
@@ -29,6 +30,7 @@ export type ChatEvent =
     }
   | {
       kind: 'permission'
+      editorOnly?: true
       requestId: string
       tool: string
       detail: string
@@ -78,6 +80,7 @@ export interface ChatOutput {
 }
 
 export interface ChatCompletion {
+  outcome?: 'complete' | 'cancelled' | 'failed'
   conversationId: string
   turnId: string
   stopReason?: string
