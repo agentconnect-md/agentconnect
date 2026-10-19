@@ -158,6 +158,7 @@ describe('ClientTransport.dial', () => {
       path: '/relays/ws'
     })
     expect(t.subprotocol).toBe('test.sub.v1')
+    expect(t.bufferedAmount).toBe(0)
     // The address the dial left from, which a daemon's executor facet publishes as where to reach it.
     expect(t.localAddress).toBe('127.0.0.1')
     const got = new Promise<string>((resolve) => t.onMessage(resolve))

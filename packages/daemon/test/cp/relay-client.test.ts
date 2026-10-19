@@ -11,6 +11,7 @@ import {
   RD_CODEHOST_RELEASE_V1,
   GITLAB_COM_V1_FEATURE,
   API_AG_UI_V1_FEATURE,
+  API_AHP_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_CODEHOST_REPLY_TARGET_V1,
@@ -45,6 +46,7 @@ const silentLog = {
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 class FakeTransport implements Transport {
+  bufferedAmount = 0
   readonly subprotocol = RELAY_DAEMON_SUBPROTOCOL
   sent: RelayDaemonFrame[] = []
   closed?: { code: number; reason: string }
@@ -73,14 +75,7 @@ class FakeTransport implements Transport {
   }
 }
 
-function make(
-  over: {
-    daemonId?: () => string | undefined
-    apiKey?: () => string
-    clusterIdentityToken?: () => string | undefined
-    onRelayMsg?: (msg: RdMsg, chat: (event: RdChatEvent) => void) => RdAck
-  } = {}
-) {
+function make(over: Partial<RelayClientDeps> = {}) {
   const clock = new FakeClock()
   const transports: FakeTransport[] = []
   const connect = vi.fn(async () => {
@@ -89,6 +84,7 @@ function make(
     return t
   })
   const client = new RelayClient(RELAY_ID, URL, {
+    ...over,
     apiKey: over.apiKey ?? (() => 'daemon-key'),
     ...(over.clusterIdentityToken ? { clusterIdentityToken: over.clusterIdentityToken } : {}),
     daemonId: over.daemonId ?? (() => DAEMON_ID),
@@ -100,6 +96,183 @@ function make(
   } as unknown as RelayClientDeps)
   return { client, clock, transports, connect }
 }
+
+const attachmentId = '33333333-3333-4333-8333-333333333333'
+const authorization = {
+  orgId: 'org',
+  agentId: DAEMON_ID,
+  userId: 'user',
+  user: 'User',
+  callerRole: 'owner' as const,
+  callerApproves: true,
+  grant: { token: 'grant', expiresAtMs: Date.now() + 60_000 }
+}
+const ahpHooks = (): Partial<RelayClientDeps> => ({
+  ahpEnabled: () => true,
+  onAhpOpen: vi.fn(async () => true),
+  onAhpAuthorize: vi.fn(async () => true),
+  onAhpMessage: vi.fn(),
+  onAhpClose: vi.fn(),
+  onAhpRelayLost: vi.fn()
+})
+
+describe('AHP carrier integrated with relay dial-out', () => {
+  it('bounds aggregate queued bytes, per-attachment bytes and pending attachment cardinality', async () => {
+    for (const bound of ['attachment', 'connection', 'count'] as const) {
+      const hooks = ahpHooks()
+      hooks.onAhpOpen = vi.fn(() => new Promise<boolean>(() => {}))
+      const h = make(hooks)
+      const t = await toReady(h.client, h.transports)
+      const count = bound === 'count' ? 257 : bound === 'connection' ? 6 : 1
+      for (let index = 0; index < count; index++) {
+        const id = `33333333-3333-4333-8333-${String(index).padStart(12, '0')}`
+        t.inject(buildRelayDaemonFrame('rd/ahp/open', { attachmentId: id, authorization }))
+        for (let queued = 0; queued < (bound === 'count' ? 0 : bound === 'attachment' ? 5 : 3); queued++)
+          t.inject(buildRelayDaemonFrame('rd/ahp/message', { attachmentId: id, message: 'x'.repeat(60_000) }))
+      }
+      if (bound === 'count') {
+        expect(hooks.onAhpOpen).toHaveBeenCalledTimes(256)
+        expect(t.lastReq('rd/ahp/opened')).toMatchObject({ payload: { accepted: false } })
+      } else {
+        expect(hooks.onAhpClose).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'overloaded' }),
+          expect.any(String)
+        )
+      }
+      expect(hooks.onAhpMessage).not.toHaveBeenCalled()
+      await h.client.stop()
+    }
+  })
+
+  it('advertises only a fully wired enabled host and acknowledges open before queued messages', async () => {
+    for (const hooks of [{ ahpEnabled: () => true }, ahpHooks()]) {
+      const h = make(hooks)
+      const t = await toReady(h.client, h.transports)
+      const hello = t.lastReq('rd/hello')!
+      expect(hello.type === 'rd/hello' && hello.payload.capabilities?.includes(API_AHP_V1_FEATURE)).toBe(
+        Boolean(hooks.onAhpOpen)
+      )
+      await h.client.stop()
+    }
+    let accept!: (value: boolean) => void
+    const hooks = ahpHooks()
+    hooks.onAhpOpen = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          accept = resolve
+        })
+    )
+    const h = make(hooks)
+    const t = await toReady(h.client, h.transports)
+    const open = buildRelayDaemonFrame('rd/ahp/open', { attachmentId, authorization })
+    t.inject(open)
+    t.inject(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' }))
+    expect(hooks.onAhpMessage).not.toHaveBeenCalled()
+    accept(true)
+    await flush()
+    expect(t.lastReq('rd/ahp/opened')).toMatchObject({ corr: open.id, payload: { accepted: true } })
+    expect(hooks.onAhpMessage).toHaveBeenCalledOnce()
+    await h.client.stop()
+  })
+
+  it('fences delayed opens, output and cleanup by transport generation', async () => {
+    let accept!: (value: boolean) => void
+    const wires: Array<{ send(message: string): void }> = []
+    const scopes: string[] = []
+    const hooks = ahpHooks()
+    hooks.onAhpOpen = vi.fn((_input, wire, scope) => {
+      wires.push(wire)
+      scopes.push(scope)
+      return scopes.length === 1
+        ? new Promise<boolean>((resolve) => {
+            accept = resolve
+          })
+        : Promise.resolve(true)
+    })
+    const h = make(hooks)
+    const first = await toReady(h.client, h.transports)
+    const open = buildRelayDaemonFrame('rd/ahp/open', { attachmentId, authorization })
+    first.inject(open)
+    first.simulateClose(1006)
+    h.clock.advance(10_000)
+    await flush()
+    const second = h.transports.at(-1)!
+    second.inject(buildRelayDaemonFrame('rd/hello/ok', { relayId: RELAY_ID }, { corr: second.lastReq('rd/hello')!.id }))
+    await flush()
+    second.inject(open)
+    await flush()
+    accept(true)
+    await flush()
+    wires[0]!.send('{"stale":true}')
+    wires[1]!.send('{"current":true}')
+    expect(scopes[0]).not.toBe(scopes[1])
+    expect(second.sent.filter((frame) => frame.type === 'rd/ahp/message')).toHaveLength(1)
+    expect(hooks.onAhpClose).toHaveBeenLastCalledWith(expect.anything(), scopes[0])
+    expect(hooks.onAhpRelayLost).toHaveBeenCalledWith(scopes[0])
+    await h.client.stop()
+  })
+
+  it('preempts queued work on close or failed authorization and bounds pending frames', async () => {
+    for (const close of [true, false]) {
+      let accept!: (value: boolean) => void
+      const hooks = ahpHooks()
+      hooks.onAhpOpen = vi.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            accept = resolve
+          })
+      )
+      const h = make(hooks)
+      const t = await toReady(h.client, h.transports)
+      t.inject(buildRelayDaemonFrame('rd/ahp/open', { attachmentId, authorization }))
+      for (let n = 0; n < (close ? 1 : 32); n++)
+        t.inject(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' }))
+      if (close) t.inject(buildRelayDaemonFrame('rd/ahp/close', { attachmentId, reason: 'client_closed' }))
+      expect(hooks.onAhpClose).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: close ? 'client_closed' : 'overloaded' }),
+        expect.any(String)
+      )
+      accept(true)
+      await flush()
+      expect(hooks.onAhpMessage).not.toHaveBeenCalled()
+      await h.client.stop()
+    }
+    const hooks = ahpHooks()
+    hooks.onAhpAuthorize = vi.fn(async () => false)
+    const h = make(hooks)
+    const t = await toReady(h.client, h.transports)
+    t.inject(buildRelayDaemonFrame('rd/ahp/open', { attachmentId, authorization }))
+    await flush()
+    t.inject(buildRelayDaemonFrame('rd/ahp/authorize', { attachmentId, authorization }))
+    t.inject(buildRelayDaemonFrame('rd/ahp/message', { attachmentId, message: '{}' }))
+    await flush()
+    expect(hooks.onAhpMessage).not.toHaveBeenCalled()
+    expect(t.lastReq('rd/ahp/authorized')).toMatchObject({ payload: { accepted: false } })
+    await h.client.stop()
+  })
+
+  it('closes oversized host output and the whole hop when even reserved close space is exhausted', async () => {
+    let wire!: { send(message: string): void }
+    const hooks = ahpHooks()
+    hooks.onAhpOpen = vi.fn(async (_input, output) => {
+      wire = output
+      return true
+    })
+    const h = make(hooks)
+    const t = await toReady(h.client, h.transports)
+    t.inject(buildRelayDaemonFrame('rd/ahp/open', { attachmentId, authorization }))
+    await flush()
+    wire.send('值'.repeat(30_000))
+    expect(t.lastReq('rd/ahp/close')).toMatchObject({ payload: { reason: 'invalid_message' } })
+    t.inject(buildRelayDaemonFrame('rd/ahp/open', { attachmentId, authorization }))
+    await flush()
+    t.bufferedAmount = 2 * 1024 * 1024
+    wire.send('{}')
+    expect(t.closed?.code).toBe(1013)
+    expect(hooks.onAhpRelayLost).toHaveBeenCalledOnce()
+    await h.client.stop()
+  })
+})
 
 async function toReady(
   client: RelayClient,

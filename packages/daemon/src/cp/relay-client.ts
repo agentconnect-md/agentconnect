@@ -23,6 +23,7 @@ import {
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   RD_WEBCHAT_ATTACH_V1,
   API_AG_UI_V1_FEATURE,
+  API_AHP_V1_FEATURE,
   type RelayDaemonFrame,
   type RdHelloOk,
   type RdMsg,
@@ -52,6 +53,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
+import { AhpCarrier, ahpAvailable, type AhpCarrierDeps } from './ahp-carrier.js'
 
 const ACK_TIMEOUT_MS = 5000
 /** Longer than the relay's inner 5 s forward, so a slow target reads as the relay's `retry`, never a lost request. */
@@ -105,7 +107,7 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'
 
 /** The per-client deps, shared across every relay a daemon dials. */
-export interface RelayClientDeps {
+export interface RelayClientDeps extends AhpCarrierDeps {
   /** The daemon's existing CP API key (presented on `rd/hello`); empty when it has none. */
   apiKey: () => string
   /** This pod's projected ServiceAccount token, re-read per connect because the kubelet
@@ -135,6 +137,8 @@ export class RelayClient {
   state: RelayClientState = 'CLOSED'
 
   private transport?: Transport
+  private ahp?: AhpCarrier
+  private generation = 0
   private readonly correlator: ReqRep<RelayDaemonFrame>
   private readonly backoff: Backoff
   private stopped = false
@@ -160,11 +164,13 @@ export class RelayClient {
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.generation++
     if (this.reconnectTimer !== undefined) {
       this.deps.clock.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined
     }
     this.correlator.rejectAll(new Error('stopping'))
+    this.ahp?.dispose()
     this.transport?.close(1000, 'shutdown')
     this.state = 'CLOSED'
   }
@@ -247,6 +253,7 @@ export class RelayClient {
 
   private async attemptConnect(): Promise<void> {
     if (this.stopped || this.fatal) return
+    const generation = ++this.generation
     const daemonId = this.deps.daemonId()
     if (!daemonId) {
       // Id not adopted yet (token onboarding). Back off and retry — auth/ok normally
@@ -258,24 +265,33 @@ export class RelayClient {
     this.state = 'CONNECTING'
     try {
       const t = await this.deps.connect(this.url)
-      if (this.stopped || this.fatal) {
+      if (this.stopped || this.fatal || this.generation !== generation) {
         t.close(1000, 'shutdown')
         return
       }
       this.transport = t
-      t.onMessage((txt) => void this.onText(txt))
-      t.onClose((c, r) => this.onClose(c, r))
-      await this.handshake(daemonId)
+      const ahp = new AhpCarrier(t, this.deps)
+      this.ahp = ahp
+      t.onMessage((txt) => {
+        if (this.transport === t) void this.onText(txt)
+      })
+      t.onClose((c, r) => {
+        ahp.dispose()
+        if (this.transport === t) this.onClose(c, r)
+      })
+      await this.handshake(daemonId, t)
       this.backoff.reset()
     } catch (err) {
+      if (this.generation !== generation) return
       this.deps.log.warn(`relay(${this.relayId}): connect/hello failed: ${(err as Error).message}`)
       this.transport?.close(1011, 'handshake failed')
+      this.ahp?.dispose()
       this.transport = undefined
       this.scheduleReconnect()
     }
   }
 
-  private async handshake(daemonId: string): Promise<void> {
+  private async handshake(daemonId: string, transport: Transport): Promise<void> {
     this.state = 'HELLO'
     // Read per connect, never cached — the same credential and the same reason as the CP socket.
     const identityToken = this.deps.clusterIdentityToken?.()
@@ -284,13 +300,14 @@ export class RelayClient {
       buildRelayDaemonFrame('rd/hello', {
         ...(identityToken ? { serviceAccountToken: identityToken } : apiKey ? { apiKey } : {}),
         daemonId,
-        capabilities: [...DAEMON_RD_CAPABILITIES]
+        capabilities: [...DAEMON_RD_CAPABILITIES, ...(ahpAvailable(this.deps) ? [API_AHP_V1_FEATURE] : [])]
       })
     )
     if (rep.type !== 'rd/hello/ok') {
       throw new WireError('INTERNAL', `expected rd/hello/ok, got ${rep.type}`, false)
     }
     const ok = rep.payload as RdHelloOk
+    if (this.transport !== transport || this.stopped) throw new Error('relay connection replaced')
     if (ok.relayId !== this.relayId) {
       // Misroute: dialed relay A, reached relay B ⇒ a pool LB is in the daemon dial
       // path. Deployment error — retry (the operator must fix per-instance routing).
@@ -345,6 +362,7 @@ export class RelayClient {
     }
     const frame = decoded.frame
     if (frame.corr && this.correlator.settle(frame)) return
+    if (this.state === 'READY' && this.ahp?.receive(frame)) return
     this.deps.log.debug(`relay(${this.relayId}): ← ${frame.type} ${frame.id} (${Buffer.byteLength(text)} bytes)`)
     if (frame.type === 'rd/msg') {
       await this.handleMsg(frame.id, frame.payload)

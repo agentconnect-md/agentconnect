@@ -98,6 +98,40 @@ it('requires header credentials and rejects query secrets', async () => {
   await expect(dial(`${host.url}?token=secret`)).rejects.toThrow('status:400')
   expect(host.verify).not.toHaveBeenCalled()
 })
+it('refuses disabled API entries, invalid grant lifetimes and a capability lost during open', async () => {
+  const host = await fixture()
+  for (const verdict of [
+    { ...allow(), apiProtocols: [] },
+    { ...allow(), ahpGrant: { token: 'expired', expiresAtMs: Date.now() - 1 } },
+    { ...allow(), ahpGrant: { token: 'too-long', expiresAtMs: Date.now() + 120_000 } }
+  ]) {
+    host.verify.mockResolvedValueOnce(verdict)
+    await expect(dial(host.url)).rejects.toThrow('status:401')
+  }
+  expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
+  host.conn.authorizeAhp.mockImplementationOnce(async () => {
+    host.conn.supports.mockReturnValue(false)
+    return true
+  })
+  await expect(dial(host.url)).rejects.toThrow('status:503')
+  expect(host.conn.sendAhp).toHaveBeenCalledWith(expect.objectContaining({ reason: 'unavailable' }))
+})
+it('renews authority without accepting a different principal and rejects binary content', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  const host = await fixture()
+  const socket = await dial(host.url)
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect(host.conn.authorizeAhp).toHaveBeenCalledTimes(2)
+  host.verify.mockResolvedValueOnce({ ...allow(), userId: 'another-user' })
+  const close = once(socket, 'close')
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect((await close)[0]).toBe(4401)
+  expect(host.conn.authorizeAhp).toHaveBeenCalledTimes(2)
+  const next = await dial(host.url)
+  const binaryClose = once(next, 'close')
+  next.send(Buffer.from('{}'))
+  expect((await binaryClose)[0]).toBe(1008)
+})
 it('selects only static ahp and forwards opaque frames with a conversation-bound browser token', async () => {
   const host = await fixture()
   host.verify.mockImplementation(async () => ({ ...allow(), conversationId: '44444444-4444-4444-8444-444444444444' }))
