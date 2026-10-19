@@ -42,27 +42,30 @@ const remove = (a: HttpApp, protocol = 'ai-sdk-ui', agentId = AGENT) =>
   a.app.inject({ method: 'DELETE', url: `${ORG}/agents/${agentId}/api/${protocol}` })
 
 describe('agent chat APIs', () => {
-  it('adds idempotently, lists, removes, and audits each change once', async () => {
-    await seedAgent(prisma, AGENT)
-    const a = open()
-    expect((await list(a)).json()).toEqual({ entries: [] })
+  it.each(['ai-sdk-ui', 'ahp'])(
+    '%s adds idempotently, lists, removes, and audits each change once',
+    async (protocol) => {
+      await seedAgent(prisma, AGENT)
+      const a = open()
+      expect((await list(a)).json()).toEqual({ entries: [] })
 
-    const first = await add(a)
-    expect(first.statusCode).toBe(200)
-    expect(first.json()).toMatchObject({ protocol: 'ai-sdk-ui' })
-    const again = await add(a)
-    expect(again.json()).toEqual(first.json())
-    expect(((await list(a)).json() as { entries: unknown[] }).entries).toEqual([first.json()])
+      const first = await add(a, protocol)
+      expect(first.statusCode).toBe(200)
+      expect(first.json()).toMatchObject({ protocol })
+      const again = await add(a, protocol)
+      expect(again.json()).toEqual(first.json())
+      expect(((await list(a)).json() as { entries: unknown[] }).entries).toEqual([first.json()])
 
-    expect((await remove(a)).statusCode).toBe(204)
-    expect((await list(a)).json()).toEqual({ entries: [] })
-    expect((await remove(a)).statusCode).toBe(404)
+      expect((await remove(a, protocol)).statusCode).toBe(204)
+      expect((await list(a)).json()).toEqual({ entries: [] })
+      expect((await remove(a, protocol)).statusCode).toBe(404)
 
-    await vi.waitFor(async () => {
-      const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_api_change', agentId: AGENT } })
-      expect(audits.map((e) => (e.details as { enabled: boolean }).enabled).sort()).toEqual([false, true])
-    })
-  })
+      await vi.waitFor(async () => {
+        const audits = await prisma.auditEvent.findMany({ where: { kind: 'agent_api_change', agentId: AGENT } })
+        expect(audits.map((e) => (e.details as { enabled: boolean }).enabled).sort()).toEqual([false, true])
+      })
+    }
+  )
 
   it('rejects an unknown protocol and an unknown agent', async () => {
     await seedAgent(prisma, AGENT)

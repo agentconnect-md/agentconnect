@@ -123,6 +123,9 @@ export interface RelayConnDeps {
   onCodeHostDelivery?: (m: RcCodeHostDelivery) => Promise<void>
   /** The in-memory relay index — this connection registers itself for `rc/daemon-revoke` push. */
   relayReg: RelayRegistry
+  // AHP verification remains unavailable until its separately deployed service is wired.
+  verifyAhpKey?: (req: { credential: string; agentId: string }) => Promise<RcVerifyResult>
+  verifyAhpBrowser?: (req: { credential: string; agentId?: string }) => Promise<RcVerifyResult>
   /** Resolve a browser webchat token → identity + the agent's CURRENT placement
    *  (userId, user, agentId, daemonId, orgId, conversationId), or `{ ok:false }` (§10). May throw on a
    *  transient store error → the handler answers a retryable error. */
@@ -467,7 +470,17 @@ export class RelayConnection implements RelayChannel {
         case 'daemon-token':
           result = await this.verifyDaemonCredential('daemon-token', req.credential, req.daemonId)
           break
+        case 'ahp-client-key':
+          result = (await this.deps.verifyAhpKey?.(req)) ?? { ok: false, reason: 'AHP unavailable' }
+          break
         case 'webchat-token':
+          if (req.protocol === 'ahp') {
+            result =
+              req.conversationBinding === 'v1'
+                ? ((await this.deps.verifyAhpBrowser?.(req)) ?? { ok: false, reason: 'AHP unavailable' })
+                : { ok: false, reason: 'unsupported webchat binding' }
+            break
+          }
           result =
             req.conversationBinding === 'v1'
               ? await this.deps.verifyWebchatToken(req.credential)
