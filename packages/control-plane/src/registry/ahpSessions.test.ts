@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AhpSessionBindingRepo } from '../persistence/ports.js'
 import type { AhpGrantClaims } from './ahpGrant.js'
+import { historicalSessionUri } from './ahpSessionUri.js'
 import { AhpSessionService } from './ahpSessions.js'
 
 const binding = {
@@ -82,6 +83,31 @@ describe('AHP session control service', () => {
     expect(result).not.toHaveProperty('operationId')
   })
 
+  it.each(['ahp-session:/webchat/c/a', 'ahp-session:/session/outward', 'ahp-session:/session'])(
+    'refuses external create in the reserved namespace %s',
+    async (sessionUri) => {
+      const f = fixture()
+      expect(await f.service.reserve({ ...request, sessionUri, operationId: 'op' }, 'daemon')).toEqual({
+        ok: false,
+        reason: 'forbidden'
+      })
+      expect(f.repo.reserve).not.toHaveBeenCalled()
+    }
+  )
+
+  it('maps reused create operation conflicts to collision while preserving finalize fencing errors', async () => {
+    const f = fixture()
+    f.repo.reserve.mockResolvedValue({ ok: false, reason: 'conflict' } as never)
+    expect(await f.service.reserve({ ...request, operationId: 'op' }, 'daemon')).toEqual({
+      ok: false,
+      reason: 'collision'
+    })
+    f.repo.finalize.mockResolvedValue({ ok: false, reason: 'conflict' } as never)
+    expect(
+      await f.service.finalize({ ...request, reservationId: 'reservation', sessionId: 'outward' }, 'daemon')
+    ).toEqual({ ok: false, reason: 'stale_owner' })
+  })
+
   it('reuses a bound browser conversation URI instead of shadowing a prior client-chosen URI', async () => {
     const f = fixture('conversation')
     const result = await f.service.reserve(
@@ -105,7 +131,7 @@ describe('AHP session control service', () => {
       expect.objectContaining({
         conversationId: 'conversation',
         userId: 'owner',
-        sessionUri: 'ahp-session:/conversation/agent'
+        sessionUri: 'ahp-session:/webchat/conversation/agent'
       })
     )
   })
@@ -119,8 +145,8 @@ describe('AHP session control service', () => {
     await second.service.reserve({ ...request, agentId: 'peer', operationId: 'same-client-operation' }, 'daemon')
     const a = first.repo.reserve.mock.calls[0]![0] as unknown as { sessionUri: string; operationId: string }
     const b = second.repo.reserve.mock.calls[0]![0] as unknown as { sessionUri: string; operationId: string }
-    expect(a.sessionUri).toBe('ahp-session:/conversation/agent')
-    expect(b.sessionUri).toBe('ahp-session:/conversation/peer')
+    expect(a.sessionUri).toBe('ahp-session:/webchat/conversation/agent')
+    expect(b.sessionUri).toBe('ahp-session:/webchat/conversation/peer')
     expect(a.operationId).not.toBe(b.operationId)
     await first.service.reserve({ ...request, operationId: 'new-connection-operation' }, 'daemon')
     expect(first.repo.reserve.mock.calls[1]![0]).toMatchObject({ operationId: a.operationId, sessionUri: a.sessionUri })
@@ -168,7 +194,10 @@ describe('AHP session control service', () => {
       conversationId: 'new-attachment-conversation'
     })
     expect(f.repo.bindExisting).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'outward', sessionUri: 'ahp-session:/outward' })
+      expect.objectContaining({
+        sessionId: 'outward',
+        sessionUri: historicalSessionUri({ orgId: 'org', agentId: 'agent', sessionId: 'outward' })
+      })
     )
     expect(f.repo.reserve).not.toHaveBeenCalled()
     expect(await f.service.resolve(request)).toMatchObject({

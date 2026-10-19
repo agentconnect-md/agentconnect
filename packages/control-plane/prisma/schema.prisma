@@ -1664,7 +1664,6 @@ model WebchatConversation {
   delegations    WebchatMcpDelegation[]
   mcpOperations  WebchatMcpOperation[]
   participants   WebchatConversationAgent[]
-  ahpBindings    AhpSessionBinding[]
 
   // Concurrent mints for one user/session converge on one browser conversation
   // (Postgres permits all-null targets, so standard rows are unconstrained).
@@ -1689,7 +1688,7 @@ model AhpSessionBinding {
   sessionId      String?
   createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
-  conversation WebchatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  // No cascading relation: deletion retires the attachment but never makes its public URI reusable.
 
   @@unique([orgId, sessionUri])
   @@unique([orgId, operationId])

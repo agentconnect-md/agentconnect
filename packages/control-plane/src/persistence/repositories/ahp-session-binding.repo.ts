@@ -53,7 +53,9 @@ export class PgAhpSessionBindingRepo implements AhpSessionBindingRepo {
       if (previous) {
         const same =
           previous.agentId === input.agentId &&
-          previous.userId === input.userId &&
+          (input.conversationId
+            ? previous.conversationId === input.conversationId
+            : previous.userId === input.userId) &&
           previous.sessionUri === input.sessionUri &&
           (!input.conversationId || previous.conversationId === input.conversationId)
         return same ? { ok: true, binding: previous } : { ok: false, reason: 'conflict' }
@@ -63,15 +65,29 @@ export class PgAhpSessionBindingRepo implements AhpSessionBindingRepo {
       })
       if (occupied) return { ok: false, reason: 'collision' }
       const conversationId = input.conversationId ?? randomUUID()
+      let userId = input.userId
+      let sessionId: string | null = null
       if (input.conversationId) {
-        const [conversation] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT c.id FROM "webchat_conversation" c
+        const [conversation] = await tx.$queryRaw<
+          Array<{ id: string; userId: string; currentSessionId: string | null }>
+        >(Prisma.sql`
+          SELECT c.id, c."userId", p."currentSessionId" FROM "webchat_conversation" c
           JOIN "webchat_conversation_agent" p ON p."conversationId" = c.id
           WHERE c.id = ${conversationId}::uuid AND c."orgId" = ${input.orgId}
-            AND p."agentId" = ${input.agentId}::uuid AND p."removedAt" IS NULL AND c."userId" = ${input.userId}
+            AND p."agentId" = ${input.agentId}::uuid AND p."removedAt" IS NULL AND c."targetSessionId" IS NULL
           FOR UPDATE OF c
         `)
         if (!conversation) return { ok: false, reason: 'unavailable' }
+        userId = conversation.userId
+        sessionId = conversation.currentSessionId
+        if (sessionId) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['ahp-id', input.orgId, sessionId])}, 0))`
+          const bound = await tx.ahpSessionBinding.findUnique({
+            where: { orgId_sessionId: { orgId: input.orgId, sessionId } }
+          })
+          if (bound)
+            return bound.agentId === input.agentId ? { ok: true, binding: bound } : { ok: false, reason: 'collision' }
+        }
         const existing = await tx.ahpSessionBinding.findUnique({
           where: { orgId_conversationId_agentId: { orgId: input.orgId, conversationId, agentId: input.agentId } }
         })
@@ -92,7 +108,8 @@ export class PgAhpSessionBindingRepo implements AhpSessionBindingRepo {
           reservationId: randomUUID(),
           orgId: input.orgId,
           agentId: input.agentId,
-          userId: input.userId,
+          userId,
+          sessionId,
           operationId: input.operationId,
           sessionUri: input.sessionUri,
           conversationId

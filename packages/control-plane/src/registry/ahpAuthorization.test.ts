@@ -368,6 +368,19 @@ describe('AHP client authority', () => {
       { agentId: CONVERSATION as never, role: 'member', currentSessionId: 'peer-already-started' }
     ]
     expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
+    f.deps.sessions.getUnscoped = async () => ({
+      orgId: 'org',
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: CONVERSATION,
+      daemonId: 'daemon',
+      contentSetId: null,
+      contentStoreId: null,
+      visibility: 'private',
+      ownerIdentity: 'user:user',
+      contentPurgedAt: null
+    })
+    expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
     f.deps.conversations.target = async () => ({ targetSessionId: 'outward', ownerUserId: 'user' })
     expect(await f.auth.authorizeBinding(claims, binding)).toBeNull()
   })
