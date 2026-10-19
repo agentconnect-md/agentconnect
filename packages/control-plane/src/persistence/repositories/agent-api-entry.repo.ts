@@ -8,6 +8,8 @@ import { AgentId } from '../../domain/ids.js'
 // The wire names carry a hyphen Prisma enum members cannot.
 const toDb = (protocol: AgentApiProtocol): DbAgentApiProtocol => {
   switch (protocol) {
+    case 'ahp':
+      return 'ahp'
     case 'ai-sdk-ui':
       return 'ai_sdk_ui'
     case 'ag-ui':
@@ -16,6 +18,8 @@ const toDb = (protocol: AgentApiProtocol): DbAgentApiProtocol => {
 }
 const fromDb = (protocol: DbAgentApiProtocol): AgentApiProtocol => {
   switch (protocol) {
+    case 'ahp':
+      return 'ahp'
     case 'ai_sdk_ui':
       return 'ai-sdk-ui'
     case 'ag_ui':
