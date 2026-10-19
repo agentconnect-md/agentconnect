@@ -143,7 +143,7 @@ export class ChatSessionContinuation {
     turn: PreparedChatContinuation,
     context: ChatTurnContext,
     onRefused: () => void,
-    options?: Pick<ChatDispatchOptions, 'requireDurable' | 'receiptId' | 'deliveryId' | 'onAdmission'>
+    options?: Pick<ChatDispatchOptions, 'requireDurable' | 'receiptId' | 'deliveryId' | 'onAdmission' | 'startOnly'>
   ): Promise<ChatContinuationVerdict> {
     const { agentId, message, local, integration, request } = turn
     const { author, text, conversationId, turnId } = request

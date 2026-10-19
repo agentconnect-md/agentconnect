@@ -146,6 +146,8 @@ export interface ChatDispatchOptions {
   deliveryId?: string
   receiptId?: string
   steerOnly?: boolean
+  // Refuse an occupied execution gate instead of queueing or steering.
+  startOnly?: boolean
   onAdmission?: (result: {
     accepted: boolean
     reason?: string
