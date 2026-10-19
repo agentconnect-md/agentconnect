@@ -436,8 +436,8 @@ describe('assistant mode', () => {
     expect(await responsible()).toEqual({ userId: DEFAULT_OWNER_ID })
   })
 
-  // Expand step (assistant-mode.md §5.1): an older Control Plane's stored keys are read past, served without, and projected unchanged.
-  it('reads a policy that still carries the stored routing keys, without serving or rewriting them', async () => {
+  // A key this Control Plane no longer knows is read past: served and projected without it, so the mode stays on.
+  it('reads a policy that still carries a removed key, without serving or projecting it', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
@@ -455,11 +455,9 @@ describe('assistant mode', () => {
     expect(read.statusCode, read.body).toBe(200)
     expect(read.json().assistantMode).toEqual({ enabled: true, instructions: 'Be brief.' })
 
-    // An unrelated edit leaves the row as it was and projects it unchanged, so a daemon that still requires a key validates it.
     const edited = await patch(app, agentId, { description: 'Helps the team.' })
     expect(edited.json().assistantMode).toEqual({ enabled: true, instructions: 'Be brief.' })
-    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantMode).toEqual(stored)
-    expect(spy.upserts.at(-1)?.spec.assistantMode).toEqual(stored)
+    expect(spy.upserts.at(-1)?.spec.assistantMode).toEqual({ enabled: true, instructions: 'Be brief.' })
 
     // A new write never carries them.
     await patch(app, agentId, { assistantMode: { enabled: true } })
