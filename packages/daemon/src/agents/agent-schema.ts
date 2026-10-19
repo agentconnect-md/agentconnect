@@ -133,14 +133,6 @@ export const CronDefSchema = z.object({
 })
 export type CronDef = z.infer<typeof CronDefSchema>
 
-// Expand step, removed with next release's contract migration: an agent.json an older daemon wrote may keep two routing keys.
-const StoredAssistantModePolicy = AssistantModePolicy.extend({
-  responsibleUserId: z.unknown().optional(),
-  fallbackConversation: z.unknown().optional()
-})
-  .strict()
-  .transform(({ responsibleUserId: _r, fallbackConversation: _f, ...policy }): AssistantModePolicy => policy)
-
 export const AgentSchema = z.object({
   id: z.string(),
   // Added to the in-memory effective representation of a CP-managed agent.
@@ -244,7 +236,7 @@ export const AgentSchema = z.object({
   // disk; endpoint/grant/config live in the daemon-private CP registry.
   memory: AgentMemoryBinding.optional(),
   // Assistant mode (assistant-mode.md §5.1), replicated from the CP and stored only; absent ⇒ off.
-  assistantMode: StoredAssistantModePolicy.optional(),
+  assistantMode: AssistantModePolicy.optional(),
   // Its first switch-on (assistant-mode.md §5.15), replicated from the CP, written once and never cleared.
   assistantOnboarding: AssistantOnboarding.optional(),
   // The instance every GitLab consumer here addresses (§24.4); absent ⇒ GitLab.com, the axis default.
