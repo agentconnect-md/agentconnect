@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { AhpSessionBinding } from '@agentconnect.md/protocol'
+import { AhpMessageText, type AhpSessionBinding } from '@agentconnect.md/protocol'
 import {
   ActionType,
   sessionReducer,
@@ -7,6 +7,7 @@ import {
   type ActionOrigin,
   type AgentInfo,
   type ChatAction,
+  type ChatTurnsLoadedAction,
   type ChatState,
   type ChatSummary,
   type SessionConfigState,
@@ -23,6 +24,12 @@ import type { AhpActionJournal } from './action-journal.js'
 import { AhpChatProjection } from './chat-projection.js'
 import type { AhpCatalogNotification } from './connection.js'
 import { AhpAppsProjection, type AhpAppEntry } from './apps.js'
+
+export class AhpStateCapacityError extends Error {
+  constructor() {
+    super('AHP state exceeds the wire capacity')
+  }
+}
 
 export interface AhpCheckpointStore {
   load(sessionId: string): Promise<ChatState | undefined>
@@ -54,7 +61,6 @@ export class AhpAgentState {
   private readonly byUri = new Map<string, string>()
   private readonly references = new Map<string, number>()
   private readonly released = new Set<string>()
-  private readonly cursors = new Map<string, string | undefined>()
   private readonly listeners = new Set<(notification: AhpCatalogNotification) => void>()
   private pending: Promise<unknown> = Promise.resolve()
   private revision = 0
@@ -90,15 +96,18 @@ export class AhpAgentState {
     let initial = current?.projection.snapshot() ?? (await this.restore(binding.sessionId))
     if (!initial && !Array.isArray(history)) initial = history as ChatState
     const resource = chatUri(binding.sessionUri)
-    const actions: ChatAction[] = []
-    const projection = new AhpChatProjection(
-      binding.sessionId,
-      resource,
-      initial?.title ?? 'Conversation',
-      this.now(),
-      (action) => actions.push(action),
-      initial ? { ...initial, resource } : undefined
-    )
+    const actions: ChatAction[] = current?.actions ?? []
+    const projection =
+      current?.projection ??
+      new AhpChatProjection(
+        binding.sessionId,
+        resource,
+        initial?.title ?? 'Conversation',
+        this.now(),
+        (action) => actions.push(action),
+        initial ? { ...initial, resource } : undefined
+      )
+    if (current) projection.bindResource(resource)
     if (!initial && Array.isArray(history)) for (const event of history) projection.accept(event)
     actions.length = 0
     const chat = projection.snapshot()
@@ -233,25 +242,15 @@ export class AhpAgentState {
     channel: string,
     cursor: string | undefined,
     page: (sessionId: string, cursor: string) => Promise<{ turns: Turn[]; nextCursor?: string }>
-  ): Promise<void> {
+  ): Promise<ChatTurnsLoadedAction | undefined> {
     const entry = this.entry(channel)
     if (!entry?.binding || channel !== entry.projection.snapshot().resource)
       throw new Error('Unknown AHP history channel')
-    const next =
-      cursor ?? (this.cursors.has(channel) ? this.cursors.get(channel) : entry.projection.snapshot().turnsNextCursor)
+    const next = cursor ?? entry.projection.snapshot().turnsNextCursor
     if (!next) return
     const result = await page(entry.binding.sessionId, next)
-    const retained = entry.projection.snapshot()
-    entry.projection.apply({
-      type: ActionType.ChatTurnsLoaded,
-      turns: result.turns,
-      turnsNextCursor: result.nextCursor
-    })
-    // A fetched page expands the client's view; it does not append old turns to the durable archive.
-    entry.projection.retainWindow(new Set(retained.turns.map((turn) => turn.id)), retained.turnsNextCursor)
-    await this.persist(entry.binding.sessionId, entry)
-    await this.flush(entry)
-    this.cursors.set(channel, result.nextCursor)
+    // The router materializes this page only for its requesting connection.
+    return { type: ActionType.ChatTurnsLoaded, turns: result.turns, turnsNextCursor: result.nextCursor }
   }
 
   async output(sessionId: string, output: ChatOutput): Promise<void> {
@@ -351,9 +350,27 @@ export class AhpAgentState {
     return projection.snapshot()
   }
   private async persist(sessionId: string, entry: Entry): Promise<void> {
-    if (!this.checkpoints) return
     const archive = entry.projection.snapshot().turns
-    entry.projection.retainCompleted(32 * 1024)
+    if (this.checkpoints) entry.projection.retainCompleted(32 * 1024)
+    for (const state of [entry.projection.snapshot(), entry.session].filter((state) => state !== undefined)) {
+      if (
+        !AhpMessageText.safeParse(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'x'.repeat(256),
+            result: {
+              snapshot: {
+                resource: 'resource' in state ? state.resource : entry.binding?.sessionUri,
+                state,
+                fromSeq: Number.MAX_SAFE_INTEGER
+              }
+            }
+          })
+        ).success
+      )
+        throw new AhpStateCapacityError()
+    }
+    if (!this.checkpoints) return
     await this.checkpoints.save(
       sessionId,
       entry.projection.snapshot(),
@@ -390,7 +407,6 @@ export class AhpAgentState {
     }
     const entry = this.entries.get(id)
     if (entry?.projection.snapshot().activeTurn) return
-    if (entry) this.cursors.delete(entry.projection.snapshot().resource)
     this.entries.delete(id)
     this.byUri.delete(uri)
     this.released.delete(uri)

@@ -40,6 +40,10 @@ export class AhpChatProjection {
     }
   }
 
+  bindResource(resource: string): void {
+    this.value = { ...this.value, resource }
+  }
+
   snapshot(): ChatState {
     return structuredClone(this.value)
   }
@@ -256,15 +260,6 @@ export class AhpChatProjection {
           })
         this.part = undefined
       }
-    }
-  }
-
-  retainWindow(turnIds: ReadonlySet<string>, cursor?: string): void {
-    const { turnsNextCursor: _previousCursor, ...state } = this.value
-    this.value = {
-      ...state,
-      turns: state.turns.filter((turn) => turnIds.has(turn.id)),
-      ...(cursor ? { turnsNextCursor: cursor } : {})
     }
   }
 

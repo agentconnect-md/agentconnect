@@ -59,10 +59,11 @@ describe('AHP checkpoint integration', () => {
       turnsNextCursor: 'history:older'
     }
     await state.add(binding, initial)
-    await state.fetchTurns(chat, undefined, async () => ({ turns: [turn('older')] }))
+    const loaded = await state.fetchTurns(chat, undefined, async () => ({ turns: [turn('older')] }))
     expect((state.snapshot(chat) as ChatState).turns.map((turn) => turn.id)).toEqual(['first', 'second'])
     expect((state.snapshot(chat) as ChatState).turnsNextCursor).toBe('history:older')
-    expect(journal.replay(1, new Set([chat]))![0]!.action).toMatchObject({
+    expect(journal.replay(1, new Set([chat]))).toEqual([])
+    expect(loaded).toMatchObject({
       type: 'chat/turnsLoaded',
       turns: [{ id: 'older' }]
     })

@@ -37,6 +37,36 @@ describe('AHP logical agent state', () => {
     expect(state.summary(binding.sessionUri)?.status).toBe(SessionStatus.Idle)
   })
 
+  it('fails closed before persisting or journaling unrepresentable active output', async () => {
+    let saved: ChatState | undefined
+    const { state, journal } = await fixture({
+      load: async () => undefined,
+      save: async (_id, value) => {
+        saved = value
+      },
+      running: () => true
+    })
+    await state.add(binding)
+    await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
+    const before = journal.currentSequence
+    await expect(state.accept({ ...event, kind: 'text', text: 'x'.repeat(64 * 1024) })).rejects.toThrow('wire capacity')
+    expect(journal.currentSequence).toBe(before)
+    expect(saved?.activeTurn?.responseParts).toEqual([])
+  })
+
+  it('preserves the live generation and part identity when binding an already observed session', async () => {
+    const { state } = await fixture()
+    await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
+    await state.accept({ ...event, kind: 'discarded', nextGeneration: 1 })
+    await state.accept({ ...event, generation: 1, kind: 'text', text: 'Before' })
+    await state.add(binding)
+    await state.accept({ ...event, generation: 1, kind: 'text', text: 'After' })
+    await state.accept({ ...event, generation: 0, kind: 'text', text: 'stale' })
+    expect((state.snapshot(chat) as ChatState).activeTurn?.responseParts).toMatchObject([
+      { id: 'turn:1:1', content: 'BeforeAfter' }
+    ])
+  })
+
   it('holds active references after disconnect then evicts on completion', async () => {
     const { state } = await fixture()
     state.retain(binding.sessionUri)
@@ -76,7 +106,7 @@ describe('AHP logical agent state', () => {
     ])
   })
 
-  it('advances fetchTurns without repeating the first page and publishes before returning', async () => {
+  it('returns bounded history without changing shared snapshots or replay', async () => {
     const { state, journal } = await fixture()
     await state.add(binding, {
       resource: chat,
@@ -91,13 +121,11 @@ describe('AHP logical agent state', () => {
       cursors.push(cursor)
       return { turns: [], ...(cursor === 'first' ? { nextCursor: 'second' } : {}) }
     }
-    await state.fetchTurns(chat, undefined, page)
-    await state.fetchTurns(chat, undefined, page)
-    await state.fetchTurns(chat, undefined, page)
+    const first = await state.fetchTurns(chat, undefined, page)
+    expect(first?.turnsNextCursor).toBe('second')
+    expect((await state.fetchTurns(chat, first?.turnsNextCursor, page))?.turnsNextCursor).toBeUndefined()
     expect(cursors).toEqual(['first', 'second'])
-    expect(journal.replay(1, new Set([chat]))!.map((envelope) => envelope.action.type)).toEqual([
-      ActionType.ChatTurnsLoaded,
-      ActionType.ChatTurnsLoaded
-    ])
+    expect(journal.replay(1, new Set([chat]))).toEqual([])
+    expect((state.snapshot(chat) as ChatState).turnsNextCursor).toBe('first')
   })
 })

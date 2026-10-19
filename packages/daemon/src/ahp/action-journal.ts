@@ -49,12 +49,15 @@ export class AhpActionJournal {
     return this.sequence
   }
 
-  append(input: {
-    channel: string
-    action: StateAction
-    origin?: ActionOrigin
-    rejectionReason?: string
-  }): Promise<ActionEnvelope> {
+  append(
+    input: {
+      channel: string
+      action: StateAction
+      origin?: ActionOrigin
+      rejectionReason?: string
+    },
+    delivery: 'broadcast' | 'private' = 'broadcast'
+  ): Promise<ActionEnvelope> {
     const captured = structuredClone(input)
     const operation = this.pending.then(async () => {
       if (this.failed) throw this.failure
@@ -67,7 +70,12 @@ export class AhpActionJournal {
         }
         const envelope: ActionEnvelope = { ...captured, origin: captured.origin, serverSeq: ++this.sequence }
         // Rejections are delivered only to their origin, never to another subscriber or replay.
-        if (envelope.rejectionReason === undefined) {
+        if (delivery === 'private') {
+          // A connection's materialized history is not a shared replay state.
+          this.floor = envelope.serverSeq
+          this.entries = []
+          this.bytes = 0
+        } else if (envelope.rejectionReason === undefined) {
           const bytes = Buffer.byteLength(JSON.stringify(envelope))
           this.entries.push({ envelope, bytes })
           this.bytes += bytes

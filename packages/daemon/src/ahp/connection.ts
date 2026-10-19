@@ -6,6 +6,7 @@ import {
   type ActionOrigin,
   type AgentInfo,
   type CreateSessionParams,
+  type ChatTurnsLoadedAction,
   type DispatchActionParams,
   type FetchTurnsParams,
   type ListSessionsParams,
@@ -42,7 +43,7 @@ export interface AhpHostPort {
   listSessions(params: ListSessionsParams): Promise<ListSessionsResult>
   createSession(params: CreateSessionParams): Promise<void>
   dispatch(params: DispatchActionParams, origin: ActionOrigin): Promise<void>
-  fetchTurns?(params: FetchTurnsParams): Promise<void>
+  fetchTurns?(params: FetchTurnsParams): Promise<ChatTurnsLoadedAction | undefined>
   customRequest?(method: 'agentconnect/appRpc' | 'agentconnect/appClose', params: unknown): Promise<unknown>
   subscribeNotification?(listener: (notification: AhpCatalogNotification) => void): () => void
 }
@@ -102,6 +103,7 @@ export class AhpHostConnection {
   private disposed = false
   private queued = 0
   private pending: Promise<unknown> = Promise.resolve()
+  private readonly historyCursors = new Map<string, string | undefined>()
   private pendingOrigin?: { channel: string; clientSeq: number }
   private readonly unsubscribe: () => void
   private readonly unsubscribeNotification?: () => void
@@ -175,6 +177,7 @@ export class AhpHostConnection {
     if (this.disposed) return
     this.disposed = true
     this.subscriptions.clear()
+    this.historyCursors.clear()
     this.unsubscribe?.()
     this.unsubscribeNotification?.()
   }
@@ -229,9 +232,12 @@ export class AhpHostConnection {
         this.subscriptions.add(params.channel)
         return { snapshot }
       }
-      case 'unsubscribe':
-        this.subscriptions.delete(parse(subscription, message.params).channel)
+      case 'unsubscribe': {
+        const { channel } = parse(subscription, message.params)
+        this.subscriptions.delete(channel)
+        this.historyCursors.delete(channel)
         return undefined
+      }
       case 'listSessions':
         return this.port.listSessions(parse(listSessions, message.params))
       case 'createSession': {
@@ -248,7 +254,15 @@ export class AhpHostConnection {
         if (!this.port.fetchTurns)
           throw new AhpProtocolError(JsonRpcErrorCodes.MethodNotFound, 'History paging is unavailable')
         await this.prepare(params.channel)
-        await this.port.fetchTurns(params)
+        const after = params.cursor ?? this.historyCursors.get(params.channel)
+        if (params.cursor === undefined && this.historyCursors.has(params.channel) && after === undefined) return {}
+        const action = await this.port.fetchTurns({ ...params, ...(after ? { cursor: after } : {}) })
+        this.assertAuthorized()
+        if (action) {
+          const envelope = await this.port.journal.append({ channel: params.channel, action }, 'private')
+          this.send({ jsonrpc: '2.0', method: 'action', params: envelope })
+          this.historyCursors.set(params.channel, action.turnsNextCursor)
+        }
         return {}
       }
       case 'dispatchAction':
@@ -316,6 +330,8 @@ export class AhpHostConnection {
 
   private snapshot(resource: string): Snapshot | undefined {
     const state = resource === root ? { agents: [this.port.provider] } : this.port.snapshot(resource)
+    if (state && resource.startsWith('ahp-chat:'))
+      this.historyCursors.set(resource, 'turnsNextCursor' in state ? state.turnsNextCursor : undefined)
     return state ? { resource, state, fromSeq: this.port.journal.currentSequence } : undefined
   }
 
