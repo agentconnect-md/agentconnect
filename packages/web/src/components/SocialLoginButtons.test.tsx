@@ -64,6 +64,25 @@ describe('SocialLoginButtons layout', () => {
     expect(labels().slice(7)).toEqual(['Continue with Lark', 'Continue with Feishu'])
   })
 
+  it('shows a lone extra provider as a fifth labeled button', async () => {
+    await act(async () => {
+      root.render(
+        <SocialLoginButtons
+          providers={selectEnabledProviders('google,slack,github,gitlab,discord')}
+          onContinue={vi.fn()}
+        />
+      )
+    })
+    expect(labels()).toEqual([
+      'Continue with Google',
+      'Continue with Slack',
+      'Continue with GitHub',
+      'Continue with GitLab',
+      'Continue with Discord'
+    ])
+    expect(container.querySelector('button[aria-label="Continue with Discord"]')).toBeNull()
+  })
+
   it('moves the next provider up when one of the first four is not enabled', async () => {
     await act(async () => {
       root.render(

@@ -89,7 +89,8 @@ export default function SocialLoginButtons({
 
   // One button per provider, except that Lark and Feishu share one up front.
   const buttons = providers.filter((provider) => !isLarkOrFeishu(provider) || provider === firstRegionalProvider)
-  const primary = buttons.slice(0, VISIBLE_BUTTONS)
+  // A lone leftover would stretch into a full-width icon, so it gets a labeled button instead.
+  const primary = buttons.length === VISIBLE_BUTTONS + 1 ? buttons : buttons.slice(0, VISIBLE_BUTTONS)
   const regionalUpFront = firstRegionalProvider !== undefined && primary.includes(firstRegionalProvider)
   const more = providers.filter(
     (provider) => !primary.includes(provider) && !(regionalUpFront && isLarkOrFeishu(provider))
