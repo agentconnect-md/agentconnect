@@ -1311,7 +1311,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 64
+export const SCHEMA_VERSION = 65
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2065,7 +2065,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v63 names a first look a getting-to-know task (assistant-mode.md §5.13): its marker, onboarding's list and a queued report round.
   async (db, store) => await migrateFirstLookToGettingToKnow(db, store.postgres),
   // v64 keeps digests of the tool definitions a session's model last received, so a runtime that kept earlier ones is told the current ones.
-  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'toolDigests', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'toolDigests', 'TEXT'),
+  // v65 drops the orchestration tables, unused since the orchestration tools were removed.
+  async (db) => {
+    await db.exec('DROP TABLE IF EXISTS orchestration_subtask')
+    await db.exec('DROP TABLE IF EXISTS orchestration')
+  }
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -3038,36 +3043,6 @@ export class LocalStore {
         trippedAt INTEGER,
         reason TEXT
       );
-      -- Unused since the orchestration tools were removed; kept until a schema step drops them.
-      CREATE TABLE IF NOT EXISTS orchestration (
-        orchestrationId TEXT PRIMARY KEY,
-        mainSessionKey TEXT NOT NULL,
-        mainAgentId TEXT NOT NULL,
-        platform TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        thread TEXT NOT NULL,
-        integrationId TEXT,
-        replyTarget TEXT,
-        deadline INTEGER,
-        status TEXT NOT NULL,
-        createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS orchestration_active ON orchestration (status);
-      CREATE TABLE IF NOT EXISTS orchestration_subtask (
-        orchestrationId TEXT NOT NULL,
-        correlationId TEXT NOT NULL,
-        idx INTEGER NOT NULL,
-        toAgentId TEXT NOT NULL,
-        text TEXT NOT NULL,
-        status TEXT NOT NULL,
-        result TEXT,
-        deliveryReason TEXT,
-        updatedAt TEXT NOT NULL,
-        PRIMARY KEY (orchestrationId, correlationId)
-      );
-      CREATE INDEX IF NOT EXISTS orchestration_subtask_by_orch
-        ON orchestration_subtask (orchestrationId, idx);
       -- Self-introduce-on-join (issue #536). channel_intro is the durable set of
       -- channels an agent has already introduced itself into (or adopted as the
       -- silent baseline), so an intro fires at most once per (agent, platform,
