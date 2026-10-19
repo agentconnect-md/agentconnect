@@ -20,7 +20,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
-function fixture(snapshot = empty) {
+function fixture(snapshot = empty, extensions?: Record<string, unknown>) {
   const received: Array<{ method: string; params: Record<string, unknown> }> = []
   const servers: AhpTransport[] = []
   let clientId = ''
@@ -36,7 +36,7 @@ function fixture(snapshot = empty) {
         let result: unknown
         if (request.method === 'initialize') {
           clientId = request.params.clientId
-          result = { protocolVersion: '1.0.0', serverSeq: 10, snapshots: [] }
+          result = { protocolVersion: '1.0.0', serverSeq: 10, snapshots: [], _meta: extensions }
         } else if (request.method === 'subscribe')
           result = {
             snapshot: {
@@ -56,6 +56,8 @@ function fixture(snapshot = empty) {
                     }
             }
           }
+        if (request.method === 'agentconnect/appRpc') result = { ok: true, result: { value: 'response' } }
+        if (request.method === 'agentconnect/appClose') result = null
         if ('id' in request) await server.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }))
       }
     })()
@@ -79,6 +81,35 @@ function fixture(snapshot = empty) {
   return { attachment, received, servers, action }
 }
 describe('official SDK attachment', () => {
+  it('closes after the echo deadline and does not retry an unconfirmed action', async () => {
+    const f = fixture()
+    await f.attachment.attach(SESSION)
+    vi.useFakeTimers()
+    const sending = f.attachment.dispatch(start)
+    const unknown = expect(sending).rejects.toThrow('could not be confirmed')
+    await vi.advanceTimersByTimeAsync(30_001)
+    await unknown
+    expect(f.attachment.snapshot.connected).toBe(false)
+    expect(f.attachment.snapshot.uncertain).toBe(true)
+    await f.attachment.attach()
+    expect(f.attachment.snapshot.uncertain).toBe(true)
+    expect(f.received.filter((frame) => frame.method === 'dispatchAction')).toHaveLength(1)
+  })
+  it('requires MCP app negotiation and accepts the null close result', async () => {
+    const baseline = fixture()
+    await baseline.attachment.attach(SESSION)
+    await expect(baseline.attachment.closeApp('app')).rejects.toThrow('unavailable')
+    const enabled = fixture(empty, { 'agentconnect.md': { mcpApps: true } })
+    await enabled.attachment.attach(SESSION)
+    await expect(
+      enabled.attachment.appRpc('app', 'call', { method: 'resources/read', uri: 'ui://test' })
+    ).resolves.toEqual({ ok: true, result: { value: 'response' } })
+    await expect(enabled.attachment.closeApp('app')).resolves.toBeUndefined()
+    expect(enabled.received.at(-1)).toMatchObject({
+      method: 'agentconnect/appClose',
+      params: { channel: CHAT, appId: 'app' }
+    })
+  })
   it.each(['initialize', 'subscribe'] as const)('ignores a retired %s result', async (method) => {
     let release!: () => void,
       reached = false
@@ -123,7 +154,16 @@ describe('official SDK attachment', () => {
     await unknown
     await f.attachment.attach()
     expect(f.attachment.snapshot.uncertain).toBe(true)
-    snapshot = { ...empty(), activeTurn: { id: 'turn', message: start.message, responseParts: [] } } as ChatState
+    snapshot = {
+      ...empty(),
+      activeTurn: {
+        id: 'turn',
+        startedAt: '2026-10-19T00:00:00Z',
+        message: start.message,
+        responseParts: [],
+        usage: undefined
+      }
+    } as ChatState
     await f.attachment.attach()
     expect(f.attachment.snapshot.uncertain).toBe(false)
     expect(f.received.filter((frame) => frame.method === 'dispatchAction')).toHaveLength(1)

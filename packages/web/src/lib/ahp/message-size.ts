@@ -1,4 +1,4 @@
-import { AHP_MAX_MESSAGE_BYTES } from '@agentconnect.md/protocol'
+import { AHP_MAX_MESSAGE_BYTES } from '@agentconnect.md/protocol/ahp-constants'
 import type { StateAction } from '@microsoft/agent-host-protocol'
 
 export class AhpMessageTooLargeError extends Error {
