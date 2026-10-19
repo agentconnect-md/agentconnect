@@ -28,6 +28,8 @@ export interface WebchatTokenClaims {
   agentId: string
   orgId: string
   conversationId: string
+  /** Server-selected transport; old tokens without this field belong to legacy Webchat. */
+  protocol?: 'legacy' | 'ahp'
   /** Exact private-session owner proven by the mint-time identity expansion. */
   privateSessionOwnerIdentity?: string
   /** A hook target's merged-conversation peers mint authorized (#2500), each with its proven private owner. */
@@ -89,6 +91,7 @@ export class WebchatTokenService {
       agentId: claims.agentId,
       orgId: claims.orgId,
       conversationId: claims.conversationId,
+      ...(claims.protocol ? { protocol: claims.protocol } : {}),
       ...(claims.privateSessionOwnerIdentity
         ? { privateSessionOwnerIdentity: claims.privateSessionOwnerIdentity }
         : {}),
@@ -106,15 +109,25 @@ export class WebchatTokenService {
   async verify(token: string): Promise<WebchatTokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { algorithms: ['HS256'] })
-      const { sub, user, userPicture, agentId, orgId, conversationId, privateSessionOwnerIdentity, conversationPeers } =
-        payload as Record<string, unknown>
+      const {
+        sub,
+        user,
+        userPicture,
+        agentId,
+        orgId,
+        conversationId,
+        protocol,
+        privateSessionOwnerIdentity,
+        conversationPeers
+      } = payload as Record<string, unknown>
       const peers = conversationPeersOf(conversationPeers)
       if (
         typeof sub !== 'string' ||
         typeof agentId !== 'string' ||
         typeof orgId !== 'string' ||
         typeof conversationId !== 'string' ||
-        !UUID_RE.test(conversationId)
+        !UUID_RE.test(conversationId) ||
+        (protocol !== undefined && protocol !== 'legacy' && protocol !== 'ahp')
       ) {
         return null
       }
@@ -125,6 +138,7 @@ export class WebchatTokenService {
         agentId,
         orgId,
         conversationId: conversationId.toLowerCase(),
+        ...(protocol ? { protocol: protocol as 'legacy' | 'ahp' } : {}),
         ...(typeof privateSessionOwnerIdentity === 'string' ? { privateSessionOwnerIdentity } : {}),
         ...(peers ? { conversationPeers: peers } : {})
       }
