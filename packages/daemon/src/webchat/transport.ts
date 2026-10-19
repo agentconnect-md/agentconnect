@@ -21,8 +21,7 @@ import { continuableOrigin, originKindOf } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
-import { attachmentMention, transcriptImageAttachments } from '../session/attachment-block.js'
-import { routeRules, webchatContinuationDecision } from '../router/routing-table.js'
+import { webchatContinuationDecision } from '../router/routing-table.js'
 import { continuationScope } from './narrowed-scope.js'
 import type { RoutingRule } from '../router/routing-rule.js'
 import { SlackConnection } from '../slack/connection.js'
@@ -34,7 +33,12 @@ import { knownTimeZone } from '../messages/time-zone.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
 import { formatErr } from '../daemon/text.js'
-import { chatSettingsAllowed } from '../agents/chat-actions.js'
+import {
+  ChatSessionApplication,
+  chatSessionKey,
+  type ChatAuthor,
+  type ChatTurnRequest
+} from '../session/chat-application.js'
 import { LifecycleCleanupBlockedError, type CallMeta, type Pending, type QueueEntry } from '../daemon/turn-types.js'
 import { appendWebchatTextRow } from './turn-output.js'
 import {
@@ -48,18 +52,7 @@ import {
   type WebchatTurnStream
 } from './types.js'
 
-/** Who authored a webchat turn. `id` is the caller's STABLE control-plane principal and is
- *  what the durable transcript row records, so renaming a profile never re-identifies past
- *  rows; `name` is the mutable display handle for the author line, the branch a session
- *  worktree is cut under, and the console mirror. */
-export interface WebchatAuthor {
-  id: string
-  name: string
-  /** Public avatar URL from the verified verdict — the identity a Slack mirror posts under. */
-  pictureUrl?: string
-  /** The author's browser time zone, for every agent's local time; absent from an older relay. */
-  timeZone?: string
-}
+export type WebchatAuthor = ChatAuthor
 
 /** The author a webchat `turn` op names. A relay older than the stable-principal claim sends
  *  only the display handle; falling back to it keeps that relay working, at the cost of the
@@ -157,24 +150,23 @@ export class WebchatTransport {
   /** Steer-only admissions still awaiting their verdict, by stream key — a reconnect copy joins them. */
   private readonly pendingSteerAdmissions = new Map<string, Promise<WebchatAck>>()
 
-  constructor(private readonly host: WebchatHost) {}
+  private readonly application: ChatSessionApplication
+
+  constructor(
+    private readonly host: WebchatHost,
+    application?: ChatSessionApplication
+  ) {
+    this.application =
+      application ??
+      new ChatSessionApplication({
+        ...host,
+        queueFull: (key) =>
+          host.inflight().has(key) && (host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION
+      })
+  }
 
   dispose(): void {
     for (const [streamKey, stream] of this.webchatStreams) this.removeWebchatStream(streamKey, stream)
-  }
-
-  /** Cache the author's display handle under their stable principal, so session read-back
-   *  (`senderName`), the permission card's requester line, and a session worktree's branch
-   *  label all resolve a name from a row that stores only the id. Best-effort, like every
-   *  other name-cache write: a failed write costs a label, never a turn. Skipped when the
-   *  two are the same string — an older relay sent no principal to key on. */
-  private async rememberAuthorName(author: WebchatAuthor): Promise<void> {
-    if (!author.name || author.id === author.name) return
-    try {
-      await this.host.store().setDisplayName(author.id, author.name, Date.now())
-    } catch (err) {
-      this.host.debug(`webchat: author name cache write failed: ${formatErr(err)}`)
-    }
   }
 
   /**
@@ -201,106 +193,42 @@ export class WebchatTransport {
     uploadedFiles?: WebchatFileAttachment[]
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
-    // Route directly to the named agent (bypasses arbitration); null when it isn't a
-    // servable agent on this daemon.
-    const result = routeRules(
-      { platform: 'webchat', channel: chatId } as NormalizedMessage,
-      this.host.mergedRules(),
-      () => null,
-      agentId
-    )
-    if (!result || !this.host.agents().has(result.agentId)) {
-      // A failed ACP start drops the agent from the roster, so distinguish "its runtime did not
-      // start" from "no daemon serves it" — the two read identically to a client otherwise.
-      const startFailure = this.host.startFailure(result?.agentId ?? agentId)
-      if (startFailure) {
-        this.host.warn(`webchat: agent "${agentId}" failed to start — rejecting turn (${startFailure})`)
-        return { accepted: false, turnId, reason: 'start_failed', detail: startFailure }
-      }
-      this.host.warn(`webchat: no agent "${agentId}" on this daemon — rejecting turn`)
-      return { accepted: false, turnId, reason: 'no_agent' }
-    }
-    // Pause gate (#288): reject up-front with a specific reason. dispatch() would also
-    // skip it, but the webchat ack is returned synchronously (before the fire-and-forget
-    // dispatch), so a silent accept would leave the client waiting on a turn that never runs.
-    if (this.host.paused(result.agentId)) {
-      this.host.info(`webchat: agent "${result.agentId}" is paused — rejecting turn`)
-      return { accepted: false, turnId, reason: 'paused' }
-    }
-    if (this.host.safetyDraining(result.agentId)) {
-      this.host.info(`webchat: agent "${result.agentId}" is stopping an interrupted turn — rejecting turn`)
-      return { accepted: false, turnId, reason: 'busy' }
-    }
-    // Drain gate: same reasoning as pause. dispatch() drops a draining agent's turn and
-    // resolves null, but the ack is already returned — a silent accept would leave the
-    // browser spinning with no reply and no terminal frame. Reject synchronously instead.
-    if (this.host.draining() || this.host.agentDraining(result.agentId)) {
-      this.host.info(`webchat: agent "${result.agentId}" is draining — rejecting turn`)
-      return { accepted: false, turnId, reason: 'draining' }
-    }
-    await this.rememberAuthorName(author)
-    // platform:'webchat', channel:conversationId, no thread (the wire SessionKey omits
-    // it — §5), source:'user'. The trigger is a direct address (dm-equivalent) — webchat
-    // always targets one agent. msgId is stable per-conversation (NOT per-turn) so every
-    // turn in a conversation maps to the ONE local session (statusThread falls back to
-    // msgId), giving the conversation continuity a real session — recorded, resumable,
-    // listable — like any other. Fresh turnIds still correlate each reply stream.
-    const msg: NormalizedMessage = {
-      msgId: `webchat:${chatId}`,
-      traceId: turnId,
-      source: 'user',
-      platform: 'webchat',
-      channel: chatId,
-      sender: { id: author.id, isBot: false, name: author.name },
-      ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
+    const request: ChatTurnRequest = {
+      agentId,
+      conversationId: chatId,
+      turnId,
       text,
-      // Structured composer mentions (agent ids). This agent seeing ITSELF in
-      // the list is the explicit-address fact (`trigger:'mention'` below); the
-      // rest are prompt context (who else was addressed on this turn).
-      mentionedBots: mentions ?? [],
-      // The canonical post timestamp minted once at the relay — every
-      // participant copy of this turn records the SAME transcript ts, which is
-      // what lets co-hosted participants share one text row and cross-daemon
-      // transcripts merge by (at, postId) (webchat-multi-agents.md §5.1).
-      ...(post ? { transcriptTs: String(post.at), transcriptPostId: post.postId } : {}),
-      ...(inlineImages?.length || uploadedFiles?.length
-        ? {
-            attachments: [
-              ...(inlineImages ?? []).map((image, index): Attachment => {
-                const inlineData = Buffer.from(image.data, 'base64')
-                return {
-                  id: `webchat:${turnId}:${index}`,
-                  name: image.name,
-                  mimeType: image.mimeType,
-                  size: inlineData.byteLength,
-                  inlineData
-                }
-              }),
-              // Bytes stay in the bucket; only the reference rides the turn.
-              ...(uploadedFiles ?? []).map((file): Attachment => ({
-                id: `webchat:${turnId}:file:${file.uploadId}`,
-                name: file.name,
-                mimeType: file.mimeType,
-                size: file.size,
-                transfer: { uploadId: file.uploadId, sha256: file.sha256 }
-              }))
-            ]
+      author,
+      mentions,
+      post,
+      steer,
+      attachments: [
+        ...(inlineImages ?? []).map((image, index): Attachment => {
+          const inlineData = Buffer.from(image.data, 'base64')
+          return {
+            id: `webchat:${turnId}:${index}`,
+            name: image.name,
+            mimeType: image.mimeType,
+            size: inlineData.byteLength,
+            inlineData
           }
-        : {}),
-      isDm: true,
-      trigger: mentions?.includes(agentId) ? 'mention' : 'dm'
+        }),
+        ...(uploadedFiles ?? []).map((file): Attachment => ({
+          id: `webchat:${turnId}:file:${file.uploadId}`,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.size,
+          transfer: { uploadId: file.uploadId, sha256: file.sha256 }
+        }))
+      ]
     }
-    // dispatch() claims/enqueues synchronously inside its Promise executor, so this
-    // exact-key preflight cannot race another admission on this event-loop tick. Without
-    // it a queue-full rejection happens before a QueueEntry exists, leaving an accepted
-    // webchat turn with no terminal `done` frame.
-    const key = this.webchatSessionKey(chatId, result.agentId)
-    if (this.host.inflight().has(key) && (this.host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {
-      this.host.warn(`webchat: queue full for session ${key} — rejecting turn`)
-      return { accepted: false, turnId, reason: 'busy' }
-    }
+    const result = await this.application.prepareTurn(request)
+    if (!result.accepted) return { ...result, turnId }
+    const admission = this.application.checkAdmission(result.turn)
+    if (!admission.accepted) return { ...admission, turnId }
+    const { message: msg, agentId: targetAgentId } = result.turn
     this.pruneWebchatStreams()
-    const streamKey = this.webchatStreamKey(turnId, result.agentId)
+    const streamKey = this.webchatStreamKey(turnId, targetAgentId)
     const existingStream = this.webchatStreams.get(streamKey)
     if (existingStream) {
       // A browser that lost the ack re-sends its steer on reconnect (same turnId). The copy is
@@ -315,9 +243,9 @@ export class WebchatTransport {
       }
       return { accepted: false, turnId, reason: 'busy' }
     }
-    const initialRuntime = chatSettingsAllowed(this.host.agents().get(result.agentId)) ? requestedRuntime : undefined
+    const initialRuntime = this.application.canChangeRuntime(targetAgentId) ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(
-      result.agentId,
+      targetAgentId,
       chatId,
       turnId,
       sink,
@@ -328,50 +256,10 @@ export class WebchatTransport {
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)
     if (apiProtocol !== undefined) stream.apiProtocol = apiProtocol
-    // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the user message at
-    // ADMISSION so an in-flight generation sees it at the final fence; the identical later append
-    // from SessionManager.handle dedups in place on (channel, ts).
-    // A steer-only turn writes no row of its own: steered, the live turn's settlement appends it
-    // as a delivery; refused, nothing must remain for the final fence to regenerate over — the
-    // browser re-sends the same text later as an ordinary turn. It still needs the canonical ts.
-    if (post && steer) msg.transcriptTs = String(post.at)
-    // Before the row lands: a live turn's fence would otherwise fold this message in with only its marker.
-    const ownTurn = post !== undefined && !!uploadedFiles?.length
-    if (ownTurn) this.host.holdContextForOwnTurn(key, String(post.at))
-    if (post && this.host.turnFinalContextRefresh() && !steer) {
-      const observedMention = attachmentMention(msg.attachments)
-      // The bounded inline image rides the ADMISSION write: it wins the slot, and an
-      // attachment-less row here would pin attachmentsJson to NULL for the session reader.
-      const observedAttachments = transcriptImageAttachments(msg.attachments)
-      const observedTs = await appendWebchatTextRow(
-        this.host.store(),
-        transcriptChannelKey(chatId, undefined),
-        `webchat:${chatId}`,
-        String(post.at),
-        {
-          sender: author.id,
-          recipient: result.agentId,
-          admission: {
-            agentId: result.agentId,
-            sessionKey: sessionKey('webchat', chatId, `webchat:${chatId}`, result.agentId, undefined)
-          },
-          // The canonical identity rides the admission write too: without it the probe falls back
-          // to (sender, text) and a distinct same-ms same-text post would reuse this row (§6).
-          postId: post.postId,
-          text: observedMention ? `${text}\n${observedMention}`.trim() : text,
-          ...(observedAttachments.length ? { attachments: observedAttachments } : {})
-        }
-      )
-      // The slot may have been collision-bumped (a self-authored row can occupy
-      // the canonical millisecond). The message must carry the ts its row
-      // ACTUALLY landed on: queue coalescing matches activations by
-      // transcriptCoords ts, and a mismatch would run the follow-up again as a
-      // separate turn after the regeneration already answered it.
-      msg.transcriptTs = observedTs
-      if (ownTurn && observedTs !== String(post.at)) this.host.holdContextForOwnTurn(key, observedTs)
-    }
+    const recorded = this.application.recordAdmission(result.turn, request)
+    if (recorded) await recorded
     if (steer) {
-      const verdict = this.dispatchSteerOnly(result.agentId, msg, stream)
+      const verdict = this.dispatchSteerOnly(targetAgentId, msg, stream)
       this.pendingSteerAdmissions.set(streamKey, verdict)
       try {
         return await verdict
@@ -379,9 +267,9 @@ export class WebchatTransport {
         this.pendingSteerAdmissions.delete(streamKey)
       }
     }
-    void this.host.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
+    void this.host.dispatch(targetAgentId, msg, undefined, stream).catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))
-        this.host.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
+        this.host.error(`webchat dispatch failed for agent "${targetAgentId}": ${formatErr(err)}`)
     })
     return { accepted: true, turnId }
   }
@@ -487,7 +375,7 @@ export class WebchatTransport {
     // Hook origin has nobody to mirror to and no transport to reach: `null` IS that console-only branch, `undefined` a chat session whose integration is not connected here.
     const integration = originKindOf(local.platform) === 'hook' ? null : this.continuationIntegration(agentId, local)
     if (integration === undefined) return { accepted: false, turnId, reason: 'integration_offline' }
-    await this.rememberAuthorName(author)
+    await this.application.rememberAuthorName(author)
     // One console line sent to several hook members is one post (#2500): its shared id and time let co-hosted members share a row and the merged view dedupe the rest; a chat session keeps its mirror-ordered row.
     const shared = integration === null ? post : undefined
     const msg: NormalizedMessage = {
@@ -638,7 +526,7 @@ export class WebchatTransport {
   /** The local session key a webchat conversation maps to — mirrors `dispatchWebchatTurn`
    *  (channel = conversationId, statusThread = the stable `webchat:<id>` msgId, no thread). */
   webchatSessionKey(conversationId: string, agentId: string): string {
-    return sessionKey('webchat', conversationId, `webchat:${conversationId}`, agentId)
+    return chatSessionKey(conversationId, agentId)
   }
 
   /** Replay-window key: one browser turn fans out to N participants, and two of
@@ -934,7 +822,7 @@ export class WebchatTransport {
     // Same display-name cache the targeted turn writes, so a fanned-out copy the
     // recipient recorded FIRST still labels its author by name on read-back.
     if (contextPost.author.kind === 'user' && contextPost.author.userId && contextPost.author.user) {
-      await this.rememberAuthorName({ id: contextPost.author.userId, name: contextPost.author.user })
+      await this.application.rememberAuthorName({ id: contextPost.author.userId, name: contextPost.author.user })
     }
     // The canonical origin-minted ts. A re-fanned identical copy dedups in place — the admission
     // still records it for THIS agent — and a foreign post on the slot bumps by 1 ms.
