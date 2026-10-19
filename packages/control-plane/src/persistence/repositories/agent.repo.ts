@@ -7,6 +7,7 @@ import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js
 import {
   AgentMemoryBinding,
   AssistantOnboarding,
+  type AssistantModePolicy,
   apiGateDecisionIds,
   modelSelectionDecisionIds,
   type AgentApiGates,
@@ -32,7 +33,6 @@ import type {
   CreateAgentInput,
   HookRecord,
   OrgAgentRecord,
-  StoredAssistantModePolicy,
   UpdateAgentInput,
   ViewCtx
 } from '../ports.js'
@@ -234,7 +234,7 @@ function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemor
 }
 
 // A stored policy that no longer parses reads as never configured, so a read never fails on it.
-function assistantModeOf(value: unknown): StoredAssistantModePolicy | undefined {
+function assistantModeOf(value: unknown): AssistantModePolicy | undefined {
   if (value === null || value === undefined) return undefined
   const parsed = StoredAssistantModePolicyRow.safeParse(value)
   return parsed.success ? parsed.data : undefined
