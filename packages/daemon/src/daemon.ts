@@ -1150,6 +1150,7 @@ import {
 } from './daemon/turn-types.js'
 import { UUID_RE, type WebchatSink } from './webchat/types.js'
 import type { ChatTurnContext } from './session/chat-turn.js'
+import { resolveChatUploadUrl } from './session/chat-attachments.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
@@ -4905,14 +4906,14 @@ export class Daemon {
           : Promise.resolve(null),
       attachmentMaxBytes: cfg.limits.maxAttachmentBytes,
       // The control plane signs the agent's GET; the bytes stay in the bucket until the agent fetches them.
-      transferUrl: async (agentId, att) => {
-        if (!this.cpClient || !att.transfer || att.size === undefined) return undefined
-        const got = await this.cpClient.transferGet(
-          { agentId, size: att.size, ...att.transfer, network: this.transferNetwork() },
-          this.orgForAgent(agentId)
-        )
-        return got.url && got.expiresAt !== undefined ? { url: got.url, expiresAt: got.expiresAt } : undefined
-      },
+      transferUrl: (agentId, attachment) =>
+        resolveChatUploadUrl(attachment, {
+          agentId,
+          network: this.transferNetwork(),
+          ...(this.cpClient
+            ? { transferGet: (request) => this.cpClient!.transferGet(request, this.orgForAgent(agentId)) }
+            : {})
+        }),
       // §8.4/§8.5/§9.2: snapshot real Slack thread history for cold backfill and
       // warm-turn unread reconciliation (#649).
       fetchThreadHistory: (agentId, channel, threadTs, cutoffTs, afterTs) =>

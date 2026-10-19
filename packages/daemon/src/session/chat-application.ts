@@ -128,7 +128,7 @@ export class ChatSessionApplication {
     return { accepted: true, turn: { agentId: result.agentId, sessionKey: key, message } }
   }
 
-  // Check synchronously beside dispatch: yielding after this check would race another admission.
+  // A synchronous preflight; the existing dispatch gate still decides admission after any persistence wait.
   checkAdmission(turn: PreparedChatTurn): ChatPreparation {
     if (this.host.queueFull(turn.sessionKey)) {
       this.host.warn(`chat: queue full for session ${turn.sessionKey} — rejecting turn`)
