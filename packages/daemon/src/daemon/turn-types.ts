@@ -335,6 +335,8 @@ export interface QueueEntry {
    *  turns, or a replayed entry re-admitted from an already-present row). Set once on
    *  admission and used to delete the row on every terminal path. */
   inboxId?: string
+  /** The delivery receipt minted with `inboxId`; released when the admission is dropped before running. */
+  receiptId?: string
   /** P3 outbound: publish the turn's completed reply on this code-host thread. Hook
    * deliveries duplicate this reference in their durable HookDispatchContext so
    * restart replay can recreate the poster behind its publish-state fence. */
