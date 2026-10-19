@@ -83,7 +83,7 @@
       "everyone": "Everyone",
       "everyoneDescription": "All members can see it.",
       "selected": "Selected",
-      "selectedDescription": "Selected members and org owners.",
+      "selectedDescription": "Only the members you pick and organization owners can see it.",
       "shareWith": "Share with",
       "removeLastMember": "Select another member before removing the last person",
       "removeAccess": "Remove from selection",
@@ -97,9 +97,9 @@
       "restrictedResource": "Selected members and organization owners can access this resource.",
       "agentsLabel": "Agents",
       "allAgents": "All agents",
-      "allAgentsDescription": "Every agent of the organization reads it.",
+      "allAgentsDescription": "Every agent in the organization can use it.",
       "selectedAgents": "Selected agents",
-      "selectedAgentsDescription": "Only the agents chosen here read it.",
+      "selectedAgentsDescription": "Only the agents you pick can use it.",
       "searchAgents": "Search agents…",
       "noAgents": "No agents",
       "agentCount": "{count, plural, one {# agent} other {# agents}}",
@@ -657,15 +657,15 @@
     "visibility": {
       "private": "Private",
       "everyone": "Everyone",
-      "privateTitle": "Visible only to me",
-      "everyoneTitle": "Visible to everyone in the org",
+      "privateTitle": "Only you can see this session.",
+      "everyoneTitle": "Everyone in your organization can see this session.",
       "settingUp": "Setting up session access",
       "loading": "loading",
       "externalMembers": "{provider} members",
-      "repoAccess": "Visible to everyone who can access the repo",
-      "channelAccess": "Visible to everyone who can access the channel",
-      "conversationAccess": "Visible to everyone who can access the conversation",
-      "accessUnverified": "{provider} access could not be verified; this session remains hidden",
+      "repoAccess": "Anyone who can access the repository can see this session.",
+      "channelAccess": "Anyone who can access the channel can see this session.",
+      "conversationAccess": "Anyone who can access the conversation can see this session.",
+      "accessUnverified": "{provider} access couldn't be checked, so this session stays hidden.",
       "waiting": "Waiting for the owning daemon to confirm the change",
       "waitingWithMemory": "Waiting for the owning daemon to confirm the change — capture stops at daemon acknowledgement",
       "sessionVisibility": "Session visibility",
@@ -4714,7 +4714,7 @@
       "title": "Session access",
       "followPlatformAccess": "Follow platform access",
       "help": "Session access — what the toggles do",
-      "hint": "On — session visibility follows the platform's own access. Off — new sessions are visible to Everyone, and sessions synced while it was on stop showing.",
+      "hint": "When on, people see a session only if they can see where it came from. Turning it off makes new sessions visible to everyone and hides the ones synced while it was on.",
       "providerHelp": "{label} — what this covers",
       "loadError": "Could not load {name} session access.",
       "notConfigured": "Not configured",
@@ -4724,7 +4724,8 @@
       "providers": {
         "slack": {
           "name": "Slack",
-          "label": "Follow Slack access",
+          "label": "Require Slack access",
+          "description": "Only people who can see the channel can see its sessions.",
           "details": "Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.\nDMs stay private, and agent memory learned earlier is not erased.\nSessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.\nTurning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.",
           "unavailable": "Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Slack identity to check.",
           "unresolved": "{count, plural, one {# session hidden — no trusted Slack scope.} other {# sessions hidden — no trusted Slack scope.}}",
@@ -4732,7 +4733,8 @@
         },
         "github": {
           "name": "GitHub",
-          "label": "Follow GitHub access",
+          "label": "Require GitHub access",
+          "description": "Only people who can access the repository can see its sessions.",
           "details": "Public-repository sessions stay visible to Everyone; private-repository sessions need a linked GitHub profile with current access.\nAgent memory learned earlier is not erased.\nSessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.\nTurning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.",
           "unavailable": "Unavailable until console sign-in and GitHub access checks are configured for this deployment — without them a viewer has no linked GitHub profile to check.",
           "unresolved": "{count, plural, one {# session hidden — no trusted repository scope.} other {# sessions hidden — no trusted repository scope.}}",
@@ -4740,7 +4742,8 @@
         },
         "gitlab": {
           "name": "GitLab",
-          "label": "Follow GitLab access",
+          "label": "Require GitLab access",
+          "description": "Only people who can access the project can see its sessions.",
           "details": "Public-repository sessions are visible to Everyone. Other projects require a linked account on this GitLab instance with an active Reporter or higher membership. Disabled repositories stay hidden.\nEarlier agent memory is not erased. History without a trusted project stays hidden.\nTurning this off hides previously synced sessions; turning it back on restores permission checks.",
           "unavailable": "Configure GitLab integration and sign-in before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted project.} other {# sessions hidden — no trusted project.}}",
@@ -4748,7 +4751,8 @@
         },
         "feishu": {
           "name": "Feishu/Lark",
-          "label": "Follow Feishu/Lark access",
+          "label": "Require Feishu/Lark access",
+          "description": "Only members of the group chat can see its sessions.",
           "details": "Group sessions created through the matching AgentConnect app follow current chat membership.\nDMs stay private, and agent memory learned earlier is not erased.\nUser-built apps with a different App ID keep the ordinary organization visibility model.\nTurning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.",
           "unavailable": "Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu/Lark profile to check.",
           "unresolved": "{count, plural, one {# session hidden — no trusted chat scope.} other {# sessions hidden — no trusted chat scope.}}",
@@ -4756,7 +4760,8 @@
         },
         "telegram": {
           "name": "Telegram",
-          "label": "Follow Telegram access",
+          "label": "Require Telegram access",
+          "description": "Only members of the group can see its sessions.",
           "details": "Groups follow current membership; the chat bot must be an administrator. DMs are visible only to their participant.\nLink your account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
           "unavailable": "Configure Telegram sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
@@ -4764,7 +4769,8 @@
         },
         "discord": {
           "name": "Discord",
-          "label": "Follow Discord access",
+          "label": "Require Discord access",
+          "description": "Only people who can read the channel can see its sessions.",
           "details": "Channels follow current server roles and channel permissions, including Read Message History. Private threads also require thread membership or Manage Threads. DMs follow their participants.\nLink your account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
           "unavailable": "Configure Discord sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
@@ -4772,7 +4778,8 @@
         },
         "googlechat": {
           "name": "Google Chat",
-          "label": "Follow Google Chat access",
+          "label": "Require Google Chat access",
+          "description": "Only members of the space can see its sessions.",
           "details": "Spaces and DMs follow current human membership, checked by the conversation’s Chat app. Invitations alone do not grant access.\nLink your Google account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
           "unavailable": "Configure Google sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
@@ -4788,11 +4795,11 @@
       "options": {
         "all": {
           "label": "All agents",
-          "description": "Open in both directions to every agent."
+          "description": "New agents can call, and be called by, every other agent."
         },
         "selected": {
           "label": "Isolated",
-          "description": "No peer access until agents are selected."
+          "description": "New agents can't call or be called by other agents until you pick which ones."
         }
       }
     },
