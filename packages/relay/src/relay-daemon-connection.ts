@@ -177,7 +177,9 @@ export class RelayDaemonConnection {
   // Binding lives on this authenticated daemon socket, never on a caller-supplied daemon id.
   listenAhp(attachmentId: string, listener: (event: RdAhpMessage | RdAhpClose) => void): () => void {
     this.ahpListeners.set(attachmentId, listener)
-    return () => this.ahpListeners.delete(attachmentId)
+    return () => {
+      if (this.ahpListeners.get(attachmentId) === listener) this.ahpListeners.delete(attachmentId)
+    }
   }
 
   async authorizeAhp(payload: RdAhpOpen, initial = false): Promise<boolean> {
@@ -441,7 +443,15 @@ export class RelayDaemonConnection {
   private fireClosed(): void {
     const listeners = [...this.closeListeners]
     this.closeListeners.clear()
+    const attachments = [...this.ahpListeners]
     this.ahpListeners.clear()
+    for (const [attachmentId, listener] of attachments) {
+      try {
+        listener({ attachmentId, reason: 'unavailable' })
+      } catch {
+        this.deps.log.warn('AHP attachment close listener failed')
+      }
+    }
     for (const listener of listeners) listener()
   }
 }

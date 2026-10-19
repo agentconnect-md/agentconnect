@@ -164,8 +164,7 @@ import {
   assistantModeEditNeedsAdmission,
   assistantModeRefusalMessage,
   assistantResponsibleUser,
-  onboardingHintsFor,
-  servedAssistantMode
+  onboardingHintsFor
 } from '../../agents/assistant-mode.js'
 import { readySetMembers, usesDecisionMaterialize } from '../repository-selection.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -425,7 +424,7 @@ function toDto(
     repositorySelector: a.repositorySelector ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
-    assistantMode: a.assistantMode ? servedAssistantMode(a.assistantMode) : null,
+    assistantMode: a.assistantMode ?? null,
     status: a.status,
     placementKind: a.placementKind,
     daemonId: a.daemonId,
