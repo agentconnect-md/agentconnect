@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ActionType } from '@microsoft/agent-host-protocol'
+import { ActionType, ToolCallConfirmationReason, ToolCallCancellationReason } from '@microsoft/agent-host-protocol'
 import { SessionImageAttachment, type ElicitCard } from '@agentconnect.md/protocol'
 import type { ChatInputCompletedAction } from '@microsoft/agent-host-protocol'
 import { ChatAttachmentsInput } from '../session/chat-attachments.js'
@@ -61,8 +61,16 @@ const permissionFields = {
   selectedOptionId: id.optional()
 }
 export const permissionAction = z.discriminatedUnion('approved', [
-  z.strictObject({ ...permissionFields, approved: z.literal(true), confirmed: z.literal('user-action') }),
-  z.strictObject({ ...permissionFields, approved: z.literal(false), reason: z.enum(['denied', 'skipped']) })
+  z.strictObject({
+    ...permissionFields,
+    approved: z.literal(true),
+    confirmed: z.literal(ToolCallConfirmationReason.UserAction)
+  }),
+  z.strictObject({
+    ...permissionFields,
+    approved: z.literal(false),
+    reason: z.enum([ToolCallCancellationReason.Denied, ToolCallCancellationReason.Skipped])
+  })
 ])
 const answerValue = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('text'), value: z.string().max(16000) }),
@@ -124,10 +132,18 @@ export function ahpElicitValue(action: ChatInputCompletedAction, card: ElicitCar
   for (const [key, answer] of Object.entries(answers)) {
     const field = fields.find((candidate) => candidate.propName === key)
     if (!field) throw new Error('Unknown input question')
-    const kind = field.number ? 'number' : field.text ? 'text' : field.multi ? 'selected-many' : 'selected'
+    const kind =
+      field.kind === 'boolean'
+        ? 'boolean'
+        : field.number
+          ? 'number'
+          : field.text
+            ? 'text'
+            : field.multi
+              ? 'selected-many'
+              : 'selected'
     if (answer.value.kind !== kind) throw new Error('Input answer kind mismatch')
-    if (typeof answer.value.value === 'boolean') throw new Error('Unsupported boolean answer')
-    values[key] = answer.value.value
+    values[key] = typeof answer.value.value === 'boolean' ? String(answer.value.value) : answer.value.value
   }
   if (card.fields) return values
   if (Object.keys(values).length !== 1 || values.value === undefined) throw new Error('Input answer is required')

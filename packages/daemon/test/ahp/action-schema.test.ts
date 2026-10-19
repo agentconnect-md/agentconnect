@@ -60,7 +60,7 @@ it('maps submitted answers only to the pending card question and kind', () => {
     answers: {
       value: { state: ChatInputAnswerState.Submitted, value: { kind: ChatInputAnswerValueKind.Text, value: 'Ada' } }
     }
-  }
+  } as const
   const card = { requestId: 'input', message: 'Name?', options: [], text: {} }
   expect(ahpElicitValue(action, card)).toBe('Ada')
   expect(() => ahpElicitValue({ ...action, answers: { foreign: action.answers.value } }, card)).toThrow('Unknown')
@@ -76,4 +76,28 @@ it('maps submitted answers only to the pending card question and kind', () => {
     )
   ).toThrow('kind')
   expect(ahpElicitValue({ ...action, answers: undefined, response: ChatInputResponseKind.Cancel }, card)).toBeNull()
+})
+
+it('maps standard boolean form answers into the existing coordinator representation', () => {
+  expect(
+    ahpElicitValue(
+      {
+        type: ActionType.ChatInputCompleted,
+        requestId: 'form',
+        response: ChatInputResponseKind.Accept,
+        answers: {
+          allowed: {
+            state: ChatInputAnswerState.Submitted,
+            value: { kind: ChatInputAnswerValueKind.Boolean, value: true }
+          }
+        }
+      },
+      {
+        requestId: 'form',
+        message: 'Choose',
+        options: [],
+        fields: [{ propName: 'allowed', label: 'Allowed', kind: 'boolean', options: [] }]
+      }
+    )
+  ).toEqual({ allowed: 'true' })
 })
