@@ -250,10 +250,11 @@ export const ConfigSchema = z.object({
   features: z
     .object({
       turnFinalContextRefresh: z.boolean().default(true),
+      ahp: z.object({ mode: z.enum(['off', 'shadow', 'on']).default('off') }).default({ mode: 'off' }),
       // Steer a message into the live turn over `_session/steering` instead of queueing it.
       sessionSteering: z.boolean().default(true)
     })
-    .default({ turnFinalContextRefresh: true, sessionSteering: true }),
+    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'off' } }),
   sessions: z
     .object({
       // Local-DB retention for FINISHED sessions (issue #485): a session untouched

@@ -1,3 +1,17 @@
+import { dispatchAhpAppRequest, type AhpAppsScope } from './ahp/apps.js'
+import { AhpProtocolError } from './ahp/connection.js'
+import { initialAhpChat } from './ahp/initial-state.js'
+import { AhpRuntimeObserver } from './ahp/runtime-observer.js'
+import { AhpShadowService } from './ahp/shadow-service.js'
+import { SessionStatus, ActionType, MessageKind, AhpErrorCodes } from '@microsoft/agent-host-protocol'
+import { AhpService, chatChannel } from './ahp/service.js'
+import { AhpApplication, ahpElicitValue } from './ahp/application.js'
+import { dispatchAhpAction, type AhpDispatchEnvironment } from './ahp/dispatch.js'
+import { LocalAhpCheckpoints } from './ahp/checkpoint-store.js'
+import { readAhpHistory } from './ahp/history.js'
+import { ChatSessionApplication, chatSessionKey, type ChatApplicationHost } from './session/chat-application.js'
+import { ChatSessionContinuation } from './session/chat-continuation.js'
+import { observeChatTurn } from './session/chat-observer.js'
 import { memorySourceTurnId } from './memory/source-turn.js'
 import { codeHostExternalSource } from './codehost/session-audience.js'
 import {
@@ -27,6 +41,7 @@ import {
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
   API_AG_UI_V1_FEATURE,
+  API_AHP_V1_FEATURE,
   API_DECISION_GATE_V1_FEATURE,
   API_GATE_EVALUATIONS_V1_FEATURE,
   AgentApiProtocol,
@@ -1148,7 +1163,7 @@ import {
   type TurnSettlement
 } from './daemon/turn-types.js'
 import { UUID_RE, type WebchatSink } from './webchat/types.js'
-import type { ChatTurnContext } from './session/chat-turn.js'
+import type { ChatTurnContext, ChatSink } from './session/chat-turn.js'
 import { resolveChatUploadUrl } from './session/chat-attachments.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
@@ -2172,6 +2187,10 @@ export class Daemon {
   private readonly cronReportOutbox: CronReportOutbox
   // Observed-channel discovery/retraction (platforms/observed-channels-sync.ts).
   private readonly observedChannelsSync: ObservedChannelsSync
+  private readonly ahpShadow = new AhpShadowService()
+  private ahp: AhpService | undefined
+  private readonly ahpObservedSinks = new WeakSet<ChatSink>()
+  private readonly ahpNativeTurns = new WeakMap<Pending, AhpRuntimeObserver>()
   private readonly webchatTransport: WebchatTransport
   private readonly webchatMcpRevocations: WebchatMcpRevocations
   // What each agent's runtime last advertised it can be asked to run (ACP available_commands_update).
@@ -2456,6 +2475,7 @@ export class Daemon {
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
     this.connections = new ConnectionReconciler(this.connectionReconcilerHost())
     this.webchatTransport = new WebchatTransport(this.webchatHost())
+    this.ahp = this.createAhpService()
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.commands = new CommandHandlers(this.commandHost())
     this.githubReviews = new GithubReviewOrchestrator(this.githubReviewHost())
@@ -2782,6 +2802,302 @@ export class Daemon {
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
     this.placeTrust.forget(integrationId)
+  }
+
+  private chatApplicationHost(): ChatApplicationHost {
+    return {
+      info: (message) => this.log.info(message),
+      warn: (message) => this.log.warn(message),
+      debug: (message) => this.log.debug(message),
+      store: () => this.store,
+      agents: () => this.agents,
+      mergedRules: () => this.mergedRules(),
+      paused: (id) => this.paused(id),
+      startFailure: (id) => this.lastStartFailure.get(id),
+      safetyDraining: (id) => this.safetyDrainingAgents.has(id),
+      draining: () => this.draining,
+      agentDraining: (id) => this.drainingAgents.has(id),
+      queueFull: (key) => this.inflight.has(key) && (this.serialQueue.get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION,
+      turnFinalContextRefresh: () => this.cfg.features.turnFinalContextRefresh,
+      holdContextForOwnTurn: (key, ts) => this.holdContextForOwnTurn(key, ts)
+    }
+  }
+
+  private createAhpService(): AhpService {
+    const application = new ChatSessionApplication(this.chatApplicationHost())
+    const continuation = new ChatSessionContinuation(
+      {
+        ...this.chatApplicationHost(),
+        error: (message) => this.log.error(message),
+        integrationIdForSessionTransport: (id, platform, scope) =>
+          this.integrationIdForSessionTransport(id, platform, scope),
+        connForIntegration: (id) => this.connForIntegration(id),
+        botUserIds: () => this.botUserIds,
+        resolveCpAgent: (id, platform) => this.resolveCpAgent(id, platform),
+        dispatch: (id, message, integrationId, context, options) =>
+          this.dispatch(id, message, integrationId, context, undefined, options)
+      },
+      application
+    )
+    const actions = new AhpApplication({
+      application,
+      continuation,
+      now: () => this.clock.now(),
+      admit: (scope, text, turnId) => this.admitApiTurn(scope.agentId, 'ahp', text, turnId, scope.author.name),
+      dispatch: (turn, context, options) =>
+        this.dispatch(turn.agentId, turn.message, undefined, context, undefined, options),
+      cancel: async (scope, turnId) => {
+        const pending = [...this.pending.values()].find(
+          (p) =>
+            p.entry.agentId === scope.agentId &&
+            p.outwardSessionId === scope.sessionId &&
+            (p.webchat?.turnId ?? this.ahpNativeTurns.get(p)?.turnId) === turnId
+        )
+        return pending
+          ? this.stopSessionByKey(pending.plan.sessionKey, { userId: scope.author.id, name: scope.author.name })
+          : false
+      },
+      permission: (scope, request) =>
+        this.permissions.handleChatPermissionChoice({
+          agentId: scope.agentId,
+          conversationId: scope.conversationId,
+          outwardSessionId: scope.sessionId,
+          turnId: request.turnId,
+          requestId: request.requestId,
+          allow: request.allow,
+          selectedOptionId: request.selectedOptionId,
+          mayAllow: scope.callerApproves,
+          callerRole: scope.callerRole,
+          userId: scope.author.id,
+          user: scope.author.name
+        }),
+      elicit: async (scope, request) => {
+        const pending = this.permissions.chatElicitation({
+          agentId: scope.agentId,
+          conversationId: scope.conversationId,
+          outwardSessionId: scope.sessionId,
+          requestId: request.requestId
+        })
+        if (!pending) return false
+        let value
+        try {
+          value = ahpElicitValue(request, pending.card)
+        } catch {
+          return false
+        }
+        return this.permissions.handleCallerElicitChoice({
+          agentId: scope.agentId,
+          requestId: request.requestId,
+          value,
+          webchatConversationId: scope.conversationId,
+          outwardSessionId: scope.sessionId,
+          turnId: pending.turnId,
+          callerRole: scope.callerRole,
+          userId: scope.author.id
+        })
+      },
+      setRuntime: async (scope, change) => {
+        const local = await this.store.getSessionByOutwardId(scope.sessionId, scope.agentId)
+        const key = local?.key ?? chatSessionKey(scope.conversationId, scope.agentId)
+        switch (change.key) {
+          case 'model':
+            return this.commands.setModelByKey(key, change.value)
+          case 'effort':
+            return this.commands.setEffortByKey(key, change.value)
+          case 'permissionMode':
+            return this.commands.setPermissionModeByKey(key, change.value)
+          case 'fastMode':
+            return this.commands.setFastByKey(key, change.value)
+        }
+      },
+      onExecutionError: (error) => this.log.warn(`AHP execution failed: ${formatErr(error)}`)
+    })
+    const dispatchEnvironment: AhpDispatchEnvironment = {
+      session: (id, agent) => this.store.getSessionByOutwardId(id, agent),
+      authorized: (auth) =>
+        this.cfg.features.ahp.mode === 'on' &&
+        auth.grant.expiresAtMs > this.clock.now() &&
+        this.servesAgent(auth.agentId) &&
+        this.orgForAgent(auth.agentId) === auth.orgId &&
+        !this.draining,
+      canStart: (key, turnId) => !this.inflight.has(key) || this.activeGateEntries.get(key)?.webchat?.turnId === turnId,
+      now: () => this.clock.now(),
+      mask: (agent, text) => this.maskAgentSecrets(agent, text),
+      observe: (auth, event) => this.ahp?.observe(auth.orgId, auth.agentId, this.maskAgentSecrets(auth.agentId, event)),
+      output: (auth, session, output) =>
+        this.ahp?.output(auth.orgId, auth.agentId, session, this.maskAgentSecrets(auth.agentId, output)),
+      post: (post) => this.relays?.sendWebchatPost(post),
+      markSink: (sink) => this.ahpObservedSinks.add(sink)
+    }
+    return new AhpService({
+      enabled: () => this.cfg.features.ahp.mode === 'on',
+      available: (auth) =>
+        this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
+      initializeMetadata: { 'agentconnect.md': { webchat: true, files: true, steering: true, mcpApps: true } },
+      now: () => this.clock.now(),
+      provider: (id) => ({ provider: id, displayName: this.agents.get(id)?.name ?? id, description: '', models: [] }),
+      reserveSequence: (org, agent, size) => this.store.reserveAhpSequenceBlock(org, agent, size),
+      checkpoints: (org, agent) =>
+        new LocalAhpCheckpoints(
+          this.store,
+          org,
+          agent,
+          (id) => [...this.pending.values()].some((p) => p.entry.agentId === agent && p.outwardSessionId === id),
+          () => this.clock.now()
+        ),
+      duty: (id) => {
+        const duty = this.duties.dutyForAgent(id)
+        return duty ? { groupId: duty.groupId, term: duty.term } : undefined
+      },
+      registry: {
+        reserve: (input) => this.cpClient!.ahpSessionReserve(input),
+        finalize: (input) => this.cpClient!.ahpSessionFinalize(input),
+        resolve: (input) => this.cpClient!.ahpSessionResolve(input),
+        list: (input) => this.cpClient!.ahpSessionList(input)
+      },
+      ensureSession: (binding, auth) =>
+        this.store.ensureOutwardSessionId(
+          chatSessionKey(binding.conversationId, auth.agentId),
+          auth.agentId,
+          this.clock.now()
+        ),
+      history: (binding, auth) =>
+        initialAhpChat(
+          this.store,
+          binding,
+          auth,
+          (text) => this.maskAgentSecrets(auth.agentId, text),
+          this.clock.now()
+        ),
+      historyPage: async (binding, auth, cursor) => {
+        if (cursor.startsWith('history:')) {
+          const page = await readAhpHistory(
+            this.store,
+            { orgId: auth.orgId, agentId: auth.agentId, sessionId: binding.sessionId, cursor },
+            (text) => this.maskAgentSecrets(auth.agentId, text)
+          )
+          return { turns: page.turns, ...(page.cursor ? { nextCursor: page.cursor } : {}) }
+        }
+        return new LocalAhpCheckpoints(
+          this.store,
+          auth.orgId,
+          auth.agentId,
+          () => false,
+          () => this.clock.now()
+        ).page(binding.sessionId, cursor)
+      },
+      summary: async (binding, auth) => {
+        const local = await this.store.getSessionByOutwardId(binding.sessionId, auth.agentId)
+        const running = [...this.pending.values()].some(
+          (p) => p.entry.agentId === auth.agentId && p.outwardSessionId === binding.sessionId
+        )
+        return {
+          resource: binding.sessionUri,
+          provider: auth.agentId,
+          title: this.maskAgentSecrets(auth.agentId, local?.title ?? 'Conversation'),
+          status: running ? SessionStatus.InProgress : SessionStatus.Idle,
+          createdAt: new Date(local?.updatedAt ?? 0).toISOString(),
+          modifiedAt: new Date(local?.updatedAt ?? 0).toISOString(),
+          defaultChat: chatChannel(binding.sessionUri)
+        }
+      },
+      sessionConfig: async (binding, auth) => {
+        if (!application.canChangeRuntime(auth.agentId)) return
+        const local = await this.store.getSessionByOutwardId(binding.sessionId, auth.agentId)
+        if (auth.targetSessionId || (local && local.platform !== 'webchat')) return
+        const key = local?.key ?? chatSessionKey(binding.conversationId, auth.agentId)
+        const [model, effort, permissionMode, fastMode] = await Promise.all([
+          this.store.getModelOverride(key),
+          this.store.getEffortOverride(key),
+          this.store.getPermissionModeOverride(key),
+          this.store.getFastModeOverride(key)
+        ])
+        return {
+          schema: {
+            type: 'object',
+            properties: {
+              model: { type: 'string', title: 'Model', sessionMutable: true },
+              effort: { type: 'string', title: 'Effort', sessionMutable: true },
+              permissionMode: { type: 'string', title: 'Permission mode', sessionMutable: true },
+              fastMode: { type: 'boolean', title: 'Fast mode', sessionMutable: true }
+            }
+          },
+          values: {
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(fastMode === undefined ? {} : { fastMode })
+          }
+        }
+      },
+      dispatch: (params, origin, context) => dispatchAhpAction(actions, params, origin, context, dispatchEnvironment),
+      customRequest: (method, params, context, isCurrent) =>
+        dispatchAhpAppRequest(
+          method,
+          params,
+          { ...context, isCurrent },
+          {
+            rpc: async (scope, input, emit) => {
+              const conversationId = await this.ahpAppConversation(scope, input.appId)
+              await this.handleAppRpc(
+                conversationId,
+                input.appId,
+                input.callId,
+                input.rpc,
+                { userId: scope.authorization.userId, user: scope.authorization.user },
+                {
+                  conversationId: scope.binding.conversationId,
+                  turnId: `app:${input.appId}`,
+                  index: 0,
+                  sink: { output: emit, done: () => {} }
+                },
+                {
+                  isCurrent,
+                  dispatchMessage: async (text) => {
+                    const turnId = randomUUID()
+                    try {
+                      await dispatchAhpAction(
+                        actions,
+                        {
+                          channel: chatChannel(scope.binding.sessionUri),
+                          clientSeq: 0,
+                          action: {
+                            type: ActionType.ChatTurnStarted,
+                            turnId,
+                            startedAt: new Date(this.clock.now()).toISOString(),
+                            message: { text, origin: { kind: MessageKind.User } }
+                          }
+                        },
+                        undefined,
+                        context,
+                        dispatchEnvironment
+                      )
+                      return { accepted: true, turnId }
+                    } catch (error) {
+                      if (error instanceof AhpProtocolError) return { accepted: false, turnId, reason: error.message }
+                      throw error
+                    }
+                  }
+                }
+              )
+            },
+            close: async (scope, input) => {
+              const conversationId = await this.ahpAppConversation(scope, input.appId)
+              const resolved = this.liveApps.resolve({ appId: input.appId, conversationId })
+              if ('app' in resolved) {
+                this.liveApps.settle(input.appId)
+                this.settleAppCard(resolved.app, CLOSED)
+              } else await this.recordAppClose(input.appId, conversationId)
+              this.ahp?.output(scope.authorization.orgId, scope.authorization.agentId, scope.binding.sessionId, {
+                conversationId: scope.binding.conversationId,
+                turnId: `app:${input.appId}`,
+                index: 0,
+                event: { kind: 'app_resolved', appId: input.appId, outcome: CLOSED }
+              })
+            }
+          }
+        )
+    })
   }
 
   private webchatHost(): WebchatHost {
@@ -7950,6 +8266,7 @@ export class Daemon {
       API_DECISION_GATE_V1_FEATURE,
       // The CP adds an agent's AG-UI API only while every connected daemon serving it lists this.
       API_AG_UI_V1_FEATURE,
+      ...(this.cfg.features.ahp.mode === 'on' && this.ahp ? [API_AHP_V1_FEATURE] : []),
       // It records each API gate verdict and answers decision/api-gate-evaluations for the API row's Recent evaluations.
       API_GATE_EVALUATIONS_V1_FEATURE,
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -15253,6 +15570,7 @@ export class Daemon {
     pending.reply.attemptText = ''
     pending.reply.attemptAnswerUpdates = []
     for (const update of updates) {
+      this.ahpNativeTurns.get(pending)?.update(update)
       for (const action of pending.conv.onUpdate(update)) this.enqueueApply(pending, action)
     }
   }
@@ -15373,6 +15691,10 @@ export class Daemon {
    *  physical convergence a duty change drives. */
   private permissionHost(): PermissionHost {
     return {
+      chatObservation: (pending) => {
+        const observer = this.ahpNativeTurns.get(pending)
+        return observer ? { turnId: observer.turnId, emit: (event) => observer.event(event) } : undefined
+      },
       cancelTurn: (p, reason) =>
         this.interruptTurn(p.plan.agentId, p.plan.sessionKey, reason ?? 'cancel', p.acpSessionId, { only: p }),
       log: () => this.log,
@@ -16380,6 +16702,7 @@ export class Daemon {
     entry.webchat.sink.done({
       conversationId: entry.webchat.conversationId,
       turnId: entry.webchat.turnId,
+      outcome: 'cancelled',
       ...(error ? { error } : {})
     })
   }
@@ -16403,6 +16726,7 @@ export class Daemon {
       /** Steer into the live turn or refuse `busy` — never queue. For a caller that keeps its own
        *  queue (the console composer) and must learn the verdict from the admission ACK. */
       steerOnly?: boolean
+      startOnly?: boolean
       /** Recovery of a row whose loop-guard admission was already counted. */
       replay?: boolean
       /** A startup replay may wait for an interrupt safety drain instead of being dropped. */
@@ -16496,7 +16820,8 @@ export class Daemon {
             })
             // NOT for §5.2a continuation wakes: their inbound IS a committed peer post the
             // browser already rendered — re-posting it would duplicate that reply.
-            if (callMeta?.conversationContinuation !== true) this.webchatTransport.postAgentWakeInbound(webchat, msg)
+            if (webchat?.apiProtocol !== 'ahp' && callMeta?.conversationContinuation !== true)
+              this.webchatTransport.postAgentWakeInbound(webchat, msg)
           }
           // §8.6, the ONE place every delivery path settles — live dispatch, queued
           // dispatch, and startup replay alike. Completing the rendezvous here rather than
@@ -16686,6 +17011,11 @@ export class Daemon {
         // while an earlier arrival was still persisting, and a direct claim here would start
         // ahead of it. Queue behind the chain instead — the link reclaims the idle gate.
         if (this.inflight.has(key) || this.dispatchAdmissionChains.has(key)) {
+          if (opts?.startOnly) {
+            await settleAdmission({ accepted: false, reason: 'busy' })
+            resolve(null)
+            return
+          }
           // Arrival-order FIFO (§4.1-4.3): the loop guard, the durable write and coalescing all
           // await, and the old synchronous path could not yield between this branch and the
           // enqueue. Followers for one key therefore admit in the order they arrived — the link
@@ -16754,7 +17084,7 @@ export class Daemon {
             // message into the live prompt — the placement it would have coalesced never existed
             // yet, so settle it as coalesced now instead of prompting the same message twice.
             if (await this.coalesceLateAdmission(key, entry)) {
-              await settleAdmission({ accepted: true })
+              await settleAdmission({ accepted: true, ...(opts?.steerOnly ? { steered: true } : {}) })
               return
             }
             // A running prompt takes the message directly when the runtime can steer (#1847); the
@@ -16865,7 +17195,7 @@ export class Daemon {
           // between the fence that absorbed this message and this dispatch reaching the claim.
           if (await this.coalesceLateAdmission(key, entry)) {
             await this.releaseDispatchClaim(key)
-            await settleAdmission({ accepted: true })
+            await settleAdmission({ accepted: true, ...(opts?.steerOnly ? { steered: true } : {}) })
             return
           }
           await settleAdmission({ accepted: true })
@@ -17507,6 +17837,8 @@ export class Daemon {
       memorySourceTurnId(agentId, p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg))
     )
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
+    let observedOutcome: 'complete' | 'cancelled' | 'failed' = 'failed'
+    let observedError: string | undefined
     let turnModel: string | undefined
     const currentAttributionInfo = async (): Promise<SlackAttributionInfo> =>
       await this.turnAttributionInfo(p, run, sessionId, turnModel)
@@ -17521,6 +17853,7 @@ export class Daemon {
         sessionId
       })
       if (readyGate) {
+        observedOutcome = 'cancelled'
         if (interruptFailsTurn(readyGate)) settlement.finalPhase = 'problem'
         return null
       }
@@ -17536,18 +17869,30 @@ export class Daemon {
         settlement,
         ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {})
       })
-      if (outcome.kind === 'cancelled') return null
+      if (outcome.kind === 'cancelled') {
+        observedOutcome = 'cancelled'
+        return null
+      }
       if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.settleUsage(p, run, sessionId)
       await this.commitWebchatReply(p, run, outcome)
       await this.flushPlatformFinals(p, run, sessionId, currentAttributionInfo)
       await this.finalizeDelivery(p, run, { rec, sessionId, handled, outcome, memoryCaptureTarget })
+      observedOutcome = 'complete'
     } catch (err) {
       const caught = await this.surfaceTurnCatch(err, p, run, sessionId, settlement, currentAttributionInfo)
-      if (caught === 'suppressed') return null
+      if (caught === 'suppressed') {
+        observedOutcome = 'cancelled'
+        return null
+      }
+      observedError = this.maskAgentSecrets(agentId, turnFailureReason(err))
       throw err
     } finally {
-      await this.settleTurn(p, run, sessionId, settlement, releaseReplyConn, activeTurn)
+      try {
+        await this.settleTurn(p, run, sessionId, settlement, releaseReplyConn, activeTurn)
+      } finally {
+        this.ahpNativeTurns.get(p)?.finish(observedOutcome, observedError)
+      }
     }
     // Turn finished cleanly. Draining the next queued message for this sessionKey is
     // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
@@ -18404,6 +18749,44 @@ export class Daemon {
       const ordinaryHost = this.hosts.get(hostKey)
       if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(hostKey, ordinaryHost)
     }
+    if (turn.webchat && this.cfg.features.ahp.mode !== 'off' && !this.ahpObservedSinks.has(turn.webchat.sink)) {
+      const orgId = this.orgForAgent(agentId)
+      const shadow = this.cfg.features.ahp.mode === 'shadow'
+      if (orgId || shadow) {
+        const original = turn.webchat
+        const emit = (event: import('./session/chat-events.js').MaskedChatEvent) => {
+          const safe = this.maskAgentSecrets(agentId, event)
+          if (shadow) this.ahpShadow.accept(safe)
+          else this.ahp?.observe(orgId!, agentId, safe)
+        }
+        const observed = observeChatTurn(original, {
+          sessionId: outwardSessionId,
+          generation: 0,
+          now: () => this.clock.now(),
+          emit
+        })
+        emit({
+          sessionId: outwardSessionId,
+          turnId: original.turnId,
+          generation: 0,
+          at: this.clock.now(),
+          kind: 'started',
+          text: this.maskAgentSecrets(agentId, entry.msg.text),
+          origin: original.initiator === 'agent' ? 'agent' : 'user'
+        })
+        turn.webchat = {
+          ...observed,
+          sink: {
+            output: (update) => {
+              observed.sink.output(update)
+              if (!shadow) this.ahp?.output(orgId!, agentId, outwardSessionId, update)
+            },
+            done: (completion) => observed.sink.done(completion)
+          }
+        }
+        this.ahpObservedSinks.add(turn.webchat.sink)
+      }
+    }
     const p: Pending = {
       plan,
       entry,
@@ -18452,6 +18835,27 @@ export class Daemon {
             }
           }
         : {})
+    }
+    if (!p.webchat && this.cfg.features.ahp.mode !== 'off') {
+      const orgId = this.orgForAgent(agentId)
+      const shadow = this.cfg.features.ahp.mode === 'shadow'
+      if (orgId || shadow)
+        this.ahpNativeTurns.set(
+          p,
+          new AhpRuntimeObserver({
+            sessionId: outwardSessionId,
+            turnId: stableTurnId(agentId, entry.msg),
+            text: this.maskAgentSecrets(agentId, entry.msg.text),
+            origin: callMeta ? 'agent' : 'user',
+            now: () => this.clock.now(),
+            resolveFileLink: p.resolveFileLink,
+            emit: (event) => {
+              const safe = this.maskAgentSecrets(agentId, event)
+              if (shadow) this.ahpShadow.accept(safe)
+              else this.ahp?.observe(orgId!, agentId, safe)
+            }
+          })
+        )
     }
     // A real turn takes over the session — flush any drain narration first (delivered, not
     // dropped), so buffered text can neither leak into this turn nor go stale behind it.
@@ -19186,6 +19590,7 @@ export class Daemon {
             p.webchat.sink.done({
               conversationId: p.webchat.conversationId,
               turnId: p.webchat.turnId,
+              outcome: 'cancelled',
               stopReason: 'context_churn'
             })
           }
@@ -19996,6 +20401,7 @@ export class Daemon {
       await this.settleStatusBar(live)
       if (!exact()) return
       live.outputSuppressed ??= reason
+      this.ahpNativeTurns.get(live)?.finish('cancelled', this.maskAgentSecrets(agentId, opts.notice?.lost ?? reason))
       this.clearIdle(live)
       // Platform suppression teardown (§7.3): Feishu stops its stream timer and
       // cancels the CardKit entity. Exact lookup — no core fallback.
@@ -20007,6 +20413,7 @@ export class Daemon {
         live.webchat.sink.done({
           conversationId: live.webchat.conversationId,
           turnId: live.webchat.turnId,
+          outcome: 'cancelled',
           error: opts.notice?.lost ?? reason
         })
       }
@@ -20888,6 +21295,39 @@ export class Daemon {
     return { result: { mcpContent: content, ...(call.isError ? { mcpIsError: true } : {}) } }
   }
 
+  private async ahpAppConversation(scope: AhpAppsScope, appId: string): Promise<string> {
+    const { authorization: auth, binding } = scope
+    const local = await this.store.getSessionByOutwardIdOnly(binding.sessionId, auth.agentId)
+    const resolved = this.liveApps.resolve({ appId, conversationId: binding.conversationId })
+    if (
+      'app' in resolved &&
+      local &&
+      resolved.app.agentId === auth.agentId &&
+      resolved.app.sessionKey === local.key &&
+      scope.isCurrent()
+    )
+      return resolved.app.conversationId
+    const stored = await this.store.getAppCard(appId)
+    let body
+    try {
+      body = stored ? McpAppBody.safeParse(JSON.parse(stored.body)) : undefined
+    } catch {
+      /* Invalid persisted cards are unavailable. */
+    }
+    if (
+      !local ||
+      !stored ||
+      stored.sender !== auth.agentId ||
+      stored.sessionKey !== local.key ||
+      !body?.success ||
+      body.data.appId !== appId ||
+      !body.data.conversationId ||
+      !scope.isCurrent()
+    )
+      throw new AhpProtocolError(AhpErrorCodes.PermissionDenied, 'MCP App access denied')
+    return body.data.conversationId
+  }
+
   /**
    * Serve one MCP App view's RPC (webchat-mcp-apps.md §7.3). Four methods reach here; everything
    * else the extension gives a view is answered in the browser.
@@ -20912,7 +21352,11 @@ export class Daemon {
     /** The connection the RPC ARRIVED on. Every verdict goes back here rather than on the card's
      *  own held stream: after a reload the browser is on a new connection and the turn that opened
      *  the card is long finished, so its stream reaches nobody — which is a button that hangs. */
-    reply?: AppStream
+    reply?: AppStream,
+    ahp?: {
+      isCurrent(): boolean
+      dispatchMessage(text: string): Promise<{ accepted: boolean; turnId: string; reason?: string }>
+    }
   ): Promise<void> {
     let resolved = this.liveApps.resolve({ appId, conversationId })
     // A card the registry does not hold may still be one this daemon RECORDED: the reader reloaded,
@@ -20931,6 +21375,7 @@ export class Daemon {
         this.appSurface.answer(stream, appId, callId, { ok: false, error: APP_RPC_REFUSALS[resolved.refused] })
       return
     }
+    if (ahp && !ahp.isCurrent()) throw new AhpProtocolError(AhpErrorCodes.PermissionDenied, 'MCP App access expired')
     const app = resolved.app
     const answer = (outcome: McpAppRpcResult): void =>
       this.appSurface.answer(reply ?? app.stream, appId, callId, outcome)
@@ -20958,6 +21403,8 @@ export class Daemon {
             answer({ ok: false, error: APP_RPC_REFUSALS.unknown_tool })
             return
           }
+          if (ahp && !ahp.isCurrent())
+            throw new AhpProtocolError(AhpErrorCodes.PermissionDenied, 'MCP App access expired')
           const call = await host.callForView(scope, app.server, tool, rpc.args ?? {})
           // The RAW upstream result, structured content included: that payload is what the view
           // asked for and what it has to render, and the model's half of it would be no use here.
@@ -20980,16 +21427,18 @@ export class Daemon {
           // and it goes through the ordinary dispatch, so the roster check, busy/steer and the
           // transcript all apply to it exactly as they do to something typed in the composer.
           // There is no hop to charge on a user turn; the card's call budget bounds a looping page.
-          const ack = await this.webchatTransport.dispatchWebchatTurn(
-            app.agentId ?? '',
-            app.conversationId,
-            rpc.text,
-            webchatAuthorOf(author ?? {}),
-            // The reader's CURRENT connection, for the same reason the verdict goes back on it:
-            // a turn streamed onto the stream that opened the card would reach whoever was there
-            // before the reload, which is nobody.
-            reply?.sink ?? app.stream.sink
-          )
+          const ack = ahp
+            ? await ahp.dispatchMessage(rpc.text)
+            : await this.webchatTransport.dispatchWebchatTurn(
+                app.agentId ?? '',
+                app.conversationId,
+                rpc.text,
+                webchatAuthorOf(author ?? {}),
+                // The reader's CURRENT connection, for the same reason the verdict goes back on it:
+                // a turn streamed onto the stream that opened the card would reach whoever was there
+                // before the reload, which is nobody.
+                reply?.sink ?? app.stream.sink
+              )
           answer(
             ack.accepted
               ? { ok: true, result: { turnId: ack.turnId } }
@@ -21022,6 +21471,7 @@ export class Daemon {
           return
       }
     } catch (err) {
+      if (ahp && rpc.method === 'ui/message') throw err
       // The upstream server's own words, bounded. A view that called a tool which failed needs to
       // know that it failed, and the frame is where the reader is looking.
       answer({ ok: false, error: formatErr(err).slice(0, 500) })
@@ -21039,7 +21489,7 @@ export class Daemon {
     }
     const row = stored ? reviveAppRow(appId, conversationId, stored) : undefined
     if (!row || row.server === ADMIN_MCP_SERVER_NAME) return undefined
-    const sessionKey = this.webchatTransport.webchatSessionKey(conversationId, row.sender)
+    const sessionKey = row.sessionKey
     if (row.nativeUi && !(await this.store.getSession(sessionKey))) return undefined
     const orgId = this.orgForAgent(row.sender)
     const app: LiveApp = {
@@ -22202,6 +22652,7 @@ export class Daemon {
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
     if (p.webchat) chatTurnOutput.emitChatUpdate(p.webchat, update, p.resolveFileLink)
+    else if (!(p.plan.stageAnswer && isAnswerChunk)) this.ahpNativeTurns.get(p)?.update(update)
     this.projectNativeIntegration(p, update)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
       const startsWork = p.workBoundary.opens(update)
@@ -27256,6 +27707,12 @@ export class Daemon {
     // lazily — auth/ok adopts it before the roster ever converges. Constructed before
     // cpClient.start() so applyReconcileSnapshot has a live manager during the handshake.
     this.relays = new RelayManager({
+      ahpEnabled: () => this.cfg.features.ahp.mode === 'on' && !!this.ahp && !!this.cpClient,
+      onAhpOpen: (input, wire, scope) => this.ahp!.open(input, wire, scope),
+      onAhpAuthorize: (input, scope) => this.ahp!.authorize(input, scope),
+      onAhpMessage: (input, scope) => this.ahp!.receive(input, scope),
+      onAhpClose: (input, scope) => this.ahp!.close(input, scope),
+      onAhpRelayLost: (scope) => this.ahp!.relayLost(scope),
       apiKey: () => cpKey,
       ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       daemonId: () => this.cfg.daemonId,
@@ -27936,6 +28393,8 @@ export class Daemon {
     // SQLite store. Unfinished operations remain durable for restart recovery.
     await Promise.resolve(this.memoryOutbox?.stop()).catch((e) => errors.push(e))
     await Promise.resolve(this.memoryConnections?.close()).catch((e) => errors.push(e))
+    this.ahp?.dispose()
+    this.ahpShadow.dispose()
     await Promise.resolve(this.relays?.stop()).catch((e) => errors.push(e))
     errors.push(...(await this.connections.dispose()))
     // Capture startup promises before stopHost invalidates their cache entries. Every
