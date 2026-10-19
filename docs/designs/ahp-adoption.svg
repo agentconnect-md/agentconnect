@@ -11,7 +11,7 @@
     Webchat selects a legacy or AHP adapter at attachment time. Third-party clients use the independently enabled public
     AHP endpoint. Separate relay routes lead to sibling legacy and AHP services in the daemon. Both use a
     protocol-neutral application port over one existing session core, store, and ACP runtime owner. Control Plane links
-    carry control and metadata. The feature switches are proposed configuration, with legacy as the default.
+    carry control and metadata. Deployment controls keep AHP opt-in, with legacy as the default. Public client acceptance remains pending.
   </desc>
   <defs>
     <marker
@@ -98,14 +98,14 @@
   <text x="60" y="62" class="heading">Open AHP access to AgentConnect</text>
   <text x="60" y="98" class="detail">Separate protocol services · reversible client rollout · one execution owner</text>
   <rect x="1160" y="40" width="272" height="44" rx="22" fill="#f1edff" />
-  <text x="1296" y="69" class="small" text-anchor="middle">PROPOSAL · DESIGN ONLY</text>
+  <text x="1296" y="69" class="small" text-anchor="middle">STAGED · OPT-IN</text>
 
   <rect x="70" y="145" width="460" height="90" rx="12" class="box" />
   <text x="300" y="183" class="label" text-anchor="middle">Webchat</text>
   <text x="300" y="214" class="detail" text-anchor="middle">Common UI contract · separate adapters</text>
   <rect x="650" y="145" width="400" height="90" rx="12" class="box" />
   <text x="850" y="183" class="label" text-anchor="middle">Third-party AHP clients</text>
-  <text x="850" y="214" class="detail" text-anchor="middle">VS Code / CLI / custom UI</text>
+  <text x="850" y="214" class="detail" text-anchor="middle">Official SDK / compatible clients</text>
   <rect x="1100" y="145" width="330" height="90" rx="12" class="box" />
   <text x="1265" y="183" class="label" text-anchor="middle">Control Plane</text>
   <text x="1265" y="214" class="detail" text-anchor="middle">Identity · registry · credentials</text>
@@ -113,7 +113,7 @@
   <path d="M 300 235 V 280" class="flow duplex" />
   <rect x="70" y="280" width="460" height="90" rx="12" class="new" />
   <text x="300" y="314" class="label" text-anchor="middle">Client protocol selector</text>
-  <text x="300" y="346" class="detail" text-anchor="middle">webchat.protocol: legacy | ahp</text>
+  <text x="300" y="346" class="detail" text-anchor="middle">WEBCHAT_PROTOCOL: legacy | ahp</text>
   <path d="M 300 370 V 440" class="flow duplex" />
   <text x="278" y="417" class="small" text-anchor="end">Legacy (default)</text>
   <path d="M 500 370 V 398 H 730 V 440" class="flow duplex" />
@@ -123,6 +123,7 @@
   <text x="876" y="343" class="small">Independent of Webchat</text>
   <path d="M 1190 235 V 440" class="control" />
   <text x="1210" y="317" class="small">Auth / routing</text>
+  <text x="1210" y="347" class="small">Grants ≤ 60 seconds</text>
   <path d="M 1420 235 V 258 H 1470 V 612 H 1450" class="control" />
   <text x="1398" y="563" class="small" text-anchor="end">Create / bind / metadata</text>
 
@@ -132,7 +133,7 @@
   <rect x="650" y="440" width="780" height="86" rx="12" class="new" />
   <text x="1040" y="475" class="label" text-anchor="middle">Relay · authenticated AHP endpoint</text>
   <text x="1040" y="506" class="detail" text-anchor="middle">
-    Standard frames · auth / audience / daemon capability gates
+    AHP_MODE=on · audience / agent API entry / daemon capability
   </text>
 
   <rect x="50" y="590" width="1400" height="605" rx="18" class="group" />
@@ -140,19 +141,19 @@
   <path d="M 300 526 V 566 H 560 V 650" class="flow duplex" />
   <path d="M 1040 526 V 650" class="flow duplex" />
   <rect x="85" y="650" width="500" height="165" rx="14" class="box" />
-  <text x="335" y="686" class="section" text-anchor="middle">LegacyChatService</text>
+  <text x="335" y="686" class="section" text-anchor="middle">Legacy Webchat service</text>
   <text x="335" y="722" class="detail" text-anchor="middle">Legacy wire + per-turn stream / replay</text>
   <text x="335" y="752" class="detail" text-anchor="middle">Existing webchat/ adapter</text>
   <text x="335" y="784" class="small" text-anchor="middle">Independent connections and lifecycle</text>
   <rect x="650" y="650" width="780" height="165" rx="14" class="new" />
-  <text x="1040" y="686" class="section" text-anchor="middle">AhpChatService · AHP v1 host</text>
+  <text x="1040" y="686" class="section" text-anchor="middle">AhpService · AHP v1 host</text>
   <text x="1040" y="722" class="detail" text-anchor="middle">
     Negotiation · channels · action mapping · state projection
   </text>
   <text x="1040" y="752" class="detail" text-anchor="middle">
-    Separate subscriptions, snapshots, replay and lifecycle
+    Bounded snapshots / history paging · durable checkpoints
   </text>
-  <text x="1040" y="784" class="small" text-anchor="middle">ahp.mode: off | shadow | on</text>
+  <text x="1040" y="784" class="small" text-anchor="middle">features.ahp.mode: off | shadow | on</text>
 
   <path d="M 335 815 V 870" class="flow duplex" />
   <path d="M 1040 815 V 870" class="flow duplex" />
@@ -176,7 +177,7 @@
   <rect x="740" y="1010" width="335" height="110" rx="12" class="box" />
   <text x="907" y="1045" class="label" text-anchor="middle">Existing session store</text>
   <text x="907" y="1077" class="detail" text-anchor="middle">Sessions + transcripts</text>
-  <text x="907" y="1104" class="small" text-anchor="middle">One durable business record</text>
+  <text x="907" y="1104" class="small" text-anchor="middle">Derived AHP checkpoints / archive</text>
   <rect x="1150" y="1010" width="280" height="110" rx="12" class="box" />
   <text x="1290" y="1045" class="label" text-anchor="middle">Platform adapters</text>
   <text x="1290" y="1077" class="detail" text-anchor="middle">Ingress + renderers</text>
@@ -200,13 +201,12 @@
 
   <line x1="60" y1="1374" x2="1440" y2="1374" stroke="#dbe2ec" />
   <rect x="60" y="1397" width="16" height="16" rx="3" class="new" />
-  <text x="89" y="1412" class="small">Proposed boundary</text>
+  <text x="89" y="1412" class="small">Opt-in AHP boundary</text>
   <path d="M 430 1406 H 485" class="flow" />
   <text x="503" y="1412" class="small">Content / execution path</text>
   <path d="M 900 1406 H 955" class="control" />
   <text x="973" y="1412" class="small">Control / metadata path</text>
   <text x="60" y="1445" class="small">
-    Switch names are placeholders under features.*. Shadow opens no client endpoint. Gateway: reference + interop
-    fixture only.
+    Deployment controls: docs/ahp-operations.md. Shadow opens no endpoint. Public client acceptance remains pending.
   </text>
 </svg>
