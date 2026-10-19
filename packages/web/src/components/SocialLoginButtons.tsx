@@ -103,7 +103,7 @@ export default function SocialLoginButtons({
           <div className="flex items-center gap-3 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary) before:h-px before:flex-1 before:bg-(--border-default) after:h-px after:flex-1 after:bg-(--border-default)">
             {t('or')}
           </div>
-          <div className="relative flex justify-center gap-3">
+          <div className="relative flex gap-2.5">
             {more.map((provider) => {
               // Lark and Feishu share one mark, so the row shows it once and asks which cloud on click.
               if (isLarkOrFeishu(provider) && provider !== firstRegionalProvider) return null
@@ -116,7 +116,7 @@ export default function SocialLoginButtons({
                   aria-label={t('continueWith', { provider: label })}
                   aria-expanded={pair ? showRegional : undefined}
                   title={t('continueWith', { provider: label })}
-                  className="sso h-10 w-12"
+                  className="sso min-w-0 flex-1"
                   onClick={() => (pair ? setShowRegional((open) => !open) : onContinue(provider.target))}
                 >
                   <SocialLoginMark target={provider.target} size={20} />
