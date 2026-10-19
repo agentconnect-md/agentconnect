@@ -123,3 +123,13 @@ export interface ChatTurnOutput extends ChatTurnContext {
   messageId?: string
   messageEmitted: boolean
 }
+
+// The existing daemon admission gate remains the sole owner of queueing, steering, and execution.
+export interface ChatDispatchOptions {
+  requireDurable?: boolean
+  deliveryId?: string
+  steerOnly?: boolean
+  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean; steered?: boolean }) => void
+  admissionWait?: Promise<boolean>
+  deferObservedInbound?: boolean
+}
