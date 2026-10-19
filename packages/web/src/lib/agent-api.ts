@@ -7,7 +7,7 @@ export const API_PROTOCOLS: readonly {
   label: string
   docsUrl: string
   available: boolean
-  descriptionKey: 'aiSdkUiDescription' | 'agUiDescription' | 'acp2Description'
+  descriptionKey: 'aiSdkUiDescription' | 'agUiDescription' | 'acp2Description' | 'ahpDescription'
 }[] = [
   {
     id: 'ai-sdk-ui',
@@ -22,6 +22,13 @@ export const API_PROTOCOLS: readonly {
     docsUrl: 'https://docs.ag-ui.com',
     available: true,
     descriptionKey: 'agUiDescription'
+  },
+  {
+    id: 'ahp',
+    label: 'AHP v1',
+    docsUrl: 'https://github.com/microsoft/agent-host-protocol',
+    available: true,
+    descriptionKey: 'ahpDescription'
   },
   {
     id: 'acp-2',
@@ -233,5 +240,42 @@ export default function Chat() {
 }`
       }
     ]
+  }
+}
+
+export function ahpDeploymentAccess(): 'off' | 'pilot' | 'public' {
+  if (typeof window === 'undefined' || window.__AC_ENV?.AHP_ENABLED !== 'true') return 'off'
+  return window.__AC_ENV?.AHP_PUBLIC_ACCESS === 'true' ? 'public' : 'pilot'
+}
+export function availableApiProtocols(): typeof API_PROTOCOLS {
+  return API_PROTOCOLS.map((protocol) =>
+    protocol.id === 'ahp' ? { ...protocol, available: ahpDeploymentAccess() !== 'off' } : protocol
+  )
+}
+export function ahpQuickstart(url: string): QuickstartFile {
+  return {
+    file: 'connect.ts',
+    code: `// npm i @microsoft/agent-host-protocol@1.0.0 ws
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { WebSocket } from "ws";
+import { AhpClient } from "@microsoft/agent-host-protocol/client";
+import { WebSocketTransport } from "@microsoft/agent-host-protocol/ws";
+
+const socket = new WebSocket(${JSON.stringify(url)}, "ahp", {
+  headers: { Authorization: \`Bearer \${process.env.AGENTCONNECT_API_KEY}\` },
+});
+await once(socket, "open");
+const client = new AhpClient(
+  WebSocketTransport.fromSocket(socket as unknown as globalThis.WebSocket),
+);
+client.connect();
+try {
+  await client.initialize({ clientId: randomUUID(), protocolVersions: ["1.0.0"] });
+  const sessions = await client.request("listSessions", { channel: "ahp-root://" });
+  console.log(sessions.items);
+} finally {
+  await client.shutdown();
+}`
   }
 }
