@@ -129,8 +129,6 @@ export interface RelayConnDeps {
   /** Resolve a browser webchat token → identity + the agent's CURRENT placement
    *  (userId, user, agentId, daemonId, orgId, conversationId), or `{ ok:false }` (§10). May throw on a
    *  transient store error → the handler answers a retryable error. */
-  verifyAhpKey?: (req: { credential: string; agentId: string }) => Promise<RcVerifyResult>
-  verifyAhpBrowser?: (req: { credential: string; agentId?: string }) => Promise<RcVerifyResult>
   verifyWebchatToken: (token: string) => Promise<RcVerifyResult>
   /** Resolve an API key on the agent chat API to the same verdict, its chat id mapped to a conversation (§10.4); may throw like the token check. */
   verifyAgentChatKey: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
