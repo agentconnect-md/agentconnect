@@ -7,6 +7,7 @@ import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { agentMessageId } from '../messages/message-boundary.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { chunkText } from './chat-chunk.js'
+import { extractToolOutput } from './tool-output.js'
 
 // Map already-masked runtime updates into shared chat events without choosing a protocol.
 export function emitChatUpdate(wc: ChatTurnOutput, update: any, resolveFileLink?: WorkspaceFileLinkResolver): void {
@@ -70,7 +71,8 @@ export function emitChatUpdate(wc: ChatTurnOutput, update: any, resolveFileLink?
         kind: 'tool_call',
         toolCallId: String(update.toolCallId ?? ''),
         title: String(update.title ?? update.toolCallId ?? 'tool'),
-        status: String(update.status ?? 'pending')
+        status: String(update.status ?? 'pending'),
+        ...toolPreview(update)
       })
       return
     case 'tool_call_update': {
@@ -80,7 +82,8 @@ export function emitChatUpdate(wc: ChatTurnOutput, update: any, resolveFileLink?
         kind: 'tool_update',
         toolCallId: String(update.toolCallId ?? ''),
         status: String(update.status ?? ''),
-        ...(title !== undefined ? { title } : {})
+        ...(title !== undefined ? { title } : {}),
+        ...toolPreview(update)
       })
       return
     }
@@ -142,4 +145,30 @@ export function commitSegmentOnce(segment: { committing?: Promise<void> }, write
     throw err
   })
   return segment.committing
+}
+
+// Preview only already-masked values, bounded independently of transcript retention.
+function toolPreview(update: { rawInput?: unknown; rawOutput?: unknown; content?: unknown }): {
+  input?: string
+  output?: string
+} {
+  const preview = (value: unknown): string | undefined => {
+    if (value === undefined) return undefined
+    try {
+      const text = typeof value === 'string' ? value : JSON.stringify(value)
+      if (text === undefined) return undefined
+      const bytes = Buffer.from(text)
+      return bytes.length <= 8192
+        ? text
+        : bytes
+            .subarray(0, 8188)
+            .toString('utf8')
+            .replace(/\ufffd$/, '') + '…'
+    } catch {
+      return undefined
+    }
+  }
+  const input = preview(update.rawInput)
+  const output = preview(extractToolOutput(update) || update.rawOutput)
+  return { ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}) }
 }
