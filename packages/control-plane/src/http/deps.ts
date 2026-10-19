@@ -7,6 +7,7 @@ import type { SharedImageService } from '../file-transfer/shared-image.js'
  * `buildHttpServer`.
  */
 import type {
+  AhpSessionBindingRepo,
   AgentMemoryFileRepo,
   AgentMemoryHistoryRepo,
   AgentRepo,
@@ -205,6 +206,7 @@ export interface HttpDeps {
     sessionUsage: SessionUsageRepo
     /** Ownership-only metadata that authorizes browser conversation resumes. */
     webchatConversation: WebchatConversationRepo
+    ahpSessionBinding?: Pick<AhpSessionBindingRepo, 'forConversation'>
     /** The chat APIs each agent accepts calls on (the API card on its Integrations tab). */
     agentApiEntry: AgentApiEntryRepo
     /** WebUI human identity — JIT-provisions the user behind a verified OIDC token. */

@@ -1962,8 +1962,9 @@ export function buildContainer(
         }
       }
     },
-    runtimeConfig:
-      opts.deploymentConfig || gitlab
+    runtimeConfig: {
+      webchatProtocol: config.WEBCHAT_PROTOCOL,
+      ...(opts.deploymentConfig || gitlab
         ? {
             ...(opts.deploymentConfig ? { deploymentRevision: opts.deploymentConfig.revision } : {}),
             publicRuntimeConfig: {
@@ -1984,7 +1985,8 @@ export function buildContainer(
           }
         : fileTransfer
           ? { fileTransfer: { maxBytes: fileTransfer.maxBytes } }
-          : {},
+          : {})
+    },
     maxOrgsPerNonAdminUser: opts.deploymentConfig?.values.features.maxOrgsPerNonAdminUser ?? 1,
     clock,
     // The same late-bound façade the orchestrators above hold (see its
@@ -2010,6 +2012,7 @@ export function buildContainer(
       sessionUsage: repos.sessionUsage,
       agentApiEntry: repos.agentApiEntry,
       webchatConversation: repos.webchatConversation,
+      ahpSessionBinding: repos.ahpSessionBinding,
       user: repos.user,
       org: repos.org,
       waitlist: repos.waitlist,

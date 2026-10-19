@@ -20,6 +20,7 @@ const PublicGitlabInstance = z.object({ instanceUrl: z.string().url() }).strict(
 export const RuntimeConfigDto = z
   .object({
     schemaVersion: z.literal('1'),
+    webchatProtocol: z.enum(['legacy', 'ahp']),
     revision: z.number().int().positive().nullable(),
     config: z
       .object({
@@ -36,6 +37,7 @@ export const RuntimeConfigDto = z
 export type RuntimeConfigDto = z.infer<typeof RuntimeConfigDto>
 
 export interface RuntimeConfigRouteDeps {
+  webchatProtocol?: 'legacy' | 'ahp'
   /** Immutable DB-owned browser auth state loaded at process startup. */
   publicRuntimeConfig?: RuntimeConfigDto['config']
   deploymentRevision?: number
@@ -61,6 +63,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
       },
       async () => ({
         schemaVersion: '1' as const,
+        webchatProtocol: deps.webchatProtocol ?? 'legacy',
         revision: deps.deploymentRevision ?? null,
         config: deps.publicRuntimeConfig ?? null,
         fileTransfer: deps.fileTransfer ?? null
