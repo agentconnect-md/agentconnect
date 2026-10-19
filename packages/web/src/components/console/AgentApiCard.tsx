@@ -41,6 +41,7 @@ import {
   type UserApiKeyDto
 } from '@/lib/api'
 import { Scrim } from '@/components/console/Scrim'
+import { AhpQuickstartDialog } from './AhpQuickstartDialog'
 
 const MOCK_RELAY_URL = 'https://relay.example.test'
 
@@ -100,7 +101,11 @@ export function AgentApiCard({
   ))
   const dialogs = (
     <>
-      {quickstart && <QuickstartDialog agent={agent} protocol={quickstart} onClose={() => setQuickstart(null)} />}
+      {quickstart === 'ahp' ? (
+        <AhpQuickstartDialog agent={agent} onClose={() => setQuickstart(null)} />
+      ) : (
+        quickstart && <QuickstartDialog agent={agent} protocol={quickstart} onClose={() => setQuickstart(null)} />
+      )}
       {removing && (
         <ConfirmationDialog
           title={t('removeTitle')}
