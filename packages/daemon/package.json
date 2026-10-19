@@ -53,6 +53,7 @@
     "@anthropic-ai/sandbox-runtime": "0.0.78",
     "@jsquash/webp": "1.5.0",
     "@larksuiteoapi/node-sdk": "^1.74.0",
+    "@microsoft/agent-host-protocol": "1.0.0",
     "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/server": "2.3.1",
     "@opentelemetry/api": "^1.9.1",
