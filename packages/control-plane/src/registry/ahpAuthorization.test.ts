@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnect.md/protocol'
 import { AhpAuthorization, type AhpAuthorizationDeps } from './ahpAuthorization.js'
+import { AhpCatalogCursor } from './ahpCatalogCursor.js'
 import { AhpSessionService } from './ahpSessions.js'
 import type { AhpSessionBindingRepo } from '../persistence/ports.js'
 import { AhpGrantService } from './ahpGrant.js'
@@ -16,6 +17,7 @@ function fixture() {
     now: Date.now(),
     role: 'member' as string | null,
     permission: 'full',
+    chatActions: 'talk' as 'talk' | 'approve',
     revoked: false,
     api: true,
     feature: true,
@@ -57,6 +59,7 @@ function fixture() {
         id: AGENT,
         orgId: 'org',
         visibility: 'org',
+        chatActions: state.chatActions,
         sharedWith: [],
         placementKind: 'daemon',
         daemonId: 'daemon',
@@ -318,13 +321,17 @@ describe('AHP client authority', () => {
       }
       const service = new AhpSessionService({
         authorization: f.auth,
+        cursors: new AhpCatalogCursor(PEPPER),
         bindings: {
           get: async () => binding,
-          listOwned: async () => [binding]
+          forSession: async () => binding,
+          listCandidates: async () => ['outward']
         } as unknown as AhpSessionBindingRepo
       })
       const signed = await grant(f)
       const req = { orgId: 'org', agentId: AGENT, grant: signed.token, sessionUri: binding.sessionUri }
+      const claims = (await f.grants.verify(signed.token))!
+      expect(await f.auth.authorizeExisting(claims, 'outward')).toBe(true)
       expect(await service.resolve(req)).toMatchObject({ ok: true })
       expect(await service.list({ ...req, limit: 10 })).toMatchObject({
         sessions: [{ sessionUri: binding.sessionUri }]
@@ -341,6 +348,7 @@ describe('AHP client authority', () => {
         session.visibility = 'external'
         session.externalProvider = 'slack'
       }
+      expect(await f.auth.authorizeExisting(claims, 'outward')).toBe(false)
       expect(await service.resolve(req)).toEqual({ ok: false, reason: 'not_found' })
       expect(await service.list({ ...req, limit: 10 })).toEqual({ ok: true, sessions: [] })
     }
@@ -362,12 +370,12 @@ describe('AHP client authority', () => {
       sessionUri: 'ahp-session:/empty',
       sessionId: 'outward'
     }
-    expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
+    expect(await f.auth.authorizeBinding(claims, binding)).toEqual({ callerRole: 'owner', callerApproves: false })
     f.deps.conversations.participants = async () => [
       { agentId: AGENT as never, role: 'primary', currentSessionId: null },
       { agentId: CONVERSATION as never, role: 'member', currentSessionId: 'peer-already-started' }
     ]
-    expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
+    expect(await f.auth.authorizeBinding(claims, binding)).toEqual({ callerRole: 'owner', callerApproves: false })
     f.deps.sessions.getUnscoped = async () => ({
       orgId: 'org',
       agentId: AGENT,
@@ -380,8 +388,58 @@ describe('AHP client authority', () => {
       ownerIdentity: 'user:user',
       contentPurgedAt: null
     })
-    expect(await f.auth.authorizeBinding(claims, binding)).toBe('owner')
+    // Metadata and current roster pointers commit together; a detached historic row cannot fill an empty slot.
+    expect(await f.auth.authorizeBinding(claims, binding)).toBeNull()
+    f.deps.conversations.participants = async () => [
+      { agentId: AGENT as never, role: 'primary', currentSessionId: 'outward' }
+    ]
+    expect(await f.auth.authorizeExisting(claims, 'outward')).toBe(true)
+    expect(await f.auth.authorizeBinding(claims, binding)).toEqual({ callerRole: 'owner', callerApproves: false })
+    f.deps.conversations.participants = async () => [
+      { agentId: AGENT as never, role: 'primary', currentSessionId: 'replacement' }
+    ]
+    expect(await f.auth.authorizeExisting(claims, 'outward')).toBe(false)
+    expect(await f.auth.authorizeBinding(claims, binding)).toBeNull()
     f.deps.conversations.target = async () => ({ targetSessionId: 'outward', ownerUserId: 'user' })
     expect(await f.auth.authorizeBinding(claims, binding)).toBeNull()
   })
+  it.each(['role-downgrade', 'approval-policy-revoked'])(
+    'recomputes approval authority through the CP service after %s without renewing the grant',
+    async (change) => {
+      const f = fixture()
+      f.state.role = change === 'role-downgrade' ? 'member' : 'viewer'
+      f.state.chatActions = change === 'role-downgrade' ? 'talk' : 'approve'
+      const initial = await f.auth.verifyKey({ credential: 'key', agentId: AGENT })
+      if (!initial.ok || !initial.ahpGrant) throw new Error('expected grant')
+      expect(initial.callerApproves).toBe(true)
+      const binding = {
+        orgId: 'org',
+        agentId: AGENT,
+        userId: 'user',
+        conversationId: CONVERSATION,
+        reservationId: 'reservation',
+        operationId: 'operation',
+        sessionUri: 'ahp-session:/native',
+        sessionId: 'outward'
+      }
+      const service = new AhpSessionService({
+        authorization: f.auth,
+        cursors: new AhpCatalogCursor(PEPPER),
+        bindings: {
+          get: async () => binding,
+          forSession: async () => binding,
+          listCandidates: async () => ['outward']
+        } as unknown as AhpSessionBindingRepo
+      })
+      const req = { orgId: 'org', agentId: AGENT, grant: initial.ahpGrant.token, sessionUri: binding.sessionUri }
+      expect(await service.resolve(req)).toMatchObject({ ok: true, callerApproves: true })
+      f.state.role = 'viewer'
+      f.state.chatActions = 'talk'
+      expect(await service.resolve(req)).toMatchObject({ ok: true, callerRole: 'owner', callerApproves: false })
+      expect(await service.list({ ...req, limit: 10 })).toMatchObject({
+        ok: true,
+        sessions: [{ callerRole: 'owner', callerApproves: false }]
+      })
+    }
+  )
 })

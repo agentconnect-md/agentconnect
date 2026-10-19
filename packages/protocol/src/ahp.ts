@@ -99,7 +99,7 @@ export const AhpSessionResolve = z.strictObject({ ...registryScope, sessionUri: 
 export type AhpSessionResolve = z.infer<typeof AhpSessionResolve>
 export const AhpSessionList = z.strictObject({
   ...registryScope,
-  cursor: z.string().uuid().optional(),
+  cursor: z.string().min(1).max(2048).optional(),
   limit: z.number().int().min(1).max(100).default(50)
 })
 export type AhpSessionList = z.infer<typeof AhpSessionList>
@@ -108,7 +108,8 @@ export const AhpSessionBinding = z.strictObject({
   conversationId: z.string().uuid(),
   sessionUri: AhpSessionUri,
   sessionId: z.string().min(1).max(256).optional(),
-  callerRole: ChatCallerRole.optional()
+  callerRole: ChatCallerRole.optional(),
+  callerApproves: z.boolean().optional()
 })
 export type AhpSessionBinding = z.infer<typeof AhpSessionBinding>
 const RegistryRefusal = z.strictObject({
@@ -124,7 +125,7 @@ export const AhpSessionListResult = z.discriminatedUnion('ok', [
   z.strictObject({
     ok: z.literal(true),
     sessions: z.array(AhpSessionBinding).max(100),
-    cursor: z.string().uuid().optional()
+    cursor: z.string().min(1).max(2048).optional()
   }),
   RegistryRefusal
 ])

@@ -221,6 +221,7 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
+import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
 import { AhpSessionService } from './registry/ahpSessions.js'
 import { makeSessionAccessResolver } from './http/session-access.js'
 import { AhpAuthorization } from './registry/ahpAuthorization.js'
@@ -2674,7 +2675,11 @@ export function buildContainer(
       )
   })
   const wsDeps: DaemonWsServerDeps = {
-    ahpSessions: new AhpSessionService({ authorization: ahpAuthorization, bindings: repos.ahpSessionBinding }),
+    ahpSessions: new AhpSessionService({
+      authorization: ahpAuthorization,
+      bindings: repos.ahpSessionBinding,
+      cursors: new AhpCatalogCursor(config.API_KEY_PEPPER, () => clock.now())
+    }),
     log: { error: (o, m) => http.log.error(o, m), warn: (o, m) => http.log.warn(o, m) },
     auth,
     placementResolver,

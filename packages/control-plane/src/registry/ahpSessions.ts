@@ -1,3 +1,4 @@
+import type { AhpCatalogCursor } from './ahpCatalogCursor.js'
 import { historicalSessionUri } from './ahpSessionUri.js'
 import type {
   AhpSessionBinding,
@@ -29,14 +30,15 @@ const NOT_FOUND = { ok: false, reason: 'not_found' } as const
 export class AhpSessionService {
   constructor(
     private readonly deps: {
-      authorization: Pick<AhpAuthorization, 'authorizeGrant' | 'authorizeBinding'>
+      authorization: Pick<AhpAuthorization, 'authorizeGrant' | 'authorizeBinding' | 'authorizeExisting'>
       bindings: AhpSessionBindingRepo
+      cursors: Pick<AhpCatalogCursor, 'encode' | 'decode'>
     }
   ) {}
 
   private async authorizedBinding(claims: AhpGrantClaims, binding: AhpSessionBindingRecord) {
-    const callerRole = await this.deps.authorization.authorizeBinding(claims, binding)
-    return callerRole ? { ...publicBinding(binding), callerRole } : null
+    const authority = await this.deps.authorization.authorizeBinding(claims, binding)
+    return authority ? { ...publicBinding(binding), ...authority } : null
   }
 
   private async authorizedResult(claims: AhpGrantClaims, result: AhpSessionWriteResult): Promise<AhpSessionResult> {
@@ -125,7 +127,7 @@ export class AhpSessionService {
       ? binding.sessionId === claims.targetSessionId
       : claims.conversationId
         ? binding.conversationId === claims.conversationId
-        : binding.userId === claims.userId
+        : true
     if (!allowed) return NOT_FOUND
     const authorized = await this.authorizedBinding(claims, binding)
     return authorized
@@ -143,19 +145,42 @@ export class AhpSessionService {
       const authorized = binding?.sessionId ? await this.authorizedBinding(claims, binding) : null
       return { ok: true, sessions: authorized ? [{ ...authorized, conversationId: claims.conversationId }] : [] }
     }
-    const bindings = await this.deps.bindings.listOwned({
+    const after = req.cursor ? await this.deps.cursors.decode(claims, req.cursor) : undefined
+    if (after === null) return FORBIDDEN
+    const candidates = await this.deps.bindings.listCandidates({
       orgId: req.orgId,
       agentId: req.agentId,
-      userId: claims.userId,
-      after: req.cursor,
-      limit: req.limit
+      after,
+      limit: req.limit + 1
     })
+    const scanned = candidates.slice(0, req.limit)
+    const sessions: AhpSessionBinding[] = []
+    for (const sessionId of scanned) {
+      const binding = await this.existingBinding(claims, sessionId)
+      const authorized = binding ? await this.authorizedBinding(claims, binding) : null
+      if (authorized) sessions.push(authorized)
+    }
     return {
       ok: true,
-      sessions: (await Promise.all(bindings.map((binding) => this.authorizedBinding(claims, binding)))).filter(
-        (binding): binding is NonNullable<typeof binding> => binding !== null
-      ),
-      ...(bindings.length === req.limit ? { cursor: bindings[bindings.length - 1]!.reservationId } : {})
+      sessions,
+      ...(candidates.length > req.limit
+        ? { cursor: await this.deps.cursors.encode(claims, scanned[scanned.length - 1]!) }
+        : {})
     }
+  }
+
+  private async existingBinding(claims: AhpGrantClaims, sessionId: string): Promise<AhpSessionBindingRecord | null> {
+    const bound = await this.deps.bindings.forSession(claims.orgId, sessionId)
+    if (bound) return bound
+    if (!(await this.deps.authorization.authorizeExisting(claims, sessionId))) return null
+    const result = await this.deps.bindings.registerExisting({
+      orgId: claims.orgId,
+      agentId: claims.agentId,
+      userId: claims.userId,
+      sessionId,
+      sessionUri: historicalSessionUri({ ...claims, sessionId }),
+      operationId: agentChatConversationId(claims.orgId, sessionId, claims.agentId, 'ahp-existing-v1')
+    })
+    return result.ok ? result.binding : null
   }
 }
