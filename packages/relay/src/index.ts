@@ -27,6 +27,7 @@ import { RelayCpClient } from './relay-cp-client.js'
 import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
+import { createAhpServer } from './ahp-server.js'
 import { WebchatRouter, bindWebchatPostAuthor, fanImageUpdate, imageUpdateBound } from './webchat-router.js'
 import { VERDICT_TTL_MS, WebchatVerdictCache } from './webchat-verdict-cache.js'
 import { registerAgentChatRoutes } from './agent-chat-route.js'
@@ -366,6 +367,11 @@ async function main(): Promise<void> {
     log
   })
 
+  const ahpServer = createAhpServer(server, {
+    mode: () => config.AHP_MODE,
+    verify: (credential, agentId, kind) => client.verifyAhpCredential(credential, agentId, kind),
+    daemon: (daemonId) => held.rdServer?.get(daemonId)
+  })
   client.start()
   await server.listen({ port: config.PORT, host: config.HOST })
 
@@ -456,6 +462,7 @@ async function main(): Promise<void> {
     for (const ws of rdServer.wss.clients) ws.close(1012, 'relay restarting')
     for (const ws of browserServer.clients) ws.close(1012, 'relay restarting')
     chatRoute.closeAll('the relay is restarting')
+    ahpServer.close()
     await held.relayIngress?.stopAll()
     await client.stop()
     await server.close()
