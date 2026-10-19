@@ -743,7 +743,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     ).toBe(true)
   })
 
-  it('rd/agentmsg + rd/agentmsg/fwd still accept the correlationId an older peer sends', () => {
+  it('rd/agentmsg + rd/agentmsg/fwd decode an older peer’s correlationId and drop it', () => {
     const msg = {
       claimedFromAgentId: AGENT_ID,
       toAgentId: '44444444-4444-4444-8444-444444444444',
@@ -753,7 +753,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       hopCount: 0,
       deliveryId: 'delivery-1'
     }
-    expect(RdAgentMsg.safeParse(msg).success).toBe(true)
+    expect(RdAgentMsg.parse(msg)).not.toHaveProperty('correlationId')
     expect(decodeRelayDaemonFrame(envelope('rd/agentmsg', msg)).ok).toBe(true)
     const fwd = {
       trustedFromAgentId: AGENT_ID,
@@ -765,7 +765,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       hopCount: 1,
       deliveryId: 'delivery-1'
     }
-    expect(RdAgentMsgFwd.safeParse(fwd).success).toBe(true)
+    expect(RdAgentMsgFwd.parse(fwd)).not.toHaveProperty('correlationId')
     expect(decodeRelayDaemonFrame(envelope('rd/agentmsg/fwd', fwd)).ok).toBe(true)
   })
 
