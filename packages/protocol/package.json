@@ -11,6 +11,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./ahp-constants": {
+      "development": "./src/ahp-constants.ts",
+      "types": "./dist/ahp-constants.d.ts",
+      "import": "./dist/ahp-constants.js",
+      "default": "./dist/ahp-constants.js"
+    },
     "./assistant-permission-modes": {
       "development": "./src/assistant-permission-modes.ts",
       "types": "./dist/assistant-permission-modes.d.ts",

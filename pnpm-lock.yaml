@@ -703,6 +703,9 @@ importers:
       '@logto/browser':
         specifier: ^3.1.1
         version: 3.1.1
+      '@microsoft/agent-host-protocol':
+        specifier: 1.0.0
+        version: 1.0.0
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
