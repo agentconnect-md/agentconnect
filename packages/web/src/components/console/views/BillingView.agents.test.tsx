@@ -71,7 +71,15 @@ vi.mock('@/lib/billing-api', async () => ({
   fetchBillingTransactionsSince: async () => DEBITS
 }))
 
-const { default: BillingView, rowAttribution } = await import('./BillingView')
+const {
+  default: BillingView,
+  fmtPostedRange,
+  groupUsage,
+  revealScrollTop,
+  rowAttribution,
+  usageDays,
+  usageHours
+} = await import('./BillingView')
 
 const agent = (id: string, name: string) => ({ id, name, runtime: 'claude' }) as Agent
 const roster = new Map([
@@ -174,15 +182,11 @@ describe('the usage row', () => {
     // hover and on keyboard focus (hence tabbable). The trailing amount span is the ≤768px copy
     // (visible where touch has neither hover nor focus), CSS-hidden on desktop but present in
     // textContent here. Sub-cent amounts keep significant digits rather than rounding to `$0.00`.
-    expect(chips.slice(0, 3).map((c) => c.textContent)).toEqual([
-      'reviewer$0.006823',
-      'reviewer$0.01522',
-      'reviewer$0.001036'
-    ])
-    expect(chips.slice(0, 3).map((c) => c.getAttribute('title'))).toEqual([
+    // d2 and d3 share agent and (no) models, so they fold into one record carrying their sum.
+    expect(chips.slice(0, 2).map((c) => c.textContent)).toEqual(['reviewer$0.006823', 'reviewer$0.01626'])
+    expect(chips.slice(0, 2).map((c) => c.getAttribute('title'))).toEqual([
       'reviewer — $0.006823',
-      'reviewer — $0.01522',
-      'reviewer — $0.001036'
+      'reviewer — $0.01626'
     ])
     expect(chips[0]!.getAttribute('aria-label')).toBe('reviewer — $0.006823')
     expect(chips.every((c) => c.getAttribute('tabindex') === '0')).toBe(true)
@@ -201,9 +205,9 @@ describe('the usage row', () => {
     const host = await render()
     const headers = [...host.querySelectorAll('.row.h > span')].map((h) => h.textContent)
     expect(headers.slice(0, 4)).toEqual(['', 'Agent', 'Models', 'Amount'])
-    // Only the row the service split by model gets a toggle; the others stay plain rows.
+    // A model-split charge and a folded record get toggles; a lone unsplit charge stays a plain row.
     const toggles = [...host.querySelectorAll<HTMLButtonElement>('[data-tx-toggle]')]
-    expect(toggles).toHaveLength(1)
+    expect(toggles).toHaveLength(2)
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
     expect(host.querySelector('[data-tx-models]')).toBeNull()
     await act(async () => toggles[0]!.click())
@@ -213,5 +217,142 @@ describe('the usage row', () => {
     // Clicking anywhere on the row toggles too.
     await act(async () => (toggles[0]!.closest('.row') as HTMLElement).click())
     expect(host.querySelector('[data-tx-models]')).toBeNull()
+  })
+
+  it('folds charges with the same agent and models into one record that expands into its charges', async () => {
+    const host = await render()
+    const badges = [...host.querySelectorAll('[data-tx-count]')]
+    expect(badges.map((b) => b.textContent)).toEqual(['2 charges'])
+    const row = badges[0]!.closest('.row') as HTMLElement
+    expect(row.textContent).toContain('-$0.01626')
+    await act(async () => row.click())
+    expect(host.querySelector('[data-tx-stats]')!.textContent).toBe('2 charges · avg $0.008131 · max $0.01522')
+    // Both charges fall on one local day: one day row, closed until clicked.
+    const days = [...host.querySelectorAll<HTMLButtonElement>('[data-tx-day]')]
+    expect(days).toHaveLength(1)
+    expect(days[0]!.textContent).toContain('2 charges100%-$0.01626')
+    expect(host.querySelector('[data-tx-charge]')).toBeNull()
+    await act(async () => days[0]!.click())
+    expect(days[0]!.getAttribute('aria-expanded')).toBe('true')
+    // The opened day is an hourly chart plus one table row per charge: local posted time, then amount.
+    const rows = [...host.querySelectorAll('[data-tx-day-charges] [data-tx-charge]')]
+    expect(rows.map((r) => r.textContent!.replace(/^\d{4}-\d\d-\d\d \d\d:\d\d/, ''))).toEqual([
+      '-$0.01522',
+      '-$0.001036'
+    ])
+    expect(rows[0]!.querySelector('[title]')!.getAttribute('title')).toBe('$0.015224848')
+    expect(host.querySelector('[data-tx-models]')).toBeNull()
+    // Hovering a row lights its hour: both charges share one, so both rows go hot, and leaving clears it.
+    expect(rows.some((r) => r.hasAttribute('data-hot'))).toBe(false)
+    await act(async () => rows[0]!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(rows.map((r) => r.hasAttribute('data-hot'))).toEqual([true, true])
+    await act(async () =>
+      rows[0]!.parentElement!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
+    )
+    expect(rows.some((r) => r.hasAttribute('data-hot'))).toBe(false)
+  })
+})
+
+describe('groupUsage', () => {
+  const tx = (id: string, agents: { agentId: string; amount: string }[], models?: string[]) => ({
+    type: 'debit' as const,
+    id,
+    period: '2026-08',
+    amount: String(agents.reduce((sum, a) => sum + Number(a.amount), 0)),
+    at: `2026-08-25T0${id.slice(1)}:00:00.000Z`,
+    agents,
+    models: models?.map((model) => ({ model, amount: '1' }))
+  })
+
+  it('keeps model sets apart and orders records by their newest charge', () => {
+    const groups = groupUsage(
+      [
+        tx('t3', [{ agentId: 'agt_1', amount: '1' }], ['a']),
+        tx('t2', [{ agentId: 'agt_1', amount: '2' }], ['b']),
+        tx('t1', [{ agentId: 'agt_1', amount: '3' }], ['a'])
+      ],
+      roster,
+      false
+    )
+    expect(groups.map((g) => g.txs.map((t) => t.id))).toEqual([['t3', 't1'], ['t2']])
+    expect(groups[0]).toMatchObject({
+      amount: '4',
+      at: '2026-08-25T03:00:00.000Z',
+      models: [{ model: 'a', amount: '2' }]
+    })
+    expect(groups[0]!.agents).toEqual([{ key: 'agt_1', agent: roster.get('agt_1'), amount: '4' }])
+  })
+
+  it('folds different withheld agents into one record without keeping their ids', () => {
+    const groups = groupUsage(
+      [tx('t2', [{ agentId: 'x', amount: '1' }]), tx('t1', [{ agentId: 'y', amount: '2' }])],
+      roster,
+      false
+    )
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.agents).toEqual([{ key: 'withheld', agent: undefined, amount: '3' }])
+    expect(groups[0]!.key).not.toMatch(/"x"|"y"/)
+  })
+})
+
+describe('fmtPostedRange', () => {
+  // Local wall-clock instants, so the expectation holds in any test timezone.
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo - 1, d, h, mi).toISOString()
+
+  it('prints one time for a single instant', () => {
+    expect(fmtPostedRange(at(2026, 10, 19, 10, 2), at(2026, 10, 19, 10, 2))).toBe('2026-10-19 10:02')
+  })
+
+  it('keeps the date once when both ends share a day', () => {
+    expect(fmtPostedRange(at(2026, 10, 19, 0, 9), at(2026, 10, 19, 10, 2))).toBe('2026-10-19 00:09–10:02')
+  })
+
+  it('drops the shared year across days, and keeps both years across years', () => {
+    expect(fmtPostedRange(at(2026, 10, 18, 22, 50), at(2026, 10, 19, 10, 2))).toBe('10-18 22:50 – 10-19 10:02')
+    expect(fmtPostedRange(at(2025, 12, 31, 23, 0), at(2026, 1, 1, 1, 0))).toBe('2025-12-31 23:00 – 2026-01-01 01:00')
+  })
+})
+
+describe('revealScrollTop', () => {
+  // A 190px list scrolled to 64; rows are 32px.
+  const at = (top: number, bottom: number) => revealScrollTop({ top, bottom, scrollTop: 64, clientHeight: 190 })
+
+  it('leaves a fully visible block where it is', () => {
+    expect(at(64, 160)).toBeNull()
+  })
+
+  it('centres a block below or above the viewport', () => {
+    expect(at(320, 384)).toBe(257)
+    expect(at(0, 32)).toBe(0)
+  })
+
+  it('top-aligns a block taller than the list', () => {
+    expect(at(320, 640)).toBe(320)
+  })
+})
+
+describe('usageDays', () => {
+  const charge = (id: string, d: number, h: number, amount: string) => ({
+    type: 'debit' as const,
+    id,
+    period: '2026-10',
+    amount,
+    at: new Date(2026, 9, d, h, 0).toISOString()
+  })
+
+  it('splits newest-first charges by local day and sums each day exactly', () => {
+    const days = usageDays([charge('c3', 19, 10, '0.1'), charge('c2', 19, 0, '0.2'), charge('c1', 18, 23, '0.5')])
+    expect(days.map((d) => [d.day, d.txs.map((tx) => tx.id), d.amount])).toEqual([
+      ['2026-10-19', ['c3', 'c2'], '0.3'],
+      ['2026-10-18', ['c1'], '0.5']
+    ])
+  })
+
+  it('buckets a day into 24 local hours with exact totals', () => {
+    const hours = usageHours([charge('c3', 19, 10, '0.1'), charge('c2', 19, 10, '0.2'), charge('c1', 19, 0, '0.5')])
+    expect(hours).toHaveLength(24)
+    expect(hours[10]).toEqual({ label: '10', amount: 0.3, total: '0.3', count: 2 })
+    expect(hours[0]).toMatchObject({ label: '00', total: '0.5', count: 1 })
+    expect(hours[23]).toMatchObject({ label: '23', amount: 0, count: 0 })
   })
 })
