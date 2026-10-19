@@ -388,12 +388,8 @@ describe('the approver', () => {
     })
   })
 
-  it('never uses a stored fallback conversation: with no one reachable the draft waits for an editor in Activity', async () => {
-    const legacy = { fallbackConversation: { integrationId: INT, channelId: 'C0APPROVALS' } }
-    const w = await world({
-      policy: legacy as Partial<AssistantModePolicy>,
-      route: async (req) => ({ requestId: req.requestId })
-    })
+  it('with no one reachable, the draft waits for an editor in Activity', async () => {
+    const w = await world({ route: async (req) => ({ requestId: req.requestId }) })
     expect(await w.post(TO_SUPPORT, PLACELESS, null)).toMatchObject({ result: { drafted: true, approver: null } })
     expect(w.port.postCard).not.toHaveBeenCalled()
     const draft = await w.only()
@@ -423,12 +419,8 @@ describe('the approver', () => {
     expect(w.route).toHaveBeenCalledWith({ requestId, integrationIds: [INT], responsible: true })
   })
 
-  it('names no card for an external sub-session request when no one is reachable, never a stored fallback conversation', async () => {
-    const legacy = { fallbackConversation: { integrationId: INT, channelId: 'C0APPROVALS' } }
-    const w = await world({
-      policy: legacy as Partial<AssistantModePolicy>,
-      route: async (req) => ({ requestId: req.requestId })
-    })
+  it('names no card for an external sub-session request when no one is reachable', async () => {
+    const w = await world({ route: async (req) => ({ requestId: req.requestId }) })
     expect(await w.drafts.cardApprover(AGENT, '66666666-6666-4666-8666-666666666666')).toBeUndefined()
   })
 
