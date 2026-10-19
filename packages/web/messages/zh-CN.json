@@ -1112,12 +1112,10 @@
       "slackConnect": "连接 Slack · AgentConnect"
     },
     "login": {
-      "brandLead": "在团队已在使用的工具中运行你的 Agent。",
-      "brandDescription": "由 Claude 和 Codex 驱动，通过 ACP 在你自己的机器上运行，并接入 Slack、Telegram 和 Discord。",
-      "brandFootnote": "Agent 在你的机器上运行，密钥始终由你保管。",
+      "brandLead": "在团队工作的地方，@ 任何 Agent。",
+      "brandDescription": "把 Claude、Codex 或任何 ACP Agent 带进 Slack、Google Chat、GitHub 等工具。",
       "title": "登录",
-      "subtitle": "欢迎回来，继续进入你的工作区。",
-      "ssoOnly": "仅支持单点登录。AgentConnect 不会存储密码。",
+      "subtitle": "继续进入你的 AgentConnect 工作区。",
       "firstTime": "首次使用？登录后将自动创建账户。",
       "continueWith": "使用 {provider} 继续",
       "continueWithPrefix": "使用 ",
@@ -4593,6 +4591,10 @@
       "loadingMore": "加载中…",
       "endOfLedger": "已到达账单末尾",
       "modelShare": "{name} — {amount}",
+      "chargeCount": "{count, plural, other {# 笔扣费}}",
+      "chargeStats": "{count, plural, other {# 笔扣费}} · 平均 {avg} · 最高 {max}",
+      "spendByHour": "按小时用量",
+      "postedFrom": "起始 {time}",
       "expand": "展开",
       "collapse": "收起"
     }

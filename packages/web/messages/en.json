@@ -1112,12 +1112,10 @@
       "slackConnect": "Connect Slack · AgentConnect"
     },
     "login": {
-      "brandLead": "Run your agents from the tools your team already lives in.",
-      "brandDescription": "Slack, Telegram and Discord — driven by Claude and Codex, running on your own machines over ACP.",
-      "brandFootnote": "Agents run on your machines — keys never leave them.",
+      "brandLead": "@ any agent, right where your team works.",
+      "brandDescription": "Bring Claude, Codex or any ACP agent into Slack, Google Chat, GitHub and more.",
       "title": "Sign in",
-      "subtitle": "Welcome back. Continue to your workspace.",
-      "ssoOnly": "Single sign-on only. AgentConnect never stores a password.",
+      "subtitle": "Continue to your AgentConnect workspace.",
       "firstTime": "First time here? Signing in creates your account.",
       "continueWith": "Continue with {provider}",
       "continueWithPrefix": "Continue with ",
@@ -4593,6 +4591,10 @@
       "loadingMore": "Loading…",
       "endOfLedger": "end of ledger",
       "modelShare": "{name} — {amount}",
+      "chargeCount": "{count, plural, one {# charge} other {# charges}}",
+      "chargeStats": "{count, plural, one {# charge} other {# charges}} · avg {avg} · max {max}",
+      "spendByHour": "Spend by hour",
+      "postedFrom": "from {time}",
       "expand": "Expand",
       "collapse": "Collapse"
     }

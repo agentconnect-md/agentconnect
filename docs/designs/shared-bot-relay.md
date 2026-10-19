@@ -451,6 +451,10 @@ route per installed agent or a per-agent slug fan-out. If that owner is active b
 currently unplaced, CP emits no scoped route and adds the conversation to the relay
 mute fence so it cannot fall through to another agent's unscoped default. This
 availability fence does not count as `gatedOffChannels`; the trigger remains On.
+A pool agent whose duty lease is vacant is not unplaced: the compile addresses it at a
+live member of its set, which claims the duty on receipt (the activation rendezvous),
+because a muted conversation is acknowledged to the platform and never redelivered.
+Only an agent no member can take is fenced.
 This also preserves state and repairs ownership when an integration is removed;
 `No default` is not an operator state.
 
