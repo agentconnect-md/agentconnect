@@ -1,7 +1,14 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { RdWebchatPost, WebchatDone, WebchatEvent, WebchatOutput, WebchatStatus } from '@agentconnect.md/protocol'
-import type { ChatEvent, ChatOutput, ChatPost, ChatStatus, ChatTurnOutput } from '../src/session/chat-turn.js'
-import { legacyChatOutput, legacyChatCompletion } from '../src/webchat/chat-output.js'
+import type {
+  ChatCompletion,
+  ChatEvent,
+  ChatOutput,
+  ChatPost,
+  ChatStatus,
+  ChatTurnOutput
+} from '../src/session/chat-turn.js'
+import { legacyChatOutput } from '../src/webchat/chat-output.js'
 import { emitChatUpdate, flushHeldChatText } from '../src/session/chat-output.js'
 
 // The legacy adapter projects shared events without leaking its replay fields into execution.
@@ -10,7 +17,7 @@ describe('protocol-neutral chat output', () => {
     expectTypeOf<WebchatEvent>().toExtend<ChatEvent>()
     expectTypeOf<ChatStatus>().toEqualTypeOf<WebchatStatus>()
     expectTypeOf<ReturnType<typeof legacyChatOutput>>().toEqualTypeOf<WebchatOutput>()
-    expectTypeOf<ReturnType<typeof legacyChatCompletion>>().toEqualTypeOf<WebchatDone>()
+    expectTypeOf<WebchatDone>().toExtend<ChatCompletion>()
     expectTypeOf<ChatPost>().toEqualTypeOf<RdWebchatPost>()
   })
 
