@@ -152,12 +152,12 @@ describe('AHP session registry (real Postgres)', () => {
     await prisma.memberSetMember.create({ data: { setId, daemonId: f.input.writer.daemonId } })
     await prisma.agent.update({ where: { id: f.input.agentId }, data: { placementKind: 'set', setId, daemonId: null } })
     await seedDutyGroup(prisma, groupId, f.input.writer.daemonId, [f.input.agentId], { term: 2n })
-    const writer = { ...f.input.writer, duty: { groupId, term: 2 } }
+    const writer = { ...f.input.writer, duty: { groupId, term: '2' } }
     expect(await f.repo.reserve(f.input)).toEqual({ ok: false, reason: 'unavailable' })
     const result = await f.repo.reserve({ ...f.input, writer })
     if (!result.ok) throw new Error(result.reason)
     const input = { ...finalizeInput(f, result.binding.reservationId), writer }
-    expect(await f.repo.finalize({ ...input, writer: { ...writer, duty: { groupId, term: 1 } } })).toEqual({
+    expect(await f.repo.finalize({ ...input, writer: { ...writer, duty: { groupId, term: '1' } } })).toEqual({
       ok: false,
       reason: 'unavailable'
     })

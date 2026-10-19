@@ -221,6 +221,7 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
+import { AhpSessionService } from './registry/ahpSessions.js'
 import { AhpAuthorization } from './registry/ahpAuthorization.js'
 import { AhpGrantService } from './registry/ahpGrant.js'
 import { createWebchatTokenVerifier, everyTurnReachesItsContent } from './registry/webchatVerification.js'
@@ -2630,7 +2631,33 @@ export function buildContainer(
   })
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
+  const ahpAuthorization = new AhpAuthorization({
+    grants: new AhpGrantService(config.API_KEY_PEPPER, () => clock.now()),
+    tokens: webchatTokens,
+    keys: apiKeys,
+    keyRows: repos.apiKey,
+    agents: repos.agent,
+    daemons: connReg,
+    conversations: repos.webchatConversation,
+    apiEntries: repos.agentApiEntry,
+    sessions: repos.session,
+    memberSets: repos.memberSet,
+    orgs: repos.org,
+    remoteMcp: webchatRemoteMcp,
+    placement: placementResolver,
+    users: repos.user,
+    ...(iconStore ? { iconStore } : {}),
+    config,
+    now: () => clock.now(),
+    reachesContent: (orgId, ids) =>
+      everyTurnReachesItsContent(
+        { sessions: repos.session, agents: repos.agent, placement: placementResolver, memberSets: repos.memberSet },
+        orgId,
+        ids
+      )
+  })
   const wsDeps: DaemonWsServerDeps = {
+    ahpSessions: new AhpSessionService({ authorization: ahpAuthorization, bindings: repos.ahpSessionBinding }),
     log: { error: (o, m) => http.log.error(o, m), warn: (o, m) => http.log.warn(o, m) },
     auth,
     placementResolver,
@@ -2793,31 +2820,6 @@ export function buildContainer(
     relayPublicBase,
     webAppUrl
   )
-  const ahpAuthorization = new AhpAuthorization({
-    grants: new AhpGrantService(config.API_KEY_PEPPER, () => clock.now()),
-    tokens: webchatTokens,
-    keys: apiKeys,
-    keyRows: repos.apiKey,
-    agents: repos.agent,
-    daemons: connReg,
-    conversations: repos.webchatConversation,
-    apiEntries: repos.agentApiEntry,
-    sessions: repos.session,
-    memberSets: repos.memberSet,
-    orgs: repos.org,
-    remoteMcp: webchatRemoteMcp,
-    placement: placementResolver,
-    users: repos.user,
-    ...(iconStore ? { iconStore } : {}),
-    config,
-    now: () => clock.now(),
-    reachesContent: (orgId, ids) =>
-      everyTurnReachesItsContent(
-        { sessions: repos.session, agents: repos.agent, placement: placementResolver, memberSets: repos.memberSet },
-        orgId,
-        ids
-      )
-  })
   const relayWsDeps: RelayWsServerDeps = {
     auth: relayAuth,
     verifyAhpKey: (req) => ahpAuthorization.verifyKey(req),
