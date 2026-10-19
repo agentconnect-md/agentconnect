@@ -335,6 +335,8 @@ export interface QueueEntry {
    *  turns, or a replayed entry re-admitted from an already-present row). Set once on
    *  admission and used to delete the row on every terminal path. */
   inboxId?: string
+  /** The delivery receipt minted with `inboxId`; released when the admission is dropped before running. */
+  receiptId?: string
   /** P3 outbound: publish the turn's completed reply on this code-host thread. Hook
    * deliveries duplicate this reference in their durable HookDispatchContext so
    * restart replay can recreate the poster behind its publish-state fence. */
@@ -396,6 +398,8 @@ export interface HandledTurnSession {
   additionalMcpServersAttached?: boolean
   /** The digest of the standing context the blocks carry inline, recorded once the runtime answers the prompt. */
   standingDigest?: string
+  /** The tool digests the blocks bring the model up to, recorded once the runtime answers the prompt. */
+  toolDigests?: string
 }
 
 /** The handles every `dispatchOne` phase shares: the entry being run, the pure plan for it,
