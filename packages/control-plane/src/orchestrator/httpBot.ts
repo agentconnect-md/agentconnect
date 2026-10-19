@@ -260,9 +260,8 @@ export class HttpBotOrchestrator {
      *  Used ONLY for the send-only spec and its removal — the relay's own
      *  `rc/assign` target is one member, resolved below. */
     private readonly agentDelivery: AgentDelivery,
-    /** Names the one member the relay addresses ingress to. Placement when it names a machine;
-     *  for a pool agent, the member currently holding its duty — placement names none. */
-    private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY,
+    /** Names the one member the relay addresses ingress to: placement, a pool agent's duty holder, or a live member to claim it. */
+    private readonly placement: Pick<PlacementResolver, 'routableDaemon' | 'dispatchDaemon'> = PLACEMENT_ONLY,
     /** §14.8: which of a gated install's reported DMs seed to the ordinary DM default
      *  because their counterpart is in the agent's own audience. Late-bound in the
      *  composition root; absent ⇒ every gated conversation keeps the §14.2 Off default. */
@@ -1375,19 +1374,18 @@ export class HttpBotOrchestrator {
     return compiled
   }
 
-  /** The members a daemon is currently SERVING, and every member agent record. */
+  /** The members ingress may be addressed at, and every member agent record. */
   private async readPlacement(integrations: IntegrationRecord[]) {
     const agentById = new Map<string, AgentRecord>()
     for (const i of integrations) {
       const a = await this.agents.getUnscoped(i.agentId)
       if (a) agentById.set(i.agentId, a)
     }
-    // Only agents a daemon is currently SERVING can receive traffic — the shared selection every
-    // seat that names a default reads, so a persisted owner can never be one this compile drops.
+    // A vacant pool agent goes to a live member that claims it on receipt; dropping it made the relay ack its messages unrouted.
     const placed = await placedMembers(
       integrations,
       (agentId) => agentById.get(agentId),
-      (agent) => this.placement.routableDaemon(agent)
+      (agent) => this.placement.dispatchDaemon(agent)
     )
     return { agentById, placed }
   }
