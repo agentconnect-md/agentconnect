@@ -42,6 +42,7 @@ export default function SocialLoginButtons({
   const [selectedRegionalTarget, setSelectedRegionalTarget] = useState<LarkFeishuTarget>(
     firstRegionalProvider?.target ?? 'lark'
   )
+  const [showRegional, setShowRegional] = useState(false)
   const selectedRegionalProvider =
     regionalProviders.find((provider) => provider.target === selectedRegionalTarget) ?? firstRegionalProvider
 
@@ -88,7 +89,8 @@ export default function SocialLoginButtons({
 
   // One button per provider, except that Lark and Feishu share one up front.
   const buttons = providers.filter((provider) => !isLarkOrFeishu(provider) || provider === firstRegionalProvider)
-  const primary = buttons.slice(0, VISIBLE_BUTTONS)
+  // A lone leftover would stretch into a full-width icon, so it gets a labeled button instead.
+  const primary = buttons.length === VISIBLE_BUTTONS + 1 ? buttons : buttons.slice(0, VISIBLE_BUTTONS)
   const regionalUpFront = firstRegionalProvider !== undefined && primary.includes(firstRegionalProvider)
   const more = providers.filter(
     (provider) => !primary.includes(provider) && !(regionalUpFront && isLarkOrFeishu(provider))
@@ -102,20 +104,41 @@ export default function SocialLoginButtons({
           <div className="flex items-center gap-3 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary) before:h-px before:flex-1 before:bg-(--border-default) after:h-px after:flex-1 after:bg-(--border-default)">
             {t('or')}
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
-            {more.map((provider) => (
-              <button
-                key={provider.target}
-                type="button"
-                aria-label={t('continueWith', { provider: provider.name })}
-                title={t('continueWith', { provider: provider.name })}
-                className="sso h-9 w-auto flex-1 gap-1.5 px-3 text-[13px]"
-                onClick={() => onContinue(provider.target)}
-              >
-                <SocialLoginMark target={provider.target} size={16} />
-                {provider.name}
-              </button>
-            ))}
+          <div className="relative flex gap-2.5">
+            {more.map((provider) => {
+              // Lark and Feishu share one mark, so the row shows it once and asks which cloud on click.
+              if (isLarkOrFeishu(provider) && provider !== firstRegionalProvider) return null
+              const pair = isLarkOrFeishu(provider) && regionalProviders.length > 1
+              const label = pair ? regionalProviders.map((p) => p.name).join(' / ') : provider.name
+              return (
+                <button
+                  key={provider.target}
+                  type="button"
+                  aria-label={t('continueWith', { provider: label })}
+                  aria-expanded={pair ? showRegional : undefined}
+                  title={t('continueWith', { provider: label })}
+                  className="sso min-w-0 flex-1"
+                  onClick={() => (pair ? setShowRegional((open) => !open) : onContinue(provider.target))}
+                >
+                  <SocialLoginMark target={provider.target} size={20} />
+                </button>
+              )
+            })}
+            {showRegional && (
+              <div className="absolute top-full z-10 mt-2 flex gap-1 rounded-lg border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-md)">
+                {regionalProviders.map((provider) => (
+                  <button
+                    key={provider.target}
+                    type="button"
+                    aria-label={t('continueWith', { provider: provider.name })}
+                    className="cursor-pointer rounded-md border-0 bg-transparent px-3 py-1.5 font-sans text-[13px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    onClick={() => onContinue(provider.target)}
+                  >
+                    {provider.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
