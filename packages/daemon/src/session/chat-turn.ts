@@ -13,8 +13,8 @@ import type {
 export type ChatEvent =
   | { kind: 'message'; text: string; segmentId?: string; postId?: string }
   | { kind: 'thinking'; text: string }
-  | { kind: 'tool_call'; toolCallId: string; title: string; status: string }
-  | { kind: 'tool_update'; toolCallId: string; status: string; title?: string }
+  | { kind: 'tool_call'; toolCallId: string; title: string; status: string; input?: string; output?: string }
+  | { kind: 'tool_update'; toolCallId: string; status: string; title?: string; input?: string; output?: string }
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
   | { kind: 'notice'; text: string; standing?: boolean }
@@ -25,8 +25,21 @@ export type ChatEvent =
       requestId: string
       outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
       label?: string
+      answers?: Record<string, string | number | boolean | string[]>
     }
-  | { kind: 'permission'; requestId: string; tool: string; detail: string }
+  | {
+      kind: 'permission'
+      requestId: string
+      tool: string
+      detail: string
+      options?: { id: string; label: string; allow: boolean }[]
+    }
+  | {
+      kind: 'permission_resolved'
+      requestId: string
+      outcome: 'allowed' | 'denied' | 'cancelled'
+      selectedOptionId?: string
+    }
   | ({ kind: 'app' } & McpAppCard)
   | { kind: 'app_template'; appId: string; seq: number; chunk: string }
   | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }

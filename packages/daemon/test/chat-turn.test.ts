@@ -8,16 +8,16 @@ import type {
   ChatStatus,
   ChatTurnOutput
 } from '../src/session/chat-turn.js'
+import { legacyChatOutput } from '../src/webchat/chat-output.js'
 import { emitChatUpdate, flushHeldChatText } from '../src/session/chat-output.js'
 
-// The legacy codec must continue to accept shared events without leaking its replay fields into execution.
+// The legacy adapter projects shared events without leaking its replay fields into execution.
 describe('protocol-neutral chat output', () => {
   it('remains representable by the legacy protocol adapter', () => {
-    expectTypeOf<ChatEvent>().toExtend<WebchatEvent>()
     expectTypeOf<WebchatEvent>().toExtend<ChatEvent>()
     expectTypeOf<ChatStatus>().toEqualTypeOf<WebchatStatus>()
-    expectTypeOf<ChatOutput>().toExtend<WebchatOutput>()
-    expectTypeOf<ChatCompletion>().toExtend<WebchatDone>()
+    expectTypeOf<ReturnType<typeof legacyChatOutput>>().toEqualTypeOf<WebchatOutput>()
+    expectTypeOf<WebchatDone>().toExtend<ChatCompletion>()
     expectTypeOf<ChatPost>().toEqualTypeOf<RdWebchatPost>()
   })
 
