@@ -76,6 +76,7 @@ export interface Transport {
   onClose(cb: (code: number, reason: string) => void): void
   close(code: number, reason: string): void
   readonly subprotocol: string
+  readonly bufferedAmount?: number
   /** The local address this connection leaves from, when a real socket carries it: the interface a LAN peer reaches this end on. */
   readonly localAddress?: string
 }
@@ -93,6 +94,9 @@ export interface DialOpts {
 }
 
 export class ClientTransport implements Transport {
+  get bufferedAmount(): number {
+    return this.ws.bufferedAmount
+  }
   get subprotocol(): string {
     return this.ws.protocol
   }
