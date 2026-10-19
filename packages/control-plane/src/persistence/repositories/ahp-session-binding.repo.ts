@@ -1,3 +1,5 @@
+import { AgentId, OrgId } from '../../domain/ids.js'
+import { PgWebchatConversationRepo } from './webchat-conversation.repo.js'
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '../../generated/prisma/client.js'
 import { dutyEligibility, type PlacementRef } from '../../domain/placement.js'
@@ -75,7 +77,7 @@ export class PgAhpSessionBindingRepo implements AhpSessionBindingRepo {
           JOIN "webchat_conversation_agent" p ON p."conversationId" = c.id
           WHERE c.id = ${conversationId}::uuid AND c."orgId" = ${input.orgId}
             AND p."agentId" = ${input.agentId}::uuid AND p."removedAt" IS NULL AND c."targetSessionId" IS NULL
-          FOR UPDATE OF c
+          FOR SHARE OF c, p
         `)
         if (!conversation) return { ok: false, reason: 'unavailable' }
         userId = conversation.userId
@@ -204,6 +206,103 @@ export class PgAhpSessionBindingRepo implements AhpSessionBindingRepo {
   forConversation(orgId: string, agentId: string, conversationId: string): Promise<AhpSessionBindingRecord | null> {
     return this.db.ahpSessionBinding.findUnique({
       where: { orgId_conversationId_agentId: { orgId, agentId, conversationId } }
+    })
+  }
+
+  async listCandidates(input: Parameters<AhpSessionBindingRepo['listCandidates']>[0]): Promise<string[]> {
+    const rows = await this.db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id FROM (
+        SELECT id FROM "session_meta" WHERE "orgId" = ${input.orgId} AND "agentId" = ${input.agentId}::uuid
+          AND "contentPurgedAt" IS NULL
+        UNION
+        SELECT "sessionId" AS id FROM "ahp_session_binding"
+          WHERE "orgId" = ${input.orgId} AND "agentId" = ${input.agentId}::uuid AND "sessionId" IS NOT NULL
+      ) candidates WHERE id > ${input.after ?? ''} ORDER BY id ASC LIMIT ${Math.max(1, Math.min(101, input.limit))}
+    `)
+    return rows.map((row) => row.id)
+  }
+
+  registerExisting(input: Parameters<AhpSessionBindingRepo['registerExisting']>[0]): Promise<AhpSessionWriteResult> {
+    return withAmbientTx(this.db, async (tx) => {
+      const observed = await tx.sessionMeta.findFirst({
+        where: { id: input.sessionId, orgId: input.orgId, agentId: input.agentId, contentPurgedAt: null },
+        select: { platform: true, channel: true }
+      })
+      if (!observed) return { ok: false, reason: 'unavailable' }
+      // Native milestones lock the conversation before metadata; discovery uses that same order.
+      let native: { id: string; userId: string } | undefined
+      if (observed.platform === 'webchat') {
+        const sources = await tx.$queryRaw<Array<{ id: string; userId: string }>>(Prisma.sql`
+          SELECT c.id, c."userId" FROM "webchat_conversation" c
+          JOIN "webchat_conversation_agent" p ON p."conversationId" = c.id
+          WHERE c.id::text = ${observed.channel} AND c."orgId" = ${input.orgId} AND c."targetSessionId" IS NULL
+            AND p."agentId" = ${input.agentId}::uuid AND p."removedAt" IS NULL
+            AND p."currentSessionId" = ${input.sessionId} FOR SHARE OF c, p
+        `)
+        native = sources[0]
+        if (!native) return { ok: false, reason: 'unavailable' }
+      }
+      const [session] = await tx.$queryRaw<Array<{ platform: string | null; channel: string | null }>>(Prisma.sql`
+        SELECT platform, channel FROM "session_meta" WHERE id = ${input.sessionId}
+          AND "orgId" = ${input.orgId} AND "agentId" = ${input.agentId}::uuid AND "contentPurgedAt" IS NULL
+          AND platform IS NOT DISTINCT FROM ${observed.platform} AND channel IS NOT DISTINCT FROM ${observed.channel}
+          FOR SHARE
+      `)
+      if (!session) return { ok: false, reason: 'unavailable' }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['ahp-id', input.orgId, input.sessionId])}, 0))`
+      const previous = await tx.ahpSessionBinding.findUnique({
+        where: { orgId_sessionId: { orgId: input.orgId, sessionId: input.sessionId } }
+      })
+      if (previous) return { ok: true, binding: previous }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['ahp-uri', input.orgId, input.sessionUri])}, 0))`
+      if (
+        await tx.ahpSessionBinding.findUnique({
+          where: { orgId_sessionUri: { orgId: input.orgId, sessionUri: input.sessionUri } }
+        })
+      )
+        return { ok: false, reason: 'collision' }
+      let conversationId: string
+      let userId = input.userId
+      if (native) {
+        conversationId = native.id
+        userId = native.userId
+        // An interrupted native reservation owns this slot; discovery cannot take it over.
+        if (
+          await tx.ahpSessionBinding.findUnique({
+            where: {
+              orgId_conversationId_agentId: {
+                orgId: input.orgId,
+                conversationId,
+                agentId: input.agentId
+              }
+            }
+          })
+        )
+          return { ok: false, reason: 'collision' }
+      } else {
+        const continuation = await new PgWebchatConversationRepo(tx).upsertSessionTargeted(
+          {
+            orgId: OrgId(input.orgId),
+            agentId: AgentId(input.agentId),
+            userId
+          },
+          input.sessionId
+        )
+        conversationId = continuation.conversationId
+      }
+      const binding = await tx.ahpSessionBinding.create({
+        data: {
+          reservationId: randomUUID(),
+          orgId: input.orgId,
+          agentId: input.agentId,
+          userId,
+          conversationId,
+          sessionId: input.sessionId,
+          sessionUri: input.sessionUri,
+          operationId: input.operationId
+        }
+      })
+      return { ok: true, binding }
     })
   }
 

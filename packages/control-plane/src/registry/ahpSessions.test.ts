@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AhpSessionBindingRepo } from '../persistence/ports.js'
 import type { AhpGrantClaims } from './ahpGrant.js'
 import { historicalSessionUri } from './ahpSessionUri.js'
+import { AhpCatalogCursor } from './ahpCatalogCursor.js'
 import { AhpSessionService } from './ahpSessions.js'
 
 const binding = {
@@ -23,6 +24,9 @@ function fixture(conversationId?: string) {
     user: 'Owner',
     ...(conversationId ? { conversationId } : { apiKeyId: 'key' })
   }
+  const cursors = new AhpCatalogCursor('test-cursor-pepper')
+  const authorizeBinding = vi.fn(async () => ({ callerRole: 'owner' as const, callerApproves: false }))
+  const authorizeExisting = vi.fn(async () => true)
   const authorizeGrant = vi.fn(async () => claims)
   const repo = {
     reserve: vi.fn(async (_input: Parameters<AhpSessionBindingRepo['reserve']>[0]) => ({ ok: true, binding })),
@@ -34,13 +38,22 @@ function fixture(conversationId?: string) {
       binding
     })),
     forConversation: vi.fn(async () => binding),
-    listOwned: vi.fn(async () => [binding])
+    listCandidates: vi.fn(async (_input: Parameters<AhpSessionBindingRepo['listCandidates']>[0]) => ['outward']),
+    registerExisting: vi.fn(async (_input: Parameters<AhpSessionBindingRepo['registerExisting']>[0]) => ({
+      ok: true,
+      binding
+    }))
   }
   return {
     repo,
+    claims,
+    cursors,
+    authorizeBinding,
+    authorizeExisting,
     authorizeGrant,
     service: new AhpSessionService({
-      authorization: { authorizeGrant, authorizeBinding: async () => 'owner' },
+      authorization: { authorizeGrant, authorizeBinding, authorizeExisting },
+      cursors,
       bindings: repo as unknown as AhpSessionBindingRepo
     })
   }
@@ -77,7 +90,8 @@ describe('AHP session control service', () => {
       conversationId: 'conversation',
       sessionUri: binding.sessionUri,
       sessionId: 'outward',
-      callerRole: 'owner'
+      callerRole: 'owner',
+      callerApproves: false
     })
     expect(result).not.toHaveProperty('userId')
     expect(result).not.toHaveProperty('operationId')
@@ -152,29 +166,29 @@ describe('AHP session control service', () => {
     expect(first.repo.reserve.mock.calls[1]![0]).toMatchObject({ operationId: a.operationId, sessionUri: a.sessionUri })
   })
 
-  it('does not disclose another principal’s binding or an unfinished creation', async () => {
+  it('does not disclose an unauthorized binding or an unfinished creation', async () => {
     const f = fixture()
     f.repo.get.mockResolvedValue({ ...binding, userId: 'somebody-else' })
+    f.authorizeBinding.mockResolvedValue(null as never)
     expect(await f.service.resolve(request)).toEqual({ ok: false, reason: 'not_found' })
     f.repo.get.mockResolvedValue({ ...binding, sessionId: null as never })
     expect(await f.service.resolve(request)).toEqual({ ok: false, reason: 'not_found' })
   })
 
-  it('confines browser discovery to its conversation and API-key discovery to its owner', async () => {
+  it('confines browser discovery to its conversation and scopes API-key candidate discovery', async () => {
     const browser = fixture('conversation')
     expect(await browser.service.list({ ...request, limit: 10 })).toMatchObject({
       ok: true,
       sessions: [{ sessionUri: binding.sessionUri }]
     })
-    expect(browser.repo.listOwned).not.toHaveBeenCalled()
+    expect(browser.repo.listCandidates).not.toHaveBeenCalled()
     const api = fixture()
-    await api.service.list({ ...request, limit: 10, cursor: 'previous' })
-    expect(api.repo.listOwned).toHaveBeenCalledWith({
+    await api.service.list({ ...request, limit: 10, cursor: await api.cursors.encode(api.claims, 'previous') })
+    expect(api.repo.listCandidates).toHaveBeenCalledWith({
       orgId: 'org',
       agentId: 'agent',
-      userId: 'owner',
       after: 'previous',
-      limit: 10
+      limit: 11
     })
   })
   it('exports an authorized continuation as the same outward session without creating a conversation or runtime slot', async () => {
@@ -209,5 +223,54 @@ describe('AHP session control service', () => {
       await f.service.finalize({ ...request, reservationId: binding.reservationId, sessionId: 'replacement' }, 'daemon')
     ).toEqual({ ok: false, reason: 'forbidden' })
     expect(f.repo.finalize).not.toHaveBeenCalled()
+  })
+  it('discovers shared history only after current policy permits metadata registration', async () => {
+    const f = fixture()
+    f.repo.forSession.mockResolvedValue(null as never)
+    f.repo.listCandidates.mockResolvedValueOnce(['hidden', 'outward']).mockResolvedValueOnce(['outward'])
+    f.authorizeExisting.mockResolvedValueOnce(false)
+    const hidden = await f.service.list({ ...request, limit: 1 })
+    expect(hidden).toMatchObject({ ok: true, sessions: [], cursor: expect.any(String) })
+    expect(f.repo.registerExisting).not.toHaveBeenCalled()
+    if (!hidden.ok || !hidden.cursor) throw new Error('expected next page')
+    expect(await f.cursors.decode(f.claims, hidden.cursor)).toBe('hidden')
+    expect(await f.service.list({ ...request, limit: 1, cursor: hidden.cursor })).toMatchObject({
+      ok: true,
+      sessions: [{ sessionId: 'outward' }]
+    })
+    expect(f.repo.registerExisting).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'outward',
+        sessionUri: historicalSessionUri({ ...f.claims, sessionId: 'outward' })
+      })
+    )
+    expect(f.repo.reserve).not.toHaveBeenCalled()
+  })
+
+  it('advances past occupied aliases without shadowing the client reservation', async () => {
+    const f = fixture()
+    f.repo.forSession.mockResolvedValue(null as never)
+    f.repo.listCandidates.mockResolvedValue(['occupied', 'next'])
+    f.repo.registerExisting.mockResolvedValue({ ok: false, reason: 'collision' } as never)
+    const result = await f.service.list({ ...request, limit: 1 })
+    expect(result).toMatchObject({ ok: true, sessions: [] })
+    if (!result.ok || !result.cursor) throw new Error('expected next page')
+    expect(await f.cursors.decode(f.claims, result.cursor)).toBe('occupied')
+    expect(f.repo.reserve).not.toHaveBeenCalled()
+  })
+
+  it('resolves another registrant’s alias through current audience policy without granting creator authority', async () => {
+    const f = fixture()
+    f.repo.get.mockResolvedValue({ ...binding, userId: 'original-owner' })
+    f.authorizeBinding.mockResolvedValue({ callerRole: 'participant', callerApproves: false } as never)
+    expect(await f.service.resolve(request)).toMatchObject({ ok: true, callerRole: 'participant' })
+    expect(f.authorizeBinding).toHaveBeenCalledWith(f.claims, expect.objectContaining({ userId: 'original-owner' }))
+  })
+
+  it('rejects a cross-principal cursor before any candidate scan', async () => {
+    const f = fixture()
+    const cursor = await f.cursors.encode({ ...f.claims, userId: 'another-member' }, 'hidden')
+    expect(await f.service.list({ ...request, limit: 10, cursor })).toEqual({ ok: false, reason: 'forbidden' })
+    expect(f.repo.listCandidates).not.toHaveBeenCalled()
   })
 })

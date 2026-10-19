@@ -1892,6 +1892,16 @@ export interface AhpSessionBindingRepo {
     writer: AhpSessionWriter
   }): Promise<AhpSessionWriteResult>
   forConversation(orgId: string, agentId: string, conversationId: string): Promise<AhpSessionBindingRecord | null>
+  // Register metadata for an authorized existing identity; never allocate another runtime slot.
+  registerExisting(input: {
+    orgId: string
+    agentId: string
+    userId: string
+    sessionId: string
+    sessionUri: string
+    operationId: string
+  }): Promise<AhpSessionWriteResult>
+  listCandidates(input: { orgId: string; agentId: string; after?: string; limit: number }): Promise<string[]>
   // Pending creations are not discoverable; an interrupted reservation remains occupied indefinitely.
   listOwned(input: {
     orgId: string

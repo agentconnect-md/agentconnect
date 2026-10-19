@@ -182,8 +182,62 @@ export class AhpAuthorization {
     }
   }
 
+  private async sessionAllowed(
+    claims: AhpGrantClaims,
+    access: NonNullable<Awaited<ReturnType<AhpAuthorization['agentAccess']>>>,
+    sessionId: string,
+    session: NonNullable<Awaited<ReturnType<AhpAuthorizationDeps['sessions']['getUnscoped']>>>,
+    ownConversation: boolean,
+    continued: boolean
+  ): Promise<boolean> {
+    if (session.orgId !== claims.orgId || session.agentId !== claims.agentId || session.contentPurgedAt !== null)
+      return false
+    const audience = await this.deps.sessionAccess(claims, session as SessionViewable)
+    const allowed = ownConversation ? canViewSession : canContinueSession
+    if (!allowed(session as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess)) return false
+    if (!(await this.deps.reachesContent(OrgId(claims.orgId), [SessionId(sessionId)]))) return false
+    if (continued) {
+      if (session.platform === 'webchat') {
+        const source = await this.deps.conversations.target(session.channel ?? '')
+        const roster = await this.deps.conversations.participants(OrgId(claims.orgId), session.channel ?? '')
+        if (
+          !source ||
+          source.targetSessionId !== null ||
+          !roster.some((slot) => slot.agentId === claims.agentId && slot.currentSessionId === sessionId)
+        )
+          return false
+      }
+      const features = this.deps.daemons.get(access.daemonId)?.capabilities?.features ?? []
+      if (!continuableOrigin(session.platform ?? '') || !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))
+        return false
+      if (originKindOf(session.platform ?? '') === 'hook' && !features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE))
+        return false
+    }
+    return true
+  }
+
+  /** Discovery checks current visibility before creating any continuation metadata. */
+  async authorizeExisting(claims: AhpGrantClaims, sessionId: string): Promise<boolean> {
+    const access = await this.agentAccess(claims)
+    const session = await this.deps.sessions.getUnscoped(SessionId(sessionId))
+    if (!access || !session) return false
+    let ownConversation = false
+    const continued = session.platform !== 'webchat'
+    if (!continued) {
+      const conversation = await this.deps.conversations.target(session.channel ?? '')
+      if (!conversation || conversation.targetSessionId !== null) return false
+      const roster = await this.deps.conversations.participants(OrgId(claims.orgId), session.channel ?? '')
+      if (!roster.some((slot) => slot.agentId === claims.agentId && slot.currentSessionId === sessionId)) return false
+      ownConversation = conversation.ownerUserId === claims.userId
+    }
+    return this.sessionAllowed(claims, access, sessionId, session, ownConversation, continued)
+  }
+
   /** An alias creator is not the continued session's owner; resolve its current audience for every read. */
-  async authorizeBinding(claims: AhpGrantClaims, binding: AhpSessionBindingRecord): Promise<ChatCallerRole | null> {
+  async authorizeBinding(
+    claims: AhpGrantClaims,
+    binding: AhpSessionBindingRecord
+  ): Promise<{ callerRole: ChatCallerRole; callerApproves: boolean } | null> {
     if (binding.orgId !== claims.orgId || binding.agentId !== claims.agentId) return null
     const access = await this.agentAccess(claims)
     if (!access) return null
@@ -191,29 +245,32 @@ export class AhpAuthorization {
     if (!conversation) return null
     const continued = conversation.targetSessionId !== null
     const ownConversation = !continued && conversation.ownerUserId === claims.userId
+    const roster = continued
+      ? []
+      : await this.deps.conversations.participants(OrgId(claims.orgId), binding.conversationId)
+    const slot = roster.find((participant) => participant.agentId === claims.agentId)
+    if (!continued && (!slot || (slot.currentSessionId !== null && slot.currentSessionId !== binding.sessionId)))
+      return null
     const session = binding.sessionId ? await this.deps.sessions.getUnscoped(SessionId(binding.sessionId)) : null
     if (!session) {
       // A native slot has no metadata until its first turn; only its verified creator may open that empty slot.
-      const roster = await this.deps.conversations.participants(OrgId(claims.orgId), binding.conversationId)
-      const slot = roster.find((participant) => participant.agentId === claims.agentId)
-      if (!ownConversation || binding.userId !== claims.userId || !slot || slot.currentSessionId != null) return null
+      if (!ownConversation || binding.userId !== claims.userId || slot?.currentSessionId != null) return null
     } else {
-      if (session.orgId !== claims.orgId || session.agentId !== claims.agentId || session.contentPurgedAt !== null)
+      if (
+        !continued &&
+        (slot?.currentSessionId !== binding.sessionId ||
+          session.platform !== 'webchat' ||
+          session.channel !== binding.conversationId)
+      )
         return null
-      const audience = await this.deps.sessionAccess(claims, session as SessionViewable)
-      const allowed = ownConversation ? canViewSession : canContinueSession
-      if (!allowed(session as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess))
+      if (!(await this.sessionAllowed(claims, access, binding.sessionId!, session, ownConversation, continued)))
         return null
-      if (!(await this.deps.reachesContent(OrgId(claims.orgId), [SessionId(binding.sessionId!)]))) return null
-      if (continued) {
-        const features = this.deps.daemons.get(access.daemonId)?.capabilities?.features ?? []
-        if (!continuableOrigin(session.platform ?? '') || !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))
-          return null
-        if (originKindOf(session.platform ?? '') === 'hook' && !features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE))
-          return null
-      }
     }
-    return chatCallerRole(canEdit(access.agent, access.viewer), ownConversation)
+    const editor = canEdit(access.agent, access.viewer)
+    return {
+      callerRole: chatCallerRole(editor, ownConversation),
+      callerApproves: editor || chatApprovalsAllowed(access.agent)
+    }
   }
 
   async authorizeGrant(token: string, scope: { orgId: string; agentId: string }): Promise<AhpGrantClaims | null> {
