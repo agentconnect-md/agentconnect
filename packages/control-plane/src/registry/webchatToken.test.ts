@@ -19,6 +19,11 @@ describe('WebchatTokenService', () => {
     expect(await svc.verify(token)).toEqual(CLAIMS)
   })
 
+  it.each(['legacy', 'ahp'] as const)('round-trips the server-selected %s protocol pin', async (protocol) => {
+    const svc = new WebchatTokenService(PEPPER)
+    expect(await svc.verify((await svc.mint({ ...CLAIMS, protocol })).token)).toEqual({ ...CLAIMS, protocol })
+  })
+
   it('returns the expiry the token is signed with, five minutes out', async () => {
     const svc = new WebchatTokenService(PEPPER)
     const before = Date.now()

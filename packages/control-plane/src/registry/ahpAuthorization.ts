@@ -108,7 +108,7 @@ export class AhpAuthorization {
     }
   }
 
-  private async conversationAccess(claims: AhpGrantClaims) {
+  private async conversationAccess(claims: Pick<AhpGrantClaims, 'orgId' | 'userId' | 'conversationId'>) {
     const binding = await this.deps.conversations.resumeBinding(claims.conversationId!, OrgId(claims.orgId))
     if (!binding) return null
     if (!(await this.deps.reachesContent(OrgId(claims.orgId), binding.currentSessionIds))) return null
@@ -133,7 +133,7 @@ export class AhpAuthorization {
   async verifyBrowser(req: { credential: string; agentId?: string }): Promise<RcVerifyResult> {
     const d = this.deps
     const claims = await d.tokens.verify(req.credential)
-    if (!claims || !(await this.conversationAccess(claims))) return denied()
+    if (!claims || claims.protocol !== 'ahp' || !(await this.conversationAccess(claims))) return denied()
     const role = (await d.orgs.roleOf(claims.orgId, claims.userId)) as OrgMemberRole | null
     if (!role) return denied()
     const verdict = await webchatBinding(d)(claims, { remoteMcp: false, viewer: { userId: claims.userId, role } })
@@ -154,6 +154,7 @@ export class AhpAuthorization {
         userId: claims.userId,
         user: claims.user,
         conversationId: claims.conversationId,
+        protocol: 'ahp',
         ...(targetSessionId ? { targetSessionId } : {}),
         ...(claims.conversationPeers ? { conversationPeers: claims.conversationPeers } : {}),
         ...(claims.privateSessionOwnerIdentity
@@ -213,6 +214,7 @@ export class AhpAuthorization {
     const access = await this.agentAccess(claims)
     if (!access) return null
     if (claims.apiKeyId) return (await this.liveKey(claims)) ? claims : null
+    if (claims.protocol !== 'ahp') return null
     const binding = await this.conversationAccess(claims)
     if (!binding) return null
     const verdict = await webchatBinding(this.deps)(

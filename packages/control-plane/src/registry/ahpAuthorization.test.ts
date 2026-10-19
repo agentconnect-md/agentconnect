@@ -4,6 +4,7 @@ import { AhpAuthorization, type AhpAuthorizationDeps } from './ahpAuthorization.
 import { AhpSessionService } from './ahpSessions.js'
 import type { AhpSessionBindingRepo } from '../persistence/ports.js'
 import { AhpGrantService } from './ahpGrant.js'
+import { createWebchatTokenVerifier } from './webchatVerification.js'
 import { WebchatTokenService } from './webchatToken.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -127,9 +128,38 @@ describe('AHP client authority', () => {
     expect(await f.auth.authorizeGrant(signed.token, { orgId: 'org', agentId: AGENT })).toBeNull()
   })
 
+  it.each([undefined, 'legacy'] as const)('rejects browser protocol pin %s at AHP ingress', async (protocol) => {
+    const f = fixture()
+    const browser = await f.tokens.mint({
+      orgId: 'org',
+      agentId: AGENT,
+      userId: 'user',
+      user: 'User',
+      conversationId: CONVERSATION,
+      protocol
+    })
+    expect(await f.auth.verifyBrowser({ credential: browser.token })).toMatchObject({ ok: false })
+  })
+  it('rejects AHP-pinned tokens on legacy ingress and preserves the pin in the signed grant', async () => {
+    const f = fixture()
+    const browser = await f.tokens.mint({
+      protocol: 'ahp',
+      orgId: 'org',
+      agentId: AGENT,
+      userId: 'user',
+      user: 'User',
+      conversationId: CONVERSATION
+    })
+    expect(await createWebchatTokenVerifier(f.deps)(browser.token)).toMatchObject({ ok: false })
+    const verified = await f.auth.verifyBrowser({ credential: browser.token })
+    if (!verified.ok || !verified.ahpGrant) throw new Error('expected AHP grant')
+    expect(await f.grants.verify(verified.ahpGrant.token)).toMatchObject({ protocol: 'ahp' })
+  })
+
   it('binds browser authority to its existing conversation and keeps pre-turn slots owner-only', async () => {
     const f = fixture()
     const browser = await f.tokens.mint({
+      protocol: 'ahp',
       orgId: 'org',
       agentId: AGENT,
       userId: 'user',
@@ -157,6 +187,7 @@ describe('AHP client authority', () => {
     ]
     f.deps.apiEntries.listForAgent = async (id) => (id === peer ? [{ protocol: 'ahp' }] : [])
     const browser = await f.tokens.mint({
+      protocol: 'ahp',
       orgId: 'org',
       agentId: AGENT,
       userId: 'user',
@@ -200,6 +231,7 @@ describe('AHP client authority', () => {
       }
     })
     const browser = await f.tokens.mint({
+      protocol: 'ahp',
       orgId: 'org',
       agentId: AGENT,
       userId: 'user',
@@ -234,6 +266,7 @@ describe('AHP client authority', () => {
       currentSessionIds: ['session' as never]
     })
     const browser = await f.tokens.mint({
+      protocol: 'ahp',
       orgId: 'org',
       agentId: AGENT,
       userId: 'user',

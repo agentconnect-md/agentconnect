@@ -11,6 +11,7 @@ const Claims = z
     user: z.string(),
     apiKeyId: z.string().optional(),
     conversationId: z.string().uuid().optional(),
+    protocol: z.literal('ahp').optional(),
     privateSessionOwnerIdentity: z.string().optional(),
     targetSessionId: z.string().min(1).max(256).optional(),
     conversationPeers: z
@@ -19,6 +20,7 @@ const Claims = z
       .optional()
   })
   .refine((value) => Boolean(value.apiKeyId) !== Boolean(value.conversationId))
+  .refine((value) => !value.conversationId || value.protocol === 'ahp')
 export type AhpGrantClaims = z.infer<typeof Claims>
 const AUDIENCE = 'agentconnect.ahp-client.v1'
 

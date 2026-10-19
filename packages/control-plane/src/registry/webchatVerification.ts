@@ -68,7 +68,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
   const resolve = webchatBinding(deps)
   return async (token) => {
     const claims = await deps.tokens.verify(token)
-    if (!claims) return { ok: false, reason: 'invalid token' }
+    if (!claims || claims.protocol === 'ahp') return { ok: false, reason: 'invalid token' }
     // The token proves who minted it, not that they still may: membership is re-read on every dial.
     const role = (await deps.orgs.roleOf(claims.orgId, claims.userId)) as OrgMemberRole | null
     if (!role) return ACCESS_REVOKED
