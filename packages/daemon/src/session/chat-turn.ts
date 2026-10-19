@@ -128,8 +128,14 @@ export interface ChatTurnOutput extends ChatTurnContext {
 export interface ChatDispatchOptions {
   requireDurable?: boolean
   deliveryId?: string
+  receiptId?: string
   steerOnly?: boolean
-  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean; steered?: boolean }) => void
+  onAdmission?: (result: {
+    accepted: boolean
+    reason?: string
+    duplicate?: boolean
+    steered?: boolean
+  }) => void | Promise<void>
   admissionWait?: Promise<boolean>
   deferObservedInbound?: boolean
 }

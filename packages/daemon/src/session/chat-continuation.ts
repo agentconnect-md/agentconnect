@@ -142,7 +142,8 @@ export class ChatSessionContinuation {
   async dispatch(
     turn: PreparedChatContinuation,
     context: ChatTurnContext,
-    onRefused: () => void
+    onRefused: () => void,
+    options?: Pick<ChatDispatchOptions, 'requireDurable' | 'receiptId' | 'deliveryId' | 'onAdmission'>
   ): Promise<ChatContinuationVerdict> {
     const { agentId, message, local, integration, request } = turn
     const { author, text, conversationId, turnId } = request
@@ -152,7 +153,30 @@ export class ChatSessionContinuation {
     }
     // Hook output commits into the same transcript once and never uses a platform renderer.
     if (!integration) {
-      void this.host.dispatch(agentId, message, undefined, context).catch(logFailure)
+      if (options) {
+        let settle!: (result: { accepted: boolean; reason?: string }) => void
+        let fail!: (error: unknown) => void
+        const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve, reject) => {
+          settle = resolve
+          fail = reject
+        })
+        void this.host
+          .dispatch(agentId, message, undefined, context, {
+            ...options,
+            onAdmission: async (result) => {
+              await options.onAdmission?.(result)
+              settle(result)
+            }
+          })
+          .catch(fail)
+        const result = await admitted
+        if (!result.accepted) {
+          onRefused()
+          return { accepted: false, reason: result.reason === 'draining' ? 'draining' : 'busy' }
+        }
+      } else {
+        void this.host.dispatch(agentId, message, undefined, context).catch(logFailure)
+      }
       this.host.info(
         `chat continuation: ${author.name} → hook session ${local.key} (conversation ${conversationId}, turn ${turnId})`
       )
@@ -163,15 +187,24 @@ export class ChatSessionContinuation {
     const mirrorAdmission = new Promise<boolean>((resolve) => {
       settleMirror = resolve
     })
-    let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
-    const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+    let committed: Promise<void> = Promise.resolve()
+    let settleAdmission!: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+    const admitted = new Promise<{ accepted: boolean; reason?: string; duplicate?: boolean }>((resolve) => {
       settleAdmission = resolve
     })
     void this.host
       .dispatch(agentId, message, integration.integrationId, context, {
+        ...options,
         admissionWait: mirrorAdmission,
         deferObservedInbound: true,
-        onAdmission: (result) => settleAdmission(result)
+        onAdmission: (result) => {
+          settleAdmission(result)
+          committed = (async () => {
+            if (result.accepted && !result.duplicate && !(await mirrorAdmission)) return
+            await options?.onAdmission?.(result)
+          })()
+          return committed
+        }
       })
       .catch((error) => {
         logFailure(error)
@@ -181,15 +214,21 @@ export class ChatSessionContinuation {
     if (!admission.accepted) {
       settleMirror(false)
       onRefused()
+      await committed
       return { accepted: false, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
+    }
+    if (admission.duplicate) {
+      settleMirror(false)
+      await committed
+      return { accepted: true }
     }
     // Reserve a queue slot first, then prove that the attributed human message reached its origin.
     const attributedText = `[${author.name} via console] ${text}`
-    let slackMirror: { conn: SlackConnection; ts: string; text: string } | undefined
+    let authorMirror: { conn: SlackConnection; ts: string; text: string } | undefined
     try {
       let mirrorId: string | undefined
-      if (local.platform === 'slack') {
-        const conn = integration.conn as SlackConnection
+      if ('postAsAuthor' in integration.conn) {
+        const conn = integration.conn
         const landed = await conn.postAsAuthor(
           local.channel,
           local.thread || undefined,
@@ -198,7 +237,7 @@ export class ChatSessionContinuation {
           { agentAuthorId: agentId }
         )
         mirrorId = landed?.ts
-        if (landed) slackMirror = { conn, ts: landed.ts, text: landed.text }
+        if (landed) authorMirror = { conn, ts: landed.ts, text: landed.text }
       } else {
         mirrorId = await integration.conn.postMessage(local.channel, attributedText, local.thread || undefined)
       }
@@ -210,13 +249,14 @@ export class ChatSessionContinuation {
       settleMirror(false)
       return { accepted: false, reason: 'integration_delivery_failed' }
     }
+    await committed
     // Once delivery is proven, a failed routing finalization leaves transcript-only peers.
-    if (slackMirror && typeof slackMirror.conn.finalizeResponse === 'function') {
-      const finalized = await slackMirror.conn.finalizeResponse(
+    if (authorMirror && typeof authorMirror.conn.finalizeResponse === 'function') {
+      const finalized = await authorMirror.conn.finalizeResponse(
         local.channel,
-        slackMirror.ts,
-        [{ type: 'markdown', text: slackMirror.text }],
-        slackMirror.text,
+        authorMirror.ts,
+        [{ type: 'markdown', text: authorMirror.text }],
+        authorMirror.text,
         agentId,
         { responseId: message.msgId, deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
       )

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentSchema } from '../src/agents/agent-schema.js'
 import { ChatSessionApplication } from '../src/session/chat-application.js'
+import { ChatSessionContinuation } from '../src/session/chat-continuation.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
 import { WebchatTransport, type WebchatHost, type WebchatReplyConnection } from '../src/webchat/transport.js'
 import { memoryStoreDatabase, openTestStore } from './store-support.js'
@@ -270,5 +271,86 @@ describe('shared continuation behind the legacy adapter', () => {
     expect(call[2]).toBeUndefined()
     expect(call[3]?.continuation).toBeUndefined()
     expect(postAsAuthor).not.toHaveBeenCalled()
+  })
+})
+
+describe('durable continuation admission', () => {
+  async function prepare() {
+    const f = await continuationFixture()
+    const continuation = new ChatSessionContinuation(
+      {
+        ...f.host,
+        dispatch: (agent, message, integration, context, options) =>
+          f.host.dispatch(agent, message, integration, context, undefined, options)
+      },
+      f.application
+    )
+    const prepared = await continuation.prepare({
+      agentId,
+      conversationId,
+      targetSessionId: 'outward',
+      turnId: 'durable',
+      text: 'continued',
+      author
+    })
+    if (!prepared.accepted) throw new Error('fixture failed')
+    return { ...f, continuation, prepared, context: { conversationId, turnId: 'durable', sink: f.sink } }
+  }
+
+  it('awaits the durable admission effect after the mirror and before execution', async () => {
+    const f = await prepare()
+    const order: string[] = []
+    f.postAsAuthor.mockImplementation(async () => {
+      order.push('mirror')
+      return { ts: '200', text: 'continued' }
+    })
+    vi.mocked(f.host.dispatch).mockImplementation(async (_a, _m, _i, _c, _meta, options) => {
+      expect(options).toMatchObject({ requireDurable: true, receiptId: 'stable-receipt' })
+      await options?.onAdmission?.({ accepted: true })
+      if (await options?.admissionWait) order.push('execute')
+      return null
+    })
+    await f.continuation.dispatch(f.prepared.turn, f.context, vi.fn(), {
+      requireDurable: true,
+      receiptId: 'stable-receipt',
+      onAdmission: async () => {
+        await Promise.resolve()
+        order.push('echo')
+      }
+    })
+    expect(order).toEqual(['mirror', 'echo', 'execute'])
+  })
+
+  it('reconciles a durable duplicate without mirroring again', async () => {
+    const f = await prepare()
+    const onAdmission = vi.fn(async () => {})
+    vi.mocked(f.host.dispatch).mockImplementation(async (_a, _m, _i, _c, _meta, options) => {
+      await options?.onAdmission?.({ accepted: true, duplicate: true })
+      return null
+    })
+    await expect(
+      f.continuation.dispatch(f.prepared.turn, f.context, vi.fn(), {
+        requireDurable: true,
+        receiptId: 'stable',
+        onAdmission
+      })
+    ).resolves.toEqual({ accepted: true })
+    expect(f.postAsAuthor).not.toHaveBeenCalled()
+    expect(onAdmission).toHaveBeenCalledWith({ accepted: true, duplicate: true })
+  })
+
+  it('does not acknowledge admission when the platform mirror fails', async () => {
+    const f = await prepare()
+    f.postAsAuthor.mockResolvedValue(undefined)
+    const onAdmission = vi.fn(async () => {})
+    vi.mocked(f.host.dispatch).mockImplementation(async (_a, _m, _i, _c, _meta, options) => {
+      await options?.onAdmission?.({ accepted: true })
+      expect(await options?.admissionWait).toBe(false)
+      return null
+    })
+    await expect(
+      f.continuation.dispatch(f.prepared.turn, f.context, vi.fn(), { requireDurable: true, onAdmission })
+    ).resolves.toMatchObject({ accepted: false, reason: 'integration_delivery_failed' })
+    expect(onAdmission).not.toHaveBeenCalled()
   })
 })
