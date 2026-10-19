@@ -8,7 +8,14 @@ import {
   type ChatCallerRole,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
-import { canContinueSession, canEdit, canView, identitySetOf, type SessionViewable } from '../authorization/policy.js'
+import {
+  canContinueSession,
+  canViewSession,
+  canEdit,
+  canView,
+  identitySetOf,
+  type SessionViewable
+} from '../authorization/policy.js'
 import { chatApprovalsAllowed, chatCallerRole } from '../domain/chat-actions.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type {
@@ -194,7 +201,8 @@ export class AhpAuthorization {
       if (session.orgId !== claims.orgId || session.agentId !== claims.agentId || session.contentPurgedAt !== null)
         return null
       const audience = await this.deps.sessionAccess(claims, session as SessionViewable)
-      if (!canContinueSession(session as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess))
+      const allowed = ownConversation ? canViewSession : canContinueSession
+      if (!allowed(session as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess))
         return null
       if (!(await this.deps.reachesContent(OrgId(claims.orgId), [SessionId(binding.sessionId!)]))) return null
       if (continued) {

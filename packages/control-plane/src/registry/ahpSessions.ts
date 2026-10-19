@@ -1,4 +1,4 @@
-import { AhpSessionUri } from '@agentconnect.md/protocol'
+import { historicalSessionUri } from './ahpSessionUri.js'
 import type {
   AhpSessionBinding,
   AhpSessionFinalize,
@@ -50,15 +50,14 @@ export class AhpSessionService {
   async reserve(req: AhpSessionReserve, daemonId: string): Promise<AhpSessionResult> {
     const claims = await this.deps.authorization.authorizeGrant(req.grant, req)
     if (!claims) return FORBIDDEN
+    if (claims.apiKeyId && /^ahp-session:\/(?:webchat|session)(?:\/|$)/.test(req.sessionUri)) return FORBIDDEN
     if (claims.conversationId && claims.targetSessionId) {
-      const uri = AhpSessionUri.safeParse(`ahp-session:/${claims.targetSessionId}`)
-      if (!uri.success) return { ok: false, reason: 'unavailable' }
       const result = await this.deps.bindings.bindExisting({
         orgId: req.orgId,
         agentId: req.agentId,
         conversationId: claims.conversationId,
         sessionId: claims.targetSessionId,
-        sessionUri: uri.data,
+        sessionUri: historicalSessionUri({ ...claims, sessionId: claims.targetSessionId }),
         operationId: agentChatConversationId(req.orgId, claims.targetSessionId, req.agentId, 'ahp-existing-v1'),
         writer: { daemonId, ...(req.duty ? { duty: req.duty } : {}) }
       })
@@ -69,20 +68,23 @@ export class AhpSessionService {
       const existing = await this.deps.bindings.forConversation(req.orgId, req.agentId, claims.conversationId)
       if (existing) return this.authorizedResult(claims, { ok: true, binding: existing })
     }
+    const reserved = await this.deps.bindings.reserve({
+      orgId: req.orgId,
+      agentId: req.agentId,
+      userId: claims.userId,
+      sessionUri: claims.conversationId
+        ? `ahp-session:/webchat/${claims.conversationId}/${req.agentId}`
+        : req.sessionUri,
+      operationId: claims.conversationId
+        ? agentChatConversationId(req.orgId, claims.conversationId, req.agentId, 'ahp-binding-v1')
+        : req.operationId,
+      ...(claims.apiKeyId ? { apiKeyId: claims.apiKeyId } : {}),
+      ...(claims.conversationId ? { conversationId: claims.conversationId } : {}),
+      writer: { daemonId, ...(req.duty ? { duty: req.duty } : {}) }
+    })
     return this.authorizedResult(
       claims,
-      await this.deps.bindings.reserve({
-        orgId: req.orgId,
-        agentId: req.agentId,
-        userId: claims.userId,
-        sessionUri: claims.conversationId ? `ahp-session:/${claims.conversationId}/${req.agentId}` : req.sessionUri,
-        operationId: claims.conversationId
-          ? agentChatConversationId(req.orgId, claims.conversationId, req.agentId, 'ahp-binding-v1')
-          : req.operationId,
-        ...(claims.apiKeyId ? { apiKeyId: claims.apiKeyId } : {}),
-        ...(claims.conversationId ? { conversationId: claims.conversationId } : {}),
-        writer: { daemonId, ...(req.duty ? { duty: req.duty } : {}) }
-      })
+      !reserved.ok && reserved.reason === 'conflict' ? { ok: false, reason: 'collision' } : reserved
     )
   }
 
