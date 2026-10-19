@@ -301,6 +301,9 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.74.0
         version: 1.74.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
+      '@microsoft/agent-host-protocol':
+        specifier: 1.0.0
+        version: 1.0.0
       '@modelcontextprotocol/client':
         specifier: 2.3.1
         version: 2.3.1
@@ -2005,6 +2008,9 @@ packages:
 
   '@microsandbox/types@0.7.8':
     resolution: {integrity: sha512-GCLuiSbTXU/5s8/VhyQzRc8AtDyz4uaIk3fP0GbWAPvj2xJfR7rpUr51UYZIFd9ONwAqa7XEfpyr8jnlFInkhA==}
+
+  '@microsoft/agent-host-protocol@1.0.0':
+    resolution: {integrity: sha512-swjikGoqZ/bv3Mn4vkkLzwpmS/j9tV7Aas7ruD2a/R3KVsUlokwCJNSET57mdsmZLMnrawDaCr/ctufbpjE4iA==}
 
   '@modelcontextprotocol/client@2.3.1':
     resolution: {integrity: sha512-mIGZXpHsjnZ6lD+gD/WCMpR5k8yVQQ8nNFH1N0Srf7AvnwTUMYD6pvTY8ng2+He5FfV7YMZLmrjL7cLa/cc3dQ==}
@@ -10898,6 +10904,8 @@ snapshots:
   '@lukeed/ms@2.0.2': {}
 
   '@microsandbox/types@0.7.8': {}
+
+  '@microsoft/agent-host-protocol@1.0.0': {}
 
   '@modelcontextprotocol/client@2.3.1':
     dependencies:
