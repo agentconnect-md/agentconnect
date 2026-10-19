@@ -405,7 +405,7 @@ describe('passive platform permission and input observation', () => {
   function native() {
     const w = world()
     delete w.p.webchat
-    w.p.plan.platform = 'fixture'
+    w.p.plan = { ...w.p.plan, platform: 'fixture' }
     w.p.conn = {} as never
     const observed: ChatEvent[] = []
     w.host.chatObservation = (p) =>
