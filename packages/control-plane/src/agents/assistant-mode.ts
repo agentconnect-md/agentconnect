@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import {
   ASSISTANT_ONBOARDING_HINTS_MAX,
   AssistantModePolicy,
@@ -18,21 +17,11 @@ import type {
   MemberSetRepo,
   OrgMemberRecord,
   OrgRepo,
-  StoredAssistantModePolicy,
   UserRepo
 } from '../persistence/ports.js'
 
-// Expand step (assistant-mode.md §5.1): an older CP's routing keys are read past and never written; removed keys are dropped.
-export const StoredAssistantModePolicyRow = AssistantModePolicy.extend({
-  responsibleUserId: z.unknown().optional(),
-  fallbackConversation: z.unknown().optional()
-}).strip()
-
-/** The stored policy as the API serves it, without the routing keys an older CP wrote. */
-export function servedAssistantMode(policy: StoredAssistantModePolicy): AssistantModePolicy {
-  const { responsibleUserId: _r, fallbackConversation: _f, ...served } = policy
-  return served
-}
+// A stored row drops keys this CP does not know, so a key another CP version wrote never turns the mode off.
+export const StoredAssistantModePolicyRow = AssistantModePolicy.strip()
 
 /** The agent's responsible user (assistant-mode.md §5.1): its creator while they may edit it, else the editor who joined first. */
 export function assistantResponsibleUser<M extends OrgMemberRecord>(

@@ -67,7 +67,7 @@ async function render() {
 
 function rowNames(): string[] {
   return ['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'].filter((name) =>
-    [...host.querySelectorAll('span')].some((span) => span.textContent === name)
+    [...host.querySelectorAll('span')].some((span) => span.textContent === `Require ${name} access`)
   )
 }
 
