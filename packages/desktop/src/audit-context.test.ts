@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { COMPUTER_APPROVAL_META_KEY } from '@agentconnect.md/protocol/computer'
 import { auditSinks, type AuditRecord } from './audit.js'
 import { Computer } from './computer.js'
+import { ScreenshotStore } from './cp/screenshot-store.js'
 import { startHttpServer, type RunningHttpServer } from './http-server.js'
 import type { McpPrincipal } from './mcp-access.js'
 import { FakeDriver, testConfig } from './testing.js'
@@ -18,10 +19,15 @@ afterEach(async () => {
 })
 
 // Bearer `agent` is an agent session's channel token, anything else a local client token.
-async function start() {
+async function start(screenshots?: ScreenshotStore) {
   const records: AuditRecord[] = []
   const config = testConfig({ actionScreenshot: false })
-  const computer = new Computer({ driver: new FakeDriver(), config, audit: auditSinks((r) => records.push(r)) })
+  const computer = new Computer({
+    driver: new FakeDriver(),
+    config,
+    audit: auditSinks((r) => records.push(r)),
+    ...(screenshots ? { screenshots: screenshots.stash } : {})
+  })
   const principal = (header: string | undefined): McpPrincipal =>
     header === 'Bearer agent'
       ? { client: `${AGENT}/sess-1`, viewOnly: false, agent: { agentId: AGENT, sessionId: 'sess-1' } }
@@ -86,5 +92,38 @@ describe('audit call context', () => {
     expect(records.at(-1)).not.toHaveProperty('approval')
     expect(records.at(-1)).not.toHaveProperty('agentId')
     await client.close()
+  })
+
+  it('names an agent session’s stored screenshot in its result and its audit entry, never a local client’s', async () => {
+    const offered: string[] = []
+    const store = new ScreenshotStore({
+      retentionDays: () => 30,
+      computerId: () => '00000000-0000-4000-8000-000000000001',
+      sign: async (put) => {
+        offered.push(put.sessionId)
+        return { status: 'stored' }
+      },
+      commit: async () => true,
+      log: () => undefined
+    })
+    const { records, connect } = await start(store)
+    const agent = await connect('agent')
+    const result = (await agent.callTool({ name: 'computer_screenshot', arguments: {} })) as {
+      content: { type: string; text?: string }[]
+    }
+    const meta = JSON.parse(result.content.find((block) => block.type === 'text')!.text!) as { stored?: string }
+    expect(meta.stored).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(records.at(-1)).toMatchObject({ tool: 'computer_screenshot', screenshotRef: meta.stored })
+    await store.flush()
+    expect(offered).toEqual(['sess-1'])
+    await agent.close()
+
+    const local = await connect('local')
+    const plain = (await local.callTool({ name: 'computer_screenshot', arguments: {} })) as {
+      content: { type: string; text?: string }[]
+    }
+    expect(JSON.parse(plain.content.find((block) => block.type === 'text')!.text!)).not.toHaveProperty('stored')
+    expect(records.at(-1)).not.toHaveProperty('screenshotRef')
+    await local.close()
   })
 })

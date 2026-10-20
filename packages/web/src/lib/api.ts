@@ -690,6 +690,7 @@ export interface ToolBody {
   content?: unknown[] // ACP ToolCallContent[] (content|diff|terminal blocks)
   locations?: { path: string; line?: number }[]
   truncated?: boolean // daemon capped the stored body at write time
+  screenshots?: string[] // stored screenshot hashes the body names, kept when a cap cuts them off
 }
 
 // The agent's task list for one turn (protocol `PlanBody`), transported as a JSON
@@ -2746,6 +2747,27 @@ export async function fetchToolBody(sessionId: string, toolCallId: string): Prom
     offset = chunk.nextOffset
   }
   return out
+}
+
+/** One stored Computer screenshot (computer-use.md §9) with a short-lived signed URL. */
+export interface ComputerScreenshotDto {
+  ref: string
+  sha256: string
+  computerId: string
+  agentId: string
+  takenAt: string
+  bytes: number
+  contentType: string
+  expiresAt: string
+  url: string
+  urlExpiresAt: string
+}
+
+// Resolves a tool result's `sha256:<hex>` screenshot reference; 404 when expired, never stored, or not visible to the caller.
+export async function fetchComputerScreenshot(sessionId: string, sha256: string): Promise<ComputerScreenshotDto> {
+  return apiGet<ComputerScreenshotDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/computer-screenshots/${encodeURIComponent(sha256)}`
+  )
 }
 
 // Fetch one agent's raw spec (GET /agents/:id). Returns the wire DTO (not the

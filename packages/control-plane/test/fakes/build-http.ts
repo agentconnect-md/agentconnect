@@ -102,6 +102,7 @@ import { DaemonAuthService } from '../../src/registry/authService.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { ComputerService } from '../../src/registry/computerService.js'
+import type { ComputerScreenshots } from '../../src/registry/computerScreenshots.js'
 import { ComputerAuditLog } from '../../src/registry/computerAuditLog.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
@@ -305,7 +306,18 @@ export function buildHttpApp(
   const epoch = new EpochService(daemonRepo, clock)
   const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock)
   const computerRepo = new PgComputerRepo(prisma)
-  const computerService = new ComputerService(codec, computerRepo, apiKeyRepo, auditRepo, clock)
+  // A whole ComputerScreenshots also shortens retention on a policy change, as the container wires it.
+  const screenshots = depsOverrides?.computerScreenshots
+  const computerService = new ComputerService(
+    codec,
+    computerRepo,
+    apiKeyRepo,
+    auditRepo,
+    clock,
+    screenshots && 'applyRetention' in screenshots
+      ? { screenshots: screenshots as Pick<ComputerScreenshots, 'applyRetention'> }
+      : {}
+  )
   const computerAudit = new ComputerAuditLog(new PgComputerAuditRepo(prisma), clock)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(TEST_API_KEY_PEPPER),

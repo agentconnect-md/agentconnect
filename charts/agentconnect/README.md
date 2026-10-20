@@ -328,6 +328,29 @@ than an hour, and the role's `MaxSessionDuration` must allow it. Set
 `sourceCache.credentials.serviceAccount.sessionDurationSeconds` to pin the length
 instead.
 
+### Computer screenshots
+
+With a Source Cache configured, `computerScreenshots.enabled=true` stores the screenshots
+agents take on Computers in the same bucket
+([design](../../docs/designs/computer-use.md#9-screenshot-storage-implemented)). The chart
+renders `AC_COMPUTER_SCREENSHOTS` on the Control Plane with the bucket's location and
+credentials. The desktop daemon uploads each screenshot on a URL the Control Plane signs,
+and the console reads it on another; the Control Plane never holds the bytes.
+
+| Value              | Default | Meaning                                                 |
+| ------------------ | ------- | ------------------------------------------------------- |
+| `retentionDays`    | `30`    | Days kept for a Computer whose policy sets no retention |
+| `maxRetentionDays` | `365`   | The most a Computer's policy may ask for                |
+| `maxBytes`         | `8Mi`   | Largest screenshot stored (at most `32Mi`)              |
+
+A Computer's policy can set `screenshotRetentionDays`; 0 means its screenshots are never
+written. The Control Plane deletes expired screenshots itself, so the bucket needs no
+extra lifecycle rule. Its credentials need `s3:PutObject`, `s3:GetObject` and
+`s3:DeleteObject` under `<prefix>/computer-screenshots/`. Desktops and browsers reach the
+bucket at `sourceCache.publicEndpoint` (or `endpoint`); a desktop's PUT is not a browser
+request, and the console shows a screenshot with a plain `<img>`, so no CORS rule is
+needed for either.
+
 ## Node maintenance
 
 The Control Plane runs as one replica, and it also serves the API. Evicting its pod, as a

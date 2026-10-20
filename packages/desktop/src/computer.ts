@@ -4,7 +4,7 @@ import {
   normalizeComputerKey as normalizeKey,
   type ComputerControlLease
 } from '@agentconnect.md/protocol/computer'
-import type { AuditSink } from './audit.js'
+import { currentCallContext, type AuditSink, type CallContext } from './audit.js'
 import type { DesktopConfig } from './config.js'
 import {
   DriverToolError,
@@ -72,7 +72,15 @@ export interface ComputerDeps {
   platform?: NodeJS.Platform
   // Why the Control Plane's authority is missing (revoked, or its channel key lapsed); undefined while it may act.
   refusal?: () => string | undefined
+  // Stores the screenshots an agent session's call returned and marks them in its output (computer-use.md §9).
+  screenshots?: ScreenshotStash
 }
+
+/** Takes the images of one call's output for storage; returns the output with their references, or undefined to leave it. */
+export type ScreenshotStash = (
+  output: ToolOutput,
+  context: CallContext
+) => { output: ToolOutput; ref?: string } | undefined
 
 export type ComputerConfig = Pick<
   DesktopConfig,
@@ -103,6 +111,7 @@ export class Computer {
   private readonly onStatus: (status: string) => void
   private readonly platform: NodeJS.Platform
   private readonly refusal: () => string | undefined
+  private readonly screenshots: ScreenshotStash | undefined
   private lastStatus = ''
   private lease: Lease | undefined
   // The control lease the Control Plane last told about (computer-use.md §4.4); only its holder session may take control.
@@ -127,6 +136,7 @@ export class Computer {
     this.onStatus = deps.onStatus ?? (() => undefined)
     this.platform = deps.platform ?? process.platform
     this.refusal = deps.refusal ?? (() => undefined)
+    this.screenshots = deps.screenshots
   }
 
   // ---- Control Plane authority (computer-use.md §8.2): checked before every screenshot, input and viewer frame ----
@@ -724,6 +734,17 @@ export class Computer {
     }
   }
 
+  // A storage failure never fails the call: the screenshot is still returned, just not stored.
+  private stash(output: ToolOutput): { output: ToolOutput; ref?: string } | undefined {
+    if (!this.screenshots || !output.content.some((block) => block.type === 'image')) return undefined
+    try {
+      return this.screenshots(output, currentCallContext())
+    } catch (error) {
+      this.log(`screenshot storage skipped: ${(error as Error).message}`)
+      return undefined
+    }
+  }
+
   private async audited(
     client: string,
     tool: string,
@@ -733,14 +754,17 @@ export class Computer {
     const started = this.now()
     try {
       this.assertAuthorized()
-      const output = await fn()
+      let output = await fn()
+      const stored = this.stash(output)
+      if (stored) output = stored.output
       this.audit({
         client,
         tool,
         args,
         outcome: output.isError ? 'error' : 'ok',
         ...(output.isError ? { code: 'uncertain' } : {}),
-        ms: this.now() - started
+        ms: this.now() - started,
+        ...(stored?.ref ? { screenshotRef: stored.ref } : {})
       })
       return output
     } catch (error) {

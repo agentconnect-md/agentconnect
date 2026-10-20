@@ -4610,3 +4610,39 @@ model ComputerRegistration {
   @@index([expiresAt])
   @@map("computer_registration")
 }
+
+// One stored screenshot (computer-use.md §9): only its reference, hash and size; the bytes live in the object store.
+// No foreign key: a deleted Computer's rows stay until the reaper has deleted their objects.
+model ComputerScreenshot {
+  id          String    @id @db.Uuid
+  orgId       String
+  computerId  String    @db.Uuid
+  sessionId   String
+  agentId     String    @db.Uuid
+  sha256      String
+  bytes       Int
+  contentType String
+  objectKey   String
+  takenAt     DateTime  @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  // Null while the desktop's upload is unconfirmed; such a row is collected after an hour.
+  storedAt    DateTime? @db.Timestamptz(3)
+  expiresAt   DateTime  @db.Timestamptz(3)
+
+  @@unique([computerId, sessionId, sha256])
+  @@index([orgId, sessionId, takenAt])
+  @@index([expiresAt])
+  @@index([computerId])
+  @@map("computer_screenshot")
+}
+
+// Screenshot bytes written per organization and UTC day, kept for Cloud metering after the screenshots expire.
+model ComputerScreenshotUsage {
+  orgId String
+  day   DateTime @db.Date
+  count Int      @default(0)
+  bytes BigInt   @default(0)
+
+  @@id([orgId, day])
+  @@map("computer_screenshot_usage")
+}

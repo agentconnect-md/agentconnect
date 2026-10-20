@@ -132,6 +132,7 @@ import {
   PgComputerRepo,
   PgComputerLeaseRepo,
   PgComputerAuditRepo,
+  PgComputerScreenshotRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -257,6 +258,13 @@ import { SessionUsageWriter } from './usage/writer.js'
 import { createIconStore } from './icons/icon-store.js'
 import { createCredentialsProvider, createObjectClient } from '@agentconnect.md/object-store'
 import { loadFileTransferConfig } from './file-transfer/config.js'
+import { loadComputerScreenshotsConfig } from './computer-screenshots/config.js'
+import { createScreenshotBucket, isScreenshotObjectKey } from './computer-screenshots/bucket.js'
+import { ComputerScreenshots } from './registry/computerScreenshots.js'
+import {
+  COMPUTER_SCREENSHOT_REAP_INTERVAL_MS,
+  ComputerScreenshotReaper
+} from './orchestrator/computerScreenshotReaper.js'
 import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
@@ -542,6 +550,7 @@ export function buildContainer(
     computer: new PgComputerRepo(prisma),
     computerLease: new PgComputerLeaseRepo(prisma),
     computerAudit: new PgComputerAuditRepo(prisma),
+    computerScreenshot: new PgComputerScreenshotRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     organizationRecord: new PgOrganizationRecordRepo(prisma),
@@ -670,10 +679,30 @@ export function buildContainer(
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
   const computerAudit = new ComputerAuditLog(repos.computerAudit, clock)
+  // Screenshot storage (computer-use.md §9): this process signs and checks; desktops upload and browsers read straight from the bucket.
+  const screenshotsConfig = loadComputerScreenshotsConfig({ AC_COMPUTER_SCREENSHOTS: config.AC_COMPUTER_SCREENSHOTS })
+  const computerScreenshots = screenshotsConfig
+    ? (() => {
+        const credentials = createCredentialsProvider(screenshotsConfig.credentials, {
+          region: screenshotsConfig.region,
+          env: process.env
+        })
+        const objects = createObjectClient({ config: screenshotsConfig, credentials, isKey: isScreenshotObjectKey })
+        return new ComputerScreenshots(
+          repos.computerScreenshot,
+          repos.session,
+          createScreenshotBucket({ config: screenshotsConfig, credentials, objects }),
+          clock,
+          screenshotsConfig.retention,
+          { info: (o, m) => http.log.info(o, m), warn: (o, m) => http.log.warn(o, m) }
+        )
+      })()
+    : undefined
   const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock, {
     channels: computerChannels,
     leases: computerLeases,
-    staleAfterMs: missedBeatsMs
+    staleAfterMs: missedBeatsMs,
+    ...(computerScreenshots ? { screenshots: computerScreenshots } : {})
   })
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
   const inviteLinks = new OrgInviteLinkService(
@@ -2157,6 +2186,7 @@ export function buildContainer(
     apiKeys,
     computers,
     computerAudit,
+    ...(computerScreenshots ? { computerScreenshots } : {}),
     oauth,
     webchatTokens,
     inviteLinks,
@@ -2280,6 +2310,16 @@ export function buildContainer(
     { intervalMs: OAUTH_REAP_INTERVAL_MS, graceMs: OAUTH_REAP_GRACE_MS },
     http.log
   )
+
+  // Deletes expired and abandoned screenshots, objects first (computer-use.md §9).
+  const computerScreenshotReaper = computerScreenshots
+    ? new ComputerScreenshotReaper(
+        computerScreenshots,
+        clock,
+        { intervalMs: COMPUTER_SCREENSHOT_REAP_INTERVAL_MS },
+        http.log
+      )
+    : undefined
 
   // Deletes computer registration tokens a week past their expiry (computer-use.md §3.6).
   const computerRegistrationReaper = new ComputerRegistrationReaper(
@@ -3308,6 +3348,7 @@ export function buildContainer(
         registry: computerChannels,
         leases: computerLeases,
         audit: computerAudit,
+        ...(computerScreenshots ? { screenshots: computerScreenshots } : {}),
         relays: () => relayRoster.entries(),
         clock,
         heartbeatSec: config.HEARTBEAT_SEC,
@@ -3332,6 +3373,7 @@ export function buildContainer(
       hookRunReaper.start()
       oauthReaper.start()
       computerRegistrationReaper.start()
+      computerScreenshotReaper?.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
@@ -3362,6 +3404,7 @@ export function buildContainer(
       hookRunReaper.stop()
       oauthReaper.stop()
       computerRegistrationReaper.stop()
+      computerScreenshotReaper?.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()

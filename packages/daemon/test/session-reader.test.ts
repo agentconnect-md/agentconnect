@@ -7,6 +7,7 @@ import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { createSessionReader, previewAppBody } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
+import { TranscriptRecorder } from '../src/session/transcript-recorder.js'
 
 /** The admission a session-internal row (tool / plan / card) always carries — its own sender's
  *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
@@ -1175,6 +1176,51 @@ describe('SessionReader', () => {
       /cannot resolve the transcript organization/
     )
     await holder.close() // one database behind both handles: closing it once is closing it
+  })
+})
+
+// A computer tool result as the runtime reports it: the screenshot's base64, then the text naming where it was stored.
+const SHOT_HASH = 'c'.repeat(64)
+const screenshotContent = (imageChars: number) => [
+  { type: 'content', content: { type: 'image', mimeType: 'image/png', data: 'A'.repeat(imageChars) } },
+  { type: 'content', content: { type: 'text', text: JSON.stringify({ width: 1280, stored: `sha256:${SHOT_HASH}` }) } }
+]
+
+describe('stored screenshot references survive a capped tool body', () => {
+  it('rides beside the preview of a screenshot-sized body', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const content = screenshotContent(600 * 1024)
+    const body = JSON.stringify({ toolCallId: 'shot-1', status: 'completed', content, rawOutput: { content } })
+    await s.insertToolCall(
+      admitted({ channel: 'C1', thread: 'T1', ts: '1', sender: AGENT, toolCallId: 'shot-1', title: 'shot', body })
+    )
+    const [row] = (await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages
+    expect(row!.bodyTruncated).toBe(true)
+    expect(Buffer.byteLength(row!.body!)).toBeLessThanOrEqual(32 * 1024)
+    expect(row!.body).not.toContain(`sha256:${SHOT_HASH}`)
+    expect((JSON.parse(row!.body!) as { screenshots?: string[] }).screenshots).toEqual([SHOT_HASH])
+    await s.close()
+  })
+
+  it('is kept when the write cap sheds the content that named it', () => {
+    const content = screenshotContent(2 * 1024 * 1024)
+    const [event] = new TranscriptRecorder().onUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'shot-2',
+      title: 'computer_screenshot',
+      status: 'completed',
+      content,
+      rawOutput: { content }
+    } as never)
+    const body = JSON.parse((event as { body: string }).body) as {
+      truncated?: boolean
+      content?: unknown
+      screenshots?: string[]
+    }
+    expect(body.truncated).toBe(true)
+    expect(body.content).toBeUndefined()
+    expect(body.screenshots).toEqual([SHOT_HASH])
   })
 })
 

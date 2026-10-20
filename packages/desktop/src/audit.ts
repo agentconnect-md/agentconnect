@@ -15,6 +15,9 @@ const callContext = new AsyncLocalStorage<CallContext>()
 /** Run one tool call with its caller's context, which every audit record it writes carries. */
 export const withCallContext = <T>(context: CallContext, fn: () => T): T => callContext.run(context, fn)
 
+/** The context of the tool call running now, or an empty one outside any call. */
+export const currentCallContext = (): CallContext => callContext.getStore() ?? {}
+
 export interface AuditRecord extends CallContext {
   client: string
   tool: string
@@ -22,6 +25,8 @@ export interface AuditRecord extends CallContext {
   outcome: 'ok' | 'error'
   code?: string
   ms: number
+  // The stored screenshot this call returned (computer-use.md §9).
+  screenshotRef?: string
 }
 
 export type AuditSink = (record: AuditRecord) => void

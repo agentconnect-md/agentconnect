@@ -4,7 +4,13 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { orgOf, ctxOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
-import { UsageQueryDto, UsageDto } from '../dto/index.js'
+import {
+  ComputerScreenshotUsageDto,
+  ComputerScreenshotUsageQuery,
+  ErrorDto,
+  UsageQueryDto,
+  UsageDto
+} from '../dto/index.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { AuthorizationAction, can } from '../../authorization/policy.js'
 
@@ -78,6 +84,30 @@ export function usageRoutes(deps: HttpDeps) {
           ...(agg.unattributed ? { unattributed: agg.unattributed } : {}),
           series: agg.series
         }
+      }
+    )
+
+    // Screenshot storage for metering (computer-use.md §9); totals only, so every member and the settlement workload read it alike.
+    r.get(
+      '/usage/computer-screenshots',
+      {
+        schema: {
+          tags: [Tag.Usage],
+          summary: 'Get computer screenshot storage usage',
+          description:
+            'Totals the Computer screenshots the organization stored: `written` counts the screenshots and bytes stored in the [from, to) window by UTC day, kept after the screenshots expire, and `stored` what the organization holds now. Returns zeros when screenshot storage is not configured.',
+          operationId: 'getComputerScreenshotUsage',
+          querystring: ComputerScreenshotUsageQuery,
+          response: { 200: ComputerScreenshotUsageDto, 400: ErrorDto }
+        }
+      },
+      async (req) => {
+        const orgId = req.usageServiceOrgId ?? orgOf(req)
+        const window = { from: new Date(req.query.from), to: new Date(req.query.to) }
+        const totals = deps.computerScreenshots
+          ? await deps.computerScreenshots.usage(orgId, window)
+          : { written: { count: 0, bytes: 0 }, stored: { count: 0, bytes: 0 } }
+        return { from: req.query.from, to: req.query.to, ...totals }
       }
     )
   }

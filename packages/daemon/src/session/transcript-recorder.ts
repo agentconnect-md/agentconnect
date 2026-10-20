@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
-import type { PlanBody, ToolBody } from '@agentconnect.md/protocol'
+import { computerScreenshotHashesIn, type PlanBody, type ToolBody } from '@agentconnect.md/protocol'
 import { isEphemeralBody, redactEphemeralBody } from './ephemeral-results.js'
 import { planEntriesOf, planSummary } from './plan-entries.js'
 
@@ -149,6 +149,9 @@ function serializeBody(input: ToolBody): string {
   let json = JSON.stringify(body)
   if (Buffer.byteLength(json) <= MAX_TOOL_BODY_BYTES) return json
   const capped: ToolBody = { ...body, truncated: true }
+  // The fields shed below may hold the only stored screenshot references, so they are kept beside them.
+  const screenshots = computerScreenshotHashesIn(json)
+  if (screenshots.length > 0) capped.screenshots = screenshots
   // rawOutput is usually the heaviest field; shed it, then content, until we fit.
   capped.rawOutput = undefined
   json = JSON.stringify(capped)

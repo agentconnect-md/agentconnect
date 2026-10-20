@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   COMPUTER_AUDIT_FEATURE,
+  COMPUTER_SCREENSHOT_FEATURE,
+  computerScreenshotRef,
+  parseComputerScreenshotRef,
   COMPUTER_CP_FRAME_TYPES,
   computerAuditArgs,
   computerAuditText,
@@ -66,6 +69,10 @@ describe('computer channel frames', () => {
       'computer/relays',
       'computer/audit',
       'computer/audit/ok',
+      'computer/screenshot/put',
+      'computer/screenshot/put/ok',
+      'computer/screenshot/commit',
+      'computer/screenshot/commit/ok',
       'error'
     ])
     const frames = [
@@ -79,6 +86,10 @@ describe('computer channel frames', () => {
       }),
       buildComputerCpFrame('computer/credential', { credential }),
       buildComputerCpFrame('computer/policy', { policy: ComputerPolicySchema.parse({ agentMode: 'view' }) }),
+      buildComputerCpFrame('computer/policy', {
+        policy: ComputerPolicySchema.parse({ screenshotRetentionDays: 7 }),
+        screenshotRetentionDays: 7
+      }),
       buildComputerCpFrame('computer/revoke', { reason: 'revoked' }),
       buildComputerCpFrame('computer/lease', { lease }),
       buildComputerCpFrame('computer/lease', { lease: null }),
@@ -87,6 +98,11 @@ describe('computer channel frames', () => {
       }),
       buildComputerCpFrame('computer/heartbeat', { status: 'busy', lease: { holder: 'sess-1', idleMs: 1200 } }),
       buildComputerCpFrame('computer/auth/ok', { ...authOk, features: [COMPUTER_AUDIT_FEATURE] }),
+      buildComputerCpFrame('computer/auth/ok', {
+        ...authOk,
+        features: [COMPUTER_SCREENSHOT_FEATURE],
+        screenshotRetentionDays: 30
+      }),
       buildComputerCpFrame('computer/audit', { entries: [auditEntry] }),
       buildComputerCpFrame('computer/audit/ok', { stored: 1 }),
       buildComputerCpFrame('error', { code: 'AUTH_FAILED', message: 'no', retryable: false })
@@ -213,5 +229,52 @@ describe('computer audit frames', () => {
     const extra = buildComputerCpFrame('computer/audit', { entries: [{ ...auditEntry, text: 'hi' } as never] })
     expect(roundTrip(extra).ok).toBe(false)
     expect(roundTrip(buildComputerCpFrame('computer/audit', { entries: [] })).ok).toBe(false)
+  })
+})
+
+describe('computer screenshot frames', () => {
+  const sha256 = 'ab'.repeat(32)
+  const put = {
+    sessionId: 'ses-1',
+    agentId: '11111111-1111-4111-8111-111111111111',
+    sha256,
+    bytes: 1024,
+    contentType: 'image/png' as const,
+    takenAt: '2026-10-20T00:00:00.000Z'
+  }
+
+  it('names a screenshot by its content hash', () => {
+    expect(COMPUTER_SCREENSHOT_FEATURE).toBe('computer-screenshot-v1')
+    expect(parseComputerScreenshotRef(computerScreenshotRef(sha256))).toBe(sha256)
+    expect(parseComputerScreenshotRef(`sha256:${'AB'.repeat(32)}`)).toBeUndefined()
+    expect(parseComputerScreenshotRef('obj://x')).toBeUndefined()
+    expect(parseComputerScreenshotRef(undefined)).toBeUndefined()
+  })
+
+  it('round-trips the put and commit exchange', () => {
+    expect(roundTrip(buildComputerCpFrame('computer/screenshot/put', put)).ok).toBe(true)
+    const ok = buildComputerCpFrame('computer/screenshot/put/ok', {
+      status: 'upload',
+      url: 'https://bucket.example/key?X-Amz-Signature=x',
+      headers: { 'content-length': '1024' },
+      expiresAt: '2026-10-20T00:05:00.000Z'
+    })
+    expect(roundTrip(ok).ok).toBe(true)
+    expect(roundTrip(buildComputerCpFrame('computer/screenshot/commit', { sessionId: 'ses-1', sha256 })).ok).toBe(true)
+    expect(roundTrip(buildComputerCpFrame('computer/screenshot/commit/ok', { stored: true })).ok).toBe(true)
+  })
+
+  it('refuses a put with a malformed hash, an unknown type or an unknown field', () => {
+    expect(roundTrip(buildComputerCpFrame('computer/screenshot/put', { ...put, sha256: 'x' })).ok).toBe(false)
+    expect(
+      roundTrip(buildComputerCpFrame('computer/screenshot/put', { ...put, contentType: 'image/gif' as never })).ok
+    ).toBe(false)
+    expect(roundTrip(buildComputerCpFrame('computer/screenshot/put', { ...put, key: 'x' } as never)).ok).toBe(false)
+  })
+
+  it('bounds the policy retention', () => {
+    expect(ComputerPolicySchema.parse({}).screenshotRetentionDays).toBeUndefined()
+    expect(ComputerPolicySchema.parse({ screenshotRetentionDays: 0 }).screenshotRetentionDays).toBe(0)
+    expect(ComputerPolicySchema.safeParse({ screenshotRetentionDays: 4000 }).success).toBe(false)
   })
 })

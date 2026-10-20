@@ -79,7 +79,7 @@ function harness() {
     issuedAt: new Date(clock.now() + offsetMs).toISOString(),
     expiresAt: new Date(clock.now() + offsetMs + 300_000).toISOString()
   })
-  const authOk = (transport: FakeTransport, features?: string[]) => {
+  const authOk = (transport: FakeTransport, features?: string[], screenshotRetentionDays?: number) => {
     const auth = transport.ofType('computer/auth')[0]!
     transport.deliver(
       buildComputerCpFrame(
@@ -92,7 +92,8 @@ function harness() {
           serverTime: new Date(clock.now()).toISOString(),
           credential: credential(),
           policy: ComputerPolicySchema.parse({ leaseIdleSeconds: 60 }),
-          ...(features ? { features } : {})
+          ...(features ? { features } : {}),
+          ...(screenshotRetentionDays !== undefined ? { screenshotRetentionDays } : {})
         },
         { corr: auth.id }
       )
@@ -156,6 +157,56 @@ describe('ComputerCpClient', () => {
       buildComputerCpFrame('error', { code: 'BAD_PAYLOAD', message: 'bad', retryable: false }, { corr: third.id })
     )
     expect(await refused).toBe('rejected')
+  })
+
+  it('stores screenshots only with a CP that offers it, under the retention it tells', async () => {
+    const put = {
+      sessionId: 'sess-1',
+      agentId: '00000000-0000-4000-8000-0000000000aa',
+      sha256: 'ab'.repeat(32),
+      bytes: 3,
+      contentType: 'image/png' as const,
+      takenAt: new Date(0).toISOString()
+    }
+    const old = harness()
+    old.client.start()
+    await settle()
+    old.authOk(old.transports[0]!, [], 30)
+    await settle()
+    expect(old.client.screenshotRetentionDays()).toBe(0)
+    expect(await old.client.signScreenshot(put)).toBe('retry')
+
+    const h = harness()
+    h.client.start()
+    await settle()
+    const transport = h.transports[0]!
+    h.authOk(transport, ['computer-screenshot-v1'], 30)
+    await settle()
+    expect(h.client.screenshotRetentionDays()).toBe(30)
+    const signing = h.client.signScreenshot(put)
+    const req = transport.ofType('computer/screenshot/put')[0]!
+    expect(req.payload).toEqual(put)
+    transport.deliver(
+      buildComputerCpFrame(
+        'computer/screenshot/put/ok',
+        { status: 'upload', url: 'https://store.example.test/k', headers: { 'content-length': '3' } },
+        { corr: req.id }
+      )
+    )
+    expect(await signing).toMatchObject({ status: 'upload', url: 'https://store.example.test/k' })
+    const committing = h.client.commitScreenshot({ sessionId: 'sess-1', sha256: put.sha256 })
+    const commit = transport.ofType('computer/screenshot/commit')[0]!
+    transport.deliver(buildComputerCpFrame('computer/screenshot/commit/ok', { stored: true }, { corr: commit.id }))
+    expect(await committing).toBe(true)
+
+    // The owner turned retention off: the next policy push says so.
+    transport.deliver(
+      buildComputerCpFrame('computer/policy', {
+        policy: ComputerPolicySchema.parse({ screenshotRetentionDays: 0 }),
+        screenshotRetentionDays: 0
+      })
+    )
+    expect(h.client.screenshotRetentionDays()).toBe(0)
   })
 
   it('hands the told control lease on and reports its local lease in every heartbeat', async () => {

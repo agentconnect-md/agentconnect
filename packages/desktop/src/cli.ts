@@ -7,8 +7,9 @@ import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { AuditReporter } from './cp/audit-report.js'
+import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
-import { Computer } from './computer.js'
+import { Computer, type ScreenshotStash } from './computer.js'
 import {
   authenticate,
   configPath,
@@ -283,7 +284,8 @@ function buildComputer(
   config: DesktopConfig,
   onStatus?: (status: string) => void,
   refusal?: () => string | undefined,
-  report?: AuditSink
+  report?: AuditSink,
+  screenshots?: ScreenshotStash
 ) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
@@ -298,7 +300,8 @@ function buildComputer(
     audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(report ? [report] : [])),
     log,
     ...(onStatus ? { onStatus } : {}),
-    ...(refusal ? { refusal } : {})
+    ...(refusal ? { refusal } : {}),
+    ...(screenshots ? { screenshots } : {})
   })
   return { driver, computer }
 }
@@ -527,6 +530,17 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
         })
       : undefined
   auditReport?.start()
+  // Agent sessions' screenshots go to the object store when the CP keeps them (§9); 0 retention writes nothing.
+  const screenshotStore =
+    registration && !registration.revokedAt
+      ? new ScreenshotStore({
+          retentionDays: () => live.channel?.client.screenshotRetentionDays() ?? 0,
+          computerId: () => registration.computerId,
+          sign: (put) => live.channel?.client.signScreenshot(put) ?? Promise.resolve('retry' as const),
+          commit: (commit) => live.channel?.client.commitScreenshot(commit) ?? Promise.resolve('retry' as const),
+          log
+        })
+      : undefined
   const { driver, computer } = buildComputer(
     dir,
     config,
@@ -535,7 +549,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
       live.channel?.client.beat()
     },
     () => authority.refusal(),
-    auditReport?.sink
+    auditReport?.sink,
+    screenshotStore?.stash
   )
   setTitle('online')
   if (registration?.revokedAt)
@@ -603,6 +618,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     log('shutting down')
     computer.pause('daemon shutting down')
     auditReport?.stop()
+    screenshotStore?.stop()
     await auditReport?.flush()
     live.channel?.stop()
     authority.close()

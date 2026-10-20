@@ -30,7 +30,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
 | 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray not built) |
 | 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop (§7)                                                                                       | Validated                                         |
-| 12  | Screenshots                        | Returned as MCP `image` content; stored in the object store with configurable retention and billing (§9)                                                                                       | Return validated; storage is design               |
+| 12  | Screenshots                        | Returned as MCP `image` content; stored in the object store with configurable retention and billing (§9)                                                                                       | Implemented (masking is design)                   |
 | 13  | Runtimes without MCP image support | Computer use is disabled; no OCR or accessibility-tree fallback                                                                                                                                | Unchanged                                         |
 | 14  | Unknown outcomes                   | On timeout, disconnect, or driver crash, **never replay input**; return `uncertain` with a fresh screenshot (§5.4)                                                                             | Validated                                         |
 | 15  | Licenses                           | Bundled components are MIT / Apache / BSD / ISC only; GPL ffmpeg is **not bundled** but downloaded and checksummed on first run (§11)                                                          | Validated (Cloud distribution needs legal)        |
@@ -445,6 +445,7 @@ interface ComputerPolicy {
   quietHours?: { tz: string; ranges: string[] } // no use outside these windows
   leaseIdleSeconds: number // idle release, default 120 (validated)
   leaseMaxSeconds: number // cap on one control lease, default 1800 (validated)
+  screenshotRetentionDays?: number // days stored screenshots are kept (§9); 0 = never written, absent = deployment default
 }
 ```
 
@@ -621,8 +622,9 @@ Cua Driver maps them back to the screen (including HiDPI scale), so the model ne
 ```ts
 {
   content: [
+    { type: 'text', text: '{"computer":"<id>","stored":"sha256:<hex>"}' }, // only when stored, §9; redacted is design
     { type: 'image', data: '<base64>', mimeType: 'image/png' },
-    { type: 'text', text: '{"computer":"cmp_…","width":1280,"height":800,"redacted":[],"stored":"obj://…"}' } // redacted / stored are design
+    { type: 'text', text: '{"width":1280,"height":800}' }
   ]
 }
 ```
@@ -757,7 +759,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   Computer's entries older than 90 days. `GET /computers/{id}/audit` (`listComputerAudit`) pages them newest first,
   filtered by agent or session, for the registrant of a self-hosted Computer or an editor of a managed one. A call an
   approval refused never reaches the desktop, so it is in the session's permission requests, not this audit. The target
-  window and the screenshot reference (§9) are not recorded yet.
+  window is not recorded yet; an entry carries the `screenshotRef` of a screenshot its call stored (§9).
 - **Revocation**: deleting the Computer, revoking the key, or removing an agent's grant takes effect immediately while
   the desktop daemon is connected to the Control Plane, and disconnects viewers. Every tool and viewer channel carries
   a short-lived credential (minutes) that the desktop daemon verifies locally and that only the Control Plane renews.
@@ -777,13 +779,50 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   renewal, and resumes when it reconnects. The tool and viewer channel tokens that the data plane will sign with
   this key are in §3.7.
 
-## 9. Screenshot storage [design]
+## 9. Screenshot storage [implemented]
 
-- Screenshots go to the object store (`packages/object-store`) under `org/computer/session/<ts>-<id>.<fmt>`; the
-  session record keeps only the reference and hash.
-- Retention is configurable; 0 means never written. Masking happens on the desktop daemon before upload.
+- Screenshots go to the object store (`packages/object-store`) under
+  `<prefix>/computer-screenshots/<org>/<computer>/<session>/<takenAtMs>-<sha256>.<ext>`; the session timeline keeps
+  only the reference, `sha256:<hex>`, and the Control Plane keeps metadata, never bytes.
+- Retention is configurable; 0 means never written. Masking happens on the desktop daemon before upload (masking
+  itself, `redactApps`, is still design).
 - Read access is the intersection of session visibility ([session-visibility.md](session-visibility.md)) and Computer visibility.
-- Cloud metering: screenshot storage counts toward usage (`packages/control-plane/src/usage`).
+- Cloud metering: screenshot storage counts toward usage.
+
+**[implemented]** The deployment turns storage on with `AC_COMPUTER_SCREENSHOTS`, a bucket document like
+`AC_FILE_TRANSFER` (`packages/control-plane/src/computer-screenshots/config.ts`) plus `retention.defaultDays` (30) and
+`retention.maxDays` (365); the chart renders it into the Source Cache bucket when `computerScreenshots.enabled`. A
+Computer's retention is its policy's `screenshotRetentionDays`, else the default, capped at the maximum; without the
+document it is 0. The CP then advertises `computer-screenshot-v1` and tells the desktop the retention in `computer/auth/ok`
+and every `computer/policy`.
+
+- **Write.** Only calls under an agent session's channel token are stored, never a local client's. When the retention
+  is above 0, the desktop hashes each image a call returns, puts a text block with `"computer"` and
+  `"stored":"sha256:<hex>"` right before it (ahead of the bytes, so a trimmed timeline preview still holds it), records
+  the reference as the audit entry's `screenshotRef`, and returns the call at once. In the background it offers the
+  image with `computer/screenshot/put` (session, agent, hash, size, type, time). The CP signs only for an agent the
+  Computer's policy grants and a session of that agent in its org (a session it does not know yet is a retryable
+  error); it reserves a `computer_screenshot` row (unique per Computer, session and hash, so a repeated screen is
+  stored once) and answers with a PUT presigned for exactly that length, type and SHA-256 checksum, or `stored` /
+  `skipped`. The desktop PUTs the bytes straight to the bucket and sends
+  `computer/screenshot/commit`; the CP HEADs the object, and only an object holding exactly those bytes marks the row
+  stored and counts it. The desktop keeps up to 20 screenshots waiting and tries each 5 times, 5 s apart; a failure
+  never fails the tool call, it only leaves the reference unresolvable.
+- **Read.** `GET /sessions/{sessionId}/computer-screenshots/{sha256}` (`getSessionComputerScreenshot`) resolves a
+  reference, and `GET /sessions/{sessionId}/computer-screenshots` (`listSessionComputerScreenshots`) pages a
+  session's, each with a GET presigned for 5 minutes. The caller must see the session and the Computer it came from;
+  a deleted Computer's screenshots are hidden at once. The console's session timeline shows the screenshots a
+  computer tool row names (`ComputerScreenshots` in the tool body). A tool body the agent daemon trims for a
+  timeline page, or caps at 1 MiB when it records it, carries the hashes it named in `screenshots`, so the reference
+  survives losing the image bytes around it.
+- **Retention.** A row expires `retention` days after it was offered and reads as absent from then on. A lowered
+  retention also applies to what is already stored: a policy change shortens its Computer's rows at once (0 expires
+  them all), and every sweep shortens rows past a lowered deployment default or maximum. Every replica
+  sweeps every 10 minutes: expired rows, uploads unconfirmed for an hour, and rows of deleted Computers have their
+  object deleted first and then the row, so a failed delete is retried. No bucket lifecycle rule is needed.
+- **Metering.** A confirmed upload adds its bytes to `computer_screenshot_usage` per organization and UTC day, which
+  outlives the screenshots. `GET /usage/computer-screenshots` (`getComputerScreenshotUsage`) totals what was written
+  in a window and what is held now, for members and for the usage-reader workload alike.
 
 ## 10. Console [design]
 
@@ -791,7 +830,8 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   fixes, recent activity, audit.
 - Computer detail: policy editing, an **embedded viewer** (watch / take over), pause and stop, revoke. Viewer media
   still flows between the browser and the desktop daemon, directly or through the relay, never through the Control Plane.
-- Agent settings: enable computer use and pick Computers. Session page: the current lease and an action timeline with screenshots.
+- Agent settings: enable computer use and pick Computers. Session page: the current lease and an action timeline with screenshots
+  (**[implemented]**: a computer tool row shows the screenshots its result stored, §9).
 
 ## 11. Licenses
 
@@ -859,7 +899,7 @@ The MCP client was Claude Code.
 ### 12.4 Not in the prototype (still design)
 
 Control Plane registration and the Computer model, `ComputerPolicy`, approvals, per-agent grants, object-store
-screenshots, the relay data plane, TLS (the prototype has local bearer tokens, one Computer, no CP); tray / menu bar UI,
+screenshots (all since implemented), the relay data plane, TLS (the prototype has local bearer tokens, one Computer, no CP); tray / menu bar UI,
 screen border, global hotkey, keyboard activity detection; window masking; Developer ID signing and notarization; native
 capture and hardware encoding; multiple displays; audio and clipboard; latency measurement; the Windows `install.ps1`
 setup and firewall end to end; Wayland IME text; KDE; CP registration, environment injection, Kubernetes deployment,
@@ -937,7 +977,7 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
 3. **Agent side**: the `computerUse` agent setting; registering `computer_*` in `resolve-servers.ts` (when the runtime
    supports image content); forwarding tool calls over the data plane; session instructions (§5.6); approvals (first
    input of a session, app launch, submit-like keys) through the existing permissions / elicitation; audit reporting.
-4. **Screenshot storage**: object-store writes, retention, references from the session timeline (§9).
+4. **Screenshot storage** **[implemented]**: object-store writes, retention, references from the session timeline (§9).
 5. **Console**: the Computers page (list, status, `doctor` results with fixes, policy, granted agents); "Add Computer"
    producing the install command; an embedded viewer on the detail page (watch, take over, pause, stop, revoke); the
    agent setting.
