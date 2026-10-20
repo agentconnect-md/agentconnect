@@ -9,6 +9,7 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import type { HttpDeps } from '../deps.js'
 import { installZod } from '../plugins/zod.js'
 import { webchatTokenRoutes } from './webchat-token.js'
+import { WebchatTokenService } from '../../registry/webchatToken.js'
 
 const ORG = OrgId('org')
 const AGENT = AgentId('11111111-1111-4111-8111-111111111111')
@@ -36,7 +37,8 @@ async function fixture() {
   }
   const agent = { id: AGENT, orgId: ORG, visibility: 'org', sharedWith: [], daemonId: DAEMON, placementKind: 'daemon' }
   const create = vi.fn(async () => {})
-  const mint = vi.fn(async () => ({ token: 'short-token', expiresAt: new Date('2026-10-18T20:00:00Z') }))
+  const tokens = new WebchatTokenService('test-pepper-at-least-32-characters-long')
+  const mint = vi.fn(tokens.mint.bind(tokens))
   const deps = {
     config,
     clock: { now: Date.now },
@@ -81,7 +83,7 @@ async function fixture() {
     webchatTokens: { mint }
   } as unknown as HttpDeps
   await app.register(webchatTokenRoutes(deps), { prefix: '/orgs/:orgId' })
-  return { app, config, create, mint }
+  return { app, config, create, mint, tokens }
 }
 
 describe('Webchat token routes pin an authorized protocol', () => {
@@ -95,7 +97,7 @@ describe('Webchat token routes pin an authorized protocol', () => {
     const response = await f.app.inject({ method: 'POST', url: `/orgs/${ORG}${path}`, ...(payload ? { payload } : {}) })
     expect(response.statusCode, response.body).toBe(200)
     expect(response.json()).toMatchObject({
-      token: 'short-token',
+      token: expect.any(String),
       protocol: 'ahp',
       ahp: {
         url: `wss://relay.test/ahp/agents/${AGENT}`,
@@ -103,6 +105,7 @@ describe('Webchat token routes pin an authorized protocol', () => {
       }
     })
     expect(f.mint).toHaveBeenCalledTimes(1)
+    expect(await f.tokens.verify(response.json().token)).toMatchObject({ protocol: 'ahp' })
   })
 
   it('honors a pinned legacy reconnect independently of the default, and refuses AHP while off', async () => {
@@ -116,6 +119,7 @@ describe('Webchat token routes pin an authorized protocol', () => {
     expect(legacy.statusCode, legacy.body).toBe(200)
     expect(legacy.json()).toMatchObject({ protocol: 'legacy' })
     expect(legacy.json()).not.toHaveProperty('ahp')
+    expect(await f.tokens.verify(legacy.json().token)).toMatchObject({ protocol: 'legacy' })
     const denied = await f.app.inject({
       method: 'POST',
       url: `/orgs/${ORG}/agents/${AGENT}/webchat/token`,
@@ -136,5 +140,17 @@ describe('Webchat token routes pin an authorized protocol', () => {
     expect(response.statusCode).toBe(404)
     expect(response.json()).not.toHaveProperty('ahp')
     expect(f.mint).not.toHaveBeenCalled()
+  })
+
+  it('signs an explicit AHP attachment pin while the deployment default stays legacy', async () => {
+    const f = await fixture()
+    f.config.WEBCHAT_PROTOCOL = 'legacy'
+    const response = await f.app.inject({
+      method: 'POST',
+      url: `/orgs/${ORG}/agents/${AGENT}/webchat/token`,
+      payload: { protocol: 'ahp' }
+    })
+    expect(response.statusCode).toBe(200)
+    expect(await f.tokens.verify(response.json().token)).toMatchObject({ protocol: 'ahp' })
   })
 })

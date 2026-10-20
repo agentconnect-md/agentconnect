@@ -21,6 +21,7 @@ export const RuntimeConfigDto = z
   .object({
     schemaVersion: z.literal('1'),
     webchatProtocol: z.enum(['legacy', 'ahp']),
+    ahp: z.object({ enabled: z.boolean(), publicAccess: z.boolean() }).strict().optional(),
     revision: z.number().int().positive().nullable(),
     config: z
       .object({
@@ -38,6 +39,7 @@ export type RuntimeConfigDto = z.infer<typeof RuntimeConfigDto>
 
 export interface RuntimeConfigRouteDeps {
   webchatProtocol?: 'legacy' | 'ahp'
+  ahp?: { enabled: boolean; publicAccess: boolean }
   /** Immutable DB-owned browser auth state loaded at process startup. */
   publicRuntimeConfig?: RuntimeConfigDto['config']
   deploymentRevision?: number
@@ -64,6 +66,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
       async () => ({
         schemaVersion: '1' as const,
         webchatProtocol: deps.webchatProtocol ?? 'legacy',
+        ahp: { enabled: deps.ahp?.enabled ?? false, publicAccess: deps.ahp?.publicAccess ?? false },
         revision: deps.deploymentRevision ?? null,
         config: deps.publicRuntimeConfig ?? null,
         fileTransfer: deps.fileTransfer ?? null

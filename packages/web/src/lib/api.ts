@@ -113,6 +113,8 @@ export interface WebchatTokenDto {
   token: string
   relayUrl: string
   conversationId: string
+  protocol?: 'legacy' | 'ahp'
+  ahp?: { url: string; sessionUri?: string; peers?: Array<{ agentId: string; url: string; sessionUri?: string }> }
 }
 
 export interface WebchatMcpOperationDto {
@@ -167,10 +169,15 @@ export function decideWebchatMcpOperation(
  * verifies it with the CP (`rc/verify(webchat-token)`) and bridges to the agent's daemon.
  * Throws `ApiError(503)` when the CP has no relay pool configured (`PUBLIC_RELAY_URL`).
  */
-export function mintWebchatToken(orgId: string, agentId: string, conversationId?: string): Promise<WebchatTokenDto> {
+export function mintWebchatToken(
+  orgId: string,
+  agentId: string,
+  conversationId?: string,
+  protocol: 'legacy' | 'ahp' = 'legacy'
+): Promise<WebchatTokenDto> {
   return apiPost<WebchatTokenDto>(
     `/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/token`,
-    conversationId ? { conversationId } : {}
+    { conversationId, protocol }
   )
 }
 
@@ -209,9 +216,13 @@ export function removeWebchatConversationAgent(
  */
 export function mintWebchatConversationToken(
   orgId: string,
-  body: { conversationId?: string; agentIds?: string[] }
+  body: { conversationId?: string; agentIds?: string[] },
+  protocol: 'legacy' | 'ahp' = 'legacy'
 ): Promise<WebchatTokenDto> {
-  return apiPost<WebchatTokenDto>(`/orgs/${encodeURIComponent(orgId)}/webchat/conversations/token`, body)
+  return apiPost<WebchatTokenDto>(`/orgs/${encodeURIComponent(orgId)}/webchat/conversations/token`, {
+    ...body,
+    protocol
+  })
 }
 
 /**
@@ -219,10 +230,14 @@ export function mintWebchatConversationToken(
  * token whose conversation adopts an existing chat-origin session, so the console
  * composer can continue it. 403/409 per the server-computed continuation gates.
  */
-export function mintWebchatSessionToken(orgId: string, sessionId: string): Promise<WebchatTokenDto> {
+export function mintWebchatSessionToken(
+  orgId: string,
+  sessionId: string,
+  protocol: 'legacy' | 'ahp' = 'legacy'
+): Promise<WebchatTokenDto> {
   return apiPost<WebchatTokenDto>(
     `/orgs/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(sessionId)}/webchat/token`,
-    {}
+    { protocol }
   )
 }
 

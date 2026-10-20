@@ -2132,7 +2132,8 @@
         "added": "Added",
         "docs": "Docs",
         "add": "Add API",
-        "adding": "Adding…"
+        "adding": "Adding…",
+        "ahpDescription": "Standard AHP v1 sessions and chat actions for compatible agent clients."
       }
     },
     "api": {

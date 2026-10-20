@@ -125,3 +125,20 @@ describe('quickstartExamples, AG-UI', () => {
     expect(await res.text()).toContain('"type":"RUN_STARTED"')
   })
 })
+
+it('gates AHP availability on server runtime capability and distinguishes pilot access', async () => {
+  const { availableApiProtocols, ahpDeploymentAccess, ahpQuickstart } = await import('./agent-api')
+  vi.stubGlobal('window', { __AC_ENV: {} })
+  expect(availableApiProtocols().find((p) => p.id === 'ahp')?.available).toBe(false)
+  window.__AC_ENV = { AHP_ENABLED: 'true' }
+  expect(ahpDeploymentAccess()).toBe('pilot')
+  expect(availableApiProtocols().find((p) => p.id === 'ahp')?.available).toBe(true)
+  window.__AC_ENV = { AHP_ENABLED: 'true', AHP_PUBLIC_ACCESS: 'true' }
+  expect(ahpDeploymentAccess()).toBe('public')
+  const example = ahpQuickstart('wss://relay.test/ahp/agents/agent')
+  expect(compile(example.file, example.code).diagnostics).toEqual([])
+  expect(example.code).toContain('@microsoft/agent-host-protocol@1.0.0')
+  expect(example.code).toContain('Authorization:')
+  expect(example.code).not.toContain('?token=')
+  vi.unstubAllGlobals()
+})

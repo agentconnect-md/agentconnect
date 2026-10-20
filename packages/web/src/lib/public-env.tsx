@@ -64,6 +64,9 @@ const KEYS = [
   // Console feature flags this deployment turns on — a comma-separated list of ids
   // (lib/feature-flags.ts). Unset ⇒ none: a flagged surface ships in every build and appears
   // only where an environment asks for it, so one prebuilt image serves them all.
+  'WEBCHAT_PROTOCOL',
+  'AHP_ENABLED',
+  'AHP_PUBLIC_ACCESS',
   'FEATURE_FLAGS'
 ] as const
 
@@ -81,6 +84,8 @@ interface RuntimeConfigResponse {
     gitlab?: null | { instanceUrl: string }
   }
   fileTransfer?: null | { maxBytes: number }
+  webchatProtocol?: 'legacy' | 'ahp'
+  ahp?: { enabled: boolean; publicAccess: boolean }
 }
 
 interface DeploymentEnv {
@@ -100,7 +105,11 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
   if (!response.ok) throw new Error(`runtime config returned HTTP ${response.status}`)
   const body = (await response.json()) as RuntimeConfigResponse
   if (body.schemaVersion !== '1') return null
-  const topology: Record<string, string> = {}
+  const topology: Record<string, string> = {
+    WEBCHAT_PROTOCOL: body.webchatProtocol === 'ahp' ? 'ahp' : 'legacy',
+    AHP_ENABLED: String(body.ahp?.enabled === true),
+    AHP_PUBLIC_ACCESS: String(body.ahp?.publicAccess === true)
+  }
   if (body.fileTransfer) topology.FILE_TRANSFER_MAX_BYTES = String(body.fileTransfer.maxBytes)
   if (body.config === null) return { config: null, topology }
 

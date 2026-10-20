@@ -234,6 +234,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
         if (!req.body.conversationId) await deps.repos.webchatConversation.create(binding)
         const { token, expiresAt } = await deps.webchatTokens.mint({
+          protocol: attachment.protocol,
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
@@ -327,6 +328,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         })
         if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
         const { token, expiresAt } = await deps.webchatTokens.mint({
+          protocol: attachment.protocol,
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
@@ -397,6 +399,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           })
           if (!attachment) return reply.code(503).send(AHP_UNAVAILABLE)
           const { token, expiresAt } = await deps.webchatTokens.mint({
+            protocol: attachment.protocol,
             userId,
             ...(await authorIdentity(userId, req.principal!.email)),
             agentId: primary.id,
@@ -442,6 +445,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           members.map((a) => a.id)
         )
         const { token, expiresAt } = await deps.webchatTokens.mint({
+          protocol: attachment.protocol,
           userId,
           ...(await authorIdentity(userId, req.principal!.email)),
           agentId: primary!.id,
