@@ -166,6 +166,10 @@ export class Computer {
     return this.paused?.by === client
   }
 
+  private assertViewerControl(client: string): void {
+    if (!this.controlledBy(client)) throw new ComputerError('human_in_control', 'take control in the viewer first')
+  }
+
   // Raw PNG of the primary display at the configured size, for the viewer's frame loop; not audited.
   async frame(): Promise<{ png: Buffer; width: number; height: number }> {
     const output = await this.exclusive(() => this.captureScreen())
@@ -178,8 +182,10 @@ export class Computer {
     const started = this.now()
     const args = input as unknown as Record<string, unknown>
     try {
-      if (!this.controlledBy(client)) throw new ComputerError('human_in_control', 'take control in the viewer first')
+      this.assertViewerControl(client)
       await this.exclusive(async () => {
+        // Pause or hand-back may have happened while this input waited in the queue or for the capture.
+        this.assertViewerControl(client)
         if (!this.captureIsCurrent()) await this.captureScreen()
         // Viewer coordinates are fractions of the frame; the driver wants pixels of its last capture.
         const { width, height } = this.capture!
@@ -188,6 +194,7 @@ export class Computer {
           y: Math.round(Math.min(Math.max(point.y, 0), 1) * (height - 1))
         })
         const call = viewerCall(input, px)
+        this.assertViewerControl(client)
         await this.callDriver(call)
       })
       if (input.type !== 'move')

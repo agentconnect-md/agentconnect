@@ -208,6 +208,32 @@ describe('Computer', () => {
     expect((await computer.click('claude', { x: 1, y: 1 })).isError).toBeUndefined()
   })
 
+  for (const [revoke, wait] of [
+    ['pause', 'behind a screenshot'],
+    ['hand back', 'behind a screenshot'],
+    ['pause', 'for its own capture']
+  ] as const) {
+    it(`drops viewer input revoked by ${revoke} while it waits ${wait}`, async () => {
+      const { driver, computer } = setup({ actionScreenshot: false })
+      const capture = driver.handlers.get_desktop_state!
+      let finish!: () => void
+      const gate = new Promise<void>((resolve) => (finish = resolve))
+      driver.handlers.get_desktop_state = async (args) => {
+        await gate
+        return capture(args)
+      }
+      computer.takeOver('alice')
+      const shot = wait === 'behind a screenshot' ? computer.screenshot('claude') : undefined
+      const click = computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+      if (revoke === 'pause') computer.pause('emergency stop')
+      else computer.handBack('alice')
+      finish()
+      await shot
+      await expect(click).rejects.toMatchObject({ code: 'human_in_control' })
+      expect(driver.calls.filter((call) => call.name === 'click')).toEqual([])
+    })
+  }
+
   it('types non-ASCII text on Linux one remapped character at a time', async () => {
     const { driver, computer } = setup({ actionScreenshot: false }, 'linux')
     await computer.type('claude', { text: 'ok 你好!' })
