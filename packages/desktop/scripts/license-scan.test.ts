@@ -74,6 +74,7 @@ describe('license expressions', () => {
     expect(forbiddenText('This program is free software: GNU Affero General Public License')).toContain('AGPL')
     expect(forbiddenText('/*! SPDX-License-Identifier: GPL-2.0-only */')).toContain('GPL-2.0-only')
     expect(forbiddenText('Licensed under the Business Source License 1.1')).toEqual(['BSL'])
+    expect(forbiddenText('/*! AGPL-3.0 */')).toEqual(['AGPL'])
     expect(forbiddenText('GNU Lesser General Public License v2.1, see LGPL-2.1')).toEqual([])
     expect(forbiddenText('MIT License, Permission is hereby granted')).toEqual([])
   })

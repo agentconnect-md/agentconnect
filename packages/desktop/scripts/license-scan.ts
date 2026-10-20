@@ -76,7 +76,8 @@ export function classifyExpression(expression: string): Verdict {
 const FORBIDDEN_TEXT: [RegExp, string][] = [
   [/GNU\s+Affero\s+General\s+Public\s+License/i, 'AGPL'],
   [/GNU\s+General\s+Public\s+License/i, 'GPL'],
-  [/(?<![A-Za-z])A?GPL[-v]?[123]/, 'GPL'],
+  [/(?<![A-Za-z])AGPL[-v]?[123]/, 'AGPL'],
+  [/(?<![A-Za-z])GPL[-v]?[123]/, 'GPL'],
   [/Server\s+Side\s+Public\s+License|\bSSPL\b/i, 'SSPL'],
   [/Business\s+Source\s+License|\bBUSL-1\.1\b/i, 'BSL'],
   [/Functional\s+Source\s+License|\bFSL-1\.[01]\b/i, 'FSL']
