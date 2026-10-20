@@ -16419,6 +16419,8 @@ export class Daemon {
       /** Steer into the live turn or refuse `busy` — never queue. For a caller that keeps its own
        *  queue (the console composer) and must learn the verdict from the admission ACK. */
       steerOnly?: boolean
+      /** Start a new turn or refuse `busy` while the session gate is occupied — never steer, never queue. */
+      startOnly?: boolean
       /** Recovery of a row whose loop-guard admission was already counted. */
       replay?: boolean
       /** A startup replay may wait for an interrupt safety drain instead of being dropped. */
@@ -16708,6 +16710,12 @@ export class Daemon {
           // is registered synchronously here, so a later delivery can never place itself first
           // nor go missing from the depth the cap is measured against.
           await this.admitInArrivalOrder(key, async () => {
+            // A start-only delivery names its own turn, so an occupied gate refuses it before anything durable exists.
+            if (opts?.startOnly) {
+              await settleAdmission({ accepted: false, reason: 'busy' })
+              resolve(null)
+              return
+            }
             // This link may have waited on a peer's placement, so read the queue it actually
             // admits into rather than the one this delivery arrived at.
             batchLeader = this.reviewBatchLeader(entry)
@@ -16783,6 +16791,7 @@ export class Daemon {
             // message and re-sends it when the turn ends. The durable row must not outlive it.
             if (opts?.steerOnly) {
               await this.removeInbox(entry).catch(() => undefined)
+              await this.releaseReceipt(entry)
               await settleAdmission({ accepted: false, reason: 'busy' })
               resolve(null)
               return
