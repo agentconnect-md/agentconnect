@@ -70,7 +70,8 @@ export default function EditMemberModal({
       cron: t('resources.cron', { count: 2 }),
       mcpProvider: t('resources.mcpProvider', { count: 2 }),
       skillSource: t('resources.skillSource', { count: 2 }),
-      decision: t('resources.decision', { count: 2 })
+      decision: t('resources.decision', { count: 2 }),
+      computer: t('resources.computer', { count: 2 })
     }
     return resources
       .map((resource) => t('resourceCount', { count: resource.selected, kind: labels[resource.kind] }))

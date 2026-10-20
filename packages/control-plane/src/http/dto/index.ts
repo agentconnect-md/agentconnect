@@ -8,6 +8,16 @@ import { z } from 'zod'
 import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
+  COMPUTER_ISOLATIONS,
+  COMPUTER_KINDS,
+  COMPUTER_OSES,
+  COMPUTER_REGISTRATION_MAX_TTL_MINUTES,
+  COMPUTER_SESSIONS,
+  COMPUTER_STATUSES,
+  ComputerCapabilitiesSchema,
+  ComputerPolicySchema
+} from '../../domain/computer.js'
+import {
   SkillSourceFailureCode,
   AgentModelProvider,
   AgentDecisionIds,
@@ -2725,7 +2735,7 @@ export const MemberRemovalPreviewDto = z.object({
   replacement: MemberDto.nullable(),
   resources: z.array(
     z.object({
-      kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource', 'decision']),
+      kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource', 'decision', 'computer']),
       // Selected resources whose explicit audience contains the departing member.
       selected: z.number().int(),
       // The subset with no other current member; `replacement` is added to these.
@@ -4521,3 +4531,73 @@ export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageRe
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
 export type AgentWakeDtoT = z.infer<typeof AgentWakeDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>
+
+// ── computers (computer-use.md §2.2, §3.6, §4.1) ─────────────────────────
+export const ComputerDto = z.object({
+  id: z.string(),
+  name: z.string(),
+  ownerUserId: z.string(),
+  kind: z.enum(COMPUTER_KINDS),
+  isolation: z.enum(COMPUTER_ISOLATIONS),
+  os: z.enum(COMPUTER_OSES),
+  osVersion: z.string(),
+  session: z.enum(COMPUTER_SESSIONS),
+  status: z.enum(COMPUTER_STATUSES),
+  capabilities: ComputerCapabilitiesSchema,
+  desktopDaemonVersion: z.string(),
+  driverVersion: z.string(),
+  policy: ComputerPolicySchema,
+  visibility: ResourceVisibilityEnum,
+  sharedWith: z.array(z.string()),
+  lastSeenAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** The caller may revoke, delete or re-share it. */
+  canEdit: z.boolean(),
+  /** The caller may change who uses it: the registrant of a self-hosted computer, or an editor of a managed one. */
+  canEditPolicy: z.boolean()
+})
+export type ComputerDtoT = z.infer<typeof ComputerDto>
+export const ComputerListDto = z.array(ComputerDto)
+
+export const CreateComputerRegistrationBody = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    ttlMinutes: z.number().int().min(5).max(COMPUTER_REGISTRATION_MAX_TTL_MINUTES).optional()
+  })
+  .strict()
+
+export const ComputerRegistrationDto = z.object({
+  registrationId: z.string(),
+  /** One-time registration token, shown exactly once. */
+  token: z.string(),
+  displayTail: z.string(),
+  name: z.string().nullable(),
+  expiresAt: z.string(),
+  /** Where the desktop daemon exchanges the token for its Computer key. */
+  exchangeUrl: z.string()
+})
+
+export const RegisterComputerBody = z
+  .object({
+    token: z.string().min(1).max(256),
+    name: z.string().trim().min(1).max(120),
+    isolation: z.enum(COMPUTER_ISOLATIONS).default('none'),
+    os: z.enum(COMPUTER_OSES),
+    osVersion: z.string().trim().min(1).max(120),
+    session: z.enum(COMPUTER_SESSIONS),
+    capabilities: ComputerCapabilitiesSchema.default(ComputerCapabilitiesSchema.parse({})),
+    desktopDaemonVersion: z.string().trim().min(1).max(64),
+    driverVersion: z.string().trim().min(1).max(64)
+  })
+  .strict()
+
+export const RegisteredComputerDto = z.object({
+  computerId: z.string(),
+  orgId: z.string(),
+  apiKeyId: z.string(),
+  /** The Computer key, shown exactly once; it authenticates only the Computer channel. */
+  apiKey: z.string(),
+  displayTail: z.string()
+})

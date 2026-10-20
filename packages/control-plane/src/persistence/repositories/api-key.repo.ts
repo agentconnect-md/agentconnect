@@ -15,7 +15,7 @@ import type {
   UpdateApiKeyInput,
   PrincipalType
 } from '../ports.js'
-import { DaemonId, OrgId } from '../../domain/ids.js'
+import { ComputerId, DaemonId, OrgId } from '../../domain/ids.js'
 import type { ApiKeyPermission } from '../../domain/api-key-permission.js'
 
 // The selection rows ride every read with their agent's names, so the key list can say which agents without a second read.
@@ -37,6 +37,7 @@ function toRecord(k: ApiKeyRow): ApiKeyRecord {
     principalType: k.principalType as PrincipalType,
     orgId: k.orgId ? OrgId(k.orgId) : null, // null iff principalType='relay'
     daemonId: k.daemonId ? DaemonId(k.daemonId) : null,
+    computerId: k.computerId ? ComputerId(k.computerId) : null,
     userId: k.userId,
     displayTail: k.displayTail,
     name: k.name,
@@ -62,6 +63,7 @@ export class PgApiKeyRepo implements ApiKeyRepo {
         principalType: input.principalType,
         orgId: input.orgId, // null for relay keys (org-less infra credential)
         daemonId: input.daemonId ?? null,
+        computerId: input.computerId ?? null,
         userId: input.userId ?? null,
         hash: input.hash,
         displayTail: input.displayTail,

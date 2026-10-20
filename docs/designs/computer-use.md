@@ -115,7 +115,10 @@ interface Computer {
 ```
 
 Persistence lives in the Control Plane (`packages/control-plane/src/persistence/`); visibility reuses
-[resource-visibility.md](resource-visibility.md). The desktop daemon reports status and capabilities in its heartbeat,
+[resource-visibility.md](resource-visibility.md). **[implemented]** The `computer` table holds this record with a UUID
+`id`; `kind`, `session` and the policy are validated by `src/domain/computer.ts`. A newly registered self-hosted
+computer starts **Selected** with only its registrant in the audience (organization owners still see it by role),
+and only the registrant may change its policy; any editor may revoke or delete it. The desktop daemon reports status and capabilities in its heartbeat,
 with `permissions`, `session`, and `viewer` taken straight from `doctor` (§3.5). Wire frames go in a new
 `packages/protocol/src/frames/computer.ts`.
 
@@ -281,7 +284,11 @@ Follow the "add a daemon in the console, run the generated command" flow and dae
    closes the viewer. The bound when the CP connection is lost is in §8.2.
 
 API keys gain a `computer` principal type, usable only on the Computer channel; it can neither run agents nor reach
-other resources ([daemon-api-key-auth.md](daemon-api-key-auth.md)). The prototype's local token (sha256 stored, shown
+other resources ([daemon-api-key-auth.md](daemon-api-key-auth.md)). **[implemented]** `POST
+/orgs/:orgId/computers/registrations` mints a one-time token (60 minutes by default, at most 24 hours) and
+`POST /v1/computers/register` spends it, creating the Computer and its key in one transaction; both the minting route
+and `POST /orgs/:orgId/computers/:id/revoke` are `interactiveOnly`. A registrant who leaves the organization has their
+Computers revoked. The prototype's local token (sha256 stored, shown
 once) stays as an offline / development mode.
 
 ### 3.7 Data paths

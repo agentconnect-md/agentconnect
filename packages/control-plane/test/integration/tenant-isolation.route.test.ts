@@ -33,8 +33,20 @@ import { PgWebchatConversationRepo } from '../../src/persistence/repositories/we
 import { PgGithubInstallationRepo } from '../../src/persistence/repositories/github.repo.js'
 import { PgExternalMemoryConnectionRepo } from '../../src/persistence/repositories/memory-connection.repo.js'
 import { PgApiKeyRepo } from '../../src/persistence/repositories/api-key.repo.js'
+import { PgComputerRepo } from '../../src/persistence/repositories/computer.repo.js'
+import { defaultComputerPolicy } from '../../src/domain/computer.js'
 import { AgentMissing, BotMissing, CronMissing, HookMissing } from '../../src/persistence/errors.js'
-import { AgentId, BotId, CronId, DaemonId, HookId, IntegrationId, OrgId, SessionId } from '../../src/domain/ids.js'
+import {
+  AgentId,
+  BotId,
+  ComputerId,
+  CronId,
+  DaemonId,
+  HookId,
+  IntegrationId,
+  OrgId,
+  SessionId
+} from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -1424,5 +1436,65 @@ describe('tenant isolation — installation, memory-connection and key fences un
     expect(await keys.listForDaemon(OrgId(foreignOrgId), DaemonId(foreignDaemonId))).toHaveLength(1)
 
     await foreignInfraUnmodified()
+  })
+})
+
+describe('tenant isolation — Computer over the REST surface and its repository', () => {
+  async function seedForeignComputer(): Promise<string> {
+    const id = randomUUID()
+    await prisma.computer.create({
+      data: {
+        id,
+        orgId: foreignOrgId,
+        name: 'foreign-desk',
+        ownerUserId: DEFAULT_OWNER_ID,
+        os: 'linux',
+        osVersion: 'x',
+        session: 'x11',
+        desktopDaemonVersion: '0.1.0',
+        driverVersion: '0.35.2',
+        policy: {}
+      }
+    })
+    await prisma.apiKey.create({
+      data: { principalType: 'computer', orgId: foreignOrgId, computerId: id, hash: sha256(id), displayTail: '…cmp' }
+    })
+    return id
+  }
+
+  async function foreignComputerUnmodified(id: string): Promise<void> {
+    const row = await prisma.computer.findUniqueOrThrow({ where: { id } })
+    expect(row).toMatchObject({ orgId: foreignOrgId, status: 'offline', visibility: 'org', policy: {} })
+    expect(await prisma.apiKey.count({ where: { computerId: id, revokedAt: null } })).toBe(1)
+  }
+
+  it('every route reads a foreign Computer as absent and writes nothing', async () => {
+    const id = await seedForeignComputer()
+    const app = build()
+    for (const request of [
+      { method: 'GET' as const, url: `${ORG}/computers/${id}` },
+      { method: 'PUT' as const, url: `${ORG}/computers/${id}/policy`, payload: {} },
+      { method: 'PUT' as const, url: `${ORG}/computers/${id}/sharing`, payload: { visibility: 'org' } },
+      { method: 'POST' as const, url: `${ORG}/computers/${id}/revoke` },
+      { method: 'DELETE' as const, url: `${ORG}/computers/${id}` }
+    ]) {
+      expect((await app.app.inject(request)).statusCode, `${request.method} ${request.url}`).toBe(404)
+    }
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/computers` })).json()).toEqual([])
+    await foreignComputerUnmodified(id)
+  })
+
+  it('repository reads and mutations treat a cross-org id exactly like a missing row', async () => {
+    const id = ComputerId(await seedForeignComputer())
+    const repo = new PgComputerRepo(prisma)
+    expect(await repo.get(CALLER_ORG, id)).toBeNull()
+    expect(await repo.list(CALLER_ORG)).toEqual([])
+    await expect(repo.setPolicy(CALLER_ORG, id, defaultComputerPolicy(DEFAULT_OWNER_ID))).rejects.toThrow()
+    await expect(repo.setSharing(CALLER_ORG, id, { visibility: 'restricted', sharedWith: [] })).rejects.toThrow()
+    await expect(repo.revoke(CALLER_ORG, id, 'hijack', new Date())).rejects.toThrow()
+    await expect(repo.delete(CALLER_ORG, id)).rejects.toThrow()
+    await foreignComputerUnmodified(id)
+    // The unscoped read is the Computer channel's key-verification escape hatch.
+    expect(await repo.getUnscoped(id)).not.toBeNull()
   })
 })

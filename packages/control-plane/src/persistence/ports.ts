@@ -76,8 +76,18 @@ import type {
   IntegrationId,
   BotId,
   SessionId,
-  OrgId
+  OrgId,
+  ComputerId
 } from '../domain/ids.js'
+import type {
+  ComputerCapabilities,
+  ComputerIsolation,
+  ComputerKind,
+  ComputerOs,
+  ComputerPolicy,
+  ComputerSession,
+  ComputerStatus
+} from '../domain/computer.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
@@ -188,6 +198,7 @@ export type AuditKind =
   | 'mcp_tool_call'
   | 'agent_api_change'
   | 'memory_change'
+  | 'computer_change'
 
 // ───────────────────────────────────────────────────────────────────────────
 // DaemonRepo (C4) — fleet registry & fencing root (§3.3)
@@ -437,13 +448,15 @@ export interface DaemonLifecycleOpRepo {
 // ApiKeyRepo (C4) — long-lived, revocable daemon/user credential (§3.3a)
 // ───────────────────────────────────────────────────────────────────────────
 
-export type PrincipalType = 'daemon' | 'user' | 'relay' | 'oauth'
+export type PrincipalType = 'daemon' | 'user' | 'relay' | 'oauth' | 'computer'
 
 export interface CreateApiKeyInput {
   principalType: PrincipalType
   /** Org for daemon/user/oauth keys; null for relay keys (deployment-level infra, not tenant-scoped). */
   orgId: OrgId | null
   daemonId?: DaemonId
+  /** Set iff principalType='computer' — the one Computer the key may act as. */
+  computerId?: ComputerId
   userId?: string
   /** `HMAC-SHA256(secret, pepper)` hex — the unique lookup key. Plaintext is never stored. */
   hash: string
@@ -485,6 +498,7 @@ export interface ApiKeyRecord {
   principalType: PrincipalType
   orgId: OrgId | null // null iff principalType='relay'
   daemonId: DaemonId | null
+  computerId: ComputerId | null // set iff principalType='computer'
   userId: string | null
   displayTail: string
   name: string | null
@@ -543,6 +557,103 @@ export interface ApiKeyRepo {
    *  System-tier: fenced by the caller's own identity, which spans organizations
    *  by design (a personal key list is per-user, not per-org). */
   listForUser(userId: string, opts?: { includeRevoked?: boolean }): Promise<UserApiKeyRecord[]>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// ComputerRepo — registered desktops agents may be granted (computer-use.md §2.2, §3.6)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Domain view of a `computer` row. */
+export interface ComputerRecord extends Shareable {
+  id: ComputerId
+  orgId: OrgId
+  name: string
+  ownerUserId: string
+  kind: ComputerKind
+  isolation: ComputerIsolation
+  os: ComputerOs
+  osVersion: string
+  session: ComputerSession
+  status: ComputerStatus
+  capabilities: ComputerCapabilities
+  desktopDaemonVersion: string
+  driverVersion: string
+  policy: ComputerPolicy
+  lastSeenAt: Date | null
+  revokedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface CreateComputerRegistrationInput {
+  orgId: OrgId
+  createdByUserId: string
+  /** `HMAC-SHA256(secret, pepper)` hex of the one-time token. */
+  hash: string
+  displayTail: string
+  name?: string
+  expiresAt: Date
+}
+
+export interface ComputerRegistrationRecord {
+  id: string
+  orgId: OrgId
+  createdByUserId: string
+  displayTail: string
+  name: string | null
+  expiresAt: Date
+  consumedAt: Date | null
+  computerId: ComputerId | null
+  createdAt: Date
+}
+
+/** What the desktop daemon reports about itself when it exchanges its registration token. */
+export interface ComputerProfile {
+  name: string
+  kind: ComputerKind
+  isolation: ComputerIsolation
+  os: ComputerOs
+  osVersion: string
+  session: ComputerSession
+  capabilities: ComputerCapabilities
+  desktopDaemonVersion: string
+  driverVersion: string
+}
+
+export interface RegisterComputerInput {
+  /** Hash of the presented registration token. */
+  registrationHash: string
+  now: Date
+  computerId: ComputerId
+  profile: ComputerProfile
+  /** The fresh computer API key's stored half. */
+  key: { hash: string; displayTail: string }
+}
+
+export interface ComputerRepo {
+  createRegistration(input: CreateComputerRegistrationInput): Promise<ComputerRegistrationRecord>
+  /** Consume a live registration token, create its Computer and mint the Computer's key in one transaction; null when the token is unknown, spent, expired, or its registrant left the org. */
+  register(input: RegisterComputerInput): Promise<{ computer: ComputerRecord; apiKeyId: string } | null>
+  get(orgId: OrgId, id: ComputerId): Promise<ComputerRecord | null>
+  /** Internal read for the Computer channel's key verification, where the org comes from the key row. */
+  getUnscoped(id: ComputerId): Promise<ComputerRecord | null>
+  list(orgId: OrgId, viewer?: ViewCtx): Promise<ComputerRecord[]>
+  setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord>
+  setSharing(
+    orgId: OrgId,
+    id: ComputerId,
+    sharing: { visibility: ResourceVisibility; sharedWith: string[] },
+    byUserId?: string
+  ): Promise<ComputerRecord>
+  /** Mark the Computer revoked and revoke every live key it holds; idempotent. Returns the revoked key ids beside the row. */
+  revoke(
+    orgId: OrgId,
+    id: ComputerId,
+    reason: string,
+    at: Date
+  ): Promise<{ computer: ComputerRecord; revokedKeyIds: string[] }>
+  /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */
+  delete(orgId: OrgId, id: ComputerId): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -6072,7 +6183,8 @@ export interface CodeHostDecisionRoutingRepo {
   listUsages(orgId: OrgId, decisionIds?: readonly string[]): Promise<CodeHostDecisionRoutingUsage[]>
 }
 
-export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision'
+export type VisibilityResourceKind =
+  'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision' | 'computer'
 
 /**
  * What removing one member would do, read before the fact (resource-visibility.md

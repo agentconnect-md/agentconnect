@@ -135,6 +135,8 @@ model Org {
   agentMemoryMutations      AgentMemoryMutation[]
   agentMemoryStoreOperations AgentMemoryStoreOperation[]
   agentMemoryHistory        AgentMemoryHistory[]
+  computers                 Computer[]
+  computerRegistrations     ComputerRegistration[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -224,6 +226,8 @@ model User {
   createdEnvironmentEntries        OrganizationEnvironmentEntry[]      @relation("OrgEnvCreatedBy")
   modifiedEnvironmentEntries       OrganizationEnvironmentEntry[]      @relation("OrgEnvModifiedBy")
   authorizedEnvironmentAssignments OrganizationEnvironmentAssignment[] @relation("OrgEnvAuthorizedBy")
+  ownedComputers                   Computer[]                 @relation("ComputerOwner")
+  computerRegistrations            ComputerRegistration[]     @relation("ComputerRegistrationCreatedBy")
 
   @@map("app_user")
 }
@@ -610,6 +614,7 @@ enum PrincipalType {
   user
   relay // relay↔CP credential (shared-bot-relay.md §8) — org-less infra key
   oauth // access token minted by the embedded OAuth AS (agent-assistant.md §7) — same shape as a user key
+  computer // desktop daemon credential bound to one Computer; usable only on the Computer channel (computer-use.md §3.6)
 }
 
 /// What a key may do (daemon-api-key-auth.md §6, Key permissions and agent selection). `full` is today's behavior.
@@ -624,6 +629,7 @@ model ApiKey {
   principalType PrincipalType // daemon | user | relay | oauth
   orgId         String? // org-scoped for daemon/user/oauth keys; NULL for relay keys
   daemonId      String?       @db.Uuid // set iff principalType=daemon
+  computerId    String?       @db.Uuid // set iff principalType=computer
   userId        String? // set iff principalType=user or oauth
 
   hash            String   @unique // HMAC-SHA256(secret, pepper) hex — NEVER plaintext; the unique lookup key
@@ -645,11 +651,14 @@ model ApiKey {
   // Cascade: deleting a daemon (DELETE /daemons/:id) removes its keys, so no
   // orphaned credential rows (daemonId-null but still hash-valid) survive.
   daemon               Daemon?               @relation(fields: [daemonId], references: [id], onDelete: Cascade)
+  // Cascade: deleting a Computer removes its credentials, like a daemon's.
+  computer             Computer?             @relation(fields: [computerId], references: [id], onDelete: Cascade)
   user                 User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   agents               ApiKeyAgent[]
   webchatConversations WebchatConversation[]
 
   @@index([daemonId])
+  @@index([computerId])
   @@index([userId])
   @@index([orgId, revokedAt])
   @@index([oauthGrantId])
@@ -3194,6 +3203,7 @@ enum AuditKind {
   mcp_tool_call
   agent_api_change
   memory_change
+  computer_change
 }
 
 model AuditEvent {
@@ -4442,4 +4452,102 @@ model TransferUploadTicket {
   @@index([expiresAt])
   @@index([objectKey])
   @@map("transfer_upload_ticket")
+}
+
+// Computer — a registered desktop agents may be granted (computer-use.md §2.2); screen content is never stored here.
+
+enum ComputerKind {
+  self_hosted @map("self-hosted")
+  managed
+}
+
+enum ComputerIsolation {
+  none
+  container
+  vm
+}
+
+enum ComputerOs {
+  macos
+  windows
+  linux
+}
+
+enum ComputerSession {
+  aqua
+  console
+  rdp
+  x11
+  xvfb
+  wayland_gnome @map("wayland-gnome")
+}
+
+enum ComputerStatus {
+  online
+  offline
+  locked
+  paused
+  human_in_control
+  busy
+  revoked
+}
+
+model Computer {
+  id                   String             @id @db.Uuid
+  orgId                String
+  name                 String
+  // The registrant; their desktop, so only they may change who controls it (computer-use.md §4.1).
+  ownerUserId          String
+  kind                 ComputerKind       @default(self_hosted)
+  isolation            ComputerIsolation  @default(none)
+  os                   ComputerOs
+  osVersion            String
+  session              ComputerSession
+  // Durable lifecycle marker; live states arrive with the Computer channel heartbeat.
+  status               ComputerStatus     @default(offline)
+  capabilities         Json               @default("{}") @db.JsonB
+  desktopDaemonVersion String
+  driverVersion        String
+  // ComputerPolicy (computer-use.md §4.1), validated by the domain schema on every write.
+  policy               Json               @db.JsonB
+  visibility           ResourceVisibility @default(org)
+  sharedWith           String[]           @default([])
+  lastSeenAt           DateTime?          @db.Timestamptz(6)
+  revokedAt            DateTime?          @db.Timestamptz(6)
+  createdAt            DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
+
+  org           Org                    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner         User                   @relation("ComputerOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  apiKeys       ApiKey[]
+  registrations ComputerRegistration[]
+
+  @@index([orgId])
+  @@index([ownerUserId])
+  @@index([sharedWith], type: Gin)
+  @@map("computer")
+}
+
+/// A short-lived, one-time token a desktop daemon exchanges for its Computer API key (computer-use.md §3.6).
+model ComputerRegistration {
+  id              String    @id @default(uuid()) @db.Uuid
+  orgId           String
+  createdByUserId String
+  // HMAC-SHA256(secret, pepper) hex, like api_key.hash; the plaintext is shown once.
+  hash            String    @unique
+  displayTail     String
+  // Optional console-chosen name; the desktop daemon's hostname is used otherwise.
+  name            String?
+  expiresAt       DateTime  @db.Timestamptz(6)
+  consumedAt      DateTime? @db.Timestamptz(6)
+  computerId      String?   @db.Uuid
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+
+  org       Org       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("ComputerRegistrationCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  computer  Computer? @relation(fields: [computerId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([expiresAt])
+  @@map("computer_registration")
 }

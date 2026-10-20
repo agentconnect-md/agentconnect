@@ -128,6 +128,7 @@ import {
   PgMcpProviderOauthSecretStore,
   PgMcpProviderOauthStateStore,
   PgSkillSourceRepo,
+  PgComputerRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -219,6 +220,7 @@ import { findTool } from './http/mcp/tools.js'
 import { ApiKeyCodec } from './registry/apiKey.js'
 import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
+import { ComputerService } from './registry/computerService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -521,6 +523,7 @@ export function buildContainer(
     mcpProviderOauthSecret: new PgMcpProviderOauthSecretStore(prisma, secretCipher),
     mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),
     skillSource: new PgSkillSourceRepo(prisma),
+    computer: new PgComputerRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     organizationRecord: new PgOrganizationRecordRepo(prisma),
@@ -631,6 +634,7 @@ export function buildContainer(
     clusterIdentity
   )
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
+  const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock)
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(config.API_KEY_PEPPER),
@@ -2036,6 +2040,7 @@ export function buildContainer(
       mcpProviderOauthSecret: repos.mcpProviderOauthSecret,
       mcpProviderOauthState: repos.mcpProviderOauthState,
       skillSource: repos.skillSource,
+      computer: repos.computer,
       agentSkillSourceStatus: repos.agentSkillSourceStatus,
       organizationKnowledge: repos.organizationKnowledge,
       organizationRecord: repos.organizationRecord,
@@ -2095,6 +2100,7 @@ export function buildContainer(
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
     auth,
     apiKeys,
+    computers,
     oauth,
     webchatTokens,
     inviteLinks,

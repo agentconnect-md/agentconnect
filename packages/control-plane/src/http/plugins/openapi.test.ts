@@ -299,6 +299,8 @@ describe('openapi plane', () => {
           'GET /api/v1/orgs/:orgId/daemons/:id/keys',
           'POST /api/v1/orgs/:orgId/daemons/:id/keys',
           'POST /api/v1/orgs/:orgId/daemons/token',
+          'POST /api/v1/orgs/:orgId/computers/registrations',
+          'POST /api/v1/orgs/:orgId/computers/:id/revoke',
           'DELETE /api/v1/oauth/grants/:id',
           'DELETE /api/v1/orgs/:orgId',
           'GET /api/v1/me/keys',
@@ -330,6 +332,35 @@ describe('openapi plane', () => {
       const tags = doc.tags.map((t: { name: string }) => t.name)
       expect(tags).not.toContain('API keys')
       expect(tags).not.toContain('Daemon keys')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('names, tags and describes every Computer route, and keeps the public exchange unauthenticated', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/computers'
+      const expected: Array<[string, 'get' | 'put' | 'post' | 'delete', string]> = [
+        [base, 'get', 'listComputers'],
+        [`${base}/{id}`, 'get', 'getComputer'],
+        [`${base}/{id}`, 'delete', 'deleteComputer'],
+        [`${base}/{id}/policy`, 'put', 'setComputerPolicy'],
+        [`${base}/{id}/sharing`, 'put', 'setComputerSharing'],
+        ['/api/v1/computers/register', 'post', 'registerComputer']
+      ]
+      for (const [path, method, operationId] of expected) {
+        const op = doc.paths?.[path]?.[method]
+        expect(op, `${method} ${path}`).toMatchObject({ tags: ['Computers'], operationId })
+        expect(op?.summary, path).toBeTruthy()
+        expect(op?.description, path).toBeTruthy()
+      }
+      // The desktop daemon presents its registration token in the body, not a bearer.
+      expect(doc.paths['/api/v1/computers/register'].post.security).toEqual([])
+      // The `/v1` alias serves the handed-out exchange URL without documenting it twice.
+      expect(Object.keys(doc.paths).some((p) => p.startsWith('/v1/'))).toBe(false)
+      expect(doc.tags.map((t: { name: string }) => t.name)).toContain('Computers')
     } finally {
       await app.close()
     }

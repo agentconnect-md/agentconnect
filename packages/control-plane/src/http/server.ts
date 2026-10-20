@@ -29,6 +29,7 @@ import { runtimeConfigRoutes } from './routes/runtime-config.js'
 import { daemonRoutes } from './routes/daemons.js'
 import { memberSetRoutes } from './routes/member-sets.js'
 import { keyRoutes } from './routes/keys.js'
+import { computerRoutes, computerRegisterRoutes } from './routes/computers.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
@@ -336,6 +337,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // Unauthenticated org avatar PNG (console `<img src>`; no bearer). Same
       // version-root placement + `/v1` alias as the agent icon endpoint.
       await api.register(orgIconRoutes(deps))
+      // Unauthenticated Computer registration exchange: the one-time token in the body is the credential.
+      await api.register(computerRegisterRoutes(deps))
       // AgentConnect MCP — version root, OUTSIDE the org subtree: the org is
       // resolved from the personal API key's binding, not the URL
       // (docs/designs/agent-assistant.md §6.1). Mounted again at the public
@@ -352,6 +355,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(daemonRoutes(deps))
           await scope.register(memberSetRoutes(deps))
           await scope.register(keyRoutes(deps))
+          await scope.register(computerRoutes(deps))
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))
           await scope.register(webchatTokenRoutes(deps))
@@ -439,6 +443,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       for (const plugin of platformRoutes('public-callback')) await pub.register(plugin)
       await pub.register(agentIconRoutes(deps))
       await pub.register(orgIconRoutes(deps))
+      await pub.register(computerRegisterRoutes(deps, { hide: true }))
       await pub.register(mcpRoutes(deps))
     },
     { prefix: '/v1' }

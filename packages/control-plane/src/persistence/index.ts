@@ -73,6 +73,7 @@ export {
   PgMcpProviderOauthStateStore
 } from './repositories/mcp-oauth.repo.js'
 export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
+export { PgComputerRepo } from './repositories/computer.repo.js'
 export { PgAgentSkillSourceStatusRepo } from './repositories/agent-skill-source-status.repo.js'
 export { PgOrganizationKnowledgeRepo } from './repositories/organization-knowledge.repo.js'
 export { PgOrganizationRecordRepo } from './repositories/organization-record.repo.js'

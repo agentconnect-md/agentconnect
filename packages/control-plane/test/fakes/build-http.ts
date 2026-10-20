@@ -64,6 +64,7 @@ import {
   PgMcpProviderOauthSecretStore,
   PgMcpProviderOauthStateStore,
   PgSkillSourceRepo,
+  PgComputerRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -99,6 +100,7 @@ import { DaemonRegistryService } from '../../src/registry/registryService.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
+import { ComputerService } from '../../src/registry/computerService.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
 import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
@@ -300,6 +302,8 @@ export function buildHttpApp(
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
   const epoch = new EpochService(daemonRepo, clock)
   const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock)
+  const computerRepo = new PgComputerRepo(prisma)
+  const computerService = new ComputerService(codec, computerRepo, apiKeyRepo, auditRepo, clock)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(TEST_API_KEY_PEPPER),
     new PgOrgInviteLinkRepo(prisma),
@@ -571,6 +575,7 @@ export function buildHttpApp(
       mcpProviderOauthSecret: new PgMcpProviderOauthSecretStore(prisma, cipher),
       mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),
       skillSource: skillSourceRepo,
+      computer: computerRepo,
       agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
       organizationKnowledge: organizationKnowledgeRepo,
       organizationRecord: new PgOrganizationRecordRepo(prisma),
@@ -651,6 +656,7 @@ export function buildHttpApp(
       memberSets
     ),
     apiKeys: apiKeyService,
+    computers: computerService,
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
     inviteLinks,

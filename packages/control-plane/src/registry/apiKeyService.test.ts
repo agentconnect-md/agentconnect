@@ -16,6 +16,7 @@ function record(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     principalType: 'user',
     orgId: OrgId('org_1'),
     daemonId: null,
+    computerId: null,
     userId: 'usr_1',
     displayTail: '…abcd',
     name: null,
@@ -81,6 +82,9 @@ describe('ApiKeyService.authenticateUser — fail-closed contract', () => {
     // relay keys are org-less infra credentials — doubly rejected (principal + org guard)
     const relay = record({ principalType: 'relay', userId: null, orgId: null })
     expect(await service(relay).authenticateUser(token)).toBeNull()
+    // a desktop daemon's Computer key is confined to the Computer channel
+    const computer = record({ principalType: 'computer', userId: null, computerId: 'c' as never })
+    expect(await service(computer).authenticateUser(token)).toBeNull()
   })
 
   it('rejects a user row without an org binding (corrupt row → fail closed)', async () => {
