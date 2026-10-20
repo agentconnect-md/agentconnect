@@ -143,6 +143,7 @@ function SessionAccessRow({
     slack: {
       name: t('providers.slack.name'),
       label: t('providers.slack.label'),
+      description: t('providers.slack.description'),
       details: t('providers.slack.details'),
       unavailable: t('providers.slack.unavailable'),
       unresolved: (count: number) => t('providers.slack.unresolved', { count }),
@@ -151,6 +152,7 @@ function SessionAccessRow({
     github: {
       name: t('providers.github.name'),
       label: t('providers.github.label'),
+      description: t('providers.github.description'),
       details: t('providers.github.details'),
       unavailable: t('providers.github.unavailable'),
       unresolved: (count: number) => t('providers.github.unresolved', { count }),
@@ -159,6 +161,7 @@ function SessionAccessRow({
     gitlab: {
       name: t('providers.gitlab.name'),
       label: t('providers.gitlab.label'),
+      description: t('providers.gitlab.description'),
       details: t('providers.gitlab.details'),
       unavailable: t('providers.gitlab.unavailable'),
       unresolved: (count: number) => t('providers.gitlab.unresolved', { count }),
@@ -167,6 +170,7 @@ function SessionAccessRow({
     feishu: {
       name: t('providers.feishu.name'),
       label: t('providers.feishu.label'),
+      description: t('providers.feishu.description'),
       details: t('providers.feishu.details'),
       unavailable: t('providers.feishu.unavailable'),
       unresolved: (count: number) => t('providers.feishu.unresolved', { count }),
@@ -175,6 +179,7 @@ function SessionAccessRow({
     telegram: {
       name: t('providers.telegram.name'),
       label: t('providers.telegram.label'),
+      description: t('providers.telegram.description'),
       details: t('providers.telegram.details'),
       unavailable: t('providers.telegram.unavailable'),
       unresolved: (count: number) => t('providers.telegram.unresolved', { count }),
@@ -183,6 +188,7 @@ function SessionAccessRow({
     discord: {
       name: t('providers.discord.name'),
       label: t('providers.discord.label'),
+      description: t('providers.discord.description'),
       details: t('providers.discord.details'),
       unavailable: t('providers.discord.unavailable'),
       unresolved: (count: number) => t('providers.discord.unresolved', { count }),
@@ -191,6 +197,7 @@ function SessionAccessRow({
     googlechat: {
       name: t('providers.googlechat.name'),
       label: t('providers.googlechat.label'),
+      description: t('providers.googlechat.description'),
       details: t('providers.googlechat.details'),
       unavailable: t('providers.googlechat.unavailable'),
       unresolved: (count: number) => t('providers.googlechat.unresolved', { count }),
@@ -211,7 +218,7 @@ function SessionAccessRow({
             land on — `TooltipLayer` opens from focus, and a plain span never
             takes any. Same affordance the two-line row carried. */}
         <div className="flex items-center gap-[5px]">
-          <span className="font-sans text-[13px] font-medium leading-normal">{copy.name}</span>
+          <span className="font-sans text-[13px] font-medium leading-normal">{copy.label}</span>
           <button
             type="button"
             className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
@@ -220,6 +227,9 @@ function SessionAccessRow({
           >
             <Icon name="info" size={13} />
           </button>
+        </div>
+        <div className="mt-[2px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {copy.description}
         </div>
         {(actionError || loadError) && (
           <div role="alert" className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">

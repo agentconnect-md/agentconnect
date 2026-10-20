@@ -28,9 +28,8 @@
 > unknown-tool error. Sections 3 and 6.8 remain as the record of the removed
 > design. `correlationId` is gone as well: `sendMessage` no longer accepts it, the
 > daemon no longer carries it in trusted call metadata or the parent-session
-> reply, and the `rd/agentmsg` frames only tolerate it from older peers. The
-> daemon store keeps its unused `orchestration` and `orchestration_subtask` tables
-> until a schema step drops them.
+> reply, and the `rd/agentmsg` frames drop it when an older peer sends it. Store
+> v65 drops the unused `orchestration` and `orchestration_subtask` tables.
 
 > This document is the concrete implementation design for
 > [`agents-collaboration-design.md`](agents-collaboration-design.md). That
