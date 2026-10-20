@@ -21,6 +21,7 @@ import {
 import type { ApiKeyCodec } from './apiKey.js'
 import type { ComputerChannelControl } from '../ws/computer-registry.js'
 import type { ComputerLeaseService } from './computerLeaseService.js'
+import type { ComputerScreenshots } from './computerScreenshots.js'
 
 /** Skip the best-effort `lastUsedAt` write unless the key has not been touched for this long. */
 const LAST_USED_THROTTLE_MS = 60_000
@@ -53,6 +54,8 @@ export interface ComputerServiceOpts {
   leases?: Pick<ComputerLeaseService, 'current' | 'preempt'>
   /** A live status older than this reads as offline: its channel died without a clean close. */
   staleAfterMs?: number
+  /** Stored screenshots, so a lowered retention applies to the ones already kept. */
+  screenshots?: Pick<ComputerScreenshots, 'applyRetention'>
 }
 
 export class ComputerService {
@@ -150,6 +153,8 @@ export class ComputerService {
     const computer = await this.computers.setPolicy(orgId, id, policy)
     if (!computer) return null
     this.opts.channels?.pushPolicy(id, computer.policy)
+    // A failure here is caught up by the screenshot reaper's next sweep.
+    await this.opts.screenshots?.applyRetention(id).catch(() => 0)
     // A grant taken away ends the lease it backed; a failure here leaves it to the next heartbeat.
     await this.opts.leases?.current(orgId, id).catch(() => null)
     this.record(orgId, actorUserId, 'policy_update', {

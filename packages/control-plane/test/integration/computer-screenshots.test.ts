@@ -7,7 +7,8 @@ import { FakeClock } from '../fakes/fake-clock.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgComputerScreenshotRepo } from '../../src/persistence/repositories/computer-screenshot.repo.js'
-import { ComputerScreenshots } from '../../src/registry/computerScreenshots.js'
+import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { ComputerScreenshots, ScreenshotSessionPendingError } from '../../src/registry/computerScreenshots.js'
 import type { ScreenshotBucket, ScreenshotObjectKey } from '../../src/computer-screenshots/bucket.js'
 import { ComputerPolicySchema } from '../../src/domain/computer.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
@@ -54,7 +55,10 @@ function harness() {
   const clock = new FakeClock(T0)
   const bucket = new FakeBucket()
   const repo = new PgComputerScreenshotRepo(prisma)
-  const screenshots = new ComputerScreenshots(repo, bucket, clock, { defaultDays: 30, maxDays: 90 })
+  const screenshots = new ComputerScreenshots(repo, new PgSessionRepo(prisma), bucket, clock, {
+    defaultDays: 30,
+    maxDays: 90
+  })
   return { clock, bucket, repo, screenshots }
 }
 
@@ -127,7 +131,7 @@ async function store(
   over: Record<string, unknown> = {}
 ) {
   const signed = await h.screenshots.put(
-    { orgId: DEFAULT_ORG_ID, computerId, policy: policy(over) },
+    { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId], ...over }) },
     offer(s.sessionId, s.agentId)
   )
   expect(signed.status).toBe('upload')
@@ -143,7 +147,7 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     const signed = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy() },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
       offer(s.sessionId, s.agentId)
     )
     expect(signed).toMatchObject({ status: 'upload', headers: { 'content-length': '100' } })
@@ -158,7 +162,7 @@ describe('computer screenshot storage', () => {
     expect(row.expiresAt.getTime()).toBe(T0 + 30 * DAY)
     // The same bytes again in the session need no upload.
     const again = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy() },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
       offer(s.sessionId, s.agentId)
     )
     expect(again).toEqual({ status: 'stored' })
@@ -191,14 +195,20 @@ describe('computer screenshot storage', () => {
           )
       }
     })
-    const screenshots = new ComputerScreenshots(new PgComputerScreenshotRepo(flaky), bucket, clock, {
-      defaultDays: 30,
-      maxDays: 90
-    })
+    const screenshots = new ComputerScreenshots(
+      new PgComputerScreenshotRepo(flaky),
+      new PgSessionRepo(prisma),
+      bucket,
+      clock,
+      {
+        defaultDays: 30,
+        maxDays: 90
+      }
+    )
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     const signed = await screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy() },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
       offer(s.sessionId, s.agentId)
     )
     bucket.objects.set(new URL(signed.url!).pathname.slice(1), 100)
@@ -215,14 +225,14 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     const skipped = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ screenshotRetentionDays: 0 }) },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId], screenshotRetentionDays: 0 }) },
       offer(s.sessionId, s.agentId)
     )
     expect(skipped.status).toBe('skipped')
     expect(await prisma.computerScreenshot.count({ where: { computerId } })).toBe(0)
     expect(h.screenshots.retentionDays(policy({ screenshotRetentionDays: 400 }))).toBe(90)
     const tooBig = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy() },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
       offer(s.sessionId, s.agentId, { bytes: 4096 })
     )
     expect(tooBig).toMatchObject({ status: 'skipped', reason: 'too large' })
@@ -317,7 +327,7 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy() },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
       offer(s.sessionId, s.agentId, { sha256: 'cd'.repeat(32) })
     )
     await store(h, computerId, s)
@@ -329,6 +339,60 @@ describe('computer screenshot storage', () => {
     const del = await appAs(DEFAULT_OWNER_ID).app.inject({ method: 'DELETE', url: `${ORG}/computers/${computerId}` })
     expect(del.statusCode).toBeLessThan(300)
     expect(await h.screenshots.reap()).toBe(1)
+    expect(await prisma.computerScreenshot.count({ where: { computerId } })).toBe(0)
+  })
+
+  it('signs nothing for a session that is not the offering agent’s, or for an agent not granted the Computer', async () => {
+    const h = harness()
+    const computerId = await register(appAs(DEFAULT_OWNER_ID))
+    const mine = await session()
+    const theirs = await session('private', 'user:someone-else')
+    const granted = { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [mine.agentId] }) }
+    // Another agent's session, even one the desktop's owner cannot see.
+    expect(await h.screenshots.put(granted, offer(theirs.sessionId, mine.agentId))).toMatchObject({ status: 'skipped' })
+    // An agent the Computer does not grant, naming its own session.
+    expect(await h.screenshots.put(granted, offer(theirs.sessionId, theirs.agentId))).toMatchObject({
+      status: 'skipped'
+    })
+    // A session id the org has no record of is offered again later, never stored now.
+    await expect(h.screenshots.put(granted, offer('s-made-up', mine.agentId))).rejects.toBeInstanceOf(
+      ScreenshotSessionPendingError
+    )
+    expect(await prisma.computerScreenshot.count({ where: { computerId } })).toBe(0)
+  })
+
+  it('applies a lowered retention to screenshots already stored', async () => {
+    const h = harness()
+    const computerId = await register(appAs(DEFAULT_OWNER_ID))
+    const s = await session()
+    await store(h, computerId, s)
+    h.clock.advance(3 * DAY)
+    const url = `${ORG}/sessions/${s.sessionId}/computer-screenshots/${SHA}`
+    expect((await appAs(DEFAULT_OWNER_ID, h.screenshots).app.inject({ method: 'GET', url })).statusCode).toBe(200)
+
+    // Two days now: a screenshot taken three days ago is past it.
+    const lowered = await appAs(DEFAULT_OWNER_ID, h.screenshots).app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/policy`,
+      payload: { screenshotRetentionDays: 2 }
+    })
+    expect(lowered.statusCode).toBe(200)
+    expect((await appAs(DEFAULT_OWNER_ID, h.screenshots).app.inject({ method: 'GET', url })).statusCode).toBe(404)
+    expect(await h.screenshots.reap()).toBe(1)
+    expect(await prisma.computerScreenshot.count({ where: { computerId } })).toBe(0)
+  })
+
+  it('caps what is already stored at a lowered deployment maximum on the next sweep', async () => {
+    const h = harness()
+    const computerId = await register(appAs(DEFAULT_OWNER_ID))
+    const s = await session()
+    await store(h, computerId, s)
+    h.clock.advance(10 * DAY)
+    const restarted = new ComputerScreenshots(h.repo, new PgSessionRepo(prisma), h.bucket, h.clock, {
+      defaultDays: 30,
+      maxDays: 7
+    })
+    expect(await restarted.reap()).toBe(1)
     expect(await prisma.computerScreenshot.count({ where: { computerId } })).toBe(0)
   })
 })

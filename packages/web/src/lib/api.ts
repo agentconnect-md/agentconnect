@@ -690,6 +690,7 @@ export interface ToolBody {
   content?: unknown[] // ACP ToolCallContent[] (content|diff|terminal blocks)
   locations?: { path: string; line?: number }[]
   truncated?: boolean // daemon capped the stored body at write time
+  screenshots?: string[] // stored screenshot hashes the body names, kept when a cap cuts them off
 }
 
 // The agent's task list for one turn (protocol `PlanBody`), transported as a JSON

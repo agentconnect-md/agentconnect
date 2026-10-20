@@ -119,6 +119,20 @@ export class PgComputerScreenshotRepo implements ComputerScreenshotRepo {
     return rows.map(toRecord)
   }
 
+  async clampExpiry(retention: { defaultDays: number; maxDays: number; computerId?: string }): Promise<number> {
+    const only = retention.computerId ? Prisma.sql`AND c."id" = ${retention.computerId}::uuid` : Prisma.empty
+    return this.db.$executeRaw`
+      UPDATE "computer_screenshot" s
+      SET "expiresAt" = s."createdAt" + make_interval(days => r.days)
+      FROM (
+        SELECT c."id",
+               LEAST(COALESCE((c."policy"->>'screenshotRetentionDays')::int, ${retention.defaultDays}::int), ${retention.maxDays}::int) AS days
+        FROM "computer" c
+        WHERE TRUE ${only}
+      ) r
+      WHERE s."computerId" = r."id" AND s."expiresAt" > s."createdAt" + make_interval(days => r.days)`
+  }
+
   async deleteRows(ids: string[]): Promise<number> {
     if (ids.length === 0) return 0
     const { count } = await this.db.computerScreenshot.deleteMany({ where: { id: { in: ids } } })

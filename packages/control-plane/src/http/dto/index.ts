@@ -4564,9 +4564,9 @@ export const ComputerDto = z.object({
   updatedAt: z.string(),
   /** The caller may revoke, delete or re-share it. */
   canEdit: z.boolean(),
-  /** The caller may change who uses it: the registrant of a self-hosted computer, or an editor of a managed one. */
   /** Days screenshots of this Computer are kept now: its policy's value or the deployment default; 0 stores none. */
   screenshotRetentionDays: z.number().int(),
+  /** The caller may change who uses it: the registrant of a self-hosted computer, or an editor of a managed one. */
   canEditPolicy: z.boolean()
 })
 export type ComputerDtoT = z.infer<typeof ComputerDto>

@@ -7,7 +7,8 @@ import type {
   ComputerScreenshotPutOk
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
-import type { ComputerScreenshotRecord, ComputerScreenshotRepo } from '../persistence/ports.js'
+import type { ComputerScreenshotRecord, ComputerScreenshotRepo, SessionRepo } from '../persistence/ports.js'
+import { OrgId, SessionId } from '../domain/ids.js'
 import {
   isScreenshotObjectKey,
   screenshotObjectKey,
@@ -39,9 +40,17 @@ export interface ComputerScreenshotRead {
   url: SignedScreenshotUrl
 }
 
+/** The session an offer names is not known yet, possibly still being recorded; the desktop offers it again later. */
+export class ScreenshotSessionPendingError extends Error {
+  constructor() {
+    super('session not known yet')
+  }
+}
+
 export class ComputerScreenshots {
   constructor(
     private readonly repo: ComputerScreenshotRepo,
+    private readonly sessions: Pick<SessionRepo, 'get'>,
     private readonly bucket: ScreenshotBucket,
     private readonly clock: Clock,
     private readonly opts: ComputerScreenshotsOpts,
@@ -55,12 +64,21 @@ export class ComputerScreenshots {
 
   /** Reserve and sign one upload a desktop offers; already stored bytes and a retention of 0 need no upload. */
   async put(
-    computer: { orgId: string; computerId: string; policy: Pick<ComputerPolicy, 'screenshotRetentionDays'> },
+    computer: {
+      orgId: string
+      computerId: string
+      policy: Pick<ComputerPolicy, 'screenshotRetentionDays' | 'allowedAgents'>
+    },
     put: ComputerScreenshotPut
   ): Promise<ComputerScreenshotPutOk> {
     const days = this.retentionDays(computer.policy)
     if (days <= 0) return { status: 'skipped', reason: 'retention is 0' }
     if (put.bytes > this.bucket.maxBytes) return { status: 'skipped', reason: 'too large' }
+    // The desktop names the session, so only a session of a granted agent in this org may receive its screenshots.
+    if (!computer.policy.allowedAgents.includes(put.agentId)) return { status: 'skipped', reason: 'agent not granted' }
+    const session = await this.sessions.get(OrgId(computer.orgId), SessionId(put.sessionId))
+    if (!session) throw new ScreenshotSessionPendingError()
+    if (session.agentId !== put.agentId) return { status: 'skipped', reason: 'not this agent’s session' }
     const now = this.clock.now()
     const takenAt = new Date(Math.min(Date.parse(put.takenAt), now + TAKEN_AT_SKEW_MS))
     const reserve = () =>
@@ -147,8 +165,15 @@ export class ComputerScreenshots {
     return this.repo.usage(orgId, window, new Date(this.clock.now()))
   }
 
+  /** Shorten what a Computer's screenshots are kept to its retention now; at 0 they read as absent and are collected. */
+  applyRetention(computerId: string): Promise<number> {
+    return this.repo.clampExpiry({ ...this.opts, computerId })
+  }
+
   /** One sweep: delete expired, abandoned and orphaned screenshots, objects first; returns how many rows went. */
   async reap(): Promise<number> {
+    // A lowered default or maximum, or a policy change whose clamp failed, applies to what is already stored.
+    await this.repo.clampExpiry(this.opts)
     const now = this.clock.now()
     let total = 0
     for (;;) {

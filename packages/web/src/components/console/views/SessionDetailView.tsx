@@ -1976,7 +1976,7 @@ function ToolBodyDetail({
 
   const truncated = msg.bodyTruncated && fullBody == null
   // Screenshots a computer tool stored, named by hash in its result (computer-use.md §9).
-  const screenshotRefs = useMemo(() => screenshotRefsIn(bodyStr), [bodyStr])
+  const screenshotRefs = useMemo(() => screenshotRefsIn(bodyStr, body?.screenshots), [bodyStr, body?.screenshots])
   const badge = statusBadge(body?.status ?? msg.toolStatus)
   const kind = body?.kind ?? msg.toolKind
   const bytes = msg.bodyBytes

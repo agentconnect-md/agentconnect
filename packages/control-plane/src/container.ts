@@ -690,6 +690,7 @@ export function buildContainer(
         const objects = createObjectClient({ config: screenshotsConfig, credentials, isKey: isScreenshotObjectKey })
         return new ComputerScreenshots(
           repos.computerScreenshot,
+          repos.session,
           createScreenshotBucket({ config: screenshotsConfig, credentials, objects }),
           clock,
           screenshotsConfig.retention,
@@ -700,7 +701,8 @@ export function buildContainer(
   const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock, {
     channels: computerChannels,
     leases: computerLeases,
-    staleAfterMs: missedBeatsMs
+    staleAfterMs: missedBeatsMs,
+    ...(computerScreenshots ? { screenshots: computerScreenshots } : {})
   })
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
   const inviteLinks = new OrgInviteLinkService(

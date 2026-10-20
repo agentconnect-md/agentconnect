@@ -622,8 +622,9 @@ Cua Driver maps them back to the screen (including HiDPI scale), so the model ne
 ```ts
 {
   content: [
+    { type: 'text', text: '{"computer":"<id>","stored":"sha256:<hex>"}' }, // only when stored, §9; redacted is design
     { type: 'image', data: '<base64>', mimeType: 'image/png' },
-    { type: 'text', text: '{"width":1280,"height":800,"computer":"<id>","stored":"sha256:<hex>"}' } // stored: §9; redacted is design
+    { type: 'text', text: '{"width":1280,"height":800}' }
   ]
 }
 ```
@@ -796,21 +797,27 @@ document it is 0. The CP then advertises `computer-screenshot-v1` and tells the 
 and every `computer/policy`.
 
 - **Write.** Only calls under an agent session's channel token are stored, never a local client's. When the retention
-  is above 0, the desktop hashes each image a call returns, adds `"computer"` and `"stored":"sha256:<hex>"` to the
-  JSON text that describes it (or a text block of its own), records the reference as the audit entry's
-  `screenshotRef`, and returns the call at once. In the background it offers the image with `computer/screenshot/put`
-  (session, agent, hash, size, type, time); the CP reserves a `computer_screenshot` row (unique per Computer, session
-  and hash, so a repeated screen is stored once) and answers with a PUT presigned for exactly that length, type and
-  SHA-256 checksum, or `stored` / `skipped`. The desktop PUTs the bytes straight to the bucket and sends
+  is above 0, the desktop hashes each image a call returns, puts a text block with `"computer"` and
+  `"stored":"sha256:<hex>"` right before it (ahead of the bytes, so a trimmed timeline preview still holds it), records
+  the reference as the audit entry's `screenshotRef`, and returns the call at once. In the background it offers the
+  image with `computer/screenshot/put` (session, agent, hash, size, type, time). The CP signs only for an agent the
+  Computer's policy grants and a session of that agent in its org (a session it does not know yet is a retryable
+  error); it reserves a `computer_screenshot` row (unique per Computer, session and hash, so a repeated screen is
+  stored once) and answers with a PUT presigned for exactly that length, type and SHA-256 checksum, or `stored` /
+  `skipped`. The desktop PUTs the bytes straight to the bucket and sends
   `computer/screenshot/commit`; the CP HEADs the object, and only an object holding exactly those bytes marks the row
-  stored and counts it. The desktop keeps up to 20 screenshots waiting and tries each 5 times; a failure never fails
-  the tool call, it only leaves the reference unresolvable.
+  stored and counts it. The desktop keeps up to 20 screenshots waiting and tries each 5 times, 5 s apart; a failure
+  never fails the tool call, it only leaves the reference unresolvable.
 - **Read.** `GET /sessions/{sessionId}/computer-screenshots/{sha256}` (`getSessionComputerScreenshot`) resolves a
   reference, and `GET /sessions/{sessionId}/computer-screenshots` (`listSessionComputerScreenshots`) pages a
   session's, each with a GET presigned for 5 minutes. The caller must see the session and the Computer it came from;
   a deleted Computer's screenshots are hidden at once. The console's session timeline shows the screenshots a
-  computer tool row names (`ComputerScreenshots` in the tool body).
-- **Retention.** A row expires `retention` days after it was offered and reads as absent from then on. Every replica
+  computer tool row names (`ComputerScreenshots` in the tool body). A tool body the agent daemon trims for a
+  timeline page, or caps at 1 MiB when it records it, carries the hashes it named in `screenshots`, so the reference
+  survives losing the image bytes around it.
+- **Retention.** A row expires `retention` days after it was offered and reads as absent from then on. A lowered
+  retention also applies to what is already stored: a policy change shortens its Computer's rows at once (0 expires
+  them all), and every sweep shortens rows past a lowered deployment default or maximum. Every replica
   sweeps every 10 minutes: expired rows, uploads unconfirmed for an hour, and rows of deleted Computers have their
   object deleted first and then the row, so a failed delete is retried. No bucket lifecycle rule is needed.
 - **Metering.** A confirmed upload adds its bytes to `computer_screenshot_usage` per organization and UTC day, which

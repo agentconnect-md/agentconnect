@@ -762,6 +762,8 @@ export interface ComputerScreenshotRepo {
   ): Promise<ComputerScreenshotRecord[]>
   /** Rows to collect: expired, unconfirmed since before `pendingBefore`, or of a Computer that no longer exists. */
   reapable(now: Date, pendingBefore: Date, limit: number): Promise<ComputerScreenshotRecord[]>
+  /** Shorten rows kept past their Computer's retention now (its policy's days, else `defaultDays`, capped at `maxDays`). */
+  clampExpiry(retention: { defaultDays: number; maxDays: number; computerId?: string }): Promise<number>
   deleteRows(ids: string[]): Promise<number>
   usage(orgId: string, window: { from: Date; to: Date }, now: Date): Promise<ComputerScreenshotUsageTotals>
 }

@@ -10,7 +10,11 @@
  * preview and assembles a page under the per-frame budget (newest rows that fit);
  * the FULL body is pulled on demand via `toolBody`, chunked by offset.
  */
-import { MAX_FRAME_BYTES, SessionImageAttachment as SessionImageAttachmentSchema } from '@agentconnect.md/protocol'
+import {
+  MAX_FRAME_BYTES,
+  SessionImageAttachment as SessionImageAttachmentSchema,
+  computerScreenshotHashesIn
+} from '@agentconnect.md/protocol'
 import type {
   SessionListReq,
   SessionListPage,
@@ -152,8 +156,11 @@ function shrinkField(value: unknown, chars: number): unknown {
  * until it fits; `truncated`/status/kind/locations are preserved. Always sets
  * `truncated:true` on the returned preview.
  */
-function previewBody(full: ToolBody): ToolBody {
+function previewBody(full: ToolBody, raw: string): ToolBody {
   const preview: ToolBody = { ...full, truncated: true }
+  // Stored screenshot references sit behind the image bytes a trim cuts, so they ride beside the preview.
+  const screenshots = full.screenshots ?? computerScreenshotHashesIn(raw)
+  if (screenshots.length > 0) preview.screenshots = screenshots
   // Progressively tighten the char budget on the biggest fields until we fit.
   for (const chars of [8192, 2048, 512, 128, 16]) {
     preview.rawOutput = shrinkField(full.rawOutput, chars)
@@ -448,7 +455,7 @@ export function createSessionReader(
         if (bytes <= PREVIEW_CAP) {
           base.body = r.body
         } else {
-          base.body = JSON.stringify(previewBody(full))
+          base.body = JSON.stringify(previewBody(full, r.body))
           base.bodyTruncated = true
           base.bodyBytes = bytes
         }

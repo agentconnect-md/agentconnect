@@ -12,6 +12,12 @@ describe('screenshotRefsIn', () => {
     expect(screenshotRefsIn(`${plain} ${JSON.stringify({ stored: `sha256:${B}` })}`)).toEqual([A, B])
   })
 
+  it('reads the hashes a capped body carries in screenshots first', () => {
+    const cut = `{"content":["[{\\"type\\":\\"image\\",\\"data\\":\\"iVBOR…"]}`
+    expect(screenshotRefsIn(cut, [B, 'nope'])).toEqual([B])
+    expect(screenshotRefsIn(JSON.stringify({ stored: `sha256:${A}` }), [B])).toEqual([B, A])
+  })
+
   it('ignores anything else', () => {
     expect(screenshotRefsIn(undefined)).toEqual([])
     expect(screenshotRefsIn(JSON.stringify({ sha: `sha256:${A}` }))).toEqual([])
@@ -22,6 +28,6 @@ describe('screenshotRefsIn', () => {
     const many = Array.from({ length: 5 }, (_, i) =>
       JSON.stringify({ stored: `sha256:${String(i).repeat(64)}` })
     ).join()
-    expect(screenshotRefsIn(many, 3)).toHaveLength(3)
+    expect(screenshotRefsIn(many, undefined, 3)).toHaveLength(3)
   })
 })

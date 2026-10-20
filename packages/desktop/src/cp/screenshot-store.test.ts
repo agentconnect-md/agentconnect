@@ -51,14 +51,10 @@ describe('ScreenshotStore', () => {
     const { s, puts, uploads, commit } = store()
     const stored = s.stash(screenshot(), agent)!
     expect(stored.ref).toBe(`sha256:${SHA}`)
-    expect(JSON.parse(stored.output.content[1]!.text!)).toEqual({
-      width: 1280,
-      height: 800,
-      computer: COMPUTER,
-      stored: `sha256:${SHA}`
-    })
-    // The image itself is still returned to the agent as it was.
-    expect(stored.output.content[0]).toEqual(screenshot().content[0])
+    // The reference comes first, so a preview that cuts the image bytes keeps it.
+    expect(JSON.parse(stored.output.content[0]!.text!)).toEqual({ computer: COMPUTER, stored: `sha256:${SHA}` })
+    // The image and its description are still returned to the agent as they were.
+    expect(stored.output.content.slice(1)).toEqual(screenshot().content)
     await s.flush()
     expect(puts).toEqual([
       {
@@ -86,16 +82,21 @@ describe('ScreenshotStore', () => {
     expect(store().s.stash({ content: [{ type: 'text', text: 'no image' }] }, agent)).toBeUndefined()
   })
 
-  it('adds a text block of its own after an image without JSON beside it', () => {
+  it('puts each image’s reference right before it', () => {
+    const other = Buffer.from('second png')
     const output = {
       content: [
         { type: 'text', text: 'uncertain' },
-        { type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' }
+        { type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' },
+        { type: 'image', data: other.toString('base64'), mimeType: 'image/png' }
       ]
     }
     const stored = store().s.stash(output, agent)!
-    expect(stored.output.content).toHaveLength(3)
-    expect(JSON.parse(stored.output.content[2]!.text!)).toEqual({ computer: COMPUTER, stored: `sha256:${SHA}` })
+    expect(stored.output.content.map((block) => block.type)).toEqual(['text', 'text', 'image', 'text', 'image'])
+    expect(JSON.parse(stored.output.content[1]!.text!)).toEqual({ computer: COMPUTER, stored: `sha256:${SHA}` })
+    const otherSha = createHash('sha256').update(other).digest('hex')
+    expect(JSON.parse(stored.output.content[3]!.text!)).toEqual({ computer: COMPUTER, stored: `sha256:${otherSha}` })
+    expect(stored.ref).toBe(`sha256:${SHA}`)
   })
 
   it('skips the upload of bytes the CP already holds or will not keep', async () => {
@@ -127,6 +128,19 @@ describe('ScreenshotStore', () => {
     }
     expect(stuck.s.pending).toBe(0)
     expect(refusing).toHaveBeenCalledTimes(5)
+  })
+
+  it('leaves the next attempt to the backoff timer when a screenshot arrives during it', async () => {
+    const sign = vi.fn(async () => 'retry' as const)
+    const { s } = store({ sign, retryMs: 60_000 })
+    s.stash(screenshot(), agent)
+    await s.flush()
+    expect(sign).toHaveBeenCalledTimes(1)
+    for (const bytes of ['b', 'c', 'd']) s.stash(screenshot(Buffer.from(bytes)), agent)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(sign).toHaveBeenCalledTimes(1)
+    expect(s.pending).toBe(4)
+    s.stop()
   })
 
   it('queues one upload per session for repeated bytes and drops the oldest beyond its bound', () => {

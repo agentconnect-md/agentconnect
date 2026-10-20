@@ -96,7 +96,8 @@ export const ToolBody = z.object({
   rawOutput: z.unknown().optional(),
   content: z.array(z.unknown()).optional(), // ACP ToolCallContent[] kept opaque (content|diff|terminal blocks)
   locations: z.array(z.object({ path: z.string(), line: z.number().int().optional() })).optional(),
-  truncated: z.boolean().optional() // set when the daemon capped the stored body at write time
+  truncated: z.boolean().optional(), // set when the daemon capped the stored body at write time
+  screenshots: z.array(z.string()).max(8).optional() // stored screenshot hashes the body names, kept when a cap cuts them off
 })
 export type ToolBody = z.infer<typeof ToolBody>
 

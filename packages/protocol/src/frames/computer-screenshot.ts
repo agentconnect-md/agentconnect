@@ -31,6 +31,19 @@ export function parseComputerScreenshotRef(ref: unknown): string | undefined {
   return SHA256_HEX_RE.test(sha256) ? sha256 : undefined
 }
 
+// `"stored":"sha256:<hex>"`, also inside a tool result that is itself a JSON string.
+const STORED_REF_RE = /stored\\*"\s*:\s*\\*"sha256:([0-9a-f]{64})/g
+
+/** The distinct screenshot hashes serialized text names as `"stored":"sha256:<hex>"`, in order; never more than `max`. */
+export function computerScreenshotHashesIn(text: string, max = 8): string[] {
+  const seen = new Set<string>()
+  for (const match of text.matchAll(STORED_REF_RE)) {
+    if (seen.size >= max) break
+    seen.add(match[1]!)
+  }
+  return [...seen]
+}
+
 // D→C REQ behind `computer-screenshot-v1`: sign the upload of one screenshot an agent session's call returned.
 export const ComputerScreenshotPut = z
   .object({

@@ -44,21 +44,9 @@ interface Job {
 const isContentType = (value: unknown): value is ComputerScreenshotContentType =>
   (COMPUTER_SCREENSHOT_CONTENT_TYPES as readonly unknown[]).includes(value)
 
-// The reference goes into the JSON text that describes the image, or into a text block of its own after it.
+// The reference rides in a small text block ahead of the image, so a timeline preview that cuts the bytes still keeps it.
 function withReference(content: DriverContent[], index: number, fields: Record<string, string>): DriverContent[] {
-  const next = content[index + 1]
-  if (next?.type === 'text' && next.text) {
-    try {
-      const parsed: unknown = JSON.parse(next.text)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const merged = { ...(parsed as Record<string, unknown>), ...fields }
-        return content.map((block, i) => (i === index + 1 ? { type: 'text', text: JSON.stringify(merged) } : block))
-      }
-    } catch {
-      // Not JSON: a block of its own follows instead.
-    }
-  }
-  return [...content.slice(0, index + 1), { type: 'text', text: JSON.stringify(fields) }, ...content.slice(index + 1)]
+  return [...content.slice(0, index), { type: 'text', text: JSON.stringify(fields) }, ...content.slice(index)]
 }
 
 export class ScreenshotStore {
@@ -93,7 +81,7 @@ export class ScreenshotStore {
       if (body.length === 0 || body.length > COMPUTER_SCREENSHOT_MAX_BYTES) continue
       const sha256 = createHash('sha256').update(body).digest('hex')
       const stored = computerScreenshotRef(sha256)
-      // The first image is the call's own screenshot; the loop runs backwards so indexes stay valid.
+      // The first image is the call's own screenshot; the loop runs backwards so inserting keeps earlier indexes valid.
       ref = stored
       content = withReference(content, index, { computer: computerId, stored })
       this.enqueue({
@@ -132,7 +120,8 @@ export class ScreenshotStore {
       this.queue.shift()
       this.dropped++
     }
-    void this.flush()
+    // While a retry waits out its backoff, the timer makes the next attempt; flushing now would spend attempts early.
+    if (!this.timer) void this.flush()
   }
 
   private async drain(): Promise<void> {

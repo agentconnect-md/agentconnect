@@ -28,7 +28,7 @@ import type { ComputerPrincipal, ComputerService } from '../registry/computerSer
 import type { ComputerChannelKeys } from '../registry/computerChannelKeys.js'
 import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
 import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
-import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
+import { ScreenshotSessionPendingError, type ComputerScreenshots } from '../registry/computerScreenshots.js'
 import type { ComputerChannel, ComputerChannelRegistry } from './computer-registry.js'
 import type { HandshakeGate } from './handshake-gate.js'
 
@@ -263,7 +263,8 @@ export class ComputerConnection implements ComputerChannel {
             )
       if (this.state === 'READY') this.reply(frame, 'computer/screenshot/put/ok', reply)
     } catch (err) {
-      this.deps.log?.warn({ err: (err as Error).message }, 'computer: screenshot signing failed')
+      if (!(err instanceof ScreenshotSessionPendingError))
+        this.deps.log?.warn({ err: (err as Error).message }, 'computer: screenshot signing failed')
       if (this.state === 'READY') this.sendError(frame.id, 'INTERNAL', 'screenshot signing failed', true)
     }
   }
