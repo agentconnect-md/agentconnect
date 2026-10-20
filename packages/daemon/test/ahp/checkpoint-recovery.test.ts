@@ -49,6 +49,19 @@ async function fixture(warn?: (message: string) => void) {
 }
 
 describe('AHP checkpoint integration', () => {
+  it('journals and delivers a turn too large to checkpoint', async () => {
+    const warn = vi.fn()
+    const { state, journal } = await fixture(warn)
+    await state.add(binding)
+    const event = { sessionId: 'physical', turnId: 'long', generation: 0, at: 1000 }
+    await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
+    await state.accept({ ...event, kind: 'text', text: 'x'.repeat(600 * 1024) })
+    await state.accept({ ...event, kind: 'finished', outcome: 'complete' })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('checkpoint skipped'))
+    expect(journal.replay(1, new Set([chat]))!.map((envelope) => envelope.action.type)).toContain('chat/turnComplete')
+    expect(state.summary(binding.sessionUri)?.status).toBe(SessionStatus.Idle)
+  })
+
   it('journals and delivers a turn whose checkpoint save is refused', async () => {
     const warn = vi.fn()
     const { state, journal, checkpoints } = await fixture(warn)

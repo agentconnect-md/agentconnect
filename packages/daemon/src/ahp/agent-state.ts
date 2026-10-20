@@ -350,7 +350,7 @@ export class AhpAgentState {
     })
     return projection.snapshot()
   }
-  // Checkpoints are derived recovery data: a refused or failed save never blocks journaling and delivery.
+  // Checkpoints are derived recovery data: an oversized state or a failed save never blocks journaling and delivery.
   private async persist(sessionId: string, entry: Entry): Promise<void> {
     const archive = entry.projection.snapshot().turns
     if (this.checkpoints) entry.projection.retainCompleted(32 * 1024)
@@ -369,8 +369,10 @@ export class AhpAgentState {
             }
           })
         ).success
-      )
-        throw new AhpStateCapacityError()
+      ) {
+        this.warn(`ahp: ${new AhpStateCapacityError().message} for session ${sessionId}; checkpoint skipped`)
+        return
+      }
     }
     if (!this.checkpoints) return
     try {
