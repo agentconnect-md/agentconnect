@@ -855,7 +855,7 @@ describe('P4 serial gate', () => {
 
     // The queued webchat entry got a terminal done frame (clean drop → no error) so the
     // browser stops spinning instead of hanging.
-    expect(cp.dones).toEqual([{ conversationId: 'conv-a', turnId }])
+    expect(cp.dones).toEqual([{ conversationId: 'conv-a', turnId, outcome: 'cancelled' }])
 
     await daemon.stop()
   })
@@ -890,5 +890,94 @@ describe('P4 serial gate', () => {
     g.releaseAll()
     await p1.catch(() => {})
     await daemon.stop()
+  })
+})
+
+describe('delivery receipt of a dropped admission', () => {
+  it('releases the receipt so a retry of the same delivery admits fresh and runs', async () => {
+    const g = gatedHost()
+    const daemon = await boot(g.host)
+    try {
+      const results: { accepted: boolean; duplicate?: boolean }[] = []
+      const send = (ts: string, admissionWait: Promise<boolean>) =>
+        (daemon as any).dispatch('bot-a', msg(ts, 'retried action'), undefined, undefined, undefined, {
+          requireDurable: true,
+          receiptId: 'receipt:retried-action',
+          admissionWait,
+          onAdmission: (result: { accepted: boolean; duplicate?: boolean }) => void results.push(result)
+        })
+      await expect(send('600', Promise.resolve(false))).resolves.toBeNull()
+      expect(g.started).toHaveLength(0)
+      expect(await (daemon as any).store.hasInbox('receipt:retried-action')).toBe(false)
+
+      const retried = send('601', Promise.resolve(true))
+      await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+      expect(results.map((r) => !!r.duplicate)).toEqual([false, false])
+      g.releaseOne()
+      await expect(retried).resolves.toBe('acp-1')
+      expect(await (daemon as any).store.hasInbox('receipt:retried-action')).toBe(true)
+    } finally {
+      g.releaseAll()
+      await daemon.stop()
+    }
+  })
+})
+
+describe('start-only and steer-only refusals on an occupied gate', () => {
+  it('refuses a start-only turn while one runs, leaves no trace, and admits the retry once the gate frees', async () => {
+    const g = gatedHost()
+    const daemon = await boot(g.host)
+    try {
+      const key = 'slack:C1:T1:bot-a'
+      const active = (daemon as any).dispatch('bot-a', msg('700', 'running'))
+      await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+      const results: { accepted: boolean; reason?: string; duplicate?: boolean; steered?: boolean }[] = []
+      const start = (ts: string) =>
+        (daemon as any).dispatch('bot-a', msg(ts, 'client turn'), undefined, undefined, undefined, {
+          requireDurable: true,
+          startOnly: true,
+          receiptId: 'ahp-turn:client-turn',
+          onAdmission: (result: (typeof results)[number]) => void results.push(result)
+        })
+      await expect(start('701')).resolves.toBeNull()
+      expect(results).toEqual([{ accepted: false, reason: 'busy' }])
+      expect((daemon as any).serialQueue.get(key) ?? []).toHaveLength(0)
+      expect(await (daemon as any).store.hasInbox('ahp-turn:client-turn')).toBe(false)
+      expect(g.started).toHaveLength(1)
+
+      g.releaseOne()
+      await active
+      const retried = start('702')
+      await vi.waitFor(() => expect(g.started).toHaveLength(2), WAIT)
+      expect(results[1]).toEqual({ accepted: true })
+      g.releaseOne()
+      await expect(retried).resolves.toBe('acp-1')
+    } finally {
+      g.releaseAll()
+      await daemon.stop()
+    }
+  })
+
+  it('releases the receipt of a steer-only delivery refused as busy', async () => {
+    const g = gatedHost()
+    const daemon = await boot(g.host)
+    try {
+      const active = (daemon as any).dispatch('bot-a', msg('710', 'running'))
+      await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+      const results: { accepted: boolean; reason?: string }[] = []
+      await (daemon as any).dispatch('bot-a', msg('711', 'steer me'), undefined, undefined, undefined, {
+        requireDurable: true,
+        steerOnly: true,
+        receiptId: 'ahp-turn:steer',
+        onAdmission: (result: (typeof results)[number]) => void results.push(result)
+      })
+      expect(results).toEqual([{ accepted: false, reason: 'busy' }])
+      expect(await (daemon as any).store.hasInbox('ahp-turn:steer')).toBe(false)
+      g.releaseOne()
+      await active
+    } finally {
+      g.releaseAll()
+      await daemon.stop()
+    }
   })
 })

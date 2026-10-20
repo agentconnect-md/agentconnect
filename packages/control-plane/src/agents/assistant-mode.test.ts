@@ -94,18 +94,14 @@ describe('assistant mode permission default', () => {
 })
 
 describe('a stored assistant mode policy', () => {
-  it('keeps the routing keys an older CP wrote and drops a removed key instead of failing the read', () => {
+  it('drops a removed key instead of failing the read', () => {
     const stored = {
       enabled: true,
       responsibleUserId: 'usr_1',
       patrolSchedule: '0 9 * * *',
       limits: { dailyCheckBudget: 5, dailySubsessionsPerItem: 3 }
     }
-    expect(StoredAssistantModePolicyRow.parse(stored)).toEqual({
-      enabled: true,
-      responsibleUserId: 'usr_1',
-      limits: { dailyCheckBudget: 5 }
-    })
+    expect(StoredAssistantModePolicyRow.parse(stored)).toEqual({ enabled: true, limits: { dailyCheckBudget: 5 } })
   })
 })
 

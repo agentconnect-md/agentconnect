@@ -70,7 +70,8 @@ export class AhpAgentState {
     readonly provider: AgentInfo,
     readonly journal: AhpActionJournal,
     private readonly now: () => number,
-    private readonly checkpoints?: AhpCheckpointStore
+    private readonly checkpoints?: AhpCheckpointStore,
+    private readonly warn: (message: string) => void = () => {}
   ) {
     this.epoch = journal.currentSequence
   }
@@ -349,6 +350,7 @@ export class AhpAgentState {
     })
     return projection.snapshot()
   }
+  // Checkpoints are derived recovery data: an oversized state or a failed save never blocks journaling and delivery.
   private async persist(sessionId: string, entry: Entry): Promise<void> {
     const archive = entry.projection.snapshot().turns
     if (this.checkpoints) entry.projection.retainCompleted(32 * 1024)
@@ -367,18 +369,24 @@ export class AhpAgentState {
             }
           })
         ).success
-      )
-        throw new AhpStateCapacityError()
+      ) {
+        this.warn(`ahp: ${new AhpStateCapacityError().message} for session ${sessionId}; checkpoint skipped`)
+        return
+      }
     }
     if (!this.checkpoints) return
-    await this.checkpoints.save(
-      sessionId,
-      entry.projection.snapshot(),
-      this.epoch,
-      ++this.revision,
-      archive,
-      entry.session?._meta ?? entry.presentation
-    )
+    try {
+      await this.checkpoints.save(
+        sessionId,
+        entry.projection.snapshot(),
+        this.epoch,
+        ++this.revision,
+        archive,
+        entry.session?._meta ?? entry.presentation
+      )
+    } catch (error) {
+      this.warn(`ahp: checkpoint for session ${sessionId} not saved: ${(error as Error).message}`)
+    }
   }
   private async flush(entry: Entry, origin?: ActionOrigin, echoed?: StateAction): Promise<void> {
     const chat = entry.projection.snapshot()

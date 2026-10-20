@@ -69,6 +69,7 @@ public callback endpoint is required; the CP only orchestrates. Concretely:
 | `@agentconnect.md/memory-plugin-mem0` | TypeScript                         | Memory-plugin profile wrappers for Mem0 Cloud and OSS.                                                                                                                                                       |
 | `@agentconnect.md/k8s-client`         | TypeScript                         | Thin bare-REST in-cluster Kubernetes client (config, HTTP verbs, resumable watch, Lease election) used by the daemon's K8sDriver; ships a fake API server under `./testing`.                                 |
 | `@agentconnect.md/object-store`       | TypeScript                         | S3-compatible object-store primitives (SigV4 signing, bucket credentials, header-signed object requests, lifecycle checks) shared by the daemon's Source Cache and the CP's file-transfer signer.            |
+| `@agentconnect.md/desktop`            | Node CLI + werift                  | Prototype desktop daemon for computer use: embeds Cua Driver, serves the `computer_*` tools over MCP plus a WebRTC viewer. Standalone; not yet wired to the CP.                                              |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild
 `protocol` (or rely on its `development` export → `./src/index.ts`) and check both sides.

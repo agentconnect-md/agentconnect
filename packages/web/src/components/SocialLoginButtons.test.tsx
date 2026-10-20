@@ -40,11 +40,11 @@ describe('SocialLoginButtons regional preference', () => {
   })
 })
 
-describe('SocialLoginButtons more options', () => {
+describe('SocialLoginButtons layout', () => {
   const labels = () =>
     [...container.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.textContent)
 
-  it('shows the first four buttons and the rest behind More sign-in options', async () => {
+  it('shows the first four buttons and the rest as an icon row', async () => {
     await act(async () => {
       root.render(<SocialLoginButtons providers={selectEnabledProviders('*')} onContinue={vi.fn()} />)
     })
@@ -54,21 +54,33 @@ describe('SocialLoginButtons more options', () => {
       'Continue with Slack',
       'Continue with GitHub',
       'Continue with GitLab',
-      'More sign-in options'
-    ])
-
-    const more = [...container.querySelectorAll('button')].find((b) => b.textContent === 'More sign-in options')
-    await act(async () => more?.click())
-    expect(labels().slice(5)).toEqual([
-      'Continue with Lark',
-      'Switch to Feishu',
+      'Continue with Lark / Feishu',
       'Continue with Discord',
       'Continue with Telegram'
     ])
-    expect(labels()).toContain('Fewer options')
 
-    await act(async () => more?.click())
-    expect(labels()).not.toContain('Continue with Telegram')
+    const regional = container.querySelector<HTMLButtonElement>('button[aria-label="Continue with Lark / Feishu"]')
+    await act(async () => regional?.click())
+    expect(labels().slice(7)).toEqual(['Continue with Lark', 'Continue with Feishu'])
+  })
+
+  it('shows a lone extra provider as a fifth labeled button', async () => {
+    await act(async () => {
+      root.render(
+        <SocialLoginButtons
+          providers={selectEnabledProviders('google,slack,github,gitlab,discord')}
+          onContinue={vi.fn()}
+        />
+      )
+    })
+    expect(labels()).toEqual([
+      'Continue with Google',
+      'Continue with Slack',
+      'Continue with GitHub',
+      'Continue with GitLab',
+      'Continue with Discord'
+    ])
+    expect(container.querySelector('button[aria-label="Continue with Discord"]')).toBeNull()
   })
 
   it('moves the next provider up when one of the first four is not enabled', async () => {
