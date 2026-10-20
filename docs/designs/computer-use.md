@@ -134,8 +134,9 @@ with `permissions`, `session`, and `viewer` taken straight from `doctor` (§3.5)
 ### 3.1 Components [validated]
 
 The desktop daemon is a Node program bundled into one `.mjs` (on macOS, a Node single executable application inside a
-signed `.app`, §3.2.1). The proposed package is `packages/desktop` with the CLI entry `agentconnect desktop …` (the
-prototype ships a standalone `agentconnect-desktop` bin).
+signed `.app`, §3.2.1). The package is `packages/desktop` with the CLI entry `agentconnect desktop …`, which the CLI routes to the
+installed desktop daemon ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-desktop-daemon)); the standalone
+`agentconnect-desktop` bin stays for development.
 
 ```mermaid
 flowchart LR

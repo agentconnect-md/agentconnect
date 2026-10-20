@@ -18,3 +18,6 @@ export function runSelf(args: string[], timeoutMs: number): Promise<string> {
 
 // The executable is the main binary of a macOS .app bundle (the signed AgentConnect Desktop.app).
 export const appBundlePath = (): string | undefined => /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(process.execPath)?.[1]
+
+// How the user runs this CLI: `agentconnect desktop` sets AGENTCONNECT_DESKTOP_COMMAND; the standalone bin is the fallback.
+export const selfCommand = (): string => process.env.AGENTCONNECT_DESKTOP_COMMAND?.trim() || 'agentconnect-desktop'

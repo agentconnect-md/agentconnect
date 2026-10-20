@@ -331,6 +331,13 @@ agentconnect-desktop service install|uninstall|start|stop|restart|status   (macO
 agentconnect-desktop autostart enable | disable | start      (Windows)
 ```
 
+With the AgentConnect CLI installed, every command also runs as `agentconnect desktop <command>`
+(for example `agentconnect desktop doctor`). The CLI runs `AgentConnect Desktop.app` when it is in
+`~/Applications` or `/Applications` (macOS), otherwise `app/agentconnect-desktop.mjs` in the data
+dir, where the install scripts and the Linux service put it; `AGENTCONNECT_DESKTOP_ENTRY` points it
+at a development build instead. See
+[cli-daemon-split.md §1.2](../../docs/designs/cli-daemon-split.md#12-desktop-daemon).
+
 Data dir: `%LOCALAPPDATA%\AgentConnect\desktop` on Windows, `~/.agentconnect/desktop`
 elsewhere (`AGENTCONNECT_DESKTOP_HOME` overrides). `config.json` also holds
 `maxImageDimension`, `leaseIdleSeconds`, `leaseMaxSeconds`, `humanIdleSeconds`,
