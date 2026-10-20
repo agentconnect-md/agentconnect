@@ -44,7 +44,8 @@ mkdirSync(work, { recursive: true })
 const node = await officialNode()
 
 // SEA runs CommonJS only.
-await build({
+const bundled = await build({
+  absWorkingDir: root,
   entryPoints: [join(root, 'src/cli.ts')],
   outfile: join(work, 'main.cjs'),
   bundle: true,
@@ -52,8 +53,12 @@ await build({
   format: 'cjs',
   target: 'node24',
   legalComments: 'linked',
+  // Every bundled input, for the release license scan (scripts/license-scan.ts).
+  metafile: true,
   logLevel: 'warning'
 })
+mkdirSync(join(out, '.meta'), { recursive: true })
+writeFileSync(join(out, '.meta', 'macos-main.cjs.json'), JSON.stringify(bundled.metafile))
 writeFileSync(
   join(work, 'sea-config.json'),
   JSON.stringify({

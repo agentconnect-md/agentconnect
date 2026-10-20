@@ -5,6 +5,6 @@
     "noEmit": true,
     "rootDir": "../.."
   },
-  "include": ["src", "vitest.config.ts"],
+  "include": ["src", "test", "scripts/**/*.ts", "vitest.config.ts", "vitest.xvfb.config.ts"],
   "exclude": []
 }

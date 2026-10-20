@@ -36,10 +36,9 @@ It is private, not published to npm, and not part of any AgentConnect release.
   movement); no tray icon, screen border, or global stop hotkey.
 - Builds are unsigned (macOS `.app` is ad-hoc signed; no Windows installer), so OS grants do not
   survive a rebuild. The Docker image is not published.
-- CI runs the unit tests (fake driver) only. The Xvfb integration job and the license scan
-  arrive with [#3184](https://github.com/agentconnect-md/agentconnect/issues/3184), and the
-  `agentconnect desktop` CLI subcommand with [#3185](https://github.com/agentconnect-md/agentconnect/issues/3185); `agentconnect-desktop`
-  is a development bin.
+- CI covers X11 under Xvfb only (see [Development](#development)); the real-session matrix of design
+  §13 is still run by hand. The `agentconnect desktop` CLI subcommand arrives with
+  [#3185](https://github.com/agentconnect-md/agentconnect/issues/3185); `agentconnect-desktop` is a development bin.
 
 ```
 Claude Code ──HTTP (Bearer token)──▶ agentconnect-desktop ──stdio MCP──▶ cua-driver mcp --direct ──▶ desktop
@@ -344,8 +343,23 @@ elsewhere (`AGENTCONNECT_DESKTOP_HOME` overrides). `config.json` also holds
 ```bash
 pnpm --filter @agentconnect.md/desktop test # fake driver, no desktop needed
 pnpm --filter @agentconnect.md/desktop typecheck
-pnpm --filter @agentconnect.md/desktop dev # tsx src/cli.ts run
+pnpm --filter @agentconnect.md/desktop dev          # tsx src/cli.ts run
+pnpm --filter @agentconnect.md/desktop test:xvfb    # bundle, then the Xvfb suite (needs DISPLAY, xterm, xdotool)
+pnpm --filter @agentconnect.md/desktop license-scan # scan bundle/ after `bundle` (and `bundle:macos`)
 ```
+
+CI runs two more jobs on pull requests that touch this package (`.github/workflows/test.yaml`):
+
+- **Desktop (Xvfb)**: `xvfb-run` at 1600x900, then `test/xvfb.test.ts` against the bundled daemon. `init` and
+  `install-ffmpeg` download the pinned, sha256-checked Cua Driver and ffmpeg; the suite checks a screenshot, a pointer
+  move against X's own pointer, a click plus typing into an `xterm`, a `/view` screenshot frame, and one H.264 keyframe
+  received over WebRTC and decoded by ffmpeg.
+- **Desktop licenses**: `scripts/license-scan.ts` reads the esbuild metafiles `bundle` and `bundle:macos` write to
+  `bundle/.meta/`, attributes every bundled input to its npm package, and fails on AGPL / FSL / BSL (Business Source) /
+  SSPL / GPL, on a license missing from its allowlist, on forbidden licenses in the extracted `*.LEGAL.txt`, on
+  ffmpeg or Cua Driver inside an artifact, and on any undeclared executable or archive. The macOS app is scanned the
+  same way when built (CI builds only the Linux bundle). The Docker image is not a release artifact yet: it carries
+  distribution packages and ffmpeg, which design §11 leaves to counsel before publishing.
 
 macOS and Linux also work for local development (`init` installs the matching driver
 build). On macOS, `--direct` attributes Accessibility and Screen Recording to the terminal
