@@ -2132,7 +2132,8 @@
         "added": "已添加",
         "docs": "文档",
         "add": "添加 API",
-        "adding": "添加中…"
+        "adding": "添加中…",
+        "ahpDescription": "通过标准 AHP v1 会话和聊天动作连接兼容的 Agent 客户端。"
       }
     },
     "api": {
