@@ -1965,7 +1965,6 @@ export function buildContainer(
     },
     runtimeConfig: {
       webchatProtocol: config.WEBCHAT_PROTOCOL,
-      ahp: { enabled: config.AHP_MODE === 'on', publicAccess: config.AHP_PUBLIC_ACCESS },
       ...(opts.deploymentConfig || gitlab
         ? {
             ...(opts.deploymentConfig ? { deploymentRevision: opts.deploymentConfig.revision } : {}),

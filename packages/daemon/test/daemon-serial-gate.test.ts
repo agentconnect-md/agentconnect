@@ -892,3 +892,33 @@ describe('P4 serial gate', () => {
     await daemon.stop()
   })
 })
+
+describe('delivery receipt of a dropped admission', () => {
+  it('releases the receipt so a retry of the same delivery admits fresh and runs', async () => {
+    const g = gatedHost()
+    const daemon = await boot(g.host)
+    try {
+      const results: { accepted: boolean; duplicate?: boolean }[] = []
+      const send = (ts: string, admissionWait: Promise<boolean>) =>
+        (daemon as any).dispatch('bot-a', msg(ts, 'retried action'), undefined, undefined, undefined, {
+          requireDurable: true,
+          receiptId: 'receipt:retried-action',
+          admissionWait,
+          onAdmission: (result: { accepted: boolean; duplicate?: boolean }) => void results.push(result)
+        })
+      await expect(send('600', Promise.resolve(false))).resolves.toBeNull()
+      expect(g.started).toHaveLength(0)
+      expect(await (daemon as any).store.hasInbox('receipt:retried-action')).toBe(false)
+
+      const retried = send('601', Promise.resolve(true))
+      await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+      expect(results.map((r) => !!r.duplicate)).toEqual([false, false])
+      g.releaseOne()
+      await expect(retried).resolves.toBe('acp-1')
+      expect(await (daemon as any).store.hasInbox('receipt:retried-action')).toBe(true)
+    } finally {
+      g.releaseAll()
+      await daemon.stop()
+    }
+  })
+})

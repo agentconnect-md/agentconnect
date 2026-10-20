@@ -104,6 +104,16 @@ describe('bounded optional AHP Apps metadata', () => {
       projection.update('turn', { kind: 'app_template', appId: 'b', seq: 0, chunk: 'x'.repeat(10 * 1024) })
     ).toThrow('limit')
   })
+  it('evicts settled cards for bytes, never live ones', () => {
+    const projection = new AhpAppsProjection()
+    projection.update('turn', { kind: 'app', ...card, appId: 'big', html: 'x'.repeat(12 * 1024) })
+    expect(() =>
+      projection.update('turn', { kind: 'app', ...card, appId: 'next', html: 'y'.repeat(6 * 1024) })
+    ).toThrow('limit')
+    projection.update('turn', { kind: 'app_resolved', appId: 'big', outcome: 'completed' })
+    projection.update('turn', { kind: 'app', ...card, appId: 'next', html: 'y'.repeat(6 * 1024) })
+    expect(projection.snapshot().map((entry) => entry.card.appId)).toEqual(['next'])
+  })
   it('evicts only settled cards, retains at most16 and never broadcasts RPC results', () => {
     const projection = new AhpAppsProjection()
     for (let index = 0; index < 16; index++) projection.update('turn', { kind: 'app', ...card, appId: String(index) })
