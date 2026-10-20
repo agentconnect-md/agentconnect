@@ -10,6 +10,9 @@ overrides:
 
 pnpmfileChecksum: sha256-yhrtow4uYXdBwgBbzJFJ4wA8s3O9UECr9QpwYpWeDfE=
 
+patchedDependencies:
+  '@microsoft/agent-host-protocol@1.0.0': 03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510
+
 importers:
 
   .:
@@ -303,7 +306,7 @@ importers:
         version: 1.74.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
       '@microsoft/agent-host-protocol':
         specifier: 1.0.0
-        version: 1.0.0
+        version: 1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)
       '@modelcontextprotocol/client':
         specifier: 2.3.1
         version: 2.3.1
@@ -742,7 +745,7 @@ importers:
         version: 3.1.1
       '@microsoft/agent-host-protocol':
         specifier: 1.0.0
-        version: 1.0.0
+        version: 1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -11084,7 +11087,7 @@ snapshots:
 
   '@microsandbox/types@0.7.8': {}
 
-  '@microsoft/agent-host-protocol@1.0.0': {}
+  '@microsoft/agent-host-protocol@1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)': {}
 
   '@modelcontextprotocol/client@2.3.1':
     dependencies:

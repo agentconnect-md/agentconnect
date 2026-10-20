@@ -855,7 +855,7 @@ describe('P4 serial gate', () => {
 
     // The queued webchat entry got a terminal done frame (clean drop → no error) so the
     // browser stops spinning instead of hanging.
-    expect(cp.dones).toEqual([{ conversationId: 'conv-a', turnId }])
+    expect(cp.dones).toEqual([{ conversationId: 'conv-a', turnId, outcome: 'cancelled' }])
 
     await daemon.stop()
   })

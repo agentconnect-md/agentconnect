@@ -31,3 +31,6 @@ ignoredOptionalDependencies:
 overrides:
   '@prisma/config@7>deepmerge-ts': 8.0.2
   'prisma@7>mysql2': 3.24.4
+
+patchedDependencies:
+  '@microsoft/agent-host-protocol@1.0.0': patches/@microsoft__agent-host-protocol@1.0.0.patch
