@@ -60,8 +60,8 @@ jobs:
             # Lists what CANNOT reach the daemon/CLI closure, so a new root config, script or package stays in scope.
             echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
             echo "microsandbox=$(any '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)')"
-            # The desktop daemon has no workspace dependencies, so only its own files and the lockfile reach its bundle.
-            echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|\.github/workflows/test\.yaml$)')"
+            # No workspace deps, so only its own files and the root install, Node, tsconfig and reporter config reach it.
+            echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
   # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
@@ -608,8 +608,7 @@ jobs:
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
-  # The desktop daemon end to end on a real X server (computer-use.md §14.3): the bundled daemon, the pinned and
-  # checksummed Cua Driver and ffmpeg it downloads, screenshot, input checked against X itself, and one viewer frame.
+  # Desktop daemon end to end on Xvfb with the pinned Cua Driver and ffmpeg (computer-use.md §14.3).
   desktop-xvfb:
     name: Desktop (Xvfb)
     needs: scope
@@ -649,15 +648,18 @@ jobs:
           sudo apt-get $APT_OPTS install -y --no-install-recommends xvfb xauth xterm xdotool xfonts-base
       - name: Xvfb integration suite
         env:
-          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/desktop-xvfb-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
           DESKTOP_XVFB_LOG: '1'
         run: >
           xvfb-run --auto-servernum --server-args='-screen 0 1600x900x24 -nolisten tcp'
           pnpm --filter @agentconnect.md/desktop test:xvfb
+      - name: Publish Desktop (Xvfb) summary
+        if: ${{ !cancelled() }}
+        run: |
+          summary="${{ runner.temp }}/desktop-xvfb.md"
+          if [ -f "$summary" ]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
 
-  # License scan of the desktop release artifacts (computer-use.md §11): every input esbuild bundled, the legal comments
-  # it extracted, and any executable or archive in the artifacts; fails on AGPL / FSL / BSL / SSPL / GPL or an unknown license.
+  # License scan of the desktop release artifacts; fails on AGPL / FSL / BSL / SSPL / GPL or an unknown license (§11).
   desktop-licenses:
     name: Desktop licenses
     needs: scope
