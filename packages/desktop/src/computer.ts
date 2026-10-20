@@ -1,4 +1,5 @@
 import { hostname, release } from 'node:os'
+import type { ComputerControlLease } from '@agentconnect.md/protocol/computer'
 import type { AuditSink } from './audit.js'
 import type { DesktopConfig } from './config.js'
 import {
@@ -41,6 +42,8 @@ interface Lease {
   holder: string
   acquiredAt: number
   lastUsedAt: number
+  // Set when the lease was taken under the Control Plane's lease with this id.
+  cpLeaseId?: string
 }
 
 interface Capture {
@@ -99,6 +102,8 @@ export class Computer {
   private readonly refusal: () => string | undefined
   private lastStatus = ''
   private lease: Lease | undefined
+  // The control lease the Control Plane last told about (computer-use.md §4.4); only its holder session may take control.
+  private cpLease: ComputerControlLease | undefined
   // `by` is set when a remote human took over through the web viewer.
   private paused: { at: number; reason: string; by?: string } | undefined
   private capture: Capture | undefined
@@ -135,6 +140,34 @@ export class Computer {
     if (this.paused?.by) this.paused = undefined
     this.stopPolling()
     this.notify()
+  }
+
+  // The Control Plane granted, moved or ended the control lease; a local lease it no longer backs is dropped.
+  applyControlLease(lease: ComputerControlLease | null): void {
+    this.cpLease = lease ?? undefined
+    const local = this.lease
+    if (!local) return
+    const backed = lease ? local.holder === lease.holder.sessionId : local.cpLeaseId === undefined
+    if (backed) {
+      if (lease) local.cpLeaseId = lease.leaseId
+      return
+    }
+    this.log(`lease of ${local.holder} pre-empted by the Control Plane`)
+    this.lease = undefined
+    this.stopPolling()
+    this.notify()
+  }
+
+  // The local lease's holder, time since its last input, and time held, for the Computer channel heartbeat.
+  leaseActivity(): { holder: string; idleMs: number; heldMs: number } | undefined {
+    this.expireLease()
+    if (!this.lease) return undefined
+    const now = this.now()
+    return {
+      holder: this.lease.holder,
+      idleMs: Math.max(0, now - this.lease.lastUsedAt),
+      heldMs: Math.max(0, now - this.lease.acquiredAt)
+    }
   }
 
   // The status the Computer channel heartbeat reports.
@@ -259,6 +292,8 @@ export class Computer {
       paused: this.paused ?? null,
       // Set while the Control Plane's authority is missing: every tool and viewer call is refused.
       unavailable: this.refusal() ?? null,
+      // The Control Plane's lease, when one stands: only its holder session may send input.
+      controlLease: this.cpLease ?? null,
       lease: this.lease
         ? {
             holder: this.lease.holder,
@@ -288,13 +323,22 @@ export class Computer {
     this.assertAuthorized()
     this.expireLease()
     if (this.paused) throw new ComputerError('human_in_control', 'the owner paused this computer', this.paused)
+    const granted = this.cpLease
+    if (granted && granted.holder.sessionId !== holder) {
+      const label = granted.holder.agentName ?? granted.holder.agentId
+      throw new ComputerError('computer_busy', `computer is controlled by ${label}`, {
+        holder: label,
+        sessionId: granted.holder.sessionId,
+        agentId: granted.holder.agentId
+      })
+    }
     if (this.lease && this.lease.holder !== holder) {
       throw new ComputerError('computer_busy', `computer is controlled by ${this.lease.holder}`, {
         holder: this.lease.holder
       })
     }
     const now = this.now()
-    this.lease ??= { holder, acquiredAt: now, lastUsedAt: now }
+    this.lease ??= { holder, acquiredAt: now, lastUsedAt: now, ...(granted ? { cpLeaseId: granted.leaseId } : {}) }
     this.lease.lastUsedAt = now
     this.startPolling()
     this.notify()

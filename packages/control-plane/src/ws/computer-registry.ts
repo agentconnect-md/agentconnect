@@ -7,6 +7,8 @@ export interface ComputerChannel {
   readonly orgId: string
   readonly ownerUserId: string
   pushPolicy(policy: ComputerPolicy): void
+  /** The lease may have changed: re-read it and tell the desktop. */
+  leaseChanged(): void
   revoke(reason: ComputerRevoke['reason']): void
   close(code: number, reason: string): void
 }
@@ -16,6 +18,7 @@ export interface ComputerChannelControl {
   revoke(computerId: string, reason: ComputerRevoke['reason']): void
   revokeOwner(orgId: string, ownerUserId: string): void
   pushPolicy(computerId: string, policy: ComputerPolicy): void
+  leaseChanged(computerId: string): void
 }
 
 export class ComputerChannelRegistry implements ComputerChannelControl {
@@ -51,6 +54,10 @@ export class ComputerChannelRegistry implements ComputerChannelControl {
 
   pushPolicy(computerId: string, policy: ComputerPolicy): void {
     this.byComputer.get(computerId)?.pushPolicy(policy)
+  }
+
+  leaseChanged(computerId: string): void {
+    this.byComputer.get(computerId)?.leaseChanged()
   }
 
   get size(): number {

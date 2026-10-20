@@ -22,6 +22,7 @@ import {
 } from './frames/follow-up-watch.js'
 
 import { AuthReq, AuthOk } from './frames/auth.js'
+import { ComputerLeaseAcquire, ComputerLeaseAcquireResult, ComputerLeaseRelease } from './frames/computer-lease.js'
 import { RegisterReq, RegisterOk, RelayRosterUpdate, CapabilitiesUpdate } from './frames/register.js'
 import { CollabRoutesSnapshot } from './frames/collab.js'
 import { RouteAssign, RouteAssignAck, RouteUpdate, Drain, DrainProgress, DrainDone } from './frames/route.js'
@@ -370,6 +371,10 @@ export const FRAME_SCHEMAS = {
   'agent/remove': AgentRemove,
   'agent/exists': AgentExists,
   'agent/exists/ok': AgentExistsOk,
+  // Computer control leases (computer-use.md §4.4), behind COMPUTER_LEASE_FEATURE.
+  'computer-lease/acquire': ComputerLeaseAcquire,
+  'computer-lease/acquire/result': ComputerLeaseAcquireResult,
+  'computer-lease/release': ComputerLeaseRelease,
   'agent/detach': AgentDetach,
   'agent/activate': AgentActivate,
   'agent/activity': AgentActivity,
@@ -773,6 +778,9 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('agent/remove', FRAME_SCHEMAS['agent/remove']),
   frame('agent/exists', FRAME_SCHEMAS['agent/exists']),
   frame('agent/exists/ok', FRAME_SCHEMAS['agent/exists/ok']),
+  frame('computer-lease/acquire', FRAME_SCHEMAS['computer-lease/acquire']),
+  frame('computer-lease/acquire/result', FRAME_SCHEMAS['computer-lease/acquire/result']),
+  frame('computer-lease/release', FRAME_SCHEMAS['computer-lease/release']),
   frame('agent/detach', FRAME_SCHEMAS['agent/detach']),
   frame('agent/activate', FRAME_SCHEMAS['agent/activate']),
   frame('agent/activity', FRAME_SCHEMAS['agent/activity']),

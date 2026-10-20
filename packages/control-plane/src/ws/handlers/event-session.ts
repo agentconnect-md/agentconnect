@@ -247,6 +247,17 @@ async function recordReportedExecutor(p: EventSession, agentId: AgentId, deps: D
   }
 }
 
+/** A turn that ended holds no Computer: release the leases its session took by the end, both on the daemon clock (§4.4). */
+async function releaseComputerLeases(p: EventSession, agentId: AgentId, deps: DaemonWsDeps): Promise<void> {
+  if (!deps.computerLeases) return
+  try {
+    await deps.computerLeases.sessionEnded(p.sessionId, agentId, Date.parse(p.ts))
+  } catch (err) {
+    // Advisory: an unreleased lease still runs out at its idle limit.
+    deps.log.error({ err, agentId, sessionId: p.sessionId }, 'event/session: releasing computer leases failed')
+  }
+}
+
 async function recordEventSession(
   p: EventSession,
   orgId: OrgId,
@@ -319,6 +330,8 @@ async function recordEventSession(
   // invalidation signal and immediately re-read `/sessions`; publishing first
   // would race that GET against the upsert and leave the new row invisible.
   deps.events.publish(daemonId, p)
+  // A failed or interrupted turn ends with `problem` instead of `end`.
+  if (p.phase === 'end' || p.phase === 'problem') await releaseComputerLeases(p, agentId, deps)
   // A finished session waits on nobody: clear a wait its daemon never got to release (§7).
   if (p.phase === 'end' && session?.activityState === 'awaiting_permission') {
     if (await deps.session.setActivityState(SessionId(p.sessionId), agentId, 'idle')) {

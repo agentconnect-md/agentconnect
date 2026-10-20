@@ -4523,11 +4523,39 @@ model Computer {
   owner         User                   @relation("ComputerOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
   apiKeys       ApiKey[]
   registrations ComputerRegistration[]
+  lease         ComputerLease?
 
   @@index([orgId])
   @@index([ownerUserId])
   @@index([sharedWith], type: Gin)
   @@map("computer")
+}
+
+// The one control lease a Computer may have (computer-use.md §4.4); the row exists only while a session holds it or is barred.
+model ComputerLease {
+  computerId String   @id @db.Uuid
+  orgId      String
+  // A fresh id per acquisition, so a late release or report of an earlier lease cannot end a later one.
+  leaseId    String   @db.Uuid
+  sessionId  String
+  agentId    String   @db.Uuid
+  // Display hint for `computer_busy`, captured at acquire.
+  agentName  String?
+  // The agent daemon that took the lease; its heartbeats renew `renewedAt`. No FK: a deleted daemon just stops renewing.
+  daemonId   String?  @db.Uuid
+  acquiredAt DateTime @db.Timestamptz(3)
+  lastUsedAt DateTime @db.Timestamptz(3)
+  renewedAt  DateTime @db.Timestamptz(3)
+  // The daemon-clock time of the session's latest acquire: a turn end stamped earlier does not release the lease.
+  turnAt     DateTime @db.Timestamptz(3)
+  // Set when the lease hit leaseMaxSeconds: the row then holds nothing and bars its session until its turn ends.
+  spentAt    DateTime? @db.Timestamptz(3)
+
+  computer Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([daemonId])
+  @@map("computer_lease")
 }
 
 /// A short-lived, one-time token a desktop daemon exchanges for its Computer API key (computer-use.md §3.6).

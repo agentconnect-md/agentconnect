@@ -14,6 +14,7 @@ import {
   buildComputerCpFrame,
   decodeComputerCpFrameTolerant,
   type ComputerAuthOk,
+  type ComputerControlLease,
   type ComputerCpFrame,
   type ComputerHeartbeat,
   type ComputerPolicy
@@ -25,7 +26,9 @@ const AUTH_TIMEOUT_MS = 15_000
 /** What one heartbeat reports; the facts are sent only when they changed or right after auth. */
 export interface HeartbeatReport {
   status: ComputerHeartbeat['status']
-  facts?: Omit<ComputerHeartbeat, 'status'>
+  // The local lease's holder and idle time, sent with every heartbeat so the CP's idle clock follows real use.
+  lease?: ComputerHeartbeat['lease']
+  facts?: Omit<ComputerHeartbeat, 'status' | 'lease'>
 }
 
 export interface ComputerCpClientDeps {
@@ -35,6 +38,8 @@ export interface ComputerCpClientDeps {
   authority: ChannelAuthority
   report: () => HeartbeatReport
   onPolicy?: (policy: ComputerPolicy) => void
+  // The CP granted, moved or ended the control lease (computer-use.md §4.4).
+  onLease?: (lease: ComputerControlLease | null) => void
   // The CP revoked or refused this key: persist it and stop for good.
   onRevoked: (reason: string) => void
   onReady?: (ok: ComputerAuthOk) => void
@@ -82,7 +87,11 @@ export class ComputerCpClient {
     const report = this.deps.report()
     const facts = report.facts ? JSON.stringify(report.facts) : undefined
     const fresh = facts !== undefined && facts !== this.sentFacts
-    const payload: ComputerHeartbeat = { status: report.status, ...(fresh ? report.facts : {}) }
+    const payload: ComputerHeartbeat = {
+      status: report.status,
+      ...(report.lease ? { lease: report.lease } : {}),
+      ...(fresh ? report.facts : {})
+    }
     try {
       this.transport.send(JSON.stringify(buildComputerCpFrame('computer/heartbeat', payload)))
       if (fresh) this.sentFacts = facts
@@ -166,6 +175,9 @@ export class ComputerCpClient {
         return
       case 'computer/policy':
         this.deps.onPolicy?.(frame.payload.policy)
+        return
+      case 'computer/lease':
+        this.deps.onLease?.(frame.payload.lease)
         return
       case 'computer/revoke':
         return this.revoked(`${frame.payload.reason} by the Control Plane`)
