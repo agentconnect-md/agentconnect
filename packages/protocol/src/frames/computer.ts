@@ -4,8 +4,7 @@ import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
 
-// The Computer channel (computer-use.md §3.6, §8.2): a desktop daemon's outbound control socket to the Control Plane.
-// A separate frame union from the daemon and relay wires; screen content and tool calls never ride it.
+// The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 
 /** Subprotocol negotiated on the desktop daemon ↔ CP socket. */
 export const COMPUTER_CP_SUBPROTOCOL = 'agentconnect.computer.v1'

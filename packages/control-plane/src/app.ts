@@ -150,8 +150,7 @@ export function buildApp(deps: BuildAppDeps): App {
         // Fastify drops its bind-failure listener once listen() resolves, so a later accept error is fatal unheard.
         container.http.server.on('error', (err) => container.http.log.warn(`http server socket error: ${err.message}`))
         wss = container.wsGateway(container.http)
-        // The relay control gateway rides the same http.Server on its own path;
-        // mount it alongside so one `mountWs()` call attaches both edges.
+        // The relay and Computer gateways ride the same http.Server on their own paths.
         relayWss = container.relayGateway(container.http)
         computerWss = container.computerGateway(container.http)
       }

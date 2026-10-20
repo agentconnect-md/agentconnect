@@ -478,9 +478,9 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   const setTitle = (status: string): void => {
     process.title = `AgentConnect Desktop — ${status}`
   }
-  // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   // Filled once built; the authority and status callbacks below fire only after that.
   const live: { viewer?: Viewer; channel?: { client: ComputerCpClient; stop(): void } } = {}
+  // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
     registered: Boolean(registration),
     ...(registration?.revokedAt ? { revokedReason: registration.revokedReason ?? 'revoked' } : {}),
@@ -746,8 +746,7 @@ function setupContext(dir: string, config: DesktopConfig): SetupContext {
   }
 }
 
-// One-time install on the desktop: everything that needs downloading or a person's approval, then doctor.
-// Without a client name (CP registration) no local token is minted: the Control Plane is the authority.
+// One-time install: downloads, a person's approvals, then doctor; with CP registration no local token is minted.
 async function setup(
   dir: string,
   initial: DesktopConfig,
