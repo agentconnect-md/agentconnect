@@ -30,7 +30,6 @@ import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { appBundlePath, runSelf } from './self.js'
-import { SEEDED_LICENSE } from './seeded-license/index.js'
 import * as linuxService from './service-linux.js'
 import {
   installService,
@@ -80,7 +79,7 @@ Commands:
                                                background service: macOS .app LaunchAgent (the app holds
                                                the permissions), Linux systemd user unit (graphical session)
 
-Data dir: ${dataDir()} ${SEEDED_LICENSE}`
+Data dir: ${dataDir()}`
 
 // "7700-7719" → [7700, 7719]; DesktopConfig validates the bounds.
 const parsePortRange = (value: string): [number, number] => {
