@@ -12,7 +12,6 @@ import { RTCPeerConnection, RTCRtpCodecParameters } from 'werift'
 // End to end on a real X server: the bundled daemon, the pinned Cua Driver and the pinned ffmpeg (design §14.3).
 const root = fileURLToPath(new URL('..', import.meta.url))
 const cli = join(root, 'bundle', 'agentconnect-desktop.mjs')
-const display = process.env.DISPLAY
 // The Xvfb screen size, so pointer moves can be checked against X's own pointer query.
 const screen = { width: 1600, height: 900 }
 
@@ -69,8 +68,10 @@ const pngSize = (png: Buffer) => {
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
 }
 
-describe.skipIf(!display)('desktop daemon on Xvfb', () => {
+// Never skips: this suite only runs on purpose (`test:xvfb`), so a missing display is a failure, not a pass.
+describe('desktop daemon on Xvfb', () => {
   beforeAll(async () => {
+    if (!process.env.DISPLAY) throw new Error('DISPLAY is not set: run under xvfb-run or an X session')
     if (!existsSync(cli)) throw new Error(`build the bundle first: ${cli}`)
     home = mkdtempSync(join(tmpdir(), 'ac-desktop-xvfb-'))
     const port = await freePort()
