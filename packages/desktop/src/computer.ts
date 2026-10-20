@@ -1,5 +1,5 @@
 import { hostname, release } from 'node:os'
-import type { ComputerControlLease } from '@agentconnect.md/protocol/computer'
+import { computerLeaseHolderName, type ComputerControlLease } from '@agentconnect.md/protocol/computer'
 import type { AuditSink } from './audit.js'
 import type { DesktopConfig } from './config.js'
 import {
@@ -147,7 +147,7 @@ export class Computer {
     this.cpLease = lease ?? undefined
     const local = this.lease
     if (!local) return
-    const backed = lease ? local.holder === lease.holder.sessionId : local.cpLeaseId === undefined
+    const backed = lease ? local.holder === computerLeaseHolderName(lease.holder) : local.cpLeaseId === undefined
     if (backed) {
       if (lease) local.cpLeaseId = lease.leaseId
       return
@@ -324,7 +324,7 @@ export class Computer {
     this.expireLease()
     if (this.paused) throw new ComputerError('human_in_control', 'the owner paused this computer', this.paused)
     const granted = this.cpLease
-    if (granted && granted.holder.sessionId !== holder) {
+    if (granted && computerLeaseHolderName(granted.holder) !== holder) {
       const label = granted.holder.agentName ?? granted.holder.agentId
       throw new ComputerError('computer_busy', `computer is controlled by ${label}`, {
         holder: label,

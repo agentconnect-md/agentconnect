@@ -18,9 +18,13 @@ const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const T0 = 1_760_000_100_000
 const relay = { relayId: '11111111-1111-4111-8111-111111111111', url: 'wss://relay-0.example.com/rd/ws' }
 
-function setup(over: Partial<ComputerRecord> = {}, policy: Record<string, unknown> = { allowedAgents: [AGENT] }) {
+function setup(
+  over: Partial<ComputerRecord> = {},
+  policy: Record<string, unknown> = { allowedAgents: [AGENT] },
+  keyDeliveryMs = 0
+) {
   const clock = new FakeClock(T0)
-  const keys = new ComputerChannelKeys('unit-test-pepper-0123456789abcdefghij', 300)
+  const keys = new ComputerChannelKeys('unit-test-pepper-0123456789abcdefghij', 300, keyDeliveryMs)
   const record = {
     id: ComputerId(CID),
     orgId: ORG,
@@ -72,6 +76,40 @@ describe('ComputerChannelGrants', () => {
     const signer = keys.current(CID, 'key_1', clock.now())
     expect(readComputerChannelToken(result.token)?.kid).toBe(signer.keyId)
     expect(result.expiresAt).toBe(signer.expiresAt)
+  })
+
+  it('signs just after a key window opens with a key the desktop already holds', async () => {
+    // T0 opens a key window; the desktop's last heartbeat came before it, so it holds only the previous window's key.
+    const { grants, keys, clock, repo } = setup(
+      { lastSeenAt: new Date(T0 - 5_000) },
+      { allowedAgents: [AGENT] },
+      50_000
+    )
+    const record = await repo.get()
+    const sent = [keys.current(CID, 'key_1', T0 - 1)]
+    const verify = (token: string, now: number) =>
+      verifyComputerChannelToken(token, {
+        aud: 'mcp',
+        computerId: CID,
+        key: (kid) => {
+          const held = sent.find((credential) => credential.keyId === kid)
+          return held ? Buffer.from(held.key, 'base64url') : undefined
+        },
+        now
+      })
+    clock.advance(1_000)
+    const early = await grants.grant(ORG, CID, who)
+    if (!early.granted) throw new Error('refused')
+    expect(verify(early.token, clock.now())).toMatchObject({ ses: 'sess-1' })
+    expect(Date.parse(early.expiresAt)).toBeLessThanOrEqual(Date.parse(sent[0]!.expiresAt))
+    // Past the delivery lag the desktop has had a heartbeat, and with it the newest key.
+    sent.push(keys.current(CID, 'key_1', T0))
+    clock.advance(59_000)
+    record.lastSeenAt = new Date(clock.now() - 5_000)
+    const later = await grants.grant(ORG, CID, who)
+    if (!later.granted) throw new Error('refused')
+    expect(readComputerChannelToken(later.token)?.kid).toBe(String(T0))
+    expect(verify(later.token, clock.now())).toMatchObject({ ses: 'sess-1' })
   })
 
   it('carries a view grant into the token', async () => {

@@ -22,6 +22,7 @@ import { RelayLinks } from './relay-links.js'
 
 const COMPUTER = '00000000-0000-4000-8000-000000000001'
 const AGENT = '00000000-0000-4000-8000-0000000000bb'
+const OTHER_AGENT = '00000000-0000-4000-8000-0000000000cc'
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
 const key = randomBytes(32)
 const keyId = '1760000000000'
@@ -125,10 +126,10 @@ function harness() {
 }
 
 // What the CP's grant hands an agent daemon.
-const sessionToken = (mode: 'view' | 'control' = 'control', session = 'sess-1') => {
+const sessionToken = (mode: 'view' | 'control' = 'control', session = 'sess-1', agent = AGENT) => {
   const now = Date.now()
   return signComputerChannelToken(
-    { aud: 'mcp', cmp: COMPUTER, kid: keyId, iat: now, exp: now + 120_000, ses: session, agt: AGENT, mode },
+    { aud: 'mcp', cmp: COMPUTER, kid: keyId, iat: now, exp: now + 120_000, ses: session, agt: agent, mode },
     key
   )
 }
@@ -158,10 +159,54 @@ describe('desktop relay links', () => {
     const shot = await client.callTool({ name: 'computer_screenshot', arguments: {} })
     expect((shot.content as { type: string }[])[0]?.type).toBe('image')
     await client.callTool({ name: 'computer_click', arguments: { x: 10, y: 10 } })
-    // The lease names the session the CP put in the token, the holder the CP's control lease names too.
-    expect(computer.info().lease).toMatchObject({ holder: 'sess-1' })
+    // The lease names the agent and session the CP put in the token, the holder the CP's control lease names too.
+    expect(computer.info().lease).toMatchObject({ holder: `${AGENT}/sess-1` })
     expect(driver.inputCalls()).toContain('click')
     await client.close()
+  })
+
+  it("refuses input from another agent's token that reuses the lease holder's session id", async () => {
+    const relay = await fakeRelay()
+    const { links, computer, driver } = harness()
+    links.converge([{ relayId: RELAY_ID, url: relay.url }])
+    await relay.attached
+    computer.applyControlLease({
+      leaseId: '33333333-3333-4333-8333-333333333333',
+      computerId: COMPUTER,
+      holder: { sessionId: 'sess-1', agentId: AGENT, agentName: 'Ops' },
+      acquiredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString()
+    })
+    const other = await mcpClient(relay.fetchVia, sessionToken('control', 'sess-1', OTHER_AGENT))
+    const refused = await other.callTool({ name: 'computer_click', arguments: { x: 1, y: 1 } })
+    expect(refused.isError).toBe(true)
+    expect(JSON.stringify(refused.content)).toContain('computer_busy')
+    expect(driver.inputCalls()).not.toContain('click')
+    const holder = await mcpClient(relay.fetchVia, sessionToken())
+    expect((await holder.callTool({ name: 'computer_click', arguments: { x: 1, y: 1 } })).isError).toBeFalsy()
+    expect(driver.inputCalls()).toContain('click')
+    await other.close()
+    await holder.close()
+  })
+
+  it('answers a GET, the standalone SSE stream a buffered relay cannot carry, with 405 at once', async () => {
+    const { authority, computer } = harness()
+    let created = 0
+    const handle = createRelayedMcpHandler({
+      authenticate: (header) => channelPrincipal(header, authority, () => COMPUTER),
+      createMcpServer: (principal) => {
+        created++
+        return createComputerMcpServer({ computer, ...principal })
+      },
+      log: () => undefined
+    })
+    const res = await handle({
+      method: 'GET',
+      path: '/mcp',
+      headers: { authorization: `Bearer ${sessionToken()}`, accept: 'text/event-stream' }
+    })
+    expect(res).toMatchObject({ status: 405, headers: { allow: 'POST, DELETE' } })
+    expect(created).toBe(0)
   })
 
   it('offers a view grant only the tools that never send input', async () => {

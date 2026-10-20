@@ -55,8 +55,8 @@ export class ComputerChannelGrants {
       return refuse('unavailable', 'this computer is offline')
     const apiKeyId = await this.repo.liveKeyId(ComputerId(computerId), new Date(now))
     if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
-    // The key the desktop holds now: its window started at or before now and runs at least half a lifetime more.
-    const credential = this.keys.current(computerId, apiKeyId, now)
+    // A key every live desktop holds: just after a window opens the newest may not have reached it yet.
+    const credential = this.keys.signing(computerId, apiKeyId, now)
     const exp = Math.min(
       now + (this.opts.tokenTtlMs ?? COMPUTER_CHANNEL_TOKEN_TTL_MS),
       Date.parse(credential.expiresAt)

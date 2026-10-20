@@ -97,6 +97,10 @@ export class ComputerChannel {
 
   /** A `fetch` for the MCP transport: it ignores the url it is given and sends to the Computer through a relay. */
   readonly fetch: typeof fetch = async (_input, init) => {
+    // No standalone SSE stream through a buffered relay: answer the client's GET here instead of holding a relay slot.
+    if ((init?.method ?? 'GET').toUpperCase() === 'GET') {
+      return new Response(null, { status: 405, headers: { allow: 'POST, DELETE' } })
+    }
     let grant = await this.grant()
     let renewed = false
     for (;;) {

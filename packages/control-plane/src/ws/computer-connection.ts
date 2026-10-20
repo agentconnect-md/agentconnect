@@ -162,6 +162,9 @@ export class ComputerConnection implements ComputerChannel {
       credential,
       policy: computer.policy
     })
+    // Grants still sign with the previous window's key just after a boundary, so a desktop that joins then needs it too.
+    const signing = this.deps.keys.signing(this.computerId, principal.apiKeyId, now.getTime())
+    if (signing.keyId !== credential.keyId) this.send('computer/credential', { credential: signing })
     await this.syncLease(() => this.deps.leases?.current(this.orgId, this.computerId))
     await this.sendRelays()
   }

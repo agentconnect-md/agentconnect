@@ -34,7 +34,7 @@ const SEND_HIGH_WATER_BYTES = 32 * 1024 * 1024
 
 // Only what Streamable HTTP MCP needs crosses the relay; cookies, hop-by-hop and proxy headers never do.
 const FORWARD_REQUEST_HEADERS = ['authorization', 'content-type', 'accept', 'mcp-protocol-version', 'mcp-session-id']
-const FORWARD_RESPONSE_HEADERS = ['content-type', 'mcp-protocol-version', 'mcp-session-id', 'www-authenticate']
+const FORWARD_RESPONSE_HEADERS = ['allow', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'www-authenticate']
 
 export interface ComputerRelayDeps {
   /** `rc/verify` of the desktop's relay-audience token; the CP checks it against the Computer's live channel key. */
@@ -50,6 +50,8 @@ export interface ComputerRelay {
   readonly wss: WebSocketServer
   /** Whether a desktop for this Computer is attached here. */
   attached(computerId: string): boolean
+  /** Requests forwarded to this Computer's desktop and not yet answered. */
+  inFlight(computerId: string): number
   size(): number
 }
 
@@ -220,6 +222,9 @@ export function createComputerRelay(app: FastifyInstance, deps: ComputerRelayDep
   async function forward(req: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> {
     // The desktop verifies the token; a request without one is refused here so it never reaches a desktop.
     if (!bearerOk(req.headers.authorization)) return reply.code(401).send({ error: 'missing bearer token' })
+    // Bodies are buffered, so a GET's standalone SSE stream could only hold a slot until it timed out.
+    if (req.method === 'GET')
+      return reply.code(405).header('allow', 'POST, DELETE').send({ error: 'method not allowed' })
     const computerId = (req.params as { computerId?: string }).computerId ?? ''
     const link = byComputer.get(computerId)
     if (!link) return reply.code(503).send({ error: 'computer_not_attached' })
@@ -270,6 +275,7 @@ export function createComputerRelay(app: FastifyInstance, deps: ComputerRelayDep
   return {
     wss,
     attached: (computerId) => byComputer.has(computerId),
+    inFlight: (computerId) => byComputer.get(computerId)?.inFlight ?? 0,
     size: () => byComputer.size
   }
 }

@@ -76,6 +76,15 @@ describe('ComputerChannel', () => {
     expect(grants.computerChannelGrant).toHaveBeenCalledTimes(3)
   })
 
+  it("answers the MCP client's standalone-stream GET itself, without a grant or a relay", async () => {
+    const { channel, grants, calls } = setup([])
+    const res = await channel.fetch('http://ignored/mcp', { method: 'GET', headers: { accept: 'text/event-stream' } })
+    expect(res.status).toBe(405)
+    expect(res.headers.get('allow')).toBe('POST, DELETE')
+    expect(calls).toHaveLength(0)
+    expect(grants.computerChannelGrant).not.toHaveBeenCalled()
+  })
+
   it('tries the next relay only when the request provably never left', async () => {
     const refused = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })
     const reset = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })

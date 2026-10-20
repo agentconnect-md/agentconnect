@@ -63,10 +63,13 @@ describe('Computer', () => {
   })
 
   describe('the Control Plane lease', () => {
+    const AGENT = '00000000-0000-4000-8000-0000000000bb'
+    // The caller name a channel token for session sess-1 of AGENT gets: agent and session together.
+    const SESS_1 = `${AGENT}/sess-1`
     const told = (sessionId: string, leaseId = `lease-${sessionId}`) => ({
       leaseId,
       computerId: '00000000-0000-4000-8000-000000000001',
-      holder: { sessionId, agentId: '00000000-0000-4000-8000-0000000000bb', agentName: 'Ops' },
+      holder: { sessionId, agentId: AGENT, agentName: 'Ops' },
       acquiredAt: '2026-10-20T00:00:00.000Z',
       expiresAt: '2026-10-20T00:30:00.000Z'
     })
@@ -79,7 +82,13 @@ describe('Computer', () => {
         holder: 'Ops',
         sessionId: 'sess-1'
       })
-      expect((await computer.type('sess-1', { text: 'hi' })).isError).toBeUndefined()
+      // The same session id under another agent is not the holder.
+      expect(errorOf(await computer.type('00000000-0000-4000-8000-0000000000cc/sess-1', { text: 'hi' }))).toMatchObject(
+        {
+          error: 'computer_busy'
+        }
+      )
+      expect((await computer.type(SESS_1, { text: 'hi' })).isError).toBeUndefined()
       expect(computer.info().controlLease).toMatchObject({ leaseId: 'lease-sess-1' })
     })
 
@@ -88,13 +97,13 @@ describe('Computer', () => {
       await computer.type('claude', { text: 'hi' })
       computer.applyControlLease(told('sess-1'))
       expect(computer.liveStatus()).toBe('online')
-      await computer.type('sess-1', { text: 'hi' })
+      await computer.type(SESS_1, { text: 'hi' })
       // A renewal under a fresh id for the same session keeps the local lease.
       computer.applyControlLease(told('sess-1', 'lease-again'))
       expect(computer.liveStatus()).toBe('busy')
       computer.applyControlLease(null)
       expect(computer.liveStatus()).toBe('online')
-      expect(statuses).toEqual(['controlled by claude', 'online', 'controlled by sess-1', 'online'])
+      expect(statuses).toEqual(['controlled by claude', 'online', `controlled by ${SESS_1}`, 'online'])
       // With no lease told, the local tokens of an unregistered prototype still work.
       expect((await computer.type('claude', { text: 'hi' })).isError).toBeUndefined()
       computer.applyControlLease(null)
@@ -104,11 +113,11 @@ describe('Computer', () => {
     it("reports the local lease's holder, idle time and time held", async () => {
       const { computer, advance } = setup({ actionScreenshot: false })
       expect(computer.leaseActivity()).toBeUndefined()
-      await computer.type('sess-1', { text: 'hi' })
+      await computer.type(SESS_1, { text: 'hi' })
       advance(1000)
-      await computer.type('sess-1', { text: 'again' })
+      await computer.type(SESS_1, { text: 'again' })
       advance(1500)
-      expect(computer.leaseActivity()).toEqual({ holder: 'sess-1', idleMs: 1500, heldMs: 2500 })
+      expect(computer.leaseActivity()).toEqual({ holder: SESS_1, idleMs: 1500, heldMs: 2500 })
     })
   })
 

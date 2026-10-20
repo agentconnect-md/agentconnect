@@ -97,7 +97,7 @@ describe('computer relay', () => {
     ws.close()
   })
 
-  it('answers 503 for a Computer not attached here and 401 without a bearer, never reaching a desktop', async () => {
+  it('answers 503 for a Computer not attached here, 401 without a bearer and 405 to a GET, never reaching a desktop', async () => {
     const { base } = await start()
     const { seen, ws } = await desktop(base)
     const missing = await call(base, {}, '00000000-0000-4000-8000-000000000002')
@@ -105,6 +105,14 @@ describe('computer relay', () => {
     expect(await missing.json()).toEqual({ error: 'computer_not_attached' })
     const anonymous = await call(base, { headers: { 'content-type': 'application/json' } })
     expect(anonymous.status).toBe(401)
+    // A buffered relay carries no standalone SSE stream, so a GET never takes a slot.
+    const stream = await call(base, {
+      method: 'GET',
+      headers: { authorization: 'Bearer actk1.x.y', accept: 'text/event-stream' },
+      body: null
+    })
+    expect(stream.status).toBe(405)
+    expect(stream.headers.get('allow')).toBe('POST, DELETE')
     expect(seen.filter((f) => f.type === 'cr/http')).toEqual([])
     ws.close()
   })

@@ -651,9 +651,14 @@ export function buildContainer(
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
   // Live Computer channels (computer-use.md §3.6): revoke, delete and policy changes reach a connected desktop at once.
   const computerChannels = new ComputerChannelRegistry()
-  const computerChannelKeys = new ComputerChannelKeys(config.API_KEY_PEPPER, config.COMPUTER_CREDENTIAL_TTL_SEC)
   // Three missed heartbeats, the daemon watchdog's freeze threshold: for a desktop's status and a lease holder alike.
   const missedBeatsMs = config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000
+  // A desktop seen within missedBeatsMs got the newest key with that heartbeat; the margin covers the push itself.
+  const computerChannelKeys = new ComputerChannelKeys(
+    config.API_KEY_PEPPER,
+    config.COMPUTER_CREDENTIAL_TTL_SEC,
+    missedBeatsMs + 5_000
+  )
   const computerLeases = new ComputerLeaseService(repos.computerLease, clock, {
     holderTtlMs: missedBeatsMs,
     staleAfterMs: missedBeatsMs,

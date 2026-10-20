@@ -185,7 +185,7 @@ export const ComputerHeartbeat = z
     // The local lease, how long since its last input, and how long it has been held without idling out.
     lease: z
       .object({
-        holder: z.string().min(1).max(256),
+        holder: z.string().min(1).max(512),
         idleMs: z.number().int().min(0),
         heldMs: z.number().int().min(0).optional()
       })

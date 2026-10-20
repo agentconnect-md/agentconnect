@@ -26,6 +26,16 @@ describe('ComputerChannelKeys', () => {
     expect(new ComputerChannelKeys(`${PEPPER}x`, 300).current('c1', 'k1', T0).key).not.toBe(a.key)
   })
 
+  it('signs with the previous key until a new window is old enough that every live desktop holds its key', () => {
+    const lagging = new ComputerChannelKeys(PEPPER, 300, 50_000)
+    const previous = lagging.current('c1', 'k1', T0 - 1)
+    expect(lagging.signing('c1', 'k1', T0)).toEqual(previous)
+    expect(lagging.signing('c1', 'k1', T0 + 49_999)).toEqual(previous)
+    expect(lagging.signing('c1', 'k1', T0 + 50_000)).toEqual(lagging.current('c1', 'k1', T0))
+    // Without a delivery lag the newest key signs.
+    expect(keys.signing('c1', 'k1', T0)).toEqual(keys.current('c1', 'k1', T0))
+  })
+
   it('recomputes a key by id only while it is live', () => {
     const a = keys.current('c1', 'k1', T0)
     expect(keys.keyFor('c1', 'k1', a.keyId, T0 + 299_999)?.toString('base64url')).toBe(a.key)

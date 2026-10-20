@@ -2,6 +2,7 @@
 import { WebStandardStreamableHTTPServerTransport, type McpServer } from '@modelcontextprotocol/server'
 import {
   COMPUTER_CHANNEL_TOKEN_PREFIX,
+  computerLeaseHolderName,
   RELAY_COMPUTER_MAX_BODY_BYTES,
   type CrHttpRequest,
   type CrHttpResponse
@@ -17,7 +18,7 @@ export interface McpPrincipal {
 const bearer = (authorization: string | undefined): string | undefined =>
   /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1]
 
-/** A channel token's session, the holder name the CP's control lease names; undefined for anything else. */
+/** A channel token's agent and session, the holder the CP's control lease names; undefined for anything else. */
 export function channelPrincipal(
   authorization: string | undefined,
   authority: ChannelAuthority,
@@ -27,10 +28,14 @@ export function channelPrincipal(
   const id = computerId()
   if (!token?.startsWith(`${COMPUTER_CHANNEL_TOKEN_PREFIX}.`) || !id) return undefined
   const claims = authority.verify(token, 'mcp', id)
-  return claims?.ses ? { client: claims.ses, viewOnly: claims.mode === 'view' } : undefined
+  if (!claims?.ses || !claims.agt) return undefined
+  return {
+    client: computerLeaseHolderName({ agentId: claims.agt, sessionId: claims.ses }),
+    viewOnly: claims.mode === 'view'
+  }
 }
 
-const RESPONSE_HEADERS = ['content-type', 'mcp-protocol-version', 'mcp-session-id', 'www-authenticate']
+const RESPONSE_HEADERS = ['allow', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'www-authenticate']
 
 function reply(status: number, body: unknown, headers: Record<string, string> = {}): CrHttpResponse {
   return {
@@ -53,6 +58,10 @@ export function createRelayedMcpHandler(deps: RelayedMcpDeps): (request: CrHttpR
     if (new URL(request.path, 'http://desktop.invalid').pathname !== '/mcp') return reply(404, { error: 'not found' })
     const principal = deps.authenticate(request.headers.authorization)
     if (!principal) return reply(401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer' })
+    // A buffered relay cannot carry the standalone SSE stream a GET opens; 405 tells the client there is none.
+    if (request.method !== 'POST' && request.method !== 'DELETE') {
+      return reply(405, { error: 'method not allowed' }, { allow: 'POST, DELETE' })
+    }
     const mcp = deps.createMcpServer(principal)
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

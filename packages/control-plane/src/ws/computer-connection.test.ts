@@ -48,6 +48,7 @@ function setup(
     handshakes?: HandshakeGate
     leases?: ComputerConnDeps['leases']
     relays?: ComputerConnDeps['relays']
+    keyDeliveryMs?: number
   } = {}
 ) {
   const clock = new FakeClock(T0)
@@ -72,7 +73,7 @@ function setup(
       )
     },
     repo,
-    keys: new ComputerChannelKeys('unit-test-pepper-0123456789abcdefghij', 300),
+    keys: new ComputerChannelKeys('unit-test-pepper-0123456789abcdefghij', 300, over.keyDeliveryMs ?? 0),
     registry,
     clock,
     heartbeatSec: 15,
@@ -200,6 +201,18 @@ describe('ComputerConnection', () => {
     expect(renewal.type === 'computer/credential' && renewal.payload.credential.keyId).not.toBe(
       first.type === 'computer/auth/ok' && first.payload.credential.keyId
     )
+  })
+
+  it('also hands a desktop that joins just after a key window opens the key grants still sign with', async () => {
+    // T0 opens a key window.
+    const { transport } = setup({ keyDeliveryMs: 50_000 })
+    transport.deliver(auth())
+    await settle()
+    const ok = transport.ofType('computer/auth/ok')[0]!
+    const extra = transport.ofType('computer/credential')
+    expect(ok.type === 'computer/auth/ok' && ok.payload.credential.keyId).toBe(String(T0))
+    expect(extra).toHaveLength(1)
+    expect(extra[0]!.type === 'computer/credential' && extra[0]!.payload.credential.keyId).toBe(String(T0 - 150_000))
   })
 
   it('ends the channel when a heartbeat finds the Computer revoked behind its back', async () => {

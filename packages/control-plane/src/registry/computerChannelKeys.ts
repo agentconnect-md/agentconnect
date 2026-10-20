@@ -6,11 +6,23 @@ import type { ComputerChannelCredential } from '@agentconnect.md/protocol'
 export class ComputerChannelKeys {
   private readonly base: Buffer
   readonly ttlMs: number
+  private readonly deliveryMs: number
 
-  constructor(pepper: string, ttlSec: number) {
+  /** `deliveryMs`: how long after a window opens a live desktop may still lack its key (it arrives with a heartbeat). */
+  constructor(pepper: string, ttlSec: number, deliveryMs = 0) {
     // Domain-separated from every other use of the pepper.
     this.base = createHmac('sha256', pepper).update('agentconnect/computer-channel-key/v1').digest()
     this.ttlMs = ttlSec * 1000
+    this.deliveryMs = Math.min(Math.max(0, deliveryMs), this.ttlMs / 2)
+  }
+
+  /** The key a token is signed with: the previous window's until every live desktop holds the newest, which outlives that. */
+  signing(computerId: string, apiKeyId: string, nowMs: number): ComputerChannelCredential {
+    const windowMs = this.ttlMs / 2
+    const start = Math.floor(nowMs / windowMs) * windowMs
+    return nowMs - start < this.deliveryMs
+      ? this.current(computerId, apiKeyId, start - windowMs)
+      : this.current(computerId, apiKeyId, nowMs)
   }
 
   /** A new key every half lifetime, each valid a full lifetime from its window start, so a renewal always overlaps. */

@@ -365,15 +365,17 @@ desktop daemon ◀────────────────────�
   itself; the relay, which has no database, asks the CP with `rc/verify` (`computer-relay-token`), and the CP checks it
   against the Computer's live key. A newer link for the same Computer supersedes the older one. The desktop drops its
   links on revoke and when its key lapses, and redials after the next roster push.
-- **Forwarding.** An agent daemon sends `POST|GET|DELETE /cr/computers/<id>/mcp` to a relay's per-instance address. The
-  relay refuses a request without a bearer, answers `503 computer_not_attached` when the desktop is not linked to it
+- **Forwarding.** An agent daemon sends `POST|DELETE /cr/computers/<id>/mcp` to a relay's per-instance address. The
+  relay refuses a request without a bearer, answers a `GET` with `405` (a buffered relay cannot carry the standalone SSE
+  stream it opens, and the MCP client then goes without one; the agent daemon and the desktop answer it the same way),
+  answers `503 computer_not_attached` when the desktop is not linked to it
   (the agent daemon then tries the next relay; a request that may have reached a relay is never resent), and otherwise
   sends one `cr/http` frame with the method, the MCP headers and the body, and returns the `cr/http/result`. Bodies are
   buffered, at most 8 MiB each way; a desktop has at most 16 requests in flight per relay, and a request times out
   after 120 s. The relay parses no MCP and logs no body or token.
 - **On the desktop.** A relayed request is served in process through the same MCP server as the local port, and only a
-  channel token authenticates it; the prototype's local client tokens work only on the local port. The token's session
-  becomes the caller, which is the holder the CP's control lease names (§4.4), and a `view` token gets a server without
+  channel token authenticates it; the prototype's local client tokens work only on the local port. The token's agent and
+  session together become the caller, the holder the CP's control lease names (§4.4), and a `view` token gets a server without
   the input and lease tools. The agent daemon's side is `packages/daemon/src/computer/data-plane.ts`; registering the
   `computer_*` tools on it is #3190.
 
@@ -709,7 +711,9 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   **[implemented]** The channel key. The CP derives the key from `API_KEY_PEPPER`, the Computer, its key and a window,
   so it stores nothing and every replica derives the same key. A new key starts every half lifetime and lasts one
   lifetime (`COMPUTER_CREDENTIAL_TTL_SEC`, default 300 s). The CP sends a renewal on the first heartbeat of each
-  window, so consecutive keys overlap by half a lifetime. The desktop daemon reads expiries against the CP clock
+  window, so consecutive keys overlap by half a lifetime. A desktop may lack the newest key until that heartbeat, so
+  for three missed heartbeats plus 5 s after a window opens the CP signs channel tokens with the previous key, and also
+  sends that key to a desktop that authenticates in that time. The desktop daemon reads expiries against the CP clock
   it measured at auth. While it is registered, every screenshot, input, takeover and viewer frame needs a live key,
   and that covers the prototype's local-token MCP and `/view` too. With no live key, or after a revoke, calls fail
   with `unavailable`, the lease and any takeover are dropped, and WebRTC viewers are closed. A revoke drops every key
