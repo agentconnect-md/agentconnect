@@ -2,7 +2,7 @@
   "private": true,
   "name": "@agentconnect.md/desktop",
   "version": "0.0.0-prototype",
-  "description": "Prototype desktop daemon: embeds Cua Driver and exposes the computer_* tools over MCP (docs/designs/computer-use.md Phase 0)",
+  "description": "Prototype desktop daemon: embeds Cua Driver and exposes the computer_* tools over MCP (docs/designs/computer-use.md M0)",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {

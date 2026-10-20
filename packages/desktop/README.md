@@ -1,12 +1,45 @@
 # @agentconnect.md/desktop (prototype)
 
-Phase 0 prototype of the **desktop daemon** from the computer-use design
-(`docs/designs/computer-use.md`, agentconnect-md/extensions#147). It runs inside the
+Prototype of the **desktop daemon** from the computer-use design
+([`docs/designs/computer-use.md`](../../docs/designs/computer-use.md), tracked in [#3182](https://github.com/agentconnect-md/agentconnect/issues/3182)). It runs inside the
 logged-in desktop session, embeds [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)
 (MIT) for screenshots and input, and exposes the design's `computer_*` tools as an MCP
 server that Claude Code (or any MCP client) can use.
 
 It is standalone: no Control Plane, relay, or AgentConnect daemon is involved.
+
+## Status: M0 prototype
+
+This package is the prototype merged as milestone M0 of the design's development plan (§14.3).
+It is private, not published to npm, and not part of any AgentConnect release.
+
+**What works today**
+
+- The `computer_*` MCP tools over Streamable HTTP (bearer token per client) or stdio, with one
+  control lease, human-activity arbitration, an owner pause, no-replay `uncertain` results, and a
+  local audit log.
+- The `/view` browser remote desktop: WebRTC video (ffmpeg + werift) with a screenshot-polling
+  fallback, and human takeover.
+- `setup` / `doctor` on macOS, Linux (X11 and GNOME Wayland) and Windows; a macOS LaunchAgent
+  (`.app` mode) and a Linux systemd user unit; Windows logon autostart.
+- A proof-of-concept Docker image (Xvfb + Xfce + Firefox ESR).
+
+**Limits**
+
+- No Control Plane: no Computer registration, `ComputerPolicy`, approvals, per-agent
+  authorization, or object-store screenshots. Local client tokens stand in for all of them, and
+  removing a token takes effect only after a restart.
+- Plain HTTP with a bearer token. The daemon listens on `127.0.0.1` by default; other machines
+  can reach it only when you pass `--host 0.0.0.0` (or another address) explicitly, and then the
+  token is the only protection.
+- One display, no audio, no clipboard sync; keyboard activity is not detected (only pointer
+  movement); no tray icon, screen border, or global stop hotkey.
+- Builds are unsigned (macOS `.app` is ad-hoc signed; no Windows installer), so OS grants do not
+  survive a rebuild. The Docker image is not published.
+- CI runs the unit tests (fake driver) only. The Xvfb integration job and the license scan
+  arrive with [#3184](https://github.com/agentconnect-md/agentconnect/issues/3184), and the
+  `agentconnect desktop` CLI subcommand with [#3185](https://github.com/agentconnect-md/agentconnect/issues/3185); `agentconnect-desktop`
+  is a development bin.
 
 ```
 Claude Code ──HTTP (Bearer token)──▶ agentconnect-desktop ──stdio MCP──▶ cua-driver mcp --direct ──▶ desktop
@@ -30,10 +63,10 @@ desktop itself** (not over SSH or RDP-from-a-service):
      Terminal). It opens the matching System Settings pane and waits until each is switched on.
      Then a test ffmpeg capture raises the separate "bypass the private window picker" consent.
      Screen Recording takes effect after quitting Terminal (Cmd+Q) and reopening it.
-   - **Windows**: adds the inbound firewall rule "AgentConnect Desktop (Node.js)" for this
-     `node.exe`, covering all network profiles (Tailscale is often _Public_), after one
-     administrator prompt. It disables any block rule that Windows created when someone pressed
-     Cancel on its own prompt.
+   - **Windows**, only when listening beyond loopback (`--host 0.0.0.0`): adds the inbound
+     firewall rule "AgentConnect Desktop (Node.js)" for this `node.exe`, covering all network
+     profiles (Tailscale is often _Public_), after one administrator prompt. It disables any
+     block rule that Windows created when someone pressed Cancel on its own prompt.
 4. Runs `doctor`.
 
 `doctor` is read-only and can be run any time. It exits 1 when a required check fails, and every
@@ -59,17 +92,22 @@ Requirements: Windows 10/11 x64 or arm64, a logged-in desktop session, Node.js �
 (`winget install OpenJS.NodeJS`).
 
 1. Build the bundle on a dev machine (`pnpm --filter @agentconnect.md/desktop bundle`) and copy
-   `bundle/agentconnect-desktop.zip` to the Windows machine.
-2. Unzip it and, in a normal (non-admin) PowerShell on the Windows desktop, run:
+   the `bundle/` directory (`agentconnect-desktop.mjs`, `install.ps1`, `README.md`) to the
+   Windows machine.
+2. In a normal (non-admin) PowerShell on the Windows desktop, run:
 
    ```powershell
    .\install.ps1            # copies to %LOCALAPPDATA%\AgentConnect\desktop\app and runs setup
    node "$env:LOCALAPPDATA\AgentConnect\desktop\app\agentconnect-desktop.mjs" run
    ```
 
+   The daemon then listens on `127.0.0.1` only. To reach it from another machine, run
+   `.\install.ps1 -ListenHost 0.0.0.0` instead: `setup` saves the address and adds the inbound
+   firewall rule, which a loopback-only install skips.
+
    `run` is a plain foreground process: `Ctrl+C` stops it and closes the port. Keep the console
    window open: it is the indicator and emergency stop. Running `node agentconnect-desktop.mjs run`
-   straight from the unzipped folder also works; it does the downloads itself but skips the
+   straight from the copied `bundle/` folder also works; it does the downloads itself but skips the
    firewall step.
 
 Nothing is installed as a service. With `-Autostart`, `install.ps1` also adds a per-user
@@ -83,7 +121,7 @@ To start over (new token), delete `%LOCALAPPDATA%\AgentConnect\desktop\config.js
 
 Requirements: Node.js ≥ 24.12. No Homebrew or sudo is needed: the official tarball unpacked to
 `~/.local/node` works. In **Terminal on the Mac** (not over SSH: macOS grants the permissions to
-the app that starts the daemon), unzip the bundle and run:
+the app that starts the daemon), copy the `bundle/` directory to the Mac and run:
 
 ```sh
 ./install.sh                                                    # copies to ~/.agentconnect/desktop/app, runs setup (permission dialogs), then doctor
@@ -169,7 +207,8 @@ static ffmpeg (6.0, libx264).
 `docker/Dockerfile` builds a Debian trixie image with Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, the
 pinned Node.js, and the daemon with Cua Driver and ffmpeg preinstalled. The entrypoint starts Xvfb on
 `:1` (`RESOLUTION`, default `1600x900x24`), a session D-Bus, and Xfce, then runs `run` in the foreground
-as user `desktop`. `docker stop` stops the daemon, closes Firefox, then the session. `/home/desktop` is a
+as user `desktop`. Published ports only reach a container through its own interface, so the image passes
+`--host 0.0.0.0` explicitly (`LISTEN_HOST` overrides it). `docker stop` stops the daemon, closes Firefox, then the session. `/home/desktop` is a
 volume: config, token, audit log, and the Firefox profile survive a new container.
 
 ```sh
@@ -192,19 +231,21 @@ needed.
 The first `run` (or `init`) prints the exact command, for example:
 
 ```text
-claude mcp add --transport http computer http://<windows-host>:7681/mcp --header "Authorization: Bearer acd_..."
+claude mcp add --transport http computer http://127.0.0.1:7681/mcp --header "Authorization: Bearer acd_..."
 ```
 
-For testing, the daemon listens on `0.0.0.0` by default so other machines can reach it
-directly. Traffic is plain HTTP and the token is the only protection: use it on a trusted
-network only, or pass `--host 127.0.0.1` (and tunnel with `ssh -L`) to keep it local.
+The daemon listens on `127.0.0.1` unless you ask otherwise, so by default only clients on the
+same machine (or through an `ssh -L` tunnel) reach it. `--host 0.0.0.0` on `setup`, `init`, or
+`run` listens on every interface; `setup` and `init` save it in `config.json` (`"host"`) for the
+service. Traffic is plain HTTP and the token is the only protection, so do that on a trusted
+network only. A `config.json` written by an earlier prototype build may still say `"0.0.0.0"`.
 
 If Claude Code runs on the same Windows machine you can use stdio instead:
 `claude mcp add computer -- node <path>\agentconnect-desktop.mjs stdio`.
 
 ## Remote desktop viewer
 
-Open `http://<windows-host>:7681/view` in any modern browser and sign in with a client token.
+Open `http://<host>:7681/view` in any modern browser and sign in with a client token.
 The first `run` prints a ready link of the form `/view#token=...`. The token is in the URL fragment,
 so it never reaches the server or proxy logs, and the page keeps it in `localStorage`.
 
@@ -287,7 +328,7 @@ agentconnect-desktop stdio [--expose-driver-tools]
 agentconnect-desktop token add NAME | token list | token remove NAME
 agentconnect-desktop status | pause | resume
 agentconnect-desktop doctor [--here] [--json]                       (read-only checks; exit 1 on failure)
-agentconnect-desktop service install|uninstall|start|stop|restart|status   (macOS .app: LaunchAgent)
+agentconnect-desktop service install|uninstall|start|stop|restart|status   (macOS .app LaunchAgent, Linux systemd user unit)
 agentconnect-desktop autostart enable | disable | start      (Windows)
 ```
 
@@ -310,7 +351,7 @@ macOS and Linux also work for local development (`init` installs the matching dr
 build). On macOS, `--direct` attributes Accessibility and Screen Recording to the terminal
 that starts the daemon.
 
-## Differences from the design (deliberate for Phase 0)
+## Differences from the design (deliberate for M0)
 
 - One Computer per daemon and no Control Plane: registration, `ComputerPolicy`, approvals,
   object-store screenshots, and per-agent authorization are replaced by local client
