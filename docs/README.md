@@ -144,6 +144,7 @@ the picture it draws.
 - [session-executors.md](designs/session-executors.md) — Spreading one agent's sessions across a daemon group: the executor facet, the shim contract, execution strategies.
 - [background-task-aware-reclaim.md](designs/background-task-aware-reclaim.md) — ACP host reclamation that respects background jobs.
 - [runtime-model-catalog.md](designs/runtime-model-catalog.md) — Runtime model discovery, per-model fallback, and local caching.
+- **(draft)** [computer-use.md](designs/computer-use.md) — Computers: user desktops and Linux containers that agents operate through a desktop daemon with Cua Driver, a built-in WebRTC viewer, and the Linux → Docker → macOS → Windows development plan.
 
 ## Working papers
 
