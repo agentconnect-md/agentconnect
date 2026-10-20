@@ -1,0 +1,45 @@
+{
+  "private": true,
+  "name": "@agentconnect.md/desktop",
+  "version": "0.0.0-prototype",
+  "description": "Prototype desktop daemon: embeds Cua Driver and exposes the computer_* tools over MCP (docs/designs/computer-use.md M0)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "agentconnect-desktop": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "tsc -p tsconfig.json",
+    "bundle": "node scripts/bundle.mjs",
+    "bundle:macos": "node scripts/build-macos-app.mjs",
+    "clean": "rm -rf dist bundle",
+    "dev": "tsx src/cli.ts run",
+    "license-scan": "tsx scripts/license-scan.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:xvfb": "node scripts/bundle.mjs && vitest run -c vitest.xvfb.config.ts",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "werift": "0.25.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "esbuild": "0.28.2",
+    "postject": "1.0.0-alpha.6",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=24.12.0"
+  }
+}
