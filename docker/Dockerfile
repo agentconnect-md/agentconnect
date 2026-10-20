@@ -38,12 +38,10 @@ RUN corepack enable
 RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeout=20000\nfetch-timeout=600000\nnetwork-concurrency=8\n' >> /root/.npmrc
 
 # ─────────────────────────────── manifests ──────────────────────────────────
-# Workspace manifests only. The pnpm install layer downstream depends solely on
-# these, so it (including native postinstall downloads) stays a cache HIT across
-# code-only changes instead of reinstalling on every commit. `scripts/` is needed
-# by the root `prepare` hook.
+# Copy install inputs before source so code-only changes reuse the dependency layer.
 FROM base AS manifests
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .pnpmfile.mjs ./
+COPY patches/ patches/
 COPY scripts/ scripts/
 COPY packages/activation-policy/package.json packages/activation-policy/
 COPY packages/message/package.json packages/message/
