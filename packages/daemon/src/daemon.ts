@@ -16233,8 +16233,35 @@ export class Daemon {
     key: string,
     options: { required?: boolean; adoptExisting?: boolean; existingId?: string; receiptId?: string } = {}
   ): Promise<'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed'> {
-    if (entry.webchat && entry.webchat.initiator !== 'agent') return 'skipped' // Browser-owned live sinks cannot replay.
     const id = options.existingId ?? entry.callMeta?.deliveryId ?? stableMessageId(entry.msg)
+    if (entry.webchat && entry.webchat.initiator !== 'agent') {
+      // Browser-owned live sinks cannot replay, but a receipt still fences a re-sent client turn id.
+      if (!options.receiptId) return 'skipped'
+      try {
+        const minted = await this.store.appendInbox({
+          id: options.receiptId,
+          sessionKey: key,
+          agentId: entry.agentId,
+          msg: JSON.stringify(entry.msg),
+          integrationId: entry.integrationId ?? null,
+          callMeta: null,
+          hookContext: null,
+          codeHostReplyTarget: null,
+          posterPublishState: null,
+          isQueueCmd: null,
+          loopGuardCounted: 1,
+          enqueuedAt: monotonicTs(),
+          completedAt: this.clock.now()
+        })
+        if (!minted) return 'existing'
+        entry.receiptId = options.receiptId
+        return 'skipped'
+      } catch (err) {
+        if (options.required) throw err
+        this.log.warn(`durable inbox: receipt append failed for ${options.receiptId}: ${(err as Error).message}`)
+        return 'failed'
+      }
+    }
     const row = {
       id,
       sessionKey: key,
