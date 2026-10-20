@@ -294,7 +294,7 @@ describe('AHP recovery and authorization boundary', () => {
   })
 
   it('loads more than one wire frame of history through standard fetchTurns', async () => {
-    const current = await fixture()
+    const current = await fixture({ snapshot: () => ({ ...state, turnsNextCursor: 'first' }) })
     let page = 0
     current.port.fetchTurns = async () => {
       const turns: Turn[] = Array.from({ length: 6 }, (_, index) => ({
@@ -304,10 +304,7 @@ describe('AHP recovery and authorization boundary', () => {
         usage: undefined,
         state: TurnState.Complete
       }))
-      await current.port.journal.append({
-        channel: chat,
-        action: { type: ActionType.ChatTurnsLoaded, turns, ...(page++ < 2 ? { turnsNextCursor: `page-${page}` } : {}) }
-      })
+      return { type: ActionType.ChatTurnsLoaded, turns, ...(page++ < 2 ? { turnsNextCursor: `page-${page}` } : {}) }
     }
     await current.client.initialize({ clientId: 'one', protocolVersions: ['1.0.0'] })
     let reduced = (await current.client.subscribe(chat)).result.snapshot!.state as ChatState
@@ -323,6 +320,58 @@ describe('AHP recovery and authorization boundary', () => {
     expect(reduced.turns).toHaveLength(18)
     expect(Buffer.byteLength(JSON.stringify(reduced))).toBeGreaterThan(64 * 1024)
     expect(current.frames.every((frame) => Buffer.byteLength(frame) <= 64 * 1024)).toBe(true)
+  })
+
+  it('keeps independently materialized history contiguous for clients joining between pages', async () => {
+    const turn = (id: string): Turn => ({
+      id,
+      message: { text: id, origin: { kind: MessageKind.User } },
+      responseParts: [],
+      usage: undefined,
+      state: TurnState.Complete
+    })
+    const tail = { ...state, turns: [turn('recent')], turnsNextCursor: 'middle' }
+    const fetch = vi.fn(async (params: { cursor?: string }) => ({
+      type: ActionType.ChatTurnsLoaded as const,
+      turns: [turn(params.cursor!)],
+      ...(params.cursor === 'middle' ? { turnsNextCursor: 'oldest' } : {})
+    }))
+    const first = await fixture({ snapshot: () => structuredClone(tail), fetchTurns: fetch })
+    await first.client.initialize({ clientId: 'first', protocolVersions: ['1.0.0'] })
+    let firstView = (await first.client.subscribe(chat)).result.snapshot!.state as ChatState
+    const firstEvents = first.client.events()
+    await first.client.request('fetchTurns', { channel: chat })
+    const pageOne = (await firstEvents.next()).value!.event
+    if (pageOne.type !== 'action') throw new Error('Expected history action')
+    firstView = chatReducer(firstView, pageOne.params.action as ChatAction)
+    const second = await fixture(first.port)
+    await second.client.initialize({ clientId: 'second', protocolVersions: ['1.0.0'] })
+    let secondView = (await second.client.subscribe(chat)).result.snapshot!.state as ChatState
+    const secondEvents = second.client.events()
+    const beforeSecondPage = first.port.journal.currentSequence
+    await first.client.request('fetchTurns', { channel: chat })
+    const pageTwo = (await firstEvents.next()).value!.event
+    if (pageTwo.type !== 'action') throw new Error('Expected history action')
+    firstView = chatReducer(firstView, pageTwo.params.action as ChatAction)
+    expect(firstView.turns.map((turn) => turn.id)).toEqual(['oldest', 'middle', 'recent'])
+    expect(second.frames.map((frame) => JSON.parse(frame)).filter((frame) => frame.method === 'action')).toEqual([])
+    await second.client.request('fetchTurns', { channel: chat })
+    const secondPage = (await secondEvents.next()).value!.event
+    if (secondPage.type !== 'action') throw new Error('Expected history action')
+    secondView = chatReducer(secondView, secondPage.params.action as ChatAction)
+    expect(secondView.turns.map((turn) => turn.id)).toEqual(['middle', 'recent'])
+    expect(secondView.turnsNextCursor).toBe('oldest')
+    expect(fetch.mock.calls.map(([params]) => params.cursor)).toEqual(['middle', 'oldest', 'middle'])
+    await first.client.request('fetchTurns', { channel: chat })
+    expect(fetch).toHaveBeenCalledTimes(3)
+    const recovery = await fixture(first.port)
+    const recovered = await recovery.client.reconnect({
+      clientId: 'first',
+      lastSeenServerSeq: beforeSecondPage,
+      subscriptions: [chat]
+    })
+    expect(recovered).toMatchObject({ type: 'snapshot', snapshots: [{ state: JSON.parse(JSON.stringify(tail)) }] })
+    expect(first.port.snapshot(chat)).toEqual(tail)
   })
 
   it('accepts opaque 2048-byte cursors and only exposes explicitly supported extension methods', async () => {

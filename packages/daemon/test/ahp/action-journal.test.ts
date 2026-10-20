@@ -38,6 +38,19 @@ describe('AHP action journal', () => {
     expect(JSON.stringify(journal.replay(1, scopes))).not.toContain('denied')
   })
 
+  it('uses a replay barrier for connection-local history without broadcasting its payload', async () => {
+    const journal = await AhpActionJournal.create({ reserve: allocator() })
+    const listener = vi.fn()
+    journal.subscribe(listener)
+    const before = journal.currentSequence
+    const page = await journal.append({ channel, action }, 'private')
+    expect(listener).not.toHaveBeenCalled()
+    expect(journal.replay(before, scopes)).toBeUndefined()
+    const shared = await journal.append({ channel, action })
+    expect(journal.replay(page.serverSeq, scopes)).toEqual([shared])
+    expect(listener).toHaveBeenCalledExactlyOnceWith(shared)
+  })
+
   it('bounds retained bytes and events, and protects stored values from callers', async () => {
     const journal = await AhpActionJournal.create({ reserve: allocator(), maxEvents: 1 })
     const first = await journal.append({ channel, action })

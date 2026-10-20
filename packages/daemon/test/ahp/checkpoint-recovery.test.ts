@@ -49,13 +49,27 @@ async function fixture(warn?: (message: string) => void) {
 }
 
 describe('AHP checkpoint integration', () => {
-  it('journals and delivers a turn whose checkpoint exceeds the storage budget', async () => {
+  it('journals and delivers a turn too large to checkpoint', async () => {
     const warn = vi.fn()
     const { state, journal } = await fixture(warn)
     await state.add(binding)
     const event = { sessionId: 'physical', turnId: 'long', generation: 0, at: 1000 }
     await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
     await state.accept({ ...event, kind: 'text', text: 'x'.repeat(600 * 1024) })
+    await state.accept({ ...event, kind: 'finished', outcome: 'complete' })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('checkpoint skipped'))
+    expect(journal.replay(1, new Set([chat]))!.map((envelope) => envelope.action.type)).toContain('chat/turnComplete')
+    expect(state.summary(binding.sessionUri)?.status).toBe(SessionStatus.Idle)
+  })
+
+  it('journals and delivers a turn whose checkpoint save is refused', async () => {
+    const warn = vi.fn()
+    const { state, journal, checkpoints } = await fixture(warn)
+    await state.add(binding)
+    vi.spyOn(checkpoints, 'save').mockRejectedValue(new Error('AHP checkpoint exceeds storage budget'))
+    const event = { sessionId: 'physical', turnId: 'long', generation: 0, at: 1000 }
+    await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
+    await state.accept({ ...event, kind: 'text', text: 'World' })
     await state.accept({ ...event, kind: 'finished', outcome: 'complete' })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('storage budget'))
     expect(journal.replay(1, new Set([chat]))!.map((envelope) => envelope.action.type)).toContain('chat/turnComplete')
@@ -73,10 +87,11 @@ describe('AHP checkpoint integration', () => {
       turnsNextCursor: 'history:older'
     }
     await state.add(binding, initial)
-    await state.fetchTurns(chat, undefined, async () => ({ turns: [turn('older')] }))
+    const loaded = await state.fetchTurns(chat, undefined, async () => ({ turns: [turn('older')] }))
     expect((state.snapshot(chat) as ChatState).turns.map((turn) => turn.id)).toEqual(['first', 'second'])
     expect((state.snapshot(chat) as ChatState).turnsNextCursor).toBe('history:older')
-    expect(journal.replay(1, new Set([chat]))![0]!.action).toMatchObject({
+    expect(journal.replay(1, new Set([chat]))).toEqual([])
+    expect(loaded).toMatchObject({
       type: 'chat/turnsLoaded',
       turns: [{ id: 'older' }]
     })
