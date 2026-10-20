@@ -6,7 +6,7 @@ import { configPath, controlBaseUrl, isLoopbackHost, type DesktopConfig } from '
 import { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
-import { appBundlePath } from './self.js'
+import { appBundlePath, selfCommand } from './self.js'
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
 import { screencastTokenPath, waylandSession } from './stream/wayland-capture.js'
 
@@ -138,7 +138,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
           status: 'ok',
           detail: `${configPath(ctx.dir)} (clients: ${config.clients.map((client) => client.name).join(', ')})`
         }
-      : { name: 'config', status: 'fail', detail: 'no client token yet', fix: 'run: agentconnect-desktop setup' }
+      : { name: 'config', status: 'fail', detail: 'no client token yet', fix: `run: ${selfCommand()} setup` }
   )
   checks.push(sessionCheck())
   wakeDisplay()
@@ -148,7 +148,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
       name: 'cua-driver',
       status: 'fail',
       detail: `missing ${ctx.driverCommand}`,
-      fix: 'run: agentconnect-desktop setup'
+      fix: `run: ${selfCommand()} setup`
     })
   } else {
     const driver = new CuaDriver({ command: ctx.driverCommand, callTimeoutMs: config.driverCallTimeoutMs })
@@ -174,7 +174,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
         name: 'cua-driver',
         status: 'fail',
         detail: (error as Error).message.slice(0, 160),
-        fix: 'run: agentconnect-desktop setup'
+        fix: `run: ${selfCommand()} setup`
       })
     } finally {
       await driver.close()
@@ -237,11 +237,11 @@ function sessionCheck(): Check {
 }
 
 const permissionFix = (): string | undefined =>
-  process.platform === 'darwin' ? `grant ${hostApp()} the macOS permissions: agentconnect-desktop setup` : undefined
+  process.platform === 'darwin' ? `grant ${hostApp()} the macOS permissions: ${selfCommand()} setup` : undefined
 
 function macPermissionChecks(state: MacPermissions): Check[] {
   const app = hostApp()
-  const reopen = appBundlePath() ? 'then: agentconnect-desktop service restart' : 'then Cmd+Q and reopen'
+  const reopen = appBundlePath() ? `then: ${selfCommand()} service restart` : 'then Cmd+Q and reopen'
   return [
     state.accessibility
       ? { name: 'accessibility', status: 'ok', detail: `granted to ${app}` }
@@ -312,7 +312,7 @@ function linuxChecks(ctx: SetupContext): Check[] {
               helper === 'installed'
                 ? `${GNOME_HELPER} is installed but not loaded yet`
                 : `${GNOME_HELPER} extension missing: no pixel coordinates or safe input on GNOME Wayland`,
-            fix: helper === 'installed' ? 'log out and back in once' : 'run: agentconnect-desktop setup'
+            fix: helper === 'installed' ? 'log out and back in once' : `run: ${selfCommand()} setup`
           }
     )
   }
@@ -358,7 +358,7 @@ function ffmpegChecks(ctx: SetupContext, timeoutMs: number): Check[] {
         name: 'ffmpeg',
         status: 'warn',
         detail: 'not found: the /view page falls back to screenshots',
-        fix: 'run: agentconnect-desktop install-ffmpeg'
+        fix: `run: ${selfCommand()} install-ffmpeg`
       }
     ]
   }
@@ -370,7 +370,7 @@ function ffmpegChecks(ctx: SetupContext, timeoutMs: number): Check[] {
         name: 'screen capture',
         status: 'warn',
         detail: 'screen sharing not approved yet (Wayland portal): /view falls back to screenshots',
-        fix: 'run: agentconnect-desktop setup, then pick the screen and click Share'
+        fix: `run: ${selfCommand()} setup, then pick the screen and click Share`
       }
     ]
   }
@@ -397,7 +397,7 @@ function firewallCheck(config: DesktopConfig): Check {
   }
   const state = firewallState(process.execPath)
   if (!state) return { name: 'firewall', status: 'warn', detail: 'could not read Windows Firewall rules' }
-  const fix = 'run: agentconnect-desktop setup (asks for administrator approval once)'
+  const fix = `run: ${selfCommand()} setup (asks for administrator approval once)`
   if (state.block.length > 0) {
     return {
       name: 'firewall',
@@ -436,7 +436,7 @@ async function daemonCheck(config: DesktopConfig): Promise<Check> {
     status: running ? 'ok' : 'info',
     detail: running
       ? `running on port ${config.port}`
-      : `not running (start it with: agentconnect-desktop run; listens on ${config.host}:${config.port})`
+      : `not running (start it with: ${selfCommand()} run; listens on ${config.host}:${config.port})`
   }
 }
 
@@ -489,7 +489,7 @@ async function setupLinux(ctx: SetupContext): Promise<void> {
 
 async function setupMac(ctx: SetupContext): Promise<void> {
   if (overSsh()) {
-    ctx.log('macOS permissions cannot be granted over SSH: run `agentconnect-desktop setup` in Terminal on the Mac.')
+    ctx.log(`macOS permissions cannot be granted over SSH: run \`${selfCommand()} setup\` in Terminal on the Mac.`)
     return
   }
   const app = hostApp()
@@ -513,7 +513,7 @@ async function setupMac(ctx: SetupContext): Promise<void> {
       ctx.log(probe.ok ? 'ffmpeg screen capture works.' : `ffmpeg screen capture failed: ${probe.error}`)
     }
     if (!state.screenRecording || !state.accessibility) {
-      ctx.log(`After switching the permissions on, quit ${app} (Cmd+Q), reopen it and run: agentconnect-desktop doctor`)
+      ctx.log(`After switching the permissions on, quit ${app} (Cmd+Q), reopen it and run: ${selfCommand()} doctor`)
     }
   } finally {
     await driver.close()

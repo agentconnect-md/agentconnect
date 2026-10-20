@@ -29,7 +29,7 @@ import { ScreenStream } from './stream/screen-stream.js'
 import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
-import { appBundlePath, runSelf } from './self.js'
+import { appBundlePath, runSelf, selfCommand } from './self.js'
 import * as linuxService from './service-linux.js'
 import {
   installService,
@@ -52,9 +52,9 @@ import {
   type SetupContext
 } from './setup.js'
 
-const HELP = `agentconnect-desktop — prototype desktop daemon (Cua Driver + computer_* MCP tools)
+const help = (): string => `${selfCommand()} — prototype desktop daemon (Cua Driver + computer_* MCP tools)
 
-Usage: agentconnect-desktop <command> [options]
+Usage: ${selfCommand()} <command> [options]
 
 Commands:
   setup [--client NAME] [--host H] [--port P] [--no-service]
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     }
   })
   const [command, ...rest] = positionals
-  if (values.help || !command) return void console.log(HELP)
+  if (values.help || !command) return void console.log(help())
   const dir = dataDir()
   const overrides = (config: DesktopConfig): DesktopConfig => ({
     ...config,
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
       return void console.log(`autostart ${action}: ok`)
     }
     default:
-      throw new Error(`unknown command "${command}"\n\n${HELP}`)
+      throw new Error(`unknown command "${command}"\n\n${help()}`)
   }
 }
 
@@ -392,7 +392,7 @@ async function warnMissingMacPermissions(driver: CuaDriver): Promise<void> {
   log(
     `WARNING: macOS ${missing.join(' and ')} not granted to ${process.env.TERM_PROGRAM ?? 'the app running this daemon'}`
   )
-  log('  run `agentconnect-desktop setup` in Terminal on this Mac, then `doctor` to verify')
+  log(`  run \`${selfCommand()} setup\` in Terminal on this Mac, then \`doctor\` to verify`)
 }
 
 const controlFetch = async (config: DesktopConfig, path: string, timeoutMs: number): Promise<Response> =>
@@ -600,10 +600,10 @@ async function setup(dir: string, initial: DesktopConfig, clientName: string, wi
       : process.platform === 'linux' && linuxService.serviceStatus().loaded
   console.log(
     !ok
-      ? 'Fix the failed checks, then run: agentconnect-desktop doctor'
+      ? `Fix the failed checks, then run: ${selfCommand()} doctor`
       : withService && serviceRunning
-        ? 'The daemon runs as a background service: agentconnect-desktop service status | restart | stop'
-        : 'Start the daemon with: agentconnect-desktop run'
+        ? `The daemon runs as a background service: ${selfCommand()} service status | restart | stop`
+        : `Start the daemon with: ${selfCommand()} run`
   )
   if (!ok) process.exitCode = 1
 }
