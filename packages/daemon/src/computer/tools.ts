@@ -228,6 +228,7 @@ function channelError(error: unknown): ComputerChannelError | undefined {
 const CALL_TIMEOUT_MS = 90_000
 /** An idle session's desktop connections are closed after this long. */
 const IDLE_CLOSE_MS = 10 * 60_000
+const SWEEP_EVERY_MS = 60_000
 
 interface Link {
   connection: Promise<ComputerMcpConnection>
@@ -268,9 +269,14 @@ export class ComputerTools {
   private readonly now: () => number
   private readonly connect: (options: ComputerChannelOptions) => Promise<ComputerMcpConnection>
 
+  private readonly sweeper: ReturnType<typeof setInterval>
+
   constructor(private readonly deps: ComputerToolsDeps) {
     this.now = deps.now ?? Date.now
     this.connect = deps.connect ?? connectComputerMcp
+    // Idle connections close on a timer too, not only on the next computer call.
+    this.sweeper = setInterval(() => this.sweep(), SWEEP_EVERY_MS)
+    this.sweeper.unref?.()
   }
 
   /** Run one tool; undefined when `name` is not a computer tool. */
@@ -305,6 +311,7 @@ export class ComputerTools {
 
   /** Close every desktop connection; the daemon calls it on shutdown. */
   async close(): Promise<void> {
+    clearInterval(this.sweeper)
     const links = [...this.sessions.values()].flatMap((state) => [...state.links.values()])
     this.sessions.clear()
     await Promise.allSettled(links.map(async (link) => (await link.connection).close()))

@@ -31,6 +31,7 @@ type CallTool = (params: { name: string; arguments?: Record<string, unknown> }, 
 
 function setup(
   options: {
+    now?: () => number
     granted?: string[]
     lease?: ComputerLeaseAcquireResult
     callTool?: CallTool
@@ -65,7 +66,7 @@ function setup(
     computersFor: () => granted,
     orgFor: () => 'org_1',
     sessionIdFor: async () => 'out-1',
-    now: () => T0,
+    now: options.now ?? (() => T0),
     connect: async (opts) => {
       const computer = opts.target.computerId
       connects.push(computer)
@@ -313,6 +314,21 @@ describe('ComputerTools', () => {
     )
     const after = await tools.call(ctx(), 'computer_screenshot', {})
     expect(parse(after!.result)).toMatchObject({ error: 'computer_ambiguous' })
+  })
+
+  it('closes an idle connection on its timer, without another computer call', async () => {
+    vi.useFakeTimers()
+    try {
+      let now = T0
+      const { tools, closes } = setup({ now: () => now })
+      await tools.call(ctx(), 'computer_screenshot', {})
+      now += 11 * 60_000
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(closes).toEqual([C1])
+      await tools.close()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('is reached through executeTool and closes its connections on shutdown', async () => {
