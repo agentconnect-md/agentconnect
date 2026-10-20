@@ -20,7 +20,7 @@ async function start() {
   const computer = new Computer({ driver, config })
   const driverTools = exposedDriverTools(await driver.listTools())
   running = await startHttpServer({
-    host: '127.0.0.1',
+    host: config.host,
     port: 0,
     computer,
     authenticate: (header) => authenticate(config, header),
@@ -40,6 +40,11 @@ async function connect(url: string, token: string): Promise<Client> {
 }
 
 describe('desktop HTTP server', () => {
+  it('binds loopback with the default config', async () => {
+    const { url } = await start()
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+  })
+
   it('rejects MCP requests without a valid token', async () => {
     const { url } = await start()
     const response = await fetch(url, { method: 'POST', body: '{}', headers: { authorization: 'Bearer nope' } })

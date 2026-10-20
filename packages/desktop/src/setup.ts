@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { configPath, type DesktopConfig } from './config.js'
+import { configPath, isLoopbackHost, type DesktopConfig } from './config.js'
 import { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
@@ -183,7 +183,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
 
   checks.push(displayCheck(config))
   checks.push(...ffmpegChecks(ctx, captureTimeoutMs))
-  if (process.platform === 'win32') checks.push(firewallCheck())
+  if (process.platform === 'win32') checks.push(firewallCheck(config))
   if (process.platform === 'linux') checks.push(...linuxChecks(ctx))
   checks.push(await daemonCheck(config))
   return checks
@@ -391,7 +391,10 @@ function ffmpegChecks(ctx: SetupContext, timeoutMs: number): Check[] {
   ]
 }
 
-function firewallCheck(): Check {
+function firewallCheck(config: DesktopConfig): Check {
+  if (isLoopbackHost(config.host)) {
+    return { name: 'firewall', status: 'info', detail: `listening on ${config.host} only; no inbound rule needed` }
+  }
   const state = firewallState(process.execPath)
   if (!state) return { name: 'firewall', status: 'warn', detail: 'could not read Windows Firewall rules' }
   const fix = 'run: agentconnect-desktop setup (asks for administrator approval once)'
@@ -558,6 +561,10 @@ export function open(url: string): void {
 }
 
 function setupWindowsFirewall(ctx: SetupContext): void {
+  if (isLoopbackHost(ctx.config.host)) {
+    ctx.log(`Listening on ${ctx.config.host} only, so no Windows Firewall rule is needed.`)
+    return
+  }
   const program = process.execPath
   const state = firewallState(program)
   const uncovered = state?.activeProfiles.filter(

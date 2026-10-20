@@ -1,7 +1,7 @@
 # Installs the AgentConnect desktop daemon prototype for the current Windows user (no admin rights needed).
 param(
   [string]$Client = 'claude',
-  [string]$ListenHost = '0.0.0.0',
+  [string]$ListenHost = '127.0.0.1',
   [int]$Port = 7681,
   [switch]$Autostart
 )
@@ -18,7 +18,7 @@ Copy-Item -Force (Join-Path $PSScriptRoot 'agentconnect-desktop.mjs') $installDi
 Copy-Item -Force (Join-Path $PSScriptRoot 'README.md') $installDir -ErrorAction SilentlyContinue
 $script = Join-Path $installDir 'agentconnect-desktop.mjs'
 
-# setup downloads Cua Driver and ffmpeg, adds the firewall rule (one administrator prompt) and runs doctor.
+# setup downloads Cua Driver and ffmpeg, adds the firewall rule unless loopback-only (one administrator prompt), then runs doctor.
 & node $script setup --client $Client --host $ListenHost --port $Port
 if ($Autostart) { & node $script autostart enable }
 

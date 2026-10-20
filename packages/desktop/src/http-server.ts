@@ -3,10 +3,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type { Computer } from './computer.js'
+import { isWildcardHost } from './config.js'
 import { runSelf } from './self.js'
 import type { Viewer } from './viewer.js'
 
 export const CONTROL_HEADER = 'x-agentconnect-desktop'
+
+// IPv6 literals need brackets inside a URL.
+export const urlHost = (host: string): string => (host.includes(':') ? `[${host}]` : host)
 
 export interface HttpServerOptions {
   host: string
@@ -68,9 +72,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
   await once(http, 'listening')
   const address = http.address()
   if (!address || typeof address === 'string') throw new Error('desktop daemon failed to bind')
-  const shownHost = options.host === '0.0.0.0' || options.host === '::' ? '127.0.0.1' : options.host
+  const shownHost = isWildcardHost(options.host) ? '127.0.0.1' : options.host
   return {
-    url: `http://${shownHost}:${address.port}/mcp`,
+    url: `http://${urlHost(shownHost)}:${address.port}/mcp`,
     async close() {
       const closing = new Promise<void>((resolve, reject) => http.close((error) => (error ? reject(error) : resolve())))
       options.viewer?.close()

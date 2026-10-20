@@ -4,7 +4,15 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 
+export const DEFAULT_HOST = '127.0.0.1'
 export const DEFAULT_PORT = 7681
+
+// Whether a listen address only accepts connections from this machine.
+export const isLoopbackHost = (host: string): boolean =>
+  host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host)
+
+// Whether a listen address binds every interface, so clients need one of the machine's own addresses.
+export const isWildcardHost = (host: string): boolean => host === '0.0.0.0' || host === '::'
 
 const ClientEntry = z.object({
   name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
@@ -12,8 +20,8 @@ const ClientEntry = z.object({
 })
 
 export const DesktopConfig = z.object({
-  // Testing default: reachable from the LAN; set 127.0.0.1 to keep it local.
-  host: z.string().default('0.0.0.0'),
+  // Loopback unless the owner asks for another address (`--host 0.0.0.0`): traffic is plain HTTP behind a bearer token.
+  host: z.string().min(1).default(DEFAULT_HOST),
   port: z.number().int().min(1).max(65_535).default(DEFAULT_PORT),
   clients: z.array(ClientEntry).default([]),
   // Explicit driver binary; otherwise the installed pinned driver, then PATH.

@@ -33,7 +33,7 @@ COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER desktop
 WORKDIR /home/desktop
-ENV RESOLUTION=1600x900x24 PORT=7681 AGENTCONNECT_DESKTOP_HOME=/home/desktop/.agentconnect/desktop
+ENV RESOLUTION=1600x900x24 LISTEN_HOST=0.0.0.0 PORT=7681 AGENTCONNECT_DESKTOP_HOME=/home/desktop/.agentconnect/desktop
 # Home holds the daemon data dir (config, tokens, audit) and the Firefox profile.
 VOLUME /home/desktop
 EXPOSE 7681

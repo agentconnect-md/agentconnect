@@ -29,7 +29,8 @@ export DBUS_SESSION_BUS_ADDRESS
 xfce4-session > /tmp/xfce4-session.log 2>&1 &
 session=$!
 
-args=(run --port "${PORT:-7681}")
+# Published ports reach the container through its own interface, so the image asks for every interface explicitly.
+args=(run --host "${LISTEN_HOST:-0.0.0.0}" --port "${PORT:-7681}")
 [ -n "${RTC_ADDRESS:-}" ] && args+=(--rtc-address "$RTC_ADDRESS")
 [ -n "${RTC_PORTS:-}" ] && args+=(--rtc-ports "$RTC_PORTS")
 node /opt/agentconnect/agentconnect-desktop.mjs "${args[@]}" < /dev/null &

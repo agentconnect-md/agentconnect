@@ -8,10 +8,20 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { fileAuditSink } from './audit.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
 import { Computer } from './computer.js'
-import { authenticate, configPath, dataDir, issueClientToken, loadConfig, saveConfig, DesktopConfig } from './config.js'
+import {
+  authenticate,
+  configPath,
+  dataDir,
+  DesktopConfig,
+  isLoopbackHost,
+  isWildcardHost,
+  issueClientToken,
+  loadConfig,
+  saveConfig
+} from './config.js'
 import { CuaDriver, type DriverTool } from './driver/client.js'
 import { CUA_DRIVER_VERSION, installDriver, installedDriverPath, resolveDriverPath } from './driver/install.js'
-import { CONTROL_HEADER, startHttpServer } from './http-server.js'
+import { CONTROL_HEADER, startHttpServer, urlHost } from './http-server.js'
 import { canInstallFfmpeg, ffmpegAvailable, FFMPEG_VERSION, installFfmpeg, resolveFfmpegPath } from './stream/ffmpeg.js'
 import { RtcSessions } from './stream/rtc.js'
 import { ScreenStream } from './stream/screen-stream.js'
@@ -56,7 +66,8 @@ Commands:
   run [--host H] [--port P] [--expose-driver-tools] [--rtc-address A] [--rtc-ports MIN-MAX]
                                                foreground: serve MCP at http://H:P/mcp and the remote
                                                desktop viewer at http://H:P/view until Ctrl+C
-                                               (first run creates the token and downloads the driver)
+                                               (first run creates the token and downloads the driver);
+                                               H defaults to 127.0.0.1, --host 0.0.0.0 opens every interface
   stdio [--expose-driver-tools]                serve MCP over stdio (agent runs on this machine)
   token add NAME | token list | token remove NAME
   status | pause | resume                      owner controls for the running daemon (loopback)
@@ -187,7 +198,7 @@ const lanAddresses = (): string[] =>
     .map((net) => net!.address)
 
 function printClientSetup(config: DesktopConfig, client: string, token: string): void {
-  const host = config.host === '0.0.0.0' ? (lanAddresses()[0] ?? hostname()) : config.host
+  const host = urlHost(isWildcardHost(config.host) ? (lanAddresses()[0] ?? hostname()) : config.host)
   console.log(`\nClient "${client}" token (shown once, stored only as a hash):\n  ${token}\n`)
   console.log('Register with Claude Code:')
   console.log(
@@ -195,9 +206,11 @@ function printClientSetup(config: DesktopConfig, client: string, token: string):
   )
   console.log(`Remote desktop in a browser (the token stays in the URL fragment, never sent to the server):`)
   console.log(`  http://${host}:${config.port}/view#token=${token}\n`)
-  if (config.host === '0.0.0.0' || config.host === '::') {
+  if (isLoopbackHost(config.host)) {
+    console.log('Reachable from this machine only; use --host 0.0.0.0 (trusted networks) or an SSH tunnel for others.')
+  } else {
     console.log(
-      'The daemon listens on all interfaces over plain HTTP (testing only). Use --host 127.0.0.1 to keep it local.'
+      `The daemon listens on ${config.host} over plain HTTP and the token is its only protection (trusted networks only).`
     )
   }
 }
@@ -338,12 +351,14 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     log,
     viewer: buildViewer(dir, config, computer)
   })
-  const urls = config.host === '0.0.0.0' ? lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`) : [server.url]
+  const urls = isWildcardHost(config.host)
+    ? [server.url, ...lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`)]
+    : [server.url]
   log(`MCP endpoint ${urls.join(' , ')} (clients: ${config.clients.map((client) => client.name).join(', ')})`)
   log(
     `Remote desktop viewer ${urls.map((url) => url.replace(/\/mcp$/, '/view')).join(' , ')} (sign in with a client token)`
   )
-  if (config.host !== '127.0.0.1' && config.host !== '::1') {
+  if (!isLoopbackHost(config.host)) {
     log(
       `WARNING: listening on ${config.host} over plain HTTP; anyone with a token on this network can control this desktop`
     )
