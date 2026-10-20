@@ -276,7 +276,8 @@ Follow the "add a daemon in the console, run the generated command" flow and dae
    variable or a secret file (§14.5).
 3. The desktop daemon opens an outbound WebSocket with that key (the same `auth` frame and close codes as the daemon,
    see [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md)) and reports capabilities and `doctor` results.
-4. Revocation: deleting the Computer or revoking the key disconnects the desktop daemon at once, stops all input, and closes the viewer.
+4. Revocation: deleting the Computer or revoking the key disconnects the desktop daemon at once, stops all input, and
+   closes the viewer. The bound when the CP connection is lost is in §8.2.
 
 API keys gain a `computer` principal type, usable only on the Computer channel; it can neither run agents nor reach
 other resources ([daemon-api-key-auth.md](daemon-api-key-auth.md)). The prototype's local token (sha256 stored, shown
@@ -425,7 +426,11 @@ Whatever the policy, the desktop daemon refuses locally:
 | `computer_wait`                         | `{ ms }` (≤ 10000)                           | no    | Waits, then screenshots                                                   |
 | `computer_acquire` / `computer_release` | `{ computer? }` / `{}`                       | —     | Explicit lease control                                                    |
 
-Without `computer`, the only available Computer is used (the prototype has one per daemon). Input tools wait
+**Target selection [design]**: every tool except `computer_list` accepts an optional `computer` id. The session's
+target is resolved in order: the explicit `computer` argument; the Computer whose lease the session holds (set by
+`computer_acquire` or the first input); the only Computer the agent is granted. When none of these yields exactly one
+Computer, the call fails with `computer_ambiguous` listing the candidates, before any input is sent. The data plane
+forwards to the resolved Computer (the prototype has one per daemon). Input tools wait
 `actionSettleMs` after acting and attach a screenshot. The draft's `display` / `window` / `region` / `maxDimension`
 screenshot arguments are **dropped**: a fixed screenshot size per daemon is what keeps the driver's coordinate mapping
 consistent; window screenshots come from `cua_get_window_state` (§5.5). Multiple displays: §17.
@@ -581,7 +586,12 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
   the length of `computer_type` text and no screenshots [validated]. The release adds the agent, session, target window,
   approval outcome, and screenshot reference, reports to the Control Plane, and lets the owner query per Computer.
-- **Revocation**: deleting the Computer, revoking the key, or removing an agent's grant takes effect immediately and disconnects viewers.
+- **Revocation**: deleting the Computer, revoking the key, or removing an agent's grant takes effect immediately while
+  the desktop daemon is connected to the Control Plane, and disconnects viewers. Every tool and viewer channel carries
+  a short-lived credential (minutes) that the desktop daemon verifies locally and that only the Control Plane renews.
+  When the CP WebSocket is lost, the desktop daemon accepts no new channels, keeps existing ones only until their
+  credentials expire, and then stops input, screenshots, and viewers; so the worst-case revocation delay is one
+  credential lifetime, in line with the authority lifetimes in [high-availability.md](high-availability.md).
 
 ## 9. Screenshot storage [design]
 
@@ -682,7 +692,7 @@ and publishing for the container image.
 - Viewer: first-frame time, loss, and end-to-end latency on throttled / high-latency links; takeover release after the
   browser disappears; container viewers behind NAT with and without TURN.
 - End to end: an agent in microsandbox operates a Computer on another machine through the relay; human input
-  pre-empts; emergency stop; key revocation takes effect immediately; a managed container Computer is allocated, used,
+  pre-empts; emergency stop; key revocation takes effect immediately, and within one credential lifetime after a CP disconnect; a managed container Computer is allocated, used,
   and wiped.
 - Evaluation: computer-use cases in `evals/cases`; how to adopt cua-bench (MIT) [unverified].
 - Security: prompt injection from the screen; masking effectiveness.
