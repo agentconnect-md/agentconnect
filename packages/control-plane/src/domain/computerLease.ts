@@ -238,12 +238,14 @@ export function decideObserve(
   if (current.spentAt !== null) return readSpent(current, computer, clock)
   if (report.status === 'paused') return endLease(current, 'paused', clock)
   if (report.status === 'human_in_control') return endLease(current, 'human_takeover', clock)
-  const ended = leaseEnded(current, computer, clock)
-  if (ended) return endLease(current, ended, clock)
+  // Input the holder made while the lease still stood counts before the idle check, so a heartbeat cannot expire it.
   const used = report.lease?.holder === current.sessionId ? clock.now - report.lease.idleMs : undefined
-  if (used === undefined || used <= current.lastUsedAt) return { next: undefined, result: { lease: current } }
-  const touched = { ...current, lastUsedAt: used }
-  return { next: touched, result: { lease: touched } }
+  const idleAt = computer ? current.lastUsedAt + computer.policy.leaseIdleSeconds * 1000 : 0
+  const touched =
+    used !== undefined && used > current.lastUsedAt && used < idleAt ? { ...current, lastUsedAt: used } : current
+  const ended = leaseEnded(touched, computer, clock)
+  if (ended) return endLease(current, ended, clock)
+  return { next: touched === current ? undefined : touched, result: { lease: touched } }
 }
 
 /** A read: the lease while it stands, and a lapsed row to clear. */

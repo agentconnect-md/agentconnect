@@ -286,6 +286,28 @@ describe('decideObserve', () => {
     ).toBeUndefined()
   })
 
+  it('counts input reported in the heartbeat that reaches the idle deadline', () => {
+    const lease = held({ renewedAt: T0 + 110_000 })
+    const step = decideObserve(
+      computer(),
+      lease,
+      { status: 'busy', lease: { holder: 's1', idleMs: 2_000 } },
+      clock(T0 + 120_000)
+    )
+    expect(step).toMatchObject({ next: { lastUsedAt: T0 + 118_000 }, result: { lease: { lastUsedAt: T0 + 118_000 } } })
+  })
+
+  it('does not revive a lease with input made after it already ran out idle', () => {
+    const lease = held({ renewedAt: T0 + 120_000 })
+    const step = decideObserve(
+      computer(),
+      lease,
+      { status: 'busy', lease: { holder: 's1', idleMs: 0 } },
+      clock(T0 + 125_000)
+    )
+    expect(step.result).toMatchObject({ lease: null, ended: { reason: 'idle' } })
+  })
+
   it('clears a lease that ran out', () => {
     const step = decideObserve(computer(), held({ renewedAt: T0 + 200_000 }), { status: 'online' }, clock(T0 + 121_000))
     expect(step.result).toMatchObject({ lease: null, ended: { reason: 'idle' } })
