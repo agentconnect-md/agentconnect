@@ -224,7 +224,7 @@ function endLease(current: ControlLease, reason: LeaseEndReason, clock: LeaseClo
 export interface DesktopReport {
   status: ComputerStatus
   /** The desktop's local lease: its holder and how long since its last input. */
-  lease?: { holder: string; idleMs: number }
+  lease?: { holder: string; idleMs: number; heldMs?: number }
 }
 
 /** A Computer heartbeat: a pause or takeover pre-empts the lease, real use refreshes its idle clock, a lapsed lease is cleared. */
@@ -238,11 +238,13 @@ export function decideObserve(
   if (current.spentAt !== null) return readSpent(current, computer, clock)
   if (report.status === 'paused') return endLease(current, 'paused', clock)
   if (report.status === 'human_in_control') return endLease(current, 'human_takeover', clock)
-  // Input the holder made while the lease still stood counts before the idle check, so a heartbeat cannot expire it.
-  const used = report.lease?.holder === current.sessionId ? clock.now - report.lease.idleMs : undefined
+  // A desktop lease taken while this one stood never idled out locally, so its last input carries this lease's use.
+  const local = report.lease?.holder === current.sessionId ? report.lease : undefined
+  const used = local ? clock.now - local.idleMs : undefined
+  const since = local?.heldMs !== undefined ? clock.now - local.heldMs : used
   const idleAt = computer ? current.lastUsedAt + computer.policy.leaseIdleSeconds * 1000 : 0
-  const touched =
-    used !== undefined && used > current.lastUsedAt && used < idleAt ? { ...current, lastUsedAt: used } : current
+  const live = used !== undefined && since !== undefined && used > current.lastUsedAt && since < idleAt
+  const touched = live ? { ...current, lastUsedAt: used } : current
   const ended = leaseEnded(touched, computer, clock)
   if (ended) return endLease(current, ended, clock)
   return { next: touched === current ? undefined : touched, result: { lease: touched } }

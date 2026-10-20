@@ -158,11 +158,16 @@ export class Computer {
     this.notify()
   }
 
-  // The local lease's holder and time since its last input, for the Computer channel heartbeat.
-  leaseActivity(): { holder: string; idleMs: number } | undefined {
+  // The local lease's holder, time since its last input, and time held, for the Computer channel heartbeat.
+  leaseActivity(): { holder: string; idleMs: number; heldMs: number } | undefined {
     this.expireLease()
     if (!this.lease) return undefined
-    return { holder: this.lease.holder, idleMs: Math.max(0, this.now() - this.lease.lastUsedAt) }
+    const now = this.now()
+    return {
+      holder: this.lease.holder,
+      idleMs: Math.max(0, now - this.lease.lastUsedAt),
+      heldMs: Math.max(0, now - this.lease.acquiredAt)
+    }
   }
 
   // The status the Computer channel heartbeat reports.

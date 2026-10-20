@@ -458,7 +458,9 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   renews the lease in place.
   `computer-lease/release` gives it up.
 - **Expiry**: a lease ends at the first of three deadlines. `leaseIdleSeconds` runs from its last use: an acquire by
-  its session, or the `lease.idleMs` that the desktop daemon reports in each heartbeat for its local lease.
+  its session, or the last input the desktop daemon reports in each heartbeat for its local lease (`lease.idleMs`). The
+  report also carries `lease.heldMs`; a local lease taken while the CP lease stood never idled out locally, so its last
+  input counts even when it falls after the CP's previous idle deadline.
   `leaseMaxSeconds` runs from the acquisition and bounds the session, not one lease: a lease that reaches it stays as a
   spent row that holds nothing, and its session's acquires get `denied` until its turn ends (or its daemon is lost, or
   another `leaseMaxSeconds` passes). A release does not reset it. Holder liveness is three heartbeats (`HEARTBEAT_SEC × MISSED_BEATS`)

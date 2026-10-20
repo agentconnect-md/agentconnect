@@ -101,12 +101,14 @@ describe('Computer', () => {
       expect(computer.liveStatus()).toBe('busy')
     })
 
-    it("reports the local lease's holder and idle time", async () => {
+    it("reports the local lease's holder, idle time and time held", async () => {
       const { computer, advance } = setup({ actionScreenshot: false })
       expect(computer.leaseActivity()).toBeUndefined()
       await computer.type('sess-1', { text: 'hi' })
+      advance(1000)
+      await computer.type('sess-1', { text: 'again' })
       advance(1500)
-      expect(computer.leaseActivity()).toEqual({ holder: 'sess-1', idleMs: 1500 })
+      expect(computer.leaseActivity()).toEqual({ holder: 'sess-1', idleMs: 1500, heldMs: 2500 })
     })
   })
 

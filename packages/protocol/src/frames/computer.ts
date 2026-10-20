@@ -177,9 +177,13 @@ export const ComputerHeartbeat = z
     driverVersion: z.string().trim().min(1).max(64).optional(),
     capabilities: ComputerCapabilitiesSchema.optional(),
     doctor: ComputerDoctorReport.optional(),
-    // The local lease and how long since its last input, so the CP's idle clock follows real use.
+    // The local lease, how long since its last input, and how long it has been held without idling out.
     lease: z
-      .object({ holder: z.string().min(1).max(256), idleMs: z.number().int().min(0) })
+      .object({
+        holder: z.string().min(1).max(256),
+        idleMs: z.number().int().min(0),
+        heldMs: z.number().int().min(0).optional()
+      })
       .strict()
       .optional()
   })
