@@ -1,5 +1,5 @@
 // The Control Plane registration: the Computer key and where to dial (computer-use.md §3.6); a 0600 file until keychains land.
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { COMPUTER_REGISTER_PUBLIC_PATH, COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol/computer'
@@ -35,11 +35,19 @@ export function loadRegistration(dir = dataDir()): Registration | undefined {
 
 export function saveRegistration(registration: Registration, dir = dataDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // The mode argument skips a directory that already exists, so tighten it explicitly.
+  if (process.platform !== 'win32') chmodSync(dir, 0o700)
   const path = registrationPath(dir)
   const tmp = `${path}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(Registration.parse(registration), null, 2)}\n`, { mode: 0o600 })
-  // The mode argument only applies to a new file; an old tmp left behind keeps its own mode otherwise.
-  chmodSync(tmp, 0o600)
+  const body = `${JSON.stringify(Registration.parse(registration), null, 2)}\n`
+  // A leftover tmp could carry a wider mode; recreate it exclusively so the key never lands outside 0600.
+  rmSync(tmp, { force: true })
+  const fd = openSync(tmp, 'wx', 0o600)
+  try {
+    writeFileSync(fd, body)
+  } finally {
+    closeSync(fd)
+  }
   renameSync(tmp, path)
 }
 

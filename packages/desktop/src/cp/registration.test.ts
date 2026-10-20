@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -97,5 +97,27 @@ describe('registration', () => {
     expect(after.apiKey).not.toBe('secret')
     expect(after.revokedReason).toBe('revoked by the Control Plane')
     expect(statSync(registrationPath(dir)).mode & 0o777).toBe(0o600)
+  })
+
+  it.skipIf(process.platform === 'win32')('never writes the key into a wider leftover tmp file or data dir', () => {
+    const dir = tempDir()
+    chmodSync(dir, 0o755)
+    writeFileSync(`${registrationPath(dir)}.tmp`, 'stale', { mode: 0o644 })
+    saveRegistration(
+      {
+        cpUrl: 'https://cp.example.com',
+        channelUrl: 'wss://cp.example.com/v1/computers/ws',
+        computerId: '00000000-0000-4000-8000-000000000001',
+        orgId: 'org_1',
+        apiKeyId: 'key_1',
+        apiKey: 'secret',
+        registeredAt: new Date().toISOString()
+      },
+      dir
+    )
+    expect(statSync(registrationPath(dir)).mode & 0o777).toBe(0o600)
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(existsSync(`${registrationPath(dir)}.tmp`)).toBe(false)
+    expect(loadRegistration(dir)?.apiKey).toBe('secret')
   })
 })
