@@ -67,6 +67,7 @@ describe('computer channel frames', () => {
       'computer/revoke',
       'computer/lease',
       'computer/relays',
+      'computer/stop',
       'computer/audit',
       'computer/audit/ok',
       'computer/screenshot/put',
@@ -96,6 +97,8 @@ describe('computer channel frames', () => {
       buildComputerCpFrame('computer/relays', {
         relays: [{ relayId: '00000000-0000-4000-8000-0000000000cc', url: 'wss://relay-0.example.com/rd/ws' }]
       }),
+      buildComputerCpFrame('computer/stop', { stop: { at: '2026-10-20T00:00:00.000Z' } }),
+      buildComputerCpFrame('computer/stop', { stop: null }),
       buildComputerCpFrame('computer/heartbeat', { status: 'busy', lease: { holder: 'sess-1', idleMs: 1200 } }),
       buildComputerCpFrame('computer/auth/ok', { ...authOk, features: [COMPUTER_AUDIT_FEATURE] }),
       buildComputerCpFrame('computer/auth/ok', {

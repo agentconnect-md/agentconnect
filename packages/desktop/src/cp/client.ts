@@ -23,7 +23,8 @@ import {
   type ComputerPolicy,
   type ComputerRelayEntry,
   type ComputerScreenshotCommit,
-  type ComputerScreenshotPut
+  type ComputerScreenshotPut,
+  type ComputerStopPush
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './authority.js'
 import type { AuditSendResult } from './audit-report.js'
@@ -50,6 +51,8 @@ export interface ComputerCpClientDeps {
   onLease?: (lease: ComputerControlLease | null) => void
   // The relays to dial out to for the data plane (computer-use.md §3.7).
   onRelays?: (relays: ComputerRelayEntry[]) => void
+  // The console stopped this Computer, or lifted its Stop with null (computer-use.md §6).
+  onStop?: (stop: ComputerStopPush['stop']) => void
   // The CP revoked or refused this key: persist it and stop for good.
   onRevoked: (reason: string) => void
   onReady?: (ok: ComputerAuthOk) => void
@@ -249,6 +252,9 @@ export class ComputerCpClient {
         return
       case 'computer/relays':
         this.deps.onRelays?.(frame.payload.relays)
+        return
+      case 'computer/stop':
+        this.deps.onStop?.(frame.payload.stop)
         return
       case 'computer/revoke':
         return this.revoked(`${frame.payload.reason} by the Control Plane`)

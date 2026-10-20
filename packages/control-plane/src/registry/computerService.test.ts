@@ -56,6 +56,8 @@ function computer(over: Partial<ComputerRecord> = {}): ComputerRecord {
     sharedWith: ['u1'],
     lastSeenAt: null,
     revokedAt: null,
+    stoppedAt: null,
+    stoppedByUserId: null,
     createdAt: new Date(NOW),
     updatedAt: new Date(NOW),
     ...over
@@ -131,5 +133,55 @@ describe('ComputerService.register', () => {
     const issued = await svc.createRegistration({ orgId: OrgId('org_1'), createdByUserId: 'u1', ttlMinutes: 10_000 })
     expect(issued.registration.expiresAt.getTime()).toBe(NOW + 24 * 60 * 60_000)
     expect(codec.parse(issued.token)).not.toBeNull()
+  })
+})
+
+describe('ComputerService.stop / resume', () => {
+  function stoppable(result: ComputerRecord | null) {
+    const setStop = vi.fn(async () => result)
+    const apiKeys = {} as unknown as ApiKeyRepo
+    const computers = { setStop } as unknown as ComputerRepo
+    const audit = { append: vi.fn(async () => ({})) } as unknown as AuditRepo
+    const channels = {
+      pushStop: vi.fn(),
+      pushPolicy: vi.fn(),
+      revoke: vi.fn(),
+      revokeOwner: vi.fn(),
+      leaseChanged: vi.fn()
+    }
+    const leases = { current: vi.fn(async () => null), preempt: vi.fn(async () => true) }
+    const svc = new ComputerService(codec, computers, apiKeys, audit, clock, { channels, leases })
+    return { svc, setStop, channels, leases }
+  }
+
+  it('records the stop, ends the lease and tells the desktop', async () => {
+    const { svc, setStop, channels, leases } = stoppable(computer({ stoppedAt: new Date(NOW), stoppedByUserId: 'u1' }))
+    const stopped = await svc.stop(OrgId('org_1'), CID, 'u1')
+    expect(stopped?.stoppedAt).toEqual(new Date(NOW))
+    expect(setStop).toHaveBeenCalledWith('org_1', CID, { at: new Date(NOW), byUserId: 'u1' })
+    expect(leases.preempt).toHaveBeenCalledWith('org_1', CID, 'paused')
+    expect(channels.pushStop).toHaveBeenCalledWith(CID, { at: new Date(NOW).toISOString() })
+  })
+
+  it('clears the stop on resume and tells the desktop', async () => {
+    const { svc, setStop, channels } = stoppable(computer())
+    expect(await svc.resume(OrgId('org_1'), CID, 'u1')).not.toBeNull()
+    expect(setStop).toHaveBeenCalledWith('org_1', CID, null)
+    expect(channels.pushStop).toHaveBeenCalledWith(CID, null)
+  })
+
+  it('does nothing for a revoked computer', async () => {
+    const { svc, channels, leases } = stoppable(null)
+    expect(await svc.stop(OrgId('org_1'), CID, 'u1')).toBeNull()
+    expect(leases.preempt).not.toHaveBeenCalled()
+    expect(channels.pushStop).not.toHaveBeenCalled()
+  })
+
+  it('presents a stopped live computer as paused', () => {
+    const { svc } = stoppable(null)
+    const live = { status: 'online' as const, lastSeenAt: new Date(NOW) }
+    expect(svc.presentedStatus(live)).toBe('online')
+    expect(svc.presentedStatus({ ...live, stoppedAt: new Date(NOW) })).toBe('paused')
+    expect(svc.presentedStatus({ ...live, status: 'offline', stoppedAt: new Date(NOW) })).toBe('offline')
   })
 })

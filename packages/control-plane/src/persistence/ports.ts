@@ -589,6 +589,9 @@ export interface ComputerRecord extends Shareable {
   policy: ComputerPolicy
   lastSeenAt: Date | null
   revokedAt: Date | null
+  /** A console Stop that stands until someone resumes the Computer there (computer-use.md §6). */
+  stoppedAt: Date | null
+  stoppedByUserId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -657,6 +660,14 @@ export interface ComputerRepo {
   /** Internal read for the Computer channel's key verification, where the org comes from the key row. */
   getUnscoped(id: ComputerId): Promise<ComputerRecord | null>
   list(orgId: OrgId, viewer?: ViewCtx): Promise<ComputerRecord[]>
+  /** The registration a member minted, for the console to see when its desktop daemon spent it. */
+  getRegistration(orgId: OrgId, id: string): Promise<ComputerRegistrationRecord | null>
+  /** Set or clear the console Stop; null when the Computer is missing or revoked. */
+  setStop(
+    orgId: OrgId,
+    id: ComputerId,
+    stop: { at: Date; byUserId: string | null } | null
+  ): Promise<ComputerRecord | null>
   /** Replace the policy; null when the Computer is missing or revoked. */
   setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord | null>
   setSharing(

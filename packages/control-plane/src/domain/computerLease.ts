@@ -28,6 +28,8 @@ export interface LeaseComputer {
   status: ComputerStatus
   lastSeenAt: Date | null
   policy: ComputerPolicy
+  /** A console Stop: no lease stands or is granted until someone resumes the Computer (§6). */
+  stoppedAt?: Date | null
 }
 
 export interface LeaseClock {
@@ -93,6 +95,7 @@ export function leaseEnded(
   clock: LeaseClock
 ): LeaseEndReason | undefined {
   if (!computer || computer.status === 'revoked') return 'revoked'
+  if (computer.stoppedAt) return 'paused'
   // A policy change that takes the holder's grant or input away ends its lease.
   if (!computer.policy.allowedAgents.includes(lease.agentId) || computer.policy.agentMode !== 'control') return 'policy'
   const deadline = leaseDeadline(lease, computer.policy, clock.holderTtlMs)
@@ -138,6 +141,7 @@ export function decideAcquire(
   if (!computer.policy.allowedAgents.includes(req.agentId))
     return refuse('denied', 'this agent is not granted this computer')
   if (computer.policy.agentMode !== 'control') return refuse('denied', 'agents may only view this computer')
+  if (computer.stoppedAt) return refuse('human_in_control', 'this computer was stopped from the console')
   const status = presentComputerStatus(computer, clock.now, clock.staleAfterMs)
   if (status === 'offline') return refuse('unavailable', 'this computer is offline')
   if (status === 'paused') return refuse('human_in_control', 'the owner paused this computer')

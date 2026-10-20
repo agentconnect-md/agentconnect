@@ -59,6 +59,15 @@ function held(over: Partial<ControlLease> = {}): ControlLease {
 }
 
 describe('decideAcquire', () => {
+  it('refuses while a console Stop stands, and a read ends the lease it finds', () => {
+    const stopped = computer({ stoppedAt: new Date(T0) })
+    expect(decideAcquire(CID, 'org_1', stopped, null, req('s1'), clock()).result).toMatchObject({
+      granted: false,
+      code: 'human_in_control'
+    })
+    expect(decideRead(stopped, held(), clock()).next).toBeNull()
+  })
+
   it('grants a free Computer to a granted agent and stamps every clock', () => {
     const step = decideAcquire(CID, 'org_1', computer(), null, req('s1'), clock())
     expect(step.result).toMatchObject({ granted: true, fresh: true })

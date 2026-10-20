@@ -14,6 +14,7 @@ import NativeIntegrationDialog from './modals/NativeIntegrationDialog'
 import type { NativeDialogReport } from './modals/native-dialog-report'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
+import AddComputerModal from './modals/AddComputerModal'
 import AddIntegrationModal, {
   AddIntegrationForOrgModal,
   type FeishuRegion,
@@ -41,6 +42,7 @@ export type ModalKind =
   | 'nativeIntegration'
   | 'agent'
   | 'daemon'
+  | 'computer'
   | 'integration'
   | 'deleteIntegration'
   | 'deleteHook'
@@ -176,6 +178,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <DeleteGroupModal group={open.target as MemberSetRow} onClose={close} />
             )}
             {open.kind === 'agent' && <AddAgentModal onClose={close} />}
+            {open.kind === 'computer' && <AddComputerModal onClose={close} />}
             {/* Opened from an agent's "Add daemon" affordance: once the daemon connects,
                 Continue chains back into that agent's edit dialog with the fresh daemon
                 selected in the placement picker. */}

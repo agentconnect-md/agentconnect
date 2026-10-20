@@ -297,6 +297,7 @@ returns this URL as `channelUrl`.
 | `computer/credential` | C→D EVT   | a renewed channel key                                                                                  |
 | `computer/policy`     | C→D EVT   | the owner changed the policy                                                                           |
 | `computer/revoke`     | C→D EVT   | the Computer was revoked or deleted, or its owner left the organization; the CP then closes with 4401  |
+| `computer/stop`       | C→D EVT   | a console Stop (its time) or `null` once resumed; told again while the desktop does not show the Stop  |
 
 The close codes follow the daemon. A refused key gets an `AUTH_FAILED` reply and close `4401`, and the desktop treats
 that reply, or a `computer/revoke`, as a revoke: it stops redialing, forgets the key and keeps a revoked marker. The
@@ -661,6 +662,12 @@ says this, and how to read each error, in the standing instructions of every ses
   (over the loopback `/control`). While paused, input returns `human_in_control` and screenshots continue; `r` /
   `resume` resumes. The release adds a local global hotkey, a tray / menu bar Stop, and a console Stop; any of them
   revokes the lease and enters `paused` until the owner resumes [design].
+  **[implemented]** The console Stop: `POST /orgs/:orgId/computers/:id/stop` (anyone who may revoke the Computer) sets
+  `stoppedAt` on the Computer, ends its lease, and refuses every acquire with `human_in_control` until
+  `POST …/resume` (only the policy's editor, the registrant of a self-hosted Computer) clears it. The CP tells the
+  desktop with `computer/stop` after auth, on change, and on any heartbeat that does not show the Stop, so a Stop made
+  on another replica or lost to a restart still lands; the desktop pauses only while online or busy and resumes only a
+  pause the Stop itself caused. A stopped live Computer reads as `paused`.
 - **Fail-safe**: a remote key that lands in the daemon's own console window is handled as a console key; since those
   keys can only pause or quit, such a stray key only makes the system safer. The release's local UI must keep this
   property: any local control an agent can reach may only tighten, never loosen, permissions.
@@ -830,7 +837,18 @@ and every `computer/policy`.
   fixes, recent activity, audit.
 - Computer detail: policy editing, an **embedded viewer** (watch / take over), pause and stop, revoke. Viewer media
   still flows between the browser and the desktop daemon, directly or through the relay, never through the Control Plane.
-- Agent settings: enable computer use and pick Computers. Session page: the current lease and an action timeline with screenshots
+- Agent settings: enable computer use and pick Computers.
+- **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
+  owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
+  `agentconnect desktop setup --register <token> --cp-url <exchange URL>` (through `npx @agentconnect.md/cli` until the
+  one-line installer of §14.4 lands) quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
+  only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
+  fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
+  agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
+  retention, driver tools; read-only for anyone but the owner), and, for the owner, the audit as recent activity. An
+  agent's Tools tab carries the `computerUse` setting: the switch, the picked Computers, whether each one's policy
+  grants the agent, and a Grant button for that Computer's owner. The embedded viewer is still to do.
+- Session page: the current lease and an action timeline with screenshots
   (**[implemented]**: a computer tool row shows the screenshots its result stored, §9).
 
 ## 11. Licenses

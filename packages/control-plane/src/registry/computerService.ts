@@ -69,7 +69,7 @@ export class ComputerService {
   ) {}
 
   /** The status to show: a live one the channel stopped refreshing has gone offline. */
-  presentedStatus(c: Pick<ComputerRecord, 'status' | 'lastSeenAt'>): ComputerStatus {
+  presentedStatus(c: Pick<ComputerRecord, 'status' | 'lastSeenAt'> & { stoppedAt?: Date | null }): ComputerStatus {
     return presentComputerStatus(c, this.clock.now(), this.opts.staleAfterMs ?? COMPUTER_STALE_AFTER_MS)
   }
 
@@ -162,6 +162,27 @@ export class ComputerService {
       allowedAgents: policy.allowedAgents,
       agentMode: policy.agentMode
     })
+    return computer
+  }
+
+  /** The console Stop (§6): ends the lease and holds the desktop paused until `resume`; null when revoked or missing. */
+  async stop(orgId: OrgId, id: ComputerId, actorUserId?: string): Promise<ComputerRecord | null> {
+    const at = new Date(this.clock.now())
+    const computer = await this.computers.setStop(orgId, id, { at, byUserId: actorUserId ?? null })
+    if (!computer) return null
+    // A failure here leaves the lease to the next read, which ends it on the stop too.
+    await this.opts.leases?.preempt(orgId, id, 'paused').catch(() => false)
+    this.opts.channels?.pushStop(id, { at: (computer.stoppedAt ?? at).toISOString() })
+    this.record(orgId, actorUserId, 'stop', { computerId: id })
+    return computer
+  }
+
+  /** Lift a console Stop; the desktop resumes only a pause the console caused. */
+  async resume(orgId: OrgId, id: ComputerId, actorUserId?: string): Promise<ComputerRecord | null> {
+    const computer = await this.computers.setStop(orgId, id, null)
+    if (!computer) return null
+    this.opts.channels?.pushStop(id, null)
+    this.record(orgId, actorUserId, 'resume', { computerId: id })
     return computer
   }
 
