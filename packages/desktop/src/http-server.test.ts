@@ -1,3 +1,4 @@
+import { networkInterfaces } from 'node:os'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Computer } from './computer.js'
@@ -13,9 +14,9 @@ afterEach(async () => {
   running = undefined
 })
 
-async function start() {
+async function start(host?: string) {
   const driver = new FakeDriver()
-  const issued = issueClientToken(testConfig({ actionScreenshot: false }), 'claude')
+  const issued = issueClientToken(testConfig({ actionScreenshot: false, ...(host ? { host } : {}) }), 'claude')
   const config = issued.config
   const computer = new Computer({ driver, config })
   const driverTools = exposedDriverTools(await driver.listTools())
@@ -43,6 +44,27 @@ describe('desktop HTTP server', () => {
   it('binds loopback with the default config', async () => {
     const { url } = await start()
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+    expect(running!.address.address).toBe('127.0.0.1')
+  })
+
+  const lanIp = Object.values(networkInterfaces())
+    .flat()
+    .find((entry) => entry?.family === 'IPv4' && !entry.internal)?.address
+  it.skipIf(!lanIp)('keeps owner controls on loopback when listening on one specific address', async () => {
+    const { computer } = await start(lanIp)
+    const port = running!.address.port
+    const response = await fetch(`http://127.0.0.1:${port}/control/pause`, {
+      method: 'POST',
+      headers: { [CONTROL_HEADER]: '1' }
+    })
+    expect(response.status).toBe(200)
+    expect(computer.info().status).toBe('paused')
+    expect((await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' })).status).toBe(404)
+  })
+
+  it('binds every interface only when the host asks for it', async () => {
+    await start('0.0.0.0')
+    expect(running!.address.address).toBe('0.0.0.0')
   })
 
   it('rejects MCP requests without a valid token', async () => {

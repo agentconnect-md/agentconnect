@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { configPath, isLoopbackHost, type DesktopConfig } from './config.js'
+import { configPath, controlBaseUrl, isLoopbackHost, type DesktopConfig } from './config.js'
 import { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
@@ -428,7 +428,7 @@ function firewallCheck(config: DesktopConfig): Check {
 }
 
 async function daemonCheck(config: DesktopConfig): Promise<Check> {
-  const running = await fetch(`http://127.0.0.1:${config.port}/healthz`, { signal: AbortSignal.timeout(2000) })
+  const running = await fetch(`${controlBaseUrl(config)}/healthz`, { signal: AbortSignal.timeout(2000) })
     .then((response) => response.ok)
     .catch(() => false)
   return {

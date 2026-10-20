@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   authenticate,
   configPath,
+  controlBaseUrl,
   DesktopConfig,
   isLoopbackHost,
   isWildcardHost,
@@ -24,6 +25,17 @@ const tempDir = (): string => {
 }
 
 describe('desktop config', () => {
+  it('dials owner controls on the loopback address the daemon listens on', () => {
+    const url = (host: string) => controlBaseUrl({ host, port: 7681 })
+    expect(url('127.0.0.1')).toBe('http://127.0.0.1:7681')
+    expect(url('127.0.0.2')).toBe('http://127.0.0.2:7681')
+    expect(url('localhost')).toBe('http://localhost:7681')
+    expect(url('::1')).toBe('http://[::1]:7681')
+    expect(url('::')).toBe('http://[::1]:7681')
+    expect(url('0.0.0.0')).toBe('http://127.0.0.1:7681')
+    expect(url('100.64.1.2')).toBe('http://127.0.0.1:7681')
+  })
+
   it('listens on loopback unless another host is configured', () => {
     expect(DesktopConfig.parse({}).host).toBe('127.0.0.1')
     expect(loadConfig(tempDir()).host).toBe('127.0.0.1')

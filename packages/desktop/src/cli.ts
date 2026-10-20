@@ -11,6 +11,7 @@ import { Computer } from './computer.js'
 import {
   authenticate,
   configPath,
+  controlBaseUrl,
   dataDir,
   DesktopConfig,
   isLoopbackHost,
@@ -395,7 +396,7 @@ async function warnMissingMacPermissions(driver: CuaDriver): Promise<void> {
 }
 
 const controlFetch = async (config: DesktopConfig, path: string, timeoutMs: number): Promise<Response> =>
-  fetch(`http://127.0.0.1:${config.port}${path}`, {
+  fetch(`${controlBaseUrl(config)}${path}`, {
     headers: { [CONTROL_HEADER]: '1' },
     signal: AbortSignal.timeout(timeoutMs)
   })
@@ -636,7 +637,7 @@ async function stdio(dir: string, config: DesktopConfig): Promise<void> {
 }
 
 async function controlCommand(config: DesktopConfig, command: 'status' | 'pause' | 'resume'): Promise<void> {
-  const response = await fetch(`http://127.0.0.1:${config.port}/control/${command}`, {
+  const response = await fetch(`${controlBaseUrl(config)}/control/${command}`, {
     method: command === 'status' ? 'GET' : 'POST',
     headers: { [CONTROL_HEADER]: '1' }
   })

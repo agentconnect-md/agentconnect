@@ -14,6 +14,19 @@ export const isLoopbackHost = (host: string): boolean =>
 // Whether a listen address binds every interface, so clients need one of the machine's own addresses.
 export const isWildcardHost = (host: string): boolean => host === '0.0.0.0' || host === '::'
 
+// The loopback address the owner CLI dials for /control and /healthz on a daemon listening on host.
+export const controlHost = (host: string): string => {
+  if (host === '::' || host === '::1') return '::1'
+  if (isLoopbackHost(host)) return host
+  return '127.0.0.1'
+}
+
+// Base URL of the daemon's loopback owner controls.
+export const controlBaseUrl = (config: { host: string; port: number }): string => {
+  const host = controlHost(config.host)
+  return `http://${host.includes(':') ? `[${host}]` : host}:${config.port}`
+}
+
 const ClientEntry = z.object({
   name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
   tokenSha256: z.string().regex(/^[0-9a-f]{64}$/)

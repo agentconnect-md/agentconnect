@@ -484,11 +484,23 @@ export class Computer {
         this.exclusive(async () => ({ content: (await this.driver.call(name, args, signal)).content }))
       )
     }
-    return this.input(client, `cua_${name}`, args, () => ({ name, args }), {
-      coordinates: false,
-      screenshot: false,
-      passthrough: true
-    })
+    return this.input(
+      client,
+      `cua_${name}`,
+      args,
+      () => {
+        this.assertKeysAllowed(passthroughKeys(args))
+        if (typeof args.text === 'string' && args.text.length > MAX_TYPE_CHARS) {
+          throw new ComputerError('invalid_argument', `text is limited to ${MAX_TYPE_CHARS} characters per call`)
+        }
+        return { name, args }
+      },
+      {
+        coordinates: false,
+        screenshot: false,
+        passthrough: true
+      }
+    )
   }
 
   private input(
@@ -689,6 +701,18 @@ function viewerCall(input: ViewerInput, px: (point: Point) => Point): { name: st
 // Splits text into ASCII runs and single other characters, which X11 types through a per-character keymap remap.
 export function typingSegments(text: string): string[] {
   return text.match(/[\x20-\x7e\n\t]+|[^\x20-\x7e\n\t]/gu) ?? []
+}
+
+// Collects every key a raw driver call would press (keys, key, modifier, modifiers), splitting "win+r" style strings.
+function passthroughKeys(args: Record<string, unknown>): string[] {
+  const values = [args.keys, args.key, args.modifier, args.modifiers].flatMap((value) =>
+    Array.isArray(value) ? value : [value]
+  )
+  return values
+    .filter((value): value is string => typeof value === 'string')
+    .flatMap((value) => (value.length > 1 ? value.split('+') : [value]))
+    .filter((key) => key.trim() !== '')
+    .map(normalizeKey)
 }
 
 function normalizeKey(key: string): string {

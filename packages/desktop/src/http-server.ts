@@ -1,9 +1,10 @@
 import { once } from 'node:events'
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type { Computer } from './computer.js'
-import { isWildcardHost } from './config.js'
+import { controlHost, isLoopbackHost, isWildcardHost } from './config.js'
 import { runSelf } from './self.js'
 import type { Viewer } from './viewer.js'
 
@@ -25,11 +26,13 @@ export interface HttpServerOptions {
 
 export interface RunningHttpServer {
   url: string
+  // The address the public listener actually bound.
+  address: AddressInfo
   close(): Promise<void>
 }
 
 const isLoopback = (req: IncomingMessage): boolean =>
-  ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')
+  /^(::1|(::ffff:)?127(\.\d{1,3}){3})$/.test(req.socket.remoteAddress ?? '')
 
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = typeof body === 'string' ? body : JSON.stringify(body, null, 2)
@@ -72,16 +75,47 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
   await once(http, 'listening')
   const address = http.address()
   if (!address || typeof address === 'string') throw new Error('desktop daemon failed to bind')
+  const localControl = await listenLocalControl(options, address.port)
   const shownHost = isWildcardHost(options.host) ? '127.0.0.1' : options.host
   return {
     url: `http://${urlHost(shownHost)}:${address.port}/mcp`,
+    address,
     async close() {
-      const closing = new Promise<void>((resolve, reject) => http.close((error) => (error ? reject(error) : resolve())))
+      const closing = Promise.all([http, ...(localControl ? [localControl] : [])].map(closeServer))
       options.viewer?.close()
       http.closeAllConnections()
+      localControl?.closeAllConnections()
       await closing
       await Promise.allSettled([...active].map((server) => server.close()))
     }
+  }
+}
+
+const closeServer = (server: Server): Promise<void> =>
+  new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+
+// A specific non-loopback host (a LAN or Tailscale IP) gets a second loopback listener so the owner CLI reaches /control.
+async function listenLocalControl(options: HttpServerOptions, port: number): Promise<Server | undefined> {
+  if (isLoopbackHost(options.host) || isWildcardHost(options.host)) return undefined
+  const local = createServer(async (req, res) => {
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname
+    if (path === '/healthz') return send(res, 200, 'ok')
+    if (!path.startsWith('/control/')) return send(res, 404, 'not found')
+    try {
+      await control(req, res, path, options)
+    } catch (error) {
+      options.log(`control request failed: ${(error as Error).message}`)
+      if (res.headersSent) return res.destroy()
+      send(res, 500, 'failed')
+    }
+  })
+  local.listen(port, controlHost(options.host))
+  try {
+    await once(local, 'listening')
+    return local
+  } catch (error) {
+    options.log(`owner controls unavailable: cannot listen on loopback port ${port}: ${(error as Error).message}`)
+    return undefined
   }
 }
 

@@ -127,6 +127,34 @@ describe('Computer', () => {
     })
   })
 
+  for (const platform of ['win32', 'linux'] as const) {
+    it(`applies the same key and text limits to raw driver tools on ${platform}`, async () => {
+      const { computer, driver } = setup({ actionScreenshot: false }, platform)
+      for (const [name, args] of [
+        ['hotkey', { keys: ['win', 'r'] }],
+        ['hotkey', { keys: ['ctrl', 'alt', 'delete'] }],
+        ['press_key', { key: 'super' }],
+        ['press_key', { key: 'Win+R' }],
+        ['click', { x: 1, y: 1, modifier: ['meta'] }]
+      ] as const) {
+        expect(errorOf(await computer.driverTool('claude', name, { ...args }, false))).toMatchObject({
+          error: 'denied'
+        })
+      }
+      expect(
+        errorOf(await computer.driverTool('claude', 'type_text', { text: 'x'.repeat(4097) }, false))
+      ).toMatchObject({ error: 'invalid_argument' })
+      expect(driver.calls).toEqual([])
+      expect((await computer.driverTool('claude', 'hotkey', { keys: ['ctrl', 's'] }, false)).isError).toBeUndefined()
+      expect(driver.calls.map((call) => call.name)).toContain('hotkey')
+    })
+  }
+
+  it('allows raw driver system keys when allowSystemKeys is on', async () => {
+    const { computer } = setup({ actionScreenshot: false, allowSystemKeys: true })
+    expect((await computer.driverTool('claude', 'hotkey', { keys: ['win', 'r'] }, false)).isError).toBeUndefined()
+  })
+
   it('allows everyday Cmd shortcuts on macOS but refuses lock, log out and force quit', async () => {
     const { computer, driver } = setup({ actionScreenshot: false }, 'darwin')
     expect((await computer.key('claude', { keys: ['cmd', 'a'] })).isError).toBeUndefined()
