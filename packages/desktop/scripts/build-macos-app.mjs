@@ -52,6 +52,8 @@ const bundled = await build({
   platform: 'node',
   format: 'cjs',
   target: 'node24',
+  // Workspace packages (protocol, connection) are bundled from source, so no prior build is needed.
+  conditions: ['development'],
   legalComments: 'linked',
   // Every bundled input, for the release license scan (scripts/license-scan.ts).
   metafile: true,

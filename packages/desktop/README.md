@@ -6,7 +6,9 @@ logged-in desktop session, embeds [Cua Driver](https://github.com/trycua/cua/tre
 (MIT) for screenshots and input, and exposes the design's `computer_*` tools as an MCP
 server that Claude Code (or any MCP client) can use.
 
-It is standalone: no Control Plane, relay, or AgentConnect daemon is involved.
+It runs standalone with local client tokens, or registered with a Control Plane as a Computer
+(see [Register with a Control Plane](#register-with-a-control-plane)). No relay or AgentConnect
+daemon is involved yet.
 
 ## Status: M0 prototype
 
@@ -26,9 +28,10 @@ It is private, not published to npm, and not part of any AgentConnect release.
 
 **Limits**
 
-- No Control Plane: no Computer registration, `ComputerPolicy`, approvals, per-agent
-  authorization, or object-store screenshots. Local client tokens stand in for all of them, and
-  removing a token takes effect only after a restart.
+- Registration with a Control Plane and its Computer channel work (status, capabilities, `doctor`,
+  revoke). `ComputerPolicy` is enforced only for the lease limits. Approvals, per-agent
+  authorization, the data plane and object-store screenshots are still missing. Local client
+  tokens stand in for them, and removing a token takes effect only after a restart.
 - Plain HTTP with a bearer token. The daemon listens on `127.0.0.1` by default; other machines
   can reach it only when you pass `--host 0.0.0.0` (or another address) explicitly, and then the
   token is the only protection.
@@ -316,10 +319,37 @@ process-kill, clipboard, and file-transfer tools are never exposed.
 - **Audit**: every call is appended to `audit.log` in the data dir; typed text is
   recorded by length only. Screenshots are not stored.
 
+## Register with a Control Plane
+
+In the console, create a Computer registration. It gives you a one-time token and an exchange URL.
+Then run this on the desktop:
+
+```
+agentconnect-desktop setup --register TOKEN --cp-url URL [--name NAME]
+```
+
+This runs the whole `setup` and also exchanges the token for this desktop's Computer key. The key
+is stored in `computer-key.json` in the data dir with mode 0600. The keychain or credential
+manager comes later. No local client token is minted. `register TOKEN --cp-url URL` does only the
+exchange, and you restart the daemon afterwards.
+
+A registered daemon dials the Computer channel and reports its status, capabilities and `doctor`
+results there. The design
+([computer-use.md §3.6, §8.2](../../docs/designs/computer-use.md#36-registration-and-pairing-design))
+describes this. The daemon acts only while it holds a channel key that the Control Plane renews,
+and this applies to local-token MCP clients and `/view` too. If it loses the Control Plane, it keeps
+working until that key expires (5 minutes by default) and then refuses with `unavailable` until it
+reconnects. If the Computer is revoked or deleted, the daemon refuses input, screenshots and
+viewers at once. It also forgets the key and stays refused after restarts, until you register it
+again. `doctor` shows the registration as the `control plane` check. `stdio` mode has no channel,
+so a registered desktop refuses it.
+
 ## Commands
 
 ```
 agentconnect-desktop setup [--client NAME] [--host H] [--port P]   (once, on the desktop: downloads + OS approvals + doctor)
+agentconnect-desktop setup --register TOKEN --cp-url URL [--name NAME]   (the same, registered as a Computer)
+agentconnect-desktop register TOKEN --cp-url URL [--name NAME]   (only the registration; restart the daemon after)
 agentconnect-desktop init [--client NAME] [--host H] [--port P]    (non-interactive part: config + token + driver)
 agentconnect-desktop install-ffmpeg                          (Windows; run does it in the background)
 agentconnect-desktop run [--host H] [--port P] [--expose-driver-tools] [--rtc-address A] [--rtc-ports MIN-MAX]
@@ -374,9 +404,9 @@ that starts the daemon.
 
 ## Differences from the design (deliberate for M0)
 
-- One Computer per daemon and no Control Plane: registration, `ComputerPolicy`, approvals,
-  object-store screenshots, and per-agent authorization are replaced by local client
-  tokens.
+- One Computer per daemon. Registration and the Computer channel exist, but the data plane,
+  `ComputerPolicy` beyond the lease limits, approvals, object-store screenshots and per-agent
+  authorization do not, so agents still connect with local client tokens.
 - `computer_screenshot` has no `display`, `window`, `region`, or `maxDimension`
   parameters: the image size is fixed per daemon so the driver's capture mapping stays
   consistent. Window-level capture is available through `cua_get_window_state`.
