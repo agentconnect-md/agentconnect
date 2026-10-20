@@ -71,7 +71,7 @@ import {
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
-import { availableApiProtocols, apiProtocolLabel } from '@/lib/agent-api'
+import { availableApiProtocols, ahpDeploymentAccess, apiProtocolLabel } from '@/lib/agent-api'
 import EditWorkspaceModal from './EditWorkspaceModal'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import {
@@ -1727,7 +1727,7 @@ export default function AddIntegrationModal({
             <div className="fldlbl mb-2">{t('api.protocol')}</div>
             <div className="flex flex-col gap-2" role="radiogroup" aria-label={t('api.protocol')}>
               {availableApiProtocols().map((p) => {
-                const added = p.available && apiAdded.has(p.id)
+                const added = apiAdded.has(p.id)
                 const selectable = p.available && !added
                 const on = selectable && apiProtocol === p.id
                 return (
@@ -1754,7 +1754,14 @@ export default function AddIntegrationModal({
                         </MarkSlot>
                         <span className="font-sans text-[13px] font-semibold leading-normal">{p.label}</span>
                         {!p.available && (
-                          <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('api.soon')}</span>
+                          <span className="badge bg-(--surface-active) text-(--text-tertiary)">
+                            {p.id === 'ahp' ? t('api.ahpOff') : t('api.soon')}
+                          </span>
+                        )}
+                        {p.id === 'ahp' && p.available && ahpDeploymentAccess() === 'pilot' && (
+                          <span className="badge bg-(--surface-active) text-(--text-tertiary)">
+                            {t('api.ahpPilot')}
+                          </span>
                         )}
                         {added && (
                           <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('api.added')}</span>

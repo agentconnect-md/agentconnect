@@ -2133,7 +2133,9 @@
         "docs": "Docs",
         "add": "Add API",
         "adding": "Adding…",
-        "ahpDescription": "Standard AHP v1 sessions and chat actions for compatible agent clients."
+        "ahpDescription": "Standard AHP v1 sessions and chat actions for compatible agent clients.",
+        "ahpOff": "Disabled",
+        "ahpPilot": "Pilot"
       }
     },
     "api": {
@@ -2161,7 +2163,11 @@
       "noKeys": "No Agent chat key reaches this agent yet.",
       "me": "Me",
       "allAgents": "All agents",
-      "done": "Done"
+      "done": "Done",
+      "ahpOff": "AHP is disabled on this deployment. This configured API will become available when AHP is enabled.",
+      "ahpPilot": "AHP access is limited to approved pilot keys on this deployment.",
+      "ahpAccess": "Use an existing approved full-access API key on a trusted server. Chat-only keys and OAuth tokens are not accepted. Keep credentials out of browser code.",
+      "ahpEndpoint": "WebSocket endpoint"
     }
   },
   "Agents": {

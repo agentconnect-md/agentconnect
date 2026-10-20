@@ -2133,7 +2133,9 @@
         "docs": "文档",
         "add": "添加 API",
         "adding": "添加中…",
-        "ahpDescription": "通过标准 AHP v1 会话和聊天动作连接兼容的 Agent 客户端。"
+        "ahpDescription": "通过标准 AHP v1 会话和聊天动作连接兼容的 Agent 客户端。",
+        "ahpOff": "未启用",
+        "ahpPilot": "试点"
       }
     },
     "api": {
@@ -2161,7 +2163,11 @@
       "noKeys": "还没有能调用这个 Agent 的 Agent 对话密钥。",
       "me": "我",
       "allAgents": "全部 Agent",
-      "done": "完成"
+      "done": "完成",
+      "ahpOff": "当前部署尚未启用 AHP。启用后，此 API 配置才可连接。",
+      "ahpPilot": "当前部署仅允许已获批准的试点密钥接入 AHP。",
+      "ahpAccess": "请在可信服务端使用已获批准的完全访问 API 密钥。仅聊天密钥和 OAuth 令牌不适用。请勿将凭据放入浏览器代码。",
+      "ahpEndpoint": "WebSocket 地址"
     }
   },
   "Agents": {
