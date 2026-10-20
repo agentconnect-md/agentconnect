@@ -75,6 +75,8 @@ export interface RelayConnDeps {
   /** Fired after a successful register — recompute + fan `relay/roster` to daemons,
    *  and replay the compiled hook rules to THIS relay (its table is a memory copy). */
   onRegistered: (ch: RelayChannel) => void
+  /** A desktop daemon's `cr/hello` token (computer-use.md §3.7); absent where Computers are not served. */
+  verifyComputerRelayToken?: (credential: string, computerId: string) => Promise<RcVerifyResult>
   /** Apply a relay `rc/run-report` (delivery-stage HookRun bookkeeping). */
   onRunReport: (report: RcRunReport) => Promise<void>
   /** Apply a relay `rc/set-channel-agent` (the in-Slack config modal picked a
@@ -488,6 +490,12 @@ export class RelayConnection implements RelayChannel {
           break
         case 'agent-chat-key':
           result = await this.deps.verifyAgentChatKey(req)
+          break
+        case 'computer-relay-token':
+          result = (await this.deps.verifyComputerRelayToken?.(req.credential, req.computerId)) ?? {
+            ok: false,
+            reason: 'computer relay unavailable'
+          }
           break
       }
     } catch {

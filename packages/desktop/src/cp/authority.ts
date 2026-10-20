@@ -1,5 +1,14 @@
 // Whether this desktop may act right now (computer-use.md §8.2): only while a CP-renewed channel key is live, never after a revoke.
-import type { ComputerChannelCredential } from '@agentconnect.md/protocol/computer'
+import {
+  signComputerChannelToken,
+  verifyComputerChannelToken,
+  type ComputerChannelCredential,
+  type ComputerChannelTokenAudience,
+  type ComputerChannelTokenClaims
+} from '@agentconnect.md/protocol/computer'
+
+/** How long a relay-audience token the desktop signs for `cr/hello` lives. */
+const RELAY_TOKEN_TTL_MS = 60_000
 
 export type AuthorityState =
   // Not registered with a Control Plane: the prototype's local client tokens are the only authority.
@@ -86,6 +95,37 @@ export class ChannelAuthority {
   key(keyId: string): Buffer | undefined {
     if (this.revoked) return undefined
     return this.live().find((held) => held.keyId === keyId)?.key
+  }
+
+  /** Verify a channel token the CP issued for this Computer; undefined for any token that does not hold. */
+  verify(token: string, aud: ComputerChannelTokenAudience, computerId: string): ComputerChannelTokenClaims | undefined {
+    if (this.revoked || !this.options.registered) return undefined
+    const claims = verifyComputerChannelToken(token, {
+      aud,
+      computerId,
+      key: (kid) => this.key(kid),
+      now: this.serverNow()
+    })
+    return claims ?? undefined
+  }
+
+  /** A relay-audience token signed with the newest live key, proving to a relay (through the CP) that this desktop holds it. */
+  relayToken(computerId: string): string | undefined {
+    if (this.revoked || !this.options.registered) return undefined
+    const newest = this.live().reduce<HeldKey | undefined>(
+      (best, held) => (!best || held.expiresAt > best.expiresAt ? held : best),
+      undefined
+    )
+    if (!newest) return undefined
+    const iat = this.serverNow()
+    const exp = Math.min(iat + RELAY_TOKEN_TTL_MS, newest.expiresAt - this.skewMs)
+    if (!(exp > iat)) return undefined
+    return signComputerChannelToken({ aud: 'relay', cmp: computerId, kid: newest.keyId, iat, exp }, newest.key)
+  }
+
+  // The CP's clock, as measured at the last auth.
+  private serverNow(): number {
+    return this.now() - this.skewMs
   }
 
   /** The CP revoked this Computer: drop every key at once and stay refused. */

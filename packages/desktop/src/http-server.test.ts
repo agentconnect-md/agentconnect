@@ -24,8 +24,11 @@ async function start(host?: string) {
     host: config.host,
     port: 0,
     computer,
-    authenticate: (header) => authenticate(config, header),
-    createMcpServer: (client) => createComputerMcpServer({ computer, client, driverTools }),
+    authenticate: (header) => {
+      const client = authenticate(config, header)
+      return client ? { client, viewOnly: false } : undefined
+    },
+    createMcpServer: ({ client }) => createComputerMcpServer({ computer, client, driverTools }),
     log: () => undefined,
     viewer: createViewer({ computer, authenticate: (header) => authenticate(config, header), log: () => undefined })
   })

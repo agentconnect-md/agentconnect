@@ -47,6 +47,7 @@ function setup(
     live?: () => boolean
     handshakes?: HandshakeGate
     leases?: ComputerConnDeps['leases']
+    relays?: ComputerConnDeps['relays']
   } = {}
 ) {
   const clock = new FakeClock(T0)
@@ -76,7 +77,8 @@ function setup(
     clock,
     heartbeatSec: 15,
     ...(over.handshakes ? { handshakes: over.handshakes } : {}),
-    ...(over.leases ? { leases: over.leases } : {})
+    ...(over.leases ? { leases: over.leases } : {}),
+    ...(over.relays ? { relays: over.relays } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -103,6 +105,16 @@ describe('ComputerConnection', () => {
     expect(okFrame.type === 'computer/auth/ok' && Date.parse(okFrame.payload.credential.expiresAt)).toBeGreaterThan(T0)
     expect(reports[0]).toEqual({ status: 'online', desktopDaemonVersion: '0.2.0' })
     expect(registry.get(CID)).toBe(conn)
+  })
+
+  it('tells the desktop the relay roster after auth and again when it changes', async () => {
+    const relay = { relayId: '11111111-1111-4111-8111-111111111111', url: 'wss://relay-0.example.com/rd/ws' }
+    const { transport, registry } = setup({ relays: async () => [relay] })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/relays').map((f) => f.payload)).toEqual([{ relays: [relay] }])
+    registry.pushRelays([])
+    expect(transport.ofType('computer/relays').at(-1)?.payload).toEqual({ relays: [] })
   })
 
   it('refuses a bad key with AUTH_FAILED and close 4401', async () => {

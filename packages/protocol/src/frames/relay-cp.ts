@@ -182,6 +182,12 @@ export const RcVerify = z.discriminatedUnion('kind', [
     protocol: z.literal('ahp').optional(),
     agentId: z.string().uuid().optional()
   }),
+  // A desktop daemon's relay-audience channel token on `cr/hello` (computer-use.md §3.7): signed with its live channel key.
+  z.object({
+    kind: z.literal('computer-relay-token'),
+    credential: z.string().min(1).max(2048),
+    computerId: z.string().uuid()
+  }),
   // An API key on the agent chat API (shared-bot-relay.md §10.4): the CP maps (key owner, agent, chat id) to its conversation.
   z.object({
     kind: z.literal('agent-chat-key'),
@@ -222,6 +228,8 @@ export const RcVerifyResult = z.object({
   reason: z.string().optional(),
   orgId: z.string().optional(),
   daemonId: z.string().uuid().optional(),
+  // computer-relay-token → the Computer the desktop proved it holds a live channel key for.
+  computerId: z.string().uuid().optional(),
   userId: z.string().optional(),
   user: z.string().optional(), // display handle for the transcript author line
   // The author's public avatar URL, for a platform mirror that renders a per-message identity.

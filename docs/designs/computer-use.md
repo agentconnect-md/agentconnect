@@ -24,7 +24,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 3   | Driver                             | Embed **Cua Driver (MIT, pinned 0.35.2)** as a `cua-driver mcp --direct` stdio child; never `cua-spacesd` or the Cua viewer (FSL) (§3.1)                                                       | Validated                                         |
 | 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows the user Run key, on Linux a systemd user unit (§3.2, §3.3) | Validated (except the Windows install flow)       |
 | 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.desktop`), not the terminal (§3.2.1)                                                                                      | Validated                                         |
-| 6   | Connection                         | Outbound WebSocket to the Control Plane with a Computer API key; screen data is never persisted by the Control Plane (§3.6, §3.7)                                                              | Design (the prototype uses local bearer tokens)   |
+| 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (direct path and TURN are design)     |
 | 7   | Permissions                        | Per-Computer visibility and grants with `view` / `control` modes; approvals for risky actions; hard refusals for system security surfaces and dangerous shortcuts (§4)                         | Hard refusals validated; the rest is design       |
 | 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
@@ -325,15 +325,57 @@ once) stays as an offline / development mode.
 - **Prototype [validated]**: the MCP client (Claude Code) connects over HTTP straight to the desktop daemon's `/mcp`;
   the browser viewer connects to the same port. Cross-internet tests ran over Tailscale.
 - **Control plane [design]**: registration, heartbeats, status, leases, and policy go over the Control Plane WebSocket.
-- **Data plane [design]**: tool calls and screenshot bytes travel between the agent's daemon and the desktop daemon,
-  preferably over a session channel through the relay ([shared-bot-relay.md](shared-bot-relay.md)), or over the
-  session-executors TLS-PSK pipe ([session-executors.md §6](session-executors.md)); same machine or LAN can connect
-  directly. Because the desktop daemon is already a standard Streamable HTTP MCP server, the data plane only forwards
-  HTTP; no new tool protocol is needed.
-- **Viewer media**: WebRTC media is direct UDP (ICE-lite, host candidates only, §7.2). Without a direct path (no
-  Tailscale, behind NAT, inside a pod) it needs TURN or relay forwarding [unverified].
-- The Control Plane only issues channel credentials and never persists screen content, consistent with ACP streams not
-  passing through the Control Plane.
+- **Data plane [implemented]**: tool calls and screenshot bytes travel between the agent's daemon and the desktop
+  daemon over **an outbound session channel through the relay**; the decision for §17-1 follows. The Control Plane
+  issues the credentials and carries no screen byte or tool body.
+- **Viewer media [design]**: WebRTC media is direct UDP (ICE-lite, host candidates only, §7.2). Without a direct path
+  (no Tailscale, behind NAT, inside a pod) signaling rides the same relay channel and media falls back to **TURN**
+  (such as coturn, BSD), not the relay (§17-1).
+
+**Decision (§17-1).** A user's desktop sits behind NAT and can only dial out, and the relay is already the install's
+public, per-instance ingress that daemons dial ([shared-bot-relay.md §5](shared-bot-relay.md)). So the desktop daemon
+dials every relay in the CP's roster, and an agent daemon sends its MCP calls to a relay, which forwards them over that
+link. The session-executors TLS-PSK pipe ([session-executors.md §6](session-executors.md)) was not chosen: its executor
+listens and its holder dials, which is the direction NAT forbids, and it carries the shim protocol between daemons of
+one group rather than HTTP to a machine outside it. Because the desktop daemon is already a standard Streamable HTTP
+MCP server, the channel forwards HTTP and nothing else; no new tool protocol is needed. A direct connection is the
+same-network optimization: the desktop's own `/mcp` accepts the same per-session token, and choosing it needs an
+address the desktop advertises, which is still to do. Viewer media goes through TURN rather than the relay because it
+is UDP and continuous, and the relay is a bounded HTTP and WebSocket forwarder that holds no media state.
+
+```
+agent daemon ── computer-channel/grant ──▶ Control Plane      (daemon wire: control only)
+     │◀── token (mcp, one session) + relay roster ──┘
+     │
+     └── HTTPS POST /cr/computers/<id>/mcp + Bearer token ──▶ relay
+                                                               │  cr/http over the desktop's own outbound socket
+desktop daemon ◀───────────────────────────────────────────────┘  verifies the token with its channel key, serves /mcp
+```
+
+- **Credentials.** A **channel token** (`actk1.<claims>.<HMAC-SHA256>`, `packages/protocol/src/computer-channel-token.ts`)
+  is signed with the Computer's current channel key (§8.2), which the CP derives and the desktop holds, so the desktop
+  verifies it locally and the CP stores nothing. An agent daemon asks for one with `computer-channel/grant`
+  (`computerId`, `agentId`, `sessionId`) on the daemon wire, behind `computer-channel-v1`. The CP answers only a daemon
+  that serves the agent, for an agent the policy grants, while the Computer is online; the token names the session,
+  agent, daemon and the policy's `agentMode`, and lives 120 s or until its key expires, whichever is first. The agent
+  daemon asks again 30 s before expiry, and once when the desktop answers 401. The reply also names the relays.
+- **The relay link.** The CP pushes `computer/relays` (the roster daemons dial) after auth and whenever it changes. The
+  desktop dials each relay's `/cr/ws` (subprotocol `agentconnect.cr.v1`, frames in
+  `packages/protocol/src/frames/relay-computer.ts`) and proves its key with `cr/hello`, a relay-audience token it signs
+  itself; the relay, which has no database, asks the CP with `rc/verify` (`computer-relay-token`), and the CP checks it
+  against the Computer's live key. A newer link for the same Computer supersedes the older one. The desktop drops its
+  links on revoke and when its key lapses, and redials after the next roster push.
+- **Forwarding.** An agent daemon sends `POST|GET|DELETE /cr/computers/<id>/mcp` to a relay's per-instance address. The
+  relay refuses a request without a bearer, answers `503 computer_not_attached` when the desktop is not linked to it
+  (the agent daemon then tries the next relay; a request that may have reached a relay is never resent), and otherwise
+  sends one `cr/http` frame with the method, the MCP headers and the body, and returns the `cr/http/result`. Bodies are
+  buffered, at most 8 MiB each way; a desktop has at most 16 requests in flight per relay, and a request times out
+  after 120 s. The relay parses no MCP and logs no body or token.
+- **On the desktop.** A relayed request is served in process through the same MCP server as the local port, and only a
+  channel token authenticates it; the prototype's local client tokens work only on the local port. The token's session
+  becomes the caller, which is the holder the CP's control lease names (§4.4), and a `view` token gets a server without
+  the input and lease tools. The agent daemon's side is `packages/daemon/src/computer/data-plane.ts`; registering the
+  `computer_*` tools on it is #3190.
 
 ### 3.8 Container form (Docker) [validated]
 
@@ -478,7 +520,7 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   replica reaches the desktop with its next heartbeat. While a lease stands, the desktop daemon lets only its holder
   session acquire locally, refuses every other caller with `computer_busy` naming the holder, and drops a local lease
   that the CP moved or ended. With no lease known, the prototype's local client tokens still work. The data plane
-  (#3189) binds a call to its session, and the `computer_*` tools (#3190) call acquire.
+  (§3.7) binds a call to its session through its channel token, and the `computer_*` tools (#3190) call acquire.
 
 ## 5. Agent tool interface
 
@@ -518,7 +560,7 @@ Release (design):
      (any execution strategy; inside a sandbox through the shim's MCP tunnel, see buildSandboxMcpServers in mcp/inject.ts)
           │  computer_* → check the agent's grant and lease (from the Control Plane)
           ▼
-     session channel (relay / TLS-PSK / direct) ──HTTP MCP──▶ desktop daemon /mcp
+     session channel (relay, §3.7; direct later) ──HTTP MCP──▶ desktop daemon /mcp
 ```
 
 The tools are registered in `packages/daemon/src/mcp/resolve-servers.ts` and appear only when the agent has computer
@@ -673,7 +715,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   with `unavailable`, the lease and any takeover are dropped, and WebRTC viewers are closed. A revoke drops every key
   at once and persists. Once the CP is lost, the desktop keeps working for at most one lifetime after the last
   renewal, and resumes when it reconnects. The tool and viewer channel tokens that the data plane will sign with
-  this key come with #3189.
+  this key are in §3.7.
 
 ## 9. Screenshot storage [design]
 
@@ -801,7 +843,7 @@ Estimates assume one engineer who knows the codebase.
 | Milestone | Scope                                                                                                                         | Estimate             | Depends on                                                        |
 | --------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------- |
 | M0        | Merge the prototype, CI, safe defaults                                                                                        | 1 engineer-week      | —                                                                 |
-| M1        | **Linux** self-hosted computer plus all shared work (CP, data plane, permissions, console)                                    | 6–8 engineer-weeks   | M0; data-plane decision (§17-1)                                   |
+| M1        | **Linux** self-hosted computer plus all shared work (CP, data plane, permissions, console)                                    | 6–8 engineer-weeks   | M0; data-plane decision (§17-1, settled in §3.7)                  |
 | M2        | **Docker**: productized image, self-hosted containers, Linux managed computers (Kubernetes pool)                              | 4–6 engineer-weeks   | M1 (the image work can run alongside M1); TURN / relay media path |
 | M3        | **macOS**: signing and notarization, menu bar UI, install and grant flow                                                      | 3–4 engineer-weeks   | M1                                                                |
 | M4        | **Windows**: signed installer, tray UI, session and lock-screen handling                                                      | 3–4 engineer-weeks   | M1                                                                |
@@ -827,8 +869,8 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
    `computer` API-key principal (its routes `interactiveOnly`); `computer` frames in `packages/protocol` (auth,
    heartbeat, capabilities, `doctor` results, status); a lease service (renewed by session heartbeats, released when the
    session ends); OpenAPI docs.
-2. **Data plane**: settle §17-1 first. A user desktop usually sits behind NAT and can only dial out, so the
-   recommendation is **an outbound session channel through the relay by default**, with direct connection as a
+2. **Data plane**: §17-1 is settled (§3.7). A user desktop usually sits behind NAT and can only dial out, so the
+   data plane is **an outbound session channel through the relay by default**, with direct connection as a
    same-network optimization. The desktop daemon is already a standard Streamable HTTP MCP server, so only HTTP is
    forwarded. Viewer: the console issues short-lived credentials and signaling uses the same channel; media tries direct
    (ICE-lite) first and falls back to TURN (such as coturn, BSD) or the relay.
@@ -978,8 +1020,10 @@ Closed by the prototype: how to call Cua Driver (stdio child); who owns macOS gr
 how Windows starts it (user Run key); remote watching (built-in WebRTC viewer); the Linux form without a physical
 desktop (a container image, §3.8).
 
-1. Data plane: forward tool calls through the relay, or reuse the session-executors TLS-PSK pipe? Without a direct
-   path, does viewer WebRTC media go through TURN or the relay?
+1. ~~Data plane: forward tool calls through the relay, or reuse the session-executors TLS-PSK pipe? Without a direct
+   path, does viewer WebRTC media go through TURN or the relay?~~ **Decided (§3.7)**: tool calls go through the relay
+   over the desktop's outbound link, with CP-issued per-session tokens; direct connection is the same-network
+   optimization; viewer signaling rides the same channel and media falls back to TURN, not the relay.
 2. When one machine runs both an agent daemon and a desktop daemon, are they one installer, one app identity, and one
    registration flow (grant ownership on macOS especially must match)?
 3. May a Computer be shared with other members' agents; what are the default approvals and warnings?

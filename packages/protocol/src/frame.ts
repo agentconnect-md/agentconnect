@@ -23,6 +23,7 @@ import {
 
 import { AuthReq, AuthOk } from './frames/auth.js'
 import { ComputerLeaseAcquire, ComputerLeaseAcquireResult, ComputerLeaseRelease } from './frames/computer-lease.js'
+import { ComputerChannelGrantRequest, ComputerChannelGrantResult } from './frames/computer-channel.js'
 import { RegisterReq, RegisterOk, RelayRosterUpdate, CapabilitiesUpdate } from './frames/register.js'
 import { CollabRoutesSnapshot } from './frames/collab.js'
 import { RouteAssign, RouteAssignAck, RouteUpdate, Drain, DrainProgress, DrainDone } from './frames/route.js'
@@ -375,6 +376,9 @@ export const FRAME_SCHEMAS = {
   'computer-lease/acquire': ComputerLeaseAcquire,
   'computer-lease/acquire/result': ComputerLeaseAcquireResult,
   'computer-lease/release': ComputerLeaseRelease,
+  // Computer data-plane tokens (computer-use.md §3.7), behind COMPUTER_CHANNEL_FEATURE.
+  'computer-channel/grant': ComputerChannelGrantRequest,
+  'computer-channel/grant/result': ComputerChannelGrantResult,
   'agent/detach': AgentDetach,
   'agent/activate': AgentActivate,
   'agent/activity': AgentActivity,
@@ -781,6 +785,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('computer-lease/acquire', FRAME_SCHEMAS['computer-lease/acquire']),
   frame('computer-lease/acquire/result', FRAME_SCHEMAS['computer-lease/acquire/result']),
   frame('computer-lease/release', FRAME_SCHEMAS['computer-lease/release']),
+  frame('computer-channel/grant', FRAME_SCHEMAS['computer-channel/grant']),
+  frame('computer-channel/grant/result', FRAME_SCHEMAS['computer-channel/grant/result']),
   frame('agent/detach', FRAME_SCHEMAS['agent/detach']),
   frame('agent/activate', FRAME_SCHEMAS['agent/activate']),
   frame('agent/activity', FRAME_SCHEMAS['agent/activity']),

@@ -1,6 +1,7 @@
 // The per-socket FSM of a desktop daemon's Computer channel (computer-use.md §3.6, §8.2): auth, heartbeat, renewal, revoke.
 import {
   CloseCode,
+  COMPUTER_RELAYS_MAX,
   buildComputerCpFrame,
   decodeComputerCpFrame,
   type COMPUTER_CP_SCHEMAS,
@@ -10,6 +11,7 @@ import {
   type ComputerCpFrameType,
   type ComputerHeartbeat,
   type ComputerPolicy,
+  type ComputerRelayEntry,
   type ComputerRevoke,
   type ErrorCode
 } from '@agentconnect.md/protocol'
@@ -36,6 +38,8 @@ export interface ComputerConnDeps {
   repo: Pick<ComputerRepo, 'get' | 'recordLive' | 'markOffline'>
   keys: ComputerChannelKeys
   registry: ComputerChannelRegistry
+  /** The relays the desktop dials out to for the data plane (§3.7); absent in tests that do not exercise it. */
+  relays?: () => Promise<ComputerRelayEntry[]>
   /** The control lease the desktop enforces; absent in tests that do not exercise it. */
   leases?: Pick<ComputerLeaseService, 'observe' | 'current'>
   clock: Clock
@@ -159,6 +163,22 @@ export class ComputerConnection implements ComputerChannel {
       policy: computer.policy
     })
     await this.syncLease(() => this.deps.leases?.current(this.orgId, this.computerId))
+    await this.sendRelays()
+  }
+
+  // A roster read that fails leaves the desktop without relays until the next roster change or reconnect.
+  private async sendRelays(): Promise<void> {
+    if (!this.deps.relays) return
+    try {
+      const relays = await this.deps.relays()
+      this.pushRelays(relays)
+    } catch (err) {
+      this.deps.log?.warn({ err: (err as Error).message }, 'computer: relay roster read failed')
+    }
+  }
+
+  pushRelays(relays: ComputerRelayEntry[]): void {
+    if (this.state === 'READY') this.send('computer/relays', { relays: relays.slice(0, COMPUTER_RELAYS_MAX) })
   }
 
   private async handleHeartbeat(beat: ComputerHeartbeat): Promise<void> {

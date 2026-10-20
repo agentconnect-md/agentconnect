@@ -17,7 +17,8 @@ import {
   type ComputerControlLease,
   type ComputerCpFrame,
   type ComputerHeartbeat,
-  type ComputerPolicy
+  type ComputerPolicy,
+  type ComputerRelayEntry
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './authority.js'
 
@@ -40,6 +41,8 @@ export interface ComputerCpClientDeps {
   onPolicy?: (policy: ComputerPolicy) => void
   // The CP granted, moved or ended the control lease (computer-use.md §4.4).
   onLease?: (lease: ComputerControlLease | null) => void
+  // The relays to dial out to for the data plane (computer-use.md §3.7).
+  onRelays?: (relays: ComputerRelayEntry[]) => void
   // The CP revoked or refused this key: persist it and stop for good.
   onRevoked: (reason: string) => void
   onReady?: (ok: ComputerAuthOk) => void
@@ -178,6 +181,9 @@ export class ComputerCpClient {
         return
       case 'computer/lease':
         this.deps.onLease?.(frame.payload.lease)
+        return
+      case 'computer/relays':
+        this.deps.onRelays?.(frame.payload.relays)
         return
       case 'computer/revoke':
         return this.revoked(`${frame.payload.reason} by the Control Plane`)

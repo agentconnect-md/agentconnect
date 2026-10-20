@@ -281,6 +281,21 @@ export class PgComputerRepo implements ComputerRepo {
     })
   }
 
+  async liveKeyId(id: ComputerId, at: Date): Promise<string | null> {
+    const key = await this.db.apiKey.findFirst({
+      where: {
+        computerId: id,
+        principalType: 'computer',
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: at } }],
+        computer: { revokedAt: null }
+      },
+      orderBy: [{ lastUsedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
+      select: { id: true }
+    })
+    return key?.id ?? null
+  }
+
   async reapRegistrations(expiredBefore: Date): Promise<number> {
     // A token is consumed before it expires, so its expiry bounds both the spent and the unspent rows.
     const { count } = await this.db.computerRegistration.deleteMany({ where: { expiresAt: { lt: expiredBefore } } })

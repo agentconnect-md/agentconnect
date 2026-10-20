@@ -46,6 +46,7 @@ describe('computer channel frames', () => {
       'computer/policy',
       'computer/revoke',
       'computer/lease',
+      'computer/relays',
       'error'
     ])
     const frames = [
@@ -62,6 +63,9 @@ describe('computer channel frames', () => {
       buildComputerCpFrame('computer/revoke', { reason: 'revoked' }),
       buildComputerCpFrame('computer/lease', { lease }),
       buildComputerCpFrame('computer/lease', { lease: null }),
+      buildComputerCpFrame('computer/relays', {
+        relays: [{ relayId: '00000000-0000-4000-8000-0000000000cc', url: 'wss://relay-0.example.com/rd/ws' }]
+      }),
       buildComputerCpFrame('computer/heartbeat', { status: 'busy', lease: { holder: 'sess-1', idleMs: 1200 } }),
       buildComputerCpFrame('error', { code: 'AUTH_FAILED', message: 'no', retryable: false })
     ]

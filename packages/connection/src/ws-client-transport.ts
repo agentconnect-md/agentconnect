@@ -90,6 +90,8 @@ export interface DialOpts {
   handshakeTimeoutMs?: number
   selfPingMs?: number
   idleMs?: number
+  /** Inbound frame ceiling; a wire that carries bounded bodies raises it above the protocol's default. */
+  maxPayload?: number
   createConnection?: WebSocket.ClientOptions['createConnection']
 }
 
@@ -123,7 +125,7 @@ export class ClientTransport implements Transport {
     const idleMs = opts.idleMs ?? DEFAULT_RX_IDLE_MS
     return new Promise<Transport>((resolve, reject) => {
       const ws = new WebSocket(wsUrl, [opts.subprotocol], {
-        maxPayload: MAX_FRAME_BYTES,
+        maxPayload: opts.maxPayload ?? MAX_FRAME_BYTES,
         ...(opts.createConnection ? { createConnection: opts.createConnection } : {})
       })
       // Own the deadline: custom Duplex connections need not implement socket timeouts.

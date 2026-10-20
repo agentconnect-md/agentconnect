@@ -278,7 +278,7 @@ export class RelayCpClient {
    * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
   async verify(
-    kind: Exclude<RcVerify['kind'], 'agent-chat-key' | 'ahp-client-key'>,
+    kind: Exclude<RcVerify['kind'], 'agent-chat-key' | 'ahp-client-key' | 'computer-relay-token'>,
     credential: string,
     daemonId?: string
   ): Promise<RcVerifyResult> {
@@ -291,6 +291,20 @@ export class RelayCpClient {
     const rep = await this.authorizationRequest(
       () => buildRelayCpFrame('rc/verify', request),
       'rc/verify',
+      HANDOFF_WAIT_MS,
+      {}
+    )
+    if (rep.type !== 'rc/verify/ok') {
+      throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
+    }
+    return rep.payload
+  }
+
+  /** A desktop daemon's relay-audience channel token on `cr/hello` (computer-use.md §3.7); waits like {@link verify}. */
+  async verifyComputer(credential: string, computerId: string): Promise<RcVerifyResult> {
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/verify', { kind: 'computer-relay-token', credential, computerId }),
+      'rc/verify computer-relay-token',
       HANDOFF_WAIT_MS,
       {}
     )

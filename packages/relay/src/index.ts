@@ -26,6 +26,7 @@ import { loadConfig, resolveAuth, toWsOrigin } from './config.js'
 import { RelayCpClient } from './relay-cp-client.js'
 import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
+import { createComputerRelay } from './computer-relay.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { createAhpServer } from './ahp-server.js'
 import { WebchatRouter, bindWebchatPostAuthor, fanImageUpdate, imageUpdateBound } from './webchat-router.js'
@@ -371,6 +372,12 @@ async function main(): Promise<void> {
     mode: () => config.AHP_MODE,
     verify: (credential, agentId, kind) => client.verifyAhpCredential(credential, agentId, kind),
     daemon: (daemonId) => held.rdServer?.get(daemonId)
+  })
+  // Desktop daemons dial in beside the daemons, and agent daemons' MCP for them is forwarded (computer-use.md §3.7).
+  createComputerRelay(server, {
+    verify: (token, computerId) => client.verifyComputer(token, computerId),
+    relayId: () => client.relayId,
+    log
   })
   client.start()
   await server.listen({ port: config.PORT, host: config.HOST })

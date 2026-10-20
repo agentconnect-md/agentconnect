@@ -9,7 +9,7 @@ import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
 // Only a daemon that serves the agent may act for its sessions.
-async function servedAgent(
+export async function servedAgent(
   orgId: OrgId,
   agentId: string,
   conn: DaemonConnection,

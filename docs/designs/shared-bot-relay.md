@@ -258,7 +258,7 @@ rc/set-channel-agent { botId, channelId, agentId }
 rc/bot-revoked       { botId, reason, credentialRevision?, eventAtMs?, evidence?: 'event' | 'probe', code? }
 rc/bot-credential-check { botId, credentialRevision, result: 'ok' | 'rejected', code?, observedAtMs }
 rc/daemon-revoke     { daemonId }
-rc/verify            { kind: 'daemon-key' | 'daemon-token' | 'webchat-token', credential, daemonId?, conversationBinding?: 'v1' }
+rc/verify            { kind: 'daemon-key' | 'daemon-token' | 'webchat-token' | 'computer-relay-token', credential, daemonId?, computerId?, conversationBinding?: 'v1' }
 ```
 
 `rc/bot-assign`, `rc/routes`, and `rc/assign` are broadcast to the pool.
@@ -347,6 +347,14 @@ window (a converged `not_host` ends it), and the relay's affinity guard makes a
 resend idempotent. The relay advertises `decision-routing-forward-v1`
 in `rd/hello/ok`, and sends either routed field only to a daemon advertising
 `decision-routing-v1`.
+
+Desktop daemons use a third, separate wire on the same per-instance listener:
+they dial `/cr/ws` (`agentconnect.cr.v1`) and the relay forwards agent
+daemons' `/cr/computers/<id>/mcp` HTTP requests to them as `cr/http` frames,
+buffered and unparsed, never stored. The desktop's `cr/hello` token is checked
+with `rc/verify(kind = 'computer-relay-token')`; the per-session token on each
+request is checked by the desktop itself
+([computer-use.md §3.7](computer-use.md)).
 
 The same authenticated data plane also carries cross-daemon collaboration
 frames. Their authorization rules are defined in
