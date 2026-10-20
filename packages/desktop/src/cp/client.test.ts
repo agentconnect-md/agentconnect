@@ -79,7 +79,7 @@ function harness() {
     issuedAt: new Date(clock.now() + offsetMs).toISOString(),
     expiresAt: new Date(clock.now() + offsetMs + 300_000).toISOString()
   })
-  const authOk = (transport: FakeTransport) => {
+  const authOk = (transport: FakeTransport, features?: string[]) => {
     const auth = transport.ofType('computer/auth')[0]!
     transport.deliver(
       buildComputerCpFrame(
@@ -91,7 +91,8 @@ function harness() {
           heartbeatSec: 15,
           serverTime: new Date(clock.now()).toISOString(),
           credential: credential(),
-          policy: ComputerPolicySchema.parse({ leaseIdleSeconds: 60 })
+          policy: ComputerPolicySchema.parse({ leaseIdleSeconds: 60 }),
+          ...(features ? { features } : {})
         },
         { corr: auth.id }
       )
@@ -112,6 +113,51 @@ function harness() {
 }
 
 describe('ComputerCpClient', () => {
+  it('reports audit entries only to a CP that accepts them, and only once it stored them', async () => {
+    const entry = {
+      id: '00000000-0000-4000-8000-0000000000dd',
+      at: new Date(0).toISOString(),
+      tool: 'computer_click',
+      client: 'local',
+      outcome: 'ok' as const,
+      ms: 1
+    }
+    const old = harness()
+    old.client.start()
+    await settle()
+    old.authOk(old.transports[0]!)
+    await settle()
+    expect(await old.client.reportAudit([entry])).toBe('retry')
+    expect(old.transports[0]!.ofType('computer/audit')).toEqual([])
+
+    const h = harness()
+    h.client.start()
+    await settle()
+    const transport = h.transports[0]!
+    h.authOk(transport, ['computer-audit-v1'])
+    await settle()
+    const sent = h.client.reportAudit([entry])
+    const report = transport.ofType('computer/audit')[0]!
+    expect(report.payload).toEqual({ entries: [entry] })
+    transport.deliver(buildComputerCpFrame('computer/audit/ok', { stored: 1 }, { corr: report.id }))
+    expect(await sent).toBe('stored')
+
+    const failed = h.client.reportAudit([entry])
+    const again = transport.ofType('computer/audit')[1]!
+    transport.deliver(
+      buildComputerCpFrame('error', { code: 'INTERNAL', message: 'db', retryable: true }, { corr: again.id })
+    )
+    expect(await failed).toBe('retry')
+
+    // A non-retryable refusal tells the reporter that resending the same batch cannot help.
+    const refused = h.client.reportAudit([entry])
+    const third = transport.ofType('computer/audit')[2]!
+    transport.deliver(
+      buildComputerCpFrame('error', { code: 'BAD_PAYLOAD', message: 'bad', retryable: false }, { corr: third.id })
+    )
+    expect(await refused).toBe('rejected')
+  })
+
   it('hands the told control lease on and reports its local lease in every heartbeat', async () => {
     const h = harness()
     h.client.start()

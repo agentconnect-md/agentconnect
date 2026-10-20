@@ -48,6 +48,7 @@ function setup(
     handshakes?: HandshakeGate
     leases?: ComputerConnDeps['leases']
     relays?: ComputerConnDeps['relays']
+    audit?: ComputerConnDeps['audit']
     keyDeliveryMs?: number
   } = {}
 ) {
@@ -79,7 +80,8 @@ function setup(
     heartbeatSec: 15,
     ...(over.handshakes ? { handshakes: over.handshakes } : {}),
     ...(over.leases ? { leases: over.leases } : {}),
-    ...(over.relays ? { relays: over.relays } : {})
+    ...(over.relays ? { relays: over.relays } : {}),
+    ...(over.audit ? { audit: over.audit } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -116,6 +118,41 @@ describe('ComputerConnection', () => {
     expect(transport.ofType('computer/relays').map((f) => f.payload)).toEqual([{ relays: [relay] }])
     registry.pushRelays([])
     expect(transport.ofType('computer/relays').at(-1)?.payload).toEqual({ relays: [] })
+  })
+
+  it('offers computer-audit-v1 only with an audit store, and acks a stored batch', async () => {
+    const plain = setup()
+    plain.transport.deliver(auth())
+    await settle()
+    const plainOk = plain.transport.ofType('computer/auth/ok')[0]!
+    expect(plainOk.type === 'computer/auth/ok' && plainOk.payload.features).toBeUndefined()
+
+    const record = vi.fn(async () => 1)
+    const { transport } = setup({ audit: { record } })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]).toMatchObject({ payload: { features: ['computer-audit-v1'] } })
+    const entry = {
+      id: '00000000-0000-4000-8000-0000000000dd',
+      at: new Date(T0).toISOString(),
+      tool: 'computer_type',
+      client: 'local',
+      outcome: 'ok' as const,
+      textLength: 5,
+      ms: 3
+    }
+    const report = buildComputerCpFrame('computer/audit', { entries: [entry] })
+    transport.deliver(report)
+    await settle()
+    expect(record).toHaveBeenCalledWith('org_1', CID, [entry])
+    expect(transport.ofType('computer/audit/ok')[0]).toMatchObject({ corr: report.id, payload: { stored: 1 } })
+
+    record.mockRejectedValueOnce(new Error('db down'))
+    const again = buildComputerCpFrame('computer/audit', { entries: [entry] })
+    transport.deliver(again)
+    await settle()
+    expect(transport.ofType('error').at(-1)).toMatchObject({ corr: again.id, payload: { retryable: true } })
+    expect(transport.closed).toBeUndefined()
   })
 
   it('refuses a bad key with AUTH_FAILED and close 4401', async () => {

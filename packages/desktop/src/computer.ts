@@ -1,5 +1,9 @@
 import { hostname, release } from 'node:os'
-import { computerLeaseHolderName, type ComputerControlLease } from '@agentconnect.md/protocol/computer'
+import {
+  computerLeaseHolderName,
+  normalizeComputerKey as normalizeKey,
+  type ComputerControlLease
+} from '@agentconnect.md/protocol/computer'
 import type { AuditSink } from './audit.js'
 import type { DesktopConfig } from './config.js'
 import {
@@ -84,7 +88,6 @@ export type ComputerConfig = Pick<
 const MODIFIERS = new Set(['ctrl', 'control', 'shift', 'alt', 'option', 'cmd', 'command', 'win', 'meta', 'super', 'fn'])
 const WINDOWS_KEYS = new Set(['win', 'meta', 'super', 'cmd', 'command'])
 const MAC_COMMAND_KEYS = new Set(['cmd', 'command', 'meta'])
-const KEY_ALIASES: Record<string, string> = { enter: 'return', esc: 'escape', control: 'ctrl', option: 'alt' }
 const HUMAN_POLL_MS = 500
 const MAX_TYPE_CHARS = 4096
 const TYPE_REMAP_PAUSE_MS = 40
@@ -828,11 +831,6 @@ function passthroughKeys(args: Record<string, unknown>): string[] {
     .flatMap((value) => (value.length > 1 ? value.split('+') : [value]))
     .filter((key) => key.trim() !== '')
     .map(normalizeKey)
-}
-
-function normalizeKey(key: string): string {
-  const lowered = key.trim().toLowerCase()
-  return KEY_ALIASES[lowered] ?? lowered
 }
 
 function toComputerError(error: unknown): ComputerError {

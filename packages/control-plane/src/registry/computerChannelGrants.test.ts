@@ -28,6 +28,8 @@ function setup(
   const record = {
     id: ComputerId(CID),
     orgId: ORG,
+    name: 'Desk',
+    ownerUserId: 'user_owner',
     status: 'online',
     lastSeenAt: new Date(T0 - 1000),
     policy: ComputerPolicySchema.parse(policy),
@@ -45,6 +47,17 @@ function setup(
 const who = { agentId: AGENT, sessionId: 'sess-1', daemonId: DAEMON }
 
 describe('ComputerChannelGrants', () => {
+  it('names the Computer, its owner and its approval policy for the approval cards', async () => {
+    const policy = { allowedAgents: [AGENT], approvals: { launchApp: 'session', submitLikeKeys: false } }
+    const result = await setup({}, policy).grants.grant(ORG, CID, who)
+    expect(result).toMatchObject({
+      granted: true,
+      name: 'Desk',
+      ownerUserId: 'user_owner',
+      approvals: { firstInputPerSession: true, launchApp: 'session', submitLikeKeys: false }
+    })
+  })
+
   it('issues a session token the desktop verifies with its current channel key', async () => {
     const { grants, keys } = setup()
     const result = await grants.grant(ORG, CID, who)

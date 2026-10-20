@@ -5,7 +5,8 @@ import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
-import { fileAuditSink } from './audit.js'
+import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
+import { AuditReporter } from './cp/audit-report.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
 import { Computer } from './computer.js'
 import {
@@ -281,7 +282,8 @@ function buildComputer(
   dir: string,
   config: DesktopConfig,
   onStatus?: (status: string) => void,
-  refusal?: () => string | undefined
+  refusal?: () => string | undefined,
+  report?: AuditSink
 ) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
@@ -293,7 +295,7 @@ function buildComputer(
   const computer = new Computer({
     driver,
     config,
-    audit: fileAuditSink(join(dir, 'audit.log')),
+    audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(report ? [report] : [])),
     log,
     ...(onStatus ? { onStatus } : {}),
     ...(refusal ? { refusal } : {})
@@ -387,7 +389,7 @@ function startCpChannel(options: {
       }
     },
     onPolicy: (policy) => {
-      // Lease limits apply now; the rest of the policy is enforced as later M1 work lands (approvals, agent grants).
+      // Lease limits apply here; the agent daemon asks for approvals (§4.2) and the CP enforces agent grants.
       config.leaseIdleSeconds = policy.leaseIdleSeconds
       config.leaseMaxSeconds = policy.leaseMaxSeconds
     },
@@ -516,6 +518,15 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
       live.channel?.relays.stop()
     }
   })
+  // A registered desktop also reports every call to the Control Plane, which keeps the owner's per-Computer audit (§8.2).
+  const auditReport =
+    registration && !registration.revokedAt
+      ? new AuditReporter({
+          send: (entries) => live.channel?.client.reportAudit(entries) ?? Promise.resolve('retry' as const),
+          log
+        })
+      : undefined
+  auditReport?.start()
   const { driver, computer } = buildComputer(
     dir,
     config,
@@ -523,7 +534,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
       setTitle(status)
       live.channel?.client.beat()
     },
-    () => authority.refusal()
+    () => authority.refusal(),
+    auditReport?.sink
   )
   setTitle('online')
   if (registration?.revokedAt)
@@ -542,8 +554,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   const driverTools = await loadDriverTools(driver, config)
   const viewer = buildViewer(dir, config, computer, () => authority.refusal())
   live.viewer = viewer
-  const createMcpServer = ({ client, viewOnly }: McpPrincipal): McpServer =>
-    createComputerMcpServer({ computer, client, driverTools, viewOnly })
+  const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
+    createComputerMcpServer({ computer, client, driverTools, viewOnly, ...(agent ? { agent } : {}) })
   const server = await startHttpServer({
     host: config.host,
     port: config.port,
@@ -590,6 +602,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     stopping = true
     log('shutting down')
     computer.pause('daemon shutting down')
+    auditReport?.stop()
+    await auditReport?.flush()
     live.channel?.stop()
     authority.close()
     releaseDisplay()

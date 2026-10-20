@@ -4,14 +4,18 @@ import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
 import { ComputerControlLease } from './computer-lease.js'
-import { COMPUTER_RELAYS_MAX, ComputerRelayEntry } from './computer-channel.js'
+import { COMPUTER_RELAYS_MAX, ComputerApprovalsSchema, ComputerRelayEntry } from './computer-channel.js'
+import { ComputerAuditAck, ComputerAuditReport } from './computer-audit.js'
 
 // The lease schemas ride both wires, so the `./computer` entry serves them to the desktop too.
 export * from './computer-lease.js'
 // The data plane's grant, relays and channel tokens, for the desktop and the agent daemon alike.
 export * from './computer-channel.js'
 export * from './relay-computer.js'
+// Audit entries the desktop reports and the approval outcome agent daemons attach to a call (§4.2, §8.2).
+export * from './computer-audit.js'
 export * from '../computer-channel-token.js'
+export * from './computer-keys.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 
@@ -60,12 +64,6 @@ function isTimeZone(tz: string): boolean {
 }
 
 const AppId = z.string().trim().min(1).max(256)
-
-export const ComputerApprovalsSchema = z.object({
-  firstInputPerSession: z.boolean().default(true),
-  launchApp: z.enum(['always', 'session', 'never-ask']).default('always'),
-  submitLikeKeys: z.boolean().default(true)
-})
 
 /** Who may use a Computer and how (computer-use.md §4.1); every field has a safe default. */
 export const ComputerPolicySchema = z
@@ -168,7 +166,9 @@ export const ComputerAuthOk = z.object({
   heartbeatSec: z.number().int().positive(),
   serverTime: z.string().datetime(),
   credential: ComputerChannelCredential,
-  policy: ComputerPolicySchema
+  policy: ComputerPolicySchema,
+  // What this CP accepts on the channel beyond the base frames, such as `computer-audit-v1`.
+  features: z.array(z.string().min(1).max(64)).max(32).optional()
 })
 export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>
 
@@ -227,6 +227,8 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/revoke': ComputerRevoke,
   'computer/lease': ComputerLeasePush,
   'computer/relays': ComputerRelaysPush,
+  'computer/audit': ComputerAuditReport,
+  'computer/audit/ok': ComputerAuditAck,
   error: ErrorFrame
 } as const
 
@@ -242,6 +244,8 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/revoke', COMPUTER_CP_SCHEMAS['computer/revoke']),
   frameSchema('computer/lease', COMPUTER_CP_SCHEMAS['computer/lease']),
   frameSchema('computer/relays', COMPUTER_CP_SCHEMAS['computer/relays']),
+  frameSchema('computer/audit', COMPUTER_CP_SCHEMAS['computer/audit']),
+  frameSchema('computer/audit/ok', COMPUTER_CP_SCHEMAS['computer/audit/ok']),
   frameSchema('error', COMPUTER_CP_SCHEMAS['error'])
 ])
 export type ComputerCpFrame = z.infer<typeof ComputerCpFrame>

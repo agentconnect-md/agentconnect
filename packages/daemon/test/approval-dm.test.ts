@@ -158,6 +158,50 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     await w.store.close()
   })
 
+  it('sends a computer-use approval to the Computer owner first, and down the usual chain when they cannot be reached (computer-use.md §4.2)', async () => {
+    const owner = 'cu-owner'
+    const route = vi.fn(async (payload: { requestId: string; consoleUserId?: string; verify?: unknown }) => {
+      if (payload.verify) return { requestId: payload.requestId, allowed: true, displayName: 'Ada' }
+      if (payload.consoleUserId === owner)
+        return { requestId: payload.requestId, target: { ...TARGET, consoleUserId: owner } }
+      return { requestId: payload.requestId, target: TARGET }
+    })
+    const w = await world({ platform: 'slack', requesterId: 'U-asker', route })
+    const params = {
+      ...permissionParams(),
+      toolCall: {
+        toolCallId: 'computer-approval-1',
+        title: 'Computer use on “Desk”: click at (1, 2) (first input this session)'
+      }
+    } as RequestPermissionRequest
+    const decided = w.coordinator.askComputerApproval(w.p, params, owner)
+    await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(route.mock.calls[0]![0]).toMatchObject({ consoleUserId: owner, integrationIds: ['int-1'] })
+    expect(route.mock.calls).toHaveLength(1)
+    await w.coordinator.handlePermissionChoice({
+      requestId: requestIdOf(route),
+      optionId: 'o-allow',
+      actor: { userId: 'U1' }
+    })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    expect((route.mock.calls[1]![0] as { verify?: { consoleUserId: string } }).verify?.consoleUserId).toBe(owner)
+    await w.store.close()
+
+    // An owner the CP cannot route (not an editor, or not linked) leaves the usual chain to pick someone.
+    const fallback = vi.fn(async (payload: { requestId: string; consoleUserId?: string }) =>
+      payload.consoleUserId ? { requestId: payload.requestId } : { requestId: payload.requestId, target: TARGET }
+    )
+    const other = await world({ platform: 'slack', requesterId: 'U1', route: fallback })
+    void other.coordinator.askComputerApproval(other.p, params, owner)
+    await vi.waitFor(() => expect(other.conn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(fallback.mock.calls.map((call) => (call[0] as { consoleUserId?: string }).consoleUserId)).toEqual([
+      owner,
+      undefined
+    ])
+    await other.coordinator.releaseApprovals(OWNER, ACP_SESSION)
+    await other.store.close()
+  })
+
   it('settles a console decision on the DM card with the chosen option and its decider (#2592)', async () => {
     const w = await world({ platform: 'slack', requesterId: 'U1' })
     const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())

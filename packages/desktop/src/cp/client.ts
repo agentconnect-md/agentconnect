@@ -10,9 +10,11 @@ import {
   type Transport
 } from '@agentconnect.md/connection'
 import {
+  COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
   buildComputerCpFrame,
   decodeComputerCpFrameTolerant,
+  type ComputerAuditEntry,
   type ComputerAuthOk,
   type ComputerControlLease,
   type ComputerCpFrame,
@@ -21,6 +23,7 @@ import {
   type ComputerRelayEntry
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './authority.js'
+import type { AuditSendResult } from './audit-report.js'
 
 const AUTH_TIMEOUT_MS = 15_000
 
@@ -65,6 +68,8 @@ export class ComputerCpClient {
   private heartbeatTimer: TimerHandle | undefined
   private heartbeatMs = 15_000
   private sentFacts: string | undefined
+  // What the CP accepts beyond the base frames, from its last auth reply.
+  private features = new Set<string>()
 
   constructor(private readonly deps: ComputerCpClientDeps) {
     this.clock = deps.clock ?? systemClock
@@ -100,6 +105,21 @@ export class ComputerCpClient {
       if (fresh) this.sentFacts = facts
     } catch (error) {
       this.deps.log(`computer channel: heartbeat failed: ${(error as Error).message}`)
+    }
+  }
+
+  /** Send audit entries (computer-use.md §8.2): stored, retry later, or rejected for good by a non-retryable error. */
+  async reportAudit(entries: ComputerAuditEntry[]): Promise<AuditSendResult> {
+    const transport = this.transport
+    if (this.state !== 'READY' || !transport || !this.features.has(COMPUTER_AUDIT_FEATURE)) return 'retry'
+    try {
+      const reply = await this.correlator.request(buildComputerCpFrame('computer/audit', { entries }), (encoded) =>
+        transport.send(encoded)
+      )
+      return reply.type === 'computer/audit/ok' ? 'stored' : 'retry'
+    } catch (error) {
+      this.deps.log(`computer channel: audit report failed: ${(error as Error).message}`)
+      return error instanceof WireError && !error.retryable ? 'rejected' : 'retry'
     }
   }
 
@@ -149,6 +169,7 @@ export class ComputerCpClient {
     this.state = 'READY'
     this.backoff.reset()
     this.sentFacts = undefined
+    this.features = new Set(ok.features ?? [])
     this.deps.authority.syncClock(ok.serverTime)
     this.deps.authority.accept(ok.credential)
     this.deps.onPolicy?.(ok.policy)

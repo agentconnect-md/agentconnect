@@ -47,6 +47,7 @@ import type {
 } from '../platforms/elicit-card.js'
 import {
   buildApprovalDmIntro,
+  buildComputerCallerApprovalNotice,
   buildElicitationCard,
   buildElicitDmUnanswerableCard,
   buildElicitationResolvedCard,
@@ -591,6 +592,8 @@ export class PermissionCoordinator {
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   /** Runtime approvals handed to an API caller, keyed by the id its answer names. */
   private readonly pendingCallerApprovals = new Map<string, CallerApproval>()
+  /** A computer-use approval's Computer owner, by its request's tool call id (computer-use.md §4.2). */
+  private readonly computerOwners = new Map<string, string>()
 
   /** Decision details discovered inside the platform policy and merged into the
    * single terminal event emitted by AcpHost's policy observer. */
@@ -1223,10 +1226,13 @@ export class PermissionCoordinator {
     chat.ts = ts
     // Approving in chat was turned off while it posted: retire it as the switch retired the others.
     if (!chatApprovalsAllowed(this.host.agents().get(agentId))) this.retireChatApprovalsOffCard(live)
-    else if (this.host.chatEditorsOnly(agentId, p.plan.integrationId))
-      void this.dmEditorBeside(requestId, agentId, p, requesterName).catch((err) => {
-        this.host.log().warn(`approval DM beside the card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
-      })
+    else {
+      const editorsOnly = this.host.chatEditorsOnly(agentId, p.plan.integrationId)
+      if (editorsOnly || this.computerOwnerOf(requestId))
+        void this.dmBesideCard(requestId, agentId, p, requesterName, editorsOnly).catch((err) => {
+          this.host.log().warn(`approval DM beside the card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+        })
+    }
     return await this.trackHumanApprovalWait(p, result)
   }
 
@@ -1478,9 +1484,23 @@ export class PermissionCoordinator {
     const sender = p.entry.msg.sender
     const memberId = sender?.id === asker ? sender.memberId : undefined
     const actor = asker ? { userId: asker, ...(memberId ? { memberId } : {}) } : undefined
-    if (actor && (await this.host.chatActor(agentId, p.plan.integrationId, actor)) === 'allowed') return
-    if (!this.pendingApprovals.has(requestId)) return
+    if (actor && (await this.host.chatActor(agentId, p.plan.integrationId, actor)) === 'allowed') return false
+    if (!this.pendingApprovals.has(requestId)) return true
     await this.sendApprovalDm(requestId, agentId, p, requesterName)
+    return true
+  }
+
+  /** The DMs beside a card: an editor's where only editors may answer, and the Computer owner's unless that DM already went (§4.2). */
+  private async dmBesideCard(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    requesterName: string | null,
+    editorsOnly: boolean
+  ): Promise<void> {
+    // The editor DM routes to the Computer's owner first, so the owner needs no second one.
+    if (editorsOnly && (await this.dmEditorBeside(requestId, agentId, p, requesterName))) return
+    if (this.computerOwnerOf(requestId)) await this.dmComputerOwnerBeside(requestId, agentId, p, requesterName)
   }
 
   /** Say in the channel that a too-long option list was declined; every surface, the console included, shares the cap (#1969). */
@@ -1644,6 +1664,15 @@ export class PermissionCoordinator {
     const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
     const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
     if (integrationIds.length === 0) return undefined
+    // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the usual chain.
+    const computerOwner = subsession ? undefined : this.computerOwnerOf(requestId)
+    if (computerOwner) {
+      const routed = await cp.approvalRoute(
+        { agentId, requestId, consoleUserId: computerOwner, integrationIds },
+        this.host.orgForAgent(agentId)
+      )
+      if (routed.target) return routed.target
+    }
     const requesterId =
       p.plan.platform === 'slack' && p.plan.requesterId && !subsession ? p.plan.requesterId : undefined
     const routed = await cp.approvalRoute(
@@ -2421,11 +2450,71 @@ export class PermissionCoordinator {
     })
   }
 
-  /**
-   * ACP `session/request_permission` policy (wired as AcpHost.onPermission). Built-in
-   * AgentConnect tools are trusted; every other live request waits for an Agent editor by
-   * default. An editor may explicitly opt an agent into Slack chat-side decisions.
-   */
+  /** A computer-use approval (computer-use.md §4.2): the turn's own approval path, plus the Computer's owner in their DM. */
+  async askComputerApproval(
+    p: Pending,
+    params: RequestPermissionRequest,
+    computerOwnerUserId?: string
+  ): Promise<RequestPermissionResponse> {
+    const callId = params.toolCall.toolCallId
+    if (computerOwnerUserId) this.computerOwners.set(callId, computerOwnerUserId)
+    try {
+      return await this.onAcpPermission(p.hostKey, p.acpSessionId, params)
+    } finally {
+      this.computerOwners.delete(callId)
+    }
+  }
+
+  /** The Computer owner a pending computer-use approval also goes to. */
+  private computerOwnerOf(requestId: string): string | undefined {
+    const rec = this.pendingApprovals.get(requestId)
+    return rec?.kind === 'permission' ? this.computerOwners.get(rec.params.toolCall.toolCallId) : undefined
+  }
+
+  /** An API caller answers a computer-use approval on its own stream; the Computer's owner is told in their DM (§4.2). */
+  private async noticeComputerOwner(agentId: string, p: Pending, params: RequestPermissionRequest, owner: string) {
+    const cp = this.host.cpApprovalRoute()
+    if (!cp) return
+    const integrationIds = this.host.approvalDmIntegrations(agentId, undefined)
+    if (integrationIds.length === 0) return
+    const { target } = await cp.approvalRoute(
+      { agentId, requestId: params.toolCall.toolCallId, consoleUserId: owner, integrationIds },
+      this.host.orgForAgent(agentId)
+    )
+    const conn = target ? this.host.slackConnFor(target.integrationId) : undefined
+    if (!target || !conn) return
+    const channel = await conn.openDirectMessage(target.userId)
+    const blocks = buildComputerCallerApprovalNotice({
+      agentName: p.plan.agentName,
+      title: permToolLabel(params),
+      sessionUrl: this.host.sessionLink(p.outwardSessionId, 'slack')
+    })
+    await conn.postBlocks(channel, blocks, `Computer use asked by ${p.plan.agentName}`, undefined, {
+      ...(slackAgentIdentityOptions(p.plan) ?? {}),
+      chrome: true
+    })
+  }
+
+  /** A computer-use card in the conversation also reaches the Computer's owner in their DM, unless they asked there. */
+  private async dmComputerOwnerBeside(requestId: string, agentId: string, p: Pending, requesterName: string | null) {
+    const cp = this.host.cpApprovalRoute()
+    const owner = this.computerOwnerOf(requestId)
+    if (!cp || !owner) return
+    const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
+    if (integrationIds.length === 0) return
+    const { target } = await cp.approvalRoute(
+      { agentId, requestId, consoleUserId: owner, integrationIds },
+      this.host.orgForAgent(agentId)
+    )
+    if (!target || (target.integrationId === p.plan.integrationId && target.userId === p.plan.requesterId)) return
+    const conn = this.host.slackConnFor(target.integrationId)
+    if (!conn || !this.pendingApprovals.has(requestId)) return
+    const channel = await conn.openDirectMessage(target.userId)
+    await this.sendApprovalDm(requestId, agentId, p, requesterName, undefined, { target, channel }, true)
+  }
+
+  /** ACP `session/request_permission` policy (AcpHost.onPermission): built-in tools are trusted, the rest wait for an editor unless chat decisions are on. */
   async onAcpPermission(
     owner: HostKey,
     sessionId: string,
@@ -2496,6 +2585,11 @@ export class PermissionCoordinator {
     }
     // An API caller decides first: its refusal stands, and only an allow it may not make reaches an Agent editor.
     if (this.callerAnswers(p)) {
+      const computerOwner = this.computerOwners.get(params.toolCall.toolCallId)
+      if (computerOwner)
+        void this.noticeComputerOwner(agentId, p, params, computerOwner).catch((err) => {
+          this.host.log().warn(`computer owner notice for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+        })
       const option = (...kinds: string[]) =>
         kinds.map((kind) => params.options.find((o) => o.kind === kind)).find((o) => o !== undefined)
       const select = (o: { optionId: string } | undefined): RequestPermissionResponse => {

@@ -65,6 +65,7 @@ import {
   PgMcpProviderOauthStateStore,
   PgSkillSourceRepo,
   PgComputerRepo,
+  PgComputerAuditRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -101,6 +102,7 @@ import { DaemonAuthService } from '../../src/registry/authService.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { ComputerService } from '../../src/registry/computerService.js'
+import { ComputerAuditLog } from '../../src/registry/computerAuditLog.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
 import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
@@ -304,6 +306,7 @@ export function buildHttpApp(
   const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock)
   const computerRepo = new PgComputerRepo(prisma)
   const computerService = new ComputerService(codec, computerRepo, apiKeyRepo, auditRepo, clock)
+  const computerAudit = new ComputerAuditLog(new PgComputerAuditRepo(prisma), clock)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(TEST_API_KEY_PEPPER),
     new PgOrgInviteLinkRepo(prisma),
@@ -657,6 +660,7 @@ export function buildHttpApp(
     ),
     apiKeys: apiKeyService,
     computers: computerService,
+    computerAudit,
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
     inviteLinks,

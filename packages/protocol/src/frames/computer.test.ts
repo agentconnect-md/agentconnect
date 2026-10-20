@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_FRAME_TYPES,
+  computerAuditArgs,
+  computerAuditText,
   ComputerPolicySchema,
   buildComputerCpFrame,
   decodeComputerCpFrame,
@@ -34,6 +37,20 @@ const lease = {
   expiresAt: '2026-10-20T00:30:00.000Z'
 }
 
+const auditEntry = {
+  id: '00000000-0000-4000-8000-0000000000dd',
+  at: '2026-10-20T00:00:01.000Z',
+  tool: 'computer_type',
+  client: '00000000-0000-4000-8000-0000000000bb/sess-1',
+  agentId: '00000000-0000-4000-8000-0000000000bb',
+  sessionId: 'sess-1',
+  outcome: 'ok' as const,
+  approval: 'allowed' as const,
+  args: {},
+  textLength: 6,
+  ms: 40
+}
+
 const roundTrip = (frame: unknown) => decodeComputerCpFrame(JSON.stringify(frame))
 
 describe('computer channel frames', () => {
@@ -47,6 +64,8 @@ describe('computer channel frames', () => {
       'computer/revoke',
       'computer/lease',
       'computer/relays',
+      'computer/audit',
+      'computer/audit/ok',
       'error'
     ])
     const frames = [
@@ -67,6 +86,9 @@ describe('computer channel frames', () => {
         relays: [{ relayId: '00000000-0000-4000-8000-0000000000cc', url: 'wss://relay-0.example.com/rd/ws' }]
       }),
       buildComputerCpFrame('computer/heartbeat', { status: 'busy', lease: { holder: 'sess-1', idleMs: 1200 } }),
+      buildComputerCpFrame('computer/auth/ok', { ...authOk, features: [COMPUTER_AUDIT_FEATURE] }),
+      buildComputerCpFrame('computer/audit', { entries: [auditEntry] }),
+      buildComputerCpFrame('computer/audit/ok', { stored: 1 }),
       buildComputerCpFrame('error', { code: 'AUTH_FAILED', message: 'no', retryable: false })
     ]
     for (const frame of frames) {
@@ -157,5 +179,39 @@ describe('computer control lease frames', () => {
       )
     )
     expect(unknownCode.ok).toBe(false)
+  })
+})
+
+describe('computer audit frames', () => {
+  it('keeps typed text by its length only', () => {
+    expect(computerAuditArgs({ text: 'héllo\n' })).toEqual({ args: {}, textLength: 6 })
+    expect(computerAuditArgs({ element_token: 'e1', value: 'secret' })).toEqual({
+      args: { element_token: 'e1' },
+      textLength: 6
+    })
+    expect(computerAuditArgs({ keys: ['ctrl', 's'] })).toEqual({ args: { keys: ['ctrl', 's'] } })
+  })
+
+  it('bounds the argument summary', () => {
+    expect(computerAuditArgs({ app: 'a'.repeat(600) }).args).toEqual({ app: 'a'.repeat(256) })
+    const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, 'x'.repeat(100)]))
+    expect(computerAuditArgs(many).args).toEqual({ truncated: true })
+  })
+
+  it('cleans every string a store could refuse, keys and nested values included', () => {
+    expect(
+      computerAuditArgs({ 'a\u0000pp': 'fire\u0000fox', keys: [' re\u0007turn'], deep: { x: ['\udc00y'] } }).args
+    ).toEqual({
+      app: 'firefox',
+      keys: [' return'],
+      deep: { x: ['\ufffdy'] }
+    })
+    expect(computerAuditText('tab\tand\nline\u007f')).toBe('tab\tand\nline')
+  })
+
+  it('refuses an entry with an unknown field or an empty batch', () => {
+    const extra = buildComputerCpFrame('computer/audit', { entries: [{ ...auditEntry, text: 'hi' } as never] })
+    expect(roundTrip(extra).ok).toBe(false)
+    expect(roundTrip(buildComputerCpFrame('computer/audit', { entries: [] })).ok).toBe(false)
   })
 })
