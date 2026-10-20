@@ -6,7 +6,8 @@ import {
   COMPUTER_CP_SUBPROTOCOL,
   buildComputerCpFrame,
   type ComputerAuthOk,
-  type ComputerCpFrame
+  type ComputerCpFrame,
+  type ComputerDoctorReport
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildApp, type App } from '../../src/app.js'
@@ -145,7 +146,7 @@ describe('Computer channel', () => {
     expect(Date.parse(ok.credential.expiresAt) - Date.now()).toBeGreaterThan(140_000)
     expect(await getComputer(app, reg.computerId)).toMatchObject({ status: 'online', desktopDaemonVersion: '0.2.0' })
 
-    const doctor = {
+    const doctor: ComputerDoctorReport = {
       checkedAt: new Date().toISOString(),
       checks: [
         { name: 'session', status: 'ok', detail: 'X11 display :0' },

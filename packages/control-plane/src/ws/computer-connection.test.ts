@@ -84,7 +84,8 @@ describe('ComputerConnection', () => {
       corr: req.id,
       payload: { computerId: CID, orgId: 'org_1', name: 'desk', heartbeatSec: 15 }
     })
-    expect(ok!.type === 'computer/auth/ok' && Date.parse(ok.payload.credential.expiresAt)).toBeGreaterThan(T0)
+    const okFrame = ok!
+    expect(okFrame.type === 'computer/auth/ok' && Date.parse(okFrame.payload.credential.expiresAt)).toBeGreaterThan(T0)
     expect(reports[0]).toEqual({ status: 'online', desktopDaemonVersion: '0.2.0' })
     expect(registry.get(CID)).toBe(conn)
   })
@@ -126,7 +127,8 @@ describe('ComputerConnection', () => {
     const renewals = transport.ofType('computer/credential')
     expect(renewals).toHaveLength(1)
     const first = transport.ofType('computer/auth/ok')[0]!
-    expect(renewals[0]!.type === 'computer/credential' && renewals[0].payload.credential.keyId).not.toBe(
+    const renewal = renewals[0]!
+    expect(renewal.type === 'computer/credential' && renewal.payload.credential.keyId).not.toBe(
       first.type === 'computer/auth/ok' && first.payload.credential.keyId
     )
   })
