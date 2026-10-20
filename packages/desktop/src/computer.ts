@@ -19,6 +19,7 @@ export type ComputerErrorCode =
   | 'driver_error'
   | 'driver_unavailable'
   | 'uncertain'
+  | 'unavailable'
 
 export class ComputerError extends Error {
   constructor(
@@ -62,6 +63,8 @@ export interface ComputerDeps {
   onStatus?: (status: string) => void
   // Decides which shortcuts count as OS-level; defaults to this process's platform.
   platform?: NodeJS.Platform
+  // Why the Control Plane's authority is missing (revoked, or its channel key lapsed); undefined while it may act.
+  refusal?: () => string | undefined
 }
 
 export type ComputerConfig = Pick<
@@ -93,6 +96,7 @@ export class Computer {
   private readonly log: (line: string) => void
   private readonly onStatus: (status: string) => void
   private readonly platform: NodeJS.Platform
+  private readonly refusal: () => string | undefined
   private lastStatus = ''
   private lease: Lease | undefined
   // `by` is set when a remote human took over through the web viewer.
@@ -114,16 +118,43 @@ export class Computer {
     this.log = deps.log ?? (() => undefined)
     this.onStatus = deps.onStatus ?? (() => undefined)
     this.platform = deps.platform ?? process.platform
+    this.refusal = deps.refusal ?? (() => undefined)
+  }
+
+  // ---- Control Plane authority (computer-use.md §8.2): checked before every screenshot, input and viewer frame ----
+
+  private assertAuthorized(): void {
+    const refusal = this.refusal()
+    if (refusal) throw new ComputerError('unavailable', refusal)
+  }
+
+  // Authority was lost: drop the lease and any viewer takeover; later calls are refused until it returns.
+  suspend(reason: string): void {
+    if (this.lease) this.log(`lease of ${this.lease.holder} revoked: ${reason}`)
+    this.lease = undefined
+    if (this.paused?.by) this.paused = undefined
+    this.stopPolling()
+    this.notify()
+  }
+
+  // The status the Computer channel heartbeat reports.
+  liveStatus(): 'online' | 'paused' | 'human_in_control' | 'busy' {
+    this.expireLease()
+    if (this.paused?.by) return 'human_in_control'
+    if (this.paused) return 'paused'
+    return this.lease ? 'busy' : 'online'
   }
 
   private notify(): void {
-    const status = this.paused?.by
-      ? `viewer ${this.paused.by} in control`
-      : this.paused
-        ? 'paused'
-        : this.lease
-          ? `controlled by ${this.lease.holder}`
-          : 'online'
+    const status = this.refusal()
+      ? 'unavailable'
+      : this.paused?.by
+        ? `viewer ${this.paused.by} in control`
+        : this.paused
+          ? 'paused'
+          : this.lease
+            ? `controlled by ${this.lease.holder}`
+            : 'online'
     if (status === this.lastStatus) return
     this.lastStatus = status
     this.log(`status: ${status}`)
@@ -148,6 +179,7 @@ export class Computer {
   // ---- remote human takeover (web viewer): blocks agents exactly like an owner pause ----
 
   takeOver(client: string): void {
+    this.assertAuthorized()
     if (this.paused && this.paused.by !== client) {
       throw new ComputerError('human_in_control', this.paused.reason, { by: this.paused.by ?? 'owner' })
     }
@@ -195,7 +227,10 @@ export class Computer {
         })
         const call = viewerCall(input, px)
         this.assertViewerControl(client)
-        await this.callDriver(call)
+        await this.callDriver(call, () => {
+          this.assertAuthorized()
+          this.assertViewerControl(client)
+        })
       })
       if (input.type !== 'move')
         this.audit({ client, tool: `viewer_${input.type}`, args, outcome: 'ok', ms: this.now() - started })
@@ -222,6 +257,8 @@ export class Computer {
       osVersion: release(),
       status: this.paused ? 'paused' : this.lease ? 'busy' : 'online',
       paused: this.paused ?? null,
+      // Set while the Control Plane's authority is missing: every tool and viewer call is refused.
+      unavailable: this.refusal() ?? null,
       lease: this.lease
         ? {
             holder: this.lease.holder,
@@ -248,6 +285,7 @@ export class Computer {
   // ---- lease ----
 
   acquire(holder: string): Lease {
+    this.assertAuthorized()
     this.expireLease()
     if (this.paused) throw new ComputerError('human_in_control', 'the owner paused this computer', this.paused)
     if (this.lease && this.lease.holder !== holder) {
@@ -332,6 +370,8 @@ export class Computer {
 
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.queue.then(async () => {
+      // A call queued before the authority went away must not run after it.
+      this.assertAuthorized()
       this.busy = true
       this.actions++
       try {
@@ -351,6 +391,8 @@ export class Computer {
   }
 
   private async captureScreen(signal?: AbortSignal): Promise<ToolOutput> {
+    // A capture started after the authority went away, such as a post-action screenshot, is refused too.
+    this.assertAuthorized()
     const result = await this.driver.call(
       'get_desktop_state',
       { max_image_dimension: this.config.maxImageDimension },
@@ -529,7 +571,7 @@ export class Computer {
         this.acquire(client)
         let result: DriverResult
         try {
-          result = await this.callDriver(call)
+          result = await this.callDriver(call, () => this.assertStillHolds(client))
         } catch (error) {
           if (error instanceof DriverUncertainError) return this.uncertain(error)
           throw error
@@ -571,8 +613,18 @@ export class Computer {
     return { content, isError: true }
   }
 
+  // Between the driver calls of one action: authority, a pause and the lease are rechecked so a revoke stops what is left.
+  private assertStillHolds(client: string): void {
+    this.assertAuthorized()
+    if (this.paused) throw new ComputerError('human_in_control', 'the owner paused this computer', this.paused)
+    if (this.lease?.holder !== client) throw new ComputerError('unavailable', 'the control lease was revoked')
+  }
+
   // Real Xorg typed "你好" as "好好": back to back, the next keymap remap lands before the app reads the previous key.
-  private async callDriver(call: { name: string; args: Record<string, unknown> }): Promise<DriverResult> {
+  private async callDriver(
+    call: { name: string; args: Record<string, unknown> },
+    fence: () => void
+  ): Promise<DriverResult> {
     const text = call.args.text
     if (
       call.name !== 'type_text' ||
@@ -583,8 +635,19 @@ export class Computer {
       return this.driver.call(call.name, call.args)
     }
     let result: DriverResult = { content: [] }
+    let typed = 0
     for (const segment of typingSegments(text)) {
+      if (typed > 0) {
+        try {
+          fence()
+        } catch (error) {
+          const failure = toComputerError(error)
+          const progress = `stopped after typing ${typed} of ${[...text].length} characters`
+          throw new ComputerError(failure.code, `${failure.message}; ${progress}`, failure.details)
+        }
+      }
       result = await this.driver.call(call.name, { ...call.args, text: segment })
+      typed += [...segment].length
       if (segment.length === 1 && !/[\x20-\x7e\n\t]/.test(segment)) await this.sleep(TYPE_REMAP_PAUSE_MS)
     }
     return result
@@ -622,6 +685,7 @@ export class Computer {
   ): Promise<ToolOutput> {
     const started = this.now()
     try {
+      this.assertAuthorized()
       const output = await fn()
       this.audit({
         client,

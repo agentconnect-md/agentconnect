@@ -141,6 +141,7 @@ export function buildApp(deps: BuildAppDeps): App {
 
   let wss: WebSocketServer | undefined
   let relayWss: WebSocketServer | undefined
+  let computerWss: WebSocketServer | undefined
 
   return {
     http: container.http,
@@ -149,9 +150,9 @@ export function buildApp(deps: BuildAppDeps): App {
         // Fastify drops its bind-failure listener once listen() resolves, so a later accept error is fatal unheard.
         container.http.server.on('error', (err) => container.http.log.warn(`http server socket error: ${err.message}`))
         wss = container.wsGateway(container.http)
-        // The relay control gateway rides the same http.Server on its own path;
-        // mount it alongside so one `mountWs()` call attaches both edges.
+        // The relay and Computer gateways ride the same http.Server on their own paths.
         relayWss = container.relayGateway(container.http)
+        computerWss = container.computerGateway(container.http)
       }
       return wss
     },
@@ -163,17 +164,17 @@ export function buildApp(deps: BuildAppDeps): App {
       container.readiness.beginShutdown()
     },
     async drainWs() {
-      await Promise.all([drainServer(wss), drainServer(relayWss)])
+      await Promise.all([drainServer(wss), drainServer(relayWss), drainServer(computerWss)])
     },
     async shutdown() {
       // Drain any still-connected clients first: in noServer mode `wss.close()`
       // never closes established sockets — its callback only fires once the
       // client set empties, so without the drain this await can hang forever.
-      await Promise.all([drainServer(wss), drainServer(relayWss)])
+      await Promise.all([drainServer(wss), drainServer(relayWss), drainServer(computerWss)])
       // Close all WS servers so no upgrade races the Prisma disconnect.
       const close = (s: WebSocketServer | undefined): Promise<void> =>
         new Promise<void>((resolve) => (s ? s.close(() => resolve()) : resolve()))
-      await Promise.all([close(wss), close(relayWss)])
+      await Promise.all([close(wss), close(relayWss), close(computerWss)])
       await container.shutdown()
     }
   }

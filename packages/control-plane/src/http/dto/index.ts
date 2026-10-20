@@ -15,6 +15,7 @@ import {
   COMPUTER_SESSIONS,
   COMPUTER_STATUSES,
   ComputerCapabilitiesSchema,
+  ComputerDoctorReport,
   ComputerPolicySchema
 } from '../../domain/computer.js'
 import {
@@ -4542,8 +4543,11 @@ export const ComputerDto = z.object({
   os: z.enum(COMPUTER_OSES),
   osVersion: z.string(),
   session: z.enum(COMPUTER_SESSIONS),
+  /** `offline` also when a live status went stale: the desktop's channel stopped without a clean close. */
   status: z.enum(COMPUTER_STATUSES),
   capabilities: ComputerCapabilitiesSchema,
+  /** The last `doctor` report from the Computer channel, each failure with its fix; null until it first connects. */
+  doctor: ComputerDoctorReport.nullable(),
   desktopDaemonVersion: z.string(),
   driverVersion: z.string(),
   policy: ComputerPolicySchema,
@@ -4599,5 +4603,7 @@ export const RegisteredComputerDto = z.object({
   apiKeyId: z.string(),
   /** The Computer key, shown exactly once; it authenticates only the Computer channel. */
   apiKey: z.string(),
-  displayTail: z.string()
+  displayTail: z.string(),
+  /** The Computer channel (WebSocket) the desktop daemon dials with the key. */
+  channelUrl: z.string()
 })

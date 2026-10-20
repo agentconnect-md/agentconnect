@@ -30,6 +30,18 @@ import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { appBundlePath, runSelf, selfCommand } from './self.js'
+import { ChannelAuthority } from './cp/authority.js'
+import { ComputerCpClient } from './cp/client.js'
+import {
+  exchangeRegistrationToken,
+  loadRegistration,
+  markRevoked,
+  registrationPath,
+  saveRegistration,
+  type Registration
+} from './cp/registration.js'
+import { capabilitiesFrom, computerOs, doctorReport, isolationKind, osVersion, sessionKind } from './cp/report.js'
+import { DESKTOP_DAEMON_VERSION } from './version.js'
 import * as linuxService from './service-linux.js'
 import {
   installService,
@@ -62,6 +74,11 @@ Commands:
                                                one-time install, run on the desktop itself: config + client token,
                                                Cua Driver ${CUA_DRIVER_VERSION}, ffmpeg, then the OS approvals (macOS
                                                Accessibility + Screen Recording, Windows Firewall), then doctor
+  setup --register TOKEN --cp-url URL [--name NAME]
+                                               the same, registering this desktop as a Computer with the Control
+                                               Plane instead of minting a local client token (the key is kept in
+                                               a 0600 file in the data dir)
+  register TOKEN --cp-url URL [--name NAME]    only the registration part of setup; restart the daemon afterwards
   init [--client NAME] [--host H] [--port P]   non-interactive part of setup: config + token + Cua Driver
   install-driver                               download and verify the pinned Cua Driver build
   install-ffmpeg                               download the pinned ffmpeg (${FFMPEG_VERSION}) for the WebRTC viewer
@@ -105,6 +122,9 @@ async function main(): Promise<void> {
       prompt: { type: 'boolean' },
       'capture-timeout': { type: 'string' },
       'no-service': { type: 'boolean' },
+      register: { type: 'string' },
+      'cp-url': { type: 'string' },
+      name: { type: 'string' },
       help: { type: 'boolean', short: 'h' }
     }
   })
@@ -134,8 +154,18 @@ async function main(): Promise<void> {
       else console.log(`Client "${values.client}" already exists; use "token add ${values.client}" to rotate it.`)
       return
     }
-    case 'setup':
-      return setup(dir, overrides(loadConfig(dir)), values.client, !values['no-service'])
+    case 'setup': {
+      const config = overrides(loadConfig(dir))
+      if (values.register) await registerComputer(dir, values.register, values['cp-url'], values.name)
+      return setup(dir, config, values.register ? undefined : values.client, !values['no-service'])
+    }
+    case 'register': {
+      const token = rest[0] ?? values.register
+      if (!token) throw new Error('usage: register TOKEN --cp-url URL [--name NAME]')
+      await registerComputer(dir, token, values['cp-url'], values.name)
+      console.log(`Restart the daemon if it is running so it connects: ${selfCommand()} service restart`)
+      return
+    }
     case 'install-driver':
       await installDriver(dir)
       return
@@ -244,7 +274,12 @@ const driverWrapper = (): string[] | undefined =>
     ? ['systemd-run', '--user', '--scope', '--quiet', '--collect', '--']
     : undefined
 
-function buildComputer(dir: string, config: DesktopConfig, onStatus?: (status: string) => void) {
+function buildComputer(
+  dir: string,
+  config: DesktopConfig,
+  onStatus?: (status: string) => void,
+  refusal?: () => string | undefined
+) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
     command: resolveDriverPath(dir, config.driverPath),
@@ -257,13 +292,124 @@ function buildComputer(dir: string, config: DesktopConfig, onStatus?: (status: s
     config,
     audit: fileAuditSink(join(dir, 'audit.log')),
     log,
-    ...(onStatus ? { onStatus } : {})
+    ...(onStatus ? { onStatus } : {}),
+    ...(refusal ? { refusal } : {})
   })
   return { driver, computer }
 }
 
+// Exchanges a console registration token for this desktop's Computer key and stores it 0600 (computer-use.md §3.6).
+async function registerComputer(
+  dir: string,
+  token: string,
+  cpUrl: string | undefined,
+  name: string | undefined
+): Promise<Registration> {
+  if (!cpUrl) throw new Error('--cp-url is required with a registration token (the console prints it)')
+  const registration = await exchangeRegistrationToken(cpUrl, token, {
+    name: (name ?? hostname()).slice(0, 120),
+    isolation: isolationKind(),
+    os: computerOs(),
+    osVersion: osVersion(),
+    session: sessionKind(),
+    desktopDaemonVersion: DESKTOP_DAEMON_VERSION,
+    driverVersion: CUA_DRIVER_VERSION
+  })
+  saveRegistration(registration, dir)
+  console.log(`Registered as computer ${registration.computerId}; key stored in ${registrationPath(dir)} (mode 0600).`)
+  return registration
+}
+
+const DOCTOR_INTERVAL_MS = 30 * 60_000
+
+// Connects a registered daemon to the Control Plane; returns how to stop it, or undefined when not registered.
+function startCpChannel(options: {
+  dir: string
+  config: DesktopConfig
+  registration: Registration | undefined
+  authority: ChannelAuthority
+  computer: Computer
+  driver: CuaDriver
+  screenSize: Record<string, unknown>
+}): { client: ComputerCpClient; stop(): void } | undefined {
+  const { dir, config, registration, authority, computer, driver, screenSize } = options
+  const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  // Until the first capture, the display comes from the driver's startup screen size.
+  const startupDisplay = {
+    screenWidth: num(screenSize.width),
+    screenHeight: num(screenSize.height),
+    scale: num(screenSize.scale_factor) || 1
+  }
+  if (!registration || registration.revokedAt) return undefined
+  const session = sessionKind()
+  const profile = { osVersion: osVersion(), session, desktopDaemonVersion: DESKTOP_DAEMON_VERSION }
+  let checks: Check[] | undefined
+  let doctorAt: Date | undefined
+  const client = new ComputerCpClient({
+    channelUrl: registration.channelUrl,
+    apiKey: registration.apiKey,
+    desktopDaemonVersion: DESKTOP_DAEMON_VERSION,
+    authority,
+    log,
+    report: () => {
+      const display = computer.info().display as { screenWidth: number; screenHeight: number; scale: number } | null
+      return {
+        status: computer.liveStatus(),
+        facts: {
+          ...profile,
+          driverVersion: driver.version ?? CUA_DRIVER_VERSION,
+          // Capabilities come from doctor, so they are reported only once it has run.
+          ...(checks && doctorAt
+            ? {
+                capabilities: capabilitiesFrom(checks, display ?? startupDisplay, { session, webrtc: config.webrtc }),
+                doctor: doctorReport(checks, doctorAt)
+              }
+            : {})
+        }
+      }
+    },
+    onPolicy: (policy) => {
+      // Lease limits apply now; the rest of the policy is enforced as later M1 work lands (approvals, agent grants).
+      config.leaseIdleSeconds = policy.leaseIdleSeconds
+      config.leaseMaxSeconds = policy.leaseMaxSeconds
+    },
+    onRevoked: (reason) => {
+      markRevoked(dir, reason)
+      log(`REVOKED by the Control Plane (${reason}): the key was forgotten and all input is refused`)
+    }
+  })
+  // Doctor runs in a child of the daemon, so it sees the service's own session and grants.
+  let doctorTimer: NodeJS.Timeout | undefined
+  const runDoctor = async (): Promise<void> => {
+    try {
+      const output = await runSelf(['doctor', '--json', '--here'], 120_000)
+      checks = localizeChecks(JSON.parse(output) as Check[])
+      doctorAt = new Date()
+      client.beat()
+    } catch (error) {
+      log(`doctor for the Control Plane report failed: ${(error as Error).message}`)
+    }
+    doctorTimer = setTimeout(() => void runDoctor(), DOCTOR_INTERVAL_MS)
+    doctorTimer.unref()
+  }
+  client.start()
+  void runDoctor()
+  return {
+    client,
+    stop() {
+      if (doctorTimer) clearTimeout(doctorTimer)
+      client.stop()
+    }
+  }
+}
+
 // Viewer with WebRTC when ffmpeg is usable; a missing ffmpeg is fetched in the background where a build is pinned.
-function buildViewer(dir: string, config: DesktopConfig, computer: Computer): Viewer {
+function buildViewer(
+  dir: string,
+  config: DesktopConfig,
+  computer: Computer,
+  refusal?: () => string | undefined
+): Viewer {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
   if (config.webrtc) {
@@ -307,7 +453,8 @@ function buildViewer(dir: string, config: DesktopConfig, computer: Computer): Vi
         : ffmpegState === 'downloading'
           ? 'ffmpeg is still downloading'
           : 'ffmpeg not found',
-    streamError: () => stream.lastError
+    streamError: () => stream.lastError,
+    ...(refusal ? { refusal } : {})
   })
   return viewer
 }
@@ -320,7 +467,8 @@ async function loadDriverTools(driver: CuaDriver, config: DesktopConfig): Promis
 async function run(dir: string, initial: DesktopConfig, clientName: string): Promise<void> {
   // First run sets itself up, so unzip + `run` is enough; nothing is installed as a service.
   let config = initial
-  if (config.clients.length === 0) {
+  const registration = loadRegistration(dir)
+  if (config.clients.length === 0 && !registration) {
     const issued = issueClientToken(config, clientName)
     config = issued.config
     saveConfig(config, dir)
@@ -330,9 +478,32 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   const setTitle = (status: string): void => {
     process.title = `AgentConnect Desktop — ${status}`
   }
-  const { driver, computer } = buildComputer(dir, config, setTitle)
+  // Filled once built; the authority and status callbacks below fire only after that.
+  const live: { viewer?: Viewer; channel?: { client: ComputerCpClient; stop(): void } } = {}
+  // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
+  const authority = new ChannelAuthority({
+    registered: Boolean(registration),
+    ...(registration?.revokedAt ? { revokedReason: registration.revokedReason ?? 'revoked' } : {}),
+    log,
+    onLost: (state) => {
+      const reason = state.kind === 'revoked' ? 'computer revoked' : 'Control Plane unreachable'
+      computer.suspend(reason)
+      live.viewer?.disconnectAll(reason)
+    }
+  })
+  const { driver, computer } = buildComputer(
+    dir,
+    config,
+    (status) => {
+      setTitle(status)
+      live.channel?.client.beat()
+    },
+    () => authority.refusal()
+  )
   setTitle('online')
-  await driver.call('get_screen_size', {})
+  if (registration?.revokedAt)
+    log(`this computer was revoked (${registration.revokedReason ?? 'revoked'}); all input is refused`)
+  const screenSize = (await driver.call('get_screen_size', {})).structuredContent ?? {}
   log(`Cua Driver ${driver.version ?? '?'} started (${resolveDriverPath(dir, config.driverPath)})`)
   if (process.platform === 'darwin') await warnMissingMacPermissions(driver)
   // Under launchd the .app asks for its own grants once; the dialogs appear on the Mac's screen.
@@ -344,6 +515,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   }
   const releaseDisplay = config.keepAwake ? keepDisplayAwake(log) : () => undefined
   const driverTools = await loadDriverTools(driver, config)
+  const viewer = buildViewer(dir, config, computer, () => authority.refusal())
+  live.viewer = viewer
   const server = await startHttpServer({
     host: config.host,
     port: config.port,
@@ -351,8 +524,9 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     authenticate: (header) => authenticate(config, header),
     createMcpServer: (client) => createComputerMcpServer({ computer, client, driverTools }),
     log,
-    viewer: buildViewer(dir, config, computer)
+    viewer
   })
+  live.channel = startCpChannel({ dir, config, registration, authority, computer, driver, screenSize })
   const urls = isWildcardHost(config.host)
     ? [server.url, ...lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`)]
     : [server.url]
@@ -374,6 +548,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     stopping = true
     log('shutting down')
     computer.pause('daemon shutting down')
+    live.channel?.stop()
+    authority.close()
     releaseDisplay()
     await Promise.allSettled([server.close(), driver.close()])
     process.exit(0)
@@ -570,11 +746,16 @@ function setupContext(dir: string, config: DesktopConfig): SetupContext {
   }
 }
 
-// One-time install on the desktop: everything that needs downloading or a person's approval, then doctor.
-async function setup(dir: string, initial: DesktopConfig, clientName: string, withService: boolean): Promise<void> {
+// One-time install: downloads, a person's approvals, then doctor; with CP registration no local token is minted.
+async function setup(
+  dir: string,
+  initial: DesktopConfig,
+  clientName: string | undefined,
+  withService: boolean
+): Promise<void> {
   let config = initial
   let token: string | undefined
-  if (!config.clients.some((client) => client.name === clientName)) {
+  if (clientName && !config.clients.some((client) => client.name === clientName)) {
     ;({ config, token } = issueClientToken(config, clientName))
   }
   saveConfig(config, dir)
@@ -594,7 +775,7 @@ async function setup(dir: string, initial: DesktopConfig, clientName: string, wi
     checks = serviceChecks ?? (await doctor(setupContext(dir, config)))
   }
   const ok = printChecks(checks)
-  if (token) printClientSetup(config, clientName, token)
+  if (token && clientName) printClientSetup(config, clientName, token)
   const serviceRunning =
     process.platform === 'darwin'
       ? serviceStatus().loaded
@@ -625,7 +806,15 @@ function installConsoleControls(computer: Computer): void {
 }
 
 async function stdio(dir: string, config: DesktopConfig): Promise<void> {
-  const { driver, computer } = buildComputer(dir, config)
+  // A registered desktop acts only under its Control Plane channel, which stdio mode does not hold.
+  const registration = loadRegistration(dir)
+  const refusal = registration
+    ? () =>
+        registration.revokedAt
+          ? 'this computer was revoked; register it again'
+          : 'this computer is registered with a Control Plane; use the running daemon instead of stdio'
+    : undefined
+  const { driver, computer } = buildComputer(dir, config, undefined, refusal)
   const driverTools = await loadDriverTools(driver, config)
   const server = createComputerMcpServer({ computer, client: 'stdio', driverTools })
   await server.connect(new StdioServerTransport())

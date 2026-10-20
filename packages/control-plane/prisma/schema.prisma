@@ -4506,6 +4506,8 @@ model Computer {
   // Durable lifecycle marker; live states arrive with the Computer channel heartbeat.
   status               ComputerStatus     @default(offline)
   capabilities         Json               @default("{}") @db.JsonB
+  // The last `doctor` report from the Computer channel heartbeat; never screen content.
+  doctor               Json?              @db.JsonB
   desktopDaemonVersion String
   driverVersion        String
   // ComputerPolicy (computer-use.md §4.1), validated by the domain schema on every write.

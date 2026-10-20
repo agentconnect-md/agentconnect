@@ -7,6 +7,7 @@ import { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
 import { appBundlePath, selfCommand } from './self.js'
+import { loadRegistration, registrationPath, type Registration } from './cp/registration.js'
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
 import { screencastTokenPath, waylandSession } from './stream/wayland-capture.js'
 
@@ -141,6 +142,7 @@ export const profileCovered = (profile: string, category: string): boolean =>
 export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Promise<Check[]> {
   const checks: Check[] = []
   const { config } = ctx
+  const registration = registrationCheck(ctx.dir)
   checks.push(
     config.clients.length > 0
       ? {
@@ -148,8 +150,11 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
           status: 'ok',
           detail: `${configPath(ctx.dir)} (clients: ${config.clients.map((client) => client.name).join(', ')})`
         }
-      : { name: 'config', status: 'fail', detail: 'no client token yet', fix: `run: ${selfCommand()} setup` }
+      : registration.status === 'ok'
+        ? { name: 'config', status: 'ok', detail: `${configPath(ctx.dir)} (no local client tokens)` }
+        : { name: 'config', status: 'fail', detail: 'no client token yet', fix: `run: ${selfCommand()} setup` }
   )
+  checks.push(registration)
   checks.push(sessionCheck())
   wakeDisplay()
 
@@ -197,6 +202,37 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
   if (process.platform === 'linux') checks.push(...linuxChecks(ctx))
   checks.push(await daemonCheck(config))
   return checks
+}
+
+// Whether this desktop is registered with a Control Plane as a Computer (computer-use.md §3.6).
+function registrationCheck(dir: string): Check {
+  let registration: Registration | undefined
+  try {
+    registration = loadRegistration(dir)
+  } catch (error) {
+    return {
+      name: 'control plane',
+      status: 'fail',
+      detail: `unreadable ${registrationPath(dir)}: ${(error as Error).message}`.slice(0, 300),
+      fix: `register again: ${selfCommand()} setup --register <token> --cp-url <url>`
+    }
+  }
+  if (!registration) {
+    return { name: 'control plane', status: 'info', detail: 'not registered: local client tokens only' }
+  }
+  if (registration.revokedAt) {
+    return {
+      name: 'control plane',
+      status: 'fail',
+      detail: `computer ${registration.computerId} was revoked (${registration.revokedReason ?? 'by the Control Plane'}): all input is refused`,
+      fix: `create a new registration in the console, then: ${selfCommand()} setup --register <token> --cp-url ${registration.cpUrl}`
+    }
+  }
+  return {
+    name: 'control plane',
+    status: 'ok',
+    detail: `registered as computer ${registration.computerId} with ${registration.cpUrl}`
+  }
 }
 
 function sessionCheck(): Check {

@@ -17,6 +17,8 @@ const result = await build({
   platform: 'node',
   format: 'esm',
   target: 'node24',
+  // Workspace packages (protocol, connection) are bundled from source, so no prior build is needed.
+  conditions: ['development'],
   legalComments: 'linked',
   // Every bundled input, for the release license scan (scripts/license-scan.ts).
   metafile: true,

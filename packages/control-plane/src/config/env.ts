@@ -85,6 +85,10 @@ const CoreConfigShape = {
   RELAY_TOKEN: z.string().min(32).optional(),
   // The path the relay control socket is mounted at (parallel to WS_PATH).
   RELAY_WS_PATH: z.string().default('/api/v1/relays/ws'),
+  // The desktop daemon's Computer channel (computer-use.md §3.6); also served at the public `/v1/computers/ws`.
+  COMPUTER_WS_PATH: z.string().default('/api/v1/computers/ws'),
+  // Lifetime of the channel key the CP renews; bounds how long a desktop cut off from the CP keeps working (§8.2).
+  COMPUTER_CREDENTIAL_TTL_SEC: z.coerce.number().int().min(60).max(3600).default(300),
   // Failover sweeper: a `relay` row whose lastSeenAt predates now−RELAY_STALE_SEC is
   // swept (its roster entry drops), sweeping every RELAY_REAP_INTERVAL_SEC. Default
   // 3×heartbeat / 1×heartbeat, mirroring the daemon watchdog's freeze threshold.

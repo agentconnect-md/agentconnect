@@ -31,7 +31,8 @@ import {
   WORKSPACE_SESSION_READ_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   AGENT_MODEL_PROVIDER_FEATURE,
-  FOLLOW_UP_WATCH_FEATURE
+  FOLLOW_UP_WATCH_FEATURE,
+  COMPUTER_WS_PUBLIC_PATH
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -293,6 +294,9 @@ import { AgentMoveService } from './orchestrator/agentMove.js'
 import { createDaemonWsServer } from './ws/gateway.js'
 import type { DaemonWsServerDeps } from './ws/gateway.js'
 import { createRelayWsServer } from './ws/relay-gateway.js'
+import { createComputerWsServer } from './ws/computer-gateway.js'
+import { ComputerChannelRegistry } from './ws/computer-registry.js'
+import { ComputerChannelKeys } from './registry/computerChannelKeys.js'
 import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 
 import { buildHttpServer } from './http/server.js'
@@ -375,6 +379,8 @@ export interface Container {
   wsGateway(app: FastifyInstance): WebSocketServer
   /** Mount the relay control WS gateway (`rc/*`) on the live `http.Server` (call after `listen`). */
   relayGateway(app: FastifyInstance): WebSocketServer
+  /** Mount the desktop daemons' Computer channel (`computer/*`) on the live `http.Server` (call after `listen`). */
+  computerGateway(app: FastifyInstance): WebSocketServer
   /** The single-tenant anchors the devAuth stub injects. */
   readonly defaults: { orgId: string; ownerId: string }
   /** §9 platform-provider registry (S3) — every served platform (Telegram,
@@ -639,7 +645,14 @@ export function buildContainer(
     clusterIdentity
   )
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
-  const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock)
+  // Live Computer channels (computer-use.md §3.6): revoke, delete and policy changes reach a connected desktop at once.
+  const computerChannels = new ComputerChannelRegistry()
+  const computerChannelKeys = new ComputerChannelKeys(config.API_KEY_PEPPER, config.COMPUTER_CREDENTIAL_TTL_SEC)
+  const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock, {
+    channels: computerChannels,
+    // Three missed heartbeats, the daemon watchdog's freeze threshold.
+    staleAfterMs: config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000
+  })
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(config.API_KEY_PEPPER),
@@ -3245,6 +3258,23 @@ export function buildContainer(
     http,
     wsGateway: (app: FastifyInstance) => createDaemonWsServer(app, wsDeps),
     relayGateway: (app: FastifyInstance) => createRelayWsServer(app, relayWsDeps),
+    computerGateway: (app: FastifyInstance) =>
+      createComputerWsServer(app, {
+        computers,
+        repo: repos.computer,
+        keys: computerChannelKeys,
+        registry: computerChannels,
+        clock,
+        heartbeatSec: config.HEARTBEAT_SEC,
+        log: http.log,
+        paths: [config.COMPUTER_WS_PATH, COMPUTER_WS_PUBLIC_PATH],
+        config: {
+          DATABASE_POOL_MAX: config.DATABASE_POOL_MAX,
+          ...(config.DAEMON_HANDSHAKE_CONCURRENCY
+            ? { DAEMON_HANDSHAKE_CONCURRENCY: config.DAEMON_HANDSHAKE_CONCURRENCY }
+            : {})
+        }
+      }),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     platforms,
     readiness,

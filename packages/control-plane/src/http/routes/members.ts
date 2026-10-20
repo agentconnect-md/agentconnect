@@ -152,6 +152,8 @@ export function memberRoutes(deps: HttpDeps) {
         const actingUserId = req.orgCtx!.userId
         if (denyMemberRemoval(req, reply, userId)) return
         await deps.repos.user.removeMember(orgId, userId, actingUserId)
+        // The removal revoked their Computers; their live channels close now rather than at the next heartbeat.
+        deps.computers.memberRemoved(orgId, userId)
         return reply.code(204).send(null)
       }
     )

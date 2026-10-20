@@ -44,12 +44,16 @@ export interface ViewerOptions {
   // Why WebRTC cannot start right now (e.g. ffmpeg still downloading), or undefined when it can.
   rtcUnavailable?: () => string | undefined
   streamError?: () => string | undefined
+  // Why the Control Plane's authority is missing; while set, no frame, stream or input is served.
+  refusal?: () => string | undefined
 }
 
 export interface Viewer {
   // DataChannel input from a WebRTC viewer, validated like the HTTP path.
   channelMessage(client: string, message: unknown): Promise<unknown>
   handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<void>
+  // Drop every live stream and takeover now (revoked, or the channel key lapsed); viewers may come back later.
+  disconnectAll(reason: string): void
   close(): void
 }
 
@@ -100,6 +104,11 @@ export function createViewer(options: ViewerOptions): Viewer {
       clearInterval(reaper)
       options.rtc?.closeAll()
     },
+    disconnectAll(reason) {
+      options.rtc?.closeAll()
+      lastSeen.clear()
+      log(`viewers disconnected: ${reason}`)
+    },
     async channelMessage(client, message) {
       lastSeen.set(client, Date.now())
       const { input } = ChannelMessage.parse(message)
@@ -121,6 +130,8 @@ export function createViewer(options: ViewerOptions): Viewer {
       lastSeen.set(client, Date.now())
       try {
         if (path === '/view/api/status' && req.method === 'GET') return json(res, 200, status(client))
+        const refusal = options.refusal?.()
+        if (refusal) return json(res, 403, { error: 'unavailable', message: refusal })
         if (path === '/view/api/frame' && req.method === 'GET') {
           const frame = await computer.frame()
           res.writeHead(200, {
@@ -163,7 +174,14 @@ export function createViewer(options: ViewerOptions): Viewer {
           return json(res, 400, { error: 'invalid_argument', message: error.message })
         }
         if (error instanceof ComputerError) {
-          const code = error.code === 'invalid_argument' ? 400 : error.code === 'human_in_control' ? 409 : 502
+          const code =
+            error.code === 'invalid_argument'
+              ? 400
+              : error.code === 'human_in_control'
+                ? 409
+                : error.code === 'unavailable'
+                  ? 403
+                  : 502
           return json(res, code, { error: error.code, message: error.message, ...error.details })
         }
         json(res, 500, { error: 'failed', message: (error as Error).message })

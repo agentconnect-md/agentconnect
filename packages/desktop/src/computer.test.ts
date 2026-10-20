@@ -3,7 +3,11 @@ import { redactArgs, type AuditRecord } from './audit.js'
 import { Computer, type ToolOutput } from './computer.js'
 import { FakeDriver, testConfig } from './testing.js'
 
-function setup(overrides: Parameters<typeof testConfig>[0] = {}, platform: NodeJS.Platform = 'win32') {
+function setup(
+  overrides: Parameters<typeof testConfig>[0] = {},
+  platform: NodeJS.Platform = 'win32',
+  refusal: () => string | undefined = () => undefined
+) {
   const driver = new FakeDriver()
   let now = 1_000_000
   const audit: AuditRecord[] = []
@@ -15,7 +19,8 @@ function setup(overrides: Parameters<typeof testConfig>[0] = {}, platform: NodeJ
     now: () => now,
     sleep: async () => undefined,
     onStatus: (status) => statuses.push(status),
-    platform
+    platform,
+    refusal
   })
   return { driver, computer, audit, statuses, advance: (ms: number) => (now += ms) }
 }
@@ -243,5 +248,35 @@ describe('Computer', () => {
       '好',
       '!'
     ])
+  })
+
+  it('stops a segmented Linux typing call at the next segment once the authority is revoked', async () => {
+    let refusal: string | undefined
+    const { driver, computer } = setup({ actionScreenshot: false }, 'linux', () => refusal)
+    const original = driver.call.bind(driver)
+    driver.call = async (name: string, args: Record<string, unknown>) => {
+      const result = await original(name, args)
+      if (name === 'type_text' && !refusal) {
+        refusal = 'computer key revoked'
+        computer.suspend(refusal)
+      }
+      return result
+    }
+    const output = await computer.type('claude', { text: '你好世界' })
+    expect(errorOf(output)).toMatchObject({ error: 'unavailable' })
+    expect(String(errorOf(output).message)).toMatch(/stopped after typing 1 of 4 characters/)
+    expect(driver.calls.filter((call) => call.name === 'type_text').map((call) => call.args.text)).toEqual(['你'])
+  })
+
+  it('stops a segmented Linux typing call when the owner pauses mid-way', async () => {
+    const { driver, computer } = setup({ actionScreenshot: false }, 'linux')
+    const original = driver.call.bind(driver)
+    driver.call = async (name: string, args: Record<string, unknown>) => {
+      const result = await original(name, args)
+      if (name === 'type_text') computer.pause('emergency stop')
+      return result
+    }
+    expect(errorOf(await computer.type('claude', { text: '你好' }))).toMatchObject({ error: 'human_in_control' })
+    expect(driver.calls.filter((call) => call.name === 'type_text')).toHaveLength(1)
   })
 })

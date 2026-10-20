@@ -29,6 +29,12 @@
       "import": "./dist/code-host.js",
       "default": "./dist/code-host.js"
     },
+    "./computer": {
+      "development": "./src/frames/computer.ts",
+      "types": "./dist/frames/computer.d.ts",
+      "import": "./dist/frames/computer.js",
+      "default": "./dist/frames/computer.js"
+    },
     "./organization-files": {
       "development": "./src/organization-files.ts",
       "types": "./dist/organization-files.d.ts",

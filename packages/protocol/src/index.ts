@@ -204,6 +204,8 @@ export * from './agent-api.js'
 // serving it next to the runtime Slack action ids above.
 export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './slack-app-manifest.js'
 export * from './frames/relay-daemon.js'
+// The desktop daemon's Computer channel (computer-use.md §3.6, §8.2).
+export * from './frames/computer.js'
 export { decodeEnvelopeWith, buildEnvelopeRaw } from './wire.js'
 export type { DecodeResultOf } from './wire.js'
 

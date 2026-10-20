@@ -283,6 +283,35 @@ Follow the "add a daemon in the console, run the generated command" flow and dae
 4. Revocation: deleting the Computer or revoking the key disconnects the desktop daemon at once, stops all input, and
    closes the viewer. The bound when the CP connection is lost is in §8.2.
 
+**[implemented]** The Computer channel. The frames live in `packages/protocol/src/frames/computer.ts`, a
+separate frame union from the daemon and relay wires, so a frame from another wire is `UNKNOWN_FRAME`. The desktop
+daemon dials `wss://<cp>/v1/computers/ws`, which the CP also serves at `/api/v1/computers/ws` (`COMPUTER_WS_PATH`).
+The subprotocol is `agentconnect.computer.v1`, and any other subprotocol gets HTTP 400. The registration exchange
+returns this URL as `channelUrl`.
+
+| Frame                 | Direction | Purpose                                                                                                |
+| --------------------- | --------- | ------------------------------------------------------------------------------------------------------ |
+| `computer/auth`       | D→C REQ   | the Computer key and the desktop daemon's version; the first frame, sent within 10 s                   |
+| `computer/auth/ok`    | C→D REP   | the Computer id and name, `heartbeatSec`, the CP clock, the policy, and the first channel key          |
+| `computer/heartbeat`  | D→C EVT   | the status, plus the OS version, session, versions, capabilities and `doctor` results when they change |
+| `computer/credential` | C→D EVT   | a renewed channel key                                                                                  |
+| `computer/policy`     | C→D EVT   | the owner changed the policy                                                                           |
+| `computer/revoke`     | C→D EVT   | the Computer was revoked or deleted, or its owner left the organization; the CP then closes with 4401  |
+
+The close codes follow the daemon. A refused key gets an `AUTH_FAILED` reply and close `4401`, and the desktop treats
+that reply, or a `computer/revoke`, as a revoke: it stops redialing, forgets the key and keeps a revoked marker. The
+CP closes with `4401` for nothing else; an unreadable or out-of-order first frame gets `4400`, an auth timeout `1008`,
+and a full handshake gate a retryable `RATE_LIMITED` with `4429`, and the desktop redials after a bare `4401` too.
+`1011` and `1012` redial with backoff of 1–30 s with jitter, and a newer connection for the same Computer supersedes the older one with `1012`. The CP stores
+the heartbeat with a write that applies only while the Computer and the channel's key are both unrevoked, so a
+revoke made elsewhere also ends the channel at its next heartbeat. A clean close marks the Computer `offline`. A live
+status whose `lastSeenAt` is older than three heartbeats is shown as `offline`. The desktop runs `doctor` in a child
+when it starts and every 30 minutes. The capabilities are derived from those checks and the screen size.
+
+**[implemented]** Registration on the desktop. `setup --register <token> --cp-url <url>` (or just `register`) spends
+the token and stores the key in `computer-key.json` in the data directory with mode 0600. Moving the key into the
+system keychain or credential manager is still to do. A registered desktop mints no local client token.
+
 API keys gain a `computer` principal type, usable only on the Computer channel; it can neither run agents nor reach
 other resources ([daemon-api-key-auth.md](daemon-api-key-auth.md)). **[implemented]** `POST
 /orgs/:orgId/computers/registrations` mints a one-time token (60 minutes by default, at most 24 hours) and
@@ -600,6 +629,16 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   When the CP WebSocket is lost, the desktop daemon accepts no new channels, keeps existing ones only until their
   credentials expire, and then stops input, screenshots, and viewers; so the worst-case revocation delay is one
   credential lifetime, in line with the authority lifetimes in [high-availability.md](high-availability.md).
+  **[implemented]** The channel key. The CP derives the key from `API_KEY_PEPPER`, the Computer, its key and a window,
+  so it stores nothing and every replica derives the same key. A new key starts every half lifetime and lasts one
+  lifetime (`COMPUTER_CREDENTIAL_TTL_SEC`, default 300 s). The CP sends a renewal on the first heartbeat of each
+  window, so consecutive keys overlap by half a lifetime. The desktop daemon reads expiries against the CP clock
+  it measured at auth. While it is registered, every screenshot, input, takeover and viewer frame needs a live key,
+  and that covers the prototype's local-token MCP and `/view` too. With no live key, or after a revoke, calls fail
+  with `unavailable`, the lease and any takeover are dropped, and WebRTC viewers are closed. A revoke drops every key
+  at once and persists. Once the CP is lost, the desktop keeps working for at most one lifetime after the last
+  renewal, and resumes when it reconnects. The tool and viewer channel tokens that the data plane will sign with
+  this key come with #3189.
 
 ## 9. Screenshot storage [design]
 
