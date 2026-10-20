@@ -202,3 +202,20 @@ it('keeps a rejected approval pending and displays the server refusal', async ()
     await act(async () => root.unmount())
   }
 })
+it('keeps playground methods and the session list stable across provider re-renders', async () => {
+  const host = document.createElement('div'),
+    root = createRoot(host)
+  const tree = () => (
+    <PlaygroundProvider>
+      <Probe />
+    </PlaygroundProvider>
+  )
+  await act(async () => root.render(tree()))
+  const first = ui
+  await act(async () => root.render(tree()))
+  expect(ui.reconcileLiveSteps).toBe(first.reconcileLiveSteps)
+  expect(ui.pgAttach).toBe(first.pgAttach)
+  expect(ui.subscribePgDraft).toBe(first.subscribePgDraft)
+  expect(ui.pgSessionList).toBe(first.pgSessionList)
+  await act(async () => root.unmount())
+})
