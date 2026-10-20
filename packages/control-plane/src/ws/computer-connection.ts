@@ -198,7 +198,13 @@ export class ComputerConnection implements ComputerChannel {
     if (this.state === 'READY') this.send('computer/policy', { policy })
   }
 
-  pushLease(lease: ComputerControlLease | null): void {
+  // The re-read runs on the frame queue, after any heartbeat's lease read in flight, so the last push is the newest commit.
+  leaseChanged(): void {
+    if (this.state !== 'READY') return
+    this.queue = this.queue.then(() => this.syncLease(() => this.deps.leases?.current(this.orgId, this.computerId)))
+  }
+
+  private pushLease(lease: ComputerControlLease | null): void {
     if (this.state !== 'READY') return
     const id = lease?.leaseId ?? ''
     if (id === this.toldLease) return

@@ -5,9 +5,12 @@ import { WebSocket } from 'ws'
 import {
   COMPUTER_CP_SUBPROTOCOL,
   buildComputerCpFrame,
+  buildEnvelope,
+  decodeComputerCpFrameTolerant,
+  decodeCpEnvelope,
   type AnyFrame,
-  type ComputerControlLease,
-  type ComputerCpFrame
+  type FrameType,
+  type ComputerControlLease
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
@@ -90,12 +93,15 @@ async function registerComputer(app: App, allowedAgents: string[]): Promise<{ co
 // The desktop daemon's end of the Computer channel.
 class Desktop {
   readonly leases: Array<ComputerControlLease | null> = []
+  readonly unreadable: string[] = []
   private waiters: Array<() => void> = []
 
   private constructor(readonly ws: WebSocket) {
     ws.on('message', (data: Buffer) => {
-      const frame = JSON.parse(data.toString()) as ComputerCpFrame
-      if (frame.type === 'computer/lease') this.leases.push(frame.payload.lease)
+      // Decode as the desktop does, so a frame it could not read fails the test.
+      const decoded = decodeComputerCpFrameTolerant(data.toString())
+      if (!decoded.ok) this.unreadable.push(data.toString())
+      else if (decoded.frame.type === 'computer/lease') this.leases.push(decoded.frame.payload.lease)
       for (const wake of this.waiters.splice(0)) wake()
     })
   }
@@ -140,7 +146,13 @@ function agentDaemon(daemonId = DAEMON) {
     daemonId,
     orgId: DEFAULT_ORG_ID,
     state: 'READY',
-    replyTo: (_req: AnyFrame, type: string, payload: unknown) => replies.push({ type, payload }),
+    // Replies go through the wire codec, so one the daemon could not decode fails the test.
+    replyTo: (_req: AnyFrame, type: string, payload: unknown) => {
+      const decoded = decodeCpEnvelope(
+        JSON.stringify(buildEnvelope(type as FrameType, payload, { corr: randomUUID() }))
+      )
+      replies.push(decoded.ok ? { type, payload: decoded.frame.payload } : { type: 'undecodable', payload: decoded })
+    },
     sendError: (_corr: string, code: string) => replies.push({ type: 'error', payload: { code } })
   } as unknown as DaemonConnection
   const deps = {
@@ -158,15 +170,19 @@ function agentDaemon(daemonId = DAEMON) {
     })
   } as unknown as DaemonWsDeps
   return {
-    async acquire(computerId: string, sessionId: string, agentId = AGENT) {
-      await handleComputerLeaseAcquire(frame('computer-lease/acquire', { computerId, agentId, sessionId }), conn, deps)
+    async acquire(computerId: string, sessionId: string, agentId = AGENT, at = new Date()) {
+      await handleComputerLeaseAcquire(
+        frame('computer-lease/acquire', { computerId, agentId, sessionId, requestedAt: at.toISOString() }),
+        conn,
+        deps
+      )
       return replies.at(-1)!
     },
     async release(computerId: string, sessionId: string, agentId = AGENT) {
       await handleComputerLeaseRelease(frame('computer-lease/release', { computerId, agentId, sessionId }), conn, deps)
       return replies.at(-1)!
     },
-    async session(phase: 'start' | 'end', sessionId = SESSION) {
+    async session(phase: 'start' | 'end' | 'problem', sessionId = SESSION, at = new Date()) {
       await handleEventSession(
         frame('event/session', {
           sessionId,
@@ -175,7 +191,7 @@ function agentDaemon(daemonId = DAEMON) {
           platform: 'slack',
           channel: 'C123',
           thread: 'T9',
-          ts: new Date().toISOString()
+          ts: at.toISOString()
         }),
         conn,
         deps
@@ -223,6 +239,41 @@ describe('Computer control lease', () => {
     expect(await desktop.told(3)).toBeNull()
 
     expect((await daemon.acquire(computerId, OTHER_SESSION, OTHER_AGENT)).payload).toMatchObject({ granted: true })
+    expect(desktop.unreadable).toEqual([])
+    desktop.ws.close()
+  })
+
+  it('releases the lease when the turn fails or is interrupted', async () => {
+    await seed()
+    const { app, base } = await start()
+    const { computerId, apiKey } = await registerComputer(app, [AGENT])
+    const desktop = await Desktop.connect(base, apiKey)
+    const daemon = agentDaemon()
+    await daemon.session('start')
+    expect((await daemon.acquire(computerId, SESSION)).payload).toMatchObject({ granted: true })
+    await daemon.session('problem')
+    expect(await prisma.computerLease.count({ where: { computerId } })).toBe(0)
+    desktop.ws.close()
+  })
+
+  it('names an agent with an over-long display name in frames both daemons can read', async () => {
+    await seed()
+    await prisma.agent.update({ where: { id: AGENT }, data: { displayName: 'n'.repeat(300) } })
+    const { app, base } = await start()
+    const { computerId, apiKey } = await registerComputer(app, [AGENT, OTHER_AGENT])
+    const desktop = await Desktop.connect(base, apiKey)
+    const daemon = agentDaemon()
+    expect((await daemon.acquire(computerId, SESSION)).payload).toMatchObject({
+      granted: true,
+      lease: { holder: { agentName: 'n'.repeat(200) } }
+    })
+    expect((await daemon.acquire(computerId, OTHER_SESSION, OTHER_AGENT)).payload).toMatchObject({
+      code: 'computer_busy',
+      holder: { agentName: 'n'.repeat(200) }
+    })
+    desktop.beat('busy')
+    expect(await desktop.told(2)).toMatchObject({ holder: { agentName: 'n'.repeat(200) } })
+    expect(desktop.unreadable).toEqual([])
     desktop.ws.close()
   })
 
@@ -234,10 +285,15 @@ describe('Computer control lease', () => {
     // An offline Computer grants nothing.
     expect((await daemon.acquire(computerId, SESSION)).payload).toMatchObject({ granted: false, code: 'unavailable' })
     const desktop = await Desktop.connect(base, apiKey)
-    expect((await daemon.acquire(computerId, SESSION)).payload).toMatchObject({ granted: true })
-    // A turn end stamped before the lease was taken (a late durable replay) leaves it alone.
-    await prisma.computerLease.update({ where: { computerId }, data: { acquiredAt: new Date(Date.now() + 60_000) } })
-    await daemon.session('end')
+    // The next turn takes the lease a few seconds after the previous turn ended, on the daemon's clock.
+    const ended = new Date(Date.now() - 20_000)
+    expect((await daemon.acquire(computerId, SESSION, AGENT, new Date(ended.getTime() + 5_000))).payload).toMatchObject(
+      {
+        granted: true
+      }
+    )
+    // The previous turn's end arrives late (a durable replay) and leaves the later lease alone.
+    await daemon.session('end', SESSION, ended)
     expect(await prisma.computerLease.count({ where: { computerId } })).toBe(1)
     expect(await daemon.release(computerId, SESSION)).toMatchObject({ type: 'ack', payload: { ok: true } })
     expect(await prisma.computerLease.count({ where: { computerId } })).toBe(0)

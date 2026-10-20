@@ -17,7 +17,9 @@ function toLease(row: ComputerLease): ControlLease {
     daemonId: row.daemonId,
     acquiredAt: row.acquiredAt.getTime(),
     lastUsedAt: row.lastUsedAt.getTime(),
-    renewedAt: row.renewedAt.getTime()
+    renewedAt: row.renewedAt.getTime(),
+    turnAt: row.turnAt.getTime(),
+    spentAt: row.spentAt?.getTime() ?? null
   }
 }
 
@@ -31,7 +33,9 @@ function toRow(lease: ControlLease) {
     daemonId: lease.daemonId,
     acquiredAt: new Date(lease.acquiredAt),
     lastUsedAt: new Date(lease.lastUsedAt),
-    renewedAt: new Date(lease.renewedAt)
+    renewedAt: new Date(lease.renewedAt),
+    turnAt: new Date(lease.turnAt),
+    spentAt: lease.spentAt === null ? null : new Date(lease.spentAt)
   }
 }
 

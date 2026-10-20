@@ -10,6 +10,8 @@ CREATE TABLE "computer_lease" (
     "acquiredAt" TIMESTAMPTZ(3) NOT NULL,
     "lastUsedAt" TIMESTAMPTZ(3) NOT NULL,
     "renewedAt" TIMESTAMPTZ(3) NOT NULL,
+    "turnAt" TIMESTAMPTZ(3) NOT NULL,
+    "spentAt" TIMESTAMPTZ(3),
 
     CONSTRAINT "computer_lease_pkey" PRIMARY KEY ("computerId")
 );

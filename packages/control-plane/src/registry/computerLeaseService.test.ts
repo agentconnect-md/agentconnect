@@ -5,7 +5,7 @@ import { ComputerPolicySchema } from '../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerLease.js'
 import type { ComputerId, OrgId } from '../domain/ids.js'
 import type { ComputerLeaseRepo } from '../persistence/ports.js'
-import { ComputerLeaseService } from './computerLeaseService.js'
+import { ComputerLeaseService, wireLease } from './computerLeaseService.js'
 
 const T0 = 1_760_000_000_000
 const ORG = 'org_1'
@@ -56,10 +56,16 @@ function setup() {
     policy: ComputerPolicySchema.parse({ allowedAgents: [AGENT_A, AGENT_B] })
   })
   const pushed: Array<ComputerControlLease | null> = []
-  const service = new ComputerLeaseService(repo, clock, {
+  // The connection re-reads the lease on a change; the in-memory repo has committed by then.
+  const service: ComputerLeaseService = new ComputerLeaseService(repo, clock, {
     holderTtlMs: 45_000,
     staleAfterMs: 45_000,
-    channels: { pushLease: (_id, lease) => pushed.push(lease) }
+    channels: {
+      leaseChanged: () => {
+        const lease = repo.leases.get(CID)
+        pushed.push(lease && lease.spentAt === null ? wireLease(lease, repo.computers.get(CID)!.policy) : null)
+      }
+    }
   })
   // The desktop keeps beating, so the Computer stays online as the fake clock moves.
   const tick = (ms: number) => {
@@ -73,7 +79,8 @@ const who = (sessionId: string, agentId = AGENT_A) => ({
   sessionId,
   agentId,
   agentName: agentId === AGENT_A ? 'Ops' : 'Review',
-  daemonId: 'daemon-1'
+  daemonId: 'daemon-1',
+  turnAt: T0
 })
 
 describe('ComputerLeaseService', () => {
@@ -149,6 +156,37 @@ describe('ComputerLeaseService', () => {
     }
     expect(await service.current(ORG, CID)).toBeNull()
     expect(await service.acquire(ORG, CID, who('s2', AGENT_B))).toMatchObject({ granted: true, fresh: true })
+  })
+
+  it('does not let the session that hit the max limit take the Computer again until its turn ends', async () => {
+    const { service, tick, repo } = setup()
+    await service.acquire(ORG, CID, who('s1'))
+    for (let elapsed = 0; elapsed < 1_800_000; elapsed += 15_000) {
+      tick(15_000)
+      await service.acquire(ORG, CID, who('s1'))
+    }
+    expect(await service.acquire(ORG, CID, who('s1'))).toMatchObject({ granted: false, code: 'denied' })
+    tick(15_000)
+    await service.daemonHeartbeat('daemon-1')
+    expect(await service.current(ORG, CID)).toBeNull()
+    expect(await service.release(ORG, CID, { sessionId: 's1', agentId: AGENT_A })).toBe(false)
+    expect(await service.acquire(ORG, CID, who('s1'))).toMatchObject({ granted: false, code: 'denied' })
+    await service.sessionEnded('s1', AGENT_A, T0 + 1_900_000)
+    expect(repo.leases.size).toBe(0)
+    expect(await service.acquire(ORG, CID, { ...who('s1'), turnAt: T0 + 1_900_000 })).toMatchObject({
+      granted: true,
+      fresh: true
+    })
+  })
+
+  it('keeps a lease renewed by a later turn when an earlier turn end arrives late', async () => {
+    const { service, repo } = setup()
+    await service.acquire(ORG, CID, who('s1'))
+    // The next turn renews the lease 5 s (daemon clock) after the previous turn ended.
+    await service.acquire(ORG, CID, { ...who('s1'), turnAt: T0 + 5_000 })
+    expect(await service.sessionEnded('s1', AGENT_A, T0)).toBe(0)
+    expect(repo.leases.size).toBe(1)
+    expect(await service.sessionEnded('s1', AGENT_A, T0 + 5_000)).toBe(1)
   })
 
   it('lets a pause or takeover reported by the desktop pre-empt the lease', async () => {

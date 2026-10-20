@@ -2,11 +2,14 @@ import { z } from 'zod'
 
 // Computer control leases (computer-use.md §4.4): one agent session's exclusive, time-limited right to send input.
 
+/** The longest agent name a holder carries; the CP clamps longer display names. */
+export const COMPUTER_LEASE_AGENT_NAME_MAX = 200
+
 /** Who holds a lease: one agent session; the agent's name is a display hint for `computer_busy`. */
 export const ComputerLeaseHolder = z.object({
   sessionId: z.string().min(1).max(256),
   agentId: z.string().uuid(),
-  agentName: z.string().min(1).max(200).optional()
+  agentName: z.string().min(1).max(COMPUTER_LEASE_AGENT_NAME_MAX).optional()
 })
 export type ComputerLeaseHolder = z.infer<typeof ComputerLeaseHolder>
 
@@ -28,7 +31,9 @@ export type ComputerLeaseRefusal = (typeof COMPUTER_LEASE_REFUSALS)[number]
 export const ComputerLeaseAcquire = z.object({
   computerId: z.string().uuid(),
   agentId: z.string().uuid(),
-  sessionId: z.string().min(1).max(256)
+  sessionId: z.string().min(1).max(256),
+  // The daemon-clock time of the request, compared with the `event/session` turn end on the same clock.
+  requestedAt: z.string().datetime()
 })
 export type ComputerLeaseAcquire = z.infer<typeof ComputerLeaseAcquire>
 

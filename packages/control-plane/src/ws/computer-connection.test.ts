@@ -268,16 +268,38 @@ describe('ComputerConnection control lease', () => {
     expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease }, { lease: null }])
   })
 
-  it('pushes a lease the service grants while the channel is live, and keeps the channel when a lease read fails', async () => {
+  it('re-reads a lease the service changed while the channel is live, and keeps the channel when a read fails', async () => {
+    let held: typeof lease | null = null
     const { transport, registry } = setup({
-      leases: { current: vi.fn(async () => null), observe: vi.fn(async () => Promise.reject(new Error('db down'))) }
+      leases: {
+        current: vi.fn(async () => held),
+        observe: vi.fn(async () => Promise.reject(new Error('db down')))
+      }
     })
     transport.deliver(auth())
     await settle()
-    registry.pushLease(CID, lease)
+    held = lease
+    registry.leaseChanged(CID)
     transport.deliver(beat())
     await settle()
     expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease: null }, { lease }])
     expect(transport.closed).toBeUndefined()
+  })
+
+  it('orders a change after a heartbeat whose lease read was already in flight', async () => {
+    let held: typeof lease | null = null
+    let finishObserve: (v: null) => void = () => {}
+    // The heartbeat reads no lease; an acquire then commits before the heartbeat pushes its stale read.
+    const observe = vi.fn(() => new Promise<null>((resolve) => (finishObserve = resolve)))
+    const { transport, registry } = setup({ leases: { current: vi.fn(async () => held), observe } })
+    transport.deliver(auth())
+    await settle()
+    transport.deliver(beat())
+    await settle()
+    held = lease
+    registry.leaseChanged(CID)
+    finishObserve(null)
+    await settle()
+    expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease: null }, { lease }])
   })
 })

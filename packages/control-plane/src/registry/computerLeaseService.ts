@@ -22,9 +22,9 @@ import {
 } from '../domain/computerLease.js'
 import type { AuditRepo, ComputerLeaseRepo } from '../persistence/ports.js'
 
-/** Where a lease change goes: the connected desktop daemon, which enforces only the lease it was told about. */
+/** Where a lease change goes: the connected desktop daemon re-reads the lease, so pushes follow the commits they reflect. */
 export interface ComputerLeaseSink {
-  pushLease(computerId: string, lease: ComputerControlLease | null): void
+  leaseChanged(computerId: string): void
 }
 
 export interface ComputerLeaseServiceOpts {
@@ -42,6 +42,8 @@ export interface LeaseRequester {
   agentId: string
   agentName: string | null
   daemonId: string | null
+  /** The daemon-clock time of the request. */
+  turnAt: number
 }
 
 export type AcquireResult =
@@ -71,12 +73,15 @@ export class ComputerLeaseService {
     const { result, policy } = await this.step(orgId, computerId, (computer, lease, clock) =>
       decideAcquire(computerId, orgId, computer, lease, { ...who, leaseId: randomUUID() }, clock)
     )
-    if (!result.granted) return result
+    if (!result.granted) {
+      if (result.ended) this.ended(result.ended.lease, result.ended.reason)
+      return result
+    }
     // A grant implies the Computer row was read, so its policy is known.
     const view = wireLease(result.lease, policy!)
     if (result.replaced) this.ended(result.replaced.lease, result.replaced.reason)
     if (result.fresh) {
-      this.opts.channels?.pushLease(computerId, view)
+      this.opts.channels?.leaseChanged(computerId)
       this.record(orgId, 'lease_acquire', result.lease, {})
     }
     return { ...result, view }
@@ -91,7 +96,7 @@ export class ComputerLeaseService {
     return result !== null
   }
 
-  /** The session's turn ended (`event/session` phase `end`): every lease it took before `endedAt` is released. */
+  /** The session's turn ended (`end` or `problem`): every lease it took at or before `endedAt` (daemon clock) is released. */
   async sessionEnded(sessionId: string, agentId: string, endedAt: number): Promise<number> {
     let released = 0
     for (const held of await this.repo.listBySession(sessionId)) {
@@ -160,7 +165,7 @@ export class ComputerLeaseService {
 
   // A lease ended: tell the desktop (unless the desktop itself reported why) and leave an audit row.
   private ended(lease: ControlLease, reason: LeaseEndReason, push = true): void {
-    if (push) this.opts.channels?.pushLease(lease.computerId, null)
+    if (push) this.opts.channels?.leaseChanged(lease.computerId)
     this.record(lease.orgId, 'lease_end', lease, { reason })
   }
 

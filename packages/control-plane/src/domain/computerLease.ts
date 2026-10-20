@@ -17,6 +17,10 @@ export interface ControlLease {
   lastUsedAt: number
   /** The last heartbeat of the holder's daemon. */
   renewedAt: number
+  /** The daemon-clock time of its session's latest acquire; only a turn end stamped at or after it releases the lease. */
+  turnAt: number
+  /** When it reached `leaseMaxSeconds`: a spent row holds nothing and only bars its session until its turn ends. */
+  spentAt: number | null
 }
 
 /** The slice of the Computer row a decision reads. */
@@ -70,6 +74,18 @@ export function leaseDeadline(
   return deadlines.reduce((first, d) => (d.at < first.at ? d : first))
 }
 
+const sameHolder = (lease: ControlLease, who: { sessionId: string; agentId: string }) =>
+  lease.sessionId === who.sessionId && lease.agentId === who.agentId
+
+/** A spent row stops barring its session once its daemon is lost or one more `leaseMaxSeconds` has passed. */
+export function spentLapsed(lease: ControlLease, computer: LeaseComputer | null, clock: LeaseClock): boolean {
+  if (!computer || computer.status === 'revoked' || lease.spentAt === null) return true
+  return (
+    clock.now >= lease.renewedAt + clock.holderTtlMs ||
+    clock.now >= lease.spentAt + computer.policy.leaseMaxSeconds * 1000
+  )
+}
+
 /** Why a held lease has already ended at `now`, or undefined while it stands. */
 export function leaseEnded(
   lease: ControlLease,
@@ -85,13 +101,22 @@ export function leaseEnded(
 
 export type AcquireOutcome =
   | { granted: true; lease: ControlLease; fresh: boolean; replaced?: { lease: ControlLease; reason: LeaseEndReason } }
-  | { granted: false; code: ComputerLeaseRefusal; message: string; holder?: ComputerLeaseHolder }
+  | {
+      granted: false
+      code: ComputerLeaseRefusal
+      message: string
+      holder?: ComputerLeaseHolder
+      /** A lease this decision found at its max limit and marked spent. */
+      ended?: { lease: ControlLease; reason: LeaseEndReason }
+    }
 
 export interface AcquireRequest {
   sessionId: string
   agentId: string
   agentName: string | null
   daemonId: string | null
+  /** The daemon-clock time of the request. */
+  turnAt: number
   /** The id a fresh lease takes. */
   leaseId: string
 }
@@ -117,14 +142,30 @@ export function decideAcquire(
   if (status === 'offline') return refuse('unavailable', 'this computer is offline')
   if (status === 'paused') return refuse('human_in_control', 'the owner paused this computer')
   if (status === 'human_in_control') return refuse('human_in_control', 'a person is controlling this computer')
-  const ended = current ? leaseEnded(current, computer, clock) : undefined
-  const live = current && !ended ? current : null
-  if (live && (live.sessionId !== req.sessionId || live.agentId !== req.agentId)) {
+  // The max limit bounds the session, not one lease: it may not take the Computer again until its turn ends.
+  const capped = `this session used its ${computer.policy.leaseMaxSeconds}s control limit; it can take the computer again in a later turn`
+  const spent = current?.spentAt != null ? current : null
+  if (spent && sameHolder(spent, req) && !spentLapsed(spent, computer, clock)) return refuse('denied', capped)
+  const ended = current && !spent ? leaseEnded(current, computer, clock) : undefined
+  if (current && ended === 'max' && sameHolder(current, req)) {
+    return {
+      next: { ...current, spentAt: clock.now },
+      result: { granted: false, code: 'denied', message: capped, ended: { lease: current, reason: ended } }
+    }
+  }
+  const live = current && !spent && !ended ? current : null
+  if (live && !sameHolder(live, req)) {
     const holder = leaseHolder(live)
     return refuse('computer_busy', `this computer is controlled by ${holder.agentName ?? holder.agentId}`, holder)
   }
   if (live) {
-    const renewed = { ...live, lastUsedAt: clock.now, renewedAt: clock.now, daemonId: req.daemonId ?? live.daemonId }
+    const renewed = {
+      ...live,
+      lastUsedAt: clock.now,
+      renewedAt: clock.now,
+      turnAt: Math.max(live.turnAt, req.turnAt),
+      daemonId: req.daemonId ?? live.daemonId
+    }
     return { next: renewed, result: { granted: true, lease: renewed, fresh: false } }
   }
   const lease: ControlLease = {
@@ -137,7 +178,9 @@ export function decideAcquire(
     daemonId: req.daemonId,
     acquiredAt: clock.now,
     lastUsedAt: clock.now,
-    renewedAt: clock.now
+    renewedAt: clock.now,
+    turnAt: req.turnAt,
+    spentAt: null
   }
   return {
     next: lease,
@@ -150,16 +193,32 @@ export function decideAcquire(
   }
 }
 
-/** The holder session gives the lease up; `before` keeps a late report of an earlier turn from ending a later lease. */
+/** The holder session gives the lease up; `before` (daemon clock) keeps a late end of an earlier turn from ending a later lease. */
 export function decideRelease(
   current: ControlLease | null,
   holder: { sessionId: string; agentId: string; before?: number },
   reason: 'released' | 'session_ended'
 ): LeaseStep<{ ended: ControlLease; reason: LeaseEndReason } | null> {
-  if (!current || current.sessionId !== holder.sessionId || current.agentId !== holder.agentId)
-    return { next: undefined, result: null }
-  if (holder.before !== undefined && current.acquiredAt > holder.before) return { next: undefined, result: null }
+  if (!current || !sameHolder(current, holder)) return { next: undefined, result: null }
+  if (holder.before !== undefined && current.turnAt > holder.before) return { next: undefined, result: null }
+  // A spent row already reported its end; only the turn's end clears it, so a release cannot reset the limit.
+  if (current.spentAt !== null) return { next: reason === 'session_ended' ? null : undefined, result: null }
   return { next: null, result: { ended: current, reason } }
+}
+
+type ReadStep = LeaseStep<{ lease: ControlLease | null; ended?: { lease: ControlLease; reason: LeaseEndReason } }>
+
+// A spent row holds nothing; it is cleared once it stops barring its session.
+function readSpent(current: ControlLease, computer: LeaseComputer | null, clock: LeaseClock): ReadStep {
+  return { next: spentLapsed(current, computer, clock) ? null : undefined, result: { lease: null } }
+}
+
+// A lease that ran out: a max-limit end leaves a spent row behind, every other end deletes it.
+function endLease(current: ControlLease, reason: LeaseEndReason, clock: LeaseClock): ReadStep {
+  return {
+    next: reason === 'max' ? { ...current, spentAt: clock.now } : null,
+    result: { lease: null, ended: { lease: current, reason } }
+  }
 }
 
 export interface DesktopReport {
@@ -174,13 +233,13 @@ export function decideObserve(
   current: ControlLease | null,
   report: DesktopReport,
   clock: LeaseClock
-): LeaseStep<{ lease: ControlLease | null; ended?: { lease: ControlLease; reason: LeaseEndReason } }> {
+): ReadStep {
   if (!current) return { next: undefined, result: { lease: null } }
-  const end = (reason: LeaseEndReason) => ({ next: null, result: { lease: null, ended: { lease: current, reason } } })
-  if (report.status === 'paused') return end('paused')
-  if (report.status === 'human_in_control') return end('human_takeover')
+  if (current.spentAt !== null) return readSpent(current, computer, clock)
+  if (report.status === 'paused') return endLease(current, 'paused', clock)
+  if (report.status === 'human_in_control') return endLease(current, 'human_takeover', clock)
   const ended = leaseEnded(current, computer, clock)
-  if (ended) return end(ended)
+  if (ended) return endLease(current, ended, clock)
   const used = report.lease?.holder === current.sessionId ? clock.now - report.lease.idleMs : undefined
   if (used === undefined || used <= current.lastUsedAt) return { next: undefined, result: { lease: current } }
   const touched = { ...current, lastUsedAt: used }
@@ -188,21 +247,19 @@ export function decideObserve(
 }
 
 /** A read: the lease while it stands, and a lapsed row to clear. */
-export function decideRead(
-  computer: LeaseComputer | null,
-  current: ControlLease | null,
-  clock: LeaseClock
-): LeaseStep<{ lease: ControlLease | null; ended?: { lease: ControlLease; reason: LeaseEndReason } }> {
+export function decideRead(computer: LeaseComputer | null, current: ControlLease | null, clock: LeaseClock): ReadStep {
   if (!current) return { next: undefined, result: { lease: null } }
+  if (current.spentAt !== null) return readSpent(current, computer, clock)
   const ended = leaseEnded(current, computer, clock)
-  if (!ended) return { next: undefined, result: { lease: current } }
-  return { next: null, result: { lease: null, ended: { lease: current, reason: ended } } }
+  return ended ? endLease(current, ended, clock) : { next: undefined, result: { lease: current } }
 }
 
-/** A forced end by a person (the console's Stop) or the Computer's revoke. */
+/** A forced end by a person (the console's Stop) or the Computer's revoke; a spent row keeps barring its session. */
 export function decidePreempt(
   current: ControlLease | null,
   reason: LeaseEndReason
 ): LeaseStep<{ ended: ControlLease; reason: LeaseEndReason } | null> {
-  return current ? { next: null, result: { ended: current, reason } } : { next: undefined, result: null }
+  return current && current.spentAt === null
+    ? { next: null, result: { ended: current, reason } }
+    : { next: undefined, result: null }
 }

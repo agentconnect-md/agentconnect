@@ -449,24 +449,30 @@ Whatever the policy, the desktop daemon refuses locally:
 `registry/computerLeaseService.ts` applies it). The `computer_lease` table keeps one row per held lease, keyed by
 the Computer, and every change takes the Computer row's lock, so replicas agree on the holder.
 
-- **Acquire**: an agent daemon sends `computer-lease/acquire` (`computerId`, `agentId`, `sessionId`) on the daemon wire,
+- **Acquire**: an agent daemon sends `computer-lease/acquire` (`computerId`, `agentId`, `sessionId`, and `requestedAt` on
+  its own clock) on the daemon wire,
   behind `computer-lease-v1`. The CP answers only a daemon that serves the agent. It refuses with `denied` when the
   policy does not grant the agent or is `view`; `unavailable` when the Computer is revoked, offline, or its status is
   stale; and `human_in_control` while it is `paused` or `human_in_control`. Another session's live lease gets
-  `computer_busy` with the holder (session, agent, agent name). The holding session's acquire renews the lease in place.
+  `computer_busy` with the holder (session, agent, and agent name, cut to 200 characters). The holding session's acquire
+  renews the lease in place.
   `computer-lease/release` gives it up.
 - **Expiry**: a lease ends at the first of three deadlines. `leaseIdleSeconds` runs from its last use: an acquire by
   its session, or the `lease.idleMs` that the desktop daemon reports in each heartbeat for its local lease.
-  `leaseMaxSeconds` runs from the acquisition. Holder liveness is three heartbeats (`HEARTBEAT_SEC × MISSED_BEATS`)
+  `leaseMaxSeconds` runs from the acquisition and bounds the session, not one lease: a lease that reaches it stays as a
+  spent row that holds nothing, and its session's acquires get `denied` until its turn ends (or its daemon is lost, or
+  another `leaseMaxSeconds` passes). A release does not reset it. Holder liveness is three heartbeats (`HEARTBEAT_SEC × MISSED_BEATS`)
   from the last heartbeat of the agent daemon that took it. The daemon heartbeat renews liveness, but never revives a
   holder already lost. A lapsed row is cleared the next time it is read.
-- **Session end**: daemons report `phase: end` at the end of every turn, so a lease is held for a turn. The `end`
-  milestone releases the session's leases taken before the end's timestamp (plus 30 s for a daemon clock running
-  behind), so a late replay of an earlier turn does not end a later lease.
+- **Session end**: daemons report `phase: end` at the end of a turn that completes and `phase: problem` at the end of one
+  that fails or is interrupted, so a lease is held for a turn. Either milestone releases the session's leases whose
+  latest acquire was stamped at or before the milestone's `ts`. Both stamps come from the daemon's clock, so a late
+  replay of an earlier turn's end does not end a lease a later turn took or renewed.
 - **Pre-emption**: a Computer heartbeat reporting `paused` or `human_in_control` (owner pause, stop, or viewer takeover)
   ends the lease. Revoking the Computer ends it. A policy change that removes the agent, or sets `view`, ends it too.
 - **Enforcement on the desktop**: the CP sends `computer/lease` with the lease, or `null`, after auth and whenever it
-  changes. A change made on the replica that holds the desktop's channel is sent at once. A change made on another
+  changes. A change made on the replica that holds the desktop's channel makes the channel re-read the lease at once,
+  queued behind any heartbeat's read in flight, so a stale read never overwrites a newer commit. A change made on another
   replica reaches the desktop with its next heartbeat. While a lease stands, the desktop daemon lets only its holder
   session acquire locally, refuses every other caller with `computer_busy` naming the holder, and drops a local lease
   that the CP moved or ended. With no lease known, the prototype's local client tokens still work. The data plane

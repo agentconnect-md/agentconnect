@@ -1045,6 +1045,33 @@ describe('handleEventSession', () => {
     expect(publish).not.toHaveBeenCalled()
   })
 
+  it.each(['end', 'problem'] as const)(
+    'releases the Computer leases of a turn that ends with %s, at its daemon-clock stamp',
+    async (phase) => {
+      const sessionEnded = vi.fn().mockResolvedValue(1)
+      const deps = scopedDeps({
+        session: { recordMilestone: vi.fn().mockResolvedValue(recorded()) },
+        events: { publish: vi.fn() },
+        computerLeases: { sessionEnded }
+      })
+      const base = eventSessionFrame()
+      const frame = { ...base, payload: { ...(base.payload as Record<string, unknown>), phase } } as AnyFrame
+      await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+      expect(sessionEnded).toHaveBeenCalledWith(SESSION_ID, AGENT_ID, Date.parse('2026-07-10T00:00:00.000Z'))
+    }
+  )
+
+  it('keeps Computer leases through a start or plan milestone', async () => {
+    const sessionEnded = vi.fn()
+    const deps = scopedDeps({
+      session: { recordMilestone: vi.fn().mockResolvedValue(recorded()) },
+      events: { publish: vi.fn() },
+      computerLeases: { sessionEnded }
+    })
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+    expect(sessionEnded).not.toHaveBeenCalled()
+  })
+
   it('drops a milestone for an agent not placed on the reporting daemon', async () => {
     const release = vi.fn()
     const recordMilestone = vi.fn()

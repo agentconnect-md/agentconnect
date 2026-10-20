@@ -34,6 +34,7 @@ const req = (sessionId: string, agentId = AGENT_A, leaseId = `lease-${sessionId}
   agentId,
   agentName: agentId === AGENT_A ? 'Ops' : null,
   daemonId: 'daemon-1',
+  turnAt: T0,
   leaseId
 })
 
@@ -49,6 +50,8 @@ function held(over: Partial<ControlLease> = {}): ControlLease {
     acquiredAt: T0,
     lastUsedAt: T0,
     renewedAt: T0,
+    turnAt: T0,
+    spentAt: null,
     ...over
   }
 }
@@ -189,12 +192,61 @@ describe('decideRelease', () => {
     expect(step.result).toMatchObject({ reason: 'released', ended: { leaseId: 'lease-1' } })
   })
 
-  it('ignores a turn end older than the lease', () => {
-    const lease = held({ acquiredAt: T0 + 10_000 })
+  it('ignores a turn end stamped before the latest acquire on the daemon clock', () => {
+    const lease = held({ turnAt: T0 + 10_000 })
     expect(decideRelease(lease, { sessionId: 's1', agentId: AGENT_A, before: T0 }, 'session_ended').result).toBeNull()
     expect(
       decideRelease(lease, { sessionId: 's1', agentId: AGENT_A, before: T0 + 10_000 }, 'session_ended').result
     ).toMatchObject({ reason: 'session_ended' })
+  })
+})
+
+describe('the max limit', () => {
+  const capped = T0 + 1_800_000
+  const used = held({ lastUsedAt: capped - 1000, renewedAt: capped - 1000 })
+
+  it('refuses the same session right after the max deadline and marks the lease spent', () => {
+    const step = decideAcquire(CID, 'org_1', computer({ lastSeenAt: new Date(capped) }), used, req('s1'), clock(capped))
+    expect(step.result).toMatchObject({ granted: false, code: 'denied', ended: { reason: 'max' } })
+    expect(step.next).toMatchObject({ leaseId: 'lease-1', spentAt: capped })
+  })
+
+  it('keeps refusing the spent session but lets another session take the Computer', () => {
+    const spent = held({ ...used, spentAt: capped, renewedAt: capped + 5000 })
+    const live = computer({ lastSeenAt: new Date(capped + 10_000) })
+    const again = decideAcquire(CID, 'org_1', live, spent, req('s1'), clock(capped + 10_000))
+    expect(again).toMatchObject({ next: undefined, result: { granted: false, code: 'denied' } })
+    expect(again.result).not.toHaveProperty('ended')
+    const other = decideAcquire(CID, 'org_1', live, spent, req('s2', AGENT_B), clock(capped + 10_000))
+    expect(other.result).toMatchObject({ granted: true, fresh: true })
+    expect(other.result).not.toHaveProperty('replaced')
+  })
+
+  it('reads a spent row as no lease, keeps it through a release and a stop, and clears it at the turn end', () => {
+    const spent = held({ ...used, spentAt: capped, renewedAt: capped })
+    expect(decideRead(computer(), spent, clock(capped + 1000))).toEqual({ next: undefined, result: { lease: null } })
+    expect(decideObserve(computer(), spent, { status: 'online' }, clock(capped + 1000)).result).toEqual({ lease: null })
+    expect(decideRelease(spent, { sessionId: 's1', agentId: AGENT_A }, 'released')).toEqual({
+      next: undefined,
+      result: null
+    })
+    expect(decidePreempt(spent, 'paused')).toEqual({ next: undefined, result: null })
+    expect(decideRelease(spent, { sessionId: 's1', agentId: AGENT_A, before: capped }, 'session_ended')).toEqual({
+      next: null,
+      result: null
+    })
+  })
+
+  it('stops barring the session once its daemon is lost or another max period passes', () => {
+    const spent = held({ ...used, spentAt: capped, renewedAt: capped })
+    expect(decideRead(computer(), spent, clock(capped + 45_000)).next).toBeNull()
+    const beating = held({ ...spent, renewedAt: capped + 1_800_000 })
+    expect(decideRead(computer(), beating, clock(capped + 1_800_000)).next).toBeNull()
+  })
+
+  it('marks a lease spent when a read finds it at the max limit', () => {
+    const step = decideRead(computer(), used, clock(capped))
+    expect(step).toMatchObject({ next: { spentAt: capped }, result: { lease: null, ended: { reason: 'max' } } })
   })
 })
 

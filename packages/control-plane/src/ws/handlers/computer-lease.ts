@@ -1,5 +1,5 @@
 // `computer-lease/acquire` and `computer-lease/release`: an agent daemon takes or gives up a Computer control lease (computer-use.md §4.4).
-import { isFrame } from '@agentconnect.md/protocol'
+import { COMPUTER_LEASE_AGENT_NAME_MAX, isFrame } from '@agentconnect.md/protocol'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { AgentId, DaemonId, type OrgId } from '../../domain/ids.js'
 import type { AgentRecord } from '../../persistence/ports.js'
@@ -42,8 +42,10 @@ export const handleComputerLeaseAcquire: Handler = async (frame, conn, deps) => 
     const outcome = await leases.acquire(orgId, p.computerId, {
       sessionId: p.sessionId,
       agentId: p.agentId,
-      agentName: agent.displayName ?? agent.name,
-      daemonId: conn.daemonId
+      // Display names are unbounded; an over-long holder name would make the lease frames undecodable.
+      agentName: (agent.displayName ?? agent.name).slice(0, COMPUTER_LEASE_AGENT_NAME_MAX),
+      daemonId: conn.daemonId,
+      turnAt: Date.parse(p.requestedAt)
     })
     conn.replyTo(
       frame,
