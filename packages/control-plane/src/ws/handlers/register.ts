@@ -24,6 +24,7 @@ import {
   isFrame,
   AGENT_EXISTS_FEATURE,
   COMPUTER_LEASE_FEATURE,
+  COMPUTER_CHANNEL_FEATURE,
   AGENT_PLACEMENT_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
@@ -165,6 +166,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       AGENT_PLACEMENT_FEATURE,
       // computer-use.md §4.4: this CP grants Computer control leases.
       ...(deps.computerLeases ? [COMPUTER_LEASE_FEATURE] : []),
+      // computer-use.md §3.7: this CP issues per-session data-plane tokens.
+      ...(deps.computerChannelGrants ? [COMPUTER_CHANNEL_FEATURE] : []),
       // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
       APPROVAL_DM_ROUTE_V1_FEATURE,
       // …and tells whether a chat member is any editor's linked identity, for a synced integration's chat actions.

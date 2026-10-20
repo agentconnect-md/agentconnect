@@ -371,6 +371,9 @@ export const AGENT_PLACEMENT_FEATURE = 'agent-placement-v1'
 /** CP answers `computer-lease/acquire` and `computer-lease/release` (computer-use.md §4.4); without it a daemon offers no computer tools. */
 export const COMPUTER_LEASE_FEATURE = 'computer-lease-v1'
 
+/** CP answers `computer-channel/grant` with a per-session token for a desktop daemon's `/mcp` (computer-use.md §3.7). */
+export const COMPUTER_CHANNEL_FEATURE = 'computer-channel-v1'
+
 // ── GitLab.com code-host features (gitlab-com-integration.md §17.3) ─────────
 // Each string is advertised only when its COMPLETE slice is live; the CP must
 // never place a GitLab-shaped workspace, grant, or hook on a peer without it.

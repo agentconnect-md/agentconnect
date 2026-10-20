@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type { Computer } from './computer.js'
+import type { McpPrincipal } from './mcp-access.js'
 import { controlHost, isLoopbackHost, isWildcardHost } from './config.js'
 import { runSelf } from './self.js'
 import type { Viewer } from './viewer.js'
@@ -17,8 +18,8 @@ export interface HttpServerOptions {
   host: string
   port: number
   computer: Computer
-  authenticate: (authorization: string | undefined) => string | undefined
-  createMcpServer: (client: string) => McpServer
+  authenticate: (authorization: string | undefined) => McpPrincipal | undefined
+  createMcpServer: (principal: McpPrincipal) => McpServer
   log: (line: string) => void
   // Browser remote desktop under /view; its page is public, its API uses the same bearer tokens.
   viewer?: Viewer
@@ -40,7 +41,7 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
   res.end(typeof body === 'string' ? `${text}\n` : text)
 }
 
-// Stateless Streamable HTTP: one MCP server per request, identified by the bearer token's client name.
+// Stateless Streamable HTTP: one MCP server per request, identified by its bearer token's principal.
 export async function startHttpServer(options: HttpServerOptions): Promise<RunningHttpServer> {
   const active = new Set<McpServer>()
   const http = createServer(async (req, res) => {
@@ -51,9 +52,9 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
       if (options.viewer && (path === '/view' || path.startsWith('/view/')))
         return await options.viewer.handle(req, res, path)
       if (path !== '/mcp') return send(res, 404, 'not found')
-      const client = options.authenticate(req.headers.authorization)
-      if (!client) return send(res, 401, 'unauthorized', { 'www-authenticate': 'Bearer' })
-      const mcp = options.createMcpServer(client)
+      const principal = options.authenticate(req.headers.authorization)
+      if (!principal) return send(res, 401, 'unauthorized', { 'www-authenticate': 'Bearer' })
+      const mcp = options.createMcpServer(principal)
       const transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true

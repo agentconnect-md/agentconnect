@@ -1,5 +1,5 @@
 // The in-memory index of live Computer channels, so a revoke, delete or policy change reaches the desktop at once.
-import type { ComputerPolicy, ComputerRevoke } from '@agentconnect.md/protocol'
+import type { ComputerPolicy, ComputerRelayEntry, ComputerRevoke } from '@agentconnect.md/protocol'
 
 /** The slice of a live Computer connection the registry drives; no `ws` knowledge. */
 export interface ComputerChannel {
@@ -9,6 +9,8 @@ export interface ComputerChannel {
   pushPolicy(policy: ComputerPolicy): void
   /** The lease may have changed: re-read it and tell the desktop. */
   leaseChanged(): void
+  /** The relay roster changed: the desktop converges its data-plane links to it. */
+  pushRelays(relays: ComputerRelayEntry[]): void
   revoke(reason: ComputerRevoke['reason']): void
   close(code: number, reason: string): void
 }
@@ -58,6 +60,10 @@ export class ComputerChannelRegistry implements ComputerChannelControl {
 
   leaseChanged(computerId: string): void {
     this.byComputer.get(computerId)?.leaseChanged()
+  }
+
+  pushRelays(relays: ComputerRelayEntry[]): void {
+    for (const ch of this.byComputer.values()) ch.pushRelays(relays)
   }
 
   get size(): number {

@@ -13,6 +13,10 @@ export const ComputerLeaseHolder = z.object({
 })
 export type ComputerLeaseHolder = z.infer<typeof ComputerLeaseHolder>
 
+/** The caller name a desktop gives a lease holder: agent and session together, the identity the CP's lease service compares. */
+export const computerLeaseHolderName = (holder: { agentId: string; sessionId: string }): string =>
+  `${holder.agentId}/${holder.sessionId}`
+
 /** A granted lease; `expiresAt` is its hard cap, and it may end sooner (idle, holder lost, release, pre-emption). */
 export const ComputerControlLease = z.object({
   leaseId: z.string().uuid(),

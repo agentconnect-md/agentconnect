@@ -4,9 +4,14 @@ import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
 import { ComputerControlLease } from './computer-lease.js'
+import { COMPUTER_RELAYS_MAX, ComputerRelayEntry } from './computer-channel.js'
 
 // The lease schemas ride both wires, so the `./computer` entry serves them to the desktop too.
 export * from './computer-lease.js'
+// The data plane's grant, relays and channel tokens, for the desktop and the agent daemon alike.
+export * from './computer-channel.js'
+export * from './relay-computer.js'
+export * from '../computer-channel-token.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 
@@ -180,7 +185,7 @@ export const ComputerHeartbeat = z
     // The local lease, how long since its last input, and how long it has been held without idling out.
     lease: z
       .object({
-        holder: z.string().min(1).max(256),
+        holder: z.string().min(1).max(512),
         idleMs: z.number().int().min(0),
         heldMs: z.number().int().min(0).optional()
       })
@@ -209,6 +214,10 @@ export type ComputerRevoke = z.infer<typeof ComputerRevoke>
 export const ComputerLeasePush = z.object({ lease: ComputerControlLease.nullable() })
 export type ComputerLeasePush = z.infer<typeof ComputerLeasePush>
 
+// C→D EVT after auth and whenever the roster changes: the relays to dial out to for the data plane (§3.7).
+export const ComputerRelaysPush = z.object({ relays: z.array(ComputerRelayEntry).max(COMPUTER_RELAYS_MAX) })
+export type ComputerRelaysPush = z.infer<typeof ComputerRelaysPush>
+
 export const COMPUTER_CP_SCHEMAS = {
   'computer/auth': ComputerAuth,
   'computer/auth/ok': ComputerAuthOk,
@@ -217,6 +226,7 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/policy': ComputerPolicyPush,
   'computer/revoke': ComputerRevoke,
   'computer/lease': ComputerLeasePush,
+  'computer/relays': ComputerRelaysPush,
   error: ErrorFrame
 } as const
 
@@ -231,6 +241,7 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/policy', COMPUTER_CP_SCHEMAS['computer/policy']),
   frameSchema('computer/revoke', COMPUTER_CP_SCHEMAS['computer/revoke']),
   frameSchema('computer/lease', COMPUTER_CP_SCHEMAS['computer/lease']),
+  frameSchema('computer/relays', COMPUTER_CP_SCHEMAS['computer/relays']),
   frameSchema('error', COMPUTER_CP_SCHEMAS['error'])
 ])
 export type ComputerCpFrame = z.infer<typeof ComputerCpFrame>

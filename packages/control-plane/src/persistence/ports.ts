@@ -673,6 +673,8 @@ export interface ComputerRepo {
   recordLive(orgId: OrgId, id: ComputerId, apiKeyId: string, report: ComputerLiveReport, at: Date): Promise<boolean>
   /** Mark a disconnected Computer offline unless it was revoked meanwhile. */
   markOffline(orgId: OrgId, id: ComputerId, at: Date): Promise<void>
+  /** The Computer's live key that signs its channel tokens, most recently used first; null once revoked. */
+  liveKeyId(id: ComputerId, at: Date): Promise<string | null>
   /** Delete registration rows that expired before the cutoff; returns how many. */
   reapRegistrations(expiredBefore: Date): Promise<number>
   /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */

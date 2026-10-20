@@ -229,6 +229,7 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { ComputerService } from './registry/computerService.js'
 import { ComputerLeaseService } from './registry/computerLeaseService.js'
+import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -650,9 +651,14 @@ export function buildContainer(
   const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
   // Live Computer channels (computer-use.md §3.6): revoke, delete and policy changes reach a connected desktop at once.
   const computerChannels = new ComputerChannelRegistry()
-  const computerChannelKeys = new ComputerChannelKeys(config.API_KEY_PEPPER, config.COMPUTER_CREDENTIAL_TTL_SEC)
   // Three missed heartbeats, the daemon watchdog's freeze threshold: for a desktop's status and a lease holder alike.
   const missedBeatsMs = config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000
+  // A desktop seen within missedBeatsMs got the newest key with that heartbeat; the margin covers the push itself.
+  const computerChannelKeys = new ComputerChannelKeys(
+    config.API_KEY_PEPPER,
+    config.COMPUTER_CREDENTIAL_TTL_SEC,
+    missedBeatsMs + 5_000
+  )
   const computerLeases = new ComputerLeaseService(repos.computerLease, clock, {
     holderTtlMs: missedBeatsMs,
     staleAfterMs: missedBeatsMs,
@@ -1078,7 +1084,22 @@ export function buildContainer(
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
   // (alive within the failover window), fed into `register/ok.relays` and fanned to
   // daemons on register/sweep via the `relay/roster` EVT (sender is the broadcaster).
-  const relayRoster = new RelayRoster(repos.relay, sender, clock, relayStaleMs)
+  // Desktops dial the same relays for the data plane (computer-use.md §3.7), so roster changes reach their channels too.
+  const relayRoster = new RelayRoster(
+    repos.relay,
+    {
+      broadcastRelayRoster: (relays) => {
+        sender.broadcastRelayRoster(relays)
+        computerChannels.pushRelays(relays)
+      }
+    },
+    clock,
+    relayStaleMs
+  )
+  const computerChannelGrants = new ComputerChannelGrants(repos.computer, computerChannelKeys, clock, {
+    staleAfterMs: missedBeatsMs,
+    relays: () => relayRoster.entries()
+  })
 
   // §14.8 (resource-visibility.md): which of a gated install's reported DMs open to the
   // ordinary DM default because their counterpart is already in the agent's audience.
@@ -2795,6 +2816,7 @@ export function buildContainer(
     collabRoutes,
     dutyLease,
     computerLeases,
+    computerChannelGrants,
     memberSets: repos.memberSet,
     agentBundle: (agent) => stagedAgentMoves.bundleFor(agent),
     cron: repos.cron,
@@ -2892,6 +2914,8 @@ export function buildContainer(
     auth: relayAuth,
     verifyAhpKey: (req) => ahpAuthorization.verifyKey(req),
     verifyAhpBrowser: (req) => ahpAuthorization.verifyBrowser(req),
+    verifyComputerRelayToken: (credential, computerId) =>
+      computerChannelGrants.verifyRelayToken(credential, computerId),
     relays: repos.relay,
     relayReg,
     clock,
@@ -3278,6 +3302,7 @@ export function buildContainer(
         keys: computerChannelKeys,
         registry: computerChannels,
         leases: computerLeases,
+        relays: () => relayRoster.entries(),
         clock,
         heartbeatSec: config.HEARTBEAT_SEC,
         log: http.log,

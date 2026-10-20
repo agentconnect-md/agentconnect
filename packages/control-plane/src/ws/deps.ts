@@ -65,6 +65,7 @@ import type { ApprovalRouteResolver } from '../orchestrator/approvalRoute.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
+import type { ComputerChannelGrants } from '../registry/computerChannelGrants.js'
 import type { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
@@ -181,6 +182,8 @@ export interface DaemonWsDeps {
   dutyLease: DutyLeaseService
   /** Computer control leases (computer-use.md §4.4); absent in tests that do not exercise them. */
   computerLeases?: Pick<ComputerLeaseService, 'acquire' | 'release' | 'sessionEnded' | 'daemonHeartbeat'>
+  /** Per-session data-plane tokens for a desktop daemon's `/mcp` (computer-use.md §3.7); absent in tests that do not exercise them. */
+  computerChannelGrants?: Pick<ComputerChannelGrants, 'grant'>
   /** The set a connection may claim duties within (daemon-groups.md §3), re-read once registered; the executor requests also read the set's switch and members. */
   memberSets: Pick<MemberSetRepo, 'setIdOf' | 'get' | 'memberIdsOf'>
   /** Assembles one agent's complete installable definition for `duty/fetch` —

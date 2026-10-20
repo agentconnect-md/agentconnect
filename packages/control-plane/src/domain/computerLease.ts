@@ -1,5 +1,5 @@
 // The control lease state machine (computer-use.md §4.4): pure decisions over one Computer's lease row.
-import type { ComputerLeaseHolder, ComputerLeaseRefusal } from '@agentconnect.md/protocol'
+import { computerLeaseHolderName, type ComputerLeaseHolder, type ComputerLeaseRefusal } from '@agentconnect.md/protocol'
 import { presentComputerStatus, type ComputerPolicy, type ComputerStatus } from './computer.js'
 
 /** One held lease; times are epoch milliseconds. */
@@ -239,7 +239,7 @@ export function decideObserve(
   if (report.status === 'paused') return endLease(current, 'paused', clock)
   if (report.status === 'human_in_control') return endLease(current, 'human_takeover', clock)
   // A desktop lease taken while this one stood never idled out locally, so its last input carries this lease's use.
-  const local = report.lease?.holder === current.sessionId ? report.lease : undefined
+  const local = report.lease?.holder === computerLeaseHolderName(current) ? report.lease : undefined
   const used = local ? clock.now - local.idleMs : undefined
   const since = local?.heldMs !== undefined ? clock.now - local.heldMs : used
   const idleAt = computer ? current.lastUsedAt + computer.policy.leaseIdleSeconds * 1000 : 0

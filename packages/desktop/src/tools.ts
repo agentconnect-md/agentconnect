@@ -64,8 +64,11 @@ export function createComputerMcpServer(options: {
   computer: Computer
   client: string
   driverTools?: DriverTool[]
+  // A `view` grant (computer-use.md §4.1): tools that send input or take the lease are not offered at all.
+  viewOnly?: boolean
 }): McpServer {
   const { computer, client } = options
+  const viewOnly = options.viewOnly ?? false
   const server = new McpServer(
     { name: 'agentconnect-desktop', version: DESKTOP_DAEMON_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
@@ -100,78 +103,85 @@ export function createComputerMcpServer(options: {
     },
     async () => asResult(await computer.cursorPosition(client))
   )
-  server.registerTool(
-    'computer_click',
-    {
-      description: 'Click at (x, y) in screenshot pixels. Returns a screenshot taken after the click.',
-      inputSchema: Point.extend({
-        button: z.enum(['left', 'right', 'middle']).optional(),
-        count: z.number().int().min(1).max(3).optional().describe('2 for double-click'),
-        modifiers: z.array(z.string()).max(3).optional().describe('e.g. ["ctrl"] or ["shift"]')
-      }),
-      annotations: acting
-    },
-    async (args) => asResult(await computer.click(client, args))
-  )
-  server.registerTool(
-    'computer_move',
-    {
-      description: 'Move the real mouse pointer to (x, y) in screenshot pixels (hover).',
-      inputSchema: Point,
-      annotations: acting
-    },
-    async (args) => asResult(await computer.move(client, args))
-  )
-  server.registerTool(
-    'computer_drag',
-    {
-      description: 'Press, drag and release the left button from one point to another (screenshot pixels).',
-      inputSchema: z.object({ from: Point, to: Point }),
-      annotations: acting
-    },
-    async (args) => asResult(await computer.drag(client, args))
-  )
-  server.registerTool(
-    'computer_scroll',
-    {
-      description: 'Scroll the mouse wheel at (x, y) in screenshot pixels.',
-      inputSchema: Point.extend({
-        direction: z.enum(['up', 'down', 'left', 'right']),
-        amount: z.number().int().min(1).max(25).optional().describe('wheel notches, default 3')
-      }),
-      annotations: acting
-    },
-    async (args) => asResult(await computer.scroll(client, args))
-  )
-  server.registerTool(
-    'computer_type',
-    {
-      description: 'Type text into the focused control of the frontmost app. Does not press Enter.',
-      inputSchema: z.object({ text: z.string().min(1).max(4096) }),
-      annotations: acting
-    },
-    async (args) => asResult(await computer.type(client, args))
-  )
-  server.registerTool(
-    'computer_key',
-    {
-      description:
-        'Press one key, optionally with modifiers, in the frontmost app, e.g. ["return"], ["ctrl","s"], ["alt","f4"]. Key names: return, tab, escape, backspace, delete, up/down/left/right, home, end, pageup, pagedown, space, f1-f12, letters, digits.',
-      inputSchema: z.object({ keys: z.array(z.string().min(1)).min(1).max(4) }),
-      annotations: acting
-    },
-    async (args) => asResult(await computer.key(client, args))
-  )
-  server.registerTool(
-    'computer_launch',
-    {
-      description:
-        'Launch an app by name (e.g. "Notepad", "Calculator") or, on Windows, by full .exe path. Returns the launched pid/windows.',
-      inputSchema: z.object({ app: z.string().min(1).max(512) }),
-      annotations: acting
-    },
-    async (args) => asResult(await computer.launch(client, args))
-  )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_click',
+      {
+        description: 'Click at (x, y) in screenshot pixels. Returns a screenshot taken after the click.',
+        inputSchema: Point.extend({
+          button: z.enum(['left', 'right', 'middle']).optional(),
+          count: z.number().int().min(1).max(3).optional().describe('2 for double-click'),
+          modifiers: z.array(z.string()).max(3).optional().describe('e.g. ["ctrl"] or ["shift"]')
+        }),
+        annotations: acting
+      },
+      async (args) => asResult(await computer.click(client, args))
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_move',
+      {
+        description: 'Move the real mouse pointer to (x, y) in screenshot pixels (hover).',
+        inputSchema: Point,
+        annotations: acting
+      },
+      async (args) => asResult(await computer.move(client, args))
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_drag',
+      {
+        description: 'Press, drag and release the left button from one point to another (screenshot pixels).',
+        inputSchema: z.object({ from: Point, to: Point }),
+        annotations: acting
+      },
+      async (args) => asResult(await computer.drag(client, args))
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_scroll',
+      {
+        description: 'Scroll the mouse wheel at (x, y) in screenshot pixels.',
+        inputSchema: Point.extend({
+          direction: z.enum(['up', 'down', 'left', 'right']),
+          amount: z.number().int().min(1).max(25).optional().describe('wheel notches, default 3')
+        }),
+        annotations: acting
+      },
+      async (args) => asResult(await computer.scroll(client, args))
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_type',
+      {
+        description: 'Type text into the focused control of the frontmost app. Does not press Enter.',
+        inputSchema: z.object({ text: z.string().min(1).max(4096) }),
+        annotations: acting
+      },
+      async (args) => asResult(await computer.type(client, args))
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_key',
+      {
+        description:
+          'Press one key, optionally with modifiers, in the frontmost app, e.g. ["return"], ["ctrl","s"], ["alt","f4"]. Key names: return, tab, escape, backspace, delete, up/down/left/right, home, end, pageup, pagedown, space, f1-f12, letters, digits.',
+        inputSchema: z.object({ keys: z.array(z.string().min(1)).min(1).max(4) }),
+        annotations: acting
+      },
+      async (args) => asResult(await computer.key(client, args))
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_launch',
+      {
+        description:
+          'Launch an app by name (e.g. "Notepad", "Calculator") or, on Windows, by full .exe path. Returns the launched pid/windows.',
+        inputSchema: z.object({ app: z.string().min(1).max(512) }),
+        annotations: acting
+      },
+      async (args) => asResult(await computer.launch(client, args))
+    )
   server.registerTool(
     'computer_wait',
     {
@@ -184,43 +194,46 @@ export function createComputerMcpServer(options: {
       return asResult(await computer.screenshot(client, ctx.mcpReq.signal))
     }
   )
-  server.registerTool(
-    'computer_acquire',
-    {
-      description: 'Take the exclusive control lease explicitly (input tools also take it on first use).',
-      inputSchema: z.object({}),
-      annotations: readOnly
-    },
-    async () => {
-      try {
-        computer.acquire(client)
-        return { content: [{ type: 'text', text: JSON.stringify(computer.info().lease) }] }
-      } catch (error) {
-        const failure = error as { code?: string; message: string; details?: object }
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ error: failure.code, message: failure.message, ...failure.details })
-            }
-          ]
+  if (!viewOnly)
+    server.registerTool(
+      'computer_acquire',
+      {
+        description: 'Take the exclusive control lease explicitly (input tools also take it on first use).',
+        inputSchema: z.object({}),
+        annotations: readOnly
+      },
+      async () => {
+        try {
+          computer.acquire(client)
+          return { content: [{ type: 'text', text: JSON.stringify(computer.info().lease) }] }
+        } catch (error) {
+          const failure = error as { code?: string; message: string; details?: object }
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ error: failure.code, message: failure.message, ...failure.details })
+              }
+            ]
+          }
         }
       }
-    }
-  )
-  server.registerTool(
-    'computer_release',
-    {
-      description: 'Release the control lease so the person or another agent can use the computer.',
-      inputSchema: z.object({}),
-      annotations: readOnly
-    },
-    async () => ({ content: [{ type: 'text', text: JSON.stringify({ released: computer.release(client) }) }] })
-  )
+    )
+  if (!viewOnly)
+    server.registerTool(
+      'computer_release',
+      {
+        description: 'Release the control lease so the person or another agent can use the computer.',
+        inputSchema: z.object({}),
+        annotations: readOnly
+      },
+      async () => ({ content: [{ type: 'text', text: JSON.stringify({ released: computer.release(client) }) }] })
+    )
 
   for (const tool of options.driverTools ?? []) {
     const readOnlyTool = isReadOnlyDriverTool(tool.name)
+    if (viewOnly && !readOnlyTool) continue
     server.registerTool(
       `cua_${tool.name}`,
       {

@@ -128,6 +128,9 @@ import type {
 import {
   AGENT_EXISTS_FEATURE,
   AGENT_EXISTS_MAX,
+  COMPUTER_CHANNEL_FEATURE,
+  ComputerChannelGrantResult,
+  type ComputerChannelGrantRequest,
   ExecutorCandidatesResult,
   ExecutorPrepareResult,
   ExecutorReleaseResult,
@@ -1473,6 +1476,22 @@ export class CpClient {
       for (const id of (rep.payload as AgentExistsOk).existing) existing.add(id)
     }
     return existing
+  }
+
+  /** `computer-channel/grant` (computer-use.md §3.7): a session token for a desktop's `/mcp`; NEVER log the reply, it is a bearer credential. */
+  async computerChannelGrant(
+    payload: ComputerChannelGrantRequest,
+    orgId?: string
+  ): Promise<ComputerChannelGrantResult> {
+    this.requireReady('computer-channel/grant')
+    if (!this.supportsServerFeature(COMPUTER_CHANNEL_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer computer-channel/grant', false)
+    }
+    const rep = await this.request('computer-channel/grant', payload, orgId)
+    if (rep.type !== 'computer-channel/grant/result') {
+      throw new WireError('INTERNAL', `expected computer-channel/grant/result, got ${rep.type}`, false)
+    }
+    return ComputerChannelGrantResult.parse(rep.payload)
   }
 
   /**

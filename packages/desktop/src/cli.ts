@@ -26,12 +26,15 @@ import { CONTROL_HEADER, startHttpServer, urlHost } from './http-server.js'
 import { canInstallFfmpeg, ffmpegAvailable, FFMPEG_VERSION, installFfmpeg, resolveFfmpegPath } from './stream/ffmpeg.js'
 import { RtcSessions } from './stream/rtc.js'
 import { ScreenStream } from './stream/screen-stream.js'
+import type { McpServer } from '@modelcontextprotocol/server'
 import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { appBundlePath, runSelf, selfCommand } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
+import { RelayLinks } from './cp/relay-links.js'
+import { channelPrincipal, createRelayedMcpHandler, type McpPrincipal } from './mcp-access.js'
 import {
   exchangeRegistrationToken,
   loadRegistration,
@@ -331,7 +334,8 @@ function startCpChannel(options: {
   computer: Computer
   driver: CuaDriver
   screenSize: Record<string, unknown>
-}): { client: ComputerCpClient; stop(): void } | undefined {
+  createMcpServer: (principal: McpPrincipal) => McpServer
+}): { client: ComputerCpClient; relays: RelayLinks; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
   // Until the first capture, the display comes from the driver's startup screen size.
@@ -341,6 +345,18 @@ function startCpChannel(options: {
     scale: num(screenSize.scale_factor) || 1
   }
   if (!registration || registration.revokedAt) return undefined
+  // A NAT-ed desktop is reached through the relays it dials out to; calls arrive with CP-issued session tokens (§3.7).
+  const relayLinks = new RelayLinks({
+    computerId: registration.computerId,
+    desktopDaemonVersion: DESKTOP_DAEMON_VERSION,
+    token: () => authority.relayToken(registration.computerId),
+    handle: createRelayedMcpHandler({
+      authenticate: (header) => channelPrincipal(header, authority, () => registration.computerId),
+      createMcpServer: options.createMcpServer,
+      log
+    }),
+    log
+  })
   const session = sessionKind()
   const profile = { osVersion: osVersion(), session, desktopDaemonVersion: DESKTOP_DAEMON_VERSION }
   let checks: Check[] | undefined
@@ -376,7 +392,9 @@ function startCpChannel(options: {
       config.leaseMaxSeconds = policy.leaseMaxSeconds
     },
     onLease: (lease) => computer.applyControlLease(lease),
+    onRelays: (relays) => relayLinks.converge(relays),
     onRevoked: (reason) => {
+      relayLinks.stop()
       markRevoked(dir, reason)
       log(`REVOKED by the Control Plane (${reason}): the key was forgotten and all input is refused`)
     }
@@ -399,8 +417,10 @@ function startCpChannel(options: {
   void runDoctor()
   return {
     client,
+    relays: relayLinks,
     stop() {
       if (doctorTimer) clearTimeout(doctorTimer)
+      relayLinks.stop()
       client.stop()
     }
   }
@@ -482,7 +502,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     process.title = `AgentConnect Desktop — ${status}`
   }
   // Filled once built; the authority and status callbacks below fire only after that.
-  const live: { viewer?: Viewer; channel?: { client: ComputerCpClient; stop(): void } } = {}
+  const live: { viewer?: Viewer; channel?: { client: ComputerCpClient; relays: RelayLinks; stop(): void } } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
     registered: Boolean(registration),
@@ -492,6 +512,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
       const reason = state.kind === 'revoked' ? 'computer revoked' : 'Control Plane unreachable'
       computer.suspend(reason)
       live.viewer?.disconnectAll(reason)
+      // No new data-plane calls without a live key; the next roster push after reconnecting reattaches.
+      live.channel?.relays.stop()
     }
   })
   const { driver, computer } = buildComputer(
@@ -520,16 +542,33 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   const driverTools = await loadDriverTools(driver, config)
   const viewer = buildViewer(dir, config, computer, () => authority.refusal())
   live.viewer = viewer
+  const createMcpServer = ({ client, viewOnly }: McpPrincipal): McpServer =>
+    createComputerMcpServer({ computer, client, driverTools, viewOnly })
   const server = await startHttpServer({
     host: config.host,
     port: config.port,
     computer,
-    authenticate: (header) => authenticate(config, header),
-    createMcpServer: (client) => createComputerMcpServer({ computer, client, driverTools }),
+    // A CP-issued session token also works directly, the same-network shortcut past the relay (§3.7).
+    authenticate: (header) => {
+      const channel = registration ? channelPrincipal(header, authority, () => registration.computerId) : undefined
+      if (channel) return channel
+      const client = authenticate(config, header)
+      return client ? { client, viewOnly: false } : undefined
+    },
+    createMcpServer,
     log,
     viewer
   })
-  live.channel = startCpChannel({ dir, config, registration, authority, computer, driver, screenSize })
+  live.channel = startCpChannel({
+    dir,
+    config,
+    registration,
+    authority,
+    computer,
+    driver,
+    screenSize,
+    createMcpServer
+  })
   const urls = isWildcardHost(config.host)
     ? [server.url, ...lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`)]
     : [server.url]

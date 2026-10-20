@@ -12,6 +12,8 @@ const ORG = 'org_1'
 const CID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const AGENT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+// The holder name a desktop reports for session s1 of agent A.
+const S1_HOLDER = `${AGENT_A}/s1`
 
 class MemoryLeaseRepo implements ComputerLeaseRepo {
   leases = new Map<string, ControlLease>()
@@ -125,7 +127,7 @@ describe('ComputerLeaseService', () => {
     for (let i = 0; i < 3; i++) {
       tick(15_000)
       // The desktop reports the session's input, so the idle limit is not what ends it here.
-      await service.observe(ORG, CID, { status: 'busy', lease: { holder: 's1', idleMs: 0 } })
+      await service.observe(ORG, CID, { status: 'busy', lease: { holder: S1_HOLDER, idleMs: 0 } })
       expect(await service.daemonHeartbeat('daemon-1')).toBe(1)
     }
     tick(30_000)
@@ -151,7 +153,7 @@ describe('ComputerLeaseService', () => {
     await service.acquire(ORG, CID, who('s1'))
     for (let elapsed = 0; elapsed < 1_800_000; elapsed += 15_000) {
       tick(15_000)
-      await service.observe(ORG, CID, { status: 'busy', lease: { holder: 's1', idleMs: 0 } })
+      await service.observe(ORG, CID, { status: 'busy', lease: { holder: S1_HOLDER, idleMs: 0 } })
       await service.daemonHeartbeat('daemon-1')
     }
     expect(await service.current(ORG, CID)).toBeNull()

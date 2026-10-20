@@ -16,6 +16,8 @@ const T0 = 1_760_000_000_000
 const CID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const AGENT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+// The holder name a desktop reports for session s1 of agent A.
+const S1_HOLDER = `${AGENT_A}/s1`
 
 const policy = ComputerPolicySchema.parse({
   allowedAgents: [AGENT_A, AGENT_B],
@@ -265,7 +267,7 @@ describe('decideObserve', () => {
     const step = decideObserve(
       computer(),
       held(),
-      { status: 'busy', lease: { holder: 's1', idleMs: 5_000 } },
+      { status: 'busy', lease: { holder: S1_HOLDER, idleMs: 5_000 } },
       clock(T0 + 30_000)
     )
     expect(step.next).toMatchObject({ lastUsedAt: T0 + 25_000 })
@@ -276,11 +278,20 @@ describe('decideObserve', () => {
       decideObserve(computer(), held(), { status: 'busy', lease: { holder: 'local', idleMs: 0 } }, clock(T0 + 1000))
         .next
     ).toBeUndefined()
+    // The same session id under another agent is another holder.
+    expect(
+      decideObserve(
+        computer(),
+        held(),
+        { status: 'busy', lease: { holder: `${AGENT_B}/s1`, idleMs: 0 } },
+        clock(T0 + 1000)
+      ).next
+    ).toBeUndefined()
     expect(
       decideObserve(
         computer(),
         held({ lastUsedAt: T0 + 20_000 }),
-        { status: 'busy', lease: { holder: 's1', idleMs: 15_000 } },
+        { status: 'busy', lease: { holder: S1_HOLDER, idleMs: 15_000 } },
         clock(T0 + 30_000)
       ).next
     ).toBeUndefined()
@@ -291,7 +302,7 @@ describe('decideObserve', () => {
     const step = decideObserve(
       computer(),
       lease,
-      { status: 'busy', lease: { holder: 's1', idleMs: 2_000 } },
+      { status: 'busy', lease: { holder: S1_HOLDER, idleMs: 2_000 } },
       clock(T0 + 120_000)
     )
     expect(step).toMatchObject({ next: { lastUsedAt: T0 + 118_000 }, result: { lease: { lastUsedAt: T0 + 118_000 } } })
@@ -300,14 +311,14 @@ describe('decideObserve', () => {
   it('counts continuous input between heartbeats that passes the stale idle deadline', () => {
     // A 10 s idle limit, input every second through t=14 s, and the heartbeat at t=15 s.
     const short = computer({ policy: { ...policy, leaseIdleSeconds: 10 } })
-    const report = { status: 'busy' as const, lease: { holder: 's1', idleMs: 1_000, heldMs: 15_000 } }
+    const report = { status: 'busy' as const, lease: { holder: S1_HOLDER, idleMs: 1_000, heldMs: 15_000 } }
     const step = decideObserve(short, held(), report, clock(T0 + 15_000))
     expect(step).toMatchObject({ next: { lastUsedAt: T0 + 14_000 }, result: { lease: { lastUsedAt: T0 + 14_000 } } })
   })
 
   it('does not count a desktop lease taken again after this one ran out idle', () => {
     const lease = held({ renewedAt: T0 + 120_000 })
-    const report = { status: 'busy' as const, lease: { holder: 's1', idleMs: 1_000, heldMs: 3_000 } }
+    const report = { status: 'busy' as const, lease: { holder: S1_HOLDER, idleMs: 1_000, heldMs: 3_000 } }
     expect(decideObserve(computer(), lease, report, clock(T0 + 125_000)).result).toMatchObject({
       lease: null,
       ended: { reason: 'idle' }
@@ -319,7 +330,7 @@ describe('decideObserve', () => {
     const step = decideObserve(
       computer(),
       lease,
-      { status: 'busy', lease: { holder: 's1', idleMs: 0 } },
+      { status: 'busy', lease: { holder: S1_HOLDER, idleMs: 0 } },
       clock(T0 + 125_000)
     )
     expect(step.result).toMatchObject({ lease: null, ended: { reason: 'idle' } })

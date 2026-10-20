@@ -56,9 +56,11 @@ function extractControlExt(json: unknown): InboundControlExt | undefined {
  */
 export function decodeEnvelopeWith<TFrame>(
   schemas: Record<string, z.ZodTypeAny>,
-  text: string
+  text: string,
+  opts: { maxBytes?: number } = {}
 ): DecodeResultOf<TFrame> {
-  if (byteLength(text) > MAX_FRAME_BYTES) {
+  // A wire that carries bounded bodies (the relay ↔ desktop data plane) sets its own ceiling.
+  if (byteLength(text) > (opts.maxBytes ?? MAX_FRAME_BYTES)) {
     return { ok: false, id: NIL_UUID, msg: 'FRAME_TOO_LARGE' }
   }
   let json: unknown
