@@ -376,8 +376,8 @@ desktop daemon ◀────────────────────�
 - **On the desktop.** A relayed request is served in process through the same MCP server as the local port, and only a
   channel token authenticates it; the prototype's local client tokens work only on the local port. The token's agent and
   session together become the caller, the holder the CP's control lease names (§4.4), and a `view` token gets a server without
-  the input and lease tools. The agent daemon's side is `packages/daemon/src/computer/data-plane.ts`; registering the
-  `computer_*` tools on it is #3190.
+  the input and lease tools. The agent daemon's side is `packages/daemon/src/computer/data-plane.ts`, and the
+  `computer_*` tools on it are `packages/daemon/src/computer/tools.ts` (§5).
 
 ### 3.8 Container form (Docker) [validated]
 
@@ -448,7 +448,9 @@ interface ComputerPolicy {
 }
 ```
 
-On the agent side (`packages/daemon/src/agents/agent-schema.ts`):
+On the agent side (`packages/daemon/src/agents/agent-schema.ts`; **[implemented]** as `AgentComputerUse` in
+`packages/protocol`, set on the agent create and PATCH routes, kept in the agent's `runtimeOverrides`, returned in the
+agent DTO and shipped on the spec as value or `null`):
 
 ```ts
 computerUse: z.object({
@@ -522,7 +524,9 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   replica reaches the desktop with its next heartbeat. While a lease stands, the desktop daemon lets only its holder
   session acquire locally, refuses every other caller with `computer_busy` naming the holder, and drops a local lease
   that the CP moved or ended. With no lease known, the prototype's local client tokens still work. The data plane
-  (§3.7) binds a call to its session through its channel token, and the `computer_*` tools (#3190) call acquire.
+  (§3.7) binds a call to its session through its channel token, and the `computer_*` tools take the lease with
+  `computer-lease/acquire` before every input tool and `computer_acquire`, and give it up with `computer-lease/release`
+  on `computer_release` (§5.2). The session is the outward session id its `event/session` milestones carry.
 
 ## 5. Agent tool interface
 
@@ -542,7 +546,7 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
 | `computer_wait`                         | `{ ms }` (≤ 10000)                           | no    | Waits, then screenshots                                                   |
 | `computer_acquire` / `computer_release` | `{ computer? }` / `{}`                       | —     | Explicit lease control                                                    |
 
-**Target selection [design]**: every tool except `computer_list` accepts an optional `computer` id. The session's
+**Target selection [implemented]**: every tool except `computer_list` accepts an optional `computer` id. The session's
 target is resolved in order: the explicit `computer` argument; the Computer whose lease the session holds (set by
 `computer_acquire` or the first input); the only Computer the agent is granted. When none of these yields exactly one
 Computer, the call fails with `computer_ambiguous` listing the candidates, before any input is sent. The data plane
@@ -557,7 +561,7 @@ consistent; window screenshots come from `cua_get_window_state` (§5.5). Multipl
 Prototype (validated):
   Claude Code ─HTTP + Bearer─▶ desktop daemon /mcp ─stdio MCP─▶ cua-driver mcp --direct ─▶ local desktop
 
-Release (design):
+Release (implemented):
   runtime ─stdio─▶ mcp-bridge ─▶ the agent's daemon's built-in MCP server
      (any execution strategy; inside a sandbox through the shim's MCP tunnel, see buildSandboxMcpServers in mcp/inject.ts)
           │  computer_* → check the agent's grant and lease (from the Control Plane)
@@ -565,8 +569,22 @@ Release (design):
      session channel (relay, §3.7; direct later) ──HTTP MCP──▶ desktop daemon /mcp
 ```
 
-The tools are registered in `packages/daemon/src/mcp/resolve-servers.ts` and appear only when the agent has computer
-use enabled, at least one Computer is available, and the runtime supports MCP image content.
+**[implemented]** The tools join the daemon's own bridge tool set, next to the MCP Apps tools, when the session's tool
+context is composed (`toolContextFor` in `daemon.ts`); `resolve-servers.ts` still resolves only the daemon-configured
+servers. They appear only when the agent's `computerUse` is enabled and names at least one Computer, the Control Plane
+advertises `computer-lease-v1` and `computer-channel-v1`, and the runtime shows the model MCP image content
+(`claude-acp` and `codex-acp` as audited, or a runtime definition's `mcpImageContent`). Narrowed sessions (a
+follow-up's check, organization research, getting to know) never get them. Because they are bridge tools, they reach
+the daemon the same way under every execution strategy, including the sandbox image's own bridge entry. Online status
+is not checked when the tools are offered: a call to an offline Computer gets a definite `unavailable`.
+
+Each call resolves its target (§5.1), checks the argument shape, and for an input tool or `computer_acquire` asks the
+CP for the lease first; a refusal (`computer_busy` with the holder, `human_in_control`, `denied`, `unavailable`) comes
+back as a definite error and nothing is sent. The call then goes to the desktop over the session's channel (§3.7), minus
+the `computer` argument, and the desktop's content, images included, is returned as is. An input whose request may have
+reached the desktop and failed in flight is never resent: it returns `uncertain` with a fresh screenshot (§5.4).
+`computer_list` asks every granted Computer for its own `computer_list` and marks one it cannot reach `unavailable`.
+A session's desktop connections close after 10 minutes without a call.
 
 ### 5.3 Screenshots and coordinates [validated]
 
@@ -600,10 +618,10 @@ window-scoped background input (no real cursor movement, no focus stealing), acc
 
 ### 5.6 Guidance for agents [validated]
 
-On Xfce, Firefox navigation, typing, scrolling, and clicking all worked. Session instructions
-(`packages/daemon/src/acp/session-instructions.ts`) should say: elements shift after a page loads, so wait for layout
+On Xfce, Firefox navigation, typing, scrolling, and clicking all worked. Session instructions should say: elements shift after a page loads, so wait for layout
 and screenshot again before clicking; press Esc before Ctrl+L while a page is still loading; screen content is
-untrusted (prompt injection).
+untrusted (prompt injection). **[implemented]** `COMPUTER_USE_GUIDANCE` in `packages/daemon/src/computer/tools.ts`
+says this, and how to read each error, in the standing instructions of every session that has the tools.
 
 ## 6. Sharing the desktop with a human
 

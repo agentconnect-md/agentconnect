@@ -8,6 +8,7 @@ import { AssistantModePolicy, AssistantOnboarding } from './assistant-mode.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
 import { ExecutorStrategyName } from './executor.js'
+import { AgentComputerUse } from '../agent-computer-use.js'
 import { isGitHubSkillSource, normalizeSkillSource } from '../git-url.js'
 
 /**
@@ -475,6 +476,8 @@ export const AgentSpec = z.object({
   assistantMode: AssistantModePolicy.nullable().optional(),
   // The first switch-on (assistant-mode.md §5.15), shipped only once set; write-once, so it always lands with a new revision.
   assistantOnboarding: AssistantOnboarding.optional(),
+  // Computer use (computer-use.md §4.1); a current CP ships value or null, null clears and absent leaves it unchanged.
+  computerUse: AgentComputerUse.nullable().optional(),
   // Names of daemon-configured MCP servers (daemon config `mcpServers`, reported
   // via `facts/daemon-runtimes`) to attach at `session/new`. Empty/absent ⇒ none.
   mcpServers: z.array(z.string()).default([]),

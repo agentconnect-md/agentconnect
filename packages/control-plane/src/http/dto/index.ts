@@ -25,6 +25,7 @@ import {
   ChatActions,
   AssistantModeAdmission,
   AssistantModePolicy,
+  AgentComputerUse,
   AgentModelSelection,
   AgentRepositorySelector,
   AgentMemoryBinding,
@@ -719,6 +720,7 @@ export const CreateAgentBody = z.object({
   chatActions: ChatActions.optional(), // what people can do in chat; absent ⇒ 'approve'
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
+  computerUse: AgentComputerUse.optional(), // computer use (computer-use.md §4.1); absent ⇒ off
   // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
   execution: ExecutorStrategyName.optional(),
   env: AgentEnvBody.optional(),
@@ -777,6 +779,7 @@ export const UpdateAgentBody = z
     chatActions: ChatActions.optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
+    computerUse: AgentComputerUse.nullable().optional(), // computer use (computer-use.md §4.1), replaced wholesale; null clears
     execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
     // Same-repository capability widening only. Workspace identity/conversion
     // stays on the dedicated cold action, and downgrades are deliberately not
@@ -937,6 +940,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
+  computerUse: AgentComputerUse.nullable(), // computer use (computer-use.md §4.1); null ⇒ never configured, off
   // The strategy sessions run in (session-executors.md §5).
   execution: ExecutorStrategyName,
   // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; only `host` for an unplaced agent.

@@ -220,6 +220,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         allowedTargetAgentIds: [],
         // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
         introduceOnJoin: false,
+        computerUse: null, // always shipped value-or-null so switching computer use off replicates
         // The execution strategy (session-executors.md §5) — always shipped (definite column); default host.
         execution: 'host',
         // Preset marker — always shipped so the daemon can gate preset-only capabilities.
@@ -278,6 +279,37 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     })
     expect(clear.statusCode).toBe(200)
     expect(spy.upserts.at(-1)!.u.spec.secrets).toEqual({})
+  })
+
+  it('PATCH stores, returns and replicates computer use, and null switches it off', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+    const computerUse = { enabled: true, computers: [randomUUID()] }
+
+    const update = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { computerUse } })
+    expect(update.statusCode).toBe(200)
+    expect(update.json().computerUse).toEqual(computerUse)
+    expect(spy.upserts.at(-1)?.u.spec.computerUse).toEqual(computerUse)
+    const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
+    expect(read.json().computerUse).toEqual(computerUse)
+
+    const invalid = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { computerUse: { enabled: true, computers: ['not-a-uuid'] } }
+    })
+    expect(invalid.statusCode).toBe(400)
+
+    const clear = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { computerUse: null }
+    })
+    expect(clear.statusCode).toBe(200)
+    expect(clear.json().computerUse).toBeNull()
+    expect(spy.upserts.at(-1)?.u.spec.computerUse).toBeNull()
   })
 
   it('PATCH replicates a changed and cleared git working subdirectory', async () => {

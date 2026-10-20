@@ -151,7 +151,9 @@ import {
   RuntimeCommand,
   SessionImageAttachment as SessionImageAttachmentSchema,
   WEBCHAT_IMAGE_MAX_BYTES,
-  MCP_APP_INLINE_TEMPLATE_MAX_BYTES
+  MCP_APP_INLINE_TEMPLATE_MAX_BYTES,
+  COMPUTER_CHANNEL_FEATURE,
+  COMPUTER_LEASE_FEATURE
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
@@ -291,6 +293,7 @@ import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
+import { COMPUTER_TOOLS, COMPUTER_USE_GUIDANCE, ComputerTools, computerToolsOffered } from './computer/tools.js'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, MessageGateway, SessionContext } from './mcp/ops.js'
 import { notJoinedChannel } from './platforms/not-joined.js'
@@ -711,6 +714,7 @@ import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { sessionMcpServersScope } from './runtimes/session-mcp-servers.js'
 import { keepsSessionToolDefinitions } from './runtimes/session-tool-definitions.js'
+import { showsMcpImages } from './runtimes/mcp-image-content.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
@@ -2000,6 +2004,24 @@ export class Daemon {
    *  registry of which of their cards are live, and the one surface that renders one. */
   private appsHost!: McpAppsHost
   private readonly liveApps = new LiveAppRegistry()
+  /** Computer use (computer-use.md §5): the `computer_*` tools, forwarded to desktop daemons through the relays. */
+  private readonly computerTools = new ComputerTools({
+    grants: { computerChannelGrant: (payload, orgId) => this.computerCp().computerChannelGrant(payload, orgId) },
+    leases: {
+      computerLeaseAcquire: (payload, orgId) => this.computerCp().computerLeaseAcquire(payload, orgId),
+      computerLeaseRelease: (payload, orgId) => this.computerCp().computerLeaseRelease(payload, orgId)
+    },
+    computersFor: (agentId) => this.grantedComputers(agentId),
+    orgFor: (agentId) => this.orgForAgent(agentId),
+    sessionIdFor: (ctx) =>
+      this.store.ensureOutwardSessionId(
+        sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+        ctx.agentId,
+        this.clock.now()
+      ),
+    now: () => this.clock.now(),
+    log: { debug: (message) => this.log.debug(message), warn: (message) => this.log.warn(message) }
+  })
   private appSurface!: AppSurface
   /** CP-owned, daemon-private external-memory definitions + verified clients. */
   private memoryConnections?: CpMemoryConnectionRegistry
@@ -4543,6 +4565,7 @@ export class Daemon {
       // MCP Apps: a daemon-hosted UI server's tool. Resolution is by the `<server>__<tool>`
       // namespace the host minted, so nothing here can shadow a product tool.
       appTool: (ctx, name, args) => this.runAppTool(ctx, name, args),
+      computerTool: (ctx, name, args) => this.computerTools.call(ctx, name, args),
       // Peer discovery goes to the CP (the only authority for the cross-daemon
       // roster). Resolve the client lazily; fail closed when it isn't connected.
       channelAgents: async ({ currentChannel, currentThread, currentTransportScope, ...req }) => {
@@ -5147,8 +5170,17 @@ export class Daemon {
         // Read cached Apps descriptors without dialing; their tools use the bridge, never a second runtime connection.
         const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
         if (!narrowed) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
+        // Computer use (computer-use.md §5.2): only for an agent that enabled it, on a runtime that shows the model images.
+        const computers = !narrowed && !isGettingToKnowCoordinate(thread) && this.offersComputerTools(agent)
+        if (computers) tools.push(...COMPUTER_TOOLS)
         if (!this.mcpToolServerReachable()) tools = []
-        const instructions = research ? this.organizationResearchPrompt(agent, tools) : undefined
+        const instructions =
+          [
+            research ? this.organizationResearchPrompt(agent, tools) : undefined,
+            computers && tools.length > 0 ? COMPUTER_USE_GUIDANCE : undefined
+          ]
+            .filter(Boolean)
+            .join('\n\n') || undefined
         const warnings: string[] = []
         const configuredServers = research
           ? []
@@ -28269,6 +28301,33 @@ export class Daemon {
     return this.k8s ? 'cluster' : 'public'
   }
 
+  /** The connected CP client for a computer tool's lease or channel request; throws while disconnected. */
+  private computerCp(): CpClient {
+    const client = this.cpClient
+    if (!client?.connected()) throw new Error('the control plane is not connected')
+    return client
+  }
+
+  /** The Computers an agent may use now (computer-use.md §4.1); empty while computer use is off. */
+  private grantedComputers(agentId: string): readonly string[] {
+    const use = this.agents.get(agentId)?.computerUse
+    return use?.enabled === true ? use.computers : []
+  }
+
+  /** Whether an agent's sessions get the `computer_*` tools (computer-use.md §5.2). */
+  private offersComputerTools(agent: Pick<LoadedAgent, 'computerUse' | 'runtime'>): boolean {
+    // Most agents never enabled it; only theirs reach the CP client's feature table.
+    if (agent.computerUse?.enabled !== true) return false
+    const cp = this.cpClient
+    return computerToolsOffered({
+      computerUse: agent.computerUse,
+      controlPlaneServes:
+        cp?.supportsServerFeature(COMPUTER_LEASE_FEATURE) === true &&
+        cp.supportsServerFeature(COMPUTER_CHANNEL_FEATURE),
+      runtimeShowsImages: showsMcpImages(agent.runtime, this.runtimes[agent.runtime])
+    })
+  }
+
   private orgForAgent(agentId: string): string | undefined {
     return this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
   }
@@ -28497,6 +28556,7 @@ export class Daemon {
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
+    await this.computerTools.close().catch((e: unknown) => errors.push(e))
     this.gitCredServer?.stop()
     // Local loops end with the process; dropping them here just makes the timers stop promptly.
     this.autoMergeWatcher?.stop()

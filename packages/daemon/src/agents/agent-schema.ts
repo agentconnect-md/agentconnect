@@ -3,6 +3,7 @@ import {
   AgentModelProvider,
   AgentAdditionalInstallation,
   AgentApiGateProjections,
+  AgentComputerUse,
   AgentDecisionIds,
   AgentModelSelection,
   AgentRepositorySelector,
@@ -239,6 +240,8 @@ export const AgentSchema = z.object({
   assistantMode: AssistantModePolicy.optional(),
   // Its first switch-on (assistant-mode.md §5.15), replicated from the CP, written once and never cleared.
   assistantOnboarding: AssistantOnboarding.optional(),
+  // Computer use (computer-use.md §4.1), replicated from the CP; absent ⇒ off.
+  computerUse: AgentComputerUse.optional(),
   // The instance every GitLab consumer here addresses (§24.4); absent ⇒ GitLab.com, the axis default.
   gitlabHost: z.string().optional(),
   // Its Gitea twin (gitea-integration.md §11); absent ⇒ gitea.com, the axis default.

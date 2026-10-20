@@ -806,6 +806,9 @@ export function applySpecFields(
   // Assistant mode (assistant-mode.md §5.1): null ⇒ clear, a value ⇒ set, absent (an older CP) ⇒ leave alone.
   if (spec.assistantMode === null) delete raw.assistantMode
   else if (spec.assistantMode !== undefined) raw.assistantMode = spec.assistantMode
+  // Computer use (computer-use.md §4.1): null ⇒ clear, a value ⇒ set, absent (an older CP) ⇒ leave alone.
+  if (spec.computerUse === null) delete raw.computerUse
+  else if (spec.computerUse !== undefined) raw.computerUse = spec.computerUse
   // The onboarding record (§5.15) is write-once at the CP: a value sets it, absent leaves it alone.
   if (spec.assistantOnboarding !== undefined) raw.assistantOnboarding = spec.assistantOnboarding
   // §24.4: absent means GitLab.com, so an absent value CLEARS a stale one rather than preserving it.

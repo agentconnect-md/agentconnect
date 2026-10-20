@@ -129,8 +129,12 @@ import {
   AGENT_EXISTS_FEATURE,
   AGENT_EXISTS_MAX,
   COMPUTER_CHANNEL_FEATURE,
+  COMPUTER_LEASE_FEATURE,
   ComputerChannelGrantResult,
   type ComputerChannelGrantRequest,
+  ComputerLeaseAcquireResult,
+  type ComputerLeaseAcquire,
+  type ComputerLeaseRelease,
   ExecutorCandidatesResult,
   ExecutorPrepareResult,
   ExecutorReleaseResult,
@@ -1492,6 +1496,31 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected computer-channel/grant/result, got ${rep.type}`, false)
     }
     return ComputerChannelGrantResult.parse(rep.payload)
+  }
+
+  /** `computer-lease/acquire` (computer-use.md §4.4): take or renew one session's control lease on a Computer. */
+  async computerLeaseAcquire(payload: ComputerLeaseAcquire, orgId?: string): Promise<ComputerLeaseAcquireResult> {
+    this.requireReady('computer-lease/acquire')
+    if (!this.supportsServerFeature(COMPUTER_LEASE_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer computer-lease/acquire', false)
+    }
+    const rep = await this.request('computer-lease/acquire', payload, orgId)
+    if (rep.type !== 'computer-lease/acquire/result') {
+      throw new WireError('INTERNAL', `expected computer-lease/acquire/result, got ${rep.type}`, false)
+    }
+    return ComputerLeaseAcquireResult.parse(rep.payload)
+  }
+
+  /** `computer-lease/release`: give up one session's control lease; a no-op when it holds none. */
+  async computerLeaseRelease(payload: ComputerLeaseRelease, orgId?: string): Promise<void> {
+    this.requireReady('computer-lease/release')
+    if (!this.supportsServerFeature(COMPUTER_LEASE_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer computer-lease/release', false)
+    }
+    const rep = await this.request('computer-lease/release', payload, orgId)
+    if (rep.type !== 'ack' || rep.payload.ok !== true) {
+      throw new WireError('INTERNAL', `computer-lease/release was refused (${rep.type})`, false)
+    }
   }
 
   /**

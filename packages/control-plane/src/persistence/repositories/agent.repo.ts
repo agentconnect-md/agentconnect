@@ -5,6 +5,7 @@ import { applyAssistantModeSwitch, pruneKnowledgeReaders } from './organization-
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
+  AgentComputerUse,
   AgentMemoryBinding,
   AssistantOnboarding,
   type AssistantModePolicy,
@@ -220,6 +221,8 @@ type RuntimeOverrides = {
   // Which memory backend the agent uses (managed | native | external). Stored in
   // the overrides bag like the sibling knobs; the daemon builds the provider from it.
   memory?: AgentMemoryBinding
+  // Computer use (computer-use.md §4.1): whether the agent gets `computer_*` tools, and for which Computers.
+  computerUse?: AgentComputerUse
 }
 
 function overridesOf(a: Agent): RuntimeOverrides {
@@ -231,6 +234,13 @@ function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemor
   if (!memory) return null
   const parsed = AgentMemoryBinding.safeParse(memory)
   return parsed.success ? parsed.data : memory
+}
+
+// A stored setting that no longer parses reads as never configured, so a read never fails on it.
+function computerUseOf(value: unknown): AgentComputerUse | undefined {
+  if (value === null || value === undefined) return undefined
+  const parsed = AgentComputerUse.safeParse(value)
+  return parsed.success ? parsed.data : undefined
 }
 
 // A stored policy that no longer parses reads as never configured, so a read never fails on it.
@@ -331,6 +341,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
   const ov = overridesOf(a)
   const assistantMode = assistantModeOf(a.assistantMode)
   const assistantOnboarding = assistantOnboardingOf(a.assistantOnboarding)
+  const computerUse = computerUseOf(ov.computerUse)
   return {
     id: AgentId(a.id),
     orgId: OrgId(a.orgId),
@@ -361,6 +372,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     memory: storedMemoryBinding(ov.memory),
     ...(assistantMode ? { assistantMode } : {}),
     ...(assistantOnboarding ? { assistantOnboarding } : {}),
+    ...(computerUse ? { computerUse } : {}),
     status: a.status as AgentRecord['status'],
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
@@ -487,7 +499,8 @@ export class PgAgentRepo implements AgentRepo {
             ...(input.skills ? { skills: input.skills } : {}),
             ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
             ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-            ...(input.memory ? { memory: input.memory } : {})
+            ...(input.memory ? { memory: input.memory } : {}),
+            ...(input.computerUse ? { computerUse: input.computerUse } : {})
           },
           // A user-created agent's first "last modification" is its creation, by the
           // same principal — stamp both so the audit pair is coherent from row one.
@@ -625,6 +638,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.modelSelection !== undefined ||
       patch.apiGates !== undefined ||
       patch.memory !== undefined ||
+      patch.computerUse !== undefined ||
       opts?.memoryHome !== undefined
     ) {
       // Row-lock the read: overrides are ONE JsonB bag, so the read-merge-write
@@ -733,6 +747,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.memory !== undefined) {
         if (patch.memory === null) delete next.memory
         else next.memory = patch.memory
+      }
+      if (patch.computerUse !== undefined) {
+        if (patch.computerUse === null) delete next.computerUse
+        else next.computerUse = patch.computerUse
       }
       // The managed home is decided here, against the locked binding (memory-evolution.md §3.2.1): a completion
       // `memory/home/migrated` recorded since the caller read the agent is what this write sees, not the caller's copy.

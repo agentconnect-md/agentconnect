@@ -27,7 +27,14 @@ function effectBoundary(): { deps: OpsDeps; touched: string[] } {
   const touched: string[] = []
   const deps = new Proxy({} as OpsDeps, {
     get: (_target, key) => {
-      if (key === 'canRun' || key === 'evaluationTool' || key === 'appTool' || key === 'log' || key === 'then')
+      if (
+        key === 'canRun' ||
+        key === 'evaluationTool' ||
+        key === 'appTool' ||
+        key === 'computerTool' ||
+        key === 'log' ||
+        key === 'then'
+      )
         return undefined
       touched.push(String(key))
       return () => {
