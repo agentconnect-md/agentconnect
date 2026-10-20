@@ -10,6 +10,7 @@ import { orgOf, ctxOf, denyViewerWrite } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { publicBaseUrl } from '../oauth/base.js'
+import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
 import {
   ComputerDto,
   ComputerListDto,
@@ -36,7 +37,7 @@ function canEditPolicy(c: ComputerRecord, ctx: ViewCtx): boolean {
   return c.kind !== 'self-hosted' || c.ownerUserId === ctx.userId
 }
 
-function toDto(c: ComputerRecord, ctx: ViewCtx): ComputerDtoT {
+function toDto(c: ComputerRecord, ctx: ViewCtx, status: ComputerRecord['status']): ComputerDtoT {
   return {
     id: c.id,
     name: c.name,
@@ -46,8 +47,9 @@ function toDto(c: ComputerRecord, ctx: ViewCtx): ComputerDtoT {
     os: c.os,
     osVersion: c.osVersion,
     session: c.session,
-    status: c.status,
+    status,
     capabilities: c.capabilities,
+    doctor: c.doctor,
     desktopDaemonVersion: c.desktopDaemonVersion,
     driverVersion: c.driverVersion,
     policy: c.policy,
@@ -85,7 +87,7 @@ export function computerRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.computer.list(orgOf(req), ctxOf(req))
-        return rows.map((c) => toDto(c, ctxOf(req)))
+        return rows.map((c) => toDto(c, ctxOf(req), deps.computers.presentedStatus(c)))
       }
     )
 
@@ -104,7 +106,7 @@ export function computerRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const c = await getOrgComputer(req, req.params.id)
         if (!c) return reply.code(404).send(notFound)
-        return toDto(c, ctxOf(req))
+        return toDto(c, ctxOf(req), deps.computers.presentedStatus(c))
       }
     )
 
@@ -181,7 +183,7 @@ export function computerRoutes(deps: HttpDeps) {
         const policy = withOwnerMember({ ...req.body, allowedAgents: wanted, allowedMembers: members }, c.ownerUserId)
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
         if (!updated) return reply.code(409).send(revokedConflict)
-        return toDto(updated, ctxOf(req))
+        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated))
       }
     )
 
@@ -213,7 +215,7 @@ export function computerRoutes(deps: HttpDeps) {
           { visibility: req.body.visibility, sharedWith },
           ctxOf(req).userId
         )
-        return toDto(updated, ctxOf(req))
+        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated))
       }
     )
 
@@ -240,7 +242,7 @@ export function computerRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
         }
         const revoked = await deps.computers.revoke(orgOf(req), c.id, ctxOf(req).userId)
-        return toDto(revoked, ctxOf(req))
+        return toDto(revoked, ctxOf(req), deps.computers.presentedStatus(revoked))
       }
     )
 
@@ -284,7 +286,7 @@ export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } 
           tags: [Tag.Computers],
           summary: 'Register a computer',
           description:
-            'Called by the desktop daemon: exchanges a one-time registration token for an API key bound to one new Computer in the token’s organization. The key authenticates only the Computer channel. An unknown, spent or expired token is refused with 401.',
+            'Called by the desktop daemon: exchanges a one-time registration token for an API key bound to one new Computer in the token’s organization, and names the Computer channel URL to dial with it. The key authenticates only the Computer channel. An unknown, spent or expired token is refused with 401.',
           operationId: 'registerComputer',
           security: [],
           body: RegisterComputerBody,
@@ -304,7 +306,8 @@ export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } 
           orgId: registered.computer.orgId,
           apiKeyId: registered.apiKeyId,
           apiKey: registered.apiKey,
-          displayTail: registered.displayTail
+          displayTail: registered.displayTail,
+          channelUrl: `${publicBaseUrl(req, deps.config).replace(/^http/, 'ws')}${COMPUTER_WS_PUBLIC_PATH}`
         })
       }
     )

@@ -48,6 +48,7 @@ function computer(over: Partial<ComputerRecord> = {}): ComputerRecord {
     session: 'x11',
     status: 'offline',
     capabilities: readComputerCapabilities({}),
+    doctor: null,
     desktopDaemonVersion: '0.1.0',
     driverVersion: '0.35.2',
     policy: defaultComputerPolicy('u1'),

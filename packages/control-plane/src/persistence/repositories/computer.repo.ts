@@ -2,6 +2,7 @@
 import type { Computer, ComputerRegistration, Prisma } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
+  ComputerLiveReport,
   ComputerRecord,
   ComputerRegistrationRecord,
   ComputerRepo,
@@ -15,6 +16,7 @@ import { ComputerId, OrgId } from '../../domain/ids.js'
 import {
   defaultComputerPolicy,
   readComputerCapabilities,
+  readComputerDoctor,
   readComputerPolicy,
   type ComputerKind,
   type ComputerPolicy,
@@ -42,6 +44,7 @@ function toRecord(c: Computer): ComputerRecord {
     session: fromDbSession(c.session),
     status: c.status,
     capabilities: readComputerCapabilities(c.capabilities),
+    doctor: readComputerDoctor(c.doctor),
     desktopDaemonVersion: c.desktopDaemonVersion,
     driverVersion: c.driverVersion,
     policy: readComputerPolicy(c.policy, c.ownerUserId),
@@ -244,6 +247,37 @@ export class PgComputerRepo implements ComputerRepo {
           ? existing
           : await tx.computer.update({ where: { id, orgId }, data: { status: 'revoked', revokedAt: at } })
       return { computer: toRecord(row), revokedKeyIds: live.map((k) => k.id) }
+    })
+  }
+
+  async recordLive(
+    orgId: OrgId,
+    id: ComputerId,
+    apiKeyId: string,
+    report: ComputerLiveReport,
+    at: Date
+  ): Promise<boolean> {
+    // Conditional on the Computer and the channel's own key both still standing, so a revoke always wins the race.
+    const written = await this.db.computer.updateMany({
+      where: { id, orgId, revokedAt: null, apiKeys: { some: { id: apiKeyId, revokedAt: null } } },
+      data: {
+        status: report.status,
+        lastSeenAt: at,
+        ...(report.osVersion ? { osVersion: report.osVersion } : {}),
+        ...(report.session ? { session: toDbSession(report.session) } : {}),
+        ...(report.desktopDaemonVersion ? { desktopDaemonVersion: report.desktopDaemonVersion } : {}),
+        ...(report.driverVersion ? { driverVersion: report.driverVersion } : {}),
+        ...(report.capabilities ? { capabilities: report.capabilities as unknown as Prisma.InputJsonValue } : {}),
+        ...(report.doctor ? { doctor: report.doctor as unknown as Prisma.InputJsonValue } : {})
+      }
+    })
+    return written.count === 1
+  }
+
+  async markOffline(orgId: OrgId, id: ComputerId, at: Date): Promise<void> {
+    await this.db.computer.updateMany({
+      where: { id, orgId, status: { notIn: ['revoked', 'offline'] } },
+      data: { status: 'offline', lastSeenAt: at }
     })
   }
 

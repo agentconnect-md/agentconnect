@@ -13,9 +13,11 @@ import { ComputerId, type OrgId } from '../domain/ids.js'
 import {
   COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES,
   COMPUTER_REGISTRATION_MAX_TTL_MINUTES,
-  type ComputerPolicy
+  type ComputerPolicy,
+  type ComputerStatus
 } from '../domain/computer.js'
 import type { ApiKeyCodec } from './apiKey.js'
+import type { ComputerChannelControl } from '../ws/computer-registry.js'
 
 /** Skip the best-effort `lastUsedAt` write unless the key has not been touched for this long. */
 const LAST_USED_THROTTLE_MS = 60_000
@@ -41,14 +43,37 @@ export interface RegisteredComputer {
   displayTail: string
 }
 
+export interface ComputerServiceOpts {
+  /** Live Computer channels, so a revoke, delete or policy change reaches a connected desktop at once. */
+  channels?: ComputerChannelControl
+  /** A live status older than this reads as offline: its channel died without a clean close. */
+  staleAfterMs?: number
+}
+
+const DEFAULT_STALE_AFTER_MS = 45_000
+
 export class ComputerService {
   constructor(
     private readonly codec: ApiKeyCodec,
     private readonly computers: ComputerRepo,
     private readonly apiKeys: ApiKeyRepo,
     private readonly audit: AuditRepo,
-    private readonly clock: Clock
+    private readonly clock: Clock,
+    private readonly opts: ComputerServiceOpts = {}
   ) {}
+
+  /** The status to show: a live one the channel stopped refreshing has gone offline. */
+  presentedStatus(c: Pick<ComputerRecord, 'status' | 'lastSeenAt'>): ComputerStatus {
+    if (c.status === 'offline' || c.status === 'revoked') return c.status
+    const staleAfter = this.opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
+    if (!c.lastSeenAt || this.clock.now() - c.lastSeenAt.getTime() > staleAfter) return 'offline'
+    return c.status
+  }
+
+  /** A removed member's Computers were revoked in the removal transaction; end their live channels too. */
+  memberRemoved(orgId: string, userId: string): void {
+    this.opts.channels?.revokeOwner(orgId, userId)
+  }
 
   async createRegistration(input: {
     orgId: OrgId
@@ -124,6 +149,7 @@ export class ComputerService {
   ): Promise<ComputerRecord | null> {
     const computer = await this.computers.setPolicy(orgId, id, policy)
     if (!computer) return null
+    this.opts.channels?.pushPolicy(id, computer.policy)
     this.record(orgId, actorUserId, 'policy_update', {
       computerId: id,
       allowedAgents: policy.allowedAgents,
@@ -139,12 +165,14 @@ export class ComputerService {
       'computer revoked',
       new Date(this.clock.now())
     )
+    this.opts.channels?.revoke(id, 'revoked')
     this.record(orgId, actorUserId, 'revoke', { computerId: id, revokedKeyIds })
     return computer
   }
 
   async delete(orgId: OrgId, id: ComputerId, actorUserId?: string): Promise<void> {
     await this.computers.delete(orgId, id)
+    this.opts.channels?.revoke(id, 'deleted')
     this.record(orgId, actorUserId, 'delete', { computerId: id })
   }
 

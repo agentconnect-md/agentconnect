@@ -81,8 +81,10 @@ import type {
 } from '../domain/ids.js'
 import type {
   ComputerCapabilities,
+  ComputerDoctorReport,
   ComputerIsolation,
   ComputerKind,
+  ComputerLiveStatus,
   ComputerOs,
   ComputerPolicy,
   ComputerSession,
@@ -576,6 +578,8 @@ export interface ComputerRecord extends Shareable {
   session: ComputerSession
   status: ComputerStatus
   capabilities: ComputerCapabilities
+  /** The last `doctor` report from the Computer channel; null until the desktop daemon first connects. */
+  doctor: ComputerDoctorReport | null
   desktopDaemonVersion: string
   driverVersion: string
   policy: ComputerPolicy
@@ -630,6 +634,17 @@ export interface RegisterComputerInput {
   key: { hash: string; displayTail: string }
 }
 
+/** What one Computer-channel heartbeat may change on the row; absent fields keep their stored value. */
+export interface ComputerLiveReport {
+  status: ComputerLiveStatus
+  osVersion?: string
+  session?: ComputerSession
+  desktopDaemonVersion?: string
+  driverVersion?: string
+  capabilities?: ComputerCapabilities
+  doctor?: ComputerDoctorReport
+}
+
 export interface ComputerRepo {
   createRegistration(input: CreateComputerRegistrationInput): Promise<ComputerRegistrationRecord>
   /** Consume a live registration token, create its Computer and mint the Computer's key in one transaction; null when the token is unknown, spent, expired, or its registrant left the org. */
@@ -653,6 +668,10 @@ export interface ComputerRepo {
     reason: string,
     at: Date
   ): Promise<{ computer: ComputerRecord; revokedKeyIds: string[] }>
+  /** Apply a Computer-channel report and stamp `lastSeenAt`; false when the Computer or the presented key was revoked or removed. */
+  recordLive(orgId: OrgId, id: ComputerId, apiKeyId: string, report: ComputerLiveReport, at: Date): Promise<boolean>
+  /** Mark a disconnected Computer offline unless it was revoked meanwhile. */
+  markOffline(orgId: OrgId, id: ComputerId, at: Date): Promise<void>
   /** Delete registration rows that expired before the cutoff; returns how many. */
   reapRegistrations(expiredBefore: Date): Promise<number>
   /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */
