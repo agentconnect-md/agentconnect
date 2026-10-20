@@ -11,7 +11,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import useSWR, { useSWRConfig } from 'swr'
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
   BillingError,
   BillingShapeError,
@@ -25,7 +25,9 @@ import {
   fmtDecimalUsd,
   fmtMicroUsd,
   type BillingAccount,
+  type BillingDebit,
   type BillingDebitAgent,
+  type BillingDebitModel,
   type BillingPurchase,
   type BillingTransaction
 } from '@/lib/billing-api'
@@ -120,6 +122,64 @@ export function rowAttribution(
   return chips
 }
 
+/** Loaded usage charges that name the same visible agents and models, folded into one record. */
+export interface UsageGroup {
+  key: string
+  /** The member charges, newest first. */
+  txs: BillingDebit[]
+  /** Summed per chip; named agents by spend, the withheld rollup last. */
+  agents: TxAgentChip[]
+  /** Summed per model, positive only, by spend. */
+  models: BillingDebitModel[]
+  amount: string
+  /** The newest member's posting time. */
+  at: string
+  /** The oldest member's posting time. */
+  from: string
+}
+
+// Groups by what the row SHOWS, never by raw ids: keying on a withheld id would split the rollup and leak the partition.
+export function groupUsage(
+  txs: readonly BillingDebit[],
+  agentById: Map<string, Agent>,
+  rosterPending: boolean
+): UsageGroup[] {
+  const groups = new Map<
+    string,
+    { txs: BillingDebit[]; agents: Map<string, { agent?: Agent; amounts: string[] }>; models: Map<string, string[]> }
+  >()
+  for (const tx of txs) {
+    const chips = rosterPending ? [] : rowAttribution(tx.agents, agentById)
+    const models = (tx.models ?? []).filter((m) => Number(m.amount) > 0)
+    const key = JSON.stringify([chips.map((c) => c.key).sort(), models.map((m) => m.model).sort()])
+    let g = groups.get(key)
+    if (!g) groups.set(key, (g = { txs: [], agents: new Map(), models: new Map() }))
+    g.txs.push(tx)
+    for (const c of chips) {
+      const slot = g.agents.get(c.key) ?? { agent: c.agent, amounts: [] }
+      slot.amounts.push(c.amount)
+      g.agents.set(c.key, slot)
+    }
+    for (const m of models) g.models.set(m.model, [...(g.models.get(m.model) ?? []), m.amount])
+  }
+  return [...groups].map(([key, g]) => {
+    const agents = [...g.agents].map(([k, s]) => ({ key: k, agent: s.agent, amount: sumAmounts(s.amounts) }))
+    const named = agents.filter((c) => c.agent).sort((a, b) => Number(b.amount) - Number(a.amount))
+    const models = [...g.models]
+      .map(([model, amounts]) => ({ model, amount: sumAmounts(amounts) }))
+      .sort((a, b) => Number(b.amount) - Number(a.amount))
+    return {
+      key,
+      txs: g.txs,
+      agents: [...named, ...agents.filter((c) => !c.agent)],
+      models,
+      amount: sumAmounts(g.txs.map((tx) => tx.amount)),
+      at: g.txs[0]!.at,
+      from: g.txs[g.txs.length - 1]!.at
+    }
+  })
+}
+
 // The Transactions filter, the same Usage / Top-ups split the Activity chart offers — plus
 // `all`, which is the table's own default and the whole ledger it always showed. `type` goes
 // to the service: the feed is keyset-paginated over both ledger sides at once, so narrowing
@@ -157,6 +217,258 @@ function fmtPostedLocal(iso: string): string {
         hour: '2-digit',
         minute: '2-digit'
       })
+}
+
+// A folded record's Posted range, oldest first, dropping the date or year the two ends share so it fits the column.
+export function fmtPostedRange(from: string, to: string): string {
+  const parts = postedRangeParts(from, to)
+  if (!parts) return fmtPostedLocal(to)
+  return parts.sameDay ? `${parts.start}–${parts.end}` : `${parts.start} – ${parts.end}`
+}
+
+// The two ends of a Posted range with their shared prefix trimmed; null for a single instant.
+export function postedRangeParts(from: string, to: string): { start: string; end: string; sameDay: boolean } | null {
+  const a = fmtPostedLocal(from)
+  const b = fmtPostedLocal(to)
+  if (a === b) return null
+  if (a.slice(0, 10) === b.slice(0, 10)) return { start: a, end: b.slice(11), sameDay: true }
+  if (a.slice(0, 4) === b.slice(0, 4)) return { start: a.slice(5), end: b.slice(5), sameDay: false }
+  return { start: a, end: b, sameDay: false }
+}
+
+/** One local calendar day of a folded record's charges. */
+export interface UsageDay {
+  /** `YYYY-MM-DD` in the viewer's timezone. */
+  day: string
+  /** Newest first. */
+  txs: BillingDebit[]
+  amount: string
+}
+
+// Splits a newest-first charge list by the viewer's local day, keeping that order.
+export function usageDays(txs: readonly BillingDebit[]): UsageDay[] {
+  const days = new Map<string, BillingDebit[]>()
+  for (const tx of txs) {
+    const day = fmtPostedLocal(tx.at).slice(0, 10)
+    const list = days.get(day)
+    if (list) list.push(tx)
+    else days.set(day, [tx])
+  }
+  return [...days].map(([day, list]) => ({ day, txs: list, amount: sumAmounts(list.map((tx) => tx.amount)) }))
+}
+
+/** One hour of a day's charges, for the day's bar chart. */
+export interface UsageHour {
+  label: string
+  /** Geometry only; `total` is the exact sum. */
+  amount: number
+  total: string
+  count: number
+}
+
+// Buckets one local day's charges into its 24 hours, so every day's chart shares one x axis.
+export function usageHours(txs: readonly BillingDebit[]): UsageHour[] {
+  const hours = Array.from({ length: 24 }, () => [] as string[])
+  for (const tx of txs) {
+    const d = new Date(tx.at)
+    if (!Number.isNaN(d.getTime())) hours[d.getHours()]!.push(tx.amount)
+  }
+  return hours.map((amounts, h) => {
+    const total = sumAmounts(amounts)
+    return { label: String(h).padStart(2, '0'), amount: Number(total), total, count: amounts.length }
+  })
+}
+
+// The list scrollTop that shows a row block, centred when it fits and top-aligned when not; null when already fully visible.
+export function revealScrollTop(b: {
+  top: number
+  bottom: number
+  scrollTop: number
+  clientHeight: number
+}): number | null {
+  if (b.top >= b.scrollTop && b.bottom <= b.scrollTop + b.clientHeight) return null
+  const height = b.bottom - b.top
+  return Math.max(0, height >= b.clientHeight ? b.top : b.top - (b.clientHeight - height) / 2)
+}
+
+// An opened day: spend per hour as bars, then a compact posted/amount table of its charges.
+function DayCharges({ txs }: { txs: BillingDebit[] }) {
+  const t = useTranslations('Billing')
+  const hours = usageHours(txs)
+  // The local hour under the pointer, from either a table row or a bar; it lights both sides.
+  const [hot, setHot] = useState<number | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // A bar entering a new hour scrolls that hour's rows into the list; a row hover never scrolls, or the list would jump under the pointer.
+  const hoverBar = (hour: number | null) => {
+    if (hour === hot) return
+    setHot(hour)
+    const list = listRef.current
+    const rows = hour === null ? [] : [...(list?.querySelectorAll<HTMLElement>(`[data-hour="${hour}"]`) ?? [])]
+    if (!list || !rows.length) return
+    const last = rows[rows.length - 1]!
+    const top = revealScrollTop({
+      top: rows[0]!.offsetTop,
+      bottom: last.offsetTop + last.offsetHeight,
+      scrollTop: list.scrollTop,
+      clientHeight: list.clientHeight
+    })
+    if (top === null) return
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    list.scrollTo({ top, behavior: reduced ? 'instant' : 'smooth' })
+  }
+  const Tip = ({ active, payload }: { active?: boolean; payload?: { payload: UsageHour }[] }) => {
+    const hour = active ? payload?.[0]?.payload : undefined
+    if (!hour) return null
+    return (
+      <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
+        <div className="mono text-[11px] font-semibold">
+          {hour.label}:00–{hour.label}:59
+        </div>
+        <div className="mt-1 font-sans text-[11px] leading-normal text-(--text-secondary)">
+          {t('transactions.chargeCount', { count: hour.count })}{' '}
+          <span className="mono text-(--text-primary)">-{fmtDecimalUsd(hour.total)}</span>
+        </div>
+      </div>
+    )
+  }
+  return (
+    // One card, two panes: the charge list on the left scrolls inside the chart's height, the hourly chart fills the rest.
+    <div
+      data-tx-day-charges="true"
+      className="mt-1 mb-2 ml-[22px] flex h-[192px] overflow-hidden rounded-[8px] border border-(--border-subtle) bg-(--surface-card)"
+    >
+      <div
+        ref={listRef}
+        className="relative w-[280px] flex-none overflow-y-auto border-r border-(--border-subtle)"
+        onMouseLeave={() => setHot(null)}
+      >
+        {txs.map((tx) => {
+          const hour = new Date(tx.at).getHours()
+          return (
+            <div
+              key={tx.id}
+              data-tx-charge="true"
+              data-hour={hour}
+              data-hot={hot === hour || undefined}
+              onMouseEnter={() => setHot(hour)}
+              className="flex h-[32px] items-center justify-between gap-4 border-b border-(--border-subtle) px-3.5 data-hot:bg-(--surface-hover)"
+            >
+              <span className="mono text-[12px] text-(--text-secondary)">{fmtPostedLocal(tx.at)}</span>
+              <span className="mono text-[12.5px]" title={`$${tx.amount}`}>
+                -{fmtDecimalUsd(tx.amount)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col px-4 pt-3 pb-2">
+        <span className="eyebrow">{t('transactions.spendByHour')}</span>
+        <div className={`mt-2 min-h-0 flex-1 text-(--text-tertiary) ${ACTIVITY_FILL}`}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={hours}
+              margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
+              barCategoryGap="20%"
+              onMouseMove={(state) =>
+                hoverBar(state.activeTooltipIndex == null ? null : Number(state.activeTooltipIndex))
+              }
+              onMouseLeave={() => setHot(null)}
+            >
+              <XAxis
+                dataKey="label"
+                interval={2}
+                tickLine={false}
+                axisLine={{ stroke: 'var(--border-subtle)' }}
+                tickMargin={6}
+                tick={{ fill: 'currentColor', fontSize: 10.5 }}
+                className="mono"
+              />
+              <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
+              <Bar
+                dataKey="amount"
+                className="bar-usage"
+                radius={[3, 3, 0, 0]}
+                maxBarSize={22}
+                minPointSize={(_: number | null | undefined, i: number) => (hours[i]!.count > 0 ? 2 : 0)}
+              >
+                {/* While a row or bar is hot, its hour keeps full color and the others fade. */}
+                {hours.map((h, i) => (
+                  <Cell key={h.label} fillOpacity={hot === null || hot === i ? 1 : 0.25} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// A folded record's charges: a summary strip, one row per local day, and an hourly chart + table for an opened day.
+function FoldedCharges({
+  group,
+  expanded,
+  onToggle
+}: {
+  group: UsageGroup
+  expanded: ReadonlySet<string>
+  onToggle: (key: string) => void
+}) {
+  const t = useTranslations('Billing')
+  const count = group.txs.length
+  const groupTotal = Number(group.amount)
+  const days = usageDays(group.txs)
+  const maxDay = Math.max(...days.map((d) => Number(d.amount)))
+  const max = group.txs.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a))
+  return (
+    // Summary strip, then one row per local day; a day opens into an hourly chart and its charges.
+    <div
+      data-tx-charges="true"
+      className={`border-b border-(--border-subtle) bg-(--surface-app) pt-2.5 pr-4 pb-2 pl-[52px] ${USAGE_MIN_W}`}
+    >
+      <div data-tx-stats="true" className="mono pb-1.5 text-[11.5px] text-(--text-tertiary)">
+        {t('transactions.chargeStats', {
+          count,
+          avg: fmtDecimalUsd(String(groupTotal / count)),
+          max: fmtDecimalUsd(max.amount)
+        })}
+      </div>
+      {days.map((d) => {
+        const dayKey = `${group.key}\u0000${d.day}`
+        const dayOpen = expanded.has(dayKey)
+        const share = groupTotal > 0 ? (Number(d.amount) / groupTotal) * 100 : 0
+        const width = maxDay > 0 ? (Number(d.amount) / maxDay) * 100 : 0
+        return (
+          <div key={d.day}>
+            <button
+              type="button"
+              data-tx-day="true"
+              aria-expanded={dayOpen}
+              onClick={() => onToggle(dayKey)}
+              className="grid h-[30px] w-full grid-cols-[14px_84px_76px_minmax(0,1fr)_44px_132px_190px] items-center gap-2 rounded-[6px] text-left hover:bg-(--surface-hover)"
+            >
+              <Icon name={dayOpen ? 'chevron-down' : 'chevron-right'} size={12} color="var(--text-tertiary)" />
+              <span className="mono text-[12px] text-(--text-primary)">{d.day}</span>
+              <span className="mono text-[11.5px] text-(--text-tertiary)">
+                {t('transactions.chargeCount', { count: d.txs.length })}
+              </span>
+              <span className="h-[6px] overflow-hidden rounded-full bg-(--surface-active)">
+                <span className="block h-full rounded-full bg-(--brand)" style={{ width: `${width}%` }} />
+              </span>
+              <span className="mono text-right text-[11px] text-(--text-tertiary)">{share.toFixed(0)}%</span>
+              <span className="mono text-right text-[12.5px]" title={`$${d.amount}`}>
+                -{fmtDecimalUsd(d.amount)}
+              </span>
+              <span className="mono text-[12px] text-(--text-tertiary)">
+                {fmtPostedRange(d.txs[d.txs.length - 1]!.at, d.txs[0]!.at).slice(11)}
+              </span>
+            </button>
+            {dayOpen && <DayCharges txs={d.txs} />}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 const PRESETS_USD = [10, 50, 100]
@@ -914,6 +1226,15 @@ export default function BillingView() {
   // the whole ledger. Cutting again here is what stops that image from rendering top-ups
   // under a pill that says Usage — a wrong answer is worse than a narrower one.
   const txItems = sideType ? loaded.filter((tx) => tx.type === sideType) : loaded
+  // Usage folds by visible agent + model across every loaded page; `loadedCount` still counts charges.
+  const usageGroups =
+    side === 'debit'
+      ? groupUsage(
+          txItems.filter((tx): tx is BillingDebit => tx.type === 'debit'),
+          agentById,
+          rosterPending
+        )
+      : []
   // Each side has its own header; it sticks flush to the viewport, offsetting `.content`'s 34px top padding.
   const postedHeader = (
     <span className="truncate" title={LOCAL_TZ}>
@@ -1229,28 +1550,33 @@ export default function BillingView() {
                       </div>
                     )
                   }
+                  return null
+                })}
+                {usageGroups.map((group) => {
                   // Agents are named only when in the viewer's roster (see `rowAttribution`); nothing while it loads.
-                  const split = rosterPending ? [] : rowAttribution(tx.agents, agentById)
+                  const split = group.agents
                   // Named chips are capped; the withheld rollup is appended after so it is never hidden behind `+N`.
                   const named = split.filter((c) => c.agent)
                   const rollup = split.find((c) => !c.agent)
                   const shownAgents = named.slice(0, TX_AGENT_CHIPS)
                   const restAgents = named.length - shownAgents.length
-                  const models = (tx.models ?? [])
-                    .filter((m) => Number(m.amount) > 0)
-                    .sort((a, b) => Number(b.amount) - Number(a.amount))
+                  const models = group.models
                   const shownModels = models.slice(0, TX_MODEL_CHIPS)
                   const restModels = models.length - shownModels.length
-                  const expandable = models.length > 0
-                  const open = expandable && expanded.has(tx.id)
-                  const chargeTotal = Number(tx.amount)
+                  const count = group.txs.length
+                  const expandable = count > 1 || models.length > 0
+                  const open = expandable && expanded.has(group.key)
+                  const groupTotal = Number(group.amount)
                   const modelName = (model: string) =>
                     model === UNATTRIBUTED_MODEL ? t('activity.unknownModel') : model
+                  const from = fmtPostedLocal(group.from)
+                  const to = fmtPostedLocal(group.at)
+                  const range = postedRangeParts(group.from, group.at)
                   return (
-                    <Fragment key={tx.id}>
+                    <Fragment key={group.key}>
                       <div
                         className={`row ${expandable ? 'click' : ''} ${USAGE_GRID}`}
-                        onClick={expandable ? () => toggleExpanded(tx.id) : undefined}
+                        onClick={expandable ? () => toggleExpanded(group.key) : undefined}
                       >
                         <span className="flex items-center justify-center">
                           {expandable && (
@@ -1329,22 +1655,54 @@ export default function BillingView() {
                           {restModels > 0 && (
                             <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{restModels}</span>
                           )}
+                          {/* `ml-auto` parks the count at the column's end, right before the amount it adds up to. */}
+                          {count > 1 && (
+                            <span
+                              data-tx-count="true"
+                              className="ml-auto inline-flex h-[20px] flex-none items-center rounded-full bg-(--surface-active) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
+                            >
+                              {t('transactions.chargeCount', { count })}
+                            </span>
+                          )}
                         </span>
                         {/* A debit is a positive amount taken away, so the sign belongs here; the exact wire string is the tooltip. */}
-                        <span className="mono text-right text-[13px]" title={`$${tx.amount}`}>
+                        <span className="mono text-right text-[13px]" title={`$${group.amount}`}>
                           <span className="cursor-help border-b border-dotted border-(--border-strong)">
-                            -{fmtDecimalUsd(tx.amount)}
+                            -{fmtDecimalUsd(group.amount)}
                           </span>
                         </span>
-                        {posted}
+                        {/* A folded record spans its charges: one `start → end` line on desktop, newest over its start on mobile. */}
+                        <span
+                          data-tx-posted="true"
+                          className="flex min-w-0 flex-col"
+                          title={range ? `${from} – ${to}` : undefined}
+                        >
+                          {range && (
+                            <span className="mono hidden min-w-0 items-center gap-1.5 text-[12px] desktop:flex">
+                              <span className="truncate text-(--text-tertiary)">{range.start}</span>
+                              <Icon name="arrow-right" size={11} color="var(--text-tertiary)" />
+                              <span className="truncate text-(--text-secondary)">{range.end}</span>
+                            </span>
+                          )}
+                          <span
+                            className={`mono truncate text-[12px] text-(--text-secondary) ${range ? 'desktop:hidden' : ''}`}
+                          >
+                            {to}
+                          </span>
+                          {range && (
+                            <span className="mono truncate text-[11px] text-(--text-tertiary) desktop:hidden">
+                              {t('transactions.postedFrom', { time: range.sameDay ? from.slice(11) : from })}
+                            </span>
+                          )}
+                        </span>
                       </div>
-                      {open && (
+                      {open && (count === 1 || models.length > 1) && (
                         <div
                           data-tx-models="true"
                           className={`border-b border-(--border-subtle) bg-(--surface-app) py-1.5 ${USAGE_MIN_W}`}
                         >
                           {models.map((m) => {
-                            const pct = chargeTotal > 0 ? (Number(m.amount) / chargeTotal) * 100 : 0
+                            const pct = groupTotal > 0 ? (Number(m.amount) / groupTotal) * 100 : 0
                             return (
                               <div key={m.model} className={`grid items-center px-4 py-1.5 ${USAGE_GRID}`}>
                                 <span />
@@ -1366,6 +1724,9 @@ export default function BillingView() {
                             )
                           })}
                         </div>
+                      )}
+                      {open && count > 1 && (
+                        <FoldedCharges group={group} expanded={expanded} onToggle={toggleExpanded} />
                       )}
                     </Fragment>
                   )
