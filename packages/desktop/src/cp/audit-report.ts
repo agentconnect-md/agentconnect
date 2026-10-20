@@ -1,8 +1,10 @@
 // Reports audit records to the Control Plane (computer-use.md §8.2): queued in memory, sent in acked batches, typed text by length only.
 import { randomUUID } from 'node:crypto'
 import {
+  COMPUTER_AUDIT_BATCH_BYTES,
   COMPUTER_AUDIT_BATCH_MAX,
   computerAuditArgs,
+  computerAuditText,
   type ComputerAuditEntry
 } from '@agentconnect.md/protocol/computer'
 import type { AuditRecord, AuditSink } from '../audit.js'
@@ -14,15 +16,18 @@ const FLUSH_EVERY_MS = 2000
 /** One record as the CP stores it: no typed text, bounded strings. */
 export function auditEntry(record: AuditRecord, at: Date, id: string = randomUUID()): ComputerAuditEntry {
   const summary = computerAuditArgs(record.args)
+  const text = (value: string | undefined, max: number) => (value ? computerAuditText(value.slice(0, max)) : '')
+  const sessionId = text(record.sessionId, 256)
+  const code = text(record.code, 64)
   return {
     id,
     at: at.toISOString(),
-    tool: record.tool.slice(0, 128),
-    client: record.client.slice(0, 512),
+    tool: text(record.tool, 128) || 'unknown',
+    client: text(record.client, 512) || 'unknown',
     ...(record.agentId ? { agentId: record.agentId } : {}),
-    ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+    ...(sessionId ? { sessionId } : {}),
     outcome: record.outcome,
-    ...(record.code ? { code: record.code.slice(0, 64) } : {}),
+    ...(code ? { code } : {}),
     ...(record.approval ? { approval: record.approval } : {}),
     args: summary.args,
     ...(summary.textLength !== undefined ? { textLength: summary.textLength } : {}),
@@ -30,9 +35,11 @@ export function auditEntry(record: AuditRecord, at: Date, id: string = randomUUI
   }
 }
 
+/** How the CP answered a batch: stored, not now (retry later), or never (resending it cannot help). */
+export type AuditSendResult = 'stored' | 'retry' | 'rejected'
+
 export interface AuditReporterDeps {
-  /** Send one batch; true once the CP stored it, false when it cannot take it now. */
-  send(entries: ComputerAuditEntry[]): Promise<boolean>
+  send(entries: ComputerAuditEntry[]): Promise<AuditSendResult>
   log: (line: string) => void
   now?: () => number
   maxQueued?: number
@@ -85,17 +92,52 @@ export class AuditReporter {
       this.dropped = 0
     }
     while (this.queue.length > 0) {
-      const batch = this.queue.slice(0, COMPUTER_AUDIT_BATCH_MAX)
-      let stored = false
-      try {
-        stored = await this.deps.send(batch)
-      } catch (error) {
-        this.deps.log(`audit: report failed: ${(error as Error).message}`)
+      const batch = nextBatch(this.queue)
+      const result = await this.send(batch)
+      if (result === 'retry') return
+      // A refused batch is resent one entry at a time, so one bad entry never holds back the rest.
+      if (result === 'rejected' && batch.length > 1) {
+        for (const entry of batch) {
+          const alone = await this.send([entry])
+          if (alone === 'retry') return
+          if (alone === 'rejected')
+            this.deps.log(`audit: the Control Plane refused entry ${entry.id} (${entry.tool}); dropped`)
+          this.remove([entry])
+        }
+        continue
       }
-      if (!stored) return
-      // Records may have been queued or dropped meanwhile, so the sent ones are removed by id.
-      const sent = new Set(batch.map((entry) => entry.id))
-      this.queue = this.queue.filter((entry) => !sent.has(entry.id))
+      if (result === 'rejected')
+        this.deps.log(`audit: the Control Plane refused entry ${batch[0]!.id} (${batch[0]!.tool}); dropped`)
+      this.remove(batch)
     }
   }
+
+  private async send(entries: ComputerAuditEntry[]): Promise<AuditSendResult> {
+    try {
+      return await this.deps.send(entries)
+    } catch (error) {
+      this.deps.log(`audit: report failed: ${(error as Error).message}`)
+      return 'retry'
+    }
+  }
+
+  // Records may have been queued or dropped meanwhile, so the sent ones are removed by id.
+  private remove(entries: ComputerAuditEntry[]): void {
+    const sent = new Set(entries.map((entry) => entry.id))
+    this.queue = this.queue.filter((entry) => !sent.has(entry.id))
+  }
+}
+
+/** The oldest entries that fit one frame, by count and by encoded bytes; always at least one. */
+export function nextBatch(queue: readonly ComputerAuditEntry[]): ComputerAuditEntry[] {
+  const batch: ComputerAuditEntry[] = []
+  let bytes = 0
+  for (const entry of queue) {
+    if (batch.length >= COMPUTER_AUDIT_BATCH_MAX) break
+    const size = Buffer.byteLength(JSON.stringify(entry)) + 1
+    if (batch.length > 0 && bytes + size > COMPUTER_AUDIT_BATCH_BYTES) break
+    batch.push(entry)
+    bytes += size
+  }
+  return batch
 }

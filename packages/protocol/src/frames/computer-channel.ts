@@ -15,8 +15,11 @@ export const COMPUTER_RELAYS_MAX = 64
 
 /** Which risky actions need a person's approval (computer-use.md §4.2); every field defaults to asking. */
 export const ComputerApprovalsSchema = z.object({
+  // Ask before a session's first click, drag, type, key or launch; any allow covers the rest of the session.
   firstInputPerSession: z.boolean().default(true),
+  // `always` asks per launch until an approver answers "Allow for this session"; `session` asks once.
   launchApp: z.enum(['always', 'session', 'never-ask']).default('always'),
+  // Ask before each Enter until an approver answers "Allow for this session".
   submitLikeKeys: z.boolean().default(true)
 })
 export type ComputerApprovals = z.infer<typeof ComputerApprovalsSchema>

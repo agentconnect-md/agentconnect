@@ -608,6 +608,27 @@ export function buildApprovalDmIntro(info: {
   ]
 }
 
+/** The owner's DM when an API caller answers a computer-use approval on its own stream (computer-use.md §4.2). Pure. */
+export function buildComputerCallerApprovalNotice(info: {
+  agentName: string
+  title: string
+  sessionUrl: string
+}): unknown[] {
+  const link = safeSlackLinkUrl(info.sessionUrl)
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `:computer: *${escapeMrkdwnLabel(clampTo(info.agentName, 60))}* asked for approval to use your Computer: ` +
+          `${escapeMrkdwnLabel(clampTo(info.title, 200))}. The API caller that started this session answers it.` +
+          (link ? `\n<${link}|Open session>` : '')
+      }
+    }
+  ]
+}
+
 /** "Agent's task “label”", the subject of every task approval card; no quote without a label. */
 function subsessionAsker(agentName: string, title: string | null): string {
   const agent = `*${escapeMrkdwnLabel(clampTo(agentName, 60))}*’s task`

@@ -522,7 +522,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   const auditReport =
     registration && !registration.revokedAt
       ? new AuditReporter({
-          send: (entries) => live.channel?.client.reportAudit(entries) ?? Promise.resolve(false),
+          send: (entries) => live.channel?.client.reportAudit(entries) ?? Promise.resolve('retry' as const),
           log
         })
       : undefined

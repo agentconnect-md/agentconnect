@@ -1,5 +1,5 @@
 // Computer use audit (computer-use.md §8.2): stores what desktop daemons report and answers the owner's per-Computer query.
-import { computerAuditArgs, type ComputerAuditEntry } from '@agentconnect.md/protocol'
+import { computerAuditArgs, computerAuditText, type ComputerAuditEntry } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, OrgId } from '../domain/ids.js'
 import type { ComputerAuditQuery, ComputerAuditRecord, ComputerAuditRepo } from '../persistence/ports.js'
@@ -22,17 +22,18 @@ export class ComputerAuditLog {
       return {
         id: entry.id,
         at: new Date(entry.at),
-        tool: entry.tool,
-        client: entry.client,
+        // Cleaned again here too: one string PostgreSQL refuses would fail the whole batch.
+        tool: computerAuditText(entry.tool),
+        client: computerAuditText(entry.client),
         agentId: entry.agentId ?? null,
-        sessionId: entry.sessionId ?? null,
+        sessionId: entry.sessionId !== undefined ? computerAuditText(entry.sessionId) : null,
         outcome: entry.outcome,
-        code: entry.code ?? null,
+        code: entry.code !== undefined ? computerAuditText(entry.code) : null,
         approval: entry.approval ?? null,
         args: summary.args,
         textLength: entry.textLength !== undefined || summary.textLength !== undefined ? textLength : null,
         ms: entry.ms,
-        screenshotRef: entry.screenshotRef ?? null
+        screenshotRef: entry.screenshotRef !== undefined ? computerAuditText(entry.screenshotRef) : null
       }
     })
     const keepAfter = new Date(this.clock.now() - this.retentionMs)

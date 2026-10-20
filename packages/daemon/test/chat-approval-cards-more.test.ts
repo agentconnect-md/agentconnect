@@ -537,7 +537,23 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
     await vi.waitFor(() => expect(w.slackConn.postBlocks).toHaveBeenCalledTimes(1))
     expect(w.slackConn.postBlocks.mock.calls[0]![0]).toBe('D-U-ED')
     expect(w.approvalRoute.mock.calls[0]![0]).toMatchObject({ consoleUserId: 'cu-ed' })
+    // The editor DM already went to the owner, so no second one follows.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(w.slackConn.postBlocks).toHaveBeenCalledTimes(1)
     await w.store.close()
+
+    // An asker who may answer in the conversation needs no editor DM, yet the Computer owner still gets one.
+    const editor = await ask('on_editor')
+    void editor.permissions.askComputerApproval(live(editor), params(), 'cu-ed')
+    await vi.waitFor(() => expect(editor.posts()).toHaveLength(1))
+    await vi.waitFor(() => expect(editor.slackConn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(editor.slackConn.postBlocks.mock.calls[0]![0]).toBe('D-U-ED')
+    expect(
+      editor.approvalRoute.mock.calls.some(
+        ([payload]) => (payload as { consoleUserId?: string }).consoleUserId === 'cu-ed'
+      )
+    ).toBe(true)
+    await editor.store.close()
 
     // A plain request never DMs beside its card here.
     const plain = await ask('on_member')

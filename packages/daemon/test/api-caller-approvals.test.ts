@@ -122,6 +122,50 @@ describe("an API turn's runtime approval", () => {
     expect(w.coordinator.awaitsApiCaller(CONV)).toBe(false)
   })
 
+  it('tells the Computer owner in their DM about a computer-use approval the caller answers (computer-use.md §4.2)', async () => {
+    const w = world()
+    const conn = {
+      openDirectMessage: vi.fn(async (user: string) => `D-${user}`),
+      postBlocks: vi.fn(async (..._args: unknown[]) => '1.2')
+    }
+    const target = {
+      integrationId: 'int-1',
+      teamId: 'T1',
+      userId: 'U-OWN',
+      consoleUserId: 'cu-own',
+      displayName: 'Own'
+    }
+    const approvalRoute = vi.fn(async (payload: { requestId: string }) => ({ requestId: payload.requestId, target }))
+    w.host.cpApprovalRoute = () => ({ approvalRoute: approvalRoute as never })
+    w.host.approvalDmIntegrations = () => ['int-1']
+    w.host.slackConnFor = (id) => (id === 'int-1' ? (conn as never) : undefined)
+    const params = {
+      ...PERMISSION,
+      toolCall: { toolCallId: 'computer-approval-1', title: 'Computer use on “Desk”: click at (1, 2)', kind: 'execute' }
+    } as RequestPermissionRequest
+    ;(w.p.plan as { agentName?: string }).agentName = 'Butler'
+    const outcome = w.coordinator.askComputerApproval(w.p, params, 'cu-own')
+    const requestId = await handedOut(w)
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(approvalRoute.mock.calls[0]![0]).toMatchObject({ consoleUserId: 'cu-own', integrationIds: ['int-1'] })
+    expect(conn.openDirectMessage).toHaveBeenCalledWith('U-OWN')
+    const posted = JSON.stringify(conn.postBlocks.mock.calls[0]![1])
+    expect(posted).toContain('click at (1, 2)')
+    expect(posted).toContain('*Butler*')
+    expect(posted).toContain('https://console.example.test/sessions/outward-1')
+    w.coordinator.handleCallerPermissionChoice({ requestId, allow: false, mayAllow: false, conversationId: CONV })
+    await expect(outcome).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
+
+    // A plain request on an API turn never DMs anyone.
+    const plain = world()
+    const plainConn = { openDirectMessage: vi.fn(), postBlocks: vi.fn() }
+    plain.host.cpApprovalRoute = () => ({ approvalRoute: approvalRoute as never })
+    plain.host.slackConnFor = () => plainConn as never
+    void plain.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)
+    await handedOut(plain)
+    expect(plainConn.postBlocks).not.toHaveBeenCalled()
+  })
+
   it('takes the narrowest allow from a caller who may allow it', async () => {
     const w = world()
     const outcome = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, PERMISSION)

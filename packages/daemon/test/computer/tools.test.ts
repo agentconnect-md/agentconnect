@@ -380,6 +380,10 @@ describe('computer approvals', () => {
     expect(approvalsNeeded('computer_key', { keys: ['Return'] }, ASK_ALL, typed)).toEqual(['submit'])
     expect(approvalsNeeded('computer_key', { keys: ['ctrl', 'enter'] }, ASK_ALL, typed)).toEqual(['submit'])
     expect(approvalsNeeded('computer_type', { text: 'hi\n' }, ASK_ALL, typed)).toEqual(['submit'])
+    // Keys are judged as the desktop presses them: trimmed, lowercased and aliased.
+    for (const key of [' return', 'Enter ', '\treturn', 'KP_Enter'])
+      expect(approvalsNeeded('computer_key', { keys: [key] }, ASK_ALL, typed)).toEqual(['submit'])
+    expect(approvalsNeeded('computer_key', { keys: [' esc'] }, ASK_ALL, typed)).toEqual([])
     expect(approvalsNeeded('computer_type', { text: 'hi' }, ASK_ALL, typed)).toEqual([])
     expect(approvalsNeeded('computer_launch', { app: 'x' }, { ...ASK_ALL, launchApp: 'never-ask' }, typed)).toEqual([])
   })

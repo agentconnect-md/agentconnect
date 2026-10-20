@@ -127,7 +127,7 @@ describe('ComputerCpClient', () => {
     await settle()
     old.authOk(old.transports[0]!)
     await settle()
-    expect(await old.client.reportAudit([entry])).toBe(false)
+    expect(await old.client.reportAudit([entry])).toBe('retry')
     expect(old.transports[0]!.ofType('computer/audit')).toEqual([])
 
     const h = harness()
@@ -140,14 +140,22 @@ describe('ComputerCpClient', () => {
     const report = transport.ofType('computer/audit')[0]!
     expect(report.payload).toEqual({ entries: [entry] })
     transport.deliver(buildComputerCpFrame('computer/audit/ok', { stored: 1 }, { corr: report.id }))
-    expect(await sent).toBe(true)
+    expect(await sent).toBe('stored')
 
     const failed = h.client.reportAudit([entry])
     const again = transport.ofType('computer/audit')[1]!
     transport.deliver(
       buildComputerCpFrame('error', { code: 'INTERNAL', message: 'db', retryable: true }, { corr: again.id })
     )
-    expect(await failed).toBe(false)
+    expect(await failed).toBe('retry')
+
+    // A non-retryable refusal tells the reporter that resending the same batch cannot help.
+    const refused = h.client.reportAudit([entry])
+    const third = transport.ofType('computer/audit')[2]!
+    transport.deliver(
+      buildComputerCpFrame('error', { code: 'BAD_PAYLOAD', message: 'bad', retryable: false }, { corr: third.id })
+    )
+    expect(await refused).toBe('rejected')
   })
 
   it('hands the told control lease on and reports its local lease in every heartbeat', async () => {

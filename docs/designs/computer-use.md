@@ -476,16 +476,23 @@ this session".
 
 - **first input**: the first click, drag, type, key or launch of the session on that Computer (`firstInputPerSession`);
   a move or a scroll does not count, and any "allow" answers it for the rest of the session;
-- **launching an app**: every `computer_launch` under `launchApp: always`, the first under `session`, none under `never-ask`;
-- **pressing Enter**: a `computer_key` with Return or Enter, or `computer_type` text with a line break (`submitLikeKeys`).
+- **launching an app**: under `launchApp: always`, every `computer_launch` until someone answers Allow for this
+  session; under `session`, only the first, whatever the answer; none under `never-ask`;
+- **pressing Enter**: a `computer_key` with Return or Enter, or `computer_type` text with a line break
+  (`submitLikeKeys`), until someone answers Allow for this session. Keys are judged as the desktop presses them:
+  trimmed, lowercased and aliased by the shared `normalizeComputerKey`.
 
-One card covers every reason a call has; it offers Allow once, Allow for this session (which also covers later calls
-for the same reasons) and Deny. It names the Computer and the action and never shows typed text, only its length.
+One card covers every reason a call has; it offers Allow once, Allow for this session and Deny. Allow for this session
+is the "always allow in this session" above: the person answering waives that call's reasons for the rest of the
+session, so `always` and `submitLikeKeys` are the defaults the session starts from, not a floor an approver cannot
+lower. It names the Computer and the action and never shows typed text, only its length.
 Approvals in a session run one at a time, so parallel inputs share an answer. The card is the daemon's own ask, like
 the bot-join confirmation, raised through `PermissionCoordinator.askComputerApproval` on the turn's ordinary approval
 path ([mcp-elicitation.md](mcp-elicitation.md) §8): a card in the conversation where people there may approve, or else
 the neutral notice plus the console and the approval DM. The approval DM goes to the Computer's owner first and falls
-back to the usual chain; beside a card in the conversation the owner gets a DM too, unless they are the asker there.
+back to the usual chain. Beside a card in the conversation the owner gets a DM too, unless they are the asker there or
+the editor DM already went to them. On an API turn the caller answers on its own stream, and the owner's DM only says
+that the agent asked and links the session.
 Through `agent/approval-route` the owner is reached, and their answer counts, only while they may edit the agent, which
 is the default since a self-hosted Computer admits only its owner's agents. A refusal, or no live turn to ask on, returns
 a definite `approval_denied` and nothing is sent.

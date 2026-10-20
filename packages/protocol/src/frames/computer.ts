@@ -15,6 +15,7 @@ export * from './relay-computer.js'
 // Audit entries the desktop reports and the approval outcome agent daemons attach to a call (§4.2, §8.2).
 export * from './computer-audit.js'
 export * from '../computer-channel-token.js'
+export * from './computer-keys.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 

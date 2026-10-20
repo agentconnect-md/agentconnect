@@ -117,6 +117,21 @@ describe('computer audit', () => {
     expect(bad.statusCode).toBe(400)
   })
 
+  it('stores entries whose strings PostgreSQL would refuse, cleaned, beside the rest of their batch', async () => {
+    const computerId = await register(appAs())
+    const log = new ComputerAuditLog(new PgComputerAuditRepo(prisma), new FakeClock(T0))
+    const poison = entry(2, {
+      tool: 'computer_launch\u0000',
+      client: `${AGENT}/sess-1\u0000`,
+      code: 'bad\u0000',
+      args: { app: 'fire\u0000fox', 'k\u0000': [{ deep: '\ud800x\u0000' }] }
+    })
+    expect(await log.record(DEFAULT_ORG_ID, computerId, [entry(1), poison, entry(3)])).toBe(3)
+    const row = await prisma.computerAudit.findFirstOrThrow({ where: { computerId, tool: 'computer_launch' } })
+    expect(row).toMatchObject({ client: `${AGENT}/sess-1`, code: 'bad' })
+    expect(row.args).toEqual({ app: 'firefox', k: [{ deep: '\ufffdx' }] })
+  })
+
   it('drops entries past the retention window as new ones arrive', async () => {
     const computerId = await register(appAs())
     const clock = new FakeClock(T0)

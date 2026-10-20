@@ -3,6 +3,7 @@ import {
   COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_FRAME_TYPES,
   computerAuditArgs,
+  computerAuditText,
   ComputerPolicySchema,
   buildComputerCpFrame,
   decodeComputerCpFrame,
@@ -195,6 +196,17 @@ describe('computer audit frames', () => {
     expect(computerAuditArgs({ app: 'a'.repeat(600) }).args).toEqual({ app: 'a'.repeat(256) })
     const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, 'x'.repeat(100)]))
     expect(computerAuditArgs(many).args).toEqual({ truncated: true })
+  })
+
+  it('cleans every string a store could refuse, keys and nested values included', () => {
+    expect(
+      computerAuditArgs({ 'a\u0000pp': 'fire\u0000fox', keys: [' re\u0007turn'], deep: { x: ['\udc00y'] } }).args
+    ).toEqual({
+      app: 'firefox',
+      keys: [' return'],
+      deep: { x: ['\ufffdy'] }
+    })
+    expect(computerAuditText('tab\tand\nline\u007f')).toBe('tab\tand\nline')
   })
 
   it('refuses an entry with an unknown field or an empty batch', () => {

@@ -23,6 +23,7 @@ import {
   type ComputerRelayEntry
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './authority.js'
+import type { AuditSendResult } from './audit-report.js'
 
 const AUTH_TIMEOUT_MS = 15_000
 
@@ -107,18 +108,18 @@ export class ComputerCpClient {
     }
   }
 
-  /** Send audit entries (computer-use.md §8.2); true once the CP stored them, false when it cannot take them now. */
-  async reportAudit(entries: ComputerAuditEntry[]): Promise<boolean> {
+  /** Send audit entries (computer-use.md §8.2): stored, retry later, or rejected for good by a non-retryable error. */
+  async reportAudit(entries: ComputerAuditEntry[]): Promise<AuditSendResult> {
     const transport = this.transport
-    if (this.state !== 'READY' || !transport || !this.features.has(COMPUTER_AUDIT_FEATURE)) return false
+    if (this.state !== 'READY' || !transport || !this.features.has(COMPUTER_AUDIT_FEATURE)) return 'retry'
     try {
       const reply = await this.correlator.request(buildComputerCpFrame('computer/audit', { entries }), (encoded) =>
         transport.send(encoded)
       )
-      return reply.type === 'computer/audit/ok'
+      return reply.type === 'computer/audit/ok' ? 'stored' : 'retry'
     } catch (error) {
       this.deps.log(`computer channel: audit report failed: ${(error as Error).message}`)
-      return false
+      return error instanceof WireError && !error.retryable ? 'rejected' : 'retry'
     }
   }
 

@@ -1,7 +1,9 @@
 // The agent-facing `computer_*` tools (computer-use.md §5): resolved here, forwarded to a desktop daemon over the data plane.
 import {
   COMPUTER_APPROVAL_META_KEY,
+  COMPUTER_SUBMIT_KEYS,
   ComputerApprovalsSchema,
+  normalizeComputerKey,
   type AgentComputerUse,
   type ComputerApprovalResult,
   type ComputerApprovals,
@@ -143,7 +145,6 @@ const FIRST_INPUT_TOOLS = new Set([
   'computer_key',
   'computer_launch'
 ])
-const ENTER_KEYS = new Set(['return', 'enter', 'kp_enter'])
 
 /** Why an input needs a person's approval (§4.2). */
 export type ComputerApprovalReason = 'first_input' | 'launch_app' | 'submit'
@@ -179,7 +180,7 @@ const NO_GRANTS: ComputerApprovalGrants = { input: false, session: new Set() }
 export function isSubmitLike(name: string, args: Record<string, unknown>): boolean {
   if (name === 'computer_key') {
     const keys = Array.isArray(args.keys) ? args.keys : []
-    return keys.some((key) => typeof key === 'string' && ENTER_KEYS.has(key.toLowerCase()))
+    return keys.some((key) => typeof key === 'string' && COMPUTER_SUBMIT_KEYS.has(normalizeComputerKey(key)))
   }
   return name === 'computer_type' && typeof args.text === 'string' && /[\r\n]/.test(args.text)
 }
