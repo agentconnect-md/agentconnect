@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageKind, SessionStatus, TurnState, type ChatState, type Turn } from '@microsoft/agent-host-protocol'
 import type { LocalStore } from '../../src/store/local-store.js'
 import { openTestStore } from '../store-support.js'
@@ -25,7 +25,7 @@ function turn(id: string): Turn {
     state: TurnState.Complete
   }
 }
-async function fixture() {
+async function fixture(warn?: (message: string) => void) {
   const store = await openTestStore()
   stores.push(store)
   const checkpoints = new LocalAhpCheckpoints(
@@ -42,12 +42,26 @@ async function fixture() {
     { provider: 'agent', displayName: 'Agent', description: '', models: [] },
     journal,
     () => 1000,
-    checkpoints
+    checkpoints,
+    warn
   )
   return { store, checkpoints, journal, state }
 }
 
 describe('AHP checkpoint integration', () => {
+  it('journals and delivers a turn whose checkpoint exceeds the storage budget', async () => {
+    const warn = vi.fn()
+    const { state, journal } = await fixture(warn)
+    await state.add(binding)
+    const event = { sessionId: 'physical', turnId: 'long', generation: 0, at: 1000 }
+    await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
+    await state.accept({ ...event, kind: 'text', text: 'x'.repeat(600 * 1024) })
+    await state.accept({ ...event, kind: 'finished', outcome: 'complete' })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('storage budget'))
+    expect(journal.replay(1, new Set([chat]))!.map((envelope) => envelope.action.type)).toContain('chat/turnComplete')
+    expect(state.summary(binding.sessionUri)?.status).toBe(SessionStatus.Idle)
+  })
+
   it('preserves the archive chronology while a client loads older pages', async () => {
     const { store, state, journal } = await fixture()
     const initial: ChatState = {

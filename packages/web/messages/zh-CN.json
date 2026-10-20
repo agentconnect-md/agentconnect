@@ -83,7 +83,7 @@
       "everyone": "所有人",
       "everyoneDescription": "所有成员都可以查看。",
       "selected": "指定成员",
-      "selectedDescription": "指定成员及组织所有者可以查看。",
+      "selectedDescription": "只有你选中的成员和组织所有者可以查看。",
       "shareWith": "共享给",
       "removeLastMember": "请先选择其他成员，再移除最后一名成员",
       "removeAccess": "从已选成员中移除",
@@ -97,9 +97,9 @@
       "restrictedResource": "指定成员及组织所有者可以访问此资源。",
       "agentsLabel": "Agent",
       "allAgents": "所有 Agent",
-      "allAgentsDescription": "组织内的每个 Agent 都能查阅。",
+      "allAgentsDescription": "组织内的每个 Agent 都能使用。",
       "selectedAgents": "指定 Agent",
-      "selectedAgentsDescription": "只有这里选中的 Agent 能查阅。",
+      "selectedAgentsDescription": "只有你选中的 Agent 能使用。",
       "searchAgents": "搜索 Agent…",
       "noAgents": "没有 Agent",
       "agentCount": "{count, plural, other {# 个 Agent}}",
@@ -657,15 +657,15 @@
     "visibility": {
       "private": "私密",
       "everyone": "所有人",
-      "privateTitle": "仅自己可见",
-      "everyoneTitle": "组织内所有人可见",
+      "privateTitle": "只有你能看到这个会话。",
+      "everyoneTitle": "组织内所有人都能看到这个会话。",
       "settingUp": "正在设置会话访问权限",
       "loading": "加载中",
       "externalMembers": "{provider} 成员",
-      "repoAccess": "所有可访问该仓库的人员可见",
-      "channelAccess": "所有可访问该频道的人员可见",
-      "conversationAccess": "所有可访问该对话的人员可见",
-      "accessUnverified": "无法验证 {provider} 访问权限；该会话仍保持隐藏",
+      "repoAccess": "能访问该仓库的人都能看到这个会话。",
+      "channelAccess": "能访问该频道的人都能看到这个会话。",
+      "conversationAccess": "能访问该对话的人都能看到这个会话。",
+      "accessUnverified": "无法确认 {provider} 访问权限，所以这个会话保持隐藏。",
       "waiting": "正在等待所属 Daemon 确认更改",
       "waitingWithMemory": "正在等待所属 Daemon 确认更改；Daemon 确认后将停止捕获",
       "sessionVisibility": "会话可见范围",
@@ -1112,17 +1112,14 @@
       "slackConnect": "连接 Slack · AgentConnect"
     },
     "login": {
-      "brandLead": "在团队已在使用的工具中运行你的 Agent。",
-      "brandDescription": "由 Claude 和 Codex 驱动，通过 ACP 在你自己的机器上运行，并接入 Slack、Telegram 和 Discord。",
-      "brandFootnote": "Agent 在你的机器上运行，密钥始终由你保管。",
+      "brandLead": "在团队工作的地方，@ 任何 Agent。",
+      "brandDescription": "把 Claude、Codex 或任何 ACP Agent 带进 Slack、Google Chat、GitHub 等工具。",
       "title": "登录",
-      "subtitle": "欢迎回来，继续进入你的工作区。",
-      "ssoOnly": "仅支持单点登录。AgentConnect 不会存储密码。",
+      "subtitle": "继续进入你的 AgentConnect 工作区。",
       "firstTime": "首次使用？登录后将自动创建账户。",
       "continueWith": "使用 {provider} 继续",
       "continueWithPrefix": "使用 ",
-      "moreOptions": "更多登录方式",
-      "fewerOptions": "收起"
+      "or": "或"
     },
     "activation": {
       "storageBlocked": "此浏览器阻止了激活链接所需的临时存储，因此无法验证登录身份。请允许本站使用站点数据（或改用普通的非隐私窗口），然后重新打开链接。",
@@ -2135,7 +2132,8 @@
         "added": "已添加",
         "docs": "文档",
         "add": "添加 API",
-        "adding": "添加中…"
+        "adding": "添加中…",
+        "ahpDescription": "通过标准 AHP v1 会话和聊天动作连接兼容的 Agent 客户端。"
       }
     },
     "api": {
@@ -4593,6 +4591,10 @@
       "loadingMore": "加载中…",
       "endOfLedger": "已到达账单末尾",
       "modelShare": "{name} — {amount}",
+      "chargeCount": "{count, plural, other {# 笔扣费}}",
+      "chargeStats": "{count, plural, other {# 笔扣费}} · 平均 {avg} · 最高 {max}",
+      "spendByHour": "按小时用量",
+      "postedFrom": "起始 {time}",
       "expand": "展开",
       "collapse": "收起"
     }
@@ -4713,7 +4715,7 @@
       "title": "会话访问权限",
       "followPlatformAccess": "遵循平台访问权限",
       "help": "会话访问权限：这些开关的作用",
-      "hint": "开启后，会话可见性遵循平台自身的访问权限。关闭后，新会话对所有人可见；此前开启期间同步的会话将不再显示。",
+      "hint": "开启后，只有能看到会话来源的人才能看到这个会话。关闭后，新会话对所有人可见，开启期间同步的会话会被隐藏。",
       "providerHelp": "{label}：适用范围",
       "loadError": "无法加载 {name} 的会话访问权限。",
       "notConfigured": "尚未配置",
@@ -4723,7 +4725,8 @@
       "providers": {
         "slack": {
           "name": "Slack",
-          "label": "遵循 Slack 访问权限",
+          "label": "要求 Slack 访问权限",
+          "description": "只有能看到该频道的人才能看到它的会话。",
           "details": "公开频道遵循 Slack 工作区的访问权限；私密频道、群组私信、访客和 Slack Connect 用户需要当前的成员资格。\n私信始终保持私密，之前由 Agent 学习到的记忆不会被删除。\n早于此设置创建的会话会继续隐藏，直到新的可信活动将其重新绑定到 Slack 对话。\n关闭后，开启期间同步的会话会被隐藏；它们不会被删除，重新开启即可恢复。",
           "unavailable": "此部署尚未配置控制台登录，因此不可用；查看者没有可供检查的已关联 Slack 身份。",
           "unresolved": "{count, plural, other {已隐藏 # 个会话：没有可信的 Slack 权限范围。}}",
@@ -4731,7 +4734,8 @@
         },
         "github": {
           "name": "GitHub",
-          "label": "遵循 GitHub 访问权限",
+          "label": "要求 GitHub 访问权限",
+          "description": "只有能访问该仓库的人才能看到它的会话。",
           "details": "公开仓库会话对所有人可见；私有仓库会话需要已关联且当前仍具访问权限的 GitHub 个人资料。\n之前由 Agent 学习到的记忆不会被删除。\n早于此设置创建的会话会继续隐藏，直到新的可信活动将其重新绑定到仓库。\n关闭后，开启期间同步的会话会被隐藏；它们不会被删除，重新开启即可恢复。",
           "unavailable": "此部署尚未配置控制台登录和 GitHub 访问权限检查，因此不可用；查看者没有可供检查的已关联 GitHub 个人资料。",
           "unresolved": "{count, plural, other {已隐藏 # 个会话：没有可信的仓库权限范围。}}",
@@ -4739,7 +4743,8 @@
         },
         "gitlab": {
           "name": "GitLab",
-          "label": "遵循 GitLab 权限",
+          "label": "要求 GitLab 访问权限",
+          "description": "只有能访问该项目的人才能看到它的会话。",
           "details": "公开代码库的会话对组织所有成员可见。其他项目需要关联此 GitLab 实例的账号，并拥有有效的 Reporter 或更高成员权限。已禁用的代码库保持隐藏。\n此前学到的智能体记忆不会删除。缺少可信项目来源的历史会话保持隐藏。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
           "unavailable": "请先配置 GitLab 集成和登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的项目来源。}}",
@@ -4747,7 +4752,8 @@
         },
         "feishu": {
           "name": "飞书/Lark",
-          "label": "遵循飞书/Lark 访问权限",
+          "label": "要求飞书/Lark 访问权限",
+          "description": "只有群聊成员才能看到它的会话。",
           "details": "通过对应 AgentConnect 应用创建的群聊会话会遵循当前聊天成员资格。\n私信始终保持私密，之前由 Agent 学习到的记忆不会被删除。\n使用不同 App ID 自建的应用仍遵循普通的组织可见性规则。\n关闭后，开启期间同步的会话会被隐藏；它们不会被删除，重新开启即可恢复。",
           "unavailable": "此部署尚未配置控制台登录，因此不可用；查看者没有可供检查的已关联飞书/Lark 身份。",
           "unresolved": "{count, plural, other {已隐藏 # 个会话：没有可信的聊天权限范围。}}",
@@ -4755,7 +4761,8 @@
         },
         "telegram": {
           "name": "Telegram",
-          "label": "遵循 Telegram 权限",
+          "label": "要求 Telegram 访问权限",
+          "description": "只有群成员才能看到它的会话。",
           "details": "群聊按当前成员身份授权，聊天机器人必须是管理员。私聊仅对参与者可见。\n请先在个人资料中关联账号。此前学到的智能体记忆不会被删除。\n缺少可信来源的历史会话先隐藏，等待新的可信活动补齐来源。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
           "unavailable": "请先为本部署配置 Telegram 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
@@ -4763,7 +4770,8 @@
         },
         "discord": {
           "name": "Discord",
-          "label": "遵循 Discord 权限",
+          "label": "要求 Discord 访问权限",
+          "description": "只有能阅读该频道的人才能看到它的会话。",
           "details": "频道按当前服务器角色和频道权限授权，包括读取消息历史。私密子区还需子区成员身份或管理子区权限。私聊按参与者授权。\n请先在个人资料中关联账号。此前学到的智能体记忆不会被删除。\n缺少可信来源的历史会话先隐藏，等待新的可信活动补齐来源。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
           "unavailable": "请先为本部署配置 Discord 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
@@ -4771,7 +4779,8 @@
         },
         "googlechat": {
           "name": "Google Chat",
-          "label": "遵循 Google Chat 权限",
+          "label": "要求 Google Chat 访问权限",
+          "description": "只有该空间的成员才能看到它的会话。",
           "details": "空间和私聊按当前成员身份授权，由对话中的 Chat 应用检查；仅收到邀请不算成员。\n请先在个人资料中关联 Google 账号。此前学到的 Agent 记忆不会被删除。\n缺少可信来源的历史会话先隐藏，等待新的可信活动补齐来源。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
           "unavailable": "请先为本部署配置 Google 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
@@ -4787,11 +4796,11 @@
       "options": {
         "all": {
           "label": "所有 Agent",
-          "description": "可与每个 Agent 双向通信。"
+          "description": "新 Agent 可以调用其他所有 Agent，也能被它们调用。"
         },
         "selected": {
           "label": "隔离",
-          "description": "选择 Agent 前，不允许与其他 Agent 通信。"
+          "description": "在你选好之前，新 Agent 不能调用其他 Agent，也不能被调用。"
         }
       }
     },

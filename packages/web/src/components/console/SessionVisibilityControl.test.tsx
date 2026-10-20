@@ -46,11 +46,11 @@ async function openTightenDialog(nativeMemory: boolean): Promise<string> {
     )
   })
   const everyone = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Everyone')
-  expect(everyone?.title).toBe('Visible to everyone in the org')
+  expect(everyone?.title).toBe('Everyone in your organization can see this session.')
   expect(container.textContent).not.toContain('Org')
   await act(async () => everyone?.click())
-  expect(container.textContent).toContain('Visible only to me')
-  expect(container.textContent).toContain('Visible to everyone in the org')
+  expect(container.textContent).toContain('Only you can see this session.')
+  expect(container.textContent).toContain('Everyone in your organization can see this session.')
   const privateButton = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('Private'))
   await act(async () => privateButton?.click())
   return document.body.textContent ?? ''
@@ -115,12 +115,12 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
       )
     })
     expect(container.textContent).toContain(`${brand} members`)
-    expect(container.querySelector('span')?.title).toBe('Visible to everyone who can access the conversation')
+    expect(container.querySelector('span')?.title).toBe('Anyone who can access the conversation can see this session.')
   })
 
   it.each([
-    ['slack', 'Slack members', 'Visible to everyone who can access the channel'],
-    ['github', 'GitHub members', 'Visible to everyone who can access the repo']
+    ['slack', 'Slack members', 'Anyone who can access the channel can see this session.'],
+    ['github', 'GitHub members', 'Anyone who can access the repository can see this session.']
   ] as const)('explains the settled %s audience on hover', async (externalProvider, label, title) => {
     container = document.createElement('div')
     document.body.append(container)
@@ -142,8 +142,8 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
   })
 
   it.each([
-    ['org', 'Everyone', 'Visible to everyone in the org'],
-    ['private', 'Private', 'Visible only to me']
+    ['org', 'Everyone', 'Everyone in your organization can see this session.'],
+    ['private', 'Private', 'Only you can see this session.']
   ] as const)('keeps the read-only %s audience tooltip concise', async (visibility, label, title) => {
     container = document.createElement('div')
     document.body.append(container)

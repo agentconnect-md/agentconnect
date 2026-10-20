@@ -71,7 +71,7 @@ import {
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
-import { API_PROTOCOLS, apiProtocolLabel } from '@/lib/agent-api'
+import { availableApiProtocols, apiProtocolLabel } from '@/lib/agent-api'
 import EditWorkspaceModal from './EditWorkspaceModal'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import {
@@ -562,7 +562,9 @@ export default function AddIntegrationModal({
   )
   const apiAdded = new Set<string>((apiEntries ?? []).map((e) => e.protocol))
   // Until one is picked, the first available protocol the agent has not added yet is selected.
-  const apiOffered = API_PROTOCOLS.filter((p) => p.available).map((p) => p.id as AgentApiProtocol)
+  const apiOffered = availableApiProtocols()
+    .filter((p) => p.available)
+    .map((p) => p.id as AgentApiProtocol)
   const apiProtocol =
     apiPick && !apiAdded.has(apiPick) ? apiPick : (apiOffered.find((id) => !apiAdded.has(id)) ?? apiOffered[0]!)
   const watchedGhFamilies = useMemo(() => {
@@ -1724,7 +1726,7 @@ export default function AddIntegrationModal({
           <div className="mb-4">
             <div className="fldlbl mb-2">{t('api.protocol')}</div>
             <div className="flex flex-col gap-2" role="radiogroup" aria-label={t('api.protocol')}>
-              {API_PROTOCOLS.map((p) => {
+              {availableApiProtocols().map((p) => {
                 const added = p.available && apiAdded.has(p.id)
                 const selectable = p.available && !added
                 const on = selectable && apiProtocol === p.id
