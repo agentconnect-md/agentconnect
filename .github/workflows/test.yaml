@@ -40,6 +40,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       windows: ${{ steps.filter.outputs.windows }}
       microsandbox: ${{ steps.filter.outputs.microsandbox }}
+      desktop: ${{ steps.filter.outputs.desktop }}
     steps:
       # The files API instead of a checkout; release events run every leg.
       - name: Which suites can this diff reach?
@@ -48,7 +49,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
+          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\ndesktop=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || everything
           files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || exit 1
           [ -n "$files" ] || { echo 'PR file list is empty' >&2; exit 1; }
@@ -57,8 +58,10 @@ jobs:
           {
             echo "code=$(other '^docs/|\.md$')"
             # Lists what CANNOT reach the daemon/CLI closure, so a new root config, script or package stays in scope.
-            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)|\.md$')"
+            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
             echo "microsandbox=$(any '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)')"
+            # No workspace deps, so only its own files and the root install, Node, tsconfig and reporter config reach it.
+            echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
   # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
@@ -185,7 +188,8 @@ jobs:
             'setup=@agentconnect.md/setup' \
             'web=@agentconnect.md/web' \
             'k8s-client=@agentconnect.md/k8s-client' \
-            'object-store=@agentconnect.md/object-store'
+            'object-store=@agentconnect.md/object-store' \
+            'desktop=@agentconnect.md/desktop'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:
@@ -604,11 +608,108 @@ jobs:
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
+  # Desktop daemon end to end on Xvfb with the pinned Cua Driver and ffmpeg (computer-use.md §14.3).
+  desktop-xvfb:
+    name: Desktop (Xvfb)
+    needs: scope
+    if: ${{ needs.scope.outputs.desktop == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          # Pinned so the action installs this once; `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
+          cache: true
+          # Its own primary key, for the reason the sandbox job gives.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/desktop/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/desktop..."
+      # Xvfb is the display; xterm is the window the suite types into and xdotool reads X's own pointer.
+      - name: Install Xvfb
+        timeout-minutes: 5
+        env:
+          APT_OPTS: -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2
+        run: |
+          # Upstream instead of the runner's regional mirror, for the reason the sandbox job gives.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y --no-install-recommends xvfb xauth xterm xdotool xfonts-base
+      - name: Xvfb integration suite
+        env:
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+          DESKTOP_XVFB_LOG: '1'
+        run: >
+          xvfb-run --auto-servernum --server-args='-screen 0 1600x900x24 -nolisten tcp'
+          pnpm --filter @agentconnect.md/desktop test:xvfb
+      - name: Publish Desktop (Xvfb) summary
+        if: ${{ !cancelled() }}
+        run: |
+          summary="${{ runner.temp }}/desktop-xvfb.md"
+          if [ -f "$summary" ]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
+
+  # License scan of the desktop release artifacts; fails on AGPL / FSL / BSL / SSPL / GPL or an unknown license (§11).
+  desktop-licenses:
+    name: Desktop licenses
+    needs: scope
+    if: ${{ needs.scope.outputs.desktop == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          # Pinned so the action installs this once; `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
+          cache: true
+          # Its own primary key, for the reason the sandbox job gives.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/desktop/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/desktop..."
+      # The scanner's own suite first, including a seeded AGPL dependency that must fail it.
+      - name: Scanner self-test
+        run: pnpm --filter @agentconnect.md/desktop exec vitest run scripts/license-scan.test.ts
+      - name: Build the release bundle
+        run: pnpm --filter @agentconnect.md/desktop bundle
+      - name: Scan the release bundle
+        run: pnpm --filter @agentconnect.md/desktop license-scan
+
   # The ruleset's only CI check must need every job; `always()` keeps failed needs from skipping it.
   ci-ok:
     name: CI OK
     needs:
-      [scope, build, unit, unit-windows, evals, sandbox-linux, sandbox-microsandbox, daemon-store-postgres, integration]
+      [
+        scope,
+        build,
+        unit,
+        unit-windows,
+        evals,
+        sandbox-linux,
+        sandbox-microsandbox,
+        daemon-store-postgres,
+        integration,
+        desktop-xvfb,
+        desktop-licenses
+      ]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:

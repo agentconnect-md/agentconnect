@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { Command, Option } from 'commander'
 import { selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
+import { runDesktop } from './desktop.js'
 import { runShell } from './run-shell.js'
 import {
   classifyInvocation,
@@ -64,6 +65,11 @@ const fail = (cmd: string, err: unknown): never => {
 
 async function main(): Promise<void> {
   let argv = process.argv.slice(2)
+  // The desktop daemon has its own data dir, so it is routed before any agent-daemon root or instance resolution.
+  if (classifyInvocation(argv) === 'desktop') {
+    setInvocation({ cliEntry: fileURLToPath(import.meta.url), path: process.env.PATH, platform: process.platform })
+    return runDesktop(argv, `${cliCommand()} desktop`)
+  }
   // `--instance <name>` is CLI vocabulary for "that daemon's root" (service/
   // instance.ts). Resolve it here, then rewrite argv into the `--root` form the
   // daemon understands so run/delegate never see the flag.
@@ -266,6 +272,15 @@ async function main(): Promise<void> {
         fail('instances', err)
       }
     })
+
+  // Listed for help only: `desktop` invocations are routed to the desktop daemon before commander parses.
+  program
+    .command('desktop')
+    .description(
+      'Run a desktop daemon command (setup, doctor, run, service, pause, resume, …); `agentconnect desktop --help` lists them'
+    )
+    .allowUnknownOption()
+    .helpOption(false)
 
   program
     .command('login')

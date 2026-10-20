@@ -8,7 +8,7 @@ import {
   usePlayground as useLegacyPlayground
 } from './playground/LegacyPlaygroundProvider'
 import { AhpPlaygroundStore } from './playground/AhpPlaygroundStore'
-import { selectPlayground, type PlaygroundProtocol } from './playground/selector'
+import { createPlaygroundSelector, type PlaygroundProtocol } from './playground/selector'
 import type { PlaygroundData } from './playground/contract'
 export type { QueuedTurn } from './playground/contract'
 const Context = createContext<PlaygroundData | null>(null)
@@ -30,7 +30,8 @@ function AdapterBoundary({ children }: { children: ReactNode }) {
   const store = useMemo(() => new AhpPlaygroundStore(activeOrg?.id ?? '', () => refresh.current()), [activeOrg?.id])
   const pins = useMemo(() => new Map<string, PlaygroundProtocol>(), [store])
   const lifecycle = useMemo(() => ({ generation: 0 }), [store])
-  useSyncExternalStore(store.subscribe, store.snapshot, () => 0)
+  const version = useSyncExternalStore(store.subscribe, store.snapshot, () => 0)
+  const select = useMemo(() => createPlaygroundSelector(pins), [pins])
   useEffect(() => {
     const generation = ++lifecycle.generation
     return () =>
@@ -38,7 +39,9 @@ function AdapterBoundary({ children }: { children: ReactNode }) {
         if (lifecycle.generation === generation) void store.close()
       })
   }, [store, lifecycle])
-  const value = selectPlayground(legacy, store.getValue(), pins)
+  // The store's version is what invalidates its value.
+  const ahp = useMemo(() => store.getValue(), [store, version])
+  const value = useMemo(() => select(legacy, ahp), [select, legacy, ahp])
   return <Context.Provider value={value}>{children}</Context.Provider>
 }
 export function usePlayground(): PlaygroundData {

@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "customConditions": ["development"],
+    "noEmit": true,
+    "rootDir": "../.."
+  },
+  "include": ["src", "test", "scripts/**/*.ts", "vitest.config.ts", "vitest.xvfb.config.ts"],
+  "exclude": []
+}

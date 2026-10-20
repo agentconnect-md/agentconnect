@@ -66,6 +66,36 @@ The login probe uses `@agentconnect.md/protocol`,
 runtime code. The daemon still performs the authoritative full config validation
 when it starts.
 
+### 1.2 Desktop daemon
+
+`agentconnect desktop <command>` runs the desktop daemon of
+[computer-use.md](computer-use.md) §3.1 instead of the agent daemon. The CLI
+routes it before resolving `--root` or `--instance`, because the desktop daemon
+keeps its own data directory. It forwards every token after `desktop` verbatim,
+inherits standard I/O, forwards `SIGTERM`, and propagates the exit status or
+terminating signal, exactly as delegation does. Global options placed before
+`desktop` stay with the CLI and are not forwarded.
+
+The CLI does not import or depend on `@agentconnect.md/desktop`, and it does not
+install it. It runs the first entry that exists:
+
+1. `AGENTCONNECT_DESKTOP_ENTRY`, a development override; a missing file is an
+   error rather than a fallback;
+2. on macOS, `AgentConnect Desktop.app` in `~/Applications`, then
+   `/Applications`, whose binary runs directly so the app keeps its own TCC
+   grants;
+3. `agentconnect-desktop.mjs` under the desktop data directory's `app/`
+   (`$AGENTCONNECT_DESKTOP_HOME`, `%LOCALAPPDATA%\AgentConnect\desktop` on
+   Windows, otherwise `~/.agentconnect/desktop`), where the bundle's install
+   scripts and the Linux service put it.
+
+A `.js`, `.mjs` or `.cjs` entry runs under the CLI's own Node; any other entry
+runs as an executable. The CLI sets `AGENTCONNECT_DESKTOP_COMMAND` to its own
+invocation plus `desktop`, so the desktop daemon's help and fix hints name the
+command the user typed. The standalone `agentconnect-desktop` bin remains for
+development. Downloading, versioning and upgrading the desktop daemon are not
+part of this contract yet.
+
 ## 2. Version store
 
 The CLI stores daemon releases below the configured AgentConnect root:

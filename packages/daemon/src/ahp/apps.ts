@@ -101,13 +101,22 @@ export class AhpAppsProjection {
     this.entries = next
     return { apps: this.snapshot() }
   }
+  // Settled cards give way, oldest first, before the byte budget refuses a live one.
   private assertBounded(entries: AhpAppEntry[], updating: string): void {
-    const state = entries.map((entry) => {
-      const pending = entry.card.appId === updating ? undefined : this.templates.get(entry.card.appId)
-      return pending ? { ...entry, html: pending.text } : entry
-    })
-    if (Buffer.byteLength(JSON.stringify({ apps: state })) > MAX_META_BYTES)
-      throw invalid('MCP App metadata exceeds the AHP limit')
+    const bytes = () =>
+      Buffer.byteLength(
+        JSON.stringify({
+          apps: entries.map((entry) => {
+            const pending = entry.card.appId === updating ? undefined : this.templates.get(entry.card.appId)
+            return pending ? { ...entry, html: pending.text } : entry
+          })
+        })
+      )
+    while (bytes() > MAX_META_BYTES) {
+      const settled = entries.findIndex((item) => item.outcome !== undefined && item.card.appId !== updating)
+      if (settled < 0) throw invalid('MCP App metadata exceeds the AHP limit')
+      entries.splice(settled, 1)
+    }
   }
 }
 

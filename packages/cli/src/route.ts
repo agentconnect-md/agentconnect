@@ -55,19 +55,25 @@ const VALUE_OPTS = new Set([
  */
 const SUBCOMMAND_VALUE_OPTS = new Set(['--to', '--channel', '--keep'])
 
-/** The first positional token (the subcommand), honoring option values and `--`. */
-export function firstPositional(argv: string[]): string | undefined {
+/** The index of the first positional token (the subcommand), honoring option values and `--`. */
+export function firstPositionalIndex(argv: string[]): number | undefined {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === undefined) break
-    if (a === '--') return argv[i + 1] // everything after `--` is positional
+    if (a === '--') return i + 1 < argv.length ? i + 1 : undefined // everything after `--` is positional
     if (a.startsWith('-')) {
       if (VALUE_OPTS.has(a)) i++ // its value is the next token — skip it
       continue // `--opt=value` and boolean flags consume no extra token
     }
-    return a
+    return i
   }
   return undefined
+}
+
+/** The first positional token (the subcommand), honoring option values and `--`. */
+export function firstPositional(argv: string[]): string | undefined {
+  const i = firstPositionalIndex(argv)
+  return i === undefined ? undefined : argv[i]
 }
 
 /**
@@ -147,17 +153,19 @@ export function withResolvedRoot(argv: string[], root: string): string[] {
   return out
 }
 
-export type Route = 'run' | 'delegate' | 'cli'
+export type Route = 'run' | 'desktop' | 'delegate' | 'cli'
 
 /**
  * Classify an invocation (argv after the node+script prefix):
  * - `run`      → the foreground respawn shell
+ * - `desktop`  → the desktop daemon (computer-use.md §3.1), not the agent daemon
  * - `delegate` → any daemon-owned or unknown command → exec the active daemon
  * - `cli`      → a CLI-owned command, or none (help/version/bare) → commander
  */
 export function classifyInvocation(argv: string[]): Route {
   const cmd = firstPositional(argv)
   if (cmd === 'run') return 'run'
+  if (cmd === 'desktop') return 'desktop'
   if (cmd !== undefined && !CLI_OWNED_COMMANDS.has(cmd)) return 'delegate'
   return 'cli'
 }

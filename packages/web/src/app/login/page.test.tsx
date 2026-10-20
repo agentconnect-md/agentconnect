@@ -66,12 +66,12 @@ it('renders the configured sign-in buttons before hydration and keeps the same D
   document.body.append(container)
   container.innerHTML = html
   const buttons = [...container.querySelectorAll('button')]
-  expect(buttons.map((button) => button.textContent)).toEqual([
+  expect(buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual([
     'Continue with Google',
     'Continue with Slack',
     'Continue with GitHub',
     'Continue with GitLab',
-    'More sign-in options'
+    'Continue with Discord'
   ])
 
   const onRecoverableError = vi.fn()
@@ -80,9 +80,6 @@ it('renders the configured sign-in buttons before hydration and keeps the same D
   })
   expect(onRecoverableError).not.toHaveBeenCalled()
   expect(container.querySelector('button')).toBe(buttons[0])
-
-  await act(async () => buttons[4]!.click())
-  expect(container.querySelector('button[aria-label="Continue with Discord"]')).not.toBeNull()
 })
 
 it('retains the build-time provider fallback when the runtime snapshot has no provider setting', async () => {
