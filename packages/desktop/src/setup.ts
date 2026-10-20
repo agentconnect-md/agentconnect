@@ -19,6 +19,16 @@ export interface Check {
   fix?: string
 }
 
+// The service has no AGENTCONNECT_DESKTOP_COMMAND, so the CLI renames its default command in checks it relays.
+export const localizeChecks = (checks: Check[], command = selfCommand()): Check[] => {
+  const rename = (text: string): string => text.replace(/(?<![\w/.-])agentconnect-desktop(?= |$)/g, command)
+  return checks.map((check) => ({
+    ...check,
+    detail: rename(check.detail),
+    ...(check.fix === undefined ? {} : { fix: rename(check.fix) })
+  }))
+}
+
 export interface SetupContext {
   dir: string
   config: DesktopConfig

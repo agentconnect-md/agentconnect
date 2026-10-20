@@ -50,6 +50,22 @@ and propagates the daemon process's exit status or terminating signal.
 The split keeps daemon business logic out of the CLI while allowing the daemon
 command surface to evolve without a matching CLI release.
 
+### 1.1 Login
+
+`agentconnect login` belongs to the CLI because it combines onboarding with
+service or foreground startup. It:
+
+1. performs an auth-only daemon WebSocket exchange;
+2. writes the accepted Control Plane URL and key to local config;
+3. in interactive mode, ensures the selected daemon channel is installed when
+   the root has no active version, then either installs and starts the OS service
+   or enters the foreground `run` shell.
+
+The login probe uses `@agentconnect.md/protocol`,
+`@agentconnect.md/connection`, and `ws`. It does not import daemon config or
+runtime code. The daemon still performs the authoritative full config validation
+when it starts.
+
 ### 1.2 Desktop daemon
 
 `agentconnect desktop <command>` runs the desktop daemon of
@@ -79,22 +95,6 @@ invocation plus `desktop`, so the desktop daemon's help and fix hints name the
 command the user typed. The standalone `agentconnect-desktop` bin remains for
 development. Downloading, versioning and upgrading the desktop daemon are not
 part of this contract yet.
-
-### 1.1 Login
-
-`agentconnect login` belongs to the CLI because it combines onboarding with
-service or foreground startup. It:
-
-1. performs an auth-only daemon WebSocket exchange;
-2. writes the accepted Control Plane URL and key to local config;
-3. in interactive mode, ensures the selected daemon channel is installed when
-   the root has no active version, then either installs and starts the OS service
-   or enters the foreground `run` shell.
-
-The login probe uses `@agentconnect.md/protocol`,
-`@agentconnect.md/connection`, and `ws`. It does not import daemon config or
-runtime code. The daemon still performs the authoritative full config validation
-when it starts.
 
 ## 2. Version store
 

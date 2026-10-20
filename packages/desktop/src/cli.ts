@@ -43,6 +43,7 @@ import {
 import {
   doctor,
   hostApp,
+  localizeChecks,
   MAC_PANES,
   macPermissions,
   open,
@@ -411,7 +412,7 @@ async function daemonDoctor(
     captureMs + 120_000
   ).catch(() => undefined)
   if (!response?.ok) return undefined
-  const checks = (await response.json()) as Check[] & { host?: string }
+  const checks: Check[] & { host?: string } = localizeChecks((await response.json()) as Check[])
   checks.host = ((detail) => /host app (.+)$/.exec(detail)?.[1] ?? (detail || 'the daemon'))(
     checks.find((check) => check.name === 'session')?.detail ?? ''
   )
