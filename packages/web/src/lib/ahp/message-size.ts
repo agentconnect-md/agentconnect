@@ -11,3 +11,9 @@ export function ahpRemainingActionBytes(channel: string, clientSeq: number, acti
   const frame = JSON.stringify({ jsonrpc: '2.0', method: 'dispatchAction', params: { channel, clientSeq, action } })
   return AHP_MAX_MESSAGE_BYTES - new TextEncoder().encode(frame).byteLength
 }
+
+export function ahpImageBudget(remainingBytes: number): number {
+  const remaining = remainingBytes - 256
+  if (remaining < 1024) throw new AhpMessageTooLargeError()
+  return Math.floor(remaining / 4) * 3
+}
