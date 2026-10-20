@@ -298,9 +298,11 @@ returns this URL as `channelUrl`.
 | `computer/policy`     | C→D EVT   | the owner changed the policy                                                                           |
 | `computer/revoke`     | C→D EVT   | the Computer was revoked or deleted, or its owner left the organization; the CP then closes with 4401  |
 
-The close codes follow the daemon. A refused key gets `AUTH_FAILED` and close `4401`, and the desktop treats that as a
-revoke: it stops redialing, forgets the key and keeps a revoked marker. `1011` and `1012` redial with backoff of
-1–30 s with jitter, and a newer connection for the same Computer supersedes the older one with `1012`. The CP stores
+The close codes follow the daemon. A refused key gets an `AUTH_FAILED` reply and close `4401`, and the desktop treats
+that reply, or a `computer/revoke`, as a revoke: it stops redialing, forgets the key and keeps a revoked marker. The
+CP closes with `4401` for nothing else; an unreadable or out-of-order first frame gets `4400`, an auth timeout `1008`,
+and a full handshake gate a retryable `RATE_LIMITED` with `4429`, and the desktop redials after a bare `4401` too.
+`1011` and `1012` redial with backoff of 1–30 s with jitter, and a newer connection for the same Computer supersedes the older one with `1012`. The CP stores
 the heartbeat with a write that applies only while the Computer and the channel's key are both unrevoked, so a
 revoke made elsewhere also ends the channel at its next heartbeat. A clean close marks the Computer `offline`. A live
 status whose `lastSeenAt` is older than three heartbeats is shown as `offline`. The desktop runs `doctor` in a child

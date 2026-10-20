@@ -3267,7 +3267,13 @@ export function buildContainer(
         clock,
         heartbeatSec: config.HEARTBEAT_SEC,
         log: http.log,
-        paths: [config.COMPUTER_WS_PATH, COMPUTER_WS_PUBLIC_PATH]
+        paths: [config.COMPUTER_WS_PATH, COMPUTER_WS_PUBLIC_PATH],
+        config: {
+          DATABASE_POOL_MAX: config.DATABASE_POOL_MAX,
+          ...(config.DAEMON_HANDSHAKE_CONCURRENCY
+            ? { DAEMON_HANDSHAKE_CONCURRENCY: config.DAEMON_HANDSHAKE_CONCURRENCY }
+            : {})
+        }
       }),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
     platforms,

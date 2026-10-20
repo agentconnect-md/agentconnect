@@ -7,6 +7,7 @@ import type { ComputerPrincipal } from '../registry/computerService.js'
 import type { ComputerLiveReport, ComputerRecord } from '../persistence/ports.js'
 import { ComputerConnection, type ComputerConnDeps, type ComputerTransport } from './computer-connection.js'
 import { ComputerChannelRegistry } from './computer-registry.js'
+import { HandshakeGate } from './handshake-gate.js'
 
 const CID = ComputerId('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
 const T0 = 1_760_000_100_000
@@ -39,7 +40,14 @@ class FakeTransport implements ComputerTransport {
   }
 }
 
-function setup(over: { authenticate?: ComputerPrincipal | null; live?: () => boolean } = {}) {
+function setup(
+  over: {
+    authenticate?: ComputerPrincipal | null
+    authenticateImpl?: () => Promise<ComputerPrincipal | null>
+    live?: () => boolean
+    handshakes?: HandshakeGate
+  } = {}
+) {
   const clock = new FakeClock(T0)
   const transport = new FakeTransport()
   const registry = new ComputerChannelRegistry()
@@ -56,12 +64,17 @@ function setup(over: { authenticate?: ComputerPrincipal | null; live?: () => boo
     markOffline: vi.fn(async () => {})
   }
   const deps: ComputerConnDeps = {
-    computers: { authenticate: vi.fn(async () => (over.authenticate === undefined ? principal : over.authenticate)) },
+    computers: {
+      authenticate: vi.fn(
+        over.authenticateImpl ?? (async () => (over.authenticate === undefined ? principal : over.authenticate))
+      )
+    },
     repo,
     keys: new ComputerChannelKeys('unit-test-pepper-0123456789abcdefghij', 300),
     registry,
     clock,
-    heartbeatSec: 15
+    heartbeatSec: 15,
+    ...(over.handshakes ? { handshakes: over.handshakes } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -104,11 +117,53 @@ describe('ComputerConnection', () => {
     first.transport.deliver(beat())
     await settle()
     expect(first.transport.ofType('error')[0]).toMatchObject({ payload: { code: 'PROTOCOL_STATE' } })
-    expect(first.transport.closed?.code).toBe(4401)
+    expect(first.transport.closed?.code).toBe(4400)
 
     const idle = setup()
     idle.clock.advance(10_000)
-    expect(idle.transport.closed?.code).toBe(4401)
+    expect(idle.transport.closed?.code).toBe(1008)
+  })
+
+  it('never answers an unreadable first frame with 4401', async () => {
+    const { transport } = setup()
+    const extra = auth() as unknown as { payload: Record<string, unknown> }
+    extra.payload.machineId = 'from-a-newer-desktop'
+    transport.deliver(extra as unknown as ComputerCpFrame)
+    await settle()
+    expect(transport.ofType('error')[0]).toMatchObject({ payload: { code: 'BAD_PAYLOAD' } })
+    expect(transport.closed?.code).toBe(4400)
+  })
+
+  it('lets an auth still in flight finish past the auth timeout instead of closing it as refused', async () => {
+    let resolve: (p: ComputerPrincipal) => void = () => {}
+    const pending = new Promise<ComputerPrincipal>((r) => (resolve = r))
+    const { transport, clock, registry, conn } = setup({ authenticateImpl: () => pending })
+    transport.deliver(auth())
+    await settle()
+    clock.advance(30_000)
+    expect(transport.closed).toBeUndefined()
+    resolve(principal)
+    await settle()
+    expect(transport.ofType('computer/auth/ok')).toHaveLength(1)
+    expect(registry.get(CID)).toBe(conn)
+  })
+
+  it('refuses auth with a retryable RATE_LIMITED, not 4401, while the handshake gate is full', async () => {
+    const gate = new HandshakeGate(1)
+    const held = gate.tryAcquire()
+    const { transport, repo } = setup({ handshakes: gate })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('error')[0]).toMatchObject({ payload: { code: 'RATE_LIMITED', retryable: true } })
+    expect(transport.closed?.code).toBe(4429)
+    expect(repo.get).not.toHaveBeenCalled()
+    held?.()
+
+    const next = setup({ handshakes: gate })
+    next.transport.deliver(auth())
+    await settle()
+    expect(next.transport.ofType('computer/auth/ok')).toHaveLength(1)
+    expect(gate.size).toBe(0)
   })
 
   it('stores heartbeat reports and renews the credential once its window rolls over', async () => {

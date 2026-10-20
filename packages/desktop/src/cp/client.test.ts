@@ -198,6 +198,19 @@ describe('ComputerCpClient', () => {
     expect(h.client.state).toBe('REVOKED')
   })
 
+  it('redials after a bare close 4401 that no refusal or revoke preceded', async () => {
+    const h = harness()
+    h.client.start()
+    await settle()
+    h.transports[0]!.drop(4401)
+    await settle()
+    expect(h.revoked).toEqual([])
+    expect(h.client.state).toBe('DEGRADED')
+    h.clock.advance(1000)
+    await settle()
+    expect(h.transports).toHaveLength(2)
+  })
+
   it('redials with backoff after a transient close', async () => {
     const h = harness()
     h.client.start()

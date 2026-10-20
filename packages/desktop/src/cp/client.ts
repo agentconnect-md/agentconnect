@@ -20,8 +20,6 @@ import {
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './authority.js'
 
-/** The close code for a refused or revoked key: never redial with it. */
-const AUTH_FAILED_CLOSE = 4401
 const AUTH_TIMEOUT_MS = 15_000
 
 /** What one heartbeat reports; the facts are sent only when they changed or right after auth. */
@@ -128,7 +126,7 @@ export class ComputerCpClient {
       this.ready(reply.payload)
     } catch (error) {
       if (this.transport !== transport) return
-      // A refused key arrives as AUTH_FAILED followed by close 4401, which onClose handles.
+      // A refused key arrives as an AUTH_FAILED reply, which onText already turned into a revoke.
       if (error instanceof WireError && error.code === 'AUTH_FAILED') return
       this.deps.log(`computer channel: auth failed: ${(error as Error).message}`)
       transport.close(1000, 'auth failed')
@@ -157,6 +155,10 @@ export class ComputerCpClient {
       return
     }
     const frame = decoded.frame
+    // Only an explicit refusal or revoke forgets the key; a bare close 4401 is redialed like any other.
+    if (frame.type === 'error' && frame.payload.code === 'AUTH_FAILED' && this.state === 'AUTHENTICATING') {
+      this.revoked('key refused by the Control Plane')
+    }
     if (frame.corr && this.correlator.settle(frame)) return
     switch (frame.type) {
       case 'computer/credential':
@@ -189,7 +191,6 @@ export class ComputerCpClient {
     this.stopHeartbeat()
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
     if (this.state === 'STOPPED' || this.state === 'REVOKED') return
-    if (code === AUTH_FAILED_CLOSE) return this.revoked('key refused by the Control Plane')
     this.deps.log(`computer channel: closed (${code}${reason ? ` ${reason}` : ''}); reconnecting`)
     this.scheduleReconnect()
   }

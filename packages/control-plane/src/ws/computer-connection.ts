@@ -1,5 +1,6 @@
 // The per-socket FSM of a desktop daemon's Computer channel (computer-use.md §3.6, §8.2): auth, heartbeat, renewal, revoke.
 import {
+  CloseCode,
   buildComputerCpFrame,
   decodeComputerCpFrame,
   type COMPUTER_CP_SCHEMAS,
@@ -18,6 +19,7 @@ import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerPrincipal, ComputerService } from '../registry/computerService.js'
 import type { ComputerChannelKeys } from '../registry/computerChannelKeys.js'
 import type { ComputerChannel, ComputerChannelRegistry } from './computer-registry.js'
+import type { HandshakeGate } from './handshake-gate.js'
 
 /** The accept-side transport the FSM drives; production wraps a live socket, tests an in-memory pair. */
 export interface ComputerTransport {
@@ -36,12 +38,17 @@ export interface ComputerConnDeps {
   heartbeatSec: number
   /** A socket that has not authenticated by then is closed. */
   authTimeoutMs?: number
+  /** Caps concurrent auth database work; a full gate answers a retryable RATE_LIMITED. */
+  handshakes?: HandshakeGate
   log?: { warn(obj: object, msg: string): void }
 }
 
 type State = 'AUTHENTICATING' | 'READY' | 'CLOSED'
 
-const AUTH_FAILED = 4401
+// 4401 means the key was refused or revoked and the desktop forgets it; every other close is retried.
+const AUTH_FAILED = CloseCode.AUTH_FAILED
+const BAD_HANDSHAKE = CloseCode.BAD_SUBPROTOCOL
+const AUTH_TIMEOUT = 1008
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000
 
 export class ComputerConnection implements ComputerChannel {
@@ -62,11 +69,13 @@ export class ComputerConnection implements ComputerChannel {
 
   start(): void {
     this.transport.onMessage((text) => {
-      this.queue = this.queue.then(() => this.onText(text)).catch(() => this.close(1011, 'SERVER_INTERNAL'))
+      this.queue = this.queue
+        .then(() => this.onText(text))
+        .catch(() => this.close(CloseCode.SERVER_INTERNAL, 'SERVER_INTERNAL'))
     })
     this.transport.onClose(() => void this.onClose())
     this.authTimer = this.deps.clock.setTimeout(() => {
-      if (this.state === 'AUTHENTICATING') this.close(AUTH_FAILED, 'auth timeout')
+      if (this.state === 'AUTHENTICATING') this.close(AUTH_TIMEOUT, 'auth timeout')
     }, this.deps.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS)
   }
 
@@ -78,17 +87,29 @@ export class ComputerConnection implements ComputerChannel {
         decoded.msg === 'FRAME_TOO_LARGE' || decoded.msg === 'UNKNOWN_FRAME' ? decoded.msg : 'BAD_PAYLOAD'
       // An unreadable first frame cannot authenticate; anything later is answered and the link stays.
       this.sendError(decoded.id, code, decoded.msg)
-      if (this.state === 'AUTHENTICATING') this.close(AUTH_FAILED, 'auth failed')
+      if (this.state === 'AUTHENTICATING') this.close(BAD_HANDSHAKE, 'bad auth frame')
       return
     }
     const frame = decoded.frame
     if (this.state === 'AUTHENTICATING') {
       if (frame.type !== 'computer/auth') {
         this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal before computer/auth`)
-        this.close(AUTH_FAILED, 'auth failed')
+        this.close(BAD_HANDSHAKE, 'bad auth frame')
         return
       }
-      return this.handleAuth(frame, frame.payload)
+      const release = this.deps.handshakes ? this.deps.handshakes.tryAcquire() : () => {}
+      if (!release) {
+        this.sendError(frame.id, 'RATE_LIMITED', 'computer handshake limit reached; retry shortly', true)
+        this.close(CloseCode.RATE_LIMITED, 'handshake limit reached')
+        return
+      }
+      // The auth is in flight now; a slow database must not turn it into a timeout close.
+      this.clearAuthTimer()
+      try {
+        return await this.handleAuth(frame, frame.payload)
+      } finally {
+        release()
+      }
     }
     if (frame.type === 'computer/heartbeat') return this.handleHeartbeat(frame.payload)
     this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`)
@@ -114,7 +135,6 @@ export class ComputerConnection implements ComputerChannel {
       this.close(AUTH_FAILED, 'auth failed')
       return
     }
-    this.clearAuthTimer()
     this.principal = principal
     this.computerId = principal.computerId
     this.orgId = principal.orgId
@@ -208,7 +228,7 @@ export class ComputerConnection implements ComputerChannel {
     this.transport.send(JSON.stringify(buildComputerCpFrame(type, payload)))
   }
 
-  private sendError(corr: string, code: ErrorCode, message: string): void {
-    this.transport.send(JSON.stringify(buildComputerCpFrame('error', { code, message, retryable: false }, { corr })))
+  private sendError(corr: string, code: ErrorCode, message: string, retryable = false): void {
+    this.transport.send(JSON.stringify(buildComputerCpFrame('error', { code, message, retryable }, { corr })))
   }
 }

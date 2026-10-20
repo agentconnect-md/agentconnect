@@ -181,7 +181,7 @@ describe('Computer channel', () => {
 
     const early = await Client.dial(`${base}/api/v1/computers/ws`)
     early.send(buildComputerCpFrame('computer/heartbeat', { status: 'online' }))
-    expect((await early.closed).code).toBe(4401)
+    expect((await early.closed).code).toBe(4400)
   })
 
   it('refuses a daemon key on the Computer channel', async () => {
