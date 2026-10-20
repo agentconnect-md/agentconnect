@@ -374,7 +374,7 @@ async function main(): Promise<void> {
     daemon: (daemonId) => held.rdServer?.get(daemonId)
   })
   // Desktop daemons dial in beside the daemons, and agent daemons' MCP for them is forwarded (computer-use.md §3.7).
-  createComputerRelay(server, {
+  const computerRelay = createComputerRelay(server, {
     verify: (token, computerId) => client.verifyComputer(token, computerId),
     relayId: () => client.relayId,
     log
@@ -464,10 +464,10 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     log.info(`relay: ${sig} — shutting down`)
-    // Drop daemon + browser sockets (1012 = non-fatal → they reconnect elsewhere),
-    // stop the CP client, then close the http server.
+    // Drop daemon, browser and desktop sockets with 1012 (they reconnect elsewhere), then stop the CP client and server.
     for (const ws of rdServer.wss.clients) ws.close(1012, 'relay restarting')
     for (const ws of browserServer.clients) ws.close(1012, 'relay restarting')
+    for (const ws of computerRelay.wss.clients) ws.close(1012, 'relay restarting')
     chatRoute.closeAll('the relay is restarting')
     ahpServer.close()
     await held.relayIngress?.stopAll()
