@@ -695,6 +695,7 @@ import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { sessionMcpServersScope } from './runtimes/session-mcp-servers.js'
+import { keepsSessionToolDefinitions } from './runtimes/session-tool-definitions.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
@@ -4795,6 +4796,7 @@ export class Daemon {
         ...Object.fromEntries((this.runtimes[agent.runtime]?.env ?? []).map((entry) => [entry.name, entry.value]))
       }),
       sessionSdkQuiescent: (agentId, key, id) => this.sessionSdkQuiescent(this.sessionOwnerKey(agentId, key), id),
+      keepsSessionToolDefinitions: (runtimeId) => keepsSessionToolDefinitions(runtimeId, this.runtimes[runtimeId]),
       // Compare pure tool snapshots each turn; register tokens and resolve executables only on attachment.
       toolContextFor: ({
         agent,
@@ -4844,6 +4846,7 @@ export class Daemon {
         return {
           fingerprint: toolContextFingerprint(tools, configuredServers, instructions),
           instructions,
+          tools,
           mcpServers: () => {
             for (const warning of warnings) this.log.warn(warning)
             const servers: McpServer[] = []
@@ -15943,6 +15946,7 @@ export class Daemon {
         : await this.store.appendInbox(row)
       if (!inserted && !options.adoptExisting) return 'existing'
       entry.inboxId = id
+      if (inserted && options.receiptId) entry.receiptId = options.receiptId
       this.liveInboxIds.add(id)
       return inserted ? 'inserted' : 'adopted'
     } catch (err) {
@@ -16206,6 +16210,18 @@ export class Daemon {
     }
   }
 
+  /** A never-run admission gives its receipt back so a retry of the same delivery admits fresh. */
+  private async releaseReceipt(entry: QueueEntry): Promise<void> {
+    const receiptId = entry.receiptId
+    if (!receiptId) return
+    entry.receiptId = undefined
+    try {
+      await this.store.removeInbox(receiptId)
+    } catch (err) {
+      this.log.warn(`durable inbox: receipt release failed for ${receiptId}: ${(err as Error).message}`)
+    }
+  }
+
   /** A queued parent report dropped without a handoff never arrives, so the child's link must say it failed. */
   private async noteDroppedParentReport(key: string, entry: QueueEntry): Promise<void> {
     if (!entry.msg.parentReport || entry.inboxHandedOff) return
@@ -16403,6 +16419,8 @@ export class Daemon {
       /** Steer into the live turn or refuse `busy` — never queue. For a caller that keeps its own
        *  queue (the console composer) and must learn the verdict from the admission ACK. */
       steerOnly?: boolean
+      /** Start a new turn or refuse `busy` while the session gate is occupied — never steer, never queue. */
+      startOnly?: boolean
       /** Recovery of a row whose loop-guard admission was already counted. */
       replay?: boolean
       /** A startup replay may wait for an interrupt safety drain instead of being dropped. */
@@ -16692,6 +16710,12 @@ export class Daemon {
           // is registered synchronously here, so a later delivery can never place itself first
           // nor go missing from the depth the cap is measured against.
           await this.admitInArrivalOrder(key, async () => {
+            // A start-only delivery names its own turn, so an occupied gate refuses it before anything durable exists.
+            if (opts?.startOnly) {
+              await settleAdmission({ accepted: false, reason: 'busy' })
+              resolve(null)
+              return
+            }
             // This link may have waited on a peer's placement, so read the queue it actually
             // admits into rather than the one this delivery arrived at.
             batchLeader = this.reviewBatchLeader(entry)
@@ -16767,6 +16791,7 @@ export class Daemon {
             // message and re-sends it when the turn ends. The durable row must not outlive it.
             if (opts?.steerOnly) {
               await this.removeInbox(entry).catch(() => undefined)
+              await this.releaseReceipt(entry)
               await settleAdmission({ accepted: false, reason: 'busy' })
               resolve(null)
               return
@@ -17271,6 +17296,7 @@ export class Daemon {
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
+            await this.releaseReceipt(entry)
             entry.resolve(null)
           }
         } catch (err) {
@@ -17534,7 +17560,8 @@ export class Daemon {
         sessionId,
         turnModel,
         settlement,
-        ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {})
+        ...(handled.standingDigest !== undefined ? { standingDigest: handled.standingDigest } : {}),
+        ...(handled.toolDigests !== undefined ? { toolDigests: handled.toolDigests } : {})
       })
       if (outcome.kind === 'cancelled') return null
       if (!p.signals.runtimeReportedModel) turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
@@ -18988,6 +19015,8 @@ export class Daemon {
       providerCheckpoint: string | undefined
       /** The digest of the standing context the first prompt carries inline (SessionManager.standingDelivered). */
       standingDigest?: string
+      /** The tool digests the first prompt brings the model up to (SessionManager.toolsDelivered). */
+      toolDigests?: string
     }
   ): Promise<TurnPromptOutcome> {
     const { entry, key, plan, agent, evaluation } = run
@@ -19000,7 +19029,7 @@ export class Daemon {
     let generation = 0
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
-    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest } = turn
+    let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest, toolDigests } = turn
     const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
 
     while (true) {
@@ -19018,6 +19047,10 @@ export class Daemon {
       if (standingDigest !== undefined) {
         await this.sessions.standingDelivered(key, standingDigest)
         standingDigest = undefined
+      }
+      if (toolDigests !== undefined) {
+        await this.sessions.toolsDelivered(key, toolDigests)
+        toolDigests = undefined
       }
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.

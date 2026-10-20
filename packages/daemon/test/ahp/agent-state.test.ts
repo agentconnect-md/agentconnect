@@ -37,20 +37,33 @@ describe('AHP logical agent state', () => {
     expect(state.summary(binding.sessionUri)?.status).toBe(SessionStatus.Idle)
   })
 
-  it('fails closed before persisting or journaling unrepresentable active output', async () => {
+  it('still journals and delivers active output too large for one snapshot, skipping its checkpoint', async () => {
     let saved: ChatState | undefined
-    const { state, journal } = await fixture({
-      load: async () => undefined,
-      save: async (_id, value) => {
-        saved = value
-      },
-      running: () => true
+    const warnings: string[] = []
+    let high = 0
+    const journal = await AhpActionJournal.create({
+      reserve: async (size) => ({ start: high + 1, end: (high += size) })
     })
+    const state = new AhpAgentState(
+      { provider: 'agent', displayName: 'Agent', description: '', models: [] },
+      journal,
+      () => 2000,
+      {
+        load: async () => undefined,
+        save: async (_id, value) => {
+          saved = value
+        },
+        running: () => true
+      },
+      (message) => warnings.push(message)
+    )
     await state.add(binding)
     await state.accept({ ...event, kind: 'started', text: 'Hello', origin: 'user' })
-    const before = journal.currentSequence
-    await expect(state.accept({ ...event, kind: 'text', text: 'x'.repeat(64 * 1024) })).rejects.toThrow('wire capacity')
-    expect(journal.currentSequence).toBe(before)
+    await state.accept({ ...event, kind: 'text', text: 'x'.repeat(80 * 1024) })
+    await state.accept({ ...event, kind: 'finished', outcome: 'complete' })
+    expect(warnings.some((message) => message.includes('wire capacity'))).toBe(true)
+    const types = journal.replay(1, new Set([chat]))!.map((envelope) => envelope.action.type)
+    expect(types).toContain(ActionType.ChatTurnComplete)
     expect(saved?.activeTurn?.responseParts).toEqual([])
   })
 
