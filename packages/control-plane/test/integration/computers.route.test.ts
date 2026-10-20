@@ -5,6 +5,7 @@ import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
+import { ComputerId, OrgId } from '../../src/domain/ids.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
@@ -140,6 +141,46 @@ describe('registration exchange', () => {
     expect(await prisma.computer.count()).toBe(0)
   })
 
+  it('refuses a token whose registrant was demoted to viewer after minting it', async () => {
+    const dana = await makeUser('cmp-demoted', 'collaborator')
+    const { token } = await issueToken(appAs(dana))
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: dana } },
+      data: { role: 'viewer' }
+    })
+    const res = await appAs().app.inject({ method: 'POST', url: REGISTER, payload: { token, ...profile } })
+    expect(res.statusCode).toBe(401)
+    expect(await prisma.computer.count()).toBe(0)
+  })
+
+  it('removing a member deletes their unspent tokens, so re-adding them does not revive one', async () => {
+    const dana = await makeUser('cmp-readded', 'collaborator')
+    const { token } = await issueToken(appAs(dana))
+    expect((await appAs().app.inject({ method: 'DELETE', url: `${ORG}/members/${dana}` })).statusCode).toBe(204)
+    expect(await prisma.computerRegistration.count({ where: { createdByUserId: dana } })).toBe(0)
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'cmp-readded@acme.dev', 'collaborator')
+    const res = await appAs().app.inject({ method: 'POST', url: REGISTER, payload: { token, ...profile } })
+    expect(res.statusCode).toBe(401)
+    expect(await prisma.computer.count()).toBe(0)
+  })
+
+  it('reaps registration rows a grace period past their expiry, spent or not', async () => {
+    const app = appAs()
+    const stale = await issueToken(app)
+    const spent = await issueToken(app)
+    await app.app.inject({ method: 'POST', url: REGISTER, payload: { token: spent.token, ...profile } })
+    const live = await issueToken(app)
+    const old = new Date(Date.now() - 10 * 86_400_000)
+    await prisma.computerRegistration.updateMany({
+      where: { id: { in: [stale.id, spent.id] } },
+      data: { expiresAt: old }
+    })
+    const reaped = await app.deps.repos.computer.reapRegistrations(new Date(Date.now() - 7 * 86_400_000))
+    expect(reaped).toBe(2)
+    expect((await prisma.computerRegistration.findMany()).map((r) => r.id)).toEqual([live.id])
+    expect(await prisma.computer.count()).toBe(1)
+  })
+
   it('cannot claim to be a managed computer, and validates the reported profile', async () => {
     const app = appAs()
     const { token } = await issueToken(app)
@@ -247,6 +288,14 @@ describe('revoke and delete', () => {
     // A revoked Computer's policy is frozen; delete is how it leaves.
     const policy = await app.app.inject({ method: 'PUT', url: `${ORG}/computers/${computerId}/policy`, payload: {} })
     expect(policy.statusCode).toBe(409)
+    // The write itself is fenced too, for a revoke that lands after the route's read.
+    const late = await app.deps.computers.setPolicy(OrgId(DEFAULT_ORG_ID), ComputerId(computerId), {
+      ...res.json().policy,
+      agentMode: 'view'
+    })
+    expect(late).toBeNull()
+    const frozen = await prisma.computer.findUniqueOrThrow({ where: { id: computerId } })
+    expect((frozen.policy as { agentMode: string }).agentMode).toBe('control')
     const audit = await prisma.auditEvent.findMany({ where: { kind: 'computer_change' } })
     expect(audit.map((a) => (a.details as { action: string }).action)).toEqual(
       expect.arrayContaining(['registration_create', 'register', 'revoke'])
@@ -324,13 +373,45 @@ describe('visibility and policy', () => {
         .statusCode
     ).toBe(403)
 
-    // Selected must keep a member.
-    const empty = await appAs(dana).app.inject({
+    // The registrant always stays in a Selected audience, so a non-member list still keeps them.
+    const stale = await appAs(dana).app.inject({
       method: 'PUT',
       url: `${ORG}/computers/${computerId}/sharing`,
       payload: { visibility: 'restricted', sharedWith: ['someone-else'] }
     })
-    expect(empty.statusCode).toBe(409)
+    expect(stale.statusCode).toBe(200)
+    expect(stale.json().sharedWith).toEqual([dana])
+  })
+
+  it('a collaborator or org owner cannot drop the registrant from a Selected audience', async () => {
+    const dana = await makeUser('cmp-keep-dana', 'collaborator')
+    const erin = await makeUser('cmp-keep-erin', 'collaborator')
+    const { computerId } = await register(appAs(dana))
+    const danaApp = appAs(dana)
+    await danaApp.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [dana, erin] }
+    })
+    for (const [actor, sharedWith] of [
+      [erin, [erin]],
+      [DEFAULT_OWNER_ID, [DEFAULT_OWNER_ID]]
+    ] as const) {
+      const res = await appAs(actor).app.inject({
+        method: 'PUT',
+        url: `${ORG}/computers/${computerId}/sharing`,
+        payload: { visibility: 'restricted', sharedWith }
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().sharedWith).toEqual([dana, ...sharedWith])
+    }
+    expect((await danaApp.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })).statusCode).toBe(200)
+    const policy = await danaApp.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/policy`,
+      payload: {}
+    })
+    expect(policy.statusCode).toBe(200)
   })
 
   it('the registrant sets the policy; agents must be visible and the owner stays a member', async () => {

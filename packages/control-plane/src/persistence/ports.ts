@@ -638,7 +638,8 @@ export interface ComputerRepo {
   /** Internal read for the Computer channel's key verification, where the org comes from the key row. */
   getUnscoped(id: ComputerId): Promise<ComputerRecord | null>
   list(orgId: OrgId, viewer?: ViewCtx): Promise<ComputerRecord[]>
-  setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord>
+  /** Replace the policy; null when the Computer is missing or revoked. */
+  setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord | null>
   setSharing(
     orgId: OrgId,
     id: ComputerId,
@@ -652,6 +653,8 @@ export interface ComputerRepo {
     reason: string,
     at: Date
   ): Promise<{ computer: ComputerRecord; revokedKeyIds: string[] }>
+  /** Delete registration rows that expired before the cutoff; returns how many. */
+  reapRegistrations(expiredBefore: Date): Promise<number>
   /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */
   delete(orgId: OrgId, id: ComputerId): Promise<void>
 }

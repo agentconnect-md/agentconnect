@@ -28,6 +28,7 @@ import { Tag } from '../plugins/openapi.js'
 export const COMPUTER_REGISTER_PATH = '/computers/register'
 
 const notFound = { error: 'Not Found', statusCode: 404, message: 'computer not found' }
+const revokedConflict = { error: 'Conflict', statusCode: 409, message: 'computer is revoked' }
 
 /** Who may change who uses a Computer: the registrant of their own desktop, any editor of a managed one. */
 function canEditPolicy(c: ComputerRecord, ctx: ViewCtx): boolean {
@@ -164,9 +165,7 @@ export function computerRoutes(deps: HttpDeps) {
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s owner can change its policy' })
         }
-        if (c.status === 'revoked') {
-          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'computer is revoked' })
-        }
+        if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
         // A referenced agent must be one the caller can see; an unknown or invisible one is refused alike.
         const wanted = [...new Set(req.body.allowedAgents)]
         if (wanted.length > 0) {
@@ -181,6 +180,7 @@ export function computerRoutes(deps: HttpDeps) {
         const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.allowedMembers)
         const policy = withOwnerMember({ ...req.body, allowedAgents: wanted, allowedMembers: members }, c.ownerUserId)
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
+        if (!updated) return reply.code(409).send(revokedConflict)
         return toDto(updated, ctxOf(req))
       }
     )
@@ -192,7 +192,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer sharing',
           description:
-            'Sets who can see a Computer in the console (Everyone vs Selected). Requires edit rights; Selected must retain at least one current organization member. Sharing grants no agent access: the policy decides that.',
+            'Sets who can see a Computer in the console (Everyone vs Selected). Requires edit rights; Selected must retain at least one current organization member, and a self-hosted desktop’s registrant always stays in it. Sharing grants no agent access: the policy decides that.',
           operationId: 'setComputerSharing',
           params: IdParam,
           body: SetSharingBody,

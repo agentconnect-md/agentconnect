@@ -303,6 +303,8 @@ async function removeMembershipTx(
 }
 
 async function revokeOwnedComputersTx(tx: Prisma.TransactionClient, orgId: string, ownerUserId: string): Promise<void> {
+  // Unspent tokens leave too, so a re-added member cannot redeem one minted before the removal.
+  await tx.computerRegistration.deleteMany({ where: { orgId, createdByUserId: ownerUserId, consumedAt: null } })
   const owned = await tx.computer.findMany({ where: { orgId, ownerUserId }, select: { id: true } })
   if (owned.length === 0) return
   const at = new Date()

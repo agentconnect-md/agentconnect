@@ -114,6 +114,12 @@ export class PgComputerRepo implements ComputerRepo {
           actorUserId: owner,
           sharedWith: [owner]
         })
+        // The role is rechecked at the exchange: a registrant demoted to viewer since minting may no longer register.
+        const role = await tx.membership.findUnique({
+          where: { orgId_userId: { orgId: registration.orgId, userId: owner } },
+          select: { role: true }
+        })
+        if (!role || role.role === 'viewer') throw new OrgMembershipMissing()
         const p = input.profile
         const computer = await tx.computer.create({
           data: {
@@ -174,9 +180,14 @@ export class PgComputerRepo implements ComputerRepo {
     return rows.map(toRecord)
   }
 
-  async setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord> {
-    const row = await this.db.computer.update({ where: { id, orgId }, data: { policy: policyJson(policy) } })
-    return toRecord(row)
+  async setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord | null> {
+    // Conditional on status, so a revoke that commits after the route's read still wins.
+    const written = await this.db.computer.updateMany({
+      where: { id, orgId, status: { not: 'revoked' } },
+      data: { policy: policyJson(policy) }
+    })
+    if (written.count === 0) return null
+    return this.get(orgId, id)
   }
 
   async setSharing(
@@ -187,12 +198,20 @@ export class PgComputerRepo implements ComputerRepo {
   ): Promise<ComputerRecord> {
     return withAmbientTx(this.db, async (tx) => {
       // Org fence on the opening read: a cross-org id throws the same P2025 as a missing row.
-      await tx.computer.findUniqueOrThrow({ where: { id, orgId }, select: { id: true } })
+      const existing = await tx.computer.findUniqueOrThrow({
+        where: { id, orgId },
+        select: { kind: true, ownerUserId: true }
+      })
+      // A self-hosted desktop's registrant stays in a Selected audience while still a member (the lock drops a departed one).
+      const requested =
+        sharing.visibility === 'restricted' && existing.kind === 'self_hosted'
+          ? [existing.ownerUserId, ...sharing.sharedWith]
+          : sharing.sharedWith
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId,
         visibility: sharing.visibility,
         actorUserId: byUserId,
-        sharedWith: sharing.sharedWith
+        sharedWith: requested
       })
       const row = await tx.computer.update({
         where: { id, orgId },
@@ -226,6 +245,12 @@ export class PgComputerRepo implements ComputerRepo {
           : await tx.computer.update({ where: { id, orgId }, data: { status: 'revoked', revokedAt: at } })
       return { computer: toRecord(row), revokedKeyIds: live.map((k) => k.id) }
     })
+  }
+
+  async reapRegistrations(expiredBefore: Date): Promise<number> {
+    // A token is consumed before it expires, so its expiry bounds both the spent and the unspent rows.
+    const { count } = await this.db.computerRegistration.deleteMany({ where: { expiresAt: { lt: expiredBefore } } })
+    return count
   }
 
   async delete(orgId: OrgId, id: ComputerId): Promise<void> {

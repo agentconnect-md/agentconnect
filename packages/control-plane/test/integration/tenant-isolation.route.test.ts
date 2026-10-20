@@ -1489,7 +1489,7 @@ describe('tenant isolation — Computer over the REST surface and its repository
     const repo = new PgComputerRepo(prisma)
     expect(await repo.get(CALLER_ORG, id)).toBeNull()
     expect(await repo.list(CALLER_ORG)).toEqual([])
-    await expect(repo.setPolicy(CALLER_ORG, id, defaultComputerPolicy(DEFAULT_OWNER_ID))).rejects.toThrow()
+    expect(await repo.setPolicy(CALLER_ORG, id, defaultComputerPolicy(DEFAULT_OWNER_ID))).toBeNull()
     await expect(repo.setSharing(CALLER_ORG, id, { visibility: 'restricted', sharedWith: [] })).rejects.toThrow()
     await expect(repo.revoke(CALLER_ORG, id, 'hijack', new Date())).rejects.toThrow()
     await expect(repo.delete(CALLER_ORG, id)).rejects.toThrow()

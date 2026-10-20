@@ -115,8 +115,15 @@ export class ComputerService {
     return { computerId: row.computerId, orgId: row.orgId, apiKeyId: row.id }
   }
 
-  async setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy, actorUserId?: string): Promise<ComputerRecord> {
+  /** Null when the Computer was revoked (or removed) before the write landed. */
+  async setPolicy(
+    orgId: OrgId,
+    id: ComputerId,
+    policy: ComputerPolicy,
+    actorUserId?: string
+  ): Promise<ComputerRecord | null> {
     const computer = await this.computers.setPolicy(orgId, id, policy)
+    if (!computer) return null
     this.record(orgId, actorUserId, 'policy_update', {
       computerId: id,
       allowedAgents: policy.allowedAgents,

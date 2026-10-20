@@ -205,6 +205,11 @@ import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { OAuthReaper, OAUTH_REAP_GRACE_MS, OAUTH_REAP_INTERVAL_MS } from './orchestrator/oauthReaper.js'
+import {
+  ComputerRegistrationReaper,
+  COMPUTER_REGISTRATION_REAP_GRACE_MS,
+  COMPUTER_REGISTRATION_REAP_INTERVAL_MS
+} from './orchestrator/computerRegistrationReaper.js'
 import { AgentMemoryStagingSweeper } from './orchestrator/agentMemoryStagingSweeper.js'
 import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
@@ -2225,6 +2230,14 @@ export function buildContainer(
     http.log
   )
 
+  // Deletes computer registration tokens a week past their expiry (computer-use.md §3.6).
+  const computerRegistrationReaper = new ComputerRegistrationReaper(
+    repos.computer,
+    clock,
+    { intervalMs: COMPUTER_REGISTRATION_REAP_INTERVAL_MS, graceMs: COMPUTER_REGISTRATION_REAP_GRACE_MS },
+    http.log
+  )
+
   // Same reconciler, hook runs: closes `running` hook_run rows whose completion
   // report was lost (daemon offline at turn end / relay report dropped). The
   // two-report lifecycle matches crons exactly, so the class is reused verbatim.
@@ -3243,6 +3256,7 @@ export function buildContainer(
       cronRunReaper.start()
       hookRunReaper.start()
       oauthReaper.start()
+      computerRegistrationReaper.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
@@ -3272,6 +3286,7 @@ export function buildContainer(
       cronRunReaper.stop()
       hookRunReaper.stop()
       oauthReaper.stop()
+      computerRegistrationReaper.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()
