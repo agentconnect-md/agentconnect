@@ -354,7 +354,11 @@ daemons' `/cr/computers/<id>/mcp` HTTP requests to them as `cr/http` frames,
 buffered and unparsed, never stored. The desktop's `cr/hello` token is checked
 with `rc/verify(kind = 'computer-relay-token')`; the per-session token on each
 request is checked by the desktop itself
-([computer-use.md §3.7](computer-use.md)).
+([computer-use.md §3.7](computer-use.md)). The console's embedded viewer
+calls `/cr/computers/<id>/view/api/*` from the browser the same way, with CORS
+and a viewer token the desktop checks; only its signaling, control and
+screenshot frames cross the relay, and its WebRTC media never does
+([computer-use.md §7.2](computer-use.md)).
 
 The same authenticated data plane also carries cross-daemon collaboration
 frames. Their authorization rules are defined in

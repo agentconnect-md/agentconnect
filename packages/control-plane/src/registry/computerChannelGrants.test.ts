@@ -161,3 +161,62 @@ describe('ComputerChannelGrants', () => {
     expect(await revoked.grants.verifyRelayToken(sign({}), CID)).toMatchObject({ ok: false })
   })
 })
+
+describe('ComputerChannelGrants.grantViewer', () => {
+  const turn = { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 }
+  const viewer = (over: Partial<ComputerRecord> = {}, opts: { relays?: string[]; withTurn?: boolean } = {}) => {
+    const { repo, keys, clock } = setup(over)
+    const grants = new ComputerChannelGrants(repo, keys, clock, {
+      staleAfterMs: 45_000,
+      relays: async () => [relay],
+      viewerRelays: async () => opts.relays ?? ['https://relay.example.com', 'https://relay.example.com', relay.url],
+      ...(opts.withTurn ? { turn } : {})
+    })
+    return { grants, keys }
+  }
+
+  it('signs a view token with the member and mode, names each relay once, and verifies on the desktop', async () => {
+    const { grants, keys } = viewer({}, { withTurn: true })
+    const result = await grants.grantViewer(ORG, CID, { userId: 'user_owner', mode: 'control' })
+    if (!result.granted) throw new Error('refused')
+    expect(result.relays).toEqual(['https://relay.example.com', relay.url])
+    expect(result.mode).toBe('control')
+    const held = keys.current(CID, 'key_1', T0)
+    const claims = verifyComputerChannelToken(result.token, {
+      aud: 'view',
+      computerId: CID,
+      key: (kid) => (kid === held.keyId ? Buffer.from(held.key, 'base64url') : undefined),
+      now: T0 + 1000
+    })
+    expect(claims).toMatchObject({ aud: 'view', usr: 'user_owner', mode: 'control' })
+    // The desktop and the browser get their own TURN usernames from the same secret.
+    expect(claims?.ice?.[0]?.username).toBe(`${T0 / 1000 + 3600}:computer-${CID}`)
+    expect(result.iceServers).toEqual([
+      expect.objectContaining({ urls: turn.urls, username: `${T0 / 1000 + 3600}:viewer-user_owner` })
+    ])
+    expect(Date.parse(result.expiresAt) - T0).toBeLessThanOrEqual(120_000)
+  })
+
+  it('carries no TURN without a configuration', async () => {
+    const result = await viewer().grants.grantViewer(ORG, CID, { userId: 'u', mode: 'view' })
+    if (!result.granted) throw new Error('refused')
+    expect(result.iceServers).toEqual([])
+    expect(readComputerChannelToken(result.token)?.ice).toBeUndefined()
+  })
+
+  it('refuses an offline or revoked Computer, and a deployment without a relay', async () => {
+    expect(
+      await viewer({ lastSeenAt: new Date(T0 - 60_000) }).grants.grantViewer(ORG, CID, { userId: 'u', mode: 'view' })
+    ).toMatchObject({ granted: false, code: 'unavailable' })
+    expect(
+      await viewer({ status: 'revoked' } as Partial<ComputerRecord>).grants.grantViewer(ORG, CID, {
+        userId: 'u',
+        mode: 'view'
+      })
+    ).toMatchObject({ granted: false, code: 'unavailable' })
+    expect(await viewer({}, { relays: [] }).grants.grantViewer(ORG, CID, { userId: 'u', mode: 'view' })).toMatchObject({
+      granted: false,
+      code: 'no_relay'
+    })
+  })
+})

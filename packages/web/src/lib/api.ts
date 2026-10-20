@@ -2913,6 +2913,19 @@ export async function deleteComputer(id: string): Promise<void> {
   await apiDelete<void>(computerPath(id))
 }
 
+/** A short-lived viewer credential (computer-use.md §7, §10): signaling goes to a relay, never through the CP. */
+export interface ComputerViewerGrantDto {
+  token: string
+  expiresAt: string
+  mode: 'view' | 'control'
+  relays: string[]
+  iceServers: { urls: string[]; username: string; credential: string }[]
+}
+
+export async function openComputerViewer(id: string): Promise<ComputerViewerGrantDto> {
+  return apiPost<ComputerViewerGrantDto>(`${computerPath(id)}/viewer`, {})
+}
+
 // Fetch one agent's raw spec (GET /agents/:id). Returns the wire DTO (not the
 // lean UI `Agent`) because the edit form needs fields the UI shape drops — notably
 // `description`.

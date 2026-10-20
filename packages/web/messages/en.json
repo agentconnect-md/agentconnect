@@ -6413,6 +6413,31 @@
       "reset": "Reset",
       "save": "Save",
       "saving": "Saving…"
+    },
+    "viewer": {
+      "title": "Screen",
+      "watch": "Watch",
+      "close": "Close",
+      "idle": "Watch this computer’s screen live, and take over the mouse and keyboard when you need to. Video goes straight between your browser and the desktop, or through TURN; nothing passes through AgentConnect’s servers.",
+      "offline": "The viewer opens once this computer is online.",
+      "connecting": "Connecting…",
+      "failed": "The viewer stopped.",
+      "watching": "Watching. Agents may keep working.",
+      "watchingOnly": "Watching only. You can’t take control of this computer.",
+      "youInControl": "You are in control. Agents are paused until you release it.",
+      "paused": "Paused: {reason}",
+      "agentWorking": "{holder} is working",
+      "takeControl": "Take control",
+      "release": "Release",
+      "send": "Send",
+      "textPlaceholder": "Type text to send (IME, paste)",
+      "surface": "Computer screen",
+      "screenAlt": "Latest screenshot of the computer",
+      "path": {
+        "direct": "Direct",
+        "turn": "TURN relay",
+        "screenshots": "Screenshots"
+      }
     }
   }
 }

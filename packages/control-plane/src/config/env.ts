@@ -89,6 +89,12 @@ const CoreConfigShape = {
   COMPUTER_WS_PATH: z.string().default('/api/v1/computers/ws'),
   // Lifetime of the channel key the CP renews; bounds how long a desktop cut off from the CP keeps working (§8.2).
   COMPUTER_CREDENTIAL_TTL_SEC: z.coerce.number().int().min(60).max(3600).default(300),
+  // TURN for the console viewer when no direct UDP path exists (computer-use.md §7.2): comma-separated turn:/turns: URLs.
+  COMPUTER_TURN_URLS: z.string().optional(),
+  // coturn's `static-auth-secret` (use-auth-secret); the CP mints per-viewer credentials from it and never sends it out.
+  COMPUTER_TURN_SECRET: z.string().min(16).optional(),
+  // How long minted TURN credentials stay valid; an allocation refresh after this fails, so it bounds one viewing.
+  COMPUTER_TURN_TTL_SEC: z.coerce.number().int().min(300).max(86_400).default(21_600),
   // Failover sweeper: a `relay` row whose lastSeenAt predates now−RELAY_STALE_SEC is
   // swept (its roster entry drops), sweeping every RELAY_REAP_INTERVAL_SEC. Default
   // 3×heartbeat / 1×heartbeat, mirroring the daemon watchdog's freeze threshold.

@@ -70,8 +70,34 @@ describe('computer channel tokens', () => {
     expect(verify(relay, { aud: 'relay' })).toMatchObject({ aud: 'relay', cmp: COMPUTER })
   })
 
+  it('signs a view token naming its member, mode and TURN servers, and refuses one without its member', () => {
+    const view: ComputerChannelTokenClaims = {
+      aud: 'view',
+      cmp: COMPUTER,
+      kid: claims.kid,
+      iat: now,
+      exp: now + 120_000,
+      usr: 'user-1',
+      mode: 'control',
+      ice: [
+        {
+          urls: ['turn:turn.example.com:3478?transport=udp', 'turns:turn.example.com:5349?transport=tcp'],
+          username: `${Math.floor(now / 1000) + 3600}:${COMPUTER}`,
+          credential: 'x'.repeat(28)
+        }
+      ]
+    }
+    const token = signComputerChannelToken(view, key)
+    expect(verify(token, { aud: 'view' })).toEqual(view)
+    expect(verify(token)).toBeNull()
+    expect(() => signComputerChannelToken({ ...view, usr: undefined }, key)).toThrow()
+    expect(() =>
+      signComputerChannelToken({ ...view, ice: [{ urls: ['http://x'], username: 'u', credential: 'c' }] }, key)
+    ).toThrow()
+  })
+
   it('reads anything else as not a channel token', () => {
-    for (const token of ['', 'acd_local', 'actk1.x', 'actk2.e30.AAAA', `actk1.${'A'.repeat(4000)}.A`]) {
+    for (const token of ['', 'acd_local', 'actk1.x', 'actk2.e30.AAAA', `actk1.${'A'.repeat(5000)}.A`]) {
       expect(readComputerChannelToken(token)).toBeNull()
     }
   })

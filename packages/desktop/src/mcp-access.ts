@@ -2,12 +2,14 @@
 import { WebStandardStreamableHTTPServerTransport, type McpServer } from '@modelcontextprotocol/server'
 import {
   COMPUTER_CHANNEL_TOKEN_PREFIX,
+  COMPUTER_VIEWER_API_PREFIX,
   computerLeaseHolderName,
   RELAY_COMPUTER_MAX_BODY_BYTES,
   type CrHttpRequest,
   type CrHttpResponse
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './cp/authority.js'
+import type { ViewerPrincipal, ViewerRequest, ViewerResponse } from './viewer.js'
 
 /** The caller of one MCP request: its lease holder name, and whether its policy lets it only watch. */
 export interface McpPrincipal {
@@ -53,12 +55,48 @@ export interface RelayedMcpDeps {
   authenticate: (authorization: string | undefined) => McpPrincipal | undefined
   createMcpServer: (principal: McpPrincipal) => McpServer
   log: (line: string) => void
+  // The console viewer's API (`/view/api/*`); it authenticates view tokens itself.
+  viewer?: (request: ViewerRequest) => Promise<ViewerResponse>
+}
+
+/** A console member's view token: who watches, whether they may take over, and the TURN servers issued with it. */
+export function viewerPrincipal(
+  authorization: string | undefined,
+  authority: ChannelAuthority,
+  computerId: () => string | undefined
+): ViewerPrincipal | undefined {
+  const token = bearer(authorization)
+  const id = computerId()
+  if (!token?.startsWith(`${COMPUTER_CHANNEL_TOKEN_PREFIX}.`) || !id) return undefined
+  const claims = authority.verify(token, 'view', id)
+  if (!claims?.usr) return undefined
+  return {
+    client: `console:${claims.usr}`,
+    control: claims.mode === 'control',
+    iceServers: claims.ice ?? [],
+    valid: () => authority.verify(token, 'view', id) !== undefined
+  }
 }
 
 /** Serve one `cr/http` request the relay forwarded, in process, through the same MCP server the local port serves. */
 export function createRelayedMcpHandler(deps: RelayedMcpDeps): (request: CrHttpRequest) => Promise<CrHttpResponse> {
   return async (request) => {
-    if (new URL(request.path, 'http://desktop.invalid').pathname !== '/mcp') return reply(404, { error: 'not found' })
+    const pathname = new URL(request.path, 'http://desktop.invalid').pathname
+    if (deps.viewer && pathname.startsWith(COMPUTER_VIEWER_API_PREFIX)) {
+      const out = await deps.viewer({
+        method: request.method,
+        path: pathname,
+        authorization: request.headers.authorization,
+        ...(request.body ? { body: Buffer.from(request.body, 'base64') } : {})
+      })
+      if (out.body.length > RELAY_COMPUTER_MAX_BODY_BYTES) return reply(500, { error: 'response too large' })
+      return {
+        status: out.status,
+        headers: out.headers,
+        ...(out.body.length > 0 ? { body: out.body.toString('base64') } : {})
+      }
+    }
+    if (pathname !== '/mcp') return reply(404, { error: 'not found' })
     const principal = deps.authenticate(request.headers.authorization)
     if (!principal) return reply(401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer' })
     // A buffered relay cannot carry the standalone SSE stream a GET opens; 405 tells the client there is none.

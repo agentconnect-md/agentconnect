@@ -1,6 +1,9 @@
 // Computer data-plane credentials (computer-use.md §3.7, §8.2): per-session tokens the desktop verifies; no screen byte reaches the CP.
 import {
   COMPUTER_RELAYS_MAX,
+  COMPUTER_VIEWER_TOKEN_TTL_MS,
+  type ComputerAgentMode,
+  type ComputerIceServer,
   readComputerChannelToken,
   signComputerChannelToken,
   verifyComputerChannelToken,
@@ -13,6 +16,7 @@ import { ComputerId, type OrgId } from '../domain/ids.js'
 import { presentComputerStatus } from '../domain/computer.js'
 import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerChannelKeys } from './computerChannelKeys.js'
+import { turnCredentials, type TurnConfig } from '../computer-viewer/turn.js'
 
 /** An mcp token lives this long, or less when its key runs out first; the agent daemon asks again before it lapses. */
 export const COMPUTER_CHANNEL_TOKEN_TTL_MS = 120_000
@@ -23,7 +27,22 @@ export interface ComputerChannelGrantOpts {
   /** The relays desktops dial out to; the agent daemon sends its calls through one of them. */
   relays: () => Promise<ComputerRelayEntry[]>
   tokenTtlMs?: number
+  /** Where a browser reaches the desktop's viewer API: the relay pool's public origin first, then each relay. */
+  viewerRelays?: () => Promise<string[]>
+  /** TURN for viewer media without a direct UDP path; absent means direct only. */
+  turn?: TurnConfig
 }
+
+export type ViewerGrantResult =
+  | {
+      granted: true
+      token: string
+      expiresAt: string
+      mode: ComputerAgentMode
+      relays: string[]
+      iceServers: ComputerIceServer[]
+    }
+  | { granted: false; code: 'unavailable' | 'no_relay'; message: string }
 
 export interface GrantRequester {
   agentId: string
@@ -86,6 +105,53 @@ export class ComputerChannelGrants {
       name: computer.name,
       ownerUserId: computer.ownerUserId,
       approvals: computer.policy.approvals
+    }
+  }
+
+  /** A viewer token for one member watching (or taking over) a Computer; the caller has already checked who may. */
+  async grantViewer(
+    orgId: OrgId,
+    computerId: string,
+    who: { userId: string; mode: ComputerAgentMode }
+  ): Promise<ViewerGrantResult> {
+    const refuse = (code: 'unavailable' | 'no_relay', message: string): ViewerGrantResult => ({
+      granted: false,
+      code,
+      message
+    })
+    const computer = await this.repo.get(orgId, ComputerId(computerId))
+    if (!computer || computer.status === 'revoked') return refuse('unavailable', 'this computer was revoked or removed')
+    const now = this.clock.now()
+    if (presentComputerStatus(computer, now, this.opts.staleAfterMs) === 'offline')
+      return refuse('unavailable', 'this computer is offline')
+    const apiKeyId = await this.repo.liveKeyId(ComputerId(computerId), new Date(now))
+    if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
+    const relays = [...new Set(await (this.opts.viewerRelays?.() ?? Promise.resolve([])))].slice(0, COMPUTER_RELAYS_MAX)
+    if (relays.length === 0) return refuse('no_relay', 'no relay is configured, so the viewer cannot reach the desktop')
+    const credential = this.keys.signing(computerId, apiKeyId, now)
+    const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
+    // The desktop and the browser each get their own TURN username, so coturn's logs tell them apart.
+    const turn = this.opts.turn
+    const token = signComputerChannelToken(
+      {
+        aud: 'view',
+        cmp: computerId,
+        kid: credential.keyId,
+        iat: now,
+        exp,
+        usr: who.userId,
+        mode: who.mode,
+        ...(turn ? { ice: [turnCredentials(turn, `computer-${computerId}`, now)] } : {})
+      },
+      Buffer.from(credential.key, 'base64url')
+    )
+    return {
+      granted: true,
+      token,
+      expiresAt: new Date(exp).toISOString(),
+      mode: who.mode,
+      relays,
+      iceServers: turn ? [turnCredentials(turn, `viewer-${who.userId}`, now)] : []
     }
   }
 

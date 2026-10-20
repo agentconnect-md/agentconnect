@@ -4669,6 +4669,19 @@ export const ComputerRegistrationDto = z.object({
 })
 
 /** Whether a desktop daemon has spent a registration token yet, for the console's Add Computer dialog. */
+/** A short-lived viewer credential for the console's embedded viewer (computer-use.md §7, §10). */
+export const ComputerViewerGrantDto = z.object({
+  /** Bearer for the desktop's viewer API through a relay; a credential, never logged. Renew before `expiresAt`. */
+  token: z.string(),
+  expiresAt: z.string(),
+  /** `view` watches only; `control` may also take over input. */
+  mode: z.enum(['view', 'control']),
+  /** Relay origins to try in order; the desktop is attached to each relay it dialed. */
+  relays: z.array(z.string()),
+  /** TURN servers with short-lived credentials for media without a direct UDP path; empty when none are configured. */
+  iceServers: z.array(z.object({ urls: z.array(z.string()), username: z.string(), credential: z.string() }))
+})
+
 export const ComputerRegistrationStatusDto = z.object({
   registrationId: z.string(),
   expiresAt: z.string(),

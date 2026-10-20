@@ -9,6 +9,11 @@ import { ComputerId, OrgId } from '../../src/domain/ids.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { ComputerChannelGrants } from '../../src/registry/computerChannelGrants.js'
+import { ComputerChannelKeys } from '../../src/registry/computerChannelKeys.js'
+import { PgComputerRepo } from '../../src/persistence/repositories/computer.repo.js'
+import { systemClock } from '../../src/domain/clock.js'
+import { readComputerChannelToken } from '@agentconnect.md/protocol'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const REGISTER = '/api/v1/computers/register'
@@ -19,8 +24,28 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((a) => a.close()))
 })
 
-function appAs(userId: string = DEFAULT_OWNER_ID): HttpApp {
-  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId, PUBLIC_CP_URL: 'https://cp.example.com' })
+function appAs(userId: string = DEFAULT_OWNER_ID, withRelay = false): HttpApp {
+  const app = buildHttpApp(
+    prisma,
+    { DEFAULT_OWNER_ID: userId, PUBLIC_CP_URL: 'https://cp.example.com' },
+    undefined,
+    undefined,
+    withRelay
+      ? {
+          computerViewer: new ComputerChannelGrants(
+            new PgComputerRepo(prisma),
+            new ComputerChannelKeys(TEST_API_KEY_PEPPER, 300),
+            systemClock,
+            {
+              staleAfterMs: 45_000,
+              relays: async () => [],
+              viewerRelays: async () => ['https://relay.example.com'],
+              turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 }
+            }
+          )
+        }
+      : undefined
+  )
   opened.push(app)
   return app
 }
@@ -249,7 +274,7 @@ describe('the computer principal', () => {
     expect(await app.deps.computers.authenticate(personal.apiKey)).toBeNull()
   })
 
-  it('API keys cannot mint registration tokens, revoke or delete Computers', async () => {
+  it('API keys cannot mint registration or viewer tokens, revoke or delete Computers', async () => {
     const app = appAs()
     const { computerId } = await register(app)
     const personal = (
@@ -259,6 +284,7 @@ describe('the computer principal', () => {
     for (const request of [
       { method: 'POST' as const, url: `${ORG}/computers/registrations`, payload: {} },
       { method: 'POST' as const, url: `${ORG}/computers/${computerId}/revoke` },
+      { method: 'POST' as const, url: `${ORG}/computers/${computerId}/viewer` },
       { method: 'DELETE' as const, url: `${ORG}/computers/${computerId}` }
     ]) {
       const res = await app.app.inject({ ...request, headers })
@@ -392,6 +418,58 @@ describe('console registration status and stop', () => {
   })
 })
 
+describe('console viewer', () => {
+  const live = (computerId: string) =>
+    prisma.computer.update({ where: { id: computerId }, data: { status: 'online', lastSeenAt: new Date() } })
+
+  it('mints a view token for an allowed member with the relays and TURN credentials, and refuses everyone else', async () => {
+    const app = appAs(DEFAULT_OWNER_ID, true)
+    const { computerId } = await register(app)
+    const url = `${ORG}/computers/${computerId}/viewer`
+    // Offline: nothing to watch yet.
+    expect((await app.app.inject({ method: 'POST', url })).statusCode).toBe(409)
+    await live(computerId)
+    const res = await app.app.inject({ method: 'POST', url })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { token: string; mode: string; relays: string[]; iceServers: { username: string }[] }
+    expect(body).toMatchObject({ mode: 'control', relays: ['https://relay.example.com'] })
+    expect(body.iceServers[0]?.username).toMatch(new RegExp(`:viewer-${DEFAULT_OWNER_ID}$`))
+    expect(readComputerChannelToken(body.token)).toMatchObject({ aud: 'view', cmp: computerId, usr: DEFAULT_OWNER_ID })
+
+    // An org owner who can see the Computer but is not one of its allowed members may not watch it.
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/sharing`,
+      payload: { visibility: 'org', sharedWith: [] }
+    })
+    const peerId = await makeUser('cmp-watcher', 'viewer')
+    const peer = appAs(peerId, true)
+    expect((await peer.app.inject({ method: 'POST', url })).statusCode).toBe(403)
+    // Once allowed, an organization viewer watches without taking over.
+    const policy = (await app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })).json().policy
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/policy`,
+      payload: { ...policy, allowedMembers: [DEFAULT_OWNER_ID, peerId] }
+    })
+    const watched = await peer.app.inject({ method: 'POST', url })
+    expect(watched.statusCode).toBe(200)
+    expect(watched.json()).toMatchObject({ mode: 'view' })
+
+    await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/revoke` })
+    expect((await app.app.inject({ method: 'POST', url })).statusCode).toBe(409)
+  })
+
+  it('answers 503 when no relay can carry the viewer', async () => {
+    const app = appAs()
+    const { computerId } = await register(app)
+    await live(computerId)
+    expect((await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/viewer` })).statusCode).toBe(
+      503
+    )
+  })
+})
+
 describe('visibility and policy', () => {
   it('a personal desktop is visible to its registrant and organization owners only', async () => {
     const dana = await makeUser('cmp-owner-dana', 'collaborator')
@@ -405,6 +483,7 @@ describe('visibility and policy', () => {
       { method: 'PUT' as const, url: `${ORG}/computers/${computerId}/policy`, payload: {} },
       { method: 'PUT' as const, url: `${ORG}/computers/${computerId}/sharing`, payload: { visibility: 'org' } },
       { method: 'POST' as const, url: `${ORG}/computers/${computerId}/revoke` },
+      { method: 'POST' as const, url: `${ORG}/computers/${computerId}/viewer` },
       { method: 'DELETE' as const, url: `${ORG}/computers/${computerId}` }
     ]) {
       expect((await erinApp.app.inject(request)).statusCode, `${request.method} ${request.url}`).toBe(404)

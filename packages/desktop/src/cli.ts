@@ -30,14 +30,14 @@ import { RtcSessions } from './stream/rtc.js'
 import { ScreenStream } from './stream/screen-stream.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { createComputerMcpServer, exposedDriverTools } from './tools.js'
-import { createViewer, type Viewer } from './viewer.js'
+import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { appBundlePath, runSelf, selfCommand } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
 import { RelayLinks } from './cp/relay-links.js'
-import { channelPrincipal, createRelayedMcpHandler, type McpPrincipal } from './mcp-access.js'
+import { channelPrincipal, createRelayedMcpHandler, viewerPrincipal, type McpPrincipal } from './mcp-access.js'
 import {
   exchangeRegistrationToken,
   loadRegistration,
@@ -341,6 +341,7 @@ function startCpChannel(options: {
   driver: CuaDriver
   screenSize: Record<string, unknown>
   createMcpServer: (principal: McpPrincipal) => McpServer
+  viewer: Viewer
 }): { client: ComputerCpClient; relays: RelayLinks; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -359,7 +360,9 @@ function startCpChannel(options: {
     handle: createRelayedMcpHandler({
       authenticate: (header) => channelPrincipal(header, authority, () => registration.computerId),
       createMcpServer: options.createMcpServer,
-      log
+      log,
+      // The console's embedded viewer signals and polls through the same link (computer-use.md §7, §10).
+      viewer: (request) => options.viewer.api(request)
     }),
     log
   })
@@ -439,7 +442,9 @@ function buildViewer(
   dir: string,
   config: DesktopConfig,
   computer: Computer,
-  refusal?: () => string | undefined
+  refusal?: () => string | undefined,
+  // A console member's CP-issued view token; local client tokens still work on the local port.
+  consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined
 ): Viewer {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
@@ -468,14 +473,20 @@ function buildViewer(
     ? new RtcSessions({
         stream,
         log,
-        onMessage: (client, message) => viewer.channelMessage(client, message),
+        onMessage: (principal, message) => viewer.channelMessage(principal, message),
+        reauthorize: (token) => consoleViewer?.(`Bearer ${token}`),
         ...(config.rtcAddress ? { advertiseAddress: config.rtcAddress } : {}),
         ...(config.rtcPortRange ? { portRange: config.rtcPortRange } : {})
       })
     : undefined
   const viewer: Viewer = createViewer({
     computer,
-    authenticate: (header) => authenticate(config, header),
+    authenticate: (header) => {
+      const member = consoleViewer?.(header)
+      if (member) return member
+      const client = authenticate(config, header)
+      return client ? { client, control: true } : undefined
+    },
     log,
     ...(rtc ? { rtc } : {}),
     rtcUnavailable: () =>
@@ -570,7 +581,13 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   }
   const releaseDisplay = config.keepAwake ? keepDisplayAwake(log) : () => undefined
   const driverTools = await loadDriverTools(driver, config)
-  const viewer = buildViewer(dir, config, computer, () => authority.refusal())
+  const viewer = buildViewer(
+    dir,
+    config,
+    computer,
+    () => authority.refusal(),
+    registration ? (header) => viewerPrincipal(header, authority, () => registration.computerId) : undefined
+  )
   live.viewer = viewer
   const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
     createComputerMcpServer({ computer, client, driverTools, viewOnly, ...(agent ? { agent } : {}) })
@@ -597,7 +614,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     computer,
     driver,
     screenSize,
-    createMcpServer
+    createMcpServer,
+    viewer
   })
   const urls = isWildcardHost(config.host)
     ? [server.url, ...lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`)]

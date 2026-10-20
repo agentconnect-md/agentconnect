@@ -1,4 +1,4 @@
-// The Computer data plane on the relay (computer-use.md §3.7): desktops dial in, agent daemons' MCP HTTP is forwarded to them.
+// The Computer data plane on the relay (computer-use.md §3.7): desktops dial in; agents' MCP and viewers' API are forwarded.
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
@@ -6,6 +6,9 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { WsServerTransport, attachKeepalive, type Transport } from '@agentconnect.md/connection'
 import {
+  COMPUTER_VIEWER_API_PREFIX,
+  COMPUTER_VIEWER_MAX_REQUEST_BYTES,
+  RELAY_COMPUTER_VIEW_ROUTE,
   RELAY_COMPUTER_MAX_BODY_BYTES,
   RELAY_COMPUTER_MAX_FRAME_BYTES,
   RELAY_COMPUTER_MCP_ROUTE,
@@ -35,6 +38,16 @@ const SEND_HIGH_WATER_BYTES = 32 * 1024 * 1024
 // Only what Streamable HTTP MCP needs crosses the relay; cookies, hop-by-hop and proxy headers never do.
 const FORWARD_REQUEST_HEADERS = ['authorization', 'content-type', 'accept', 'mcp-protocol-version', 'mcp-session-id']
 const FORWARD_RESPONSE_HEADERS = ['allow', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'www-authenticate']
+// The console viewer (computer-use.md §7, §10): a browser on another origin calls with a bearer, never a cookie.
+const VIEW_REQUEST_HEADERS = ['authorization', 'content-type']
+const VIEW_RESPONSE_HEADERS = ['content-type', 'x-frame-width', 'x-frame-height']
+const VIEW_CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST',
+  'access-control-allow-headers': 'authorization, content-type',
+  'access-control-expose-headers': 'x-frame-width, x-frame-height',
+  'access-control-max-age': '600'
+}
 
 export interface ComputerRelayDeps {
   /** `rc/verify` of the desktop's relay-audience token; the CP checks it against the Computer's live channel key. */
@@ -261,6 +274,46 @@ export function createComputerRelay(app: FastifyInstance, deps: ComputerRelayDep
     return reply.code(res.status).send(out)
   }
 
+  // Viewer signaling, control and screenshot frames: forwarded to the desktop's `/view/api/*` like MCP, plus CORS.
+  async function forwardView(req: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> {
+    void reply.headers({ ...VIEW_CORS, 'cache-control': 'no-store' })
+    if (req.method === 'OPTIONS') return reply.code(204).send()
+    if (!bearerOk(req.headers.authorization)) return reply.code(401).send({ error: 'missing bearer token' })
+    const { computerId = '', '*': rest = '' } = req.params as { computerId?: string; '*'?: string }
+    if (!/^[a-z0-9/_-]{1,64}$/i.test(rest) || rest.includes('..')) return reply.code(404).send({ error: 'not found' })
+    const link = byComputer.get(computerId)
+    if (!link) return reply.code(503).send({ error: 'computer_not_attached' })
+    if (link.inFlight >= maxInFlight) return reply.code(429).send({ error: 'too many requests for this computer' })
+    if (link.congested) return reply.code(503).send({ error: 'computer link congested' })
+    const headers: Record<string, string> = {}
+    for (const name of VIEW_REQUEST_HEADERS) {
+      const value = req.headers[name]
+      if (typeof value === 'string') headers[name] = value
+    }
+    const body = req.body as Buffer | undefined
+    let res: CrHttpResponse
+    try {
+      res = await link.forward(
+        {
+          method: req.method as 'GET' | 'POST',
+          path: `${COMPUTER_VIEWER_API_PREFIX}${rest}`,
+          headers,
+          ...(body && body.length > 0 ? { body: body.toString('base64') } : {})
+        },
+        timeoutMs
+      )
+    } catch (err) {
+      const timedOut = (err as Error).message === 'timeout'
+      return reply.code(timedOut ? 504 : 502).send({ error: timedOut ? 'computer timed out' : 'computer unreachable' })
+    }
+    const out = res.body ? Buffer.from(res.body, 'base64') : Buffer.alloc(0)
+    for (const name of VIEW_RESPONSE_HEADERS) {
+      const value = res.headers[name]
+      if (value !== undefined) void reply.header(name, value)
+    }
+    return reply.code(res.status).send(out)
+  }
+
   void app.register(async (scope) => {
     // Bodies pass through as bytes; the relay never parses MCP.
     scope.removeAllContentTypeParsers()
@@ -270,6 +323,15 @@ export function createComputerRelay(app: FastifyInstance, deps: ComputerRelayDep
       (_req, body, done) => done(null, body)
     )
     scope.route({ method: ['GET', 'POST', 'DELETE'], url: RELAY_COMPUTER_MCP_ROUTE, handler: forward })
+  })
+  void app.register(async (scope) => {
+    scope.removeAllContentTypeParsers()
+    scope.addContentTypeParser(
+      '*',
+      { parseAs: 'buffer', bodyLimit: COMPUTER_VIEWER_MAX_REQUEST_BYTES },
+      (_req, body, done) => done(null, body)
+    )
+    scope.route({ method: ['GET', 'POST', 'OPTIONS'], url: RELAY_COMPUTER_VIEW_ROUTE, handler: forwardView })
   })
 
   return {

@@ -343,6 +343,22 @@ and the console reads it on another; the Control Plane never holds the bytes.
 | `maxRetentionDays` | `365`   | The most a Computer's policy may ask for                |
 | `maxBytes`         | `8Mi`   | Largest screenshot stored (at most `32Mi`)              |
 
+### Computer viewer TURN
+
+The console's embedded Computer viewer sends media straight between the browser and the
+desktop when it can, and through TURN when it cannot
+([design](../../docs/designs/computer-use.md#72-media-and-network)). Run a TURN server such as
+[coturn](https://github.com/coturn/coturn) (BSD) with `use-auth-secret`, put its
+`static-auth-secret` in `secrets.existingSecret`, and list its URLs; the Control Plane mints
+short-lived credentials per viewer and never sends the secret out. Without TURN, a viewer
+with no direct path falls back to screenshots through the relay.
+
+| Value                            | Default                | Meaning                                                     |
+| -------------------------------- | ---------------------- | ----------------------------------------------------------- |
+| `computerViewer.turn.urls`       | `[]`                   | `turn:`/`turns:` URLs, such as `turn:turn.example.com:3478` |
+| `computerViewer.turn.secretKey`  | `COMPUTER_TURN_SECRET` | Key in `secrets.existingSecret` with coturn's secret        |
+| `computerViewer.turn.ttlSeconds` | `21600`                | Lifetime of minted credentials; bounds one viewing          |
+
 A Computer's policy can set `screenshotRetentionDays`; 0 means its screenshots are never
 written. The Control Plane deletes expired screenshots itself, so the bucket needs no
 extra lifecycle rule. Its credentials need `s3:PutObject`, `s3:GetObject` and
