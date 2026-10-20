@@ -867,6 +867,16 @@ sourceCache:
     transferMaxBytes: 512Mi
     transferUrlLifetime: 30m
 
+# Computer screenshot storage (computer-use.md §9): the Control Plane signs desktop uploads and console reads in the Source Cache bucket.
+computerScreenshots:
+  # Needs sourceCache (external or the bundled store); renders AC_COMPUTER_SCREENSHOTS on the Control Plane.
+  enabled: false
+  # Days a Computer without its own policy retention keeps screenshots; 0 stores none unless a policy asks.
+  retentionDays: 30
+  # The most any Computer's policy may ask for.
+  maxRetentionDays: 365
+  maxBytes: 8Mi
+
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not
 # injected from this Secret; Setup Server seals them in deployment_secret.

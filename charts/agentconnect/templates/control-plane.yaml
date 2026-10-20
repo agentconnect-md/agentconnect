@@ -241,6 +241,29 @@ spec:
             - name: AC_FILE_TRANSFER
               value: {{ toJson $document | quote }}
             {{- end }}
+            {{- with .Values.computerScreenshots }}
+            {{- if .enabled }}
+            {{- if not $sourceCache.enabled }}
+            {{- fail "computerScreenshots.enabled needs sourceCache: screenshots are stored in its bucket" }}
+            {{- end }}
+            {{- if hasKey $.Values.controlPlane.extraEnv "AC_COMPUTER_SCREENSHOTS" }}
+            {{- fail "controlPlane.extraEnv.AC_COMPUTER_SCREENSHOTS collides with the chart-owned computerScreenshots values" }}
+            {{- end }}
+            {{- $screens := dict "version" 1 "region" $sourceCache.region "bucket" $sourceCache.bucket "prefix" ($sourceCache.prefix | default "") "forcePathStyle" ($sourceCache.forcePathStyle | default false) }}
+            {{- with $sourceCache.endpoint }}
+            {{- $_ := set $screens "endpoint" . }}
+            {{- end }}
+            {{- with $sourceCache.publicEndpoint }}
+            {{- $_ := set $screens "publicEndpoint" . }}
+            {{- end }}
+            {{- $_ := set $screens "limits" (dict "maxBytes" (.maxBytes | default "8Mi")) }}
+            {{- $_ := set $screens "retention" (dict "defaultDays" (int (.retentionDays | default 0)) "maxDays" (int (.maxRetentionDays | default 365))) }}
+            {{- $_ := set $screens "credentials" (include "agentconnect.sourceCacheCredentials" $sourceCache | fromJson) }}
+            # Computer screenshots: desktops upload and browsers read straight from the bucket; the Control Plane only signs.
+            - name: AC_COMPUTER_SCREENSHOTS
+              value: {{ toJson $screens | quote }}
+            {{- end }}
+            {{- end }}
           # /readyz: DB ping, 503 from SIGTERM. A 2s period lists a new pod seconds after it listens; 10 misses (~20s) ride out a DB blip.
           readinessProbe:
             httpGet:

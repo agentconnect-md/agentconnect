@@ -6,6 +6,13 @@ import { ErrorFrame } from './error.js'
 import { ComputerControlLease } from './computer-lease.js'
 import { COMPUTER_RELAYS_MAX, ComputerApprovalsSchema, ComputerRelayEntry } from './computer-channel.js'
 import { ComputerAuditAck, ComputerAuditReport } from './computer-audit.js'
+import {
+  COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS,
+  ComputerScreenshotCommit,
+  ComputerScreenshotCommitOk,
+  ComputerScreenshotPut,
+  ComputerScreenshotPutOk
+} from './computer-screenshot.js'
 
 // The lease schemas ride both wires, so the `./computer` entry serves them to the desktop too.
 export * from './computer-lease.js'
@@ -14,6 +21,8 @@ export * from './computer-channel.js'
 export * from './relay-computer.js'
 // Audit entries the desktop reports and the approval outcome agent daemons attach to a call (§4.2, §8.2).
 export * from './computer-audit.js'
+// Screenshot uploads the CP signs and the references a session timeline keeps (§9).
+export * from './computer-screenshot.js'
 export * from '../computer-channel-token.js'
 export * from './computer-keys.js'
 
@@ -86,7 +95,9 @@ export const ComputerPolicySchema = z
       })
       .optional(),
     leaseIdleSeconds: z.number().int().min(10).max(3600).default(120),
-    leaseMaxSeconds: z.number().int().min(60).max(86_400).default(1800)
+    leaseMaxSeconds: z.number().int().min(60).max(86_400).default(1800),
+    // Days stored screenshots are kept (§9); 0 means never written, absent means the deployment's default.
+    screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional()
   })
   .refine((p) => p.leaseIdleSeconds <= p.leaseMaxSeconds, {
     message: 'leaseIdleSeconds must not exceed leaseMaxSeconds',
@@ -168,7 +179,9 @@ export const ComputerAuthOk = z.object({
   credential: ComputerChannelCredential,
   policy: ComputerPolicySchema,
   // What this CP accepts on the channel beyond the base frames, such as `computer-audit-v1`.
-  features: z.array(z.string().min(1).max(64)).max(32).optional()
+  features: z.array(z.string().min(1).max(64)).max(32).optional(),
+  // The retention in effect for this Computer's screenshots (§9); 0 or absent means none are stored.
+  screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional()
 })
 export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>
 
@@ -200,7 +213,10 @@ export const ComputerCredentialRenewal = z.object({ credential: ComputerChannelC
 export type ComputerCredentialRenewal = z.infer<typeof ComputerCredentialRenewal>
 
 // C→D EVT: the owner changed the policy.
-export const ComputerPolicyPush = z.object({ policy: ComputerPolicySchema })
+export const ComputerPolicyPush = z.object({
+  policy: ComputerPolicySchema,
+  screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional()
+})
 export type ComputerPolicyPush = z.infer<typeof ComputerPolicyPush>
 
 // C→D EVT, then close 4401: stop all input, close viewers, forget the key.
@@ -229,6 +245,10 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/relays': ComputerRelaysPush,
   'computer/audit': ComputerAuditReport,
   'computer/audit/ok': ComputerAuditAck,
+  'computer/screenshot/put': ComputerScreenshotPut,
+  'computer/screenshot/put/ok': ComputerScreenshotPutOk,
+  'computer/screenshot/commit': ComputerScreenshotCommit,
+  'computer/screenshot/commit/ok': ComputerScreenshotCommitOk,
   error: ErrorFrame
 } as const
 
@@ -246,6 +266,10 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/relays', COMPUTER_CP_SCHEMAS['computer/relays']),
   frameSchema('computer/audit', COMPUTER_CP_SCHEMAS['computer/audit']),
   frameSchema('computer/audit/ok', COMPUTER_CP_SCHEMAS['computer/audit/ok']),
+  frameSchema('computer/screenshot/put', COMPUTER_CP_SCHEMAS['computer/screenshot/put']),
+  frameSchema('computer/screenshot/put/ok', COMPUTER_CP_SCHEMAS['computer/screenshot/put/ok']),
+  frameSchema('computer/screenshot/commit', COMPUTER_CP_SCHEMAS['computer/screenshot/commit']),
+  frameSchema('computer/screenshot/commit/ok', COMPUTER_CP_SCHEMAS['computer/screenshot/commit/ok']),
   frameSchema('error', COMPUTER_CP_SCHEMAS['error'])
 ])
 export type ComputerCpFrame = z.infer<typeof ComputerCpFrame>

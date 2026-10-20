@@ -65,7 +65,12 @@ const auditDto = (e: ComputerAuditRecord) => ({
   screenshotRef: e.screenshotRef
 })
 
-function toDto(c: ComputerRecord, ctx: ViewCtx, status: ComputerRecord['status']): ComputerDtoT {
+function toDto(
+  c: ComputerRecord,
+  ctx: ViewCtx,
+  status: ComputerRecord['status'],
+  retentionDays: (policy: ComputerRecord['policy']) => number
+): ComputerDtoT {
   return {
     id: c.id,
     name: c.name,
@@ -87,6 +92,7 @@ function toDto(c: ComputerRecord, ctx: ViewCtx, status: ComputerRecord['status']
     revokedAt: c.revokedAt ? c.revokedAt.toISOString() : null,
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
+    screenshotRetentionDays: retentionDays(c.policy),
     canEdit: canEdit(c, ctx),
     canEditPolicy: canEditPolicy(c, ctx) && c.status !== 'revoked'
   }
@@ -95,6 +101,9 @@ function toDto(c: ComputerRecord, ctx: ViewCtx, status: ComputerRecord['status']
 export function computerRoutes(deps: HttpDeps) {
   return async function computerRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    // Without a bucket nothing is stored, whatever the policy says.
+    const retentionDays = (policy: ComputerRecord['policy']): number =>
+      deps.computerScreenshots?.retentionDays(policy) ?? 0
 
     // The repository fences the org; visibility is the policy half, and an invisible Computer reads as absent.
     const getOrgComputer = async (req: FastifyRequest, id: string) => {
@@ -115,7 +124,7 @@ export function computerRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.computer.list(orgOf(req), ctxOf(req))
-        return rows.map((c) => toDto(c, ctxOf(req), deps.computers.presentedStatus(c)))
+        return rows.map((c) => toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays))
       }
     )
 
@@ -134,7 +143,7 @@ export function computerRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const c = await getOrgComputer(req, req.params.id)
         if (!c) return reply.code(404).send(notFound)
-        return toDto(c, ctxOf(req), deps.computers.presentedStatus(c))
+        return toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays)
       }
     )
 
@@ -221,7 +230,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer policy',
           description:
-            'Replaces who may use a Computer and how (allowed agents and members, view or control, approvals, app limits, quiet hours, lease limits). Omitted fields take their defaults. Only the registrant may change the policy of their own self-hosted desktop; allowed agents must be visible to the caller, and the owner always stays an allowed member.',
+            'Replaces who may use a Computer and how (allowed agents and members, view or control, approvals, app limits, quiet hours, lease limits, screenshot retention in days where 0 stores none). Omitted fields take their defaults. Only the registrant may change the policy of their own self-hosted desktop; allowed agents must be visible to the caller, and the owner always stays an allowed member.',
           operationId: 'setComputerPolicy',
           params: IdParam,
           body: ComputerPolicySchema,
@@ -253,7 +262,7 @@ export function computerRoutes(deps: HttpDeps) {
         const policy = withOwnerMember({ ...req.body, allowedAgents: wanted, allowedMembers: members }, c.ownerUserId)
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
         if (!updated) return reply.code(409).send(revokedConflict)
-        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated))
+        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
       }
     )
 
@@ -285,7 +294,7 @@ export function computerRoutes(deps: HttpDeps) {
           { visibility: req.body.visibility, sharedWith },
           ctxOf(req).userId
         )
-        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated))
+        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
       }
     )
 
@@ -312,7 +321,7 @@ export function computerRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
         }
         const revoked = await deps.computers.revoke(orgOf(req), c.id, ctxOf(req).userId)
-        return toDto(revoked, ctxOf(req), deps.computers.presentedStatus(revoked))
+        return toDto(revoked, ctxOf(req), deps.computers.presentedStatus(revoked), retentionDays)
       }
     )
 

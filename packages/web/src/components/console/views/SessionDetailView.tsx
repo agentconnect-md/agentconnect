@@ -90,6 +90,8 @@ import { SharedImageCard } from '@/components/console/SharedImageCard'
 import type { SharedImageState } from '@/lib/shared-image'
 import { platformSenderFallback } from '../platforms/registry'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
+import { ComputerScreenshots } from '@/components/console/ComputerScreenshots'
+import { screenshotRefsIn } from '@/lib/computer-screenshots'
 import { SessionMessageCaption, UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
 import type { McpAppRpc, SessionMessageTurnFacts, UserTurnBody } from '@agentconnect.md/protocol'
@@ -1973,6 +1975,8 @@ function ToolBodyDetail({
   }
 
   const truncated = msg.bodyTruncated && fullBody == null
+  // Screenshots a computer tool stored, named by hash in its result (computer-use.md §9).
+  const screenshotRefs = useMemo(() => screenshotRefsIn(bodyStr), [bodyStr])
   const badge = statusBadge(body?.status ?? msg.toolStatus)
   const kind = body?.kind ?? msg.toolKind
   const bytes = msg.bodyBytes
@@ -2098,6 +2102,12 @@ function ToolBodyDetail({
                   {body.content.map((c, i) => (
                     <ContentBlock key={i} block={c} />
                   ))}
+                </>
+              )}
+              {screenshotRefs.length > 0 && (
+                <>
+                  <DetailLabel>{t('screenshots')}</DetailLabel>
+                  <ComputerScreenshots sessionId={sessionId} refs={screenshotRefs} />
                 </>
               )}
               {body.locations && body.locations.length > 0 && (

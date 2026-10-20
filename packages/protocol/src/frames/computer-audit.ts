@@ -85,7 +85,7 @@ export const ComputerAuditEntry = z
       .optional(),
     textLength: z.number().int().min(0).max(1_000_000).optional(),
     ms: z.number().int().min(0),
-    // The stored screenshot this call returned (§9); absent until screenshot storage lands.
+    // The stored screenshot this call returned (§9), as `sha256:<hex>`.
     screenshotRef: z.string().min(1).max(1024).optional()
   })
   .strict()

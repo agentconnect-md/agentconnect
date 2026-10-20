@@ -132,6 +132,8 @@ services:
       - USAGE_INGEST_TOKEN
       # Opt-in console file transfer: a JSON bucket document the Control Plane signs URLs for (docs/designs/source-cache-file-transfer.md §7).
       - AC_FILE_TRANSFER
+      # Opt-in Computer screenshot storage: a JSON bucket document like AC_FILE_TRANSFER plus retention (docs/designs/computer-use.md §9).
+      - AC_COMPUTER_SCREENSHOTS
       # Bootstrap root for DB-backed deployment secrets. These values cannot be
       # stored beside the ciphertext they unlock and therefore remain startup env.
       - SECRET_CIPHER

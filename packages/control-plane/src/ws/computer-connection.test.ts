@@ -49,6 +49,8 @@ function setup(
     leases?: ComputerConnDeps['leases']
     relays?: ComputerConnDeps['relays']
     audit?: ComputerConnDeps['audit']
+    screenshots?: ComputerConnDeps['screenshots']
+    status?: string
     keyDeliveryMs?: number
   } = {}
 ) {
@@ -59,7 +61,12 @@ function setup(
   const repo = {
     get: vi.fn(
       async () =>
-        ({ name: 'desk', ownerUserId: 'u1', policy: ComputerPolicySchema.parse({}) }) as unknown as ComputerRecord
+        ({
+          name: 'desk',
+          ownerUserId: 'u1',
+          status: over.status ?? 'online',
+          policy: ComputerPolicySchema.parse({ screenshotRetentionDays: 7 })
+        }) as unknown as ComputerRecord
     ),
     recordLive: vi.fn(async (_o: unknown, _c: unknown, _k: unknown, report: ComputerLiveReport) => {
       reports.push(report)
@@ -81,7 +88,8 @@ function setup(
     ...(over.handshakes ? { handshakes: over.handshakes } : {}),
     ...(over.leases ? { leases: over.leases } : {}),
     ...(over.relays ? { relays: over.relays } : {}),
-    ...(over.audit ? { audit: over.audit } : {})
+    ...(over.audit ? { audit: over.audit } : {}),
+    ...(over.screenshots ? { screenshots: over.screenshots } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -153,6 +161,87 @@ describe('ComputerConnection', () => {
     await settle()
     expect(transport.ofType('error').at(-1)).toMatchObject({ corr: again.id, payload: { retryable: true } })
     expect(transport.closed).toBeUndefined()
+  })
+
+  it('offers computer-screenshot-v1 with a store, tells the retention, and signs and confirms uploads', async () => {
+    const sha256 = 'ab'.repeat(32)
+    const put = vi.fn(async () => ({
+      status: 'upload' as const,
+      url: 'https://store.example.test/k?X-Amz-Signature=s',
+      headers: { 'content-length': '3' },
+      expiresAt: new Date(T0 + 300_000).toISOString()
+    }))
+    const commit = vi.fn(async () => true)
+    const { transport, registry } = setup({
+      screenshots: { retentionDays: (p) => p.screenshotRetentionDays ?? 30, put, commit }
+    })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]).toMatchObject({
+      payload: { features: ['computer-screenshot-v1'], screenshotRetentionDays: 7 }
+    })
+    const offered = {
+      sessionId: 'sess-1',
+      agentId: '11111111-1111-4111-8111-111111111111',
+      sha256,
+      bytes: 3,
+      contentType: 'image/png' as const,
+      takenAt: new Date(T0).toISOString()
+    }
+    const offer = buildComputerCpFrame('computer/screenshot/put', offered)
+    transport.deliver(offer)
+    await settle()
+    expect(put).toHaveBeenCalledWith(
+      { orgId: 'org_1', computerId: CID, policy: expect.objectContaining({ screenshotRetentionDays: 7 }) },
+      offered
+    )
+    expect(transport.ofType('computer/screenshot/put/ok')[0]).toMatchObject({
+      corr: offer.id,
+      payload: { status: 'upload' }
+    })
+    const done = buildComputerCpFrame('computer/screenshot/commit', { sessionId: 'sess-1', sha256 })
+    transport.deliver(done)
+    await settle()
+    expect(commit).toHaveBeenCalledWith(CID, done.payload)
+    expect(transport.ofType('computer/screenshot/commit/ok')[0]).toMatchObject({
+      corr: done.id,
+      payload: { stored: true }
+    })
+
+    registry.pushPolicy(CID, ComputerPolicySchema.parse({ screenshotRetentionDays: 0 }))
+    expect(transport.ofType('computer/policy').at(-1)).toMatchObject({ payload: { screenshotRetentionDays: 0 } })
+
+    put.mockRejectedValueOnce(new Error('bucket down'))
+    const again = buildComputerCpFrame('computer/screenshot/put', offered)
+    transport.deliver(again)
+    await settle()
+    expect(transport.ofType('error').at(-1)).toMatchObject({ corr: again.id, payload: { retryable: true } })
+  })
+
+  it('signs nothing for a revoked Computer, and answers screenshot frames without a store as illegal', async () => {
+    const put = vi.fn()
+    const revoked = setup({ status: 'revoked', screenshots: { retentionDays: () => 30, put, commit: vi.fn() } })
+    revoked.transport.deliver(auth())
+    await settle()
+    const offer = buildComputerCpFrame('computer/screenshot/put', {
+      sessionId: 'sess-1',
+      agentId: '11111111-1111-4111-8111-111111111111',
+      sha256: 'ab'.repeat(32),
+      bytes: 3,
+      contentType: 'image/png',
+      takenAt: new Date(T0).toISOString()
+    })
+    revoked.transport.deliver(offer)
+    await settle()
+    expect(put).not.toHaveBeenCalled()
+    expect(revoked.transport.ofType('computer/screenshot/put/ok')[0]).toMatchObject({ payload: { status: 'skipped' } })
+
+    const plain = setup()
+    plain.transport.deliver(auth())
+    await settle()
+    plain.transport.deliver(offer)
+    await settle()
+    expect(plain.transport.ofType('error').at(-1)).toMatchObject({ payload: { code: 'PROTOCOL_STATE' } })
   })
 
   it('refuses a bad key with AUTH_FAILED and close 4401', async () => {

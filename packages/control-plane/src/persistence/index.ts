@@ -127,3 +127,4 @@ export { PgDeploymentConfigRepository, PgDeploymentConfigStore } from './reposit
 export { PgAgentMemoryTransactionRepo } from './repositories/agent-memory-transaction.repo.js'
 
 export { PgProviderKeyStore } from './repositories/provider-key.repo.js'
+export { PgComputerScreenshotRepo } from './repositories/computer-screenshot.repo.js'

@@ -2748,6 +2748,27 @@ export async function fetchToolBody(sessionId: string, toolCallId: string): Prom
   return out
 }
 
+/** One stored Computer screenshot (computer-use.md §9) with a short-lived signed URL. */
+export interface ComputerScreenshotDto {
+  ref: string
+  sha256: string
+  computerId: string
+  agentId: string
+  takenAt: string
+  bytes: number
+  contentType: string
+  expiresAt: string
+  url: string
+  urlExpiresAt: string
+}
+
+// Resolves a tool result's `sha256:<hex>` screenshot reference; 404 when expired, never stored, or not visible to the caller.
+export async function fetchComputerScreenshot(sessionId: string, sha256: string): Promise<ComputerScreenshotDto> {
+  return apiGet<ComputerScreenshotDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/computer-screenshots/${encodeURIComponent(sha256)}`
+  )
+}
+
 // Fetch one agent's raw spec (GET /agents/:id). Returns the wire DTO (not the
 // lean UI `Agent`) because the edit form needs fields the UI shape drops — notably
 // `description`.

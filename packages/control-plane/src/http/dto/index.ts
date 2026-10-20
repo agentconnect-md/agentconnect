@@ -4565,6 +4565,8 @@ export const ComputerDto = z.object({
   /** The caller may revoke, delete or re-share it. */
   canEdit: z.boolean(),
   /** The caller may change who uses it: the registrant of a self-hosted computer, or an editor of a managed one. */
+  /** Days screenshots of this Computer are kept now: its policy's value or the deployment default; 0 stores none. */
+  screenshotRetentionDays: z.number().int(),
   canEditPolicy: z.boolean()
 })
 export type ComputerDtoT = z.infer<typeof ComputerDto>
@@ -4599,6 +4601,51 @@ export const ComputerAuditQuery = z.object({
   agentId: z.uuid().optional(),
   sessionId: z.string().min(1).max(256).optional()
 })
+
+/** One stored screenshot of a session (computer-use.md §9), with a short-lived signed URL to read it. */
+export const ComputerScreenshotDto = z.object({
+  /** The reference the tool result in the session timeline carries: `sha256:<hex>`. */
+  ref: z.string(),
+  sha256: z.string(),
+  computerId: z.string(),
+  agentId: z.string(),
+  takenAt: z.string(),
+  bytes: z.number().int(),
+  contentType: z.string(),
+  /** When retention removes it. */
+  expiresAt: z.string(),
+  url: z.string(),
+  urlExpiresAt: z.string()
+})
+export const ComputerScreenshotPageDto = z.object({
+  screenshots: z.array(ComputerScreenshotDto),
+  /** Pass back as `cursor` for later screenshots; null on the last page. */
+  nextCursor: z.string().nullable()
+})
+export const ComputerScreenshotListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().min(1).max(200).optional()
+})
+export const ComputerScreenshotParams = z.object({
+  sessionId: z.string().min(1).max(256),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/)
+})
+export const ComputerScreenshotSessionParam = z.object({ sessionId: z.string().min(1).max(256) })
+/** Screenshot storage an organization used (computer-use.md §9): bytes written in the window and held now. */
+export const ComputerScreenshotUsageDto = z.object({
+  from: z.string(),
+  to: z.string(),
+  /** Screenshots stored in the window, counted per UTC day; kept after the screenshots themselves expire. */
+  written: z.object({ count: z.number().int(), bytes: z.number().int() }),
+  /** Screenshots held now, not yet expired. */
+  stored: z.object({ count: z.number().int(), bytes: z.number().int() })
+})
+export const ComputerScreenshotUsageQuery = z
+  .object({ from: z.string().datetime({ offset: true }), to: z.string().datetime({ offset: true }) })
+  .refine((q) => Date.parse(q.from) < Date.parse(q.to), {
+    message: '`from` must be strictly before `to`',
+    path: ['from']
+  })
 
 export const CreateComputerRegistrationBody = z
   .object({

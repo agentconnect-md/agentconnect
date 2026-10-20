@@ -61,7 +61,8 @@ import type {
   PlaceExternalReason,
   RuntimeStrategyEntries,
   TransferUploadOutcome,
-  ComputerApprovalResult
+  ComputerApprovalResult,
+  ComputerScreenshotContentType
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -719,6 +720,50 @@ export interface ComputerAuditRepo {
   ): Promise<number>
   /** One Computer's entries, newest first. */
   list(orgId: OrgId, computerId: ComputerId, query: ComputerAuditQuery): Promise<ComputerAuditRecord[]>
+}
+
+/** One stored screenshot's metadata (computer-use.md §9); the bytes live in the object store under `objectKey`. */
+export interface ComputerScreenshotRecord {
+  id: string
+  orgId: string
+  computerId: string
+  sessionId: string
+  agentId: string
+  sha256: string
+  bytes: number
+  contentType: ComputerScreenshotContentType
+  objectKey: string
+  takenAt: Date
+  createdAt: Date
+  storedAt: Date | null
+  expiresAt: Date
+}
+
+/** Screenshot bytes an organization wrote in a window, and what it holds now. */
+export interface ComputerScreenshotUsageTotals {
+  written: { count: number; bytes: number }
+  stored: { count: number; bytes: number }
+}
+
+export interface ComputerScreenshotRepo {
+  /** Reserve a row for one upload; an existing row for the same Computer, session and hash is returned instead. */
+  reserve(row: Omit<ComputerScreenshotRecord, 'storedAt'>): Promise<ComputerScreenshotRecord>
+  get(computerId: string, sessionId: string, sha256: string): Promise<ComputerScreenshotRecord | null>
+  /** Mark a reserved row stored and count its bytes toward the day's usage; false when it was already stored or is gone. */
+  markStored(id: string, orgId: string, bytes: number, at: Date): Promise<boolean>
+  /** A session's stored screenshots with this hash, newest first. */
+  findStored(orgId: string, sessionId: string, sha256: string, now: Date): Promise<ComputerScreenshotRecord[]>
+  /** A session's stored screenshots, oldest first. */
+  listStored(
+    orgId: string,
+    sessionId: string,
+    now: Date,
+    page: { limit: number; after?: { takenAt: Date; id: string } }
+  ): Promise<ComputerScreenshotRecord[]>
+  /** Rows to collect: expired, unconfirmed since before `pendingBefore`, or of a Computer that no longer exists. */
+  reapable(now: Date, pendingBefore: Date, limit: number): Promise<ComputerScreenshotRecord[]>
+  deleteRows(ids: string[]): Promise<number>
+  usage(orgId: string, window: { from: Date; to: Date }, now: Date): Promise<ComputerScreenshotUsageTotals>
 }
 
 /** A Computer's control lease row (computer-use.md §4.4); the decisions live in `domain/computerLease.ts`. */

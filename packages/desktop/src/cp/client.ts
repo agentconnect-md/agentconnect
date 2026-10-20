@@ -12,6 +12,7 @@ import {
 import {
   COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
+  COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
   decodeComputerCpFrameTolerant,
   type ComputerAuditEntry,
@@ -20,10 +21,13 @@ import {
   type ComputerCpFrame,
   type ComputerHeartbeat,
   type ComputerPolicy,
-  type ComputerRelayEntry
+  type ComputerRelayEntry,
+  type ComputerScreenshotCommit,
+  type ComputerScreenshotPut
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './authority.js'
 import type { AuditSendResult } from './audit-report.js'
+import type { ScreenshotSignResult } from './screenshot-store.js'
 
 const AUTH_TIMEOUT_MS = 15_000
 
@@ -70,6 +74,8 @@ export class ComputerCpClient {
   private sentFacts: string | undefined
   // What the CP accepts beyond the base frames, from its last auth reply.
   private features = new Set<string>()
+  // The CP's screenshot retention for this Computer; 0 until it offers storage (computer-use.md §9).
+  private retentionDays = 0
 
   constructor(private readonly deps: ComputerCpClientDeps) {
     this.clock = deps.clock ?? systemClock
@@ -123,6 +129,42 @@ export class ComputerCpClient {
     }
   }
 
+  /** Days the CP keeps this Computer's screenshots; 0 while it stores none or does not offer storage. */
+  screenshotRetentionDays(): number {
+    return this.features.has(COMPUTER_SCREENSHOT_FEATURE) ? this.retentionDays : 0
+  }
+
+  /** Ask the CP to sign one screenshot's upload. */
+  async signScreenshot(put: ComputerScreenshotPut): Promise<ScreenshotSignResult> {
+    const transport = this.transport
+    if (this.state !== 'READY' || !transport || !this.features.has(COMPUTER_SCREENSHOT_FEATURE)) return 'retry'
+    try {
+      const reply = await this.correlator.request(buildComputerCpFrame('computer/screenshot/put', put), (encoded) =>
+        transport.send(encoded)
+      )
+      return reply.type === 'computer/screenshot/put/ok' ? reply.payload : 'retry'
+    } catch (error) {
+      this.deps.log(`computer channel: screenshot signing failed: ${(error as Error).message}`)
+      return error instanceof WireError && !error.retryable ? 'rejected' : 'retry'
+    }
+  }
+
+  /** Tell the CP an upload landed; true once it found exactly those bytes. */
+  async commitScreenshot(commit: ComputerScreenshotCommit): Promise<boolean | 'retry'> {
+    const transport = this.transport
+    if (this.state !== 'READY' || !transport || !this.features.has(COMPUTER_SCREENSHOT_FEATURE)) return 'retry'
+    try {
+      const reply = await this.correlator.request(
+        buildComputerCpFrame('computer/screenshot/commit', commit),
+        (encoded) => transport.send(encoded)
+      )
+      return reply.type === 'computer/screenshot/commit/ok' ? reply.payload.stored : 'retry'
+    } catch (error) {
+      this.deps.log(`computer channel: screenshot commit failed: ${(error as Error).message}`)
+      return error instanceof WireError && !error.retryable ? false : 'retry'
+    }
+  }
+
   private connect(): Promise<Transport> {
     if (this.deps.connect) return this.deps.connect()
     return ClientTransport.dial(this.deps.channelUrl, {
@@ -170,6 +212,7 @@ export class ComputerCpClient {
     this.backoff.reset()
     this.sentFacts = undefined
     this.features = new Set(ok.features ?? [])
+    this.retentionDays = ok.screenshotRetentionDays ?? 0
     this.deps.authority.syncClock(ok.serverTime)
     this.deps.authority.accept(ok.credential)
     this.deps.onPolicy?.(ok.policy)
@@ -198,6 +241,7 @@ export class ComputerCpClient {
         this.deps.authority.accept(frame.payload.credential)
         return
       case 'computer/policy':
+        this.retentionDays = frame.payload.screenshotRetentionDays ?? 0
         this.deps.onPolicy?.(frame.payload.policy)
         return
       case 'computer/lease':
