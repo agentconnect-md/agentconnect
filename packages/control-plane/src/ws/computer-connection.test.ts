@@ -51,6 +51,7 @@ function setup(
     audit?: ComputerConnDeps['audit']
     screenshots?: ComputerConnDeps['screenshots']
     status?: string
+    stoppedAt?: () => Date | null
     keyDeliveryMs?: number
   } = {}
 ) {
@@ -65,6 +66,7 @@ function setup(
           name: 'desk',
           ownerUserId: 'u1',
           status: over.status ?? 'online',
+          stoppedAt: over.stoppedAt ? over.stoppedAt() : null,
           policy: ComputerPolicySchema.parse({ screenshotRetentionDays: 7 })
         }) as unknown as ComputerRecord
     ),
@@ -102,6 +104,56 @@ const beat = (extra: Record<string, unknown> = {}) =>
   buildComputerCpFrame('computer/heartbeat', { status: 'online', ...extra })
 
 describe('ComputerConnection', () => {
+  it('tells the desktop a console Stop after auth, again while it does not show it, and the resume', async () => {
+    let stoppedAt: Date | null = new Date(T0)
+    const { transport, registry } = setup({ stoppedAt: () => stoppedAt })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/stop').map((f) => f.payload)).toEqual([
+      { stop: { at: new Date(T0).toISOString() } }
+    ])
+    transport.deliver(beat({ status: 'paused' }))
+    await settle()
+    expect(transport.ofType('computer/stop')).toHaveLength(1)
+    // Resumed locally while the console Stop stands: told again.
+    transport.deliver(beat())
+    await settle()
+    expect(transport.ofType('computer/stop')).toHaveLength(2)
+    // Resumed on another replica: the next heartbeat carries it.
+    stoppedAt = null
+    transport.deliver(beat({ status: 'paused' }))
+    await settle()
+    expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop: null })
+    transport.deliver(beat({ status: 'paused' }))
+    await settle()
+    expect(transport.ofType('computer/stop')).toHaveLength(3)
+    registry.pushStop(CID, { at: new Date(T0 + 1).toISOString() })
+    expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop: { at: new Date(T0 + 1).toISOString() } })
+  })
+
+  it('does not undo a console Stop with a heartbeat read that started before it', async () => {
+    const { transport, registry, repo } = setup()
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop: null })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const stale = await repo.get()
+    repo.get.mockImplementationOnce(async () => {
+      await gate
+      return stale
+    })
+    transport.deliver(beat())
+    await settle()
+    const stop = { at: new Date(T0 + 1).toISOString() }
+    registry.pushStop(CID, stop)
+    release()
+    await settle()
+    await settle()
+    expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop })
+    expect(transport.ofType('computer/stop')).toHaveLength(2)
+  })
+
   it('authenticates, records the Computer online and answers with policy and a channel credential', async () => {
     const { transport, registry, reports, conn } = setup()
     const req = auth()

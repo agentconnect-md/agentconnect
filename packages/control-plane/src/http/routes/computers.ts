@@ -17,6 +17,7 @@ import {
   ComputerDto,
   ComputerListDto,
   ComputerRegistrationDto,
+  ComputerRegistrationStatusDto,
   CreateComputerRegistrationBody,
   RegisterComputerBody,
   RegisteredComputerDto,
@@ -90,6 +91,8 @@ function toDto(
     sharedWith: c.sharedWith,
     lastSeenAt: c.lastSeenAt ? c.lastSeenAt.toISOString() : null,
     revokedAt: c.revokedAt ? c.revokedAt.toISOString() : null,
+    stoppedAt: c.stoppedAt ? c.stoppedAt.toISOString() : null,
+    stoppedByUserId: c.stoppedByUserId,
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
     screenshotRetentionDays: retentionDays(c.policy),
@@ -220,6 +223,93 @@ export function computerRoutes(deps: HttpDeps) {
           expiresAt: issued.registration.expiresAt.toISOString(),
           exchangeUrl: `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_REGISTER_PATH}`
         })
+      }
+    )
+
+    // Only the member who minted a token learns whether it was spent; anyone else reads it as absent.
+    r.get(
+      '/computers/registrations/:id',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Get a computer registration',
+          description:
+            'Reads whether a registration token the caller minted has been spent and, once it has, the Computer it registered. Never returns the token.',
+          operationId: 'getComputerRegistration',
+          params: IdParam,
+          response: { 200: ComputerRegistrationStatusDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const reg = await deps.repos.computer.getRegistration(orgOf(req), req.params.id)
+        if (!reg || reg.createdByUserId !== ctxOf(req).userId) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'registration not found' })
+        }
+        return {
+          registrationId: reg.id,
+          expiresAt: reg.expiresAt.toISOString(),
+          consumedAt: reg.consumedAt ? reg.consumedAt.toISOString() : null,
+          computerId: reg.computerId
+        }
+      }
+    )
+
+    // Stop only tightens, so anyone who may revoke the Computer may stop it; resuming is the policy owner's.
+    r.post(
+      '/computers/:id/stop',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Stop a computer',
+          description:
+            'The console Stop: ends any control lease, refuses agent input, and holds the desktop daemon paused until the Computer is resumed. Screenshots continue. Idempotent; a revoked Computer is refused with 409.',
+          operationId: 'stopComputer',
+          params: IdParam,
+          response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const c = await getOrgComputer(req, req.params.id)
+        if (!c) return reply.code(404).send(notFound)
+        if (!canEdit(c, ctxOf(req))) {
+          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
+        }
+        if (c.stoppedAt) return toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays)
+        const stopped = await deps.computers.stop(orgOf(req), c.id, ctxOf(req).userId)
+        if (!stopped) return reply.code(409).send(revokedConflict)
+        return toDto(stopped, ctxOf(req), deps.computers.presentedStatus(stopped), retentionDays)
+      }
+    )
+
+    // Resume loosens the human emergency brake, so API keys and agents' delegated calls cannot reach it.
+    r.post(
+      '/computers/:id/resume',
+      {
+        config: { interactiveOnly: true },
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Resume a computer',
+          description:
+            'Lifts a console Stop so agents granted the Computer may take control again; the desktop daemon resumes only a pause the console caused. Only the registrant of a self-hosted Computer, or an editor of a managed one, may resume it. Idempotent.',
+          operationId: 'resumeComputer',
+          params: IdParam,
+          response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const c = await getOrgComputer(req, req.params.id)
+        if (!c) return reply.code(404).send(notFound)
+        if (!canEditPolicy(c, ctxOf(req))) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s owner can resume it' })
+        }
+        if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
+        const resumed = await deps.computers.resume(orgOf(req), c.id, ctxOf(req).userId)
+        if (!resumed) return reply.code(409).send(revokedConflict)
+        return toDto(resumed, ctxOf(req), deps.computers.presentedStatus(resumed), retentionDays)
       }
     )
 

@@ -48,6 +48,7 @@ function harness() {
   const policies: ComputerPolicy[] = []
   const revoked: string[] = []
   const leases: unknown[] = []
+  const stops: unknown[] = []
   let report: HeartbeatReport = { status: 'online', facts: { osVersion: 'Ubuntu 26.04', session: 'x11' } }
   const authority = new ChannelAuthority({
     registered: true,
@@ -63,6 +64,7 @@ function harness() {
     report: () => report,
     onPolicy: (policy) => policies.push(policy),
     onLease: (lease) => leases.push(lease),
+    onStop: (stop) => stops.push(stop),
     onRevoked: (reason) => revoked.push(reason),
     log: () => {},
     clock,
@@ -105,6 +107,7 @@ function harness() {
     policies,
     revoked,
     leases,
+    stops,
     authority,
     client,
     credential,
@@ -114,6 +117,19 @@ function harness() {
 }
 
 describe('ComputerCpClient', () => {
+  it('hands a console Stop and its lifting on', async () => {
+    const h = harness()
+    h.client.start()
+    await settle()
+    const [transport] = h.transports
+    h.authOk(transport!)
+    await settle()
+    const at = new Date(h.clock.now()).toISOString()
+    transport!.deliver(buildComputerCpFrame('computer/stop', { stop: { at } }))
+    transport!.deliver(buildComputerCpFrame('computer/stop', { stop: null }))
+    expect(h.stops).toEqual([{ at }, null])
+  })
+
   it('reports audit entries only to a CP that accepts them, and only once it stored them', async () => {
     const entry = {
       id: '00000000-0000-4000-8000-0000000000dd',

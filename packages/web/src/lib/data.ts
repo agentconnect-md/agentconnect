@@ -597,6 +597,8 @@ export interface Agent {
   memoryCaptureMode?: 'turn' | 'manual'
   /** Assistant mode policy (assistant-mode.md §5.1); absent ⇒ never configured, off. */
   assistantMode?: AssistantModePolicy
+  /** Computer use (computer-use.md §4.1); absent ⇒ never configured, off. */
+  computerUse?: { enabled: boolean; computers: string[] }
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
   /** What people can do in chat: only talk, also approve tool calls, or also change runtime settings. */

@@ -234,6 +234,10 @@ export type ComputerLeasePush = z.infer<typeof ComputerLeasePush>
 export const ComputerRelaysPush = z.object({ relays: z.array(ComputerRelayEntry).max(COMPUTER_RELAYS_MAX) })
 export type ComputerRelaysPush = z.infer<typeof ComputerRelaysPush>
 
+// C→D EVT after auth, on change and again while the desktop does not show it: a console Stop, or null once resumed (§6).
+export const ComputerStopPush = z.object({ stop: z.object({ at: z.string().datetime() }).nullable() })
+export type ComputerStopPush = z.infer<typeof ComputerStopPush>
+
 export const COMPUTER_CP_SCHEMAS = {
   'computer/auth': ComputerAuth,
   'computer/auth/ok': ComputerAuthOk,
@@ -243,6 +247,7 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/revoke': ComputerRevoke,
   'computer/lease': ComputerLeasePush,
   'computer/relays': ComputerRelaysPush,
+  'computer/stop': ComputerStopPush,
   'computer/audit': ComputerAuditReport,
   'computer/audit/ok': ComputerAuditAck,
   'computer/screenshot/put': ComputerScreenshotPut,
@@ -264,6 +269,7 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/revoke', COMPUTER_CP_SCHEMAS['computer/revoke']),
   frameSchema('computer/lease', COMPUTER_CP_SCHEMAS['computer/lease']),
   frameSchema('computer/relays', COMPUTER_CP_SCHEMAS['computer/relays']),
+  frameSchema('computer/stop', COMPUTER_CP_SCHEMAS['computer/stop']),
   frameSchema('computer/audit', COMPUTER_CP_SCHEMAS['computer/audit']),
   frameSchema('computer/audit/ok', COMPUTER_CP_SCHEMAS['computer/audit/ok']),
   frameSchema('computer/screenshot/put', COMPUTER_CP_SCHEMAS['computer/screenshot/put']),

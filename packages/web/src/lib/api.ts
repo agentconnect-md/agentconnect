@@ -25,6 +25,13 @@ import type {
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
 import type {
+  ComputerCapabilities,
+  ComputerDoctorReport,
+  ComputerPolicy,
+  ComputerSession,
+  ComputerStatus
+} from '@agentconnect.md/protocol/computer'
+import type {
   Agent,
   AgentCallPolicy,
   ConnectionStatusKey,
@@ -361,6 +368,7 @@ export interface AgentDto {
   permissionMode: string | null // runtime permission/approval mode; null when never set
   chatActions: ChatActions // what people can do in chat
   pause: boolean | null // operational message-processing toggle; true ⇒ agent skips all messages; null ⇒ not paused
+  computerUse?: AgentComputerUse | null // computer use (computer-use.md §4.1); null or absent ⇒ off
   env: Record<string, string> // the agent's OWN variables
   secretKeys: string[] // names of the agent's write-only secret env vars (values never returned)
   // Organization-owned rows assigned to THIS agent (organization-secrets-and-variables.md
@@ -407,6 +415,12 @@ export interface AgentDto {
 }
 
 /** The `PUT /{agents,daemons,crons}/:id/sharing` request body. */
+/** An agent's computer use setting; each named Computer's own policy must also grant the agent. */
+export interface AgentComputerUse {
+  enabled: boolean
+  computers: string[]
+}
+
 export interface SharingInput {
   visibility: ResourceVisibility
   sharedWith: string[] // app_user.id set (intersected with current org members server-side)
@@ -1075,6 +1089,8 @@ export interface UpdateAgentInput {
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
+  /** Computer use, replaced wholesale; null clears (computer-use.md §4.1). */
+  computerUse?: AgentComputerUse | null
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */
   execution?: string
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -2036,6 +2052,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // Blank when the agent has no explicit model — the UI shows "Default" (runtime
     // default). Never fall back to the runtime id: that would fabricate a model.
     model: d.model ?? '',
+    ...(d.computerUse ? { computerUse: d.computerUse } : {}),
     modelSelection: d.modelSelection ?? null,
     repositorySelector: d.repositorySelector ?? null,
     // Blank when the runtime is deferred (an unplaced preset) — mirrors the
@@ -2768,6 +2785,132 @@ export async function fetchComputerScreenshot(sessionId: string, sha256: string)
   return apiGet<ComputerScreenshotDto>(
     `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/computer-screenshots/${encodeURIComponent(sha256)}`
   )
+}
+
+// ── Computers (computer-use.md §2.2, §3.6, §4.1, §10) ──────────────────────────
+
+/** One registered Computer as the console reads it. */
+export interface ComputerDto {
+  id: string
+  name: string
+  ownerUserId: string
+  kind: 'self-hosted' | 'managed'
+  isolation: 'none' | 'container' | 'vm'
+  os: 'macos' | 'windows' | 'linux'
+  osVersion: string
+  session: ComputerSession
+  status: ComputerStatus
+  capabilities: ComputerCapabilities
+  doctor: ComputerDoctorReport | null
+  desktopDaemonVersion: string
+  driverVersion: string
+  policy: ComputerPolicy
+  visibility: ResourceVisibility
+  sharedWith: string[]
+  lastSeenAt: string | null
+  revokedAt: string | null
+  stoppedAt: string | null
+  stoppedByUserId: string | null
+  createdAt: string
+  updatedAt: string
+  canEdit: boolean
+  screenshotRetentionDays: number
+  canEditPolicy: boolean
+}
+
+export interface ComputerAuditEntryDto {
+  id: string
+  at: string
+  tool: string
+  client: string
+  agentId: string | null
+  sessionId: string | null
+  outcome: 'ok' | 'error'
+  code: string | null
+  approval: 'not_required' | 'allowed' | 'allowed_session' | null
+  args: Record<string, unknown>
+  textLength: number | null
+  ms: number
+  screenshotRef: string | null
+}
+
+export interface ComputerAuditPageDto {
+  entries: ComputerAuditEntryDto[]
+  nextCursor: string | null
+}
+
+export interface ComputerRegistrationDto {
+  registrationId: string
+  token: string
+  displayTail: string
+  name: string | null
+  expiresAt: string
+  exchangeUrl: string
+}
+
+export interface ComputerRegistrationStatusDto {
+  registrationId: string
+  expiresAt: string
+  consumedAt: string | null
+  computerId: string | null
+}
+
+const computerPath = (id: string, orgId?: string) => `${orgBase(orgId)}/computers/${encodeURIComponent(id)}`
+
+export async function fetchComputers(orgId?: string): Promise<ComputerDto[]> {
+  return apiGet<ComputerDto[]>(`${orgBase(orgId)}/computers`)
+}
+
+export async function fetchComputer(id: string, orgId?: string): Promise<ComputerDto> {
+  return apiGet<ComputerDto>(computerPath(id, orgId))
+}
+
+export async function fetchComputerAudit(
+  id: string,
+  opts: { cursor?: string; limit?: number } = {}
+): Promise<ComputerAuditPageDto> {
+  const q = new URLSearchParams()
+  if (opts.limit) q.set('limit', String(opts.limit))
+  if (opts.cursor) q.set('cursor', opts.cursor)
+  const qs = q.toString()
+  return apiGet<ComputerAuditPageDto>(`${computerPath(id)}/audit${qs ? `?${qs}` : ''}`)
+}
+
+export async function createComputerRegistration(body: {
+  name?: string
+  ttlMinutes?: number
+}): Promise<ComputerRegistrationDto> {
+  return apiPost<ComputerRegistrationDto>(`${orgBase()}/computers/registrations`, body)
+}
+
+export async function fetchComputerRegistration(registrationId: string): Promise<ComputerRegistrationStatusDto> {
+  return apiGet<ComputerRegistrationStatusDto>(
+    `${orgBase()}/computers/registrations/${encodeURIComponent(registrationId)}`
+  )
+}
+
+export async function setComputerPolicy(id: string, policy: ComputerPolicy): Promise<ComputerDto> {
+  return apiPut<ComputerDto>(`${computerPath(id)}/policy`, policy)
+}
+
+export async function setComputerSharing(id: string, body: SharingInput): Promise<ComputerDto> {
+  return apiPut<ComputerDto>(`${computerPath(id)}/sharing`, body)
+}
+
+export async function stopComputer(id: string): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${computerPath(id)}/stop`, {})
+}
+
+export async function resumeComputer(id: string): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${computerPath(id)}/resume`, {})
+}
+
+export async function revokeComputer(id: string): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${computerPath(id)}/revoke`, {})
+}
+
+export async function deleteComputer(id: string): Promise<void> {
+  await apiDelete<void>(computerPath(id))
 }
 
 // Fetch one agent's raw spec (GET /agents/:id). Returns the wire DTO (not the

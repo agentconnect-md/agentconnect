@@ -967,7 +967,8 @@
       "profile": "Profile",
       "organizationSettings": "Organization settings",
       "more": "More",
-      "decisions": "Decisions"
+      "decisions": "Decisions",
+      "computers": "Computers"
     },
     "brand": "AgentConnect",
     "brandAgent": "Agent",
@@ -3380,6 +3381,23 @@
         "handbook": "Handbook",
         "library": "Library",
         "openKnowledge": "Open Knowledge"
+      },
+      "computers": {
+        "title": "Computers",
+        "enable": "Use computers",
+        "add": "Add computer",
+        "available": "Your computers",
+        "noMore": "No more computers available",
+        "off": "Computer use is off",
+        "offHint": "Turn it on to let this agent take screenshots, click and type on the computers you pick.",
+        "empty": "No computers picked",
+        "emptyHint": "Pick a computer. Its owner must also grant this agent in the computer's settings.",
+        "unavailable": "Unavailable computer",
+        "granted": "granted",
+        "notGranted": "waiting for its owner to grant this agent",
+        "grant": "Grant",
+        "open": "Open computer",
+        "remove": "Remove from agent"
       }
     }
   },
@@ -6184,6 +6202,217 @@
         "unreachable": "Google could not be reached. Try again.",
         "deploymentApp": "This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat."
       }
+    }
+  },
+  "Computers": {
+    "description": "Desktops your agents can see and operate. Each runs the desktop daemon in a signed-in graphical session and reports its status and checks here.",
+    "addComputer": "Add computer",
+    "add": {
+      "title": "Add computer",
+      "description": "Run one command on the desktop you want to add, in a terminal inside its signed-in graphical session. It installs the desktop daemon as a background service and registers it with this organization. You will be its owner.",
+      "os": "Operating system",
+      "osHint": {
+        "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland. The service starts with your session.",
+        "macos": "macOS asks you to allow Accessibility and Screen Recording for AgentConnect the first time.",
+        "windows": "Run it in a normal PowerShell of the signed-in user, not as administrator."
+      },
+      "name": "Name",
+      "optional": "optional",
+      "namePlaceholder": "Uses the computer's hostname",
+      "run": "Run on the computer",
+      "shell": {
+        "posix": "Terminal",
+        "windows": "PowerShell"
+      },
+      "copy": "Copy",
+      "copied": "Copied",
+      "expires": "The command works once and expires {when}.",
+      "waiting": "Waiting for the computer to register",
+      "waitingHint": "Run the command above on the computer",
+      "registered": "Registered, waiting for it to connect",
+      "registeredHint": "The desktop daemon is starting and running its checks",
+      "connected": "Computer connected",
+      "expired": "The command expired before the computer registered",
+      "expiredHint": "Create a new command and run that one instead",
+      "createNew": "Create new command",
+      "mintError": "Could not create the command: {message}",
+      "shownOnce": "The command is shown only once",
+      "cancel": "Cancel",
+      "create": "Create command",
+      "minting": "Creating…",
+      "open": "Open computer",
+      "close": "Close"
+    },
+    "loadError": "Could not load computers: {message}",
+    "empty": {
+      "title": "No computers yet",
+      "description": "Add a computer to let agents take screenshots, click and type on a desktop you choose. You stay in control: you grant agents, approve risky actions and can stop it at any time."
+    },
+    "summary": {
+      "connected": "{count} connected",
+      "disconnected": "{count} disconnected"
+    },
+    "never": "never",
+    "ownedBy": "owned by {name}",
+    "you": "You",
+    "unknownMember": "a former member",
+    "noAgents": "No agents granted",
+    "agentCount": "{count, plural, one {# agent} other {# agents}} granted",
+    "revoked": "revoked",
+    "lastSeen": "seen {when}",
+    "status": {
+      "online": "Online",
+      "offline": "Offline",
+      "locked": "Locked",
+      "paused": "Paused",
+      "human_in_control": "Person in control",
+      "busy": "Agent working",
+      "revoked": "Revoked"
+    },
+    "os": {
+      "macos": "macOS",
+      "windows": "Windows",
+      "linux": "Linux"
+    },
+    "session": {
+      "aqua": "Aqua",
+      "console": "Console session",
+      "rdp": "Remote Desktop",
+      "x11": "X11",
+      "xvfb": "Xvfb (virtual)",
+      "wayland-gnome": "GNOME on Wayland"
+    },
+    "kind": {
+      "self-hosted": "Self-hosted",
+      "managed": "Managed"
+    },
+    "isolation": {
+      "none": "your own desktop",
+      "container": "container",
+      "vm": "virtual machine"
+    },
+    "doctor": {
+      "title": "Checks",
+      "checkedAt": "checked {when}",
+      "empty": "The desktop daemon has not reported its checks yet. They arrive shortly after it connects and then every 30 minutes.",
+      "fix": "Fix:",
+      "notReported": "Checks not reported",
+      "failing": "{count, plural, one {# check failing} other {# checks failing}}",
+      "warning": "{count, plural, one {# warning} other {# warnings}}",
+      "healthy": "All checks pass"
+    },
+    "detail": {
+      "notFound": "Computer not found",
+      "notFoundPre": "No computer",
+      "notFoundPost": "is visible to you in this organization. It may have been deleted, or it is shared with other people only.",
+      "back": "Back to computers",
+      "details": "Details",
+      "owner": "Owner",
+      "kind": "Kind",
+      "display": "Display",
+      "unknown": "Not reported",
+      "input": "Input",
+      "inputNone": "None reported",
+      "inputFull": "Pointer and keyboard",
+      "inputKeymap": "Pointer and keyboard (no IME text)",
+      "viewer": "Viewer",
+      "available": "Available",
+      "unavailable": "Not available",
+      "driver": "Driver",
+      "screenshots": "Screenshots",
+      "retention": "Kept {days, plural, one {# day} other {# days}}",
+      "notStored": "Not stored",
+      "registered": "Registered",
+      "visibility": "Visibility",
+      "revokedBanner": "This computer was revoked. Its desktop daemon can no longer connect, and agents cannot use it. Register the desktop again to bring it back.",
+      "stoppedBanner": "Stopped by {name} {when}. Agents cannot take control until it is resumed.",
+      "stoppedOwnerResumes": "Only its owner can resume it.",
+      "humanBanner": "A person is using this computer, so agents are paused until they hand it back."
+    },
+    "actions": {
+      "stop": "Stop",
+      "resume": "Resume",
+      "more": "Computer actions",
+      "revoke": "Revoke",
+      "delete": "Delete"
+    },
+    "revoke": {
+      "title": "Revoke computer",
+      "body": "{name} will be disconnected at once and its key revoked. Agents lose access immediately, and the desktop has to be registered again to come back.",
+      "confirm": "Revoke",
+      "busy": "Revoking…"
+    },
+    "delete": {
+      "title": "Delete computer",
+      "body": "{name} and its keys will be removed. Its audit and stored screenshots are no longer shown. This can't be undone.",
+      "confirm": "Delete",
+      "busy": "Deleting…"
+    },
+    "activity": {
+      "title": "Recent activity",
+      "note": "What agents and viewers did, kept for 90 days",
+      "empty": "Nothing has happened on this computer yet.",
+      "loading": "Loading activity…",
+      "more": "Show older",
+      "unknownAgent": "An agent you can't see",
+      "approval": {
+        "not_required": "No approval needed",
+        "allowed": "Approved",
+        "allowed_session": "Approved for the session"
+      },
+      "took": "Took {ms} ms",
+      "typed": "typed {count, plural, one {# character} other {# characters}}",
+      "openSession": "Open session"
+    },
+    "policy": {
+      "title": "Agent access",
+      "readOnly": "Only the owner can change this",
+      "agentsTitle": "Agents that may use this computer",
+      "agentsHint": "An agent also needs computer use turned on with this computer picked in its own settings.",
+      "agents": "Agents",
+      "addAgent": "Grant an agent",
+      "noMoreAgents": "No more agents to grant",
+      "noAgents": "No agent may use it yet",
+      "noAgentsHint": "Grant an agent to let it use this computer.",
+      "unknownAgent": "Agent not visible to you",
+      "agentPicked": "Uses this computer",
+      "agentNotPicked": "Has not picked this computer yet",
+      "noIsolation": "Not your agent",
+      "noIsolationHint": "This agent belongs to another member. Your desktop has no isolation from what it does.",
+      "removeAgent": "Revoke this agent's access",
+      "accessTitle": "Control and approvals",
+      "mode": "Agents may",
+      "modeHint": "View only allows screenshots; control also allows clicks and typing.",
+      "modeControl": "View and control",
+      "modeView": "View only",
+      "launchApp": "Ask before opening an app",
+      "launchAppHint": "Each time, once per session, or never.",
+      "launchAlways": "Every time",
+      "launchSession": "Once per session",
+      "launchNever": "Never ask",
+      "firstInput": "Ask before the first input",
+      "firstInputHint": "An agent's first click or keystroke in a session waits for approval.",
+      "submitKeys": "Ask before pressing Enter",
+      "submitKeysHint": "Submitting a form or sending a message waits for approval.",
+      "limitsTitle": "Limits",
+      "idle": "Idle release (seconds)",
+      "idleHint": "Control is released after this long without input, 10 to 3600.",
+      "max": "Longest control (seconds)",
+      "maxHint": "The most one session may hold control, 60 to 86400.",
+      "retention": "Keep screenshots (days)",
+      "retentionHint": "0 stores none; blank uses the deployment's default.",
+      "retentionDefault": "Default",
+      "driverTools": "Expose driver tools",
+      "driverToolsHint": "Also offer agents the driver's own window-level tools. Off by default.",
+      "problem": {
+        "idleRange": "Idle release must be a whole number from 10 to 3600.",
+        "maxRange": "Longest control must be a whole number from 60 to 86400.",
+        "idleAboveMax": "Idle release can't be longer than the longest control.",
+        "retentionRange": "Screenshot days must be a whole number from 0 to 3650, or blank."
+      },
+      "reset": "Reset",
+      "save": "Save",
+      "saving": "Saving…"
     }
   }
 }

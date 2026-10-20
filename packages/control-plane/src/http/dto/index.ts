@@ -4560,9 +4560,12 @@ export const ComputerDto = z.object({
   sharedWith: z.array(z.string()),
   lastSeenAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
+  /** Set while a console Stop holds it paused (computer-use.md §6); only the policy's editor may resume it. */
+  stoppedAt: z.string().nullable(),
+  stoppedByUserId: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
-  /** The caller may revoke, delete or re-share it. */
+  /** The caller may stop, revoke, delete or re-share it. */
   canEdit: z.boolean(),
   /** Days screenshots of this Computer are kept now: its policy's value or the deployment default; 0 stores none. */
   screenshotRetentionDays: z.number().int(),
@@ -4663,6 +4666,15 @@ export const ComputerRegistrationDto = z.object({
   expiresAt: z.string(),
   /** Where the desktop daemon exchanges the token for its Computer key. */
   exchangeUrl: z.string()
+})
+
+/** Whether a desktop daemon has spent a registration token yet, for the console's Add Computer dialog. */
+export const ComputerRegistrationStatusDto = z.object({
+  registrationId: z.string(),
+  expiresAt: z.string(),
+  consumedAt: z.string().nullable(),
+  /** The Computer the token registered; null until it is spent. */
+  computerId: z.string().nullable()
 })
 
 export const RegisterComputerBody = z

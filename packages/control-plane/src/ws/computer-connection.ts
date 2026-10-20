@@ -18,6 +18,7 @@ import {
   type ComputerRevoke,
   type ComputerScreenshotCommit,
   type ComputerScreenshotPut,
+  type ComputerStopPush,
   type ErrorCode
 } from '@agentconnect.md/protocol'
 import type { z } from 'zod'
@@ -79,6 +80,10 @@ export class ComputerConnection implements ComputerChannel {
   private lastKeyId = ''
   // The lease id last told to the desktop ('' for none); undefined until the first push.
   private toldLease: string | undefined
+  // The console Stop last told to the desktop (its time, '' for none); undefined until the first push.
+  private toldStop: string | undefined
+  // Counts Stop pushes, so a heartbeat's read that a console push overtook does not undo it.
+  private stopPushes = 0
   private authTimer: ReturnType<Clock['setTimeout']> | undefined
   // Frames are applied one at a time, so a heartbeat never overtakes the auth it follows.
   private queue: Promise<void> = Promise.resolve()
@@ -187,6 +192,7 @@ export class ComputerConnection implements ComputerChannel {
     const signing = this.deps.keys.signing(this.computerId, principal.apiKeyId, now.getTime())
     if (signing.keyId !== credential.keyId) this.send('computer/credential', { credential: signing })
     await this.syncLease(() => this.deps.leases?.current(this.orgId, this.computerId))
+    this.syncStop(computer.stoppedAt, 'online')
     await this.sendRelays()
   }
 
@@ -230,6 +236,8 @@ export class ComputerConnection implements ComputerChannel {
     await this.syncLease(() =>
       this.deps.leases?.observe(this.orgId, this.computerId, { status, ...(beat.lease ? { lease: beat.lease } : {}) })
     )
+    if (this.state !== 'READY') return
+    await this.readStop(status)
     if (this.state !== 'READY') return
     const credential = this.deps.keys.current(this.computerId, principal.apiKeyId, now)
     if (credential.keyId !== this.lastKeyId) {
@@ -290,6 +298,32 @@ export class ComputerConnection implements ComputerChannel {
     if (this.state !== 'READY') return
     const retention = this.deps.screenshots?.retentionDays(policy)
     this.send('computer/policy', { policy, ...(retention !== undefined ? { screenshotRetentionDays: retention } : {}) })
+  }
+
+  // A Stop or resume made on another replica, or one the desktop lost, reaches it with the next heartbeat.
+  private async readStop(status: ComputerHeartbeat['status']): Promise<void> {
+    try {
+      const pushes = this.stopPushes
+      const computer = await this.deps.repo.get(OrgId(this.orgId), ComputerId(this.computerId))
+      if (computer && pushes === this.stopPushes) this.syncStop(computer.stoppedAt, status)
+    } catch (err) {
+      this.deps.log?.warn({ err: (err as Error).message }, 'computer: stop read failed')
+    }
+  }
+
+  // A standing Stop the desktop does not show is told again: it restarted, or someone resumed it locally.
+  private syncStop(stoppedAt: Date | null, status: ComputerHeartbeat['status']): void {
+    const at = stoppedAt ? stoppedAt.toISOString() : ''
+    const shown = status === 'paused' || status === 'human_in_control'
+    if (at === this.toldStop && (!at || shown)) return
+    this.pushStop(at ? { at } : null)
+  }
+
+  pushStop(stop: ComputerStopPush['stop']): void {
+    if (this.state !== 'READY') return
+    this.toldStop = stop?.at ?? ''
+    this.stopPushes++
+    this.send('computer/stop', { stop })
   }
 
   // The re-read runs on the frame queue, after any heartbeat's lease read in flight, so the last push is the newest commit.

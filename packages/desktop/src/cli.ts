@@ -35,6 +35,7 @@ import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { appBundlePath, runSelf, selfCommand } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
+import { consoleStopHandler } from './cp/console-stop.js'
 import { RelayLinks } from './cp/relay-links.js'
 import { channelPrincipal, createRelayedMcpHandler, type McpPrincipal } from './mcp-access.js'
 import {
@@ -398,12 +399,14 @@ function startCpChannel(options: {
     },
     onLease: (lease) => computer.applyControlLease(lease),
     onRelays: (relays) => relayLinks.converge(relays),
+    onStop: (stop) => applyConsoleStop(stop),
     onRevoked: (reason) => {
       relayLinks.stop()
       markRevoked(dir, reason)
       log(`REVOKED by the Control Plane (${reason}): the key was forgotten and all input is refused`)
     }
   })
+  const applyConsoleStop = consoleStopHandler(computer, () => client.beat())
   // Doctor runs in a child of the daemon, so it sees the service's own session and grants.
   let doctorTimer: NodeJS.Timeout | undefined
   const runDoctor = async (): Promise<void> => {

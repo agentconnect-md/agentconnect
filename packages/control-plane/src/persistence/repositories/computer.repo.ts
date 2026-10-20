@@ -52,6 +52,8 @@ function toRecord(c: Computer): ComputerRecord {
     sharedWith: c.sharedWith,
     lastSeenAt: c.lastSeenAt,
     revokedAt: c.revokedAt,
+    stoppedAt: c.stoppedAt,
+    stoppedByUserId: c.stoppedByUserId,
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   }
@@ -181,6 +183,26 @@ export class PgComputerRepo implements ComputerRepo {
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toRecord)
+  }
+
+  async getRegistration(orgId: OrgId, id: string): Promise<ComputerRegistrationRecord | null> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return null
+    const row = await this.db.computerRegistration.findUnique({ where: { id, orgId } })
+    return row ? toRegistrationRecord(row) : null
+  }
+
+  async setStop(
+    orgId: OrgId,
+    id: ComputerId,
+    stop: { at: Date; byUserId: string | null } | null
+  ): Promise<ComputerRecord | null> {
+    // Conditional on status like the policy, so a revoke that commits first still wins.
+    const written = await this.db.computer.updateMany({
+      where: { id, orgId, status: { not: 'revoked' } },
+      data: stop ? { stoppedAt: stop.at, stoppedByUserId: stop.byUserId } : { stoppedAt: null, stoppedByUserId: null }
+    })
+    if (written.count === 0) return null
+    return this.get(orgId, id)
   }
 
   async setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord | null> {

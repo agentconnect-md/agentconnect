@@ -1,6 +1,6 @@
 // Computers (computer-use.md §2.2, §3.6, §4.1): registration exchange, revocation, visibility and the `computer` principal.
 import { randomUUID } from 'node:crypto'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
 import { seedAgent } from '../fixtures/seed.js'
@@ -324,6 +324,71 @@ describe('revoke and delete', () => {
     // The Selected audience was repaired to a remaining owner, so the Computer is still governable.
     expect(row.sharedWith).toEqual([DEFAULT_OWNER_ID])
     expect(await appAs().deps.computers.authenticate(apiKey)).toBeNull()
+  })
+})
+
+describe('console registration status and stop', () => {
+  it('tells only the token’s minter when it was spent and by which Computer', async () => {
+    const app = appAs()
+    const { token, id } = await issueToken(app)
+    const before = await app.app.inject({ method: 'GET', url: `${ORG}/computers/registrations/${id}` })
+    expect(before.statusCode).toBe(200)
+    expect(before.json()).toMatchObject({ registrationId: id, consumedAt: null, computerId: null })
+    expect(JSON.stringify(before.json())).not.toContain(token)
+    const res = await app.app.inject({ method: 'POST', url: REGISTER, payload: { token, ...profile } })
+    const after = await app.app.inject({ method: 'GET', url: `${ORG}/computers/registrations/${id}` })
+    expect(after.json()).toMatchObject({ computerId: res.json().computerId })
+    expect(after.json().consumedAt).toBeTruthy()
+    const other = appAs(await makeUser('cmp-peeker', 'collaborator'))
+    expect((await other.app.inject({ method: 'GET', url: `${ORG}/computers/registrations/${id}` })).statusCode).toBe(
+      404
+    )
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/computers/registrations/not-a-uuid` })).statusCode).toBe(
+      404
+    )
+  })
+
+  it('a console Stop holds the Computer paused until its owner resumes it', async () => {
+    const app = appAs()
+    const { computerId } = await register(app)
+    const stop = await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/stop` })
+    expect(stop.statusCode).toBe(200)
+    expect(stop.json()).toMatchObject({ stoppedByUserId: DEFAULT_OWNER_ID })
+    expect(stop.json().stoppedAt).toBeTruthy()
+    // Idempotent: the first stop's time stands.
+    const again = await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/stop` })
+    expect(again.json().stoppedAt).toBe(stop.json().stoppedAt)
+    // A live Computer reads as paused while stopped.
+    await prisma.computer.update({ where: { id: computerId }, data: { status: 'online', lastSeenAt: new Date() } })
+    const read = await app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
+    expect(read.json()).toMatchObject({ status: 'paused' })
+    const resume = await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/resume` })
+    expect(resume.statusCode).toBe(200)
+    expect(resume.json()).toMatchObject({ status: 'online', stoppedAt: null, stoppedByUserId: null })
+    // The audit write is best-effort and off the request path.
+    await vi.waitFor(async () => {
+      const audit = await prisma.auditEvent.findMany({ where: { kind: 'computer_change' } })
+      expect(audit.map((a) => (a.details as { action: string }).action)).toEqual(
+        expect.arrayContaining(['stop', 'resume'])
+      )
+    })
+    await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/revoke` })
+    expect((await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/stop` })).statusCode).toBe(409)
+  })
+
+  it('anyone who may revoke may stop, but only the owner resumes', async () => {
+    const app = appAs()
+    const { computerId } = await register(app)
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/sharing`,
+      payload: { visibility: 'org', sharedWith: [] }
+    })
+    const peer = appAs(await makeUser('cmp-stopper', 'collaborator'))
+    expect((await peer.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/stop` })).statusCode).toBe(200)
+    expect((await peer.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/resume` })).statusCode).toBe(
+      403
+    )
   })
 })
 

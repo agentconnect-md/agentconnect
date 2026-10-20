@@ -4516,6 +4516,9 @@ model Computer {
   sharedWith           String[]           @default([])
   lastSeenAt           DateTime?          @db.Timestamptz(6)
   revokedAt            DateTime?          @db.Timestamptz(6)
+  // A console Stop: agents are refused and the desktop held paused until someone resumes it there (computer-use.md §6).
+  stoppedAt            DateTime?          @db.Timestamptz(6)
+  stoppedByUserId      String?
   createdAt            DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
 

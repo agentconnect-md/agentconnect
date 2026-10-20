@@ -191,6 +191,11 @@ export class Computer {
     return this.lease ? 'busy' : 'online'
   }
 
+  // Why agents are paused, if they are; the console Stop resumes only its own pause.
+  pauseReason(): string | undefined {
+    return this.paused?.reason
+  }
+
   private notify(): void {
     const status = this.refusal()
       ? 'unavailable'

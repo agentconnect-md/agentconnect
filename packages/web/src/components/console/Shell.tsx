@@ -90,10 +90,11 @@ function githubCallbackNotice(code: string): GithubCallbackNotice | null {
 }
 
 // The per-list-tab "+" action → which modal it opens.
-const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
+const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon' | 'computer'> = {
   '/agents': 'agent',
   '/crons': 'cron',
-  '/daemons': 'daemon'
+  '/daemons': 'daemon',
+  '/computers': 'computer'
 }
 
 const isActive = (pathname: string, href: string) =>

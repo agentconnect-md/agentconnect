@@ -967,7 +967,8 @@
       "profile": "个人资料",
       "organizationSettings": "组织设置",
       "more": "更多",
-      "decisions": "决策"
+      "decisions": "决策",
+      "computers": "电脑"
     },
     "brand": "AgentConnect",
     "brandAgent": "Agent",
@@ -3380,6 +3381,23 @@
         "handbook": "手册",
         "library": "知识库",
         "openKnowledge": "打开知识"
+      },
+      "computers": {
+        "title": "电脑",
+        "enable": "使用电脑",
+        "add": "添加电脑",
+        "available": "你的电脑",
+        "noMore": "没有更多可用的电脑",
+        "off": "电脑使用已关闭",
+        "offHint": "开启后，此 Agent 可以在你选择的电脑上截图、点击和输入。",
+        "empty": "尚未选择电脑",
+        "emptyHint": "选择一台电脑。电脑的所有者还需要在电脑设置中授权此 Agent。",
+        "unavailable": "电脑不可用",
+        "granted": "已授权",
+        "notGranted": "等待所有者授权此 Agent",
+        "grant": "授权",
+        "open": "打开电脑",
+        "remove": "从 Agent 移除"
       }
     }
   },
@@ -6184,6 +6202,217 @@
         "unreachable": "无法连接到 Google。请重试。",
         "deploymentApp": "这是部署自带的 Chat 应用，请在 Google Chat 中给它发一条消息来连接。"
       }
+    }
+  },
+  "Computers": {
+    "description": "Agent 可以查看和操作的桌面。每台电脑在已登录的图形会话中运行桌面守护进程，并在这里报告状态和检查结果。",
+    "addComputer": "添加电脑",
+    "add": {
+      "title": "添加电脑",
+      "description": "在要添加的桌面上，于已登录图形会话中的终端里运行一条命令。它会把桌面守护进程安装为后台服务并注册到此组织，你将成为它的所有者。",
+      "os": "操作系统",
+      "osHint": {
+        "linux": "Ubuntu，Xfce（Xorg）或 GNOME（Wayland）。服务会随你的会话启动。",
+        "macos": "首次运行时，macOS 会请你为 AgentConnect 允许辅助功能和屏幕录制权限。",
+        "windows": "请在已登录用户的普通 PowerShell 中运行，不要以管理员身份运行。"
+      },
+      "name": "名称",
+      "optional": "可选",
+      "namePlaceholder": "默认使用电脑的主机名",
+      "run": "在电脑上运行",
+      "shell": {
+        "posix": "终端",
+        "windows": "PowerShell"
+      },
+      "copy": "复制",
+      "copied": "已复制",
+      "expires": "该命令只能使用一次，将于{when}过期。",
+      "waiting": "正在等待电脑注册",
+      "waitingHint": "在电脑上运行上面的命令",
+      "registered": "已注册，正在等待连接",
+      "registeredHint": "桌面守护进程正在启动并运行检查",
+      "connected": "电脑已连接",
+      "expired": "命令在电脑注册前已过期",
+      "expiredHint": "请创建新命令并改为运行它",
+      "createNew": "创建新命令",
+      "mintError": "无法生成命令：{message}",
+      "shownOnce": "该命令只显示一次",
+      "cancel": "取消",
+      "create": "生成命令",
+      "minting": "正在生成…",
+      "open": "打开电脑",
+      "close": "关闭"
+    },
+    "loadError": "无法加载电脑：{message}",
+    "empty": {
+      "title": "还没有电脑",
+      "description": "添加一台电脑后，Agent 可以在你选择的桌面上截图、点击和输入。控制权始终在你手中：由你授权 Agent、批准高风险操作，并可随时停止。"
+    },
+    "summary": {
+      "connected": "{count} 台已连接",
+      "disconnected": "{count} 台未连接"
+    },
+    "never": "从未",
+    "ownedBy": "所有者：{name}",
+    "you": "你",
+    "unknownMember": "已离开的成员",
+    "noAgents": "未授权 Agent",
+    "agentCount": "已授权 {count, plural, other {# 个 Agent}}",
+    "revoked": "已吊销",
+    "lastSeen": "{when}在线",
+    "status": {
+      "online": "在线",
+      "offline": "离线",
+      "locked": "已锁屏",
+      "paused": "已暂停",
+      "human_in_control": "有人正在操作",
+      "busy": "Agent 正在操作",
+      "revoked": "已吊销"
+    },
+    "os": {
+      "macos": "macOS",
+      "windows": "Windows",
+      "linux": "Linux"
+    },
+    "session": {
+      "aqua": "Aqua",
+      "console": "控制台会话",
+      "rdp": "远程桌面",
+      "x11": "X11",
+      "xvfb": "Xvfb（虚拟）",
+      "wayland-gnome": "GNOME（Wayland）"
+    },
+    "kind": {
+      "self-hosted": "自托管",
+      "managed": "托管"
+    },
+    "isolation": {
+      "none": "你自己的桌面",
+      "container": "容器",
+      "vm": "虚拟机"
+    },
+    "doctor": {
+      "title": "检查",
+      "checkedAt": "{when}检查",
+      "empty": "桌面守护进程尚未报告检查结果。连接后不久会报告，之后每 30 分钟报告一次。",
+      "fix": "修复：",
+      "notReported": "尚未报告检查结果",
+      "failing": "{count, plural, other {# 项检查失败}}",
+      "warning": "{count, plural, other {# 项警告}}",
+      "healthy": "全部检查通过"
+    },
+    "detail": {
+      "notFound": "找不到电脑",
+      "notFoundPre": "此组织中没有你可见的电脑",
+      "notFoundPost": "。它可能已被删除，或只共享给了其他人。",
+      "back": "返回电脑列表",
+      "details": "详情",
+      "owner": "所有者",
+      "kind": "类型",
+      "display": "显示器",
+      "unknown": "未报告",
+      "input": "输入",
+      "inputNone": "未报告",
+      "inputFull": "鼠标和键盘",
+      "inputKeymap": "鼠标和键盘（不支持输入法文本）",
+      "viewer": "远程查看",
+      "available": "可用",
+      "unavailable": "不可用",
+      "driver": "驱动",
+      "screenshots": "截图",
+      "retention": "保留 {days, plural, other {# 天}}",
+      "notStored": "不保存",
+      "registered": "注册时间",
+      "visibility": "可见范围",
+      "revokedBanner": "此电脑已被吊销。它的桌面守护进程无法再连接，Agent 也无法使用它。重新注册该桌面即可恢复。",
+      "stoppedBanner": "{name}于{when}停止了此电脑。恢复之前 Agent 无法获得控制权。",
+      "stoppedOwnerResumes": "只有所有者可以恢复。",
+      "humanBanner": "有人正在使用这台电脑，Agent 会暂停，直到对方交还控制权。"
+    },
+    "actions": {
+      "stop": "停止",
+      "resume": "恢复",
+      "more": "电脑操作",
+      "revoke": "吊销",
+      "delete": "删除"
+    },
+    "revoke": {
+      "title": "吊销电脑",
+      "body": "{name} 将立即断开连接并吊销其密钥。Agent 会立刻失去访问权限，桌面需要重新注册才能恢复。",
+      "confirm": "吊销",
+      "busy": "正在吊销…"
+    },
+    "delete": {
+      "title": "删除电脑",
+      "body": "{name} 及其密钥将被移除，它的审计记录和已保存的截图将不再显示。此操作无法撤销。",
+      "confirm": "删除",
+      "busy": "正在删除…"
+    },
+    "activity": {
+      "title": "最近活动",
+      "note": "Agent 和查看者的操作，保留 90 天",
+      "empty": "这台电脑上还没有任何活动。",
+      "loading": "正在加载活动…",
+      "more": "显示更早的记录",
+      "unknownAgent": "你看不到的 Agent",
+      "approval": {
+        "not_required": "无需批准",
+        "allowed": "已批准",
+        "allowed_session": "已批准本次会话"
+      },
+      "took": "耗时 {ms} 毫秒",
+      "typed": "输入了 {count, plural, other {# 个字符}}",
+      "openSession": "打开会话"
+    },
+    "policy": {
+      "title": "Agent 访问",
+      "readOnly": "只有所有者可以修改",
+      "agentsTitle": "可以使用这台电脑的 Agent",
+      "agentsHint": "Agent 还需要在自己的设置中开启电脑使用并选择这台电脑。",
+      "agents": "Agents",
+      "addAgent": "授权 Agent",
+      "noMoreAgents": "没有更多可授权的 Agent",
+      "noAgents": "还没有 Agent 可以使用它",
+      "noAgentsHint": "授权一个 Agent，让它可以使用这台电脑。",
+      "unknownAgent": "你不可见的 Agent",
+      "agentPicked": "已选择这台电脑",
+      "agentNotPicked": "尚未选择这台电脑",
+      "noIsolation": "不是你的 Agent",
+      "noIsolationHint": "这个 Agent 属于其他成员。你的桌面与它的操作之间没有任何隔离。",
+      "removeAgent": "撤销此 Agent 的访问权限",
+      "accessTitle": "控制与批准",
+      "mode": "Agent 可以",
+      "modeHint": "仅查看只允许截图；控制还允许点击和输入。",
+      "modeControl": "查看和控制",
+      "modeView": "仅查看",
+      "launchApp": "打开应用前询问",
+      "launchAppHint": "每次、每个会话一次，或从不询问。",
+      "launchAlways": "每次",
+      "launchSession": "每个会话一次",
+      "launchNever": "从不询问",
+      "firstInput": "首次输入前询问",
+      "firstInputHint": "Agent 在一个会话中的第一次点击或按键需要等待批准。",
+      "submitKeys": "按回车前询问",
+      "submitKeysHint": "提交表单或发送消息需要等待批准。",
+      "limitsTitle": "限制",
+      "idle": "空闲释放（秒）",
+      "idleHint": "无输入超过此时长后释放控制权，10 到 3600。",
+      "max": "最长控制时间（秒）",
+      "maxHint": "单个会话最多可持有控制权的时长，60 到 86400。",
+      "retention": "截图保留（天）",
+      "retentionHint": "0 表示不保存；留空使用部署默认值。",
+      "retentionDefault": "默认",
+      "driverTools": "开放驱动工具",
+      "driverToolsHint": "同时向 Agent 提供驱动自带的窗口级工具。默认关闭。",
+      "problem": {
+        "idleRange": "空闲释放必须是 10 到 3600 之间的整数。",
+        "maxRange": "最长控制时间必须是 60 到 86400 之间的整数。",
+        "idleAboveMax": "空闲释放不能长于最长控制时间。",
+        "retentionRange": "截图保留天数必须是 0 到 3650 之间的整数，或留空。"
+      },
+      "reset": "重置",
+      "save": "保存",
+      "saving": "正在保存…"
     }
   }
 }
