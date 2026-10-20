@@ -552,6 +552,8 @@ export function agentRecordToSpec(
     // #536: self-introduce-on-join. A definite column value, always shipped so a
     // toggle replicates to the owning daemon (which applies it to agent.json).
     introduceOnJoin: a.introduceOnJoin,
+    // Computer use (computer-use.md §4.1): value or null, so switching it off replicates.
+    computerUse: a.computerUse ?? null,
     // The strategy sessions run in (session-executors.md §5), always shipped.
     execution: a.execution,
     // Preset marker (preset-agents.md §3.1). Always shipped (definite record field)

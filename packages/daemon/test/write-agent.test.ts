@@ -154,6 +154,19 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     writeAgentSpec(dir, 'bot-a', baseSpec({ assistantMode: null }), deps)
     expect(readJson(file)).not.toHaveProperty('assistantMode')
   })
+  it('stores computer use in agent.json, leaves it on omission, and clears it on null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-computer-use-'))
+    const computerUse = { enabled: true, computers: ['00000000-0000-4000-8000-000000000001'] }
+    const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude' })
+    writeAgentSpec(dir, 'bot-a', baseSpec({ computerUse }), deps)
+    expect(
+      AgentSchema.parse({ ...readJson(file), workspace: { mode: 'from-scratch', path: dir } }).computerUse
+    ).toEqual(computerUse)
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+    expect(readJson(file).computerUse).toEqual(computerUse)
+    writeAgentSpec(dir, 'bot-a', baseSpec({ computerUse: null }), deps)
+    expect(readJson(file)).not.toHaveProperty('computerUse')
+  })
   it('merges displayName from the CP spec', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

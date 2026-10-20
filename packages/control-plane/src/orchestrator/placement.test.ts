@@ -982,6 +982,10 @@ describe('agentRecordToSpec runtime overrides', () => {
     // #536: introduceOnJoin is a definite column value, always shipped so a toggle replicates.
     expect(agentRecordToSpec({ ...base, introduceOnJoin: true }, {})).toMatchObject({ introduceOnJoin: true })
     expect(agentRecordToSpec({ ...base, introduceOnJoin: false }, {})).toMatchObject({ introduceOnJoin: false })
+    // Computer use ships as a value, or null so switching it off replicates.
+    const computerUse = { enabled: true, computers: ['00000000-0000-4000-8000-000000000001'] }
+    expect(agentRecordToSpec({ ...base, computerUse }, {})).toMatchObject({ computerUse })
+    expect(agentRecordToSpec(base, {})).toMatchObject({ computerUse: null })
   })
 
   it('carries the memory backend to the daemon spec, and omits it when null', () => {

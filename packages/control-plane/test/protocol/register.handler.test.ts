@@ -250,6 +250,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       allowedTargetAgentIds: [],
       // #536: self-introduce-on-join — always shipped (definite column) so a toggle replicates.
       introduceOnJoin: false,
+      computerUse: null, // always shipped value-or-null so switching computer use off replicates
       // The execution strategy (session-executors.md §5) — always shipped (definite column); default host.
       execution: 'host',
       // Preset marker — always shipped so the daemon can gate preset-only capabilities.

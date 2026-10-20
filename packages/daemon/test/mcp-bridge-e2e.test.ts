@@ -11,6 +11,7 @@ import { McpControlServer, type McpControlDeps } from '../src/mcp/control-server
 import { buildMcpServers } from '../src/mcp/inject.js'
 import { decodeFrames, encodeFrame, type IpcPrivateRequest, type IpcResponse } from '../src/mcp/ipc.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
+import { COMPUTER_TOOLS } from '../src/computer/tools.js'
 import type { MessageGateway } from '../src/mcp/ops.js'
 import { ASK_STUB_TOOL, askStubDescriptor } from './ask-stub-tool.js'
 
@@ -147,6 +148,39 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
     // No `thread` ⇒ post to the channel ROOT (undefined), not the current thread.
     expect(gw.postMessage).toHaveBeenCalledWith('C9', '<@U9> e2e hi', undefined, { agentAuthorId: 'bot-a' })
     expect(recorded).toEqual([{ channel: 'C9', text: '<@U9> e2e hi', ts: 'ts-42' }])
+  })
+
+  it("serves a computer tool's image through the sandbox image's own bridge entry", async () => {
+    const root = tempRoot('ac-e2e-computer-')
+    const path = join(root, 'mcp.sock')
+    const image = { type: 'image' as const, data: 'iVBORw0KGgo=', mimeType: 'image/png' }
+    const computerTool = vi.fn(async (_ctx: unknown, name: string) =>
+      name === 'computer_screenshot' ? { result: { mcpContent: [image, { type: 'text', text: '{}' }] } } : undefined
+    )
+    server = new McpControlServer(controlDeps({ socketPath: path, computerTool, now: () => 0 }))
+    await server.start()
+    const token = server.register({
+      agentId: 'bot-a',
+      platform: 'webchat',
+      isDm: true,
+      channel: 'c',
+      thread: 't',
+      deliveryThread: 't',
+      tools: COMPUTER_TOOLS.filter((tool) => tool.name === 'computer_screenshot')
+    })
+    const shimEntry = fileURLToPath(new URL('../src/shim/mcp-bridge.ts', import.meta.url))
+    client = new Client({ name: 'sandbox-harness', version: '0.0.0' })
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ['--conditions', 'development', '--import', 'tsx', shimEntry],
+        env: { AC_MCP_ENDPOINT: path, AC_MCP_TOKEN: token }
+      })
+    )
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['computer_screenshot'])
+    const out = await client.callTool({ name: 'computer_screenshot', arguments: {} })
+    expect(out.isError).toBeFalsy()
+    expect(out.content).toEqual([image, { type: 'text', text: '{}' }])
   })
 
   // MCP-side elicitation (#1965 Gap A) over the real wire: the tool asks, the SDK's legacy

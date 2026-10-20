@@ -35,6 +35,7 @@ import type {
   BindRule,
   AgentIcon,
   AgentMemoryBinding,
+  AgentComputerUse,
   AssistantModePolicy,
   AssistantOnboarding,
   AssistantOnboardingHints,
@@ -902,6 +903,7 @@ export interface CreateAgentInput {
   chatActions?: ChatActions // what people can do in chat; absent ⇒ 'approve'
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
+  computerUse?: AgentComputerUse // computer use (computer-use.md §4.1); absent ⇒ off
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
@@ -956,6 +958,7 @@ export interface UpdateAgentInput {
   chatActions?: ChatActions
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
+  computerUse?: AgentComputerUse | null // computer use (computer-use.md §4.1); replaced wholesale, null clears
   execution?: string // the strategy slug, resolved by the route against the placement's table
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
@@ -1051,6 +1054,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
+  computerUse?: AgentComputerUse // from runtimeOverrides.computerUse; absent ⇒ never configured, off
   execution: string // the strategy slug sessions run in (session-executors.md §5)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human

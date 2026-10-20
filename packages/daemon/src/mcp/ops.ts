@@ -248,6 +248,12 @@ export interface OpsDeps
     name: string,
     args: Record<string, unknown>
   ) => Promise<{ result: unknown } | undefined>
+  /** Computer use (computer-use.md §5): run one `computer_*` tool; undefined when `name` is not one. */
+  computerTool?: (
+    ctx: SessionContext,
+    name: string,
+    args: Record<string, unknown>
+  ) => Promise<{ result: unknown } | undefined>
 }
 
 /**
@@ -435,6 +441,11 @@ export async function executeTool(
   // composition time; the namespace is what makes it impossible to shadow a product tool.
   if (deps.appTool) {
     const handled = await deps.appTool(ctx, name, args)
+    if (handled !== undefined) return handled.result
+  }
+  // Computer use: the `computer_*` group, forwarded to a desktop daemon over the data plane.
+  if (deps.computerTool) {
+    const handled = await deps.computerTool(ctx, name, args)
     if (handled !== undefined) return handled.result
   }
   // The rejection is all the model reads (#1921): tool, every issue, accepted shape, received key names.

@@ -210,7 +210,12 @@ const EFFECT_BOUNDARY = new Proxy({ ...PRE_CHECKS } as OpsDeps, {
   get: (target, key) =>
     key in target
       ? target[key as keyof OpsDeps]
-      : key === 'canRun' || key === 'evaluationTool' || key === 'appTool' || key === 'log' || key === 'then'
+      : key === 'canRun' ||
+          key === 'evaluationTool' ||
+          key === 'appTool' ||
+          key === 'computerTool' ||
+          key === 'log' ||
+          key === 'then'
         ? undefined
         : () => {
             throw new ReachedEffect(String(key))
