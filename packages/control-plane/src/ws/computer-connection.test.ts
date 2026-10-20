@@ -131,6 +131,29 @@ describe('ComputerConnection', () => {
     expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop: { at: new Date(T0 + 1).toISOString() } })
   })
 
+  it('does not undo a console Stop with a heartbeat read that started before it', async () => {
+    const { transport, registry, repo } = setup()
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop: null })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const stale = await repo.get()
+    repo.get.mockImplementationOnce(async () => {
+      await gate
+      return stale
+    })
+    transport.deliver(beat())
+    await settle()
+    const stop = { at: new Date(T0 + 1).toISOString() }
+    registry.pushStop(CID, stop)
+    release()
+    await settle()
+    await settle()
+    expect(transport.ofType('computer/stop').at(-1)?.payload).toEqual({ stop })
+    expect(transport.ofType('computer/stop')).toHaveLength(2)
+  })
+
   it('authenticates, records the Computer online and answers with policy and a channel credential', async () => {
     const { transport, registry, reports, conn } = setup()
     const req = auth()

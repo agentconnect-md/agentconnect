@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import {
+  ApiError,
   createComputerRegistration,
   fetchComputer,
   fetchComputerRegistration,
@@ -35,23 +36,27 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
   const [computerId, setComputerId] = useState<string | null>(null)
   const [computer, setComputer] = useState<ComputerDto | null>(null)
   const [copied, setCopied] = useState(false)
+  const [expired, setExpired] = useState(false)
   const connected = computer !== null && computer.status !== 'offline' && computer.status !== 'revoked'
 
   // Wait for the token to be spent, then for the new Computer's channel to report in.
   useEffect(() => {
-    if (!registration || connected) return
+    if (!registration || connected || expired) return
     let active = true
     const tick = async () => {
       try {
         if (!computerId) {
           const status = await fetchComputerRegistration(registration.registrationId)
-          if (active && status.computerId) setComputerId(status.computerId)
+          if (!active) return
+          if (status.computerId) setComputerId(status.computerId)
+          else if (Date.now() > Date.parse(registration.expiresAt)) setExpired(true)
           return
         }
         const row = await fetchComputer(computerId)
         if (active) setComputer(row)
-      } catch {
-        /* a transient read failure is retried on the next tick */
+      } catch (cause) {
+        // A reaped registration reads 404; any other failure is retried on the next tick.
+        if (active && !computerId && cause instanceof ApiError && cause.status === 404) setExpired(true)
       }
     }
     void tick()
@@ -60,7 +65,13 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
       active = false
       clearInterval(timer)
     }
-  }, [registration, computerId, connected])
+  }, [registration, computerId, connected, expired])
+
+  const restart = () => {
+    setRegistration(null)
+    setExpired(false)
+    setCopied(false)
+  }
 
   const mint = async () => {
     if (minting) return
@@ -165,11 +176,23 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
                 <span className="text-(--magenta-300)">{os === 'windows' ? '>' : '$'}</span> {command}
               </div>
             </div>
-            <p className="mt-[8px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              {t('expires', { when: ago(registration.expiresAt) })}
-            </p>
+            {!expired && (
+              <p className="mt-[8px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                {t('expires', { when: ago(registration.expiresAt) })}
+              </p>
+            )}
             <div className="mt-[14px] flex items-center gap-[11px] rounded-[9px] border border-dashed border-(--border-strong) px-[14px] py-[13px]">
-              {connected ? (
+              {expired ? (
+                <>
+                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center leading-[0]">
+                    <Icon name="triangle-alert" size={18} color="var(--status-paused)" />
+                  </span>
+                  <div className="flex-1">
+                    <div className="font-sans text-[13px] font-semibold leading-normal">{t('expired')}</div>
+                    <div className="mono text-[11px] text-(--text-tertiary)">{t('expiredHint')}</div>
+                  </div>
+                </>
+              ) : connected ? (
                 <>
                   <span className="flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--status-online)">
                     <Icon name="check" size={13} color="#fff" />
@@ -217,6 +240,15 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
             </Button>
             <Button variant="primary" disabled={minting} onClick={() => void mint()}>
               {minting ? t('minting') : t('create')}
+            </Button>
+          </>
+        ) : expired ? (
+          <>
+            <Button variant="ghost" onClick={onClose}>
+              {t('cancel')}
+            </Button>
+            <Button variant="primary" onClick={restart}>
+              {t('createNew')}
             </Button>
           </>
         ) : connected && computer ? (

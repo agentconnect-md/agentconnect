@@ -282,9 +282,11 @@ export function computerRoutes(deps: HttpDeps) {
       }
     )
 
+    // Resume loosens the human emergency brake, so API keys and agents' delegated calls cannot reach it.
     r.post(
       '/computers/:id/resume',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Computers],
           summary: 'Resume a computer',

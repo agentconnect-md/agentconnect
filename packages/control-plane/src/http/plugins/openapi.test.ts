@@ -301,6 +301,7 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/daemons/token',
           'POST /api/v1/orgs/:orgId/computers/registrations',
           'POST /api/v1/orgs/:orgId/computers/:id/revoke',
+          'POST /api/v1/orgs/:orgId/computers/:id/resume',
           'DELETE /api/v1/orgs/:orgId/computers/:id',
           'DELETE /api/v1/oauth/grants/:id',
           'DELETE /api/v1/orgs/:orgId',
@@ -348,6 +349,8 @@ describe('openapi plane', () => {
         [`${base}/{id}`, 'get', 'getComputer'],
         [`${base}/{id}/policy`, 'put', 'setComputerPolicy'],
         [`${base}/{id}/sharing`, 'put', 'setComputerSharing'],
+        [`${base}/{id}/stop`, 'post', 'stopComputer'],
+        [`${base}/registrations/{id}`, 'get', 'getComputerRegistration'],
         ['/api/v1/computers/register', 'post', 'registerComputer']
       ]
       for (const [path, method, operationId] of expected) {
@@ -358,6 +361,8 @@ describe('openapi plane', () => {
       }
       // The desktop daemon presents its registration token in the body, not a bearer.
       expect(doc.paths['/api/v1/computers/register'].post.security).toEqual([])
+      // Resume loosens the console Stop, so it is interactive-only and undocumented.
+      expect(doc.paths?.[`${base}/{id}/resume`]?.post).toBeUndefined()
       // The `/v1` alias serves the handed-out exchange URL without documenting it twice.
       expect(Object.keys(doc.paths).some((p) => p.startsWith('/v1/'))).toBe(false)
       expect(doc.tags.map((t: { name: string }) => t.name)).toContain('Computers')

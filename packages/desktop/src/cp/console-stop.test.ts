@@ -3,10 +3,18 @@ import { CONSOLE_STOP_REASON, consoleStopHandler, type StoppableComputer } from 
 
 function fakeComputer(initial: ReturnType<StoppableComputer['liveStatus']> = 'online') {
   let status = initial
+  let reason: string | undefined = initial === 'paused' ? 'owner' : undefined
   const computer = {
     liveStatus: () => status,
-    pause: vi.fn(() => (status = 'paused')),
-    resume: vi.fn(() => (status = 'online')),
+    pauseReason: () => reason,
+    pause: vi.fn((why: string) => {
+      status = 'paused'
+      reason = why
+    }),
+    resume: vi.fn(() => {
+      status = 'online'
+      reason = undefined
+    }),
     set: (next: typeof status) => (status = next)
   }
   return computer
@@ -45,5 +53,17 @@ describe('consoleStopHandler', () => {
     computer.set('human_in_control')
     apply(null)
     expect(computer.resume).not.toHaveBeenCalled()
+  })
+
+  it('does not resume a local pause that replaced the Stop', () => {
+    const computer = fakeComputer('online')
+    const apply = consoleStopHandler(computer, () => {})
+    apply(STOP)
+    computer.resume()
+    computer.pause('paused by the owner')
+    apply(null)
+    expect(computer.resume).toHaveBeenCalledTimes(1)
+    expect(computer.liveStatus()).toBe('paused')
+    expect(computer.pauseReason()).toBe('paused by the owner')
   })
 })

@@ -316,9 +316,9 @@ system keychain or credential manager is still to do. A registered desktop mints
 API keys gain a `computer` principal type, usable only on the Computer channel; it can neither run agents nor reach
 other resources ([daemon-api-key-auth.md](daemon-api-key-auth.md)). **[implemented]** `POST
 /orgs/:orgId/computers/registrations` mints a one-time token (60 minutes by default, at most 24 hours) and
-`POST /v1/computers/register` spends it, creating the Computer and its key in one transaction; both the minting route
-and `POST /orgs/:orgId/computers/:id/revoke` are `interactiveOnly`. A registrant who leaves the organization has their
-Computers revoked. The prototype's local token (sha256 stored, shown
+`POST /v1/computers/register` spends it, creating the Computer and its key in one transaction; the minting route,
+`POST /orgs/:orgId/computers/:id/revoke` and `POST …/resume` are `interactiveOnly`. A registrant who leaves the
+organization has their Computers revoked. The prototype's local token (sha256 stored, shown
 once) stays as an offline / development mode.
 
 ### 3.7 Data paths
@@ -664,8 +664,8 @@ says this, and how to read each error, in the standing instructions of every ses
   revokes the lease and enters `paused` until the owner resumes [design].
   **[implemented]** The console Stop: `POST /orgs/:orgId/computers/:id/stop` (anyone who may revoke the Computer) sets
   `stoppedAt` on the Computer, ends its lease, and refuses every acquire with `human_in_control` until
-  `POST …/resume` (only the policy's editor, the registrant of a self-hosted Computer) clears it. The CP tells the
-  desktop with `computer/stop` after auth, on change, and on any heartbeat that does not show the Stop, so a Stop made
+  `POST …/resume` (only the policy's editor, the registrant of a self-hosted Computer, and `interactiveOnly` so no API key
+  or agent's delegated call can lift it) clears it. The CP tells the desktop with `computer/stop` after auth, on change, and on any heartbeat that does not show the Stop, so a Stop made
   on another replica or lost to a restart still lands; the desktop pauses only while online or busy and resumes only a
   pause the Stop itself caused. A stopped live Computer reads as `paused`.
 - **Fail-safe**: a remote key that lands in the daemon's own console window is handled as a console key; since those

@@ -1,6 +1,7 @@
 // The console Stop (computer-use.md §6): pause a working desktop, and resume only a pause the Stop itself caused.
 export interface StoppableComputer {
   liveStatus(): 'online' | 'paused' | 'human_in_control' | 'busy'
+  pauseReason(): string | undefined
   pause(reason: string): void
   resume(): void
 }
@@ -25,7 +26,8 @@ export function consoleStopHandler(
     }
     if (!stoppedByConsole) return
     stoppedByConsole = false
-    if (status !== 'paused') return
+    // A local pause or takeover that replaced the Stop's own pause is the owner's to lift.
+    if (status !== 'paused' || computer.pauseReason() !== CONSOLE_STOP_REASON) return
     computer.resume()
     changed()
   }

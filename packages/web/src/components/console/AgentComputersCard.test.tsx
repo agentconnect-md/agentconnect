@@ -75,4 +75,19 @@ describe('AgentComputersCard', () => {
     expect(el.querySelector<HTMLButtonElement>('button[role="switch"]')!.disabled).toBe(true)
     expect(el.querySelector('button[title="Remove from agent"]')).toBeNull()
   })
+
+  it('shows a change made elsewhere once the saved value has caught up', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const draw = () => act(() => root.render(<AgentComputersCard agentId="a1" canEdit />))
+    draw()
+    await act(async () => host.querySelector<HTMLButtonElement>('button[role="switch"]')!.click())
+    expect(host.textContent).toContain('No computers picked')
+    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: [] } }
+    draw()
+    mocks.agent = { id: 'a1', computerUse: { enabled: false, computers: [] } }
+    draw()
+    expect(host.textContent).toContain('Computer use is off')
+  })
 })

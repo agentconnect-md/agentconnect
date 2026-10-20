@@ -82,6 +82,8 @@ export class ComputerConnection implements ComputerChannel {
   private toldLease: string | undefined
   // The console Stop last told to the desktop (its time, '' for none); undefined until the first push.
   private toldStop: string | undefined
+  // Counts Stop pushes, so a heartbeat's read that a console push overtook does not undo it.
+  private stopPushes = 0
   private authTimer: ReturnType<Clock['setTimeout']> | undefined
   // Frames are applied one at a time, so a heartbeat never overtakes the auth it follows.
   private queue: Promise<void> = Promise.resolve()
@@ -301,8 +303,9 @@ export class ComputerConnection implements ComputerChannel {
   // A Stop or resume made on another replica, or one the desktop lost, reaches it with the next heartbeat.
   private async readStop(status: ComputerHeartbeat['status']): Promise<void> {
     try {
+      const pushes = this.stopPushes
       const computer = await this.deps.repo.get(OrgId(this.orgId), ComputerId(this.computerId))
-      if (computer) this.syncStop(computer.stoppedAt, status)
+      if (computer && pushes === this.stopPushes) this.syncStop(computer.stoppedAt, status)
     } catch (err) {
       this.deps.log?.warn({ err: (err as Error).message }, 'computer: stop read failed')
     }
@@ -319,6 +322,7 @@ export class ComputerConnection implements ComputerChannel {
   pushStop(stop: ComputerStopPush['stop']): void {
     if (this.state !== 'READY') return
     this.toldStop = stop?.at ?? ''
+    this.stopPushes++
     this.send('computer/stop', { stop })
   }
 

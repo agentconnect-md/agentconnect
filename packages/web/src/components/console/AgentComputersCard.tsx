@@ -27,7 +27,9 @@ export function AgentComputersCard({ agentId, canEdit }: { agentId: string; canE
   const stored = getAgent(agentId)?.computerUse ?? OFF
   // The agent list refreshes in the background after a save, so the saved value shows until it catches up.
   const [pending, setPending] = useState<AgentComputerUse | null>(null)
-  const value = pending && !same(pending, stored) ? pending : stored
+  // Drop the saved value once the list shows it, so a later change made elsewhere shows and the next save builds on it.
+  if (pending && same(pending, stored)) setPending(null)
+  const value = pending ?? stored
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 

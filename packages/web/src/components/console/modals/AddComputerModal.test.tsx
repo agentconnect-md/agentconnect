@@ -86,4 +86,42 @@ describe('AddComputerModal', () => {
     expect(host.querySelector('[data-install-command]')!.textContent).toContain('--register "ac_secret"')
     expect(host.textContent).toContain('PowerShell')
   })
+
+  it('stops waiting once the token expires and offers a new command', async () => {
+    mocks.createComputerRegistration.mockResolvedValue({
+      ...registration,
+      expiresAt: new Date(Date.now() + REGISTRATION_POLL_MS * 1.5).toISOString()
+    })
+    mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    await act(async () => button('Create command').click())
+    expect(host.textContent).toContain('Waiting for the computer to register')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REGISTRATION_POLL_MS * 2)
+    })
+    expect(host.textContent).toContain('The command expired')
+    const polls = mocks.fetchComputerRegistration.mock.calls.length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REGISTRATION_POLL_MS * 3)
+    })
+    expect(mocks.fetchComputerRegistration).toHaveBeenCalledTimes(polls)
+    act(() => button('Create new command').click())
+    expect(button('Create command')).toBeTruthy()
+  })
+
+  it('treats a reaped registration as expired', async () => {
+    const { ApiError } = await import('@/lib/api')
+    mocks.createComputerRegistration.mockResolvedValue(registration)
+    mocks.fetchComputerRegistration.mockRejectedValue(new ApiError('registration not found', 404))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    await act(async () => button('Create command').click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(host.textContent).toContain('The command expired')
+  })
 })
