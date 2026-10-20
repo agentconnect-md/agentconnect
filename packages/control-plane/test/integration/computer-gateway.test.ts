@@ -170,6 +170,32 @@ describe('Computer channel', () => {
     await until(async () => (await getComputer(app, reg.computerId)).status === 'offline')
   })
 
+  it('stores the audit a desktop reports and serves it to the owner, with typed text by length only', async () => {
+    const { app, base } = await start()
+    const { computerId, apiKey } = await register(app)
+    const client = await Client.dial(`${base}/v1/computers/ws`)
+    expect((await client.auth(apiKey)).features).toEqual(['computer-audit-v1'])
+    const report = buildComputerCpFrame('computer/audit', {
+      entries: [
+        {
+          id: randomUUID(),
+          at: new Date().toISOString(),
+          tool: 'computer_type',
+          client: 'local',
+          outcome: 'ok',
+          args: { text: 'hunter2' },
+          ms: 9
+        }
+      ]
+    })
+    client.send(report)
+    expect((await client.next('computer/audit/ok')).payload).toEqual({ stored: 1 })
+    const page = await app.http.inject({ method: 'GET', url: `${ORG}/computers/${computerId}/audit` })
+    expect(page.json()).toMatchObject({ entries: [{ tool: 'computer_type', args: {}, textLength: 7 }] })
+    expect(page.body).not.toContain('hunter2')
+    client.ws.close()
+  })
+
   it('refuses a wrong key, a wrong subprotocol and a frame before auth', async () => {
     const { app, base } = await start()
     await register(app)

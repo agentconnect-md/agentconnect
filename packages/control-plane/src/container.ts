@@ -131,6 +131,7 @@ import {
   PgSkillSourceRepo,
   PgComputerRepo,
   PgComputerLeaseRepo,
+  PgComputerAuditRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -229,6 +230,7 @@ import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { ComputerService } from './registry/computerService.js'
 import { ComputerLeaseService } from './registry/computerLeaseService.js'
+import { ComputerAuditLog } from './registry/computerAuditLog.js'
 import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
@@ -539,6 +541,7 @@ export function buildContainer(
     skillSource: new PgSkillSourceRepo(prisma),
     computer: new PgComputerRepo(prisma),
     computerLease: new PgComputerLeaseRepo(prisma),
+    computerAudit: new PgComputerAuditRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     organizationRecord: new PgOrganizationRecordRepo(prisma),
@@ -666,6 +669,7 @@ export function buildContainer(
     audit: repos.audit,
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
+  const computerAudit = new ComputerAuditLog(repos.computerAudit, clock)
   const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock, {
     channels: computerChannels,
     leases: computerLeases,
@@ -2152,6 +2156,7 @@ export function buildContainer(
     auth,
     apiKeys,
     computers,
+    computerAudit,
     oauth,
     webchatTokens,
     inviteLinks,
@@ -3302,6 +3307,7 @@ export function buildContainer(
         keys: computerChannelKeys,
         registry: computerChannels,
         leases: computerLeases,
+        audit: computerAudit,
         relays: () => relayRoster.entries(),
         clock,
         heartbeatSec: config.HEARTBEAT_SEC,

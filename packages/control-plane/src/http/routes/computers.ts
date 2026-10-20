@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import type { ComputerRecord } from '../../persistence/ports.js'
+import type { ComputerAuditRecord, ComputerRecord } from '../../persistence/ports.js'
 import { ComputerId } from '../../domain/ids.js'
 import { ComputerPolicySchema, withOwnerMember } from '../../domain/computer.js'
 import { orgOf, ctxOf, denyViewerWrite } from '../rbac.js'
@@ -12,6 +12,8 @@ import { resolveShareSet } from '../sharing.js'
 import { publicBaseUrl } from '../oauth/base.js'
 import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
 import {
+  ComputerAuditPageDto,
+  ComputerAuditQuery,
   ComputerDto,
   ComputerListDto,
   ComputerRegistrationDto,
@@ -36,6 +38,32 @@ function canEditPolicy(c: ComputerRecord, ctx: ViewCtx): boolean {
   if (!canEdit(c, ctx)) return false
   return c.kind !== 'self-hosted' || c.ownerUserId === ctx.userId
 }
+
+// An audit page cursor: the last entry's time and id, opaque to callers.
+const encodeCursor = (e: ComputerAuditRecord): string =>
+  Buffer.from(`${e.at.toISOString()}|${e.id}`).toString('base64url')
+
+function decodeCursor(cursor: string): { at: Date; id: string } | null {
+  const [at, id] = Buffer.from(cursor, 'base64url').toString().split('|')
+  const date = new Date(at ?? '')
+  return id && /^[0-9a-f-]{36}$/i.test(id) && !Number.isNaN(date.getTime()) ? { at: date, id } : null
+}
+
+const auditDto = (e: ComputerAuditRecord) => ({
+  id: e.id,
+  at: e.at.toISOString(),
+  tool: e.tool,
+  client: e.client,
+  agentId: e.agentId,
+  sessionId: e.sessionId,
+  outcome: e.outcome,
+  code: e.code,
+  approval: e.approval,
+  args: e.args,
+  textLength: e.textLength,
+  ms: e.ms,
+  screenshotRef: e.screenshotRef
+})
 
 function toDto(c: ComputerRecord, ctx: ViewCtx, status: ComputerRecord['status']): ComputerDtoT {
   return {
@@ -107,6 +135,48 @@ export function computerRoutes(deps: HttpDeps) {
         const c = await getOrgComputer(req, req.params.id)
         if (!c) return reply.code(404).send(notFound)
         return toDto(c, ctxOf(req), deps.computers.presentedStatus(c))
+      }
+    )
+
+    // The audit shows what agents did on someone's desktop, so it is the owner's, as the policy is.
+    r.get(
+      '/computers/:id/audit',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'List computer audit entries',
+          description:
+            'Lists the calls a Computer’s desktop daemon served, newest first: the agent and session, the tool, its outcome, how it was approved, and its arguments with typed text recorded only as `textLength`. Only the registrant of a self-hosted Computer, or an editor of a managed one, may read it. Pass a page’s `nextCursor` back as `cursor` for older entries; filter by `agentId` or `sessionId`. Entries are kept for 90 days.',
+          operationId: 'listComputerAudit',
+          params: IdParam,
+          querystring: ComputerAuditQuery,
+          response: { 200: ComputerAuditPageDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const c = await getOrgComputer(req, req.params.id)
+        if (!c) return reply.code(404).send(notFound)
+        if (!canEditPolicy(c, ctxOf(req))) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s owner can read its audit' })
+        }
+        const before = req.query.cursor ? decodeCursor(req.query.cursor) : undefined
+        if (before === null) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid cursor' })
+        }
+        const limit = req.query.limit
+        const rows = await deps.computerAudit.list(orgOf(req), c.id, {
+          limit: limit + 1,
+          ...(before ? { before } : {}),
+          ...(req.query.agentId ? { agentId: req.query.agentId } : {}),
+          ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {})
+        })
+        const page = rows.slice(0, limit)
+        return {
+          entries: page.map(auditDto),
+          nextCursor: rows.length > limit ? encodeCursor(page[page.length - 1]!) : null
+        }
       }
     )
 

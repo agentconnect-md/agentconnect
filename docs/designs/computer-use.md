@@ -25,7 +25,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows the user Run key, on Linux a systemd user unit (§3.2, §3.3) | Validated (except the Windows install flow)       |
 | 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.desktop`), not the terminal (§3.2.1)                                                                                      | Validated                                         |
 | 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (direct path and TURN are design)     |
-| 7   | Permissions                        | Per-Computer visibility and grants with `view` / `control` modes; approvals for risky actions; hard refusals for system security surfaces and dangerous shortcuts (§4)                         | Hard refusals validated; the rest is design       |
+| 7   | Permissions                        | Per-Computer visibility and grants with `view` / `control` modes; approvals for risky actions; hard refusals for system security surfaces and dangerous shortcuts (§4)                         | Refusals validated; approvals implemented         |
 | 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
 | 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray not built) |
@@ -470,6 +470,26 @@ where the session's conversation lives and to the Computer's owner. Screenshots,
 default; the first input of a session, launching an app, and submit-like keys do, with an optional "always allow in
 this session".
 
+**[implemented]** The agent daemon asks before it takes the lease, so a person's answer never holds the Computer
+(`packages/daemon/src/computer/tools.ts`). The grant (§3.7) carries the Computer's name, its owner and
+`policy.approvals`; a CP that sends no policy gets every approval asked. An input asks when the policy wants one of:
+
+- **first input**: the first click, drag, type, key or launch of the session on that Computer (`firstInputPerSession`);
+  a move or a scroll does not count, and any "allow" answers it for the rest of the session;
+- **launching an app**: every `computer_launch` under `launchApp: always`, the first under `session`, none under `never-ask`;
+- **pressing Enter**: a `computer_key` with Return or Enter, or `computer_type` text with a line break (`submitLikeKeys`).
+
+One card covers every reason a call has; it offers Allow once, Allow for this session (which also covers later calls
+for the same reasons) and Deny. It names the Computer and the action and never shows typed text, only its length.
+Approvals in a session run one at a time, so parallel inputs share an answer. The card is the daemon's own ask, like
+the bot-join confirmation, raised through `PermissionCoordinator.askComputerApproval` on the turn's ordinary approval
+path ([mcp-elicitation.md](mcp-elicitation.md) §8): a card in the conversation where people there may approve, or else
+the neutral notice plus the console and the approval DM. The approval DM goes to the Computer's owner first and falls
+back to the usual chain; beside a card in the conversation the owner gets a DM too, unless they are the asker there.
+Through `agent/approval-route` the owner is reached, and their answer counts, only while they may edit the agent, which
+is the default since a self-hosted Computer admits only its owner's agents. A refusal, or no live turn to ask on, returns
+a definite `approval_denied` and nothing is sent.
+
 ### 4.3 Hard refusals
 
 Whatever the policy, the desktop daemon refuses locally:
@@ -720,6 +740,17 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
   the length of `computer_type` text and no screenshots [validated]. The release adds the agent, session, target window,
   approval outcome, and screenshot reference, reports to the Control Plane, and lets the owner query per Computer.
+  **[implemented]** The agent daemon puts how each input was approved (`not_required`, `allowed`, or
+  `allowed_session` for one an earlier answer covered) in the call's `_meta` (`md.agentconnect/approval`); the desktop
+  trusts it only from a channel token and records it with the token's agent and session. A registered desktop queues
+  every audited call, typed text reduced to `textLength` by `computerAuditArgs` in `packages/protocol`, and sends
+  batches of up to 100 as `computer/audit` once the CP's auth reply lists `computer-audit-v1`; the CP acks a stored
+  batch with `computer/audit/ok`, and the desktop keeps up to 2000 unsent entries, dropping the oldest. The CP
+  summarizes the arguments again before it writes the `computer_audit` table, skips ids it already has, and drops a
+  Computer's entries older than 90 days. `GET /computers/{id}/audit` (`listComputerAudit`) pages them newest first,
+  filtered by agent or session, for the registrant of a self-hosted Computer or an editor of a managed one. A call an
+  approval refused never reaches the desktop, so it is in the session's permission requests, not this audit. The target
+  window and the screenshot reference (§9) are not recorded yet.
 - **Revocation**: deleting the Computer, revoking the key, or removing an agent's grant takes effect immediately while
   the desktop daemon is connected to the Control Plane, and disconnects viewers. Every tool and viewer channel carries
   a short-lived credential (minutes) that the desktop daemon verifies locally and that only the Control Plane renews.

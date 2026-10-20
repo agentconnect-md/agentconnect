@@ -60,7 +60,8 @@ import type {
   BotRevocationEvidence,
   PlaceExternalReason,
   RuntimeStrategyEntries,
-  TransferUploadOutcome
+  TransferUploadOutcome,
+  ComputerApprovalResult
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -680,6 +681,44 @@ export interface ComputerRepo {
   reapRegistrations(expiredBefore: Date): Promise<number>
   /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */
   delete(orgId: OrgId, id: ComputerId): Promise<void>
+}
+
+/** One stored audit entry (computer-use.md §8.2): what a desktop daemon served, typed text by its length only. */
+export interface ComputerAuditRecord {
+  id: string
+  computerId: ComputerId
+  at: Date
+  tool: string
+  client: string
+  agentId: string | null
+  sessionId: string | null
+  outcome: 'ok' | 'error'
+  code: string | null
+  approval: ComputerApprovalResult | null
+  args: Record<string, unknown>
+  textLength: number | null
+  ms: number
+  screenshotRef: string | null
+}
+
+export interface ComputerAuditQuery {
+  limit: number
+  /** Entries strictly older than this cursor (`at`, then `id`), newest first. */
+  before?: { at: Date; id: string }
+  agentId?: string
+  sessionId?: string
+}
+
+export interface ComputerAuditRepo {
+  /** Store a desktop's batch, skipping ids it already sent, and drop that Computer's entries older than `keepAfter`; returns how many were new. */
+  append(
+    orgId: OrgId,
+    computerId: ComputerId,
+    entries: Omit<ComputerAuditRecord, 'computerId'>[],
+    keepAfter: Date
+  ): Promise<number>
+  /** One Computer's entries, newest first. */
+  list(orgId: OrgId, computerId: ComputerId, query: ComputerAuditQuery): Promise<ComputerAuditRecord[]>
 }
 
 /** A Computer's control lease row (computer-use.md §4.4); the decisions live in `domain/computerLease.ts`. */

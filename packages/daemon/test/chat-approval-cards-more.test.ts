@@ -518,6 +518,36 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
     await feishuOnly.store.close()
   })
 
+  it('DMs the Computer owner beside a computer-use card (computer-use.md §4.2)', async () => {
+    const ask = (asker: string) =>
+      world('feishu', { level: 'approve', editors: new Set(['on_editor']), asker, slackDm: true })
+    const params = () =>
+      ({
+        ...permission(),
+        toolCall: { toolCallId: `computer-approval-${Math.random()}`, title: 'Computer use on “Desk”: click at (1, 2)' }
+      }) as RequestPermissionRequest
+    const live = (w: Awaited<ReturnType<typeof world>>) => ({
+      ...w.daemon.pending.get(JSON.stringify([AGENT, 's1'])),
+      acpSessionId: 's1'
+    })
+
+    const w = await ask('on_member')
+    void w.permissions.askComputerApproval(live(w), params(), 'cu-ed')
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+    await vi.waitFor(() => expect(w.slackConn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(w.slackConn.postBlocks.mock.calls[0]![0]).toBe('D-U-ED')
+    expect(w.approvalRoute.mock.calls[0]![0]).toMatchObject({ consoleUserId: 'cu-ed' })
+    await w.store.close()
+
+    // A plain request never DMs beside its card here.
+    const plain = await ask('on_member')
+    void plain.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(plain.posts()).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(plain.slackConn.postBlocks).not.toHaveBeenCalled()
+    await plain.store.close()
+  })
+
   it('judges a typed settings command by the union_id its message carried', async () => {
     const w = await synced('settings')
     const typed = (unionId: string) =>

@@ -1,5 +1,11 @@
 import { fromJsonSchema, McpServer, type JsonSchemaType } from '@modelcontextprotocol/server'
 import { z } from 'zod'
+import {
+  COMPUTER_APPROVAL_META_KEY,
+  COMPUTER_APPROVAL_RESULTS,
+  type ComputerApprovalResult
+} from '@agentconnect.md/protocol/computer'
+import { withCallContext, type CallContext } from './audit.js'
 import type { Computer, ToolOutput } from './computer.js'
 import type { DriverTool } from './driver/client.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
@@ -58,6 +64,16 @@ export function stripDriverArgs(args: Record<string, unknown>): Record<string, u
   return out
 }
 
+// The approval outcome an agent daemon attached to a call (computer-use.md §4.2); anything else reads as none.
+function approvalOf(ctx: unknown): ComputerApprovalResult | undefined {
+  const value = (ctx as { mcpReq?: { _meta?: Record<string, unknown> } } | undefined)?.mcpReq?._meta?.[
+    COMPUTER_APPROVAL_META_KEY
+  ]
+  return (COMPUTER_APPROVAL_RESULTS as readonly unknown[]).includes(value)
+    ? (value as ComputerApprovalResult)
+    : undefined
+}
+
 const asResult = (output: ToolOutput) => output as { content: { type: 'text'; text: string }[]; isError?: boolean }
 
 export function createComputerMcpServer(options: {
@@ -66,9 +82,19 @@ export function createComputerMcpServer(options: {
   driverTools?: DriverTool[]
   // A `view` grant (computer-use.md §4.1): tools that send input or take the lease are not offered at all.
   viewOnly?: boolean
+  // An agent session's channel token: its calls are audited with the agent, the session and their approval.
+  agent?: { agentId: string; sessionId: string }
 }): McpServer {
-  const { computer, client } = options
+  const { computer, client, agent } = options
   const viewOnly = options.viewOnly ?? false
+  // The SDK passes the request context last; the audit records written inside the handler carry the caller's context.
+  const scoped =
+    <A extends unknown[], R>(handler: (...args: A) => Promise<R>) =>
+    (...args: A): Promise<R> => {
+      const approval = agent ? approvalOf(args[args.length - 1]) : undefined
+      const context: CallContext = { ...agent, ...(approval ? { approval } : {}) }
+      return withCallContext(context, () => handler(...args))
+    }
   const server = new McpServer(
     { name: 'agentconnect-desktop', version: DESKTOP_DAEMON_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
@@ -92,7 +118,7 @@ export function createComputerMcpServer(options: {
       inputSchema: z.object({}),
       annotations: readOnly
     },
-    async (_args, ctx) => asResult(await computer.screenshot(client, ctx.mcpReq.signal))
+    scoped(async (_args, ctx) => asResult(await computer.screenshot(client, ctx.mcpReq.signal)))
   )
   server.registerTool(
     'computer_cursor_position',
@@ -101,7 +127,7 @@ export function createComputerMcpServer(options: {
       inputSchema: z.object({}),
       annotations: readOnly
     },
-    async () => asResult(await computer.cursorPosition(client))
+    scoped(async () => asResult(await computer.cursorPosition(client)))
   )
   if (!viewOnly)
     server.registerTool(
@@ -115,7 +141,7 @@ export function createComputerMcpServer(options: {
         }),
         annotations: acting
       },
-      async (args) => asResult(await computer.click(client, args))
+      scoped(async (args) => asResult(await computer.click(client, args)))
     )
   if (!viewOnly)
     server.registerTool(
@@ -125,7 +151,7 @@ export function createComputerMcpServer(options: {
         inputSchema: Point,
         annotations: acting
       },
-      async (args) => asResult(await computer.move(client, args))
+      scoped(async (args) => asResult(await computer.move(client, args)))
     )
   if (!viewOnly)
     server.registerTool(
@@ -135,7 +161,7 @@ export function createComputerMcpServer(options: {
         inputSchema: z.object({ from: Point, to: Point }),
         annotations: acting
       },
-      async (args) => asResult(await computer.drag(client, args))
+      scoped(async (args) => asResult(await computer.drag(client, args)))
     )
   if (!viewOnly)
     server.registerTool(
@@ -148,7 +174,7 @@ export function createComputerMcpServer(options: {
         }),
         annotations: acting
       },
-      async (args) => asResult(await computer.scroll(client, args))
+      scoped(async (args) => asResult(await computer.scroll(client, args)))
     )
   if (!viewOnly)
     server.registerTool(
@@ -158,7 +184,7 @@ export function createComputerMcpServer(options: {
         inputSchema: z.object({ text: z.string().min(1).max(4096) }),
         annotations: acting
       },
-      async (args) => asResult(await computer.type(client, args))
+      scoped(async (args) => asResult(await computer.type(client, args)))
     )
   if (!viewOnly)
     server.registerTool(
@@ -169,7 +195,7 @@ export function createComputerMcpServer(options: {
         inputSchema: z.object({ keys: z.array(z.string().min(1)).min(1).max(4) }),
         annotations: acting
       },
-      async (args) => asResult(await computer.key(client, args))
+      scoped(async (args) => asResult(await computer.key(client, args)))
     )
   if (!viewOnly)
     server.registerTool(
@@ -180,7 +206,7 @@ export function createComputerMcpServer(options: {
         inputSchema: z.object({ app: z.string().min(1).max(512) }),
         annotations: acting
       },
-      async (args) => asResult(await computer.launch(client, args))
+      scoped(async (args) => asResult(await computer.launch(client, args)))
     )
   server.registerTool(
     'computer_wait',
@@ -189,10 +215,10 @@ export function createComputerMcpServer(options: {
       inputSchema: z.object({ ms: z.number().int().min(0).max(10_000) }),
       annotations: readOnly
     },
-    async (args, ctx) => {
+    scoped(async (args, ctx) => {
       await new Promise((resolve) => setTimeout(resolve, args.ms))
       return asResult(await computer.screenshot(client, ctx.mcpReq.signal))
-    }
+    })
   )
   if (!viewOnly)
     server.registerTool(
@@ -241,10 +267,11 @@ export function createComputerMcpServer(options: {
         inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema as JsonSchemaType),
         annotations: readOnlyTool ? readOnly : acting
       },
-      async (args, ctx) =>
+      scoped(async (args, ctx) =>
         asResult(
           await computer.driverTool(client, tool.name, stripDriverArgs(args ?? {}), readOnlyTool, ctx.mcpReq.signal)
         )
+      )
     )
   }
   return server

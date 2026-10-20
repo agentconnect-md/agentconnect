@@ -1,10 +1,12 @@
 // The per-socket FSM of a desktop daemon's Computer channel (computer-use.md §3.6, §8.2): auth, heartbeat, renewal, revoke.
 import {
   CloseCode,
+  COMPUTER_AUDIT_FEATURE,
   COMPUTER_RELAYS_MAX,
   buildComputerCpFrame,
   decodeComputerCpFrame,
   type COMPUTER_CP_SCHEMAS,
+  type ComputerAuditReport,
   type ComputerAuth,
   type ComputerControlLease,
   type ComputerCpFrame,
@@ -22,6 +24,7 @@ import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerPrincipal, ComputerService } from '../registry/computerService.js'
 import type { ComputerChannelKeys } from '../registry/computerChannelKeys.js'
 import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
+import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
 import type { ComputerChannel, ComputerChannelRegistry } from './computer-registry.js'
 import type { HandshakeGate } from './handshake-gate.js'
 
@@ -42,6 +45,8 @@ export interface ComputerConnDeps {
   relays?: () => Promise<ComputerRelayEntry[]>
   /** The control lease the desktop enforces; absent in tests that do not exercise it. */
   leases?: Pick<ComputerLeaseService, 'observe' | 'current'>
+  /** Where the desktop's audit entries are stored (§8.2); without it the CP does not offer `computer-audit-v1`. */
+  audit?: Pick<ComputerAuditLog, 'record'>
   clock: Clock
   heartbeatSec: number
   /** A socket that has not authenticated by then is closed. */
@@ -122,6 +127,7 @@ export class ComputerConnection implements ComputerChannel {
       }
     }
     if (frame.type === 'computer/heartbeat') return this.handleHeartbeat(frame.payload)
+    if (frame.type === 'computer/audit' && this.deps.audit) return this.handleAudit(frame, frame.payload)
     this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`)
   }
 
@@ -160,7 +166,8 @@ export class ComputerConnection implements ComputerChannel {
       heartbeatSec: this.deps.heartbeatSec,
       serverTime: now.toISOString(),
       credential,
-      policy: computer.policy
+      policy: computer.policy,
+      ...(this.deps.audit ? { features: [COMPUTER_AUDIT_FEATURE] } : {})
     })
     // Grants still sign with the previous window's key just after a boundary, so a desktop that joins then needs it too.
     const signing = this.deps.keys.signing(this.computerId, principal.apiKeyId, now.getTime())
@@ -214,6 +221,17 @@ export class ComputerConnection implements ComputerChannel {
     if (credential.keyId !== this.lastKeyId) {
       this.lastKeyId = credential.keyId
       this.send('computer/credential', { credential })
+    }
+  }
+
+  // The ack lets the desktop drop the batch; a failed write is retryable and the desktop sends it again.
+  private async handleAudit(frame: ComputerCpFrame, report: ComputerAuditReport): Promise<void> {
+    try {
+      const stored = await this.deps.audit!.record(this.orgId, this.computerId, report.entries)
+      if (this.state === 'READY') this.reply(frame, 'computer/audit/ok', { stored })
+    } catch (err) {
+      this.deps.log?.warn({ err: (err as Error).message }, 'computer: audit write failed')
+      if (this.state === 'READY') this.sendError(frame.id, 'INTERNAL', 'audit write failed', true)
     }
   }
 

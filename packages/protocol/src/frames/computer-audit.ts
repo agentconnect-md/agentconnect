@@ -1,0 +1,77 @@
+import { z } from 'zod'
+
+// Computer use audit (computer-use.md §4.2, §8.2): what a desktop daemon reports per call; never typed text or screen bytes.
+
+/** The CP stores the audit entries a desktop sends with `computer/audit`; a desktop sends none without it. */
+export const COMPUTER_AUDIT_FEATURE = 'computer-audit-v1'
+
+/** The `_meta` key an agent daemon puts on a `tools/call` to say how the call was approved. */
+export const COMPUTER_APPROVAL_META_KEY = 'md.agentconnect/approval'
+
+/** How a call was approved: no approval needed, a person allowed it, or an earlier "allow for this session" covered it. */
+export const COMPUTER_APPROVAL_RESULTS = ['not_required', 'allowed', 'allowed_session'] as const
+export type ComputerApprovalResult = (typeof COMPUTER_APPROVAL_RESULTS)[number]
+
+/** The most entries one `computer/audit` frame carries. */
+export const COMPUTER_AUDIT_BATCH_MAX = 100
+
+/** The longest serialized argument summary an entry keeps; a longer one is replaced by a marker. */
+export const COMPUTER_AUDIT_ARGS_MAX_CHARS = 2048
+
+const AUDIT_STRING_MAX = 256
+// Argument names whose string values are typed or written text: only their length is ever kept.
+const TEXT_KEYS = new Set(['text', 'value'])
+
+/** A call's arguments as the audit keeps them: typed text by length only, long strings cut, the whole bounded. */
+export function computerAuditArgs(args: Record<string, unknown>): {
+  args: Record<string, unknown>
+  textLength?: number
+} {
+  let textLength: number | undefined
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(args)) {
+    if (TEXT_KEYS.has(key) && typeof value === 'string') {
+      textLength = (textLength ?? 0) + [...value].length
+      continue
+    }
+    out[key.slice(0, 64)] = typeof value === 'string' ? value.slice(0, AUDIT_STRING_MAX) : value
+  }
+  const bounded = JSON.stringify(out).length <= COMPUTER_AUDIT_ARGS_MAX_CHARS ? out : { truncated: true }
+  return { args: bounded, ...(textLength !== undefined ? { textLength } : {}) }
+}
+
+/** One call a desktop daemon served, as it reports it to the CP. */
+export const ComputerAuditEntry = z
+  .object({
+    // Idempotency: a batch resent after a lost ack does not duplicate rows.
+    id: z.string().uuid(),
+    at: z.string().datetime(),
+    tool: z.string().min(1).max(128),
+    // The lease holder name: `agentId/sessionId` for an agent session, else a local client or viewer name.
+    client: z.string().min(1).max(512),
+    agentId: z.string().uuid().optional(),
+    sessionId: z.string().min(1).max(256).optional(),
+    outcome: z.enum(['ok', 'error']),
+    code: z.string().min(1).max(64).optional(),
+    approval: z.enum(COMPUTER_APPROVAL_RESULTS).optional(),
+    args: z
+      .record(z.string().max(64), z.unknown())
+      .refine((args) => JSON.stringify(args).length <= COMPUTER_AUDIT_ARGS_MAX_CHARS, 'audit args too large')
+      .optional(),
+    textLength: z.number().int().min(0).max(1_000_000).optional(),
+    ms: z.number().int().min(0),
+    // The stored screenshot this call returned (§9); absent until screenshot storage lands.
+    screenshotRef: z.string().min(1).max(1024).optional()
+  })
+  .strict()
+export type ComputerAuditEntry = z.infer<typeof ComputerAuditEntry>
+
+// D→C REQ on the Computer channel, behind `computer-audit-v1`: a batch of audit entries, oldest first.
+export const ComputerAuditReport = z.object({
+  entries: z.array(ComputerAuditEntry).min(1).max(COMPUTER_AUDIT_BATCH_MAX)
+})
+export type ComputerAuditReport = z.infer<typeof ComputerAuditReport>
+
+// C→D REP: the batch is stored; the desktop drops it from its queue.
+export const ComputerAuditAck = z.object({ stored: z.number().int().min(0) })
+export type ComputerAuditAck = z.infer<typeof ComputerAuditAck>

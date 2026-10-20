@@ -13,6 +13,8 @@ import type { ChannelAuthority } from './cp/authority.js'
 export interface McpPrincipal {
   client: string
   viewOnly: boolean
+  // Set for an agent session's channel token: the agent daemon behind it reports how each call was approved.
+  agent?: { agentId: string; sessionId: string }
 }
 
 const bearer = (authorization: string | undefined): string | undefined =>
@@ -31,7 +33,8 @@ export function channelPrincipal(
   if (!claims?.ses || !claims.agt) return undefined
   return {
     client: computerLeaseHolderName({ agentId: claims.agt, sessionId: claims.ses }),
-    viewOnly: claims.mode === 'view'
+    viewOnly: claims.mode === 'view',
+    agent: { agentId: claims.agt, sessionId: claims.ses }
   }
 }
 

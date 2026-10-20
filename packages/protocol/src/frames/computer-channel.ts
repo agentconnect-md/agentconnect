@@ -13,6 +13,14 @@ export type ComputerRelayEntry = z.infer<typeof ComputerRelayEntry>
 /** The most relays one grant or roster names. */
 export const COMPUTER_RELAYS_MAX = 64
 
+/** Which risky actions need a person's approval (computer-use.md §4.2); every field defaults to asking. */
+export const ComputerApprovalsSchema = z.object({
+  firstInputPerSession: z.boolean().default(true),
+  launchApp: z.enum(['always', 'session', 'never-ask']).default('always'),
+  submitLikeKeys: z.boolean().default(true)
+})
+export type ComputerApprovals = z.infer<typeof ComputerApprovalsSchema>
+
 /** Definite refusals: no token was issued. */
 export const COMPUTER_CHANNEL_REFUSALS = ['denied', 'unavailable'] as const
 export type ComputerChannelRefusal = (typeof COMPUTER_CHANNEL_REFUSALS)[number]
@@ -32,7 +40,11 @@ export const ComputerChannelGrantResult = z.discriminatedUnion('granted', [
     token: z.string().min(1).max(2048),
     expiresAt: z.string().datetime(),
     mode: z.enum(COMPUTER_AGENT_MODES),
-    relays: z.array(ComputerRelayEntry).max(COMPUTER_RELAYS_MAX)
+    relays: z.array(ComputerRelayEntry).max(COMPUTER_RELAYS_MAX),
+    // What the approval cards name and whom they also reach (§4.2); an older CP sends none, and every approval is asked.
+    name: z.string().min(1).max(200).optional(),
+    ownerUserId: z.string().min(1).max(128).optional(),
+    approvals: ComputerApprovalsSchema.optional()
   }),
   z.object({
     granted: z.literal(false),

@@ -79,6 +79,7 @@ import type {
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { ComputerService } from '../registry/computerService.js'
+import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
 import type { GithubService } from '../github/service.js'
 import type { CodeHostTrustedActorService } from '../codehost/trusted-actor.service.js'
 import type { McpProviderOauthService } from '../mcp-oauth/service.js'
@@ -433,6 +434,8 @@ export interface HttpDeps {
   apiKeys: ApiKeyAdmin
   /** Computer registration, revocation and the `computer` key principal (computer-use.md §3.6). */
   computers: ComputerService
+  /** The per-Computer audit the desktop daemons report (computer-use.md §8.2). */
+  computerAudit: Pick<ComputerAuditLog, 'list'>
   /** Embedded OAuth 2.1 AS logic (agent-assistant.md §7): DCR, PKCE code exchange, refresh. */
   oauth: OAuthService
   /** Mints the short-lived browser webchat token (§10, A4). */

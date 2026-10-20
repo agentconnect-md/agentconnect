@@ -26,6 +26,7 @@ import {
   AssistantModeAdmission,
   AssistantModePolicy,
   AgentComputerUse,
+  COMPUTER_APPROVAL_RESULTS,
   AgentModelSelection,
   AgentRepositorySelector,
   AgentMemoryBinding,
@@ -4568,6 +4569,36 @@ export const ComputerDto = z.object({
 })
 export type ComputerDtoT = z.infer<typeof ComputerDto>
 export const ComputerListDto = z.array(ComputerDto)
+
+/** One call a desktop daemon served (computer-use.md §8.2); typed text appears only as `textLength`. */
+export const ComputerAuditEntryDto = z.object({
+  id: z.string(),
+  at: z.string(),
+  tool: z.string(),
+  /** The caller: `agentId/sessionId` for an agent session, else a local client or viewer name. */
+  client: z.string(),
+  agentId: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  outcome: z.enum(['ok', 'error']),
+  code: z.string().nullable(),
+  /** How the call was approved; null for a call that did not come from an agent session. */
+  approval: z.enum(COMPUTER_APPROVAL_RESULTS).nullable(),
+  args: z.record(z.string(), z.unknown()),
+  textLength: z.number().int().nullable(),
+  ms: z.number().int(),
+  screenshotRef: z.string().nullable()
+})
+export const ComputerAuditPageDto = z.object({
+  entries: z.array(ComputerAuditEntryDto),
+  /** Pass back as `cursor` for older entries; null on the last page. */
+  nextCursor: z.string().nullable()
+})
+export const ComputerAuditQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().min(1).max(200).optional(),
+  agentId: z.uuid().optional(),
+  sessionId: z.string().min(1).max(256).optional()
+})
 
 export const CreateComputerRegistrationBody = z
   .object({

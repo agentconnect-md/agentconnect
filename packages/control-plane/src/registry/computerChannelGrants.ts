@@ -76,7 +76,17 @@ export class ComputerChannelGrants {
       Buffer.from(credential.key, 'base64url')
     )
     const relays = (await this.opts.relays()).slice(0, COMPUTER_RELAYS_MAX)
-    return { granted: true, token, expiresAt: new Date(exp).toISOString(), mode: computer.policy.agentMode, relays }
+    return {
+      granted: true,
+      token,
+      expiresAt: new Date(exp).toISOString(),
+      mode: computer.policy.agentMode,
+      relays,
+      // The agent daemon asks for approvals by these (§4.2): the card names the Computer and also goes to its owner.
+      name: computer.name,
+      ownerUserId: computer.ownerUserId,
+      approvals: computer.policy.approvals
+    }
   }
 
   /** A relay's `rc/verify` of a desktop's `cr/hello`: the token must be signed with that Computer's live channel key. */

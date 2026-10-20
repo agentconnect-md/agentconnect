@@ -293,7 +293,15 @@ import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
-import { COMPUTER_TOOLS, COMPUTER_USE_GUIDANCE, ComputerTools, computerToolsOffered } from './computer/tools.js'
+import {
+  COMPUTER_TOOLS,
+  COMPUTER_USE_GUIDANCE,
+  ComputerTools,
+  computerApprovalTitle,
+  computerToolsOffered,
+  type ComputerApprovalAnswer,
+  type ComputerApprovalAsk
+} from './computer/tools.js'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, MessageGateway, SessionContext } from './mcp/ops.js'
 import { notJoinedChannel } from './platforms/not-joined.js'
@@ -2020,6 +2028,7 @@ export class Daemon {
         this.clock.now()
       ),
     now: () => this.clock.now(),
+    approver: { ask: (ctx, ask) => this.askComputerApproval(ctx, ask) },
     log: { debug: (message) => this.log.debug(message), warn: (message) => this.log.warn(message) }
   })
   private appSurface!: AppSurface
@@ -28306,6 +28315,33 @@ export class Daemon {
     const client = this.cpClient
     if (!client?.connected()) throw new Error('the control plane is not connected')
     return client
+  }
+
+  /** A computer-use approval (computer-use.md §4.2) on the session's live turn; with none, nobody can answer and it is refused. */
+  private async askComputerApproval(ctx: SessionContext, ask: ComputerApprovalAsk): Promise<ComputerApprovalAnswer> {
+    const key = this.sessionKeyOf(ctx)
+    const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
+    if (!live) return 'deny'
+    const response = await this.permissions.askComputerApproval(
+      live,
+      {
+        sessionId: live.acpSessionId,
+        toolCall: {
+          toolCallId: `computer-approval-${randomUUID()}`,
+          title: computerApprovalTitle(ask),
+          kind: 'execute'
+        },
+        options: [
+          { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'allow_session', name: 'Allow for this session', kind: 'allow_always' },
+          { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+        ]
+      },
+      ask.ownerUserId
+    )
+    if (response.outcome.outcome !== 'selected') return 'deny'
+    const picked = response.outcome.optionId
+    return picked === 'allow_once' || picked === 'allow_session' ? picked : 'deny'
   }
 
   /** The Computers an agent may use now (computer-use.md §4.1); empty while computer use is off. */

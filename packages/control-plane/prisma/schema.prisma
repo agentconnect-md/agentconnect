@@ -4524,6 +4524,7 @@ model Computer {
   apiKeys       ApiKey[]
   registrations ComputerRegistration[]
   lease         ComputerLease?
+  audits        ComputerAudit[]
 
   @@index([orgId])
   @@index([ownerUserId])
@@ -4556,6 +4557,34 @@ model ComputerLease {
   @@index([sessionId])
   @@index([daemonId])
   @@map("computer_lease")
+}
+
+/// One call a desktop daemon served (computer-use.md §8.2); typed text is kept by its length only, never the text.
+model ComputerAudit {
+  computerId    String   @db.Uuid
+  // The desktop's own id for the entry, so a batch resent after a lost ack adds nothing.
+  id            String   @db.Uuid
+  orgId         String
+  at            DateTime @db.Timestamptz(3)
+  tool          String
+  // The lease holder name: `agentId/sessionId` for an agent session, else a local client or viewer name.
+  client        String
+  agentId       String?  @db.Uuid
+  sessionId     String?
+  outcome       String
+  code          String?
+  approval      String?
+  args          Json     @default("{}") @db.JsonB
+  textLength    Int?
+  ms            Int
+  screenshotRef String?
+  receivedAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  computer Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)
+
+  @@id([computerId, id])
+  @@index([computerId, at(sort: Desc)])
+  @@map("computer_audit")
 }
 
 /// A short-lived, one-time token a desktop daemon exchanges for its Computer API key (computer-use.md §3.6).

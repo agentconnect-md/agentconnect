@@ -1,11 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ComputerLeaseAcquireResult } from '@agentconnect.md/protocol'
+import type { ComputerApprovals, ComputerLeaseAcquireResult } from '@agentconnect.md/protocol'
 import { ComputerChannelError, type ComputerMcpConnection } from '../../src/computer/data-plane.js'
 import {
   COMPUTER_TOOLS,
   COMPUTER_TOOL_ARGS,
   ComputerTools,
+  approvalsNeeded,
+  computerApprovalTitle,
   computerToolsOffered,
+  describeComputerAction,
+  type ComputerApprovalAnswer,
+  type ComputerApprovalAsk,
   type ComputerToolsDeps
 } from '../../src/computer/tools.js'
 import { showsMcpImages } from '../../src/runtimes/mcp-image-content.js'
@@ -29,6 +34,9 @@ const ctx = (tools = COMPUTER_TOOLS): SessionContext => ({
 
 type CallTool = (params: { name: string; arguments?: Record<string, unknown> }, attempt: number) => Promise<unknown>
 
+// The approval policy most tests run under: nothing asks, so they exercise forwarding alone.
+const NO_APPROVALS: ComputerApprovals = { firstInputPerSession: false, launchApp: 'never-ask', submitLikeKeys: false }
+
 function setup(
   options: {
     now?: () => number
@@ -36,8 +44,13 @@ function setup(
     lease?: ComputerLeaseAcquireResult
     callTool?: CallTool
     connectError?: (attempt: number) => Error | undefined
+    approvals?: ComputerApprovals | null
+    approve?: (ask: ComputerApprovalAsk) => Promise<ComputerApprovalAnswer>
   } = {}
 ) {
+  const asks: ComputerApprovalAsk[] = []
+  const metas: unknown[] = []
+  const approvals = options.approvals === undefined ? NO_APPROVALS : options.approvals
   const granted = options.granted ?? [C1]
   const calls: Array<{ computer: string; name: string; args: Record<string, unknown> }> = []
   const connects: string[] = []
@@ -67,6 +80,12 @@ function setup(
     orgFor: () => 'org_1',
     sessionIdFor: async () => 'out-1',
     now: options.now ?? (() => T0),
+    approver: {
+      ask: async (_ctx, ask) => {
+        asks.push(ask)
+        return options.approve ? await options.approve(ask) : 'allow_once'
+      }
+    },
     connect: async (opts) => {
       const computer = opts.target.computerId
       connects.push(computer)
@@ -76,12 +95,20 @@ function setup(
       if (failed) throw failed
       const conn = {
         client: {
-          callTool: async (params: { name: string; arguments?: Record<string, unknown> }) => {
+          callTool: async (params: { name: string; arguments?: Record<string, unknown>; _meta?: unknown }) => {
             calls.push({ computer, name: params.name, args: params.arguments ?? {} })
+            metas.push(params._meta)
             return await callTool(params, attempt)
           }
         },
-        channel: {},
+        channel: {
+          grant: async () => ({
+            granted: true,
+            name: 'Desk',
+            ownerUserId: 'user_owner',
+            ...(approvals ? { approvals } : {})
+          })
+        },
         close: async () => {
           closes.push(computer)
           closedAttempts.push(attempt)
@@ -90,7 +117,7 @@ function setup(
       return conn as unknown as ComputerMcpConnection
     }
   }
-  return { tools: new ComputerTools(deps), calls, connects, closes, closedAttempts, leases }
+  return { tools: new ComputerTools(deps), calls, connects, closes, closedAttempts, leases, asks, metas }
 }
 
 const parse = (result: { mcpContent: Array<{ type: string; text?: string }> }) =>
@@ -338,5 +365,106 @@ describe('ComputerTools', () => {
     expect(result).toEqual({ mcpContent: [{ type: 'text', text: '{}' }, IMAGE] })
     await tools.close()
     expect(closes).toEqual([C1])
+  })
+})
+
+describe('computer approvals', () => {
+  const ASK_ALL: ComputerApprovals = { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true }
+
+  it('asks for the first input of a session, app launches and submit-like keys, not for moves or scrolls', () => {
+    expect(approvalsNeeded('computer_click', { x: 1, y: 1 }, ASK_ALL)).toEqual(['first_input'])
+    expect(approvalsNeeded('computer_move', { x: 1, y: 1 }, ASK_ALL)).toEqual([])
+    expect(approvalsNeeded('computer_scroll', { x: 1, y: 1, direction: 'down' }, ASK_ALL)).toEqual([])
+    expect(approvalsNeeded('computer_launch', { app: 'firefox' }, ASK_ALL)).toEqual(['first_input', 'launch_app'])
+    const typed = { input: true, session: new Set<never>() }
+    expect(approvalsNeeded('computer_key', { keys: ['Return'] }, ASK_ALL, typed)).toEqual(['submit'])
+    expect(approvalsNeeded('computer_key', { keys: ['ctrl', 'enter'] }, ASK_ALL, typed)).toEqual(['submit'])
+    expect(approvalsNeeded('computer_type', { text: 'hi\n' }, ASK_ALL, typed)).toEqual(['submit'])
+    expect(approvalsNeeded('computer_type', { text: 'hi' }, ASK_ALL, typed)).toEqual([])
+    expect(approvalsNeeded('computer_launch', { app: 'x' }, { ...ASK_ALL, launchApp: 'never-ask' }, typed)).toEqual([])
+  })
+
+  it('describes an action without the text it types', () => {
+    expect(describeComputerAction('computer_type', { text: 'p4ss\n' })).toBe('type 5 characters, including Enter')
+    expect(describeComputerAction('computer_click', { x: 3, y: 4, count: 2, button: 'right' })).toBe(
+      'right double-click at (3, 4)'
+    )
+    const title = computerApprovalTitle({
+      computerId: C1,
+      computerName: 'Desk',
+      tool: 'computer_type',
+      action: describeComputerAction('computer_type', { text: 'p4ss\n' }),
+      reasons: ['first_input', 'submit']
+    })
+    expect(title).toBe(
+      'Computer use on “Desk”: type 5 characters, including Enter (first input this session; presses Enter)'
+    )
+    expect(title).not.toContain('p4ss')
+  })
+
+  it('asks once for the first input, names the owner, and tells the desktop how each call was approved', async () => {
+    const { tools, asks, metas, leases } = setup({ approvals: ASK_ALL })
+    await tools.call(ctx(), 'computer_click', { x: 10, y: 20 })
+    expect(asks).toEqual([
+      {
+        computerId: C1,
+        computerName: 'Desk',
+        ownerUserId: 'user_owner',
+        tool: 'computer_click',
+        action: 'click at (10, 20)',
+        reasons: ['first_input']
+      }
+    ])
+    await tools.call(ctx(), 'computer_click', { x: 11, y: 20 })
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(asks).toHaveLength(1)
+    expect(metas).toEqual([
+      { 'md.agentconnect/approval': 'allowed' },
+      { 'md.agentconnect/approval': 'allowed_session' },
+      undefined
+    ])
+    expect(leases.computerLeaseAcquire).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a denied input with approval_denied before taking the lease, and asks again next time', async () => {
+    const { tools, asks, calls, leases } = setup({ approvals: ASK_ALL, approve: async () => 'deny' })
+    const handled = await tools.call(ctx(), 'computer_type', { text: 'secret' })
+    expect(handled?.result.mcpIsError).toBe(true)
+    expect(parse(handled!.result)).toMatchObject({ error: 'approval_denied', computer: C1 })
+    expect(calls).toEqual([])
+    expect(leases.computerLeaseAcquire).not.toHaveBeenCalled()
+    await tools.call(ctx(), 'computer_type', { text: 'secret' })
+    expect(asks).toHaveLength(2)
+  })
+
+  it('remembers "allow for this session" per reason, and asks for every launch under `always` otherwise', async () => {
+    const answers: ComputerApprovalAnswer[] = ['allow_once', 'allow_once', 'allow_session']
+    const { tools, asks } = setup({ approvals: ASK_ALL, approve: async () => answers.shift() ?? 'deny' })
+    await tools.call(ctx(), 'computer_launch', { app: 'firefox' })
+    await tools.call(ctx(), 'computer_launch', { app: 'firefox' })
+    expect(asks.map((ask) => ask.reasons)).toEqual([['first_input', 'launch_app'], ['launch_app']])
+    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
+    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
+    expect(asks.map((ask) => ask.reasons)).toEqual([['first_input', 'launch_app'], ['launch_app'], ['submit']])
+  })
+
+  it('shares one answer between parallel inputs', async () => {
+    let answer!: (value: ComputerApprovalAnswer) => void
+    const { tools, asks } = setup({
+      approvals: ASK_ALL,
+      approve: () => new Promise<ComputerApprovalAnswer>((resolve) => (answer = resolve))
+    })
+    const first = tools.call(ctx(), 'computer_click', { x: 1, y: 1 })
+    const second = tools.call(ctx(), 'computer_click', { x: 2, y: 2 })
+    await vi.waitFor(() => expect(asks).toHaveLength(1))
+    answer('allow_once')
+    await Promise.all([first, second])
+    expect(asks).toHaveLength(1)
+  })
+
+  it('asks for everything when the Control Plane sends no policy', async () => {
+    const { tools, asks } = setup({ approvals: null })
+    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
+    expect(asks[0]?.reasons).toEqual(['first_input', 'submit'])
   })
 })

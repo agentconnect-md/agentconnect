@@ -591,6 +591,8 @@ export class PermissionCoordinator {
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   /** Runtime approvals handed to an API caller, keyed by the id its answer names. */
   private readonly pendingCallerApprovals = new Map<string, CallerApproval>()
+  /** A computer-use approval's Computer owner, by its request's tool call id (computer-use.md §4.2). */
+  private readonly computerOwners = new Map<string, string>()
 
   /** Decision details discovered inside the platform policy and merged into the
    * single terminal event emitted by AcpHost's policy observer. */
@@ -1227,6 +1229,10 @@ export class PermissionCoordinator {
       void this.dmEditorBeside(requestId, agentId, p, requesterName).catch((err) => {
         this.host.log().warn(`approval DM beside the card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
       })
+    else if (this.computerOwnerOf(requestId))
+      void this.dmComputerOwnerBeside(requestId, agentId, p, requesterName).catch((err) => {
+        this.host.log().warn(`computer owner DM beside the card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+      })
     return await this.trackHumanApprovalWait(p, result)
   }
 
@@ -1644,6 +1650,15 @@ export class PermissionCoordinator {
     const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
     const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
     if (integrationIds.length === 0) return undefined
+    // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the usual chain.
+    const computerOwner = subsession ? undefined : this.computerOwnerOf(requestId)
+    if (computerOwner) {
+      const routed = await cp.approvalRoute(
+        { agentId, requestId, consoleUserId: computerOwner, integrationIds },
+        this.host.orgForAgent(agentId)
+      )
+      if (routed.target) return routed.target
+    }
     const requesterId =
       p.plan.platform === 'slack' && p.plan.requesterId && !subsession ? p.plan.requesterId : undefined
     const routed = await cp.approvalRoute(
@@ -2426,6 +2441,46 @@ export class PermissionCoordinator {
    * AgentConnect tools are trusted; every other live request waits for an Agent editor by
    * default. An editor may explicitly opt an agent into Slack chat-side decisions.
    */
+  /** A computer-use approval (computer-use.md §4.2): the turn's own approval path, plus the Computer's owner in their DM. */
+  async askComputerApproval(
+    p: Pending,
+    params: RequestPermissionRequest,
+    computerOwnerUserId?: string
+  ): Promise<RequestPermissionResponse> {
+    const callId = params.toolCall.toolCallId
+    if (computerOwnerUserId) this.computerOwners.set(callId, computerOwnerUserId)
+    try {
+      return await this.onAcpPermission(p.hostKey, p.acpSessionId, params)
+    } finally {
+      this.computerOwners.delete(callId)
+    }
+  }
+
+  /** The Computer owner a pending computer-use approval also goes to. */
+  private computerOwnerOf(requestId: string): string | undefined {
+    const rec = this.pendingApprovals.get(requestId)
+    return rec?.kind === 'permission' ? this.computerOwners.get(rec.params.toolCall.toolCallId) : undefined
+  }
+
+  /** A computer-use card in the conversation also reaches the Computer's owner in their DM, unless they asked there. */
+  private async dmComputerOwnerBeside(requestId: string, agentId: string, p: Pending, requesterName: string | null) {
+    const cp = this.host.cpApprovalRoute()
+    const owner = this.computerOwnerOf(requestId)
+    if (!cp || !owner) return
+    const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
+    if (integrationIds.length === 0) return
+    const { target } = await cp.approvalRoute(
+      { agentId, requestId, consoleUserId: owner, integrationIds },
+      this.host.orgForAgent(agentId)
+    )
+    if (!target || (target.integrationId === p.plan.integrationId && target.userId === p.plan.requesterId)) return
+    const conn = this.host.slackConnFor(target.integrationId)
+    if (!conn || !this.pendingApprovals.has(requestId)) return
+    const channel = await conn.openDirectMessage(target.userId)
+    await this.sendApprovalDm(requestId, agentId, p, requesterName, undefined, { target, channel }, true)
+  }
+
   async onAcpPermission(
     owner: HostKey,
     sessionId: string,
