@@ -164,6 +164,52 @@ describe('computer screenshot storage', () => {
     expect(again).toEqual({ status: 'stored' })
   })
 
+  it('meters a screenshot in the same transaction that marks it stored', async () => {
+    const clock = new FakeClock(T0)
+    const bucket = new FakeBucket()
+    // A client whose transactions fail on the usage write: the stored mark must roll back with it.
+    let failUsage = true
+    const failingUsage = {
+      upsert: async () => {
+        throw new Error('usage write failed')
+      }
+    }
+    const flaky = new Proxy(prisma, {
+      get(target, prop, receiver) {
+        if (prop === 'computerScreenshotUsage' && failUsage) return failingUsage
+        if (prop !== '$transaction') return Reflect.get(target, prop, receiver)
+        return (fn: (tx: unknown) => Promise<unknown>) =>
+          target.$transaction((tx) =>
+            fn(
+              new Proxy(tx, {
+                get(inner, key, r) {
+                  if (key === 'computerScreenshotUsage' && failUsage) return failingUsage
+                  return Reflect.get(inner, key, r)
+                }
+              })
+            )
+          )
+      }
+    })
+    const screenshots = new ComputerScreenshots(new PgComputerScreenshotRepo(flaky), bucket, clock, {
+      defaultDays: 30,
+      maxDays: 90
+    })
+    const computerId = await register(appAs(DEFAULT_OWNER_ID))
+    const s = await session()
+    const signed = await screenshots.put(
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy() },
+      offer(s.sessionId, s.agentId)
+    )
+    bucket.objects.set(new URL(signed.url!).pathname.slice(1), 100)
+    await expect(screenshots.commit(computerId, { sessionId: s.sessionId, sha256: SHA })).rejects.toThrow()
+    expect((await prisma.computerScreenshot.findFirstOrThrow({ where: { computerId } })).storedAt).toBeNull()
+    failUsage = false
+    expect(await screenshots.commit(computerId, { sessionId: s.sessionId, sha256: SHA })).toBe(true)
+    const usage = await prisma.computerScreenshotUsage.findMany({ where: { orgId: DEFAULT_ORG_ID } })
+    expect(usage.map((u) => [u.count, Number(u.bytes)])).toEqual([[1, 100]])
+  })
+
   it('writes nothing with a retention of 0 and caps a policy at the deployment maximum', async () => {
     const h = harness()
     const computerId = await register(appAs(DEFAULT_OWNER_ID))

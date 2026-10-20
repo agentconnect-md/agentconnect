@@ -5,6 +5,9 @@ import { useTranslations } from 'next-intl'
 import { Spinner } from '@/components/marks'
 import { fetchComputerScreenshot, type ComputerScreenshotDto } from '@/lib/api'
 
+/** Waits between reads of a screenshot that may still be uploading; then it is reported unavailable. */
+export const PENDING_RETRY_MS = [2000, 5000, 10_000, 20_000]
+
 type Loaded = { state: 'loading' } | { state: 'ready'; shot: ComputerScreenshotDto } | { state: 'unavailable' }
 
 // One stored screenshot: resolved through the Control Plane, which signs a short-lived read only for an authorized viewer.
@@ -13,13 +16,23 @@ function StoredScreenshot({ sessionId, sha256 }: { sessionId: string; sha256: st
   const [loaded, setLoaded] = useState<Loaded>({ state: 'loading' })
   useEffect(() => {
     let live = true
+    let timer: ReturnType<typeof setTimeout> | undefined
     setLoaded({ state: 'loading' })
-    fetchComputerScreenshot(sessionId, sha256).then(
-      (shot) => live && setLoaded({ state: 'ready', shot }),
-      () => live && setLoaded({ state: 'unavailable' })
-    )
+    // The reference reaches the timeline before its background upload is confirmed, so a miss is retried a few times.
+    const attempt = (n: number) =>
+      fetchComputerScreenshot(sessionId, sha256).then(
+        (shot) => live && setLoaded({ state: 'ready', shot }),
+        () => {
+          if (!live) return
+          const delay = PENDING_RETRY_MS[n]
+          if (delay === undefined) setLoaded({ state: 'unavailable' })
+          else timer = setTimeout(() => void attempt(n + 1), delay)
+        }
+      )
+    void attempt(0)
     return () => {
       live = false
+      if (timer) clearTimeout(timer)
     }
   }, [sessionId, sha256])
 

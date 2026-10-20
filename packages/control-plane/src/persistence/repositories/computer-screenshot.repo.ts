@@ -2,7 +2,7 @@
 import { COMPUTER_SCREENSHOT_CONTENT_TYPES, type ComputerScreenshotContentType } from '@agentconnect.md/protocol'
 import type { ComputerScreenshot } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type { ComputerScreenshotRecord, ComputerScreenshotRepo, ComputerScreenshotUsageTotals } from '../ports.js'
 
 const contentTypeOf = (value: string): ComputerScreenshotContentType =>
@@ -60,19 +60,22 @@ export class PgComputerScreenshotRepo implements ComputerScreenshotRepo {
     return row ? toRecord(row) : null
   }
 
+  // One transaction: a stored row is always metered, and the once-only guard keeps a retry from counting twice.
   async markStored(id: string, orgId: string, bytes: number, at: Date): Promise<boolean> {
-    const { count } = await this.db.computerScreenshot.updateMany({
-      where: { id, orgId, storedAt: null },
-      data: { storedAt: at }
+    return withAmbientTx(this.db, async (tx) => {
+      const { count } = await tx.computerScreenshot.updateMany({
+        where: { id, orgId, storedAt: null },
+        data: { storedAt: at }
+      })
+      if (count === 0) return false
+      const day = utcDay(at)
+      await tx.computerScreenshotUsage.upsert({
+        where: { orgId_day: { orgId, day } },
+        create: { orgId, day, count: 1, bytes: BigInt(bytes) },
+        update: { count: { increment: 1 }, bytes: { increment: BigInt(bytes) } }
+      })
+      return true
     })
-    if (count === 0) return false
-    const day = utcDay(at)
-    await this.db.computerScreenshotUsage.upsert({
-      where: { orgId_day: { orgId, day } },
-      create: { orgId, day, count: 1, bytes: BigInt(bytes) },
-      update: { count: { increment: 1 }, bytes: { increment: BigInt(bytes) } }
-    })
-    return true
   }
 
   async findStored(orgId: string, sessionId: string, sha256: string, now: Date): Promise<ComputerScreenshotRecord[]> {
