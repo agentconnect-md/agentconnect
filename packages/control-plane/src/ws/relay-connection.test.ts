@@ -864,6 +864,31 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
   })
 
+  it.each(['ahp-client-key', 'webchat-token'] as const)(
+    'rc/verify(%s) fails closed while the AHP verifier is unavailable',
+    async (kind) => {
+      const verifyWebchatToken = vi.fn(async () => ({ ok: true }))
+      const verifyAgentChatKey = vi.fn(async () => ({ ok: true }))
+      const { transport } = build({ verifyWebchatToken, verifyAgentChatKey })
+      await toReady(transport)
+      const request = buildRelayCpFrame('rc/verify', {
+        kind,
+        credential: 'credential',
+        agentId: WEBCHAT_AGENT_ID,
+        ...(kind === 'webchat-token' ? { protocol: 'ahp' as const, conversationBinding: 'v1' as const } : {})
+      })
+      transport.feedFrame(request)
+      await vi.waitFor(() => expect(transport.lastRep('rc/verify/ok')).toBeDefined())
+      expect(transport.lastRep('rc/verify/ok')).toMatchObject({
+        corr: request.id,
+        payload: { ok: false, reason: 'AHP unavailable' }
+      })
+      expect(verifyWebchatToken).not.toHaveBeenCalled()
+      expect(verifyAgentChatKey).not.toHaveBeenCalled()
+      expect(transport.closed).toBeUndefined()
+    }
+  )
+
   it('rc/verify(agent-chat-key) hands the key, agent and chat id to its verifier', async () => {
     const verifyAgentChatKey = vi.fn(async () => ({ ok: true, conversationId: '55555555-5555-4555-8555-555555555555' }))
     const { transport } = build({ verifyAgentChatKey })
