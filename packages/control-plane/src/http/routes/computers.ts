@@ -244,9 +244,11 @@ export function computerRoutes(deps: HttpDeps) {
       }
     )
 
+    // Deleting cascades the Computer's keys, so it takes an interactive sign-in like revocation.
     r.delete(
       '/computers/:id',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Computers],
           summary: 'Delete a computer',

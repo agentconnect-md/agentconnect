@@ -100,14 +100,8 @@ export class PgComputerRepo implements ComputerRepo {
       return await withAmbientTx(this.db, async (tx) => {
         const registration = await tx.computerRegistration.findUnique({ where: { hash: input.registrationHash } })
         if (!registration) return null
-        // The conditional update is the one-time gate: two concurrent exchanges cannot both match it.
-        const consumed = await tx.computerRegistration.updateMany({
-          where: { id: registration.id, consumedAt: null, expiresAt: { gt: input.now } },
-          data: { consumedAt: input.now }
-        })
-        if (consumed.count !== 1) return null
         const owner = registration.createdByUserId
-        // A personal desktop starts visible to its registrant only (and to organization owners, by role).
+        // Lock the org and membership before the token row, the same order member removal takes them.
         const memberships = await lockResourceWriteMemberships(tx, {
           orgId: registration.orgId,
           visibility: 'restricted',
@@ -120,6 +114,12 @@ export class PgComputerRepo implements ComputerRepo {
           select: { role: true }
         })
         if (!role || role.role === 'viewer') throw new OrgMembershipMissing()
+        // The conditional update is the one-time gate: two concurrent exchanges cannot both match it.
+        const consumed = await tx.computerRegistration.updateMany({
+          where: { id: registration.id, consumedAt: null, expiresAt: { gt: input.now } },
+          data: { consumedAt: input.now }
+        })
+        if (consumed.count !== 1) return null
         const p = input.profile
         const computer = await tx.computer.create({
           data: {

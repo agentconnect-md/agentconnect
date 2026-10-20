@@ -301,6 +301,7 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/daemons/token',
           'POST /api/v1/orgs/:orgId/computers/registrations',
           'POST /api/v1/orgs/:orgId/computers/:id/revoke',
+          'DELETE /api/v1/orgs/:orgId/computers/:id',
           'DELETE /api/v1/oauth/grants/:id',
           'DELETE /api/v1/orgs/:orgId',
           'GET /api/v1/me/keys',
@@ -345,7 +346,6 @@ describe('openapi plane', () => {
       const expected: Array<[string, 'get' | 'put' | 'post' | 'delete', string]> = [
         [base, 'get', 'listComputers'],
         [`${base}/{id}`, 'get', 'getComputer'],
-        [`${base}/{id}`, 'delete', 'deleteComputer'],
         [`${base}/{id}/policy`, 'put', 'setComputerPolicy'],
         [`${base}/{id}/sharing`, 'put', 'setComputerSharing'],
         ['/api/v1/computers/register', 'post', 'registerComputer']

@@ -249,7 +249,7 @@ describe('the computer principal', () => {
     expect(await app.deps.computers.authenticate(personal.apiKey)).toBeNull()
   })
 
-  it('API keys cannot mint registration tokens or revoke Computers', async () => {
+  it('API keys cannot mint registration tokens, revoke or delete Computers', async () => {
     const app = appAs()
     const { computerId } = await register(app)
     const personal = (
@@ -258,7 +258,8 @@ describe('the computer principal', () => {
     const headers = { authorization: `Bearer ${personal.apiKey}` }
     for (const request of [
       { method: 'POST' as const, url: `${ORG}/computers/registrations`, payload: {} },
-      { method: 'POST' as const, url: `${ORG}/computers/${computerId}/revoke` }
+      { method: 'POST' as const, url: `${ORG}/computers/${computerId}/revoke` },
+      { method: 'DELETE' as const, url: `${ORG}/computers/${computerId}` }
     ]) {
       const res = await app.app.inject({ ...request, headers })
       expect(res.statusCode, request.url).toBe(403)
