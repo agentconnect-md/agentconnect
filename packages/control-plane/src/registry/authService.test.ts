@@ -20,6 +20,7 @@ function record(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     principalType: 'daemon',
     orgId: OrgId('org_1'),
     daemonId: DaemonId('dddddddd-dddd-4ddd-8ddd-dddddddddddd'),
+    computerId: null,
     userId: null,
     displayTail: '…abcd',
     name: null,
@@ -204,6 +205,8 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
       { principalType: 'user', daemonId: null, userId: 'u1' },
       // a relay credential must never authenticate the daemon WS
       { principalType: 'relay', daemonId: null, orgId: null },
+      // a Computer key can never open the daemon WS, even if a row somehow carried a daemonId
+      { principalType: 'computer', computerId: 'c' as never },
       { daemonId: null },
       // a daemon key is always org-scoped; a null org is a corrupt row → fail closed
       { orgId: null }

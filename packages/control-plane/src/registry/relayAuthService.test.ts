@@ -17,6 +17,7 @@ function relayRecord(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     principalType: 'relay',
     orgId: null,
     daemonId: null,
+    computerId: null,
     userId: null,
     oauthGrantId: null,
     displayTail: '…abcd',
@@ -86,6 +87,10 @@ describe('RelayAuthService — apikey mode', () => {
     ).toBe(false)
     expect(
       (await service(relayRecord({ principalType: 'user' })).authenticate({ method: 'apikey', credential: token })).ok
+    ).toBe(false)
+    expect(
+      (await service(relayRecord({ principalType: 'computer' })).authenticate({ method: 'apikey', credential: token }))
+        .ok
     ).toBe(false)
   })
 
@@ -174,6 +179,7 @@ describe('RelayAuthService.verifyDaemonKey (rc/verify daemon-key, read-only)', (
       await service(daemonRecord({ principalType: 'relay', daemonId: null, orgId: null })).verifyDaemonKey(token)
     ).toBeNull()
     expect(await service(daemonRecord({ principalType: 'user' })).verifyDaemonKey(token)).toBeNull()
+    expect(await service(daemonRecord({ principalType: 'computer' })).verifyDaemonKey(token)).toBeNull()
     expect(await service(daemonRecord({ daemonId: null })).verifyDaemonKey(token)).toBeNull()
     expect(await service(daemonRecord({ orgId: null })).verifyDaemonKey(token)).toBeNull()
   })

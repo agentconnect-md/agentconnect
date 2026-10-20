@@ -60,6 +60,7 @@ export const Tag = {
   Members: 'Members',
   Daemons: 'Daemons',
   MemberSets: 'Member sets',
+  Computers: 'Computers',
   DaemonKeys: 'Daemon keys',
   ApiKeys: 'API keys',
   ProviderKeys: 'Provider keys',
@@ -93,6 +94,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.Daemons,
     description: 'Edge daemons — the message + agent-execution units. Enrollment tokens and lifecycle.'
+  },
+  {
+    name: Tag.Computers,
+    description:
+      'Registered graphical desktops agents may be granted: one-time registration, revocation, sharing and the usage policy. Screen content never passes through the Control Plane.'
   },
   {
     name: Tag.MemberSets,

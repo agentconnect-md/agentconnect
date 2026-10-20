@@ -1349,7 +1349,8 @@ export interface MemberDto {
 }
 
 // What leaving / removing a member would do to Selected audiences.
-export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision'
+export type VisibilityResourceKind =
+  'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource' | 'decision' | 'computer'
 
 export interface MemberRemovalPreviewDto {
   replacement: MemberDto | null // null only when removal is refused (final organization owner)

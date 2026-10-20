@@ -23,6 +23,7 @@ export type BotId = Brand<string, 'BotId'>
 export type SessionId = Brand<string, 'SessionId'>
 export type WorkspaceId = Brand<string, 'WorkspaceId'>
 export type OrgId = Brand<string, 'OrgId'>
+export type ComputerId = Brand<string, 'ComputerId'>
 
 /** A monotonic fencing epoch (sessionEpoch / routingEpoch). */
 export type Epoch = Brand<bigint, 'Epoch'>
@@ -41,5 +42,6 @@ export const BotId = (s: string): BotId => s as BotId
 export const SessionId = (s: string): SessionId => s as SessionId
 export const WorkspaceId = (s: string): WorkspaceId => s as WorkspaceId
 export const OrgId = (s: string): OrgId => s as OrgId
+export const ComputerId = (s: string): ComputerId => s as ComputerId
 export const Epoch = (n: bigint): Epoch => n as Epoch
 export const Seq = (n: bigint): Seq => n as Seq

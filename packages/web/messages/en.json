@@ -4699,7 +4699,8 @@
           "cron": "{count, plural, one {schedule} other {schedules}}",
           "mcpProvider": "{count, plural, one {MCP provider} other {MCP providers}}",
           "skillSource": "{count, plural, one {skill source} other {skill sources}}",
-          "decision": "{count, plural, one {Decision} other {Decisions}}"
+          "decision": "{count, plural, one {Decision} other {Decisions}}",
+          "computer": "{count, plural, one {computer} other {computers}}"
         },
         "roles": {
           "owner": {

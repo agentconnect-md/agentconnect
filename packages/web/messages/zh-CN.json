@@ -4699,7 +4699,8 @@
           "cron": "{count, plural, other {定时任务}}",
           "mcpProvider": "{count, plural, other {MCP 提供方}}",
           "skillSource": "{count, plural, other {技能来源}}",
-          "decision": "{count, plural, other {决策}}"
+          "decision": "{count, plural, other {决策}}",
+          "computer": "{count, plural, other {计算机}}"
         },
         "roles": {
           "owner": {

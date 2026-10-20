@@ -74,7 +74,7 @@ guessing.
 
 The persisted `ApiKey` row contains:
 
-- `principalType`: `daemon`, `user`, `relay`, or `oauth`.
+- `principalType`: `daemon`, `user`, `relay`, `oauth`, or `computer`.
 - Optional bindings for `orgId`, `daemonId`, `userId`, and `oauthGrantId`.
 - `hash`, `displayTail`, optional `name`, scopes, and audit attribution.
 - Creation, last-use, expiry, and revocation timestamps.
@@ -232,6 +232,20 @@ reject them.
 OAuth access tokens use `principalType = oauth`, are bound to a user,
 organization, scopes, and an OAuth grant, and have a finite expiry. Revoking an
 OAuth grant revokes its access-token rows.
+
+### Computer keys
+
+Computer keys use `principalType = computer` and are bound to one organization
+and one Computer through `computerId`, which cascades on delete
+([computer-use.md §3.6](computer-use.md#36-registration-and-pairing-design)). A
+desktop daemon obtains one by spending a short-lived, one-time registration
+token at `POST /v1/computers/register`; the token's hash lives in
+`computer_registration`, never in `api_key`. A Computer key authenticates only
+the Computer channel: human authentication, the daemon WebSocket, relay
+authentication, and every other surface reject it, and the channel rejects every
+other principal. Minting registration tokens and revoking a Computer are
+`interactiveOnly`. Revoking a Computer, or its registrant leaving the
+organization, revokes all of its keys.
 
 ### Key permissions and agent selection
 

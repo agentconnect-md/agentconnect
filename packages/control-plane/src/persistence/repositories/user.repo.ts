@@ -32,7 +32,15 @@ import {
 } from '../ports.js'
 import { OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
 
-const RESOURCE_AUDIENCE_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source', 'decision'] as const
+const RESOURCE_AUDIENCE_TABLES = [
+  'agent',
+  'daemon',
+  'cron_def',
+  'mcp_provider',
+  'skill_source',
+  'decision',
+  'computer'
+] as const
 const ORG_ROLE_RANK: Record<OrgMemberRole, number> = { viewer: 0, collaborator: 1, owner: 2 }
 
 interface LockedOrgMembership {
@@ -106,7 +114,8 @@ const VISIBILITY_RESOURCE_KINDS = [
   ['cron', 'cron_def'],
   ['mcpProvider', 'mcp_provider'],
   ['skillSource', 'skill_source'],
-  ['decision', 'decision']
+  ['decision', 'decision'],
+  ['computer', 'computer']
 ] as const satisfies ReadonlyArray<readonly [VisibilityResourceKind, (typeof RESOURCE_AUDIENCE_TABLES)[number]]>
 
 interface SelectedResourceCountRow {
@@ -287,8 +296,27 @@ async function removeMembershipTx(
   for (const table of RESOURCE_AUDIENCE_TABLES) {
     await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
   }
+  // A departing member's own desktops leave with them: revoke the Computers and their keys (computer-use.md §3.6).
+  await revokeOwnedComputersTx(tx, orgId, userId)
   // A membership-delete trigger ends GitLab OAuth authority (§9.4) on every removal path.
   await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
+}
+
+async function revokeOwnedComputersTx(tx: Prisma.TransactionClient, orgId: string, ownerUserId: string): Promise<void> {
+  // Unspent tokens leave too, so a re-added member cannot redeem one minted before the removal.
+  await tx.computerRegistration.deleteMany({ where: { orgId, createdByUserId: ownerUserId, consumedAt: null } })
+  const owned = await tx.computer.findMany({ where: { orgId, ownerUserId }, select: { id: true } })
+  if (owned.length === 0) return
+  const at = new Date()
+  const ids = owned.map((c) => c.id)
+  await tx.apiKey.updateMany({
+    where: { computerId: { in: ids }, revokedAt: null },
+    data: { revokedAt: at, revokedReason: 'owner left the organization' }
+  })
+  await tx.computer.updateMany({
+    where: { id: { in: ids }, status: { not: 'revoked' } },
+    data: { status: 'revoked', revokedAt: at }
+  })
 }
 
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
