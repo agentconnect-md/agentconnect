@@ -648,7 +648,8 @@ describe('webchat renders and answers ACP elicitation cards', () => {
       kind: 'elicitation_resolved',
       requestId,
       outcome: 'accepted',
-      label: 'develop'
+      label: 'develop',
+      answers: { value: 'develop' }
     })
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
@@ -764,7 +765,8 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     void (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('tc-approval'))
     await vi.waitFor(() => expect(sink.output).toHaveBeenCalled())
     expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
-    expect(cardEvents(sink).map((e) => e.kind)).toEqual(['message'])
+    expect(cardEvents(sink).map((e) => e.kind)).toEqual(['permission', 'message'])
+    expect(cardEvents(sink)[0].editorOnly).toBe(true) // observers only; the legacy wire drops it
     await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     sink.output.mockClear()
 
@@ -833,7 +835,8 @@ describe('webchat answers a multi-select elicitation with a list', () => {
       requestId,
       outcome: 'accepted',
       // Every chosen label, in the words the card used — the single-select reading, extended.
-      label: 'lint, build'
+      label: 'lint, build',
+      answers: { value: ['lint', 'build'] }
     })
   })
 
@@ -919,7 +922,8 @@ describe('webchat answers a multi-select elicitation with a list', () => {
       kind: 'elicitation_resolved',
       requestId,
       outcome: 'accepted',
-      label: 'Nothing selected'
+      label: 'Nothing selected',
+      answers: { value: [] }
     })
 
     const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation())
@@ -1613,7 +1617,8 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       kind: 'elicitation_resolved',
       requestId,
       outcome: 'accepted',
-      label: 'add-retries'
+      label: 'add-retries',
+      answers: { value: 'add-retries' }
     })
   })
 
@@ -1644,7 +1649,8 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       kind: 'elicitation_resolved',
       requestId,
       outcome: 'accepted',
-      label: '7'
+      label: '7',
+      answers: { value: 7 }
     })
   })
 
@@ -1821,7 +1827,8 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
       kind: 'elicitation_resolved',
       requestId,
       outcome: 'accepted',
-      label: 'Base branch: develop · force: No · retries: 4'
+      label: 'Base branch: develop · force: No · retries: 4',
+      answers: { branch: 'develop', force: false, retries: 4 }
     })
   })
 
@@ -1848,7 +1855,8 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
       kind: 'elicitation_resolved',
       requestId,
       outcome: 'accepted',
-      label: 'Base branch: main'
+      label: 'Base branch: main',
+      answers: { branch: 'main' }
     })
   })
 

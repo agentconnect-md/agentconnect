@@ -57,7 +57,7 @@ jobs:
           {
             echo "code=$(other '^docs/|\.md$')"
             # Lists what CANNOT reach the daemon/CLI closure, so a new root config, script or package stays in scope.
-            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)|\.md$')"
+            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
             echo "microsandbox=$(any '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
@@ -185,7 +185,8 @@ jobs:
             'setup=@agentconnect.md/setup' \
             'web=@agentconnect.md/web' \
             'k8s-client=@agentconnect.md/k8s-client' \
-            'object-store=@agentconnect.md/object-store'
+            'object-store=@agentconnect.md/object-store' \
+            'desktop=@agentconnect.md/desktop'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:
