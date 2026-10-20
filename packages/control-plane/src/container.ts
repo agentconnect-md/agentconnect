@@ -130,6 +130,7 @@ import {
   PgMcpProviderOauthStateStore,
   PgSkillSourceRepo,
   PgComputerRepo,
+  PgComputerLeaseRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -227,6 +228,7 @@ import { ApiKeyCodec } from './registry/apiKey.js'
 import { DaemonAuthService } from './registry/authService.js'
 import { ApiKeyService } from './registry/apiKeyService.js'
 import { ComputerService } from './registry/computerService.js'
+import { ComputerLeaseService } from './registry/computerLeaseService.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -535,6 +537,7 @@ export function buildContainer(
     mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),
     skillSource: new PgSkillSourceRepo(prisma),
     computer: new PgComputerRepo(prisma),
+    computerLease: new PgComputerLeaseRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     organizationRecord: new PgOrganizationRecordRepo(prisma),
@@ -648,10 +651,19 @@ export function buildContainer(
   // Live Computer channels (computer-use.md §3.6): revoke, delete and policy changes reach a connected desktop at once.
   const computerChannels = new ComputerChannelRegistry()
   const computerChannelKeys = new ComputerChannelKeys(config.API_KEY_PEPPER, config.COMPUTER_CREDENTIAL_TTL_SEC)
+  // Three missed heartbeats, the daemon watchdog's freeze threshold: for a desktop's status and a lease holder alike.
+  const missedBeatsMs = config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000
+  const computerLeases = new ComputerLeaseService(repos.computerLease, clock, {
+    holderTtlMs: missedBeatsMs,
+    staleAfterMs: missedBeatsMs,
+    channels: computerChannels,
+    audit: repos.audit,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
   const computers = new ComputerService(codec, repos.computer, repos.apiKey, repos.audit, clock, {
     channels: computerChannels,
-    // Three missed heartbeats, the daemon watchdog's freeze threshold.
-    staleAfterMs: config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000
+    leases: computerLeases,
+    staleAfterMs: missedBeatsMs
   })
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
   const inviteLinks = new OrgInviteLinkService(
@@ -2782,6 +2794,7 @@ export function buildContainer(
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
     dutyLease,
+    computerLeases,
     memberSets: repos.memberSet,
     agentBundle: (agent) => stagedAgentMoves.bundleFor(agent),
     cron: repos.cron,
@@ -3264,6 +3277,7 @@ export function buildContainer(
         repo: repos.computer,
         keys: computerChannelKeys,
         registry: computerChannels,
+        leases: computerLeases,
         clock,
         heartbeatSec: config.HEARTBEAT_SEC,
         log: http.log,

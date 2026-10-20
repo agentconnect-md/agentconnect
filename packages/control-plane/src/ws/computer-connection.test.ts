@@ -46,6 +46,7 @@ function setup(
     authenticateImpl?: () => Promise<ComputerPrincipal | null>
     live?: () => boolean
     handshakes?: HandshakeGate
+    leases?: ComputerConnDeps['leases']
   } = {}
 ) {
   const clock = new FakeClock(T0)
@@ -74,7 +75,8 @@ function setup(
     registry,
     clock,
     heartbeatSec: 15,
-    ...(over.handshakes ? { handshakes: over.handshakes } : {})
+    ...(over.handshakes ? { handshakes: over.handshakes } : {}),
+    ...(over.leases ? { leases: over.leases } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -237,5 +239,45 @@ describe('ComputerConnection', () => {
     transport.close(1006, 'gone')
     await settle()
     expect(repo.markOffline).toHaveBeenCalledWith('org_1', CID, new Date(T0))
+  })
+})
+
+describe('ComputerConnection control lease', () => {
+  const lease = {
+    leaseId: '11111111-1111-4111-8111-111111111111',
+    computerId: CID,
+    holder: { sessionId: 's1', agentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+    acquiredAt: new Date(T0).toISOString(),
+    expiresAt: new Date(T0 + 1_800_000).toISOString()
+  }
+
+  it('tells the desktop the standing lease after auth and each change after a heartbeat, once', async () => {
+    let held: typeof lease | null = lease
+    const observe = vi.fn(async () => held)
+    const { transport } = setup({ leases: { current: vi.fn(async () => held), observe } })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease }])
+    transport.deliver(beat({ status: 'busy', lease: { holder: 's1', idleMs: 250 } }))
+    await settle()
+    expect(observe).toHaveBeenCalledWith('org_1', CID, { status: 'busy', lease: { holder: 's1', idleMs: 250 } })
+    expect(transport.ofType('computer/lease')).toHaveLength(1)
+    held = null
+    transport.deliver(beat({ status: 'paused' }))
+    await settle()
+    expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease }, { lease: null }])
+  })
+
+  it('pushes a lease the service grants while the channel is live, and keeps the channel when a lease read fails', async () => {
+    const { transport, registry } = setup({
+      leases: { current: vi.fn(async () => null), observe: vi.fn(async () => Promise.reject(new Error('db down'))) }
+    })
+    transport.deliver(auth())
+    await settle()
+    registry.pushLease(CID, lease)
+    transport.deliver(beat())
+    await settle()
+    expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease: null }, { lease }])
+    expect(transport.closed).toBeUndefined()
   })
 })

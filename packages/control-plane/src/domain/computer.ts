@@ -4,7 +4,8 @@ import {
   ComputerDoctorReport,
   ComputerPolicySchema,
   type ComputerCapabilities,
-  type ComputerPolicy
+  type ComputerPolicy,
+  type ComputerStatus
 } from '@agentconnect.md/protocol'
 
 // The vocabularies, policy and capabilities are wire contracts, so the protocol package owns them.
@@ -60,4 +61,18 @@ export function readComputerCapabilities(raw: unknown): ComputerCapabilities {
 export function readComputerDoctor(raw: unknown): ComputerDoctorReport | null {
   const parsed = ComputerDoctorReport.safeParse(raw)
   return parsed.success ? parsed.data : null
+}
+
+/** A live status older than this reads as offline: its channel died without a clean close (three heartbeats). */
+export const COMPUTER_STALE_AFTER_MS = 45_000
+
+/** The status to show and to gate on: a live one the channel stopped refreshing has gone offline. */
+export function presentComputerStatus(
+  c: { status: ComputerStatus; lastSeenAt: Date | null },
+  nowMs: number,
+  staleAfterMs = COMPUTER_STALE_AFTER_MS
+): ComputerStatus {
+  if (c.status === 'offline' || c.status === 'revoked') return c.status
+  if (!c.lastSeenAt || nowMs - c.lastSeenAt.getTime() > staleAfterMs) return 'offline'
+  return c.status
 }

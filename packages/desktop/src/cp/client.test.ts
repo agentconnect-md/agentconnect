@@ -47,6 +47,7 @@ function harness() {
   const transports: FakeTransport[] = []
   const policies: ComputerPolicy[] = []
   const revoked: string[] = []
+  const leases: unknown[] = []
   let report: HeartbeatReport = { status: 'online', facts: { osVersion: 'Ubuntu 26.04', session: 'x11' } }
   const authority = new ChannelAuthority({
     registered: true,
@@ -61,6 +62,7 @@ function harness() {
     authority,
     report: () => report,
     onPolicy: (policy) => policies.push(policy),
+    onLease: (lease) => leases.push(lease),
     onRevoked: (reason) => revoked.push(reason),
     log: () => {},
     clock,
@@ -100,6 +102,7 @@ function harness() {
     transports,
     policies,
     revoked,
+    leases,
     authority,
     client,
     credential,
@@ -109,6 +112,35 @@ function harness() {
 }
 
 describe('ComputerCpClient', () => {
+  it('hands the told control lease on and reports its local lease in every heartbeat', async () => {
+    const h = harness()
+    h.client.start()
+    await settle()
+    const [transport] = h.transports
+    h.authOk(transport!)
+    await settle()
+    const lease = {
+      leaseId: '00000000-0000-4000-8000-0000000000aa',
+      computerId: '00000000-0000-4000-8000-000000000001',
+      holder: { sessionId: 'sess-1', agentId: '00000000-0000-4000-8000-0000000000bb' },
+      acquiredAt: new Date(h.clock.now()).toISOString(),
+      expiresAt: new Date(h.clock.now() + 1_800_000).toISOString()
+    }
+    transport!.deliver(buildComputerCpFrame('computer/lease', { lease }))
+    transport!.deliver(buildComputerCpFrame('computer/lease', { lease: null }))
+    expect(h.leases).toEqual([lease, null])
+    h.setReport({
+      status: 'busy',
+      lease: { holder: 'sess-1', idleMs: 400 },
+      facts: { osVersion: 'Ubuntu 26.04', session: 'x11' }
+    })
+    h.client.beat()
+    expect(transport!.ofType('computer/heartbeat').at(-1)!.payload).toEqual({
+      status: 'busy',
+      lease: { holder: 'sess-1', idleMs: 400 }
+    })
+  })
+
   it('authenticates with the key, takes the credential and policy, and reports its facts once', async () => {
     const h = harness()
     h.client.start()

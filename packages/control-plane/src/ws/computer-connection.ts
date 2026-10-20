@@ -5,6 +5,7 @@ import {
   decodeComputerCpFrame,
   type COMPUTER_CP_SCHEMAS,
   type ComputerAuth,
+  type ComputerControlLease,
   type ComputerCpFrame,
   type ComputerCpFrameType,
   type ComputerHeartbeat,
@@ -18,6 +19,7 @@ import { ComputerId, OrgId } from '../domain/ids.js'
 import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerPrincipal, ComputerService } from '../registry/computerService.js'
 import type { ComputerChannelKeys } from '../registry/computerChannelKeys.js'
+import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
 import type { ComputerChannel, ComputerChannelRegistry } from './computer-registry.js'
 import type { HandshakeGate } from './handshake-gate.js'
 
@@ -34,6 +36,8 @@ export interface ComputerConnDeps {
   repo: Pick<ComputerRepo, 'get' | 'recordLive' | 'markOffline'>
   keys: ComputerChannelKeys
   registry: ComputerChannelRegistry
+  /** The control lease the desktop enforces; absent in tests that do not exercise it. */
+  leases?: Pick<ComputerLeaseService, 'observe' | 'current'>
   clock: Clock
   heartbeatSec: number
   /** A socket that has not authenticated by then is closed. */
@@ -58,6 +62,8 @@ export class ComputerConnection implements ComputerChannel {
   ownerUserId = ''
   private principal: ComputerPrincipal | undefined
   private lastKeyId = ''
+  // The lease id last told to the desktop ('' for none); undefined until the first push.
+  private toldLease: string | undefined
   private authTimer: ReturnType<Clock['setTimeout']> | undefined
   // Frames are applied one at a time, so a heartbeat never overtakes the auth it follows.
   private queue: Promise<void> = Promise.resolve()
@@ -152,6 +158,7 @@ export class ComputerConnection implements ComputerChannel {
       credential,
       policy: computer.policy
     })
+    await this.syncLease(() => this.deps.leases?.current(this.orgId, this.computerId))
   }
 
   private async handleHeartbeat(beat: ComputerHeartbeat): Promise<void> {
@@ -176,6 +183,10 @@ export class ComputerConnection implements ComputerChannel {
     if (this.state !== 'READY') return
     // The conditional write is the backstop: a revoke this replica never heard of still ends the channel here.
     if (!live) return this.revoke('revoked')
+    await this.syncLease(() =>
+      this.deps.leases?.observe(this.orgId, this.computerId, { status, ...(beat.lease ? { lease: beat.lease } : {}) })
+    )
+    if (this.state !== 'READY') return
     const credential = this.deps.keys.current(this.computerId, principal.apiKeyId, now)
     if (credential.keyId !== this.lastKeyId) {
       this.lastKeyId = credential.keyId
@@ -185,6 +196,24 @@ export class ComputerConnection implements ComputerChannel {
 
   pushPolicy(policy: ComputerPolicy): void {
     if (this.state === 'READY') this.send('computer/policy', { policy })
+  }
+
+  pushLease(lease: ComputerControlLease | null): void {
+    if (this.state !== 'READY') return
+    const id = lease?.leaseId ?? ''
+    if (id === this.toldLease) return
+    this.toldLease = id
+    this.send('computer/lease', { lease })
+  }
+
+  // A lease read that fails leaves the desktop on what it was last told; the next heartbeat retries.
+  private async syncLease(read: () => Promise<ComputerControlLease | null> | undefined): Promise<void> {
+    try {
+      const pending = read()
+      if (pending) this.pushLease(await pending)
+    } catch (err) {
+      this.deps.log?.warn({ err: (err as Error).message }, 'computer: lease sync failed')
+    }
   }
 
   revoke(reason: ComputerRevoke['reason']): void {

@@ -3,6 +3,10 @@ import { frameSchema } from '../envelope.js'
 import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
+import { ComputerControlLease } from './computer-lease.js'
+
+// The lease schemas ride both wires, so the `./computer` entry serves them to the desktop too.
+export * from './computer-lease.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 
@@ -172,7 +176,12 @@ export const ComputerHeartbeat = z
     desktopDaemonVersion: z.string().trim().min(1).max(64).optional(),
     driverVersion: z.string().trim().min(1).max(64).optional(),
     capabilities: ComputerCapabilitiesSchema.optional(),
-    doctor: ComputerDoctorReport.optional()
+    doctor: ComputerDoctorReport.optional(),
+    // The local lease and how long since its last input, so the CP's idle clock follows real use.
+    lease: z
+      .object({ holder: z.string().min(1).max(256), idleMs: z.number().int().min(0) })
+      .strict()
+      .optional()
   })
   .strict()
 export type ComputerHeartbeat = z.infer<typeof ComputerHeartbeat>
@@ -192,6 +201,10 @@ export const ComputerRevoke = z.object({
 })
 export type ComputerRevoke = z.infer<typeof ComputerRevoke>
 
+// C→D EVT: the control lease the CP granted, or null when none is held; only its holder may send input.
+export const ComputerLeasePush = z.object({ lease: ComputerControlLease.nullable() })
+export type ComputerLeasePush = z.infer<typeof ComputerLeasePush>
+
 export const COMPUTER_CP_SCHEMAS = {
   'computer/auth': ComputerAuth,
   'computer/auth/ok': ComputerAuthOk,
@@ -199,6 +212,7 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/credential': ComputerCredentialRenewal,
   'computer/policy': ComputerPolicyPush,
   'computer/revoke': ComputerRevoke,
+  'computer/lease': ComputerLeasePush,
   error: ErrorFrame
 } as const
 
@@ -212,6 +226,7 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/credential', COMPUTER_CP_SCHEMAS['computer/credential']),
   frameSchema('computer/policy', COMPUTER_CP_SCHEMAS['computer/policy']),
   frameSchema('computer/revoke', COMPUTER_CP_SCHEMAS['computer/revoke']),
+  frameSchema('computer/lease', COMPUTER_CP_SCHEMAS['computer/lease']),
   frameSchema('error', COMPUTER_CP_SCHEMAS['error'])
 ])
 export type ComputerCpFrame = z.infer<typeof ComputerCpFrame>

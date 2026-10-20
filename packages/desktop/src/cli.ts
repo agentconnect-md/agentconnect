@@ -353,8 +353,10 @@ function startCpChannel(options: {
     log,
     report: () => {
       const display = computer.info().display as { screenWidth: number; screenHeight: number; scale: number } | null
+      const lease = computer.leaseActivity()
       return {
         status: computer.liveStatus(),
+        ...(lease ? { lease } : {}),
         facts: {
           ...profile,
           driverVersion: driver.version ?? CUA_DRIVER_VERSION,
@@ -373,6 +375,7 @@ function startCpChannel(options: {
       config.leaseIdleSeconds = policy.leaseIdleSeconds
       config.leaseMaxSeconds = policy.leaseMaxSeconds
     },
+    onLease: (lease) => computer.applyControlLease(lease),
     onRevoked: (reason) => {
       markRevoked(dir, reason)
       log(`REVOKED by the Control Plane (${reason}): the key was forgotten and all input is refused`)

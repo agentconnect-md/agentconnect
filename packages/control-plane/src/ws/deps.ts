@@ -64,6 +64,7 @@ import type { GatedDmSeedResolver } from '../orchestrator/linkedDm.js'
 import type { ApprovalRouteResolver } from '../orchestrator/approvalRoute.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
+import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
 import type { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
@@ -178,6 +179,8 @@ export interface DaemonWsDeps {
   collabRoutes: CollabRoutesService
   /** The duty lease exchange riding the heartbeat (k8s daemons). */
   dutyLease: DutyLeaseService
+  /** Computer control leases (computer-use.md §4.4); absent in tests that do not exercise them. */
+  computerLeases?: Pick<ComputerLeaseService, 'acquire' | 'release' | 'sessionEnded' | 'daemonHeartbeat'>
   /** The set a connection may claim duties within (daemon-groups.md §3), re-read once registered; the executor requests also read the set's switch and members. */
   memberSets: Pick<MemberSetRepo, 'setIdOf' | 'get' | 'memberIdsOf'>
   /** Assembles one agent's complete installable definition for `duty/fetch` —

@@ -90,6 +90,7 @@ import type {
   ComputerSession,
   ComputerStatus
 } from '../domain/computer.js'
+import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerLease.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
@@ -676,6 +677,21 @@ export interface ComputerRepo {
   reapRegistrations(expiredBefore: Date): Promise<number>
   /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */
   delete(orgId: OrgId, id: ComputerId): Promise<void>
+}
+
+/** A Computer's control lease row (computer-use.md §4.4); the decisions live in `domain/computerLease.ts`. */
+export interface ComputerLeaseRepo {
+  get(computerId: ComputerId): Promise<ControlLease | null>
+  /** Lock the Computer row, read it and its lease, and apply `decide`'s row change in the same transaction. */
+  step<R>(
+    orgId: OrgId,
+    computerId: ComputerId,
+    decide: (computer: LeaseComputer | null, lease: ControlLease | null) => LeaseStep<R>
+  ): Promise<R>
+  /** The leases one session holds, at most one per Computer. */
+  listBySession(sessionId: string): Promise<ControlLease[]>
+  /** Stamp `renewedAt` on every lease the daemon took whose holder was still alive at `aliveSince`; returns how many. */
+  renewByDaemon(daemonId: string, at: Date, aliveSince: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

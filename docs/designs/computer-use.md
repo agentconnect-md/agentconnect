@@ -445,6 +445,33 @@ Whatever the policy, the desktop daemon refuses locally:
   the session ends [design].
 - Screenshots, cursor position, and watching in the viewer need no lease and run concurrently.
 
+**[implemented]** The Control Plane's lease service (`domain/computerLease.ts` holds the state machine,
+`registry/computerLeaseService.ts` applies it). The `computer_lease` table keeps one row per held lease, keyed by
+the Computer, and every change takes the Computer row's lock, so replicas agree on the holder.
+
+- **Acquire**: an agent daemon sends `computer-lease/acquire` (`computerId`, `agentId`, `sessionId`) on the daemon wire,
+  behind `computer-lease-v1`. The CP answers only a daemon that serves the agent. It refuses with `denied` when the
+  policy does not grant the agent or is `view`; `unavailable` when the Computer is revoked, offline, or its status is
+  stale; and `human_in_control` while it is `paused` or `human_in_control`. Another session's live lease gets
+  `computer_busy` with the holder (session, agent, agent name). The holding session's acquire renews the lease in place.
+  `computer-lease/release` gives it up.
+- **Expiry**: a lease ends at the first of three deadlines. `leaseIdleSeconds` runs from its last use: an acquire by
+  its session, or the `lease.idleMs` that the desktop daemon reports in each heartbeat for its local lease.
+  `leaseMaxSeconds` runs from the acquisition. Holder liveness is three heartbeats (`HEARTBEAT_SEC × MISSED_BEATS`)
+  from the last heartbeat of the agent daemon that took it. The daemon heartbeat renews liveness, but never revives a
+  holder already lost. A lapsed row is cleared the next time it is read.
+- **Session end**: daemons report `phase: end` at the end of every turn, so a lease is held for a turn. The `end`
+  milestone releases the session's leases taken before the end's timestamp (plus 30 s for a daemon clock running
+  behind), so a late replay of an earlier turn does not end a later lease.
+- **Pre-emption**: a Computer heartbeat reporting `paused` or `human_in_control` (owner pause, stop, or viewer takeover)
+  ends the lease. Revoking the Computer ends it. A policy change that removes the agent, or sets `view`, ends it too.
+- **Enforcement on the desktop**: the CP sends `computer/lease` with the lease, or `null`, after auth and whenever it
+  changes. A change made on the replica that holds the desktop's channel is sent at once. A change made on another
+  replica reaches the desktop with its next heartbeat. While a lease stands, the desktop daemon lets only its holder
+  session acquire locally, refuses every other caller with `computer_busy` naming the holder, and drops a local lease
+  that the CP moved or ended. With no lease known, the prototype's local client tokens still work. The data plane
+  (#3189) binds a call to its session, and the `computer_*` tools (#3190) call acquire.
+
 ## 5. Agent tool interface
 
 ### 5.1 Tools [validated]

@@ -62,6 +62,54 @@ describe('Computer', () => {
     expect(statuses).toEqual(['controlled by claude', 'online', 'controlled by codex'])
   })
 
+  describe('the Control Plane lease', () => {
+    const told = (sessionId: string, leaseId = `lease-${sessionId}`) => ({
+      leaseId,
+      computerId: '00000000-0000-4000-8000-000000000001',
+      holder: { sessionId, agentId: '00000000-0000-4000-8000-0000000000bb', agentName: 'Ops' },
+      acquiredAt: '2026-10-20T00:00:00.000Z',
+      expiresAt: '2026-10-20T00:30:00.000Z'
+    })
+
+    it('lets only the holder it was told about take control, naming that holder to anyone else', async () => {
+      const { computer } = setup({ actionScreenshot: false })
+      computer.applyControlLease(told('sess-1'))
+      expect(errorOf(await computer.type('claude', { text: 'hi' }))).toMatchObject({
+        error: 'computer_busy',
+        holder: 'Ops',
+        sessionId: 'sess-1'
+      })
+      expect((await computer.type('sess-1', { text: 'hi' })).isError).toBeUndefined()
+      expect(computer.info().controlLease).toMatchObject({ leaseId: 'lease-sess-1' })
+    })
+
+    it('drops a local lease the Control Plane moved to another session or ended', async () => {
+      const { computer, statuses } = setup({ actionScreenshot: false })
+      await computer.type('claude', { text: 'hi' })
+      computer.applyControlLease(told('sess-1'))
+      expect(computer.liveStatus()).toBe('online')
+      await computer.type('sess-1', { text: 'hi' })
+      // A renewal under a fresh id for the same session keeps the local lease.
+      computer.applyControlLease(told('sess-1', 'lease-again'))
+      expect(computer.liveStatus()).toBe('busy')
+      computer.applyControlLease(null)
+      expect(computer.liveStatus()).toBe('online')
+      expect(statuses).toEqual(['controlled by claude', 'online', 'controlled by sess-1', 'online'])
+      // With no lease told, the local tokens of an unregistered prototype still work.
+      expect((await computer.type('claude', { text: 'hi' })).isError).toBeUndefined()
+      computer.applyControlLease(null)
+      expect(computer.liveStatus()).toBe('busy')
+    })
+
+    it("reports the local lease's holder and idle time", async () => {
+      const { computer, advance } = setup({ actionScreenshot: false })
+      expect(computer.leaseActivity()).toBeUndefined()
+      await computer.type('sess-1', { text: 'hi' })
+      advance(1500)
+      expect(computer.leaseActivity()).toEqual({ holder: 'sess-1', idleMs: 1500 })
+    })
+  })
+
   it('expires an idle lease', async () => {
     const { computer, advance } = setup({ actionScreenshot: false, leaseIdleSeconds: 60 })
     await computer.type('claude', { text: 'hi' })

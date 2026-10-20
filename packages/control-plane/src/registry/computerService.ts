@@ -13,11 +13,14 @@ import { ComputerId, type OrgId } from '../domain/ids.js'
 import {
   COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES,
   COMPUTER_REGISTRATION_MAX_TTL_MINUTES,
+  COMPUTER_STALE_AFTER_MS,
+  presentComputerStatus,
   type ComputerPolicy,
   type ComputerStatus
 } from '../domain/computer.js'
 import type { ApiKeyCodec } from './apiKey.js'
 import type { ComputerChannelControl } from '../ws/computer-registry.js'
+import type { ComputerLeaseService } from './computerLeaseService.js'
 
 /** Skip the best-effort `lastUsedAt` write unless the key has not been touched for this long. */
 const LAST_USED_THROTTLE_MS = 60_000
@@ -46,11 +49,11 @@ export interface RegisteredComputer {
 export interface ComputerServiceOpts {
   /** Live Computer channels, so a revoke, delete or policy change reaches a connected desktop at once. */
   channels?: ComputerChannelControl
+  /** Control leases: a revoke ends the lease, and a policy change re-checks it. */
+  leases?: Pick<ComputerLeaseService, 'current' | 'preempt'>
   /** A live status older than this reads as offline: its channel died without a clean close. */
   staleAfterMs?: number
 }
-
-const DEFAULT_STALE_AFTER_MS = 45_000
 
 export class ComputerService {
   constructor(
@@ -64,10 +67,7 @@ export class ComputerService {
 
   /** The status to show: a live one the channel stopped refreshing has gone offline. */
   presentedStatus(c: Pick<ComputerRecord, 'status' | 'lastSeenAt'>): ComputerStatus {
-    if (c.status === 'offline' || c.status === 'revoked') return c.status
-    const staleAfter = this.opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
-    if (!c.lastSeenAt || this.clock.now() - c.lastSeenAt.getTime() > staleAfter) return 'offline'
-    return c.status
+    return presentComputerStatus(c, this.clock.now(), this.opts.staleAfterMs ?? COMPUTER_STALE_AFTER_MS)
   }
 
   /** A removed member's Computers were revoked in the removal transaction; end their live channels too. */
@@ -150,6 +150,8 @@ export class ComputerService {
     const computer = await this.computers.setPolicy(orgId, id, policy)
     if (!computer) return null
     this.opts.channels?.pushPolicy(id, computer.policy)
+    // A grant taken away ends the lease it backed; a failure here leaves it to the next heartbeat.
+    await this.opts.leases?.current(orgId, id).catch(() => null)
     this.record(orgId, actorUserId, 'policy_update', {
       computerId: id,
       allowedAgents: policy.allowedAgents,
@@ -165,6 +167,7 @@ export class ComputerService {
       'computer revoked',
       new Date(this.clock.now())
     )
+    await this.opts.leases?.preempt(orgId, id, 'revoked').catch(() => false)
     this.opts.channels?.revoke(id, 'revoked')
     this.record(orgId, actorUserId, 'revoke', { computerId: id, revokedKeyIds })
     return computer

@@ -36,6 +36,14 @@ export const handleHeartbeat: Handler = async (frame, conn, deps) => {
         )
       : undefined
 
+  // Computer control leases this daemon's sessions hold stay alive while it beats (computer-use.md §4.4).
+  const computerLeases = deps.computerLeases
+    ?.daemonHeartbeat(conn.daemonId)
+    .catch((err: unknown) =>
+      deps.log.warn?.({ err, daemonId: conn.daemonId }, 'heartbeat: computer lease renewal failed')
+    )
+
   await deps.registry.recordHeartbeat(did, hb)
   if (lease) await lease
+  await computerLeases
 }
