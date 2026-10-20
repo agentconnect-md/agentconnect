@@ -1,11 +1,11 @@
 import { defineConfig } from 'vitest/config'
 import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
 
-// Co-located src/**/*.test.ts unit tests against a fake driver; no desktop or Cua Driver binary needed.
+// Unit tests (fake driver, license-scan fixtures); no desktop or Cua Driver binary needed. Xvfb: vitest.xvfb.config.ts.
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     reporters: githubActionsReporters('desktop.md')
   }
 })
