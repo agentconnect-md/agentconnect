@@ -57,9 +57,11 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    (`hooks/standard-webhooks.ts`); Gitea a hex HMAC header; the generic webhook an unguessable capability
    URL plus `X-AC-Signature` (`hooks/signature.ts`); `hooks/rate-limit.ts` throttles. A verified event is
    demuxed to the owning bot and forwarded as `rd/*` frames to the owning daemon.
-2. **Webchat and the agent chat API** (`relay/src/relay-browser-server.ts`, `agent-chat-route.ts`):
+2. **Webchat, the agent chat API and AHP** (`relay/src/relay-browser-server.ts`, `agent-chat-route.ts`, `ahp-server.ts`):
    a browser holds a short-lived token minted by the CP only after its visibility check; the chat API
    is authenticated by personal/OAuth keys whose agent selection the CP enforces.
+   AHP adds standard JSON-RPC over a separately authenticated per-agent WebSocket;
+   it does not widen the older chat API credential profile.
 3. **The MCP proxy** (`relay/src/mcp`, `centralized-tool-management.md`): the relay injects upstream
    credentials while proxying; an upstream URL is an SSRF primitive, so egress must be validated.
 4. **CP REST/SSE** (`control-plane/src/http/`): browser sessions (OIDC JWT via JWKS), personal API
@@ -113,6 +115,61 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 - **Loop breaker** (`loop-breaker-design.md`): bot-to-bot and agent-to-agent chains must terminate.
 - **Decisions and triggers** (`decisions.md`, `webhook-triggers-and-github-events.md`): who may summon
   an agent, maintainer gates on external PRs/issues, and the prompt boundary around untrusted event text.
+
+## AHP boundaries to audit before public rollout
+
+- **Independent admission gates:** CP and relay `AHP_MODE` must be `on`, the
+  credential must belong to the configured rollout audience, and the agent must
+  have an AHP API entry. The selected serving daemon must advertise `api-ahp-v1`.
+  Recheck placement and capability after asynchronous authorization, on renewal
+  and on reconnect. `off` / `shadow` never accept client AHP actions. Webchat's
+  protocol default is independent of public-key access.
+- **Connection-bound authority:** the initial native profile accepts full
+  personal user keys through the `Authorization` upgrade header; read-only,
+  `agent:chat`, OAuth and daemon credentials cannot acquire it. First-party tokens
+  are conversation-bound and carry a signed `protocol: ahp` claim. A legacy token
+  (including one without the claim) is not an AHP token, and an AHP token is not a
+  legacy token. A client-selected `clientId`, channel URI or provider cannot change
+  the verified principal, organization, agent or session audience.
+- **Credential transport:** reject query credentials. Browser upgrades offer the
+  static `ahp` protocol plus a base64url token carrier; select and echo only the
+  static value. Base64url is not encryption. Never log upgrade authorization or
+  token subprotocols, and never send the personal key to the daemon. The daemon
+  receives only verified scope and a CP-issued grant.
+- **Bounded authority lifetime:** grants last at most 60 seconds and never outlive
+  the source credential. Renewal rechecks membership, visibility, API entry,
+  placement and credential validity. The independent expiry timer closes a
+  socket even when renewal hangs. A CP outage cannot extend an expired grant or
+  manufacture a registry fact. Changing principal or attachment scope requires
+  a new attachment, not a replacement claim on an existing socket.
+- **Registry facts, not content:** CP reservations and URI bindings carry control
+  metadata only. Canonical URI namespaces, collisions, idempotent finalization
+  and serving-daemon/duty-term fences protect the existing session owner.
+  Resolve/list must recheck the current session audience. A continuation alias
+  cannot confer ownership; retired native outward IDs must not become resumable
+  current conversation slots. Transcripts, snapshots and replay remain on the
+  daemon/relay data plane.
+- **Opaque bounded carrier:** each AHP message is at most 64 KiB of UTF-8 with a
+  separate escaped-carrier bound. Limit attachments, pending operations, queued
+  bytes and socket buffering. Overload must close explicitly, never silently
+  discard an action or snapshot. Late callbacks from an old transport generation
+  cannot send through or clean up its replacement. Relay code must not implement
+  AHP reducers or interpret content to authorize operations.
+- **Snapshot and permission integrity:** bounded derived snapshots, durable
+  sequence reservations and paged history must retain scope and ordering across
+  reconnect/restart. Historical imports cannot invent successful execution or
+  actionable pending approvals. Approval/input/cancel/configuration operations
+  use the current verified role and existing application policy; pending request
+  and turn identities must match. Apps RPC results remain private to the requester;
+  optional presentation metadata does not confer tool authority.
+- **Attachment is not execution:** detach, grant expiry, either-hop loss and
+  protocol rollback remove observers, not admitted work. Cancellation remains a
+  separate authorized operation. Reconcile uncertain submissions through durable
+  admission before retrying; a new observer never creates another runtime owner.
+- **Rollback retains identity:** default to AHP off and legacy Webchat. Preserve
+  pinned legacy reconnects when the default changes. Disable AHP admission and
+  drain attachments without deleting URI bindings, transcripts, checkpoints or
+  receipts; an AHP-only client must not receive legacy frames as silent fallback.
 
 ## Out of scope (do not report)
 

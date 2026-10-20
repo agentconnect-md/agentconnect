@@ -1,6 +1,6 @@
 # AHP v1 adoption: an open client interface for AgentConnect
 
-> **Status:** Proposal; no implementation or dependency changes in this PR.
+> **Status:** Implementation is staged behind opt-in controls; public rollout requires the acceptance evidence below.
 > **Related:** [#1339](https://github.com/agentconnect-md/agentconnect/issues/1339).
 > Revisits [#2081](https://github.com/agentconnect-md/agentconnect/pull/2081),
 > originally proposed by stkevintan and deferred pending protocol stability.
@@ -68,8 +68,9 @@ that every capability below first appeared in the 1.0 release.
 
 ![Proposed integration: a feature switch selects Webchat's legacy or AHP adapter; independent protocol services share one session application port and execution owner. Third-party clients use the independently enabled AHP endpoint.](ahp-adoption.svg)
 
-The SVG is editable source. All added components in the diagram are proposed,
-not current runtime behavior.
+The SVG is editable source and records the target topology. The implementation
+map below identifies staged code; serving and public rollout remain opt-in under
+the [operations controls](../ahp-operations.md).
 
 ### 3.1 AHP host on the daemon
 
@@ -218,7 +219,13 @@ additional data-plane hop, authorization, fencing, backpressure, and failure
 recovery before introducing it. Module separation delivers the required code
 isolation without adding a second process or execution owner in this change.
 
-Proposed controls (names are design placeholders, not existing configuration):
+The conceptual controls below map to CP/relay `AHP_MODE`, daemon
+`features.ahp.mode`, and CP `WEBCHAT_PROTOCOL`. Defaults remain off / legacy.
+CP `AHP_PUBLIC_ACCESS` and `AHP_TEST_KEY_IDS` independently constrain the native
+credential audience. See [AHP operations](../ahp-operations.md) for exact startup,
+authentication and rollback instructions. The diagram's labels describe these
+logical controls; the CP still stores metadata, the relay carries content without
+reducing it, and the daemon owns execution and derived state.
 
 | Control                     | Values / initial default        | Meaning                                                                                                                                                                    |
 | --------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -477,6 +484,47 @@ copied. This proposal adds no gateway code or dependency.
 
 ## 8. Incremental implementation and acceptance
 
+### Implementation map
+
+The staged implementation preserves the ownership in the diagram. These source
+locations identify implemented responsibilities, not completed release gates.
+The phase criteria below still govern rollout and removal of legacy code.
+
+| Responsibility                     | Source                                                                                                                                                                                                                                                                                 | Current behavior and boundary                                                                                                                                                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public admission and grants        | [`ahpAuthorization.ts`](../../packages/control-plane/src/registry/ahpAuthorization.ts), [`ahpGrant.ts`](../../packages/control-plane/src/registry/ahpGrant.ts), [`webchat-token.ts`](../../packages/control-plane/src/http/routes/webchat-token.ts)                                    | Personal-key canary/public audience; signed browser protocol pin; short-lived scoped grants; legacy remains available.                                                                                                                        |
+| Durable URI bindings and discovery | [`ahpSessions.ts`](../../packages/control-plane/src/registry/ahpSessions.ts), [`ahp-session-binding.repo.ts`](../../packages/control-plane/src/persistence/repositories/ahp-session-binding.repo.ts)                                                                                   | CP metadata only; current audience checked for each binding. Native discovery exposes the current conversation participant slot, not retired native outward IDs as resumable slots. Authorized platform/hook history retains scoped bindings. |
+| Opaque carrier                     | [`ahp-server.ts`](../../packages/relay/src/ahp-server.ts), [`ahp-carrier.ts`](../../packages/daemon/src/cp/ahp-carrier.ts)                                                                                                                                                             | Standard public JSON-RPC; authenticated internal envelopes; bounded frames/queues; grant renewal and transport-generation fences. Attachment loss does not cancel admitted execution.                                                         |
+| Protocol and application boundary  | [`connection.ts`](../../packages/daemon/src/ahp/connection.ts), [`application.ts`](../../packages/daemon/src/ahp/application.ts), [`chat-application.ts`](../../packages/daemon/src/session/chat-application.ts)                                                                       | AHP negotiation and routing call the shared session application port; business admission, execution and permissions remain daemon-owned.                                                                                                      |
+| Masked state and durable recovery  | [`chat-projection.ts`](../../packages/daemon/src/ahp/chat-projection.ts), [`agent-state.ts`](../../packages/daemon/src/ahp/agent-state.ts), [`checkpoint-store.ts`](../../packages/daemon/src/ahp/checkpoint-store.ts), [`ahp-state.ts`](../../packages/daemon/src/store/ahp-state.ts) | Fenced checkpoints, immutable native turn archive, bounded retained state and standard history paging; interrupted work is not restored as successful execution.                                                                              |
+| Scoped legacy history              | [`history.ts`](../../packages/daemon/src/ahp/history.ts)                                                                                                                                                                                                                               | Masked historical record previews, scoped cursors, explicit unknown original outcome; no invented turn boundaries or actionable old approvals.                                                                                                |
+| First-party adapter                | [`attachment.ts`](../../packages/web/src/lib/ahp/attachment.ts), [`view.ts`](../../packages/web/src/lib/ahp/view.ts)                                                                                                                                                                   | Adapter selected at attachment time and pinned across reconnects; AHP state projected separately from legacy stream recovery.                                                                                                                 |
+| Public SDK example                 | [`examples/README.md`](../../packages/daemon/examples/README.md), [`client-example.test.ts`](../../packages/daemon/test/ahp/client-example.test.ts)                                                                                                                                    | Official SDK without AgentConnect client imports; real relay/protocol-host fixture uses fixture authorization/execution. Independent-client and deployment acceptance remain separate.                                                        |
+
+Native history paging is implemented: the host targets a 32 KiB retained chat,
+archives completed turns before eviction, and sends pages of at most 64 turns /
+32 KiB through standard `fetchTurns` and `chat/turnsLoaded`. Fetching old pages
+does not expand the host's durable retained tail; reconnect returns a bounded
+snapshot with its original cursor. Individual oversized turns are not silently
+truncated, and the 64 KiB outbound limit fails explicitly. Imported legacy
+history is separately identified as bounded previews. See
+[operations](../ahp-operations.md) for exact limits and recovery behavior.
+
+Approval parity is incomplete. An ordinary caller with `callerApproves=false`
+cannot send an accepted `ChatToolCallConfirmed` with `approved: true`; the host
+rejects the action without a confirmed echo. The first-party AHP UI retains the
+pending card and displays the caller's rejection notice. Legacy's “request editor
+approval” escalation has no negotiated AHP counterpart yet. Authorized editors
+can still perform actual approval under the existing policy and request ownership.
+Regression coverage must preserve both the editor settlement and the refused
+caller's pending state. Keep the explicitly selected legacy service available for
+escalation; do not claim complete approval parity or fall back across protocols.
+
+The independently maintained client gate remains pending. Optional Apps and
+other first-party extensions do not substitute for the standard core acceptance
+flow. Public release still requires the deployed failure/control matrix, a real
+runtime, and recorded client/version compatibility evidence.
+
 ### Phase 0: shadow projection
 
 First define the shared session application port and preserve the legacy adapter
@@ -591,7 +639,8 @@ useful. Console migration can be deferred independently of public client access.
   [multi-agent Webchat](webchat-multi-agents.md), and
   [cross-integration continuation](webchat-cross-integration-continuation.md).
 
-This change covers the refreshed adoption proposal, gateway assessment, code
-retirement map, architecture diagram, and phased acceptance criteria. All
-implementation, performance measurement, runtime interoperability, and rollout
-work remains to be done; #1339 remains open.
+This document covers the adoption design, gateway assessment, code retirement
+map, architecture diagram, implementation map, and phased acceptance criteria.
+Implementation is staged behind opt-in controls. Performance measurement,
+deployment acceptance, independently maintained client interoperability and
+public rollout still require evidence; #1339 remains open.

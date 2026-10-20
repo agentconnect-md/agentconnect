@@ -72,7 +72,9 @@ export const WINDOWS_EXCLUDED = [
   'test/schedule-catchup.test.ts',
   'test/daemon-session-metadata-outbox-pool.test.ts',
   'test/daemon-session-sweeps-pool.test.ts',
-  'test/daemon-loop-guard-pool.test.ts'
+  'test/daemon-loop-guard-pool.test.ts',
+  // Imports relay source, whose dependencies sit outside the Windows job's daemon/cli install closure.
+  'test/ahp/client-example.test.ts'
 ]
 
 // Seconds on the Windows runner, the mean of three runs. These 24 files are 78% of the suite's time, which is
