@@ -27,13 +27,21 @@ const ctx = (tools = COMPUTER_TOOLS): SessionContext => ({
   tools: [...tools]
 })
 
-type CallTool = (params: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown>
+type CallTool = (params: { name: string; arguments?: Record<string, unknown> }, attempt: number) => Promise<unknown>
 
-function setup(options: { granted?: string[]; lease?: ComputerLeaseAcquireResult; callTool?: CallTool } = {}) {
+function setup(
+  options: {
+    granted?: string[]
+    lease?: ComputerLeaseAcquireResult
+    callTool?: CallTool
+    connectError?: (attempt: number) => Error | undefined
+  } = {}
+) {
   const granted = options.granted ?? [C1]
   const calls: Array<{ computer: string; name: string; args: Record<string, unknown> }> = []
   const connects: string[] = []
   const closes: string[] = []
+  const closedAttempts: number[] = []
   const callTool = options.callTool ?? (async () => ({ content: [{ type: 'text', text: '{}' }, IMAGE] }))
   const leases = {
     computerLeaseAcquire: vi.fn(
@@ -61,21 +69,27 @@ function setup(options: { granted?: string[]; lease?: ComputerLeaseAcquireResult
     connect: async (opts) => {
       const computer = opts.target.computerId
       connects.push(computer)
+      const attempt = connects.length
       expect(opts.target).toEqual({ computerId: computer, agentId: AGENT, sessionId: 'out-1', orgId: 'org_1' })
+      const failed = options.connectError?.(attempt)
+      if (failed) throw failed
       const conn = {
         client: {
           callTool: async (params: { name: string; arguments?: Record<string, unknown> }) => {
             calls.push({ computer, name: params.name, args: params.arguments ?? {} })
-            return await callTool(params)
+            return await callTool(params, attempt)
           }
         },
         channel: {},
-        close: async () => void closes.push(computer)
+        close: async () => {
+          closes.push(computer)
+          closedAttempts.push(attempt)
+        }
       }
       return conn as unknown as ComputerMcpConnection
     }
   }
-  return { tools: new ComputerTools(deps), calls, connects, closes, leases }
+  return { tools: new ComputerTools(deps), calls, connects, closes, closedAttempts, leases }
 }
 
 const parse = (result: { mcpContent: Array<{ type: string; text?: string }> }) =>
@@ -220,6 +234,44 @@ describe('ComputerTools', () => {
     expect(calls.map((call) => call.name)).toEqual(['computer_click'])
   })
 
+  it('reports a connection that fails before the input is sent as a definite unavailable error', async () => {
+    const { tools, calls, connects } = setup({ connectError: () => new Error('relay answered initialize with 502') })
+    const handled = await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+    expect(handled?.result.mcpIsError).toBe(true)
+    expect(parse(handled!.result)).toMatchObject({ error: 'unavailable' })
+    expect(parse(handled!.result).message).toContain('relay answered initialize with 502')
+    expect(calls).toEqual([])
+    expect(connects).toEqual([C1])
+  })
+
+  it('drops only the connection a failed call used, never a newer one', async () => {
+    const gates: Array<(error?: Error) => void> = []
+    const { tools, connects, closedAttempts } = setup({
+      callTool: async (params, attempt) => {
+        if (attempt > 2 || params.name !== 'computer_wait') return { content: [IMAGE] }
+        await new Promise<void>((resolve, reject) => gates.push((error) => (error ? reject(error) : resolve())))
+        return { content: [IMAGE] }
+      }
+    })
+    const first = tools.call(ctx(), 'computer_wait', { ms: 0 })
+    const second = tools.call(ctx(), 'computer_wait', { ms: 0 })
+    await vi.waitFor(() => expect(gates).toHaveLength(2))
+    gates[1]!(new Error('lost'))
+    await expect(second).rejects.toThrow('lost')
+    const third = tools.call(ctx(), 'computer_wait', { ms: 0 })
+    await vi.waitFor(() => expect(gates).toHaveLength(3))
+    gates[0]!(new Error('lost too'))
+    await expect(first).rejects.toThrow('lost too')
+    gates[2]!()
+    await third
+    // The second connection survives the first call's late failure and is reused.
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(connects).toEqual([C1, C1])
+    expect(closedAttempts).toEqual([1, 1])
+    await tools.close()
+    expect(closedAttempts).toEqual([1, 1, 2])
+  })
+
   it('passes a desktop error through as an error result', async () => {
     const busy = { content: [{ type: 'text', text: '{"error":"human_active","message":"someone is using it"}' }] }
     const { tools } = setup({ callTool: async () => ({ ...busy, isError: true }) })
@@ -232,8 +284,8 @@ describe('ComputerTools', () => {
       granted: [C1, C2],
       callTool: async () => ({ content: [{ type: 'text', text: JSON.stringify([{ os: 'linux', status: 'online' }]) }] })
     })
-    const original = tools['link'].bind(tools)
-    vi.spyOn(tools as unknown as { link: typeof original }, 'link').mockImplementation(async (state, computer) => {
+    const original = tools['linked'].bind(tools)
+    vi.spyOn(tools as unknown as { linked: typeof original }, 'linked').mockImplementation(async (state, computer) => {
       if (computer === C2) throw new ComputerChannelError('unavailable', 'the computer is offline')
       return await original(state, computer)
     })

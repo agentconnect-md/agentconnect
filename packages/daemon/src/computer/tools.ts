@@ -234,6 +234,11 @@ interface Link {
   usedAt: number
 }
 
+interface Linked {
+  link: Link
+  conn: ComputerMcpConnection
+}
+
 interface SessionState {
   agentId: string
   sessionId: string
@@ -428,8 +433,19 @@ export class ComputerTools {
     args: Record<string, unknown>,
     input: boolean
   ): Promise<McpContentResult> {
+    let linked: Linked
     try {
-      const raw = await this.callDesktop(state, computerId, name, args)
+      linked = await this.linked(state, computerId)
+    } catch (error) {
+      // The connection (grant or MCP initialize) failed, so the call was never sent: a definite failure (§5.4).
+      if (channelError(error)) throw error
+      throw new ComputerToolError(
+        'unavailable',
+        `${name}: the computer could not be reached: ${(error as Error).message}`
+      )
+    }
+    try {
+      const raw = await this.invoke(state, computerId, linked, name, args)
       const isError = (raw as { isError?: unknown }).isError === true
       return { mcpContent: contentOf(raw), ...(isError ? { mcpIsError: true } : {}) }
     } catch (error) {
@@ -472,8 +488,16 @@ export class ComputerTools {
     name: string,
     args: Record<string, unknown>
   ): Promise<unknown> {
-    const link = state.links.get(computerId)
-    const conn = await this.link(state, computerId)
+    return await this.invoke(state, computerId, await this.linked(state, computerId), name, args)
+  }
+
+  private async invoke(
+    state: SessionState,
+    computerId: string,
+    { link, conn }: Linked,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<unknown> {
     try {
       return await conn.client.callTool(
         { name, arguments: args },
@@ -481,12 +505,18 @@ export class ComputerTools {
       )
     } catch (error) {
       // A failed call may have lost the desktop's MCP session; the next call starts a new one.
-      this.drop(state, computerId, link ?? state.links.get(computerId), conn)
+      this.drop(state, computerId, link, conn)
       throw error
     }
   }
 
-  private async link(state: SessionState, computerId: string): Promise<ComputerMcpConnection> {
+  // The exact Link the connection came from, so a failure drops that Link and never a newer one.
+  private async linked(state: SessionState, computerId: string): Promise<Linked> {
+    const link = this.link(state, computerId)
+    return { link, conn: await link.connection }
+  }
+
+  private link(state: SessionState, computerId: string): Link {
     let link = state.links.get(computerId)
     if (!link) {
       const connection = this.connect({
@@ -498,18 +528,19 @@ export class ComputerTools {
           ...(state.orgId ? { orgId: state.orgId } : {})
         }
       })
-      link = { connection, usedAt: this.now() }
-      state.links.set(computerId, link)
+      const created: Link = { connection, usedAt: this.now() }
+      link = created
+      state.links.set(computerId, created)
       connection.catch(() => {
-        if (state.links.get(computerId) === link) state.links.delete(computerId)
+        if (state.links.get(computerId) === created) state.links.delete(computerId)
       })
     }
     link.usedAt = this.now()
-    return await link.connection
+    return link
   }
 
-  private drop(state: SessionState, computerId: string, link: Link | undefined, conn: ComputerMcpConnection): void {
-    if (link && state.links.get(computerId) === link) state.links.delete(computerId)
+  private drop(state: SessionState, computerId: string, link: Link, conn: ComputerMcpConnection): void {
+    if (state.links.get(computerId) === link) state.links.delete(computerId)
     void conn.close().catch(() => undefined)
   }
 }
