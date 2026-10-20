@@ -21,18 +21,10 @@ function BrandPanel() {
         />
       </div>
       <div className="brand-lead relative z-1 mt-auto">
-        <div className="max-w-[300px] font-sans text-[27px] font-semibold leading-[1.25] tracking-[-.02em]">
-          {t('brandLead')}
-        </div>
+        <div className="font-sans text-[24px] font-semibold leading-[1.25] tracking-[-.02em]">{t('brandLead')}</div>
         <div className="brand-desc mt-[14px] max-w-[300px] font-sans text-[14px] font-normal leading-[1.6] text-(--text-inverse-dim)">
           {t('brandDescription')}
         </div>
-      </div>
-      <div className="brand-foot mt-[30px]">
-        <span className="dot h-2 w-2 rounded-full bg-(--status-online) shadow-[0_0_0_3px_rgba(21,166,97,.25)]" />
-        <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-inverse-dim)">
-          {t('brandFootnote')}
-        </span>
       </div>
       <span className="facet">
         <LogoMark size={440} />
@@ -60,8 +52,6 @@ export default function Auth({ providers }: { providers: readonly SocialLoginPro
               <SocialLoginButtons providers={providers} onContinue={sso} />
             </div>
             <p className="mt-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-              {t('ssoOnly')}
-              <br />
               {t('firstTime')}
             </p>
           </div>
