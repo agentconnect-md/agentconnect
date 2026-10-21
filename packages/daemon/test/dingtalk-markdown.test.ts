@@ -31,6 +31,17 @@ describe('rewriteDingTalkMarkdown', () => {
     const text = '## Title\n\n- one\n- two\n\n| a | b |\n| --- | --- |\n| 1 | 2 |'
     expect(rewriteDingTalkMarkdown(text)).toBe(text)
   })
+
+  it('keeps the space after a list, heading or quote marker when the first word is styled', () => {
+    for (const text of [
+      '- **Important** note',
+      '1. [Docs](https://example.test) here',
+      '## **Heading**',
+      '> `code` first'
+    ])
+      expect(rewriteDingTalkMarkdown(text)).toBe(text)
+    expect(rewriteDingTalkMarkdown('- see **this**')).toBe(`- see${NBSP}**this**`)
+  })
 })
 
 describe('DingTalkConnection.sendMarkdown', () => {

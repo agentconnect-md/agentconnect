@@ -188,6 +188,51 @@ describe('DingTalkProgressCard', () => {
     expect(calls.at(-1)).toBe('stream one')
   })
 
+  it('never bursts when updates queue behind a slow card creation and a slow send', async () => {
+    const { calls, cards } = fakeCards()
+    let opened: (id: string) => void = () => {}
+    let sent: () => void = () => {}
+    cards.open = vi.fn(() => new Promise<string>((resolve) => (opened = resolve)))
+    cards.stream = vi.fn(async (_id: string, content: string) => {
+      calls.push(`stream ${content}`)
+      if (content === 'b') await new Promise<void>((resolve) => (sent = resolve))
+    })
+    const { progress, clock } = card(cards)
+    progress.update('a', 0)
+    await clock.advance(0)
+    progress.update('b', 0)
+    await clock.advance(500)
+    await clock.advance(500)
+    opened('track-1')
+    await clock.settle()
+    progress.update('c', 0)
+    sent()
+    await clock.advance(10)
+    expect(calls.filter((c) => c.startsWith('stream'))).toEqual(['stream b'])
+    await clock.advance(DINGTALK_CARD_INTERVAL_MS)
+    expect(calls.filter((c) => c.startsWith('stream'))).toEqual(['stream b', 'stream c'])
+  })
+
+  it('reschedules from the backed-off interval when a slow update is refused for QPS', async () => {
+    const { calls, cards } = fakeCards()
+    let refuse: () => void = () => {}
+    cards.stream = vi.fn(async (_id: string, content: string) => {
+      calls.push(`stream ${content}`)
+      if (content === 'one') await new Promise<void>((_, reject) => (refuse = () => reject(RATE)))
+    })
+    const { progress, clock } = card(cards)
+    progress.update('one', 0)
+    await clock.advance(0)
+    progress.update('two', 0)
+    await clock.advance(2_000)
+    refuse()
+    await clock.settle()
+    await clock.advance(DINGTALK_CARD_INTERVAL_MS)
+    expect(calls.filter((c) => c.startsWith('stream'))).toEqual(['stream one'])
+    await clock.advance(2 * DINGTALK_CARD_INTERVAL_MS)
+    expect(calls.filter((c) => c.startsWith('stream'))).toEqual(['stream one', 'stream two'])
+  })
+
   it('stops the card and posts the quota notice once per turn', async () => {
     const { calls, cards } = fakeCards({ openError: QUOTA })
     const { progress, sendText, clock } = card(cards)
