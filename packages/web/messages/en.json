@@ -1618,6 +1618,7 @@
       "linearGatedNote": "Private agent — answers only in teams where it is the default.",
       "discordCannotLeaveRowHint": "A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.",
       "googlechatMentionHint": "Replies when mentioned. Google Chat delivers a message in a space, thread replies included, only when it mentions the app.",
+      "dingtalkMentionHint": "Replies when mentioned. DingTalk delivers a group message only when it mentions the bot.",
       "space": {
         "thisServer": "this server",
         "leaveTitle": "Leave {space} — the bot leaves the whole server, with every {noun} in it",
@@ -2125,6 +2126,10 @@
         "googlechat": {
           "create": "Configure a Chat app in Google Cloud",
           "existing": "An unused Google Chat app"
+        },
+        "dingtalk": {
+          "create": "Create an internal app in DingTalk",
+          "existing": "An unused DingTalk bot"
         }
       },
       "api": {
@@ -6201,6 +6206,70 @@
         "appUnavailable": "The Chat app is not configured in this project. Enable the Google Chat API, configure the app, then connect again.",
         "unreachable": "Google could not be reached. Try again.",
         "deploymentApp": "This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat."
+      }
+    },
+    "dingtalk": {
+      "checking": "Checking credentials…",
+      "connect": "Connect",
+      "createApp": "Create DingTalk app",
+      "walkthroughLabel": "DingTalk app setup steps",
+      "step1": "Create an internal app with a robot in the DingTalk developer console, publish it, then copy its Client ID and Client Secret. The Standard edition allows 5,000 API calls and 3,000 messages a month.",
+      "step2": "Paste the Client ID & Client Secret — required to connect",
+      "steps": {
+        "nav": {
+          "credentials": "Credentials",
+          "robot": "Robot",
+          "permissions": "Permissions",
+          "versions": "Versions"
+        },
+        "createApp": {
+          "label": "App",
+          "caption": "Under internal apps, <action>Create app</action>. The name takes letters, Chinese characters and digits only — no spaces.",
+          "title": "Internal apps",
+          "cardTitle": "Create app",
+          "nameLabel": "App name",
+          "nameValue": "MyAgent",
+          "descriptionLabel": "Description",
+          "descriptionValue": "Coding agent",
+          "save": "Save"
+        },
+        "robot": {
+          "label": "Robot",
+          "caption": "<action>Add capability</action> → Robot. Upload a message preview image, keep the Stream receive mode, then publish.",
+          "title": "Robot configuration",
+          "previewLabel": "Message preview image",
+          "modeLabel": "Message receive mode",
+          "stream": "Stream mode",
+          "http": "HTTP mode",
+          "publish": "Publish"
+        },
+        "permissions": {
+          "label": "Access",
+          "caption": "<action>Permissions</action> → enable Card.Instance.Write and Card.Streaming.Write.",
+          "apply": "Enable"
+        },
+        "publish": {
+          "label": "Publish",
+          "caption": "<action>Versions</action> → create a version and choose who can see the bot. Every later change takes effect only in a new version.",
+          "title": "Create version",
+          "versionLabel": "App version",
+          "visibilityLabel": "Available to",
+          "visibilityValue": "All employees",
+          "save": "Save"
+        },
+        "credentials": {
+          "label": "Copy",
+          "caption": "<action>Credentials</action> → copy the Client ID and Client Secret.",
+          "title": "Credentials"
+        }
+      },
+      "settings": {
+        "replace": "Replace secret",
+        "newSecret": "New Client Secret",
+        "save": "Save",
+        "checking": "Checking…",
+        "close": "Close",
+        "updated": "Client Secret updated."
       }
     }
   },

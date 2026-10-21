@@ -12,6 +12,7 @@ import type {
 } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
+import { dingTalkModule } from './dingtalk'
 import { googleChatModule } from './googlechat'
 import { linearModule } from './linear'
 import { slackModule } from './slack'
@@ -37,7 +38,8 @@ const MODULES: readonly WebPlatformModule[] = [
   feishuModule,
   linearModule,
   QQModule,
-  googleChatModule
+  googleChatModule,
+  dingTalkModule
 ]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))

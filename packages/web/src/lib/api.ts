@@ -835,6 +835,7 @@ export type CreateIntegrationInput =
       slack?: { botToken: string; appToken: string } | { botToken: string; signingSecret: string }
     })
   | (CreateIntegrationBase & { platform: 'qq'; qq?: { appId: string; appSecret: string } })
+  | (CreateIntegrationBase & { platform: 'dingtalk'; dingtalk?: { clientId: string; clientSecret: string } })
   | (CreateIntegrationBase & { platform: 'telegram'; telegram?: { botToken: string } })
   | (CreateIntegrationBase & { platform: 'discord'; discord?: { botToken: string } })
   | (CreateIntegrationBase & {
