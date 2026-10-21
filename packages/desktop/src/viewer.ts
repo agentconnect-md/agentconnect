@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
+import { ComputerViewerOfferRequest, type ComputerIceServer } from '@agentconnect.md/protocol/computer'
 import { ComputerError, type Computer, type ViewerInput } from './computer.js'
 import type { RtcSessions } from './stream/rtc.js'
 import { VIEWER_PAGE } from './viewer-page.js'
@@ -35,9 +36,40 @@ const MAX_BODY_BYTES = 64 * 1024
 // A takeover whose browser stopped polling (tab closed, network gone) is handed back to agents.
 const VIEWER_STALE_MS = 15_000
 
+/** Who is watching: a local client token, or a console member's CP-issued view token. */
+export interface ViewerPrincipal {
+  client: string
+  // Whether this viewer may take over input; a `view` token only watches.
+  control: boolean
+  // TURN servers the CP issued with the token; without them only the direct path is offered.
+  iceServers?: ComputerIceServer[]
+  // Re-checks a short-lived token; false once it lapsed or its key is gone, which closes the viewer.
+  valid?: () => boolean
+}
+
+export type ViewerVia = 'local' | 'relay'
+
+/** One viewer API call, from the local port or forwarded by a relay. */
+export interface ViewerRequest {
+  method: string
+  path: string
+  authorization: string | undefined
+  // Where it arrived; a relayed request is from the internet and may carry only a CP-issued view token.
+  via: ViewerVia
+  body?: Buffer
+  // The local address the browser reached, for the direct path's host candidate; unknown through a relay.
+  hostAddress?: string
+}
+
+export interface ViewerResponse {
+  status: number
+  headers: Record<string, string>
+  body: Buffer
+}
+
 export interface ViewerOptions {
   computer: Computer
-  authenticate: (authorization: string | undefined) => string | undefined
+  authenticate: (authorization: string | undefined, via: ViewerVia) => ViewerPrincipal | undefined
   log: (line: string) => void
   // Absent when no ffmpeg is available; the page then falls back to screenshot polling.
   rtc?: RtcSessions
@@ -50,19 +82,22 @@ export interface ViewerOptions {
 
 export interface Viewer {
   // DataChannel input from a WebRTC viewer, validated like the HTTP path.
-  channelMessage(client: string, message: unknown): Promise<unknown>
+  channelMessage(principal: ViewerPrincipal, message: unknown): Promise<unknown>
+  // The viewer API (`/view/api/*`) for the local port and the relay alike.
+  api(request: ViewerRequest): Promise<ViewerResponse>
   handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<void>
   // Drop every live stream and takeover now (revoked, or the channel key lapsed); viewers may come back later.
   disconnectAll(reason: string): void
   close(): void
 }
 
-function json(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-  res.end(JSON.stringify(body))
-}
+const json = (status: number, body: unknown): ViewerResponse => ({
+  status,
+  headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  body: Buffer.from(JSON.stringify(body))
+})
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req as AsyncIterable<Buffer>) {
@@ -70,10 +105,17 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
     if (size > MAX_BODY_BYTES) throw new ComputerError('invalid_argument', 'request body too large')
     chunks.push(chunk)
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+  return Buffer.concat(chunks)
 }
 
-// Browser remote desktop at /view: screenshot polling for frames, driver input while the human holds control.
+const parseJson = (body: Buffer | undefined): unknown => {
+  if (body && body.length > MAX_BODY_BYTES) throw new ComputerError('invalid_argument', 'request body too large')
+  return JSON.parse(body?.toString('utf8') || '{}')
+}
+
+const watchOnly = () => new ComputerError('denied', 'this viewer may watch but not take control')
+
+// Browser remote desktop: WebRTC or screenshot polling for frames, driver input while the human holds control.
 export function createViewer(options: ViewerOptions): Viewer {
   const { computer, log } = options
   const lastSeen = new Map<string, number>()
@@ -86,35 +128,121 @@ export function createViewer(options: ViewerOptions): Viewer {
   }, 5000)
   reaper.unref()
 
-  const status = (client: string) => {
+  const status = (principal: ViewerPrincipal) => {
     const info = computer.info()
     return {
-      you: client,
-      inControl: computer.controlledBy(client),
+      you: principal.client,
+      mode: principal.control ? 'control' : 'view',
+      inControl: computer.controlledBy(principal.client),
       webrtc: {
         unavailable: options.rtc ? (options.rtcUnavailable?.() ?? null) : 'disabled',
-        error: options.streamError?.() ?? null
+        error: options.streamError?.() ?? null,
+        turn: (principal.iceServers?.length ?? 0) > 0
       },
       ...info
+    }
+  }
+
+  async function route(request: ViewerRequest, principal: ViewerPrincipal): Promise<ViewerResponse> {
+    const { method, path } = request
+    if (path === '/view/api/status' && method === 'GET') return json(200, status(principal))
+    const refusal = options.refusal?.()
+    if (refusal) return json(403, { error: 'unavailable', message: refusal })
+    if (path === '/view/api/frame' && method === 'GET') {
+      const frame = await computer.frame()
+      return {
+        status: 200,
+        headers: {
+          'content-type': 'image/png',
+          'cache-control': 'no-store',
+          'x-frame-width': String(frame.width),
+          'x-frame-height': String(frame.height)
+        },
+        body: frame.png
+      }
+    }
+    if (path === '/view/api/rtc/offer' && method === 'POST') {
+      const unavailable = options.rtc ? options.rtcUnavailable?.() : 'disabled'
+      if (!options.rtc || unavailable) return json(503, { error: 'webrtc_unavailable', message: unavailable })
+      const { transport = 'direct' } = ComputerViewerOfferRequest.parse(parseJson(request.body))
+      if (transport === 'turn' && !principal.iceServers?.length) {
+        return json(409, { error: 'turn_unavailable', message: 'no TURN server was issued with this viewer token' })
+      }
+      try {
+        return json(200, await options.rtc.offer(principal, { hostAddress: request.hostAddress, transport }))
+      } catch (error) {
+        return json(502, { error: 'webrtc_failed', message: (error as Error).message })
+      }
+    }
+    if (path === '/view/api/rtc/answer' && method === 'POST') {
+      if (!options.rtc) return json(503, { error: 'webrtc_unavailable' })
+      const { id, sdp } = AnswerSchema.parse(parseJson(request.body))
+      await options.rtc.answer(principal.client, id, sdp)
+      return json(200, { ok: true })
+    }
+    if (path === '/view/api/control' && method === 'POST') {
+      const { action } = ControlSchema.parse(parseJson(request.body))
+      if (action === 'take') {
+        if (!principal.control) throw watchOnly()
+        computer.takeOver(principal.client)
+        log(`viewer ${principal.client} took control; agent input is blocked until it is released`)
+      } else if (computer.handBack(principal.client)) {
+        log(`viewer ${principal.client} released control`)
+      }
+      return json(200, status(principal))
+    }
+    if (path === '/view/api/input' && method === 'POST') {
+      if (!principal.control) throw watchOnly()
+      const input = ViewerInputSchema.parse(parseJson(request.body)) as ViewerInput
+      await computer.viewerInput(principal.client, input)
+      return json(200, { ok: true })
+    }
+    return json(404, { error: 'not found' })
+  }
+
+  const api = async (request: ViewerRequest): Promise<ViewerResponse> => {
+    const principal = options.authenticate(request.authorization, request.via)
+    if (!principal) return json(401, { error: 'unauthorized' })
+    lastSeen.set(principal.client, Date.now())
+    try {
+      return await route(request, principal)
+    } catch (error) {
+      if (error instanceof z.ZodError || error instanceof SyntaxError) {
+        return json(400, { error: 'invalid_argument', message: error.message })
+      }
+      if (error instanceof ComputerError) {
+        const code =
+          error.code === 'invalid_argument'
+            ? 400
+            : error.code === 'human_in_control'
+              ? 409
+              : error.code === 'unavailable' || error.code === 'denied'
+                ? 403
+                : 502
+        return json(code, { error: error.code, message: error.message, ...error.details })
+      }
+      return json(500, { error: 'failed', message: (error as Error).message })
     }
   }
 
   return {
     close: () => {
       clearInterval(reaper)
-      options.rtc?.closeAll()
+      options.rtc?.stop()
     },
     disconnectAll(reason) {
       options.rtc?.closeAll()
       lastSeen.clear()
       log(`viewers disconnected: ${reason}`)
     },
-    async channelMessage(client, message) {
-      lastSeen.set(client, Date.now())
+    async channelMessage(principal, message) {
+      lastSeen.set(principal.client, Date.now())
+      if (!principal.control) throw watchOnly()
       const { input } = ChannelMessage.parse(message)
-      await computer.viewerInput(client, ViewerInputSchema.parse(input) as ViewerInput)
+      await computer.viewerInput(principal.client, ViewerInputSchema.parse(input) as ViewerInput)
       return null
     },
+    api,
     async handle(req, res, path) {
       if (path === '/view' || path === '/view/') {
         res.writeHead(200, {
@@ -125,67 +253,24 @@ export function createViewer(options: ViewerOptions): Viewer {
         })
         return void res.end(VIEWER_PAGE)
       }
-      const client = options.authenticate(req.headers.authorization)
-      if (!client) return json(res, 401, { error: 'unauthorized' })
-      lastSeen.set(client, Date.now())
+      let body: Buffer | undefined
       try {
-        if (path === '/view/api/status' && req.method === 'GET') return json(res, 200, status(client))
-        const refusal = options.refusal?.()
-        if (refusal) return json(res, 403, { error: 'unavailable', message: refusal })
-        if (path === '/view/api/frame' && req.method === 'GET') {
-          const frame = await computer.frame()
-          res.writeHead(200, {
-            'content-type': 'image/png',
-            'cache-control': 'no-store',
-            'x-frame-width': String(frame.width),
-            'x-frame-height': String(frame.height)
-          })
-          return void res.end(frame.png)
-        }
-        if (path === '/view/api/rtc/offer' && req.method === 'POST') {
-          const unavailable = options.rtc ? options.rtcUnavailable?.() : 'disabled'
-          if (!options.rtc || unavailable) return json(res, 503, { error: 'webrtc_unavailable', message: unavailable })
-          return json(res, 200, await options.rtc.offer(client, req.socket.localAddress))
-        }
-        if (path === '/view/api/rtc/answer' && req.method === 'POST') {
-          if (!options.rtc) return json(res, 503, { error: 'webrtc_unavailable' })
-          const { id, sdp } = AnswerSchema.parse(await readJson(req))
-          await options.rtc.answer(client, id, sdp)
-          return json(res, 200, { ok: true })
-        }
-        if (path === '/view/api/control' && req.method === 'POST') {
-          const { action } = ControlSchema.parse(await readJson(req))
-          if (action === 'take') {
-            computer.takeOver(client)
-            log(`viewer ${client} took control; agent input is blocked until it is released`)
-          } else if (computer.handBack(client)) {
-            log(`viewer ${client} released control`)
-          }
-          return json(res, 200, status(client))
-        }
-        if (path === '/view/api/input' && req.method === 'POST') {
-          const input = ViewerInputSchema.parse(await readJson(req)) as ViewerInput
-          await computer.viewerInput(client, input)
-          return json(res, 200, { ok: true })
-        }
-        json(res, 404, { error: 'not found' })
+        body = req.method === 'POST' ? await readBody(req) : undefined
       } catch (error) {
-        if (error instanceof z.ZodError || error instanceof SyntaxError) {
-          return json(res, 400, { error: 'invalid_argument', message: error.message })
-        }
-        if (error instanceof ComputerError) {
-          const code =
-            error.code === 'invalid_argument'
-              ? 400
-              : error.code === 'human_in_control'
-                ? 409
-                : error.code === 'unavailable'
-                  ? 403
-                  : 502
-          return json(res, code, { error: error.code, message: error.message, ...error.details })
-        }
-        json(res, 500, { error: 'failed', message: (error as Error).message })
+        const out = json(400, { error: 'invalid_argument', message: (error as Error).message })
+        res.writeHead(out.status, out.headers)
+        return void res.end(out.body)
       }
+      const out = await api({
+        method: req.method ?? 'GET',
+        path,
+        authorization: req.headers.authorization,
+        via: 'local',
+        ...(body ? { body } : {}),
+        ...(req.socket.localAddress ? { hostAddress: req.socket.localAddress } : {})
+      })
+      res.writeHead(out.status, out.headers)
+      res.end(out.body)
     }
   }
 }

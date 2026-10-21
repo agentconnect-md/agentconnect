@@ -264,6 +264,20 @@ spec:
               value: {{ toJson $screens | quote }}
             {{- end }}
             {{- end }}
+            {{- with .Values.computerViewer.turn }}
+            {{- if .urls }}
+            # Console viewer TURN: the Control Plane mints per-viewer credentials from coturn's shared secret.
+            - name: COMPUTER_TURN_URLS
+              value: {{ join "," .urls | quote }}
+            - name: COMPUTER_TURN_TTL_SEC
+              value: {{ .ttlSeconds | default 21600 | quote }}
+            - name: COMPUTER_TURN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.existingSecret }}
+                  key: {{ .secretKey | default "COMPUTER_TURN_SECRET" }}
+            {{- end }}
+            {{- end }}
           # /readyz: DB ping, 503 from SIGTERM. A 2s period lists a new pod seconds after it listens; 10 misses (~20s) ride out a DB blip.
           readinessProbe:
             httpGet:

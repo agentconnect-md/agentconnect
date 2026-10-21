@@ -24,12 +24,12 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 3   | Driver                             | Embed **Cua Driver (MIT, pinned 0.35.2)** as a `cua-driver mcp --direct` stdio child; never `cua-spacesd` or the Cua viewer (FSL) (§3.1)                                                       | Validated                                         |
 | 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows the user Run key, on Linux a systemd user unit (§3.2, §3.3) | Validated (except the Windows install flow)       |
 | 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.desktop`), not the terminal (§3.2.1)                                                                                      | Validated                                         |
-| 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (direct path and TURN are design)     |
+| 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (the agent's direct path is design)   |
 | 7   | Permissions                        | Per-Computer visibility and grants with `view` / `control` modes; approvals for risky actions; hard refusals for system security surfaces and dangerous shortcuts (§4)                         | Refusals validated; approvals implemented         |
 | 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
 | 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray not built) |
-| 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop (§7)                                                                                       | Validated                                         |
+| 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop; embedded in the console, direct first then TURN (§7)                                      | Implemented                                       |
 | 12  | Screenshots                        | Returned as MCP `image` content; stored in the object store with configurable retention and billing (§9)                                                                                       | Implemented (masking is design)                   |
 | 13  | Runtimes without MCP image support | Computer use is disabled; no OCR or accessibility-tree fallback                                                                                                                                | Unchanged                                         |
 | 14  | Unknown outcomes                   | On timeout, disconnect, or driver crash, **never replay input**; return `uncertain` with a fresh screenshot (§5.4)                                                                             | Validated                                         |
@@ -329,9 +329,9 @@ once) stays as an offline / development mode.
 - **Data plane [implemented]**: tool calls and screenshot bytes travel between the agent's daemon and the desktop
   daemon over **an outbound session channel through the relay**; the decision for §17-1 follows. The Control Plane
   issues the credentials and carries no screen byte or tool body.
-- **Viewer media [design]**: WebRTC media is direct UDP (ICE-lite, host candidates only, §7.2). Without a direct path
-  (no Tailscale, behind NAT, inside a pod) signaling rides the same relay channel and media falls back to **TURN**
-  (such as coturn, BSD), not the relay (§17-1).
+- **Viewer media [implemented]**: WebRTC media is direct UDP first (ICE-lite, host candidates only, §7.2). Without a
+  direct path (behind NAT, inside a pod) signaling rides the same relay channel and media falls back to **TURN** (such
+  as coturn, BSD), not the relay; with neither, the console polls screenshots through the relay (§7.2).
 
 **Decision (§17-1).** A user's desktop sits behind NAT and can only dial out, and the relay is already the install's
 public, per-instance ingress that daemons dial ([shared-bot-relay.md §5](shared-bot-relay.md)). So the desktop daemon
@@ -691,7 +691,7 @@ encodes H.264, and werift (MIT, a pure-TypeScript WebRTC stack) sends it as RTP.
 ```
 capture (per OS) ─▶ ffmpeg libx264 ─RTP (127.0.0.1 UDP only)─▶ daemon packetizer + pacing ─▶ werift ─SRTP/UDP─▶ browser
                      ultrafast · zerolatency · constrained baseline
-signaling: POST /view/api/rtc/offer · answer (same port, same token)
+signaling: POST /view/api/rtc/offer · answer (same port, same token; from the console, through the relay)
 input: DataChannel ─▶ Computer (same lease / arbitration as agents)
 ```
 
@@ -705,6 +705,35 @@ input: DataChannel ─▶ Computer (same lease / arbitration as agents)
 - **NAT and containers**: `rtcAddress` sets the advertised public address and `rtcPortRange` pins the UDP range (§3.8).
   In Kubernetes each pod needs a reachable address and ports (hostPort / NodePort UDP), or media goes through TURN /
   the relay (§17).
+
+**[implemented]** The console viewer. The Computer detail page embeds the viewer; nothing on it passes through the
+Control Plane, which only issues credentials:
+
+- **Credential.** `POST /orgs/:orgId/computers/:id/viewer` (`createComputerViewer`, `interactiveOnly`) answers the
+  policy's allowed members (the owner always) with a `view`-audience channel token, signed with the Computer's channel
+  key like an agent's (§3.7), naming the member and a mode: `control`, or `view` for an organization viewer, which
+  watches but cannot take over. It lives 120 s (never past its key), so the browser asks again at half-life and hands
+  the new token to the desktop over the DataChannel (`{ type: 'auth', token }`); the desktop re-checks every session's
+  token every 2 s and closes the stream once it lapses, so a removed member or a lost CP ends a viewing within one
+  lifetime. 409 for a revoked or offline Computer, 503 without a relay.
+- **Signaling.** The grant names the relays: `PUBLIC_RELAY_URL` first, then each relay in the roster, all of which
+  the desktop dialed. The browser calls `<relay>/cr/computers/<id>/view/api/{status,frame,rtc/offer,rtc/answer,control,input}`
+  with the token as a bearer; the relay answers CORS preflights, forwards only the bearer and content type as one
+  `cr/http` frame (64 KiB requests), and the desktop serves it through the same viewer API as its local `/view`. A
+  relay the desktop is not attached to answers `503 computer_not_attached` and the browser tries the next one.
+- **Media.** The browser asks for `{ transport: 'direct' }` first: the desktop's ICE-lite offer with host candidates
+  (or only `rtcAddress`). If that is not connected within 6 s, and the deployment configures TURN, it asks for
+  `{ transport: 'turn' }`: both peers use full ICE with `iceTransportPolicy: 'relay'` through the TURN servers the
+  grant names, the desktop with the credentials carried in its token and the browser with its own. werift falls back
+  from TURN over UDP to TURN over TCP by itself. With neither connected within 12 s, the page polls `/frame`
+  through the relay (about 5 fps at 1600×900).
+- **TURN.** `COMPUTER_TURN_URLS` (comma-separated `turn:`/`turns:` URLs), `COMPUTER_TURN_SECRET` (coturn's
+  `static-auth-secret` with `use-auth-secret`) and `COMPUTER_TURN_TTL_SEC` (default 6 h, which bounds one viewing,
+  since a TURN allocation cannot refresh past it) turn it on; the CP mints coturn REST-API credentials per viewer
+  (`<expiry>:viewer-<user>`) and per desktop (`<expiry>:computer-<id>`) and never sends the secret out. The chart sets
+  them from `computerViewer.turn`.
+- **Input.** Take control, the keyboard and mouse mapping and the IME text box are the prototype's (§7.3), over the
+  DataChannel when one is open and through the relay otherwise. Leaving the page releases a takeover.
 
 ### 7.3 Input and takeover
 
@@ -734,7 +763,7 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - A system HTTP proxy on the viewing machine (Clash) made the browser get 502 for Tailscale IPs; WebRTC media itself
   does not use the HTTP proxy. Re-check once the release goes through the relay / TLS.
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
-  encoders), display selection, audio, clipboard sync, NAT traversal (TURN / relay).
+  encoders), display selection, audio, clipboard sync. NAT traversal (TURN, then screenshots over the relay) is done.
 
 ## 8. Security and audit
 
@@ -783,7 +812,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   and that covers the prototype's local-token MCP and `/view` too. With no live key, or after a revoke, calls fail
   with `unavailable`, the lease and any takeover are dropped, and WebRTC viewers are closed. A revoke drops every key
   at once and persists. Once the CP is lost, the desktop keeps working for at most one lifetime after the last
-  renewal, and resumes when it reconnects. The tool and viewer channel tokens that the data plane will sign with
+  renewal, and resumes when it reconnects. The tool and viewer channel tokens that the data plane signs with
   this key are in §3.7.
 
 ## 9. Screenshot storage [implemented]
@@ -847,7 +876,8 @@ and every `computer/policy`.
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
   retention, driver tools; read-only for anyone but the owner), and, for the owner, the audit as recent activity. An
   agent's Tools tab carries the `computerUse` setting: the switch, the picked Computers, whether each one's policy
-  grants the agent, and a Grant button for that Computer's owner. The embedded viewer is still to do.
+  grants the agent, and a Grant button for that Computer's owner. The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
+  may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
 - Session page: the current lease and an action timeline with screenshots
   (**[implemented]**: a computer tool row shows the screenshots its result stored, §9).
 
@@ -958,14 +988,14 @@ and publishing for the container image.
 
 Estimates assume one engineer who knows the codebase.
 
-| Milestone | Scope                                                                                                                         | Estimate             | Depends on                                                        |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------- |
-| M0        | Merge the prototype, CI, safe defaults                                                                                        | 1 engineer-week      | —                                                                 |
-| M1        | **Linux** self-hosted computer plus all shared work (CP, data plane, permissions, console)                                    | 6–8 engineer-weeks   | M0; data-plane decision (§17-1, settled in §3.7)                  |
-| M2        | **Docker**: productized image, self-hosted containers, Linux managed computers (Kubernetes pool)                              | 4–6 engineer-weeks   | M1 (the image work can run alongside M1); TURN / relay media path |
-| M3        | **macOS**: signing and notarization, menu bar UI, install and grant flow                                                      | 3–4 engineer-weeks   | M1                                                                |
-| M4        | **Windows**: signed installer, tray UI, session and lock-screen handling                                                      | 3–4 engineer-weeks   | M1                                                                |
-| Later     | Native capture and hardware encoding, multiple displays, audio / clipboard, window masking, macOS / Windows managed computers | Estimated separately | Legal conclusions                                                 |
+| Milestone | Scope                                                                                                                         | Estimate             | Depends on                                       |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------ |
+| M0        | Merge the prototype, CI, safe defaults                                                                                        | 1 engineer-week      | —                                                |
+| M1        | **Linux** self-hosted computer plus all shared work (CP, data plane, permissions, console)                                    | 6–8 engineer-weeks   | M0; data-plane decision (§17-1, settled in §3.7) |
+| M2        | **Docker**: productized image, self-hosted containers, Linux managed computers (Kubernetes pool)                              | 4–6 engineer-weeks   | M1 (the image work can run alongside M1)         |
+| M3        | **macOS**: signing and notarization, menu bar UI, install and grant flow                                                      | 3–4 engineer-weeks   | M1                                               |
+| M4        | **Windows**: signed installer, tray UI, session and lock-screen handling                                                      | 3–4 engineer-weeks   | M1                                               |
+| Later     | Native capture and hardware encoding, multiple displays, audio / clipboard, window masking, macOS / Windows managed computers | Estimated separately | Legal conclusions                                |
 
 M1 plus M2 is the first releasable scope (about 10–14 engineer-weeks): both Linux user desktops and Docker desktops
 register as Computers that agents use. M3 and M4 are independent and can run in parallel given people.

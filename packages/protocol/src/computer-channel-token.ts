@@ -1,12 +1,13 @@
 // Computer channel tokens (computer-use.md §3.7, §8.2): short-lived, signed with the Computer's CP-renewed channel key.
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
+import { COMPUTER_ICE_SERVERS_MAX, ComputerIceServer } from './computer-viewer.js'
 
 /** The token's version prefix; a token without it is never a channel token. */
 export const COMPUTER_CHANNEL_TOKEN_PREFIX = 'actk1'
 
-/** `mcp` admits one agent session's calls to `/mcp`; `relay` admits a desktop's own link to a relay. */
-export const COMPUTER_CHANNEL_TOKEN_AUDIENCES = ['mcp', 'relay'] as const
+/** `mcp` admits an agent session's calls to `/mcp`, `relay` a desktop's link to a relay, `view` a console viewer. */
+export const COMPUTER_CHANNEL_TOKEN_AUDIENCES = ['mcp', 'relay', 'view'] as const
 export type ComputerChannelTokenAudience = (typeof COMPUTER_CHANNEL_TOKEN_AUDIENCES)[number]
 
 /** No token outlives this, whatever its key's lifetime. */
@@ -28,11 +29,17 @@ export const ComputerChannelTokenClaims = z
     ses: z.string().min(1).max(256).optional(),
     agt: z.string().uuid().optional(),
     dmn: z.string().uuid().optional(),
-    mode: z.enum(COMPUTER_AGENT_MODES).optional()
+    mode: z.enum(COMPUTER_AGENT_MODES).optional(),
+    // `view` only: the member watching, and the TURN servers the desktop may relay media through.
+    usr: z.string().min(1).max(128).optional(),
+    ice: z.array(ComputerIceServer).max(COMPUTER_ICE_SERVERS_MAX).optional()
   })
   .strict()
   .refine((c) => c.aud !== 'mcp' || (c.ses !== undefined && c.agt !== undefined && c.mode !== undefined), {
     message: 'an mcp token names its session, agent and mode'
+  })
+  .refine((c) => c.aud !== 'view' || (c.usr !== undefined && c.mode !== undefined), {
+    message: 'a view token names its member and mode'
   })
   .refine((c) => c.exp > c.iat && c.exp - c.iat <= COMPUTER_CHANNEL_TOKEN_MAX_TTL_MS, {
     message: 'token lifetime out of range'
@@ -40,7 +47,8 @@ export const ComputerChannelTokenClaims = z
 export type ComputerChannelTokenClaims = z.infer<typeof ComputerChannelTokenClaims>
 
 const MAC_DOMAIN = 'agentconnect/computer-channel-token/v1\n'
-const MAX_TOKEN_CHARS = 2048
+// A view token carries TURN credentials, so tokens may run past the 2 KiB an mcp token needs.
+const MAX_TOKEN_CHARS = 4096
 
 function mac(key: Buffer, signed: string): Buffer {
   return createHmac('sha256', key)

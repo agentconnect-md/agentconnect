@@ -117,6 +117,48 @@ describe('computer relay', () => {
     ws.close()
   })
 
+  it("forwards a console viewer's API call with CORS, only its bearer and content type, and the frame headers back", async () => {
+    const { base } = await start()
+    const { seen, ws } = await desktop(base, (frame) => ({
+      status: 200,
+      headers: { 'content-type': 'image/png', 'x-frame-width': '1280', 'x-frame-height': '720', 'set-cookie': 'x=1' },
+      body: Buffer.from(frame.payload.path).toString('base64')
+    }))
+    const view = `${base}/cr/computers/${COMPUTER}/view/api`
+    const preflight = await fetch(`${view}/rtc/offer`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://console.example.com', 'access-control-request-method': 'POST' }
+    })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-headers')).toContain('authorization')
+    const frame = await fetch(`${view}/frame`, { headers: { authorization: 'Bearer actk1.v.w', cookie: 'secret=1' } })
+    expect(frame.status).toBe(200)
+    expect(frame.headers.get('access-control-allow-origin')).toBe('*')
+    expect(frame.headers.get('x-frame-width')).toBe('1280')
+    expect(frame.headers.get('set-cookie')).toBeNull()
+    expect(await frame.text()).toBe('/view/api/frame')
+    const offer = await fetch(`${view}/rtc/offer`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer actk1.v.w', 'content-type': 'application/json' },
+      body: '{"transport":"turn"}'
+    })
+    expect(offer.status).toBe(200)
+    const forwarded = seen
+      .filter((f) => f.type === 'cr/http')
+      .map((f) => f.payload as { path: string; headers: object })
+    expect(forwarded.map((f) => f.path)).toEqual(['/view/api/frame', '/view/api/rtc/offer'])
+    expect(forwarded[0]?.headers).toEqual({ authorization: 'Bearer actk1.v.w' })
+    // No bearer, a path outside the viewer API, or a Computer not attached here never reach a desktop.
+    expect((await fetch(`${view}/status`)).status).toBe(401)
+    const auth = { headers: { authorization: 'Bearer actk1.v.w' } }
+    expect((await fetch(`${view}/a%2F..%2F..%2Fmcp`, auth)).status).toBe(404)
+    const other = await fetch(`${base}/cr/computers/00000000-0000-4000-8000-000000000002/view/api/status`, auth)
+    expect(other.status).toBe(503)
+    expect(other.headers.get('access-control-allow-origin')).toBe('*')
+    expect(seen.filter((f) => f.type === 'cr/http')).toHaveLength(2)
+    ws.close()
+  })
+
   it('refuses a desktop whose token the CP does not accept', async () => {
     const { base, relay } = await start(async () => ({ ok: false, reason: 'invalid credential' }))
     const { hello, ws } = await desktop(base)

@@ -104,6 +104,8 @@ import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { ComputerService } from '../../src/registry/computerService.js'
 import type { ComputerScreenshots } from '../../src/registry/computerScreenshots.js'
 import { ComputerAuditLog } from '../../src/registry/computerAuditLog.js'
+import { ComputerChannelGrants } from '../../src/registry/computerChannelGrants.js'
+import { ComputerChannelKeys } from '../../src/registry/computerChannelKeys.js'
 import { OAuthService } from '../../src/registry/oauthService.js'
 import { WebchatTokenService } from '../../src/registry/webchatToken.js'
 import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
@@ -673,6 +675,11 @@ export function buildHttpApp(
     apiKeys: apiKeyService,
     computers: computerService,
     computerAudit,
+    // The relay-free default refuses viewers with `no_relay`; suites that open one override this dep.
+    computerViewer: new ComputerChannelGrants(computerRepo, new ComputerChannelKeys(TEST_API_KEY_PEPPER, 300), clock, {
+      staleAfterMs: 45_000,
+      relays: async () => []
+    }),
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
     inviteLinks,

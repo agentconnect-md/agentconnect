@@ -6413,6 +6413,31 @@
       "reset": "重置",
       "save": "保存",
       "saving": "正在保存…"
+    },
+    "viewer": {
+      "title": "屏幕",
+      "watch": "观看",
+      "close": "关闭",
+      "idle": "实时观看这台电脑的屏幕，需要时接管鼠标和键盘。视频在你的浏览器和桌面之间直连或经 TURN 传输，不经过 AgentConnect 的服务器。",
+      "offline": "这台电脑上线后才能打开查看器。",
+      "connecting": "正在连接…",
+      "failed": "查看器已停止。",
+      "watching": "正在观看，智能体可以继续工作。",
+      "watchingOnly": "仅可观看，你不能接管这台电脑。",
+      "youInControl": "你正在控制，智能体已暂停，直到你交还控制。",
+      "paused": "已暂停：{reason}",
+      "agentWorking": "{holder} 正在操作",
+      "takeControl": "接管",
+      "release": "交还",
+      "send": "发送",
+      "textPlaceholder": "输入要发送的文字（输入法、粘贴）",
+      "surface": "电脑屏幕",
+      "screenAlt": "电脑的最新截图",
+      "path": {
+        "direct": "直连",
+        "turn": "TURN 中继",
+        "screenshots": "截图"
+      }
     }
   }
 }

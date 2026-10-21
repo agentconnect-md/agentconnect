@@ -24,6 +24,8 @@ export * from './computer-audit.js'
 // Screenshot uploads the CP signs and the references a session timeline keeps (§9).
 export * from './computer-screenshot.js'
 export * from '../computer-channel-token.js'
+// The console viewer's relay route, TURN servers and DataChannel renewal (§7, §10).
+export * from '../computer-viewer.js'
 export * from './computer-keys.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.

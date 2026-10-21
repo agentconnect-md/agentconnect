@@ -30,7 +30,14 @@ async function start(host?: string) {
     },
     createMcpServer: ({ client }) => createComputerMcpServer({ computer, client, driverTools }),
     log: () => undefined,
-    viewer: createViewer({ computer, authenticate: (header) => authenticate(config, header), log: () => undefined })
+    viewer: createViewer({
+      computer,
+      authenticate: (header) => {
+        const client = authenticate(config, header)
+        return client ? { client, control: true } : undefined
+      },
+      log: () => undefined
+    })
   })
   return { driver, computer, token: issued.token, url: running.url }
 }

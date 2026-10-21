@@ -35,6 +35,12 @@
       "import": "./dist/frames/computer.js",
       "default": "./dist/frames/computer.js"
     },
+    "./computer-viewer": {
+      "development": "./src/computer-viewer.ts",
+      "types": "./dist/computer-viewer.d.ts",
+      "import": "./dist/computer-viewer.js",
+      "default": "./dist/computer-viewer.js"
+    },
     "./organization-files": {
       "development": "./src/organization-files.ts",
       "types": "./dist/organization-files.d.ts",

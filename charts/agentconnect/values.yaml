@@ -877,6 +877,16 @@ computerScreenshots:
   maxRetentionDays: 365
   maxBytes: 8Mi
 
+# Console viewer media without a direct UDP path (computer-use.md §7.2): the Control Plane mints coturn REST-API credentials per viewer.
+computerViewer:
+  turn:
+    # turn:/turns: URLs of TURN servers running coturn with use-auth-secret; empty keeps the viewer direct, else screenshots.
+    urls: []
+    # Key in secrets.existingSecret holding coturn's static-auth-secret (at least 16 characters).
+    secretKey: COMPUTER_TURN_SECRET
+    # Lifetime of minted credentials; a TURN allocation cannot refresh past it, so it bounds one viewing.
+    ttlSeconds: 21600
+
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not
 # injected from this Secret; Setup Server seals them in deployment_secret.

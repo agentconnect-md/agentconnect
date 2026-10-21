@@ -80,6 +80,7 @@ import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { ComputerService } from '../registry/computerService.js'
 import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
+import type { ComputerChannelGrants } from '../registry/computerChannelGrants.js'
 import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
 import type { GithubService } from '../github/service.js'
 import type { CodeHostTrustedActorService } from '../codehost/trusted-actor.service.js'
@@ -435,6 +436,8 @@ export interface HttpDeps {
   apiKeys: ApiKeyAdmin
   /** Computer registration, revocation and the `computer` key principal (computer-use.md §3.6). */
   computers: ComputerService
+  /** Viewer tokens for the console's embedded viewer (computer-use.md §7, §10). */
+  computerViewer: Pick<ComputerChannelGrants, 'grantViewer'>
   /** The per-Computer audit the desktop daemons report (computer-use.md §8.2). */
   computerAudit: Pick<ComputerAuditLog, 'list'>
   /** Stored screenshots (computer-use.md §9); absent when no bucket is configured. */

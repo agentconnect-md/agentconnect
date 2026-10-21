@@ -7,7 +7,14 @@ import type { ComputerAuditRecord, ComputerRecord } from '../../persistence/port
 import { ComputerId } from '../../domain/ids.js'
 import { ComputerPolicySchema, withOwnerMember } from '../../domain/computer.js'
 import { orgOf, ctxOf, denyViewerWrite } from '../rbac.js'
-import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
+import {
+  AuthorizationAction,
+  can,
+  canView,
+  canEdit,
+  canManageSharing,
+  type ViewCtx
+} from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { publicBaseUrl } from '../oauth/base.js'
 import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
@@ -18,6 +25,7 @@ import {
   ComputerListDto,
   ComputerRegistrationDto,
   ComputerRegistrationStatusDto,
+  ComputerViewerGrantDto,
   CreateComputerRegistrationBody,
   RegisterComputerBody,
   RegisteredComputerDto,
@@ -279,6 +287,46 @@ export function computerRoutes(deps: HttpDeps) {
         const stopped = await deps.computers.stop(orgOf(req), c.id, ctxOf(req).userId)
         if (!stopped) return reply.code(409).send(revokedConflict)
         return toDto(stopped, ctxOf(req), deps.computers.presentedStatus(stopped), retentionDays)
+      }
+    )
+
+    // Watching someone's desktop is the policy's allowed members' right; minting the credential takes an interactive sign-in.
+    r.post(
+      '/computers/:id/viewer',
+      {
+        config: { interactiveOnly: true },
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Open a computer viewer',
+          description:
+            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 503 when no relay is configured.',
+          operationId: 'createComputerViewer',
+          params: IdParam,
+          response: { 200: ComputerViewerGrantDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const c = await getOrgComputer(req, req.params.id)
+        if (!c) return reply.code(404).send(notFound)
+        const ctx = ctxOf(req)
+        if (!c.policy.allowedMembers.includes(ctx.userId) && !canEditPolicy(c, ctx)) {
+          return reply
+            .code(403)
+            .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s allowed members can watch it' })
+        }
+        if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
+        const mode = can(ctx, { action: AuthorizationAction.OrganizationWrite }) ? 'control' : 'view'
+        const grant = await deps.computerViewer.grantViewer(orgOf(req), c.id, { userId: ctx.userId, mode })
+        if (!grant.granted) {
+          const status = grant.code === 'no_relay' ? 503 : 409
+          return reply.code(status).send({
+            error: status === 503 ? 'Service Unavailable' : 'Conflict',
+            statusCode: status,
+            message: grant.message
+          })
+        }
+        const { granted: _granted, ...dto } = grant
+        return dto
       }
     )
 

@@ -233,6 +233,7 @@ import { ComputerService } from './registry/computerService.js'
 import { ComputerLeaseService } from './registry/computerLeaseService.js'
 import { ComputerAuditLog } from './registry/computerAuditLog.js'
 import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
+import { turnConfigFrom } from './computer-viewer/turn.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -1129,9 +1130,16 @@ export function buildContainer(
     clock,
     relayStaleMs
   )
+  // Viewers reach the desktop through the relay pool's public origin, then any relay it dialed (computer-use.md §7, §10).
+  const computerTurn = turnConfigFrom(config)
   const computerChannelGrants = new ComputerChannelGrants(repos.computer, computerChannelKeys, clock, {
     staleAfterMs: missedBeatsMs,
-    relays: () => relayRoster.entries()
+    relays: () => relayRoster.entries(),
+    viewerRelays: async () => [
+      ...(config.PUBLIC_RELAY_URL ? [config.PUBLIC_RELAY_URL] : []),
+      ...(await relayRoster.entries()).map((relay) => relay.url)
+    ],
+    ...(computerTurn ? { turn: computerTurn } : {})
   })
 
   // §14.8 (resource-visibility.md): which of a gated install's reported DMs open to the
@@ -2186,6 +2194,7 @@ export function buildContainer(
     apiKeys,
     computers,
     computerAudit,
+    computerViewer: computerChannelGrants,
     ...(computerScreenshots ? { computerScreenshots } : {}),
     oauth,
     webchatTokens,
