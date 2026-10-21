@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { RTCPeerConnection, type RTCDataChannel } from 'werift'
 import type { ComputerIceServer } from '@agentconnect.md/protocol/computer'
 import { startStunServer } from '../../../relay/src/stun-server.js'
+import { TurnServer } from '../../../relay/src/turn/server.js'
+import { startTurnListeners } from '../../../relay/src/turn/listeners.js'
 import { RtcSessions } from './rtc.js'
 import type { ScreenStream } from './screen-stream.js'
 import type { ViewerPrincipal } from '../viewer.js'
@@ -231,6 +233,41 @@ describe('viewer WebRTC', () => {
     },
     40_000
   )
+
+  // The relay's own TURN server (computer-use.md §7.2), with the CP's REST credentials; both peers relay-only.
+  for (const transport of ['udp', 'tcp'] as const) {
+    it(`relays media through the relay's TURN over ${transport}`, async () => {
+      const secret = 'relay-turn-secret-0123456789abcdefghijklmnop'
+      const quiet = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+      const turn = new TurnServer({
+        realm: 'agentconnect',
+        relayedAddress: '198.18.0.9',
+        secret: () => secret,
+        limits: { maxAllocations: 20, maxAllocationsPerUser: 8, maxBitsPerSecond: 10_000_000, idleTimeoutMs: 60_000 },
+        log: quiet
+      })
+      const listeners = await startTurnListeners({ turn, host: '127.0.0.1', port: 0, maxConnections: 20, log: quiet })
+      opened.push(
+        () => listeners.close(),
+        () => turn.close()
+      )
+      const port = transport === 'udp' ? listeners.udpPort : listeners.tcpPort
+      const credentials = (who: string): ComputerIceServer => {
+        const username = `${Math.floor(Date.now() / 1000) + 600}:${who}`
+        return {
+          urls: [`turn:127.0.0.1:${port}?transport=${transport}`],
+          username,
+          credential: createHmac('sha1', secret).update(username).digest('base64')
+        }
+      }
+      const { rtc } = sessions()
+      const principal = { client: 'console:u1', control: true, iceServers: [credentials('computer-c1')] }
+      const { pc, request } = await browser(rtc, principal, { transport: 'turn' }, [credentials('viewer-u1')])
+      expect(pc.localDescription!.sdp).toMatch(/198\.18\.0\.9 \d+ typ relay/)
+      expect(await request({ input: { type: 'key', keys: ['escape'] } })).toMatchObject({ ok: true })
+      expect(turn.allocations).toBeGreaterThanOrEqual(2)
+    }, 40_000)
+  }
 
   it('refuses a TURN offer when the TURN server gives no relay candidate', async () => {
     const { rtc } = sessions()

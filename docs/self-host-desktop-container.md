@@ -121,8 +121,10 @@ path that connects, and the badge names it:
    A peer-to-peer session that settles on a same-network pair still reads **Direct**.
 
 2. **TURN relay.** When the first step does not connect within 6 s (8 s for peer to peer), both ends relay
-   the video through the deployment's TURN server, if it runs one ([below](#run-a-turn-server-for-the-viewer)).
-   The desktop needs nothing published for this.
+   the video through the deployment's TURN server, if it runs one: the relay's own
+   ([below](#run-turn-on-the-relay)) or an external coturn ([below](#run-an-external-turn-server-instead)), over
+   UDP, or TCP and TLS where UDP is blocked. The desktop needs nothing published for this. A managed computer,
+   whose pod has no UDP a browser can reach, starts here.
 3. **Screenshots.** With neither, the page polls screenshots through the relay, about 5 frames a second.
 
 Take control and Release work the same on every path: while you hold control, agents get
@@ -150,12 +152,43 @@ viewer grant. Peer to peer shows the desktop's public IP to the viewer's browser
 it: **Peer-to-peer viewing** is on by default while only the owner may watch, and off once other members may,
 unless the owner turns it on. In the Helm chart, `relay.stun` does the same with one UDP Service per relay pod.
 
-### Run a TURN server for the viewer
+### Run TURN on the relay
 
 TURN serves every desktop of the deployment that browsers cannot reach directly: containers behind NAT, desktops
-without `RTC_ADDRESS`, and desktops on networks that drop UDP. It runs next to the Control Plane, not on each
-desktop's server. The Compose stack ships `compose.turn.yaml`, which adds coturn and points the Control Plane
-at it. Set these in the stack's `compose.env`:
+without `RTC_ADDRESS`, symmetric NATs that defeat hole punching, and networks that drop UDP. The relay can be that
+server, so the deployment needs no separate coturn. The Compose stack ships `compose.relay-turn.yaml`. Set these
+in `compose.env`:
+
+```sh
+AGENTCONNECT_RELAY_TURN_HOST=203.0.113.10 # the IP or DNS name browsers and desktops reach this host on
+# AGENTCONNECT_RELAY_TURN_PORT=3480       # the public UDP and TCP port
+```
+
+```sh
+docker compose --env-file compose.env -f compose.yaml -f compose.relay-turn.yaml up -d
+```
+
+Open that port for UDP and TCP on the host; nothing else. Both ends of a viewing are relay-only, so the relay
+forwards video only between its own allocations: their relayed addresses are virtual, no port range is opened,
+and the relay never sends to any other address. The relay registers its `turn:` URLs with the Control Plane,
+which mints credentials per viewer and per desktop (`<expiry>:viewer-<user>`, `<expiry>:computer-<id>`, valid for
+`COMPUTER_TURN_TTL_SEC`, 6 h by default) and hands the relay the secret it checks them with over the relay's
+authenticated link; there is no secret to set, and an expired credential can neither open nor refresh an
+allocation. Each allocation sends at most `RELAY_TURN_MAX_BPS` (10 Mbps) and is deleted after
+`RELAY_TURN_IDLE_TIMEOUT_SEC` (120 s) without traffic; a relay holds at most `RELAY_TURN_MAX_ALLOCATIONS` (400).
+The relay logs the bytes each allocation relayed when it ends, and exports `agentconnect.relay.turn.relayed_bytes`
+per Computer when OpenTelemetry metrics are on.
+
+For networks that let only 443 out, serve TURN over TLS as well: mount a certificate for the TURN host into the
+relay, set `RELAY_TURN_TLS_PORT`, `RELAY_TURN_TLS_CERT_FILE` and `RELAY_TURN_TLS_KEY_FILE`, publish the TLS port
+on 443 of an address whose 443 is free, and add `turns:<host>:443?transport=tcp` to `RELAY_TURN_URLS`. In the Helm
+chart, `relay.turn` does all of this with one Service per relay pod and `relay.turn.tls.secretName`.
+
+### Run an external TURN server instead
+
+An external coturn is the alternative, and takes precedence over the relay's TURN when both are configured. The
+Compose stack ships `compose.turn.yaml`, which adds coturn and points the Control Plane at it. Set these in the
+stack's `compose.env`:
 
 ```sh
 AGENTCONNECT_TURN_SECRET=<openssl rand -hex 32>  # letters and digits only

@@ -44,6 +44,18 @@ export const ComputerStunUrl = z
   .max(256)
   .regex(/^stun:(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?$/, 'expected stun:<host>[:<port>]')
 
+/** A relay's TURN address (`turn:` or `turns:` `<host>[:<port>][?transport=udp|tcp]`, RFC 7065), registered for viewer media. */
+export const ComputerTurnUrl = z
+  .string()
+  .max(256)
+  .regex(
+    /^turns?:(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?(\?transport=(udp|tcp))?$/,
+    'expected turn:<host>[:<port>][?transport=udp|tcp] or turns:'
+  )
+
+/** The most TURN URLs one relay registers, which is what one ICE server entry may carry. */
+export const COMPUTER_TURN_URLS_MAX = 4
+
 /** The most STUN servers one viewer token or grant names. */
 export const COMPUTER_STUN_URLS_MAX = 2
 

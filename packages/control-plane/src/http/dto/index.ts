@@ -4734,7 +4734,9 @@ export const ComputerViewerGrantDto = z.object({
   /** TURN servers with short-lived credentials for media without a direct UDP path; empty when none are configured. */
   iceServers: z.array(z.object({ urls: z.array(z.string()), username: z.string(), credential: z.string() })),
   /** The relays' `stun:` addresses for hole punching media peer to peer; empty when none serve STUN or the policy turns it off. */
-  stunUrls: z.array(z.string())
+  stunUrls: z.array(z.string()),
+  /** False when the desktop has no UDP a browser can reach (a managed computer's pod), so the viewer starts at TURN. */
+  directMedia: z.boolean()
 })
 
 /** Whether a desktop daemon has spent a registration token yet, for the console's Add Computer dialog. */

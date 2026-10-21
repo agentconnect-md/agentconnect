@@ -663,6 +663,9 @@ importers:
       '@agentconnect.md/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
       '@slack/web-api':
         specifier: ^8.2.0
         version: 8.2.0

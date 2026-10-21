@@ -1,5 +1,5 @@
 // TURN for the console viewer (computer-use.md §7.2): coturn's REST-API credentials, minted per viewer from a shared secret.
-import { createHmac } from 'node:crypto'
+import { createHmac, hkdfSync } from 'node:crypto'
 import type { ComputerIceServer } from '@agentconnect.md/protocol'
 
 export interface TurnConfig {
@@ -33,4 +33,9 @@ export function turnCredentials(config: TurnConfig, who: string, nowMs: number):
   const username = `${Math.floor(nowMs / 1000) + config.ttlSec}:${who}`
   const credential = createHmac('sha1', config.secret).update(username).digest('base64')
   return { urls: config.urls, username, credential }
+}
+
+/** The secret relay TURN credentials are minted from, derived from the pepper so relay TURN needs no secret of its own. */
+export function relayTurnSecret(pepper: string): string {
+  return Buffer.from(hkdfSync('sha256', pepper, 'agentconnect', 'computer relay TURN v1', 32)).toString('base64url')
 }

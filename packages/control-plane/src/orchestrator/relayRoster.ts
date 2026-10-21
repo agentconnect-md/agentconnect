@@ -40,6 +40,12 @@ export class RelayRoster {
     return [...new Set(alive.flatMap((r) => (r.stunUrl ? [r.stunUrl] : [])))]
   }
 
+  /** Each alive relay's TURN URLs; the viewer grant picks a stable per-Computer pair from them. */
+  async turnServers(): Promise<string[][]> {
+    const alive = await this.relays.listAlive(new Date(this.clock.now() - this.staleMs))
+    return alive.flatMap((r) => (r.turnUrls.length > 0 ? [r.turnUrls] : []))
+  }
+
   /** Recompute the roster and fan a `relay/roster` EVT to every connected daemon. */
   async broadcast(): Promise<void> {
     this.broadcaster.broadcastRelayRoster(await this.entries())

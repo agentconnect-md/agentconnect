@@ -19,6 +19,7 @@ function toRecord(r: Relay): RelayRecord {
     daemonUrl: r.daemonUrl,
     features: r.features,
     stunUrl: r.stunUrl,
+    turnUrls: r.turnUrls,
     lastSeenAt: r.lastSeenAt,
     createdAt: r.createdAt
   }
@@ -32,12 +33,13 @@ export class PgRelayRepo implements RelayRepo {
     daemonUrl: string,
     at: Date,
     features: string[] = [],
-    stunUrl: string | null = null
+    stunUrl: string | null = null,
+    turnUrls: string[] = []
   ): Promise<RelayRecord> {
     const row = await this.db.relay.upsert({
       where: { name },
-      create: { id: randomUUID(), name, daemonUrl, features, stunUrl, lastSeenAt: at },
-      update: { daemonUrl, features, stunUrl, lastSeenAt: at }
+      create: { id: randomUUID(), name, daemonUrl, features, stunUrl, turnUrls, lastSeenAt: at },
+      update: { daemonUrl, features, stunUrl, turnUrls, lastSeenAt: at }
     })
     return toRecord(row)
   }

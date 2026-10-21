@@ -26,7 +26,8 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((a) => a.close()))
 })
 
-function appAs(userId: string = DEFAULT_OWNER_ID, withRelay = false): HttpApp {
+function appAs(userId: string = DEFAULT_OWNER_ID, withRelay: boolean | 'relay-turn' = false): HttpApp {
+  const roster = new RelayRoster(new PgRelayRepo(prisma), { broadcastRelayRoster: () => {} }, systemClock, 45_000)
   const app = buildHttpApp(
     prisma,
     { DEFAULT_OWNER_ID: userId, PUBLIC_CP_URL: 'https://cp.example.com' },
@@ -42,14 +43,10 @@ function appAs(userId: string = DEFAULT_OWNER_ID, withRelay = false): HttpApp {
               staleAfterMs: 45_000,
               relays: async () => [],
               viewerRelays: async () => ['https://relay.example.com'],
-              turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 },
-              stunUrls: () =>
-                new RelayRoster(
-                  new PgRelayRepo(prisma),
-                  { broadcastRelayRoster: () => {} },
-                  systemClock,
-                  45_000
-                ).stunUrls()
+              ...(withRelay === 'relay-turn'
+                ? { relayTurn: { secret: 'r'.repeat(43), ttlSec: 3600, servers: () => roster.turnServers() } }
+                : { turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 } }),
+              stunUrls: () => roster.stunUrls()
             }
           )
         }
@@ -434,6 +431,38 @@ describe('console registration status and stop', () => {
 describe('console viewer', () => {
   const live = (computerId: string) =>
     prisma.computer.update({ where: { id: computerId }, data: { status: 'online', lastSeenAt: new Date() } })
+
+  it('names the TURN servers relays register, with credentials for the viewer and the desktop', async () => {
+    const app = appAs(DEFAULT_OWNER_ID, 'relay-turn')
+    const { computerId } = await register(app)
+    await live(computerId)
+    const url = `${ORG}/computers/${computerId}/viewer`
+    expect((await app.app.inject({ method: 'POST', url })).json()).toMatchObject({ iceServers: [], directMedia: true })
+    const turnUrls = ['turn:turn-0.example.com:3478?transport=udp', 'turns:turn-0.example.com:443?transport=tcp']
+    const row = await new PgRelayRepo(prisma).upsertByName(
+      'relay-turn-0',
+      'wss://relay.example.com/relays/0',
+      new Date(),
+      [],
+      null,
+      turnUrls
+    )
+    expect(row.turnUrls).toEqual(turnUrls)
+    const body = (await app.app.inject({ method: 'POST', url })).json() as {
+      token: string
+      iceServers: { urls: string[]; username: string }[]
+    }
+    expect(body.iceServers).toEqual([
+      expect.objectContaining({
+        urls: turnUrls,
+        username: expect.stringMatching(new RegExp(`:viewer-${DEFAULT_OWNER_ID}$`))
+      })
+    ])
+    expect(readComputerChannelToken(body.token)?.ice?.[0]).toMatchObject({
+      urls: turnUrls,
+      username: expect.stringMatching(new RegExp(`:computer-${computerId}$`))
+    })
+  })
 
   it('mints a view token for an allowed member with the relays and TURN credentials, and refuses everyone else', async () => {
     const app = appAs(DEFAULT_OWNER_ID, true)

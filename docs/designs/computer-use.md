@@ -379,8 +379,8 @@ once) stays as an offline / development mode.
   it uses host candidates; across NATs the relay is the **hole-punching (STUN) server**: each relay instance answers
   STUN Binding requests so both peers learn their server-reflexive address, and full ICE punches a direct UDP path
   (§7.2). Signaling rides the same relay channel. When punching fails (a symmetric NAT, UDP blocked), media falls back
-  to **TURN** (such as coturn, BSD) and, later, relay UDP forwarding (#3236); with neither, the console polls
-  screenshots through the relay.
+  to **TURN on the relay** (#3236), over UDP or over TCP and TLS on 443, or to an external TURN such as coturn (BSD);
+  with neither, the console polls screenshots through the relay.
 
 **Decision (§17-1).** A user's desktop sits behind NAT and can only dial out, and the relay is already the install's
 public, per-instance ingress that daemons dial ([shared-bot-relay.md §5](shared-bot-relay.md)). So the desktop daemon
@@ -392,8 +392,8 @@ MCP server, the channel forwards HTTP and nothing else; no new tool protocol is 
 same-network optimization: the desktop's own `/mcp` accepts the same per-session token, and choosing it needs an
 address the desktop advertises, which is still to do. For viewer media the relay is primarily the hole-punching
 server: STUN costs it one stateless datagram per Binding request and carries no media, so the video stays peer to
-peer, and only when punching fails does it go through TURN (or relay UDP forwarding, #3236), because media is UDP
-and continuous while the relay's channel is a bounded HTTP and WebSocket forwarder that holds no media state.
+peer, and only when punching fails does it go through the relay's TURN server (#3236), a separate UDP and TCP service
+on the relay rather than its HTTP and WebSocket channel, which is a bounded forwarder that holds no media state.
 
 ```
 agent daemon ── computer-channel/grant ──▶ Control Plane      (daemon wire: control only)
@@ -509,8 +509,8 @@ is downloaded on first start rather than preinstalled until counsel answers its 
 next to it) runs the image on a user's server, and the console's **Add Computer** offers **Docker** with the matching
 `docker run` line; the guide is [self-host-desktop-container.md](../self-host-desktop-container.md). The container
 only dials out, so the console viewer's signaling and screenshots go through the relay, and its video is direct when
-`RTC_ADDRESS` and the published UDP range reach the browser, through TURN otherwise. The stack's `compose.turn.yaml`
-adds coturn with `use-auth-secret` and sets `COMPUTER_TURN_URLS` / `COMPUTER_TURN_SECRET` (§7.2); since both peers
+`RTC_ADDRESS` and the published UDP range reach the browser, through TURN otherwise. The deployment stack's
+`compose.relay-turn.yaml` turns on the relay's own TURN (§7.2); its `compose.turn.yaml` instead adds coturn with `use-auth-secret` and sets `COMPUTER_TURN_URLS` / `COMPUTER_TURN_SECRET` (§7.2); since both peers
 are relay-only, it refuses TCP relays and lets coturn send UDP only to the host's external IP and its own container
 (any UDP port there, since coturn has no per-port allowance; the guide says to keep other UDP services off it). The desktop reruns `doctor` as soon as the first
 start's ffmpeg download lands rather than 30 minutes later, and takes the name the Control Plane knows it by from
@@ -920,8 +920,7 @@ input: DataChannel ─▶ Computer (same lease / arbitration as agents)
 - ffmpeg writes to loopback UDP only: `rtp://` opens an RTCP port on every interface and triggers the Windows firewall prompt.
 - One shared capture: the first viewer starts it, the last one stops it.
 - **NAT and containers**: `rtcAddress` sets the advertised public address and `rtcPortRange` pins the UDP range (§3.8).
-  In Kubernetes each pod needs a reachable address and ports (hostPort / NodePort UDP), or media goes through TURN /
-  the relay (§17).
+  In Kubernetes a managed computer's pod has no reachable UDP, so its viewer starts at the relay's TURN (§17-13).
 
 **[implemented]** The console viewer. The Computer detail page embeds the viewer; nothing on it passes through the
 Control Plane, which only issues credentials:
@@ -946,7 +945,8 @@ Control Plane, which only issues credentials:
   `{ transport: 'turn' }`: both peers use full ICE with `iceTransportPolicy: 'relay'` through the TURN servers the
   grant names, the desktop with the credentials carried in its token and the browser with its own. werift falls back
   from TURN over UDP to TURN over TCP by itself. With neither connected within 12 s, the page polls `/frame`
-  through the relay (about 5 fps at 1600×900).
+  through the relay (about 5 fps at 1600×900). A grant with `directMedia: false` (a managed computer, whose pod has
+  no UDP a browser can reach) skips the direct step and starts at TURN when TURN is issued.
 - **Privacy.** A server-reflexive candidate shows the desktop's public IP to the viewer's browser, so the Computer
   policy's `viewerPeerToPeer` decides whether a viewing gets STUN. Unset, it is on for a self-hosted Computer while
   only the owner may watch, and off once other members may or for a managed Computer, whose editors may watch too;
@@ -957,11 +957,38 @@ Control Plane, which only issues credentials:
 - **STUN deployment.** The chart's `relay.stun` gives each relay pod a UDP `LoadBalancer` Service with
   `externalTrafficPolicy: Local` (STUN must see the client's own source address) and a per-ordinal public host;
   `compose.stun.yaml` does the same for one relay. The relay keeps no state per client and no media.
-- **TURN.** `COMPUTER_TURN_URLS` (comma-separated `turn:`/`turns:` URLs), `COMPUTER_TURN_SECRET` (coturn's
+- **TURN on the relay [implemented]** (#3236). Each relay instance with `RELAY_TURN_PORT` is a TURN server
+  (RFC 8656, in process, `packages/relay/src/turn/`): UDP and TCP on that port, and TLS (`RELAY_TURN_TLS_*`) for
+  networks that only let 443 out. It registers its public URLs (`RELAY_TURN_URLS`) on `rc/register` (`turnUrls`),
+  but only once `rc/auth/ok` has handed it `computerTurnSecret`, the secret the CP mints credentials from (derived
+  from `API_KEY_PEPPER`, so there is nothing to configure); the CP keeps the URLs on the relay row and names up to two
+  relays to both peers in the same order, picked per Computer by rendezvous hashing so viewings spread over every
+  relay, each as one ICE server with its own credentials. Credentials are the REST
+  scheme below, checked as long-term credentials (RFC 8489 §9.2) on every Allocate, Refresh, CreatePermission and
+  ChannelBind: an expired one can neither open nor refresh an allocation, and an allocation's lifetime never runs
+  past its credential's expiry. Both peers are relay-only, so every peer is another allocation on the same relay:
+  relayed addresses are virtual (`RELAY_TURN_RELAYED_ADDRESS`, by default one per relay in 198.18.0.0/15), a
+  permission or channel may name only that address and is kept per peer port, so it names one peer allocation (a ChannelBind holds it for the channel's 10 minutes), and
+  data is handed from one allocation to another in process only when each has permitted the other: an allocation no
+  peer of a viewing permitted can neither reach it nor be charged to it.
+  The relay opens no relayed port range, sends to no other address, and cannot be used as a proxy. Resources are
+  bounded: a token bucket per allocation (`RELAY_TURN_MAX_BPS`, 10 Mbps), an idle timeout (120 s without relayed
+  data), at most `RELAY_TURN_MAX_ALLOCATIONS` (400) per relay and 16 per subject (`viewer-<user>` or
+  `computer-<id>`, across that subject's grants), and for TCP and TLS a 5 s deadline for the first frame, a 30 s
+  deadline to allocate, and at most a quarter of the connection budget, and 8 per remote IP, open without an
+  allocation. Metrics: `agentconnect.relay.turn.relayed_bytes` by direction and `computer.id` (feeds
+  #3230 billing), dropped bytes by reason, allocations by outcome, and active allocations; each ended allocation
+  logs its bytes. The chart's `relay.turn` gives each pod a UDP+TCP(+TLS) `LoadBalancer` Service;
+  `compose.relay-turn.yaml` does the same for one relay. In-process rather than a coturn sidecar: the relay already
+  speaks STUN, the secret reaches it over its authenticated CP link instead of a second copy in the deployment,
+  relay-only peers let it forward between its own allocations with no relayed port range to expose (a Kubernetes
+  Service cannot publish a range), and metrics per Computer come from the same process. One Node core forwarded
+  about 260 Mbps (100 viewings at 2.5 Mbps) at about 55% of one Apple M1 Max core with no loss.
+- **External TURN.** `COMPUTER_TURN_URLS` (comma-separated `turn:`/`turns:` URLs), `COMPUTER_TURN_SECRET` (coturn's
   `static-auth-secret` with `use-auth-secret`) and `COMPUTER_TURN_TTL_SEC` (default 6 h, which bounds one viewing,
-  since a TURN allocation cannot refresh past it) turn it on; the CP mints coturn REST-API credentials per viewer
-  (`<expiry>:viewer-<user>`) and per desktop (`<expiry>:computer-<id>`) and never sends the secret out. The chart sets
-  them from `computerViewer.turn`.
+  since a TURN allocation cannot refresh past it) turn it on, and it takes precedence over the relays' TURN; the CP
+  mints coturn REST-API credentials per viewer (`<expiry>:viewer-<user>`) and per desktop (`<expiry>:computer-<id>`)
+  and never sends the secret out. The chart sets them from `computerViewer.turn`.
 - **Input.** Take control, the keyboard and mouse mapping and the IME text box are the prototype's (§7.3), over the
   DataChannel when one is open and through the relay otherwise. Leaving the page releases a takeover.
 
@@ -993,7 +1020,7 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - A system HTTP proxy on the viewing machine (Clash) made the browser get 502 for Tailscale IPs; WebRTC media itself
   does not use the HTTP proxy. Re-check once the release goes through the relay / TLS.
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
-  encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then TURN, then screenshots over the relay) is done.
+  encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then the relay's TURN, then screenshots over the relay) is done.
 
 ## 8. Security and audit
 
@@ -1323,8 +1350,10 @@ alongside the second half of M1; managed computers depend on M1's CP integration
      the Computer page or the agent's Computers card; `manual` computers are assigned to agents through it, and #3232's
      console assigns them the same way.
    - **#3235** [implemented; real-network and cluster checks pending]: the relay as the viewer's hole-punching (STUN)
-     server, with full ICE on both peers and the order host → punched → TURN / relay UDP forwarding (#3236) →
-     screenshots (§7.2).
+     server, with full ICE on both peers and the order host → punched → TURN → screenshots (§7.2).
+   - **#3236** [implemented; real-network and cluster checks pending]: TURN on the relay as the viewer's fallback,
+     over UDP, TCP and TLS on 443, with the CP's short-lived credentials, per-allocation bandwidth caps, idle
+     timeouts and bytes-relayed metrics; managed computers start their viewer at it (§7.2).
    - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
      quotas per mode, counting sleeping desktops and kept volumes; billing for running and sleeping hours and kept
      volume storage, plus bandwidth and screenshot storage; egress policy (§15.4).
@@ -1515,7 +1544,8 @@ desktop (a container image, §3.8).
    path, does viewer WebRTC media go through TURN or the relay?~~ **Decided (§3.7)**: tool calls go through the relay
    over the desktop's outbound link, with CP-issued per-session tokens; direct connection is the same-network
    optimization; viewer signaling rides the same channel. For media the relay is the hole-punching (STUN) server so
-   video goes peer to peer (#3235); TURN, and relay UDP forwarding (#3236), are only the fallback when punching fails.
+   video goes peer to peer (#3235); TURN on the relay (#3236), or an external TURN, is only the fallback when punching
+   fails.
 2. When one machine runs both an agent daemon and a desktop daemon, are they one installer, one app identity, and one
    registration flow (grant ownership on macOS especially must match)?
 3. May a Computer be shared with other members' agents; what are the default approvals and warnings?
@@ -1531,7 +1561,9 @@ desktop (a container image, §3.8).
 10. How reliable is window-level masking on each OS; should a screenshot be refused when masking fails?
 11. When a Computer is offline or locked, do agent tool calls queue or fail at once?
 12. Managed-computer start time, Cloud quotas, billing, and egress IP policy (quotas, billing, and egress are #3230).
-13. Viewer media in Kubernetes: direct per pod through hostPort / NodePort UDP, or always TURN / the relay (cost versus latency)?
+13. ~~Viewer media in Kubernetes: direct per pod through hostPort / NodePort UDP, or always TURN / the relay (cost versus
+    latency)?~~ **Decided (§7.2)**: a managed computer's viewer starts at the relay's TURN and never tries direct media,
+    since the pool sets up no per-pod UDP; `rtcAddress` keeps direct media for a self-hosted container Computer.
 14. Does a container Computer ship a default browser configuration (extensions, language, proxy), managed by the
     organization or set by the agent?
 15. ~~Can several agents drive one Computer at once, for example through several sessions on one Linux host?~~

@@ -28,6 +28,7 @@ import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createComputerRelay } from './computer-relay.js'
 import { startStunServer } from './stun-server.js'
+import { startRelayTurn } from './turn/index.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { createAhpServer } from './ahp-server.js'
 import { WebchatRouter, bindWebchatPostAuthor, fanImageUpdate, imageUpdateBound } from './webchat-router.js'
@@ -135,11 +136,14 @@ async function main(): Promise<void> {
           : memoryBindings
 
   const wsOrigin = toWsOrigin(config.CP_URL)
+  // TURN for viewer media without a punched path (computer-use.md §7.2); it checks credentials once the CP hands over the secret.
+  const relayTurn = await startRelayTurn(config, log)
   const client = new RelayCpClient({
     auth: resolveAuth(config),
     name: config.RELAY_NAME,
     daemonUrl: config.DAEMON_DIAL_URL,
     ...(config.RELAY_STUN_URL ? { stunUrl: config.RELAY_STUN_URL } : {}),
+    ...(relayTurn ? { turn: relayTurn } : {}),
     heartbeatDefaultMs: config.HEARTBEAT_DEFAULT_MS,
     clock: systemClock,
     connect: (opts) =>
@@ -480,6 +484,7 @@ async function main(): Promise<void> {
     await held.relayIngress?.stopAll()
     await client.stop()
     await stunServer?.close()
+    await relayTurn?.close()
     await server.close()
     // Last, so spans from the drain above still make it out.
     await telemetry

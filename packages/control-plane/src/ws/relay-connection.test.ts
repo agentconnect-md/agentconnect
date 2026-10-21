@@ -106,6 +106,7 @@ function build(
     onCodeHostFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onCodeHostFeedback']
     onPullRequestFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onPullRequestFeedback']
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
+    computerTurnSecret?: string
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
     onBotCredentialCheck?: ConstructorParameters<typeof RelayConnection>[1]['onBotCredentialCheck']
@@ -125,6 +126,7 @@ function build(
     daemonUrl,
     features: [],
     stunUrl: null,
+    turnUrls: [],
     lastSeenAt: new Date(NOW),
     createdAt: new Date(NOW)
   }))
@@ -155,6 +157,7 @@ function build(
     relays,
     clock: over.clock ?? clock,
     ...(over.deploymentConfig ? { deploymentConfig: over.deploymentConfig } : {}),
+    ...(over.computerTurnSecret ? { computerTurnSecret: over.computerTurnSecret } : {}),
     onRegistered,
     onRunReport,
     onSetChannelAgent: vi.fn(async () => {}),
@@ -417,7 +420,7 @@ describe('RelayConnection FSM', () => {
 
     transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test' })
     await Promise.resolve()
-    expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [], null)
+    expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [], null, [])
     expect(transport.lastRep('rc/registered')!.payload).toEqual({
       relayId: RELAY_ID,
       serverFeatures: [
@@ -449,8 +452,20 @@ describe('RelayConnection FSM', () => {
       'wss://pod-0.example.test',
       new Date(NOW),
       [],
-      'stun:stun-0.example.test:3478'
+      'stun:stun-0.example.test:3478',
+      []
     )
+  })
+
+  it('hands the TURN secret over on rc/auth/ok and stores the TURN URLs a relay registers', async () => {
+    const { transport, upsertByName } = build({ computerTurnSecret: 'x'.repeat(43) })
+    transport.feed('rc/auth', { method: 'token', credential: RELAY_TOKEN })
+    await Promise.resolve()
+    expect(transport.lastRep('rc/auth/ok')!.payload).toMatchObject({ computerTurnSecret: 'x'.repeat(43) })
+    const turnUrls = ['turn:turn-0.example.test:3478?transport=udp', 'turns:turn-0.example.test:443?transport=tcp']
+    transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test', turnUrls })
+    await Promise.resolve()
+    expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [], null, turnUrls)
   })
 
   it('bumps lastSeen on rc/heartbeat once READY', async () => {
@@ -542,6 +557,7 @@ describe('RelayConnection FSM', () => {
       daemonUrl: 'wss://pod-0.example.test',
       features: [],
       stunUrl: null,
+      turnUrls: [],
       lastSeenAt: new Date(NOW),
       createdAt: new Date(NOW)
     })
@@ -568,6 +584,7 @@ describe('RelayConnection FSM', () => {
         daemonUrl,
         features: [],
         stunUrl: null,
+        turnUrls: [],
         lastSeenAt: new Date(NOW),
         createdAt: new Date(NOW)
       })),

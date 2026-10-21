@@ -72,6 +72,8 @@ export interface RelayConnDeps {
   /** Static deployment snapshot loaded before the CP assembled. Secret-bearing;
    *  sent only after relay authentication and never logged. */
   deploymentConfig?: RcDeploymentConfig
+  /** The secret viewer TURN credentials are minted from, so a relay serving TURN can check them (computer-use.md §7.2); never logged. */
+  computerTurnSecret?: string
   /** Fired after a successful register — recompute + fan `relay/roster` to daemons,
    *  and replay the compiled hook rules to THIS relay (its table is a memory copy). */
   onRegistered: (ch: RelayChannel) => void
@@ -301,7 +303,8 @@ export class RelayConnection implements RelayChannel {
     this.reply(frame, 'rc/auth/ok', {
       heartbeatSec: this.deps.auth.heartbeatSec,
       serverTime: new Date(this.deps.clock.now()).toISOString(),
-      ...(this.deps.deploymentConfig ? { deploymentConfig: this.deps.deploymentConfig } : {})
+      ...(this.deps.deploymentConfig ? { deploymentConfig: this.deps.deploymentConfig } : {}),
+      ...(this.deps.computerTurnSecret ? { computerTurnSecret: this.deps.computerTurnSecret } : {})
     })
   }
 
@@ -311,7 +314,8 @@ export class RelayConnection implements RelayChannel {
       req.daemonUrl,
       new Date(this.deps.clock.now()),
       req.features,
-      req.stunUrl ?? null
+      req.stunUrl ?? null,
+      req.turnUrls ?? []
     )
     // The socket may have closed during the upsert. onClose ran with relayId still ''
     // (so it skipped the registry remove) — proceeding to relayReg.add would register a

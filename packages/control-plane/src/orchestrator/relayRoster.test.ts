@@ -14,6 +14,7 @@ function row(over: Partial<RelayRecord> = {}): RelayRecord {
     daemonUrl: 'wss://relay-0.example.test',
     features: [],
     stunUrl: null,
+    turnUrls: [],
     lastSeenAt: new Date(NOW),
     createdAt: new Date(NOW),
     ...over
@@ -57,6 +58,13 @@ describe('RelayRoster', () => {
       row({ id: 'r4', stunUrl: 'stun:stun-0.example.test:3478' })
     ])
     expect(await roster.stunUrls()).toEqual(['stun:stun-0.example.test:3478', 'stun:stun-1.example.test:3478'])
+  })
+
+  it('turnServers() lists each alive relay that serves TURN, oldest first', async () => {
+    const udp = 'turn:turn-0.example.test:3478?transport=udp'
+    const tls = 'turns:turn-1.example.test:443?transport=tcp'
+    const { roster } = make([row({ id: 'r1', turnUrls: [udp] }), row({ id: 'r2' }), row({ id: 'r3', turnUrls: [tls] })])
+    expect(await roster.turnServers()).toEqual([[udp], [tls]])
   })
 
   it('an empty pool broadcasts an empty roster (no relays to dial)', async () => {

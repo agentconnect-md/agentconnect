@@ -617,6 +617,41 @@ _, stun_refused, stun_refused_status = Open3.capture3(
 )
 abort('relay STUN without a public host must fail the render') if stun_refused_status.success? || !stun_refused.include?('relay.stun.host')
 
+# Relay TURN for viewer media: off by default; once on, each pod advertises its own host and gets a UDP+TCP(+TLS) Service.
+abort('relay TURN must be off by default') if public_relay_env.key?('RELAY_TURN_PORT') ||
+                                              public_documents.any? { |doc| doc.dig('metadata', 'name').to_s.end_with?('-turn') }
+turn_rendered, turn_error, turn_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'relay.turn.enabled=true',
+  '--set', 'relay.turn.host=turn-{ordinal}.example.test', '--set', 'relay.turn.tls.secretName=relay-turn-tls'
+)
+abort("helm template (relay TURN) failed:\n#{turn_error}") unless turn_status.success?
+turn_documents = YAML.load_stream(turn_rendered).compact
+turn_relay = turn_documents.find { |doc| doc['kind'] == 'StatefulSet' && doc.dig('metadata', 'name') == 'example-agentconnect-relay' }
+turn_container = turn_relay.dig('spec', 'template', 'spec', 'containers').first
+turn_env = turn_container.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('relay must serve TURN on its port') unless turn_env['RELAY_TURN_PORT'] == '3480' &&
+                                                  %w[UDP TCP].all? { |proto| turn_container['ports'].any? { |p| p['containerPort'] == 3480 && p['protocol'] == proto } }
+abort('relay must advertise its own pod’s TURN URLs, TLS on 443 included') unless turn_env['RELAY_TURN_URLS'] ==
+  'turn:turn-$(POD_INDEX).example.test:3478?transport=udp,turn:turn-$(POD_INDEX).example.test:3478?transport=tcp,turns:turn-$(POD_INDEX).example.test:443?transport=tcp'
+names = turn_container['env'].map { |item| item['name'] }
+abort('RELAY_TURN_URLS must follow POD_INDEX so $(POD_INDEX) expands') unless names.index('POD_INDEX') < names.index('RELAY_TURN_URLS')
+abort('relay TURN must carry no secret of its own') if names.any? { |name| name.start_with?('RELAY_TURN') && name.include?('SECRET') }
+abort('relay TURN over TLS must mount its certificate') unless turn_env['RELAY_TURN_TLS_CERT_FILE'] == '/etc/agentconnect/turn-tls/tls.crt' &&
+                                                               turn_relay.dig('spec', 'template', 'spec', 'volumes').any? { |v| v.dig('secret', 'secretName') == 'relay-turn-tls' }
+%w[0 1].each do |ordinal|
+  svc = turn_documents.find { |doc| doc['kind'] == 'Service' && doc.dig('metadata', 'name') == "example-agentconnect-relay-#{ordinal}-turn" } ||
+        abort("missing the TURN Service of relay #{ordinal}")
+  abort('a TURN Service must select its own pod') unless svc.dig('spec', 'selector', 'statefulset.kubernetes.io/pod-name') == "example-agentconnect-relay-#{ordinal}"
+  ports = svc.dig('spec', 'ports').map { |p| [p['protocol'], p['port']] }
+  abort("a TURN Service carries UDP and TCP on 3478 and TLS on 443, got #{ports}") unless ports == [['UDP', 3478], ['TCP', 3478], ['TCP', 443]]
+end
+_, turn_refused, turn_refused_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'relay.turn.enabled=true'
+)
+abort('relay TURN without a public host must fail the render') if turn_refused_status.success? || !turn_refused.include?('relay.turn.host')
+
 # ONE safety window. The sweep calls a claim orphaned once nothing has touched it for this long, and a
 # member re-stamps the claims it holds on a cadence derived from the same number — so the value has to
 # reach BOTH surfaces from one place. A member reading a different grace than the job sweeping after it

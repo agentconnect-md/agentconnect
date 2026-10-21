@@ -3000,6 +3000,8 @@ export interface ComputerViewerGrantDto {
   iceServers: { urls: string[]; username: string; credential: string }[]
   // The relays' STUN servers for hole punching; empty when none serve STUN or the Computer's policy turns it off.
   stunUrls: string[]
+  // False when the desktop has no UDP a browser can reach (a managed computer's pod), so the viewer starts at TURN.
+  directMedia?: boolean
 }
 
 export async function openComputerViewer(id: string): Promise<ComputerViewerGrantDto> {

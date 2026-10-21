@@ -9,7 +9,7 @@ import {
   type CodeHostProvider,
   type CodeHostRepoRef
 } from '../code-host.js'
-import { ComputerStunUrl } from '../computer-viewer.js'
+import { COMPUTER_TURN_URLS_MAX, ComputerStunUrl, ComputerTurnUrl } from '../computer-viewer.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
@@ -90,7 +90,9 @@ export type RcDeploymentConfig = z.infer<typeof RcDeploymentConfig>
 export const RcAuthOk = z.object({
   heartbeatSec: z.number().int(), // cadence the relay must emit rc/heartbeat at
   serverTime: z.string().datetime(),
-  deploymentConfig: RcDeploymentConfig.optional()
+  deploymentConfig: RcDeploymentConfig.optional(),
+  // The secret the CP mints viewer TURN credentials from, so a relay serving TURN can check them; secret, never logged.
+  computerTurnSecret: z.string().min(32).max(256).optional()
 })
 export type RcAuthOk = z.infer<typeof RcAuthOk>
 
@@ -109,7 +111,9 @@ export const RcRegister = z.object({
   // default keeps old relays register-compatible; absent ⇒ no features.
   features: z.array(z.string()).default([]),
   // This instance's public STUN address (`stun:<host>:<port>`) for viewer hole punching; absent when it serves none.
-  stunUrl: ComputerStunUrl.optional()
+  stunUrl: ComputerStunUrl.optional(),
+  // This instance's public TURN addresses for viewer media without a punched path; sent only once it holds the TURN secret.
+  turnUrls: z.array(ComputerTurnUrl).min(1).max(COMPUTER_TURN_URLS_MAX).optional()
 })
 export type RcRegister = z.infer<typeof RcRegister>
 

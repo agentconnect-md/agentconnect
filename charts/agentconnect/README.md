@@ -347,7 +347,7 @@ and the console reads it on another; the Control Plane never holds the bytes.
 
 The console's embedded Computer viewer sends media straight between the browser and the
 desktop when it can: on the same network directly, and across NATs by hole punching through
-the relays' STUN. When neither connects it uses TURN
+the relays' STUN. When neither connects it uses TURN: the relays' own, or an external coturn
 ([design](../../docs/designs/computer-use.md#72-media-and-network)).
 
 With `relay.stun.enabled`, each relay pod answers STUN Binding requests on UDP
@@ -366,11 +366,40 @@ for each ordinal at its Service. STUN is stateless and carries no media.
 | `relay.stun.service.type`        | `LoadBalancer` | Type of each pod's STUN Service                                     |
 | `relay.stun.service.annotations` | `{}`           | Annotations for those Services (load balancer settings)             |
 
-Run a TURN server such as
+With `relay.turn.enabled`, each relay pod is a TURN server too, behind its own
+`<release>-relay-<ordinal>-turn` Service: UDP and TCP on `relay.turn.publicPort`, and TLS on
+443 when `relay.turn.tls.secretName` names a certificate covering every pod's host, for
+networks that only let 443 out. The relay registers its `turn:` / `turns:` URLs with the
+Control Plane, which hands both peers of a viewing short-lived credentials for them; the
+Control Plane gives the relay the secret it checks them with over its authenticated link, so
+there is no secret to configure. Both peers are relay-only, so a relay forwards only between
+its own allocations: relayed addresses are virtual and no UDP port range is exposed. Each
+allocation is capped in bandwidth and idles out, and the relay exports
+`agentconnect.relay.turn.relayed_bytes` per Computer. The Service carries UDP and TCP
+together, which needs mixed-protocol `LoadBalancer` support (Kubernetes 1.26 and most clouds);
+point the DNS name for each ordinal at its Service. Managed computers, whose pods have no UDP a
+browser can reach, start their viewer at TURN.
+
+| Value                                      | Default        | Meaning                                                             |
+| ------------------------------------------ | -------------- | ------------------------------------------------------------------- |
+| `relay.turn.enabled`                       | `false`        | Serve TURN on each relay pod                                        |
+| `relay.turn.port`                          | `3480`         | Container port for UDP and TCP                                      |
+| `relay.turn.host`                          | `''`           | Public host per pod; `{ordinal}` becomes the pod ordinal (required) |
+| `relay.turn.publicPort`                    | `3478`         | Public UDP and TCP port                                             |
+| `relay.turn.tls.secretName`                | `''`           | `kubernetes.io/tls` Secret for TURN over TLS; empty serves no TLS   |
+| `relay.turn.tls.port` / `tls.publicPort`   | `5349` / `443` | Container and public port for TURN over TLS                         |
+| `relay.turn.maxAllocations`                | `400`          | Allocations one pod holds; a viewing takes up to four               |
+| `relay.turn.maxAllocationsPerCredential`   | `16`           | Allocations one viewer or desktop holds, across its credentials     |
+| `relay.turn.maxBitsPerSecond`              | `10000000`     | What one allocation may send to its peer; the excess is dropped     |
+| `relay.turn.idleTimeoutSeconds`            | `120`          | An allocation that relays nothing for this long is deleted          |
+| `relay.turn.service.type` / `.annotations` | `LoadBalancer` | Each pod's TURN Service and its load balancer settings              |
+
+Alternatively, run an external TURN server such as
 [coturn](https://github.com/coturn/coturn) (BSD) with `use-auth-secret`, put its
-`static-auth-secret` in `secrets.existingSecret`, and list its URLs; the Control Plane mints
-short-lived credentials per viewer and never sends the secret out. Without TURN, a viewer
-with no direct path falls back to screenshots through the relay.
+`static-auth-secret` in `secrets.existingSecret`, and list its URLs; it takes precedence over
+the relays' own. The Control Plane mints short-lived credentials per viewer and never sends
+the secret out. Without TURN, a viewer with no direct path falls back to screenshots through
+the relay.
 
 | Value                            | Default                | Meaning                                                     |
 | -------------------------------- | ---------------------- | ----------------------------------------------------------- |

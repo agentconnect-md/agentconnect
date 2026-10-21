@@ -133,6 +133,8 @@ export interface RelayCpClientDeps {
   daemonUrl: string
   /** This instance's public STUN address (`rc/register.stunUrl`), when it serves one. */
   stunUrl?: string
+  /** This instance's TURN server: its public URLs, registered only once `rc/auth/ok` handed over the secret it checks credentials with. */
+  turn?: { urls: string[]; onSecret: (secret: string) => void }
   /** Heartbeat cadence fallback when `rc/auth/ok` carries none. */
   heartbeatDefaultMs: number
   clock: Clock
@@ -733,6 +735,9 @@ export class RelayCpClient {
       if (ok.deploymentConfig && ok.deploymentConfig.revision > 0) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
     }
     this.deps.onDeploymentSnapshot?.(ok.deploymentConfig)
+    // A CP that sends no TURN secret cannot mint credentials this relay could check, so its TURN stays unadvertised.
+    if (ok.computerTurnSecret) this.deps.turn?.onSecret(ok.computerTurnSecret)
+    const turnUrls = ok.computerTurnSecret ? this.deps.turn?.urls : undefined
 
     // ── register (upsert by name → relayId; re-sent every reconnect) ──
     this.state = 'REGISTERING'
@@ -742,6 +747,7 @@ export class RelayCpClient {
         name: this.deps.name,
         daemonUrl: this.deps.daemonUrl,
         ...(this.deps.stunUrl ? { stunUrl: this.deps.stunUrl } : {}),
+        ...(turnUrls?.length ? { turnUrls } : {}),
         // This relay preserves RdMsgWebchat.targetSessionId end to end; the CP
         // gates session-targeted mints on every live relay advertising it.
         // gitlab-com-v1: this relay verifies and routes GitLab project

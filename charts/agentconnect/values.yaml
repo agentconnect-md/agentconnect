@@ -664,6 +664,35 @@ relay:
     service:
       type: LoadBalancer
       annotations: {}
+  # TURN on each relay pod for viewer media when punching fails (computer-use.md §7.2); no secret to set, no port range.
+  # An external coturn (computerViewer.turn) takes precedence when configured.
+  turn:
+    enabled: false
+    # Container port for TURN over UDP and TCP.
+    port: 3480
+    # Public host each pod's TURN Service is reached on; `{ordinal}` becomes the pod ordinal, e.g.
+    # `turn-{ordinal}.example.com`. Required when enabled; point each name at that pod's Service address.
+    host: ''
+    # Public UDP and TCP port on the load balancer.
+    publicPort: 3478
+    tls:
+      # A kubernetes.io/tls Secret whose certificate covers every pod's host (a wildcard from cert-manager, say);
+      # empty serves no TLS. Re-read hourly, so a renewed certificate needs no restart.
+      secretName: ''
+      port: 5349
+      # Networks that only let 443 out still reach TURN over TLS here.
+      publicPort: 443
+    # Allocations one pod holds; a viewing takes one for the desktop and up to three for the browser.
+    maxAllocations: 400
+    maxAllocationsPerCredential: 16
+    # What one allocation may send to its peer; the viewer's stream is 2.5 Mbps with bursts.
+    maxBitsPerSecond: 10000000
+    # An allocation that relays nothing for this long is deleted.
+    idleTimeoutSeconds: 120
+    # The per-pod Service carrying UDP and TCP (and TLS) together needs mixed-protocol LoadBalancer support (Kubernetes 1.26+).
+    service:
+      type: LoadBalancer
+      annotations: {}
   resources:
     requests:
       cpu: 50m

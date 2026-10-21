@@ -1,0 +1,12 @@
+# Optional TURN on the relay for the console's Computer viewer: video goes through the relay when hole punching fails.
+# docker compose -f compose.yaml -f compose.relay-turn.yaml up -d; guide: docs/self-host-desktop-container.md.
+services:
+  relay:
+    environment:
+      - RELAY_TURN_PORT=3480
+      # The address browsers and desktops reach this host's TURN port on, over UDP and over TCP for networks that block UDP.
+      - RELAY_TURN_URLS=turn:${AGENTCONNECT_RELAY_TURN_HOST:?set AGENTCONNECT_RELAY_TURN_HOST to this host's public IP or DNS name}:${AGENTCONNECT_RELAY_TURN_PORT:-3480}?transport=udp,turn:${AGENTCONNECT_RELAY_TURN_HOST}:${AGENTCONNECT_RELAY_TURN_PORT:-3480}?transport=tcp
+    ports:
+      # Relayed addresses are virtual, so only the listening port is published; 3480 leaves 3478 to compose.turn.yaml and 3479 to compose.stun.yaml.
+      - ${AGENTCONNECT_RELAY_TURN_PORT:-3480}:3480/udp
+      - ${AGENTCONNECT_RELAY_TURN_PORT:-3480}:3480/tcp

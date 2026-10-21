@@ -292,8 +292,12 @@ export class ComputerViewerSession {
     else {
       // With relay STUN, one full-ICE attempt covers both: ICE checks host pairs first, then punched ones.
       const punch = (this.grant!.stunUrls?.length ?? 0) > 0 && this.state.status?.webrtc.stun === true
-      for (const transport of [punch ? 'stun' : 'direct', 'turn'] as const) {
-        if (transport === 'turn' && (this.grant!.iceServers.length === 0 || !this.state.status?.webrtc.turn)) {
+      const turn = this.grant!.iceServers.length > 0 && this.state.status?.webrtc.turn === true
+      // A desktop without reachable UDP (a managed computer's pod) skips the direct attempt when TURN can carry it.
+      const first: Transport | null = punch ? 'stun' : this.grant!.directMedia === false && turn ? null : 'direct'
+      const ladder: Transport[] = first ? [first, 'turn'] : ['turn']
+      for (const transport of ladder) {
+        if (transport === 'turn' && !turn) {
           notes.push('TURN: not configured')
           break
         }

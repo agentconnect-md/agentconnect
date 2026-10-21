@@ -15,6 +15,11 @@ the pool Service remains load-balanced for browser and webhook ingress.
 {{- if and $stun.enabled (not $stun.host) }}
 {{- fail "relay.stun.enabled needs relay.stun.host: the public name each relay pod's STUN Service is reached on" }}
 {{- end }}
+{{- $turn := .Values.relay.turn }}
+{{- if and $turn.enabled (not $turn.host) }}
+{{- fail "relay.turn.enabled needs relay.turn.host: the public name each relay pod's TURN Service is reached on" }}
+{{- end }}
+{{- $turnHost := replace "{ordinal}" "$(POD_INDEX)" ($turn.host | default "") }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -71,6 +76,19 @@ spec:
               containerPort: {{ $stun.port }}
               protocol: UDP
             {{- end }}
+            {{- if $turn.enabled }}
+            - name: turn-udp
+              containerPort: {{ $turn.port }}
+              protocol: UDP
+            - name: turn-tcp
+              containerPort: {{ $turn.port }}
+              protocol: TCP
+            {{- if $turn.tls.secretName }}
+            - name: turn-tls
+              containerPort: {{ $turn.tls.port }}
+              protocol: TCP
+            {{- end }}
+            {{- end }}
           env:
             - name: PORT
               value: {{ .Values.relay.port | quote }}
@@ -123,6 +141,29 @@ spec:
             - name: RELAY_STUN_URL
               value: {{ printf "stun:%s:%v" (replace "{ordinal}" "$(POD_INDEX)" $stun.host) ($stun.publicPort | default $stun.port) | quote }}
             {{- end }}
+            {{- if $turn.enabled }}
+            # TURN for viewer media when punching fails: this pod relays between its own allocations and registers its public URLs.
+            - name: RELAY_TURN_PORT
+              value: {{ $turn.port | quote }}
+            - name: RELAY_TURN_URLS
+              value: {{ printf "turn:%s:%v?transport=udp,turn:%s:%v?transport=tcp%s" $turnHost $turn.publicPort $turnHost $turn.publicPort (ternary (printf ",turns:%s:%v?transport=tcp" $turnHost $turn.tls.publicPort) "" (not (empty $turn.tls.secretName))) | quote }}
+            - name: RELAY_TURN_MAX_ALLOCATIONS
+              value: {{ $turn.maxAllocations | quote }}
+            - name: RELAY_TURN_MAX_ALLOCATIONS_PER_USER
+              value: {{ $turn.maxAllocationsPerCredential | quote }}
+            - name: RELAY_TURN_MAX_BPS
+              value: {{ $turn.maxBitsPerSecond | int64 | quote }}
+            - name: RELAY_TURN_IDLE_TIMEOUT_SEC
+              value: {{ $turn.idleTimeoutSeconds | quote }}
+            {{- if $turn.tls.secretName }}
+            - name: RELAY_TURN_TLS_PORT
+              value: {{ $turn.tls.port | quote }}
+            - name: RELAY_TURN_TLS_CERT_FILE
+              value: /etc/agentconnect/turn-tls/tls.crt
+            - name: RELAY_TURN_TLS_KEY_FILE
+              value: /etc/agentconnect/turn-tls/tls.key
+            {{- end }}
+            {{- end }}
             # Shared relay↔CP credential — the CP must hold the SAME value (control-plane.yaml).
             - name: RELAY_TOKEN
               valueFrom:
@@ -167,6 +208,18 @@ spec:
                 command: ["/bin/sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.relay.resources | nindent 12 }}
+          {{- if and $turn.enabled $turn.tls.secretName }}
+          volumeMounts:
+            - name: turn-tls
+              mountPath: /etc/agentconnect/turn-tls
+              readOnly: true
+          {{- end }}
+      {{- if and $turn.enabled $turn.tls.secretName }}
+      volumes:
+        - name: turn-tls
+          secret:
+            secretName: {{ $turn.tls.secretName }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -242,6 +295,42 @@ spec:
       port: {{ $stun.publicPort | default $stun.port }}
       targetPort: stun
       protocol: UDP
+{{- end }}
+{{- if $turn.enabled }}
+---
+# This pod's TURN ports, public: UDP and TCP, plus TLS for networks that only let 443 out. Relayed addresses are virtual.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-relay-%d-turn" (include "agentconnect.fullname" $) $ordinal }}
+  labels:
+    {{- include "agentconnect.labels" $ | nindent 4 }}
+  {{- with $turn.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $turn.service.type }}
+  {{- if ne $turn.service.type "ClusterIP" }}
+  externalTrafficPolicy: Local
+  {{- end }}
+  selector:
+    statefulset.kubernetes.io/pod-name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
+  ports:
+    - name: turn-udp
+      port: {{ $turn.publicPort }}
+      targetPort: turn-udp
+      protocol: UDP
+    - name: turn-tcp
+      port: {{ $turn.publicPort }}
+      targetPort: turn-tcp
+      protocol: TCP
+    {{- if $turn.tls.secretName }}
+    - name: turn-tls
+      port: {{ $turn.tls.publicPort }}
+      targetPort: turn-tls
+      protocol: TCP
+    {{- end }}
 {{- end }}
 {{- end }}
 {{- if gt (int .Values.relay.replicas) 1 }}
