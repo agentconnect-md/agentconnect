@@ -1,7 +1,5 @@
 #!/bin/sh
-# Installs the AgentConnect desktop daemon for this Linux desktop user and registers it (computer-use.md §3.5, §3.6).
-# The Control Plane serves this file with its own URL and the bundle's sha256 filled in:
-#   wget -nv -O- <control plane>/v1/computers/install.sh | sh -s -- --register <token> [--name <name>]
+# Installs and registers the AgentConnect desktop daemon (computer-use.md §3.5); the CP fills in @CP_URL@ and @BUNDLE_SHA256@.
 set -eu
 
 CP_URL='@CP_URL@'
@@ -39,9 +37,23 @@ fetch() {
   fi
 }
 
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+
 verify() {
-  actual=$(sha256sum "$1" | cut -d' ' -f1)
+  actual=$(sha_of "$1")
   [ "$actual" = "$2" ] || die "checksum mismatch for $3 (expected $2, got $actual)"
+}
+
+# The bundle URL names its sha256, so a replica holding another bundle mid-upgrade answers 404 instead; retry that.
+fetch_bundle() {
+  attempt=1
+  while :; do
+    if fetch "$1" "$2" && [ "$(sha_of "$2")" = "$BUNDLE_SHA256" ]; then return 0; fi
+    [ "$attempt" -lt 4 ] || die "could not download the desktop daemon with sha256 $BUNDLE_SHA256; if the Control Plane is being upgraded, rerun this command in a minute"
+    say 'The Control Plane may be upgrading; retrying in 15 seconds...'
+    attempt=$((attempt + 1))
+    sleep 15
+  done
 }
 
 main() {
@@ -121,10 +133,10 @@ main() {
 
   base=$(printf '%s' "$CP_URL" | sed 's:/*$::')
   say "Downloading the desktop daemon from $base..."
-  fetch "$base/v1/computers/desktop/$BUNDLE" "$tmp/$BUNDLE"
-  verify "$tmp/$BUNDLE" "$BUNDLE_SHA256" "$BUNDLE"
+  files="$base/v1/computers/desktop/$BUNDLE_SHA256"
+  fetch_bundle "$files/$BUNDLE" "$tmp/$BUNDLE"
   mv -f "$tmp/$BUNDLE" "$app/$BUNDLE"
-  if fetch "$base/v1/computers/desktop/$BUNDLE.LEGAL.txt" "$tmp/legal"; then mv -f "$tmp/legal" "$app/$BUNDLE.LEGAL.txt"; fi
+  if fetch "$files/$BUNDLE.LEGAL.txt" "$tmp/legal"; then mv -f "$tmp/legal" "$app/$BUNDLE.LEGAL.txt"; fi
 
   # A launcher on PATH (Ubuntu's ~/.profile adds ~/.local/bin at login) names the command the fix hints use.
   bin="$HOME/.local/bin"

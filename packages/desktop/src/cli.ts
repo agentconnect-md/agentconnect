@@ -45,11 +45,10 @@ import {
   type McpPrincipal
 } from './mcp-access.js'
 import {
-  cpBaseUrl,
   exchangeRegistrationToken,
   loadRegistration,
   markRevoked,
-  RegistrationTokenRefused,
+  registerOrKeep,
   registrationPath,
   saveRegistration,
   type Registration
@@ -170,7 +169,12 @@ async function main(): Promise<void> {
     }
     case 'setup': {
       const config = overrides(loadConfig(dir))
-      if (values.register) await registerOrKeep(dir, values.register, values['cp-url'], values.name)
+      if (values.register) {
+        const { register: token, 'cp-url': cpUrl, name } = values
+        const { registration, kept } = await registerOrKeep(dir, cpUrl, () => registerComputer(dir, token, cpUrl, name))
+        if (kept)
+          console.log(`The token is spent; keeping this desktop's registration as computer ${registration.computerId}.`)
+      }
       const registered = Boolean(values.register) || Boolean(loadRegistration(dir))
       return setup(dir, config, registered ? undefined : values.client, !values['no-service'])
     }
@@ -336,18 +340,6 @@ async function registerComputer(
   saveRegistration(registration, dir)
   console.log(`Registered as computer ${registration.computerId}; key stored in ${registrationPath(dir)} (mode 0600).`)
   return registration
-}
-
-// Running the console's command again (say after a relogin) finds its token spent; the key it got is still good.
-async function registerOrKeep(dir: string, token: string, cpUrl: string | undefined, name: string | undefined) {
-  try {
-    await registerComputer(dir, token, cpUrl, name)
-  } catch (error) {
-    const current = loadRegistration(dir)
-    const same = current && !current.revokedAt && cpUrl && cpBaseUrl(cpUrl) === current.cpUrl
-    if (!(error instanceof RegistrationTokenRefused) || !same) throw error
-    console.log(`The token is spent; keeping this desktop's registration as computer ${current.computerId}.`)
-  }
 }
 
 const DOCTOR_INTERVAL_MS = 30 * 60_000

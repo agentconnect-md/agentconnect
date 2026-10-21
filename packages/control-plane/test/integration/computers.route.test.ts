@@ -657,31 +657,40 @@ describe('Linux installer', () => {
 
       const bundle = await app.app.inject({
         method: 'GET',
-        url: `${prefix}/computers/desktop/agentconnect-desktop.mjs`
+        url: `${prefix}/computers/desktop/${sha}/agentconnect-desktop.mjs`
       })
       expect(bundle.statusCode).toBe(200)
       expect(bundle.body).toBe('bundle-bytes')
       expect(bundle.headers.etag).toBe(`"${sha}"`)
       const cached = await app.app.inject({
         method: 'GET',
-        url: `${prefix}/computers/desktop/agentconnect-desktop.mjs`,
+        url: `${prefix}/computers/desktop/${sha}/agentconnect-desktop.mjs`,
         headers: { 'if-none-match': `"${sha}"` }
       })
       expect(cached.statusCode).toBe(304)
       const legal = await app.app.inject({
         method: 'GET',
-        url: `${prefix}/computers/desktop/agentconnect-desktop.mjs.LEGAL.txt`
+        url: `${prefix}/computers/desktop/${sha}/agentconnect-desktop.mjs.LEGAL.txt`
       })
       expect(legal.body).toBe('MIT notices')
     }
-    const other = await app.app.inject({ method: 'GET', url: '/v1/computers/desktop/..%2Fpackage.json' })
+    const other = await app.app.inject({ method: 'GET', url: `/v1/computers/desktop/${sha}/..%2Fpackage.json` })
     expect(other.statusCode).toBe(400)
+  })
+
+  it('answers 404 with a retry hint for another bundle, as a replica mid-upgrade would hold', async () => {
+    const res = await withDist().app.inject({
+      method: 'GET',
+      url: `/v1/computers/desktop/${'0'.repeat(64)}/agentconnect-desktop.mjs`
+    })
+    expect(res.statusCode).toBe(404)
+    expect(res.json().message).toMatch(/different desktop bundle; retry/)
   })
 
   it('answers 404 when this CP ships no bundle', async () => {
     const app = appAs()
     expect((await app.app.inject({ method: 'GET', url: '/v1/computers/install.sh' })).statusCode).toBe(404)
-    const bundle = await app.app.inject({ method: 'GET', url: '/v1/computers/desktop/agentconnect-desktop.mjs' })
+    const bundle = await app.app.inject({ method: 'GET', url: `/v1/computers/desktop/${sha}/agentconnect-desktop.mjs` })
     expect(bundle.statusCode).toBe(404)
   })
 

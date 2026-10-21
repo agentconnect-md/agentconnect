@@ -141,35 +141,61 @@ export function serviceStatus(): { installed: boolean; loaded: boolean; pid?: nu
   }
 }
 
+/** A probe answer; undefined when loginctl could not say (timeout, bus hiccup), which is never an ending. */
+export type Answer = boolean | undefined
+
 export interface SessionProbe {
   /** Whether logind knows this session as a graphical one (x11, wayland). */
-  graphical(id: string): Promise<boolean>
-  /** Whether logind still has this session open; a closing session counts as ended. */
-  live(id: string): Promise<boolean>
+  graphical(id: string): Promise<Answer>
+  /** Whether logind still has this session open; a closing or unknown-to-logind session counts as ended. */
+  live(id: string): Promise<Answer>
   /** The session the manager would start the unit for now. */
   managerSession(): Promise<string | undefined>
   /** Drops this session's display from the manager, so no later start finds a dead one. */
   forget(id: string): Promise<void>
 }
 
-const run = (command: string, args: string[]): Promise<{ ok: boolean; stdout: string }> =>
+interface RunResult {
+  ok: boolean
+  /** The command ran to a non-zero exit, as opposed to timing out or failing to spawn. */
+  exited: boolean
+  stdout: string
+  stderr: string
+}
+
+const run = (command: string, args: string[]): Promise<RunResult> =>
   new Promise((resolve) => {
-    execFile(command, args, { encoding: 'utf8', timeout: 10_000 }, (error, stdout) =>
-      resolve({ ok: !error, stdout: stdout ?? '' })
+    execFile(command, args, { encoding: 'utf8', timeout: 10_000 }, (error, stdout, stderr) =>
+      resolve({
+        ok: !error,
+        exited: Boolean(error) && typeof error?.code === 'number' && !error.killed,
+        stdout: stdout ?? '',
+        stderr: stderr ?? ''
+      })
     )
   })
 
 const environmentValue = (output: string, name: string): string | undefined =>
   new RegExp(`^${name}=(.*)$`, 'm').exec(output)?.[1]?.trim() || undefined
 
+// loginctl's own answer that a session is gone, as opposed to failing to ask.
+const GONE = /no session|not known|does not exist/i
+
+/** Reads `loginctl show-session -p <property>`; undefined when logind could not be asked, null when the session is gone. */
+export async function sessionProperty(id: string, property: string, exec = run): Promise<string | null | undefined> {
+  const result = await exec('loginctl', ['show-session', id, '-p', property, '--value'])
+  if (result.ok) return result.stdout.trim() || undefined
+  return result.exited && GONE.test(result.stderr) ? null : undefined
+}
+
 export const logindProbe: SessionProbe = {
   async graphical(id) {
-    const type = await run('loginctl', ['show-session', id, '-p', 'Type', '--value'])
-    return type.ok && GRAPHICAL_TYPES.has(type.stdout.trim())
+    const type = await sessionProperty(id, 'Type')
+    return type === undefined ? undefined : type !== null && GRAPHICAL_TYPES.has(type)
   },
   async live(id) {
-    const state = await run('loginctl', ['show-session', id, '-p', 'State', '--value'])
-    return state.ok && state.stdout.trim() !== '' && state.stdout.trim() !== 'closing'
+    const state = await sessionProperty(id, 'State')
+    return state === undefined ? undefined : state !== null && state !== 'closing'
   },
   async managerSession() {
     const env = await run('systemctl', ['--user', 'show-environment'])
@@ -181,6 +207,9 @@ export const logindProbe: SessionProbe = {
     await run('systemctl', ['--user', 'unset-environment', ...SESSION_DISPLAY_VARS])
   }
 }
+
+/** Consecutive unanswered probes after which a session counts as gone; one timeout never ends it. */
+export const UNKNOWN_LIMIT = 3
 
 // Xfce never stops graphical-session.target, so the service watches its logind session and leaves with it.
 export function watchSession(options: {
@@ -195,21 +224,27 @@ export function watchSession(options: {
   let stopped = false
   let busy = false
   let checked = false
+  let unknown = 0
   const tick = async (): Promise<void> => {
     if (stopped || busy) return
     busy = true
     try {
       if (!checked) {
+        const graphical = await probe.graphical(options.session)
+        // Unanswered: ask again next tick rather than stop following for good.
+        if (graphical === undefined) return
         checked = true
-        if (!(await probe.graphical(options.session))) {
+        if (!graphical) {
           stop()
           options.onIgnored?.(`session ${options.session} is not a graphical session; not following it`)
           return
         }
       }
-      if (await probe.live(options.session)) return
+      const live = await probe.live(options.session)
+      if (live === true) unknown = 0
+      if (live === true || (live === undefined && ++unknown < UNKNOWN_LIMIT)) return
       const next = await probe.managerSession()
-      if (next && next !== options.session && (await probe.live(next))) {
+      if (next && next !== options.session && (await probe.live(next)) === true) {
         stop()
         options.onEnded(EXIT_NEW_SESSION, `desktop session ${options.session} ended; restarting in session ${next}`)
         return

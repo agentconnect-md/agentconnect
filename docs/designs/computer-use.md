@@ -274,9 +274,10 @@ Session 0 / RDP / Wayland / X11); driver; macOS grants; a real screenshot; displ
 capture; the Linux GNOME helper, portal, and PipeWire dependencies; the Windows firewall rule; whether the daemon runs.
 
 **[implemented]** Linux one-line install (X11; GNOME Wayland is #3221). The Control Plane serves
-`GET /v1/computers/install.sh` (also under `/api/v1`, no auth) and `GET /v1/computers/desktop/<file>` for the daemon
+`GET /v1/computers/install.sh` (also under `/api/v1`, no auth) and `GET /v1/computers/desktop/<sha256>/<file>` for the daemon
 bundle and its license notices, from the desktop package's built `bundle/` (`COMPUTER_DESKTOP_BUNDLE_DIR`; the CP image
-ships it). The script carries the CP's public URL and the bundle's sha256, refuses root, downloads the pinned official
+ships it). The bundle path names its sha256, so a replica holding another bundle mid-upgrade answers 404 and the
+installer retries. The script carries the CP's public URL and the bundle's sha256, refuses root, downloads the pinned official
 Node.js (picked over a single executable: one checked tarball per architecture, no Linux SEA build to maintain), checks
 both checksums, installs under `~/.agentconnect/desktop`, and runs `setup --register`. A re-run with a spent token keeps
 the stored key. The registration response names the installer as `linuxInstallerUrl`, and the console shows
@@ -884,7 +885,7 @@ and every `computer/policy`.
 - **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
   owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
   `agentconnect desktop setup --register <token> --cp-url <exchange URL>` (through `npx @agentconnect.md/cli`) quoted
-  for the chosen OS, or on Linux the one-line installer below when the CP ships the desktop bundle, and follows `GET …/computers/registrations/:id`, which
+  for the chosen OS, or on Linux the one-line installer of §3.5 when the CP ships the desktop bundle, and follows `GET …/computers/registrations/:id`, which
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
@@ -1043,8 +1044,8 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
 5. **Console**: the Computers page (list, status, `doctor` results with fixes, policy, granted agents); "Add Computer"
    producing the install command; an embedded viewer on the detail page (watch, take over, pause, stop, revoke); the
    agent setting.
-6. **Linux productization**: `setup --register`; a one-line `install.sh` (pinned Node runtime or a single executable,
-   pick one); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
+6. **Linux productization**: `setup --register`; a one-line `install.sh` (**[implemented]** for X11 with the pinned
+   Node runtime, §3.5; GNOME Wayland is #3221); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
    Wayland); keyboard activity detection (XInput2 raw events on X11; Wayland cannot listen globally, so capabilities say
    pointer only); local indicator and stop (StatusNotifier tray plus a global hotkey; on GNOME as far as the extension
    allows); Wayland IME text (clipboard paste behind a policy switch, §17-5).

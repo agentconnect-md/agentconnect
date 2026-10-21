@@ -41,7 +41,7 @@ import { DESKTOP_BUNDLE_FILE, DESKTOP_LEGAL_FILE } from '../../computer-install/
 export const COMPUTER_REGISTER_PATH = '/computers/register'
 /** The Linux one-line installer (computer-use.md §3.5); the public form is `/v1` + this. */
 export const COMPUTER_LINUX_INSTALLER_PATH = '/computers/install.sh'
-/** The files the installer downloads; only these names are served. */
+/** The files the installer downloads, under the bundle's sha256; only these names are served. */
 export const COMPUTER_DESKTOP_FILES_PATH = '/computers/desktop'
 
 const notFound = { error: 'Not Found', statusCode: 404, message: 'computer not found' }
@@ -505,6 +505,12 @@ const noDistribution = {
   message: 'this Control Plane ships no desktop daemon bundle'
 }
 
+const otherBundle = {
+  error: 'Not Found',
+  statusCode: 404,
+  message: 'this Control Plane holds a different desktop bundle; retry in a minute if it is being upgraded'
+}
+
 /** The unauthenticated exchange: the registration token in the body is the credential. */
 export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } = {}) {
   return async function computerRegisterRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -543,17 +549,20 @@ export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } 
       }
     )
     r.get(
-      `${COMPUTER_DESKTOP_FILES_PATH}/:file`,
+      `${COMPUTER_DESKTOP_FILES_PATH}/:sha256/:file`,
       {
         schema: {
           ...(opts.hide ? { hide: true } : {}),
           tags: [Tag.Computers],
           summary: 'Download the desktop daemon',
           description:
-            'The desktop daemon bundle (`agentconnect-desktop.mjs`, whose sha256 is also the `ETag`) and its third-party license notices (`agentconnect-desktop.mjs.LEGAL.txt`), as the Linux installer downloads them.',
+            'The desktop daemon bundle (`agentconnect-desktop.mjs`, whose sha256 is also the `ETag`) and its third-party license notices (`agentconnect-desktop.mjs.LEGAL.txt`), as the Linux installer downloads them. The path names the bundle sha256 the installer embeds; a Control Plane holding a different bundle, such as a replica mid-upgrade, answers 404 so the installer retries.',
           operationId: 'getComputerDesktopFile',
           security: [],
-          params: z.object({ file: z.enum([DESKTOP_BUNDLE_FILE, DESKTOP_LEGAL_FILE]) }),
+          params: z.object({
+            sha256: z.string().regex(/^[0-9a-f]{64}$/),
+            file: z.enum([DESKTOP_BUNDLE_FILE, DESKTOP_LEGAL_FILE])
+          }),
           response: {
             200: z.string(),
             304: z.null().describe('Not modified: the `If-None-Match` ETag matches'),
@@ -565,6 +574,7 @@ export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } 
         const dist = deps.desktopDistribution
         const body = req.params.file === DESKTOP_BUNDLE_FILE ? dist?.bundle : dist?.legal
         if (!dist || !body) return reply.code(404).send(noDistribution)
+        if (req.params.sha256 !== dist.sha256) return reply.code(404).send(otherBundle)
         const etag = `"${dist.sha256}"`
         reply
           .header('ETag', etag)

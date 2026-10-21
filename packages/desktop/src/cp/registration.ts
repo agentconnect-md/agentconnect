@@ -130,3 +130,19 @@ export async function exchangeRegistrationToken(
     registeredAt: new Date().toISOString()
   }
 }
+
+/** Re-running the console's command finds its token spent; a stored, unrevoked key for the same CP is still good. */
+export async function registerOrKeep(
+  dir: string,
+  cpUrl: string | undefined,
+  register: () => Promise<Registration>
+): Promise<{ registration: Registration; kept: boolean }> {
+  try {
+    return { registration: await register(), kept: false }
+  } catch (error) {
+    if (!(error instanceof RegistrationTokenRefused) || !cpUrl) throw error
+    const current = loadRegistration(dir)
+    if (!current || current.revokedAt || cpBaseUrl(cpUrl) !== current.cpUrl) throw error
+    return { registration: current, kept: true }
+  }
+}
