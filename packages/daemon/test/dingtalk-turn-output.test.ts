@@ -25,11 +25,11 @@ describe('DingTalkConverger', () => {
 
   it('posts a completed intermediate message in medium mode, never the partial one', () => {
     const conv = new DingTalkConverger('medium', { continueHint: true })
-    expect(conv.onUpdate(chunk('Checking ', 'm1'))).toEqual([])
-    expect(conv.onUpdate(chunk('the logs.', 'm1'))).toEqual([])
-    expect(conv.onUpdate(chunk('Found it.', 'm2'))).toEqual([
-      { kind: 'post', text: 'Checking the logs.', attributed: false }
-    ])
+    // Progress card actions are covered in dingtalk-progress.test.ts.
+    const posts = (update: never) => conv.onUpdate(update).filter((action) => action.kind !== 'card')
+    expect(posts(chunk('Checking ', 'm1'))).toEqual([])
+    expect(posts(chunk('the logs.', 'm1'))).toEqual([])
+    expect(posts(chunk('Found it.', 'm2'))).toEqual([{ kind: 'post', text: 'Checking the logs.', attributed: false }])
     expect(conv.onFinal()).toEqual([
       { kind: 'post', text: 'Found it.', attributed: false, hint: DINGTALK_CONTINUE_HINT }
     ])

@@ -183,11 +183,17 @@ well (**measured** on the desktop client):
 
 So the card carries progress — status, tool activity, a bounded tail of the
 reply — and collapses to a one-line summary when the turn ends, while the final
-answer goes out as one or more Markdown messages split under the size limit. A
-DingTalk renderer rewrites `_x_` to `*x*`, protects the space next to an inline
-style, and drops the fence language. A custom template with a richer Markdown
-component could keep the answer in the card; that is a later experiment, not a
-v1 dependency.
+answer goes out as one or more Markdown messages split under the size limit. The
+card is the turn's acknowledgement: it opens at turn start in every output mode
+except `none`, names tools only in `medium` and `high`, and its text is plain —
+headings, fences, and table pipes are stripped and list markers become `•`. A
+card that cannot open (permission, quota, network) leaves the turn running
+without one, and the connection stops trying for ten minutes so a missing
+permission costs one call per window and one log line. A DingTalk renderer
+rewrites `_x_` to `*x*`, turns the space before a link or inline style into a
+no-break space (**unverified** on every client), and drops the fence language.
+A custom template with a richer Markdown component could keep the answer in the
+card; that is a later experiment, not a v1 dependency.
 
 ### 4.4 Quota
 
@@ -201,12 +207,17 @@ developer console's current announcement lists:
 
 A turn is expensive in calls (**measured**): a 2,500-byte card took 17 calls and
 an 8,000-byte card 43, at about two updates per second. Whether card calls
-count as "paid" is **unverified**. The adapter therefore coalesces card updates
-(a minimum interval and a minimum growth), and maps the quota errors
-(`90020`, `Forbidden.AccessDenied.ApiCountLimitForOrg`) and the per-app limit
-(`90018`, 20 QPS per API) to a clear notice that names the edition limit
-instead of a generic delivery failure. The Console setup guide states the
-limits up front.
+count as "paid" is **unverified**. The adapter therefore coalesces card updates:
+at most one every three seconds, the newest snapshot winning; reply growth alone
+earns an update only after 160 characters, while a status or tool change always
+does; and a card stops at 30 content updates. A one-minute turn then costs about
+25 calls. The API client maps the quota errors (`90020`,
+`Forbidden.AccessDenied.ApiCountLimitForOrg`) and the per-app limit (`90018`,
+`Forbidden.AccessDenied.QpsLimitForAppkeyAndApi`, 20 QPS per API) to a typed
+limit error. A quota refusal posts one plain-text notice per turn that names
+the edition limit, instead of a generic delivery failure; a QPS refusal of a
+card update skips that update and doubles the interval, up to fifteen seconds,
+and never fails the turn. The Console setup guide states the limits up front.
 
 ### 4.5 Attachments
 
