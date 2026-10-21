@@ -5,6 +5,8 @@ import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputContext, TurnOutputSurface } from '../turn-output.js'
 import type { DingTalkReplyPort } from './connection.js'
 import { DingTalkProgressCard, DingTalkQuotaNotice } from './progress-card.js'
+import { dingTalkElicitCards } from './elicit-card.js'
+import { dingTalkImageUploader } from './media.js'
 import { applyDingTalkAction, DingTalkConverger, type DingTalkTurnHost, type DingTalkTurnState } from './turn-output.js'
 
 function egressOf(ctx: TurnOutputContext<NormalizedMessage>): DingTalkReplyPort | undefined {
@@ -26,6 +28,9 @@ export function createDingTalkTurnOutput(
       if (!conn?.cards || ctx.mode === 'none') return undefined
       return new DingTalkProgressCard(conn.cards, ctx.message.channel, quotaNotice(conn, ctx.message.channel))
     },
+    // Approvals have no card here: core posts a notice and the Console answers it (§4.6).
+    elicitCards: dingTalkElicitCards,
+    imageUploader: (turn) => dingTalkImageUploader(turnState<DingTalkTurnState>(turn)),
     // The hint earns its space only in a group, where quoting a bot message is the only way back into the session.
     createConverger: (ctx) =>
       new DingTalkConverger(ctx.mode, { continueHint: ctx.showFooter && !ctx.isDm }, ctx.resolveFileLink),

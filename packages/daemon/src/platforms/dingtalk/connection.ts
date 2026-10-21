@@ -9,6 +9,7 @@ import { platformIntegrationConfig } from '../integration-config.js'
 import {
   DINGTALK_ROBOT_TOPIC,
   DingTalkApi,
+  DingTalkApiError,
   dingTalkMarkdownTitle,
   dingTalkTargetForChannel,
   splitForMsgParam,
@@ -17,6 +18,16 @@ import {
 import { DingTalkCardClient, type DingTalkCardPort } from './card.js'
 import { rewriteDingTalkMarkdown } from './markdown.js'
 import { DingTalkStream, type DingTalkSocket, type DingTalkStreamTiming } from './stream.js'
+import type { UploadOutcome } from '../../mcp/ops/context.js'
+import { DINGTALK_ATTACHMENT_TOOL } from './attachments.js'
+import {
+  DINGTALK_MEDIA_MAX_BYTES,
+  dingTalkMediaMessage,
+  downloadDingTalkFile,
+  uploadDingTalkMedia,
+  type DingTalkMediaDeps,
+  type DingTalkMediaPort
+} from './media.js'
 
 export interface DingTalkConnectionGroup {
   clientId: string
@@ -66,9 +77,10 @@ export interface DingTalkReplyPort {
 }
 
 const SEEN_LIMIT = 2_000
+const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const MEMBERS_PER_CHANNEL = 200
 
-export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort {
+export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort, DingTalkMediaPort {
   readonly botUserId: string
   private readonly abort = new AbortController()
   private readonly api: DingTalkApi
@@ -78,7 +90,9 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   private readonly channels = new Map<string, { name?: string; isIm: boolean }>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
   private readonly names = new Map<string, string>()
-  private downloadWarned = false
+  // Download code → declared MIME type, so an image download is held to image bytes.
+  private readonly attachmentTypes = new Map<string, string>()
+  private readonly media: DingTalkMediaDeps
 
   constructor(
     readonly group: DingTalkConnectionGroup,
@@ -98,6 +112,13 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (deps.origin) apiOptions.origin = deps.origin
     this.api = new DingTalkApi(group, apiOptions)
     this.cards = new DingTalkCardClient(this.api, group.clientId, deps.log)
+    this.media = {
+      accessToken: () => this.api.accessToken(),
+      robotCode: group.clientId,
+      signal: this.abort.signal,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      ...(deps.origin ? { origin: deps.origin } : {})
+    }
     this.stream = new DingTalkStream({
       openConnection: () => this.api.openStream(),
       ...(deps.createSocket ? { createSocket: deps.createSocket } : {}),
@@ -148,6 +169,14 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
       traceId: randomUUID()
     }) as NormalizedMessage | null
     if (!msg) return null
+    for (const attachment of msg.attachments ?? []) {
+      attachment.readerToolName = DINGTALK_ATTACHMENT_TOOL.name
+      if (!attachment.sourceUrl) continue
+      this.attachmentTypes.delete(attachment.sourceUrl)
+      this.attachmentTypes.set(attachment.sourceUrl, attachment.mimeType)
+    }
+    while (this.attachmentTypes.size > SEEN_LIMIT)
+      this.attachmentTypes.delete(this.attachmentTypes.keys().next().value!)
     this.observe(msg, payload)
     return msg
   }
@@ -190,10 +219,45 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     return { id: user, ...(name ? { name } : {}) }
   }
 
-  async downloadFile(): Promise<Buffer | null> {
-    if (!this.downloadWarned) this.deps.log.warn('dingtalk: attachment download is not supported yet')
-    this.downloadWarned = true
-    return null
+  /** An attachment's bytes by its download code (§4.5); null when unavailable or over `maxBytes`, never a throw. */
+  async downloadFile(code: string, maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES): Promise<Buffer | null> {
+    return downloadDingTalkFile(this.media, code, maxBytes, {
+      image: this.attachmentTypes.get(code)?.startsWith('image/') === true,
+      reportFailure: (reason) => this.deps.log.warn(`dingtalk: attachment download failed (${reason})`)
+    })
+  }
+
+  /** Upload a file and send it as an image or file message; the outcome's id is the send's process query key. */
+  async sendMedia(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType: string },
+    caption?: string
+  ): Promise<UploadOutcome> {
+    if (file.bytes.byteLength > DINGTALK_MEDIA_MAX_BYTES) return { ok: false, reason: 'too_large' }
+    let mediaId: string
+    try {
+      mediaId = await uploadDingTalkMedia(this.media, file, file.mimeType.startsWith('image/') ? 'image' : 'file')
+    } catch (error) {
+      this.deps.log.warn(`dingtalk: media upload failed (${error instanceof Error ? error.message : 'unknown error'})`)
+      const code = error instanceof DingTalkApiError ? error.code : undefined
+      return { ok: false, reason: 'platform_error', ...(code ? { detail: code } : {}) }
+    }
+    const message = dingTalkMediaMessage(mediaId, file)
+    let messageId: string | undefined
+    try {
+      messageId = await this.api.send(dingTalkTargetForChannel(channel), message.msgKey, message.msgParam)
+    } catch (error) {
+      this.deps.log.warn(`dingtalk: media send failed (${error instanceof Error ? error.message : 'unknown error'})`)
+      // Only DingTalk's own refusal proves nothing was sent; a lost response may still have delivered it.
+      if (!(error instanceof DingTalkApiError)) return { ok: false, reason: 'indeterminate' }
+      return { ok: false, reason: 'platform_error', ...(error.code ? { detail: error.code } : {}) }
+    }
+    const captioned = caption ? (await this.sendText(channel, caption)) !== undefined : true
+    return {
+      ok: true,
+      ...(messageId ? { messageId } : {}),
+      ...(captioned ? {} : { warning: 'The caption was not delivered.' })
+    }
   }
 
   /** Send Markdown as one or more messages under the size limit; `suffix` rides the last one and is not part of any returned text. */

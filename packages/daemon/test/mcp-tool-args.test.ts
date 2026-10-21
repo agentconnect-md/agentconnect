@@ -57,6 +57,19 @@ const qqInt: Integration = {
   },
   config: { appId: '123456', appSecret: 'secret' }
 }
+const dingTalkInt: Integration = {
+  id: 'int-4',
+  platform: 'dingtalk',
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
+  config: { clientId: 'client-example', clientSecret: 'secret' }
+}
 
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
@@ -73,6 +86,7 @@ const advertised: ToolDescriptor[] = [
     decisions: true,
     currentPlatform: 'telegram'
   }),
+  ...toolsForIntegrations([dingTalkInt], { organizationKnowledge: true, decisions: true, currentPlatform: 'dingtalk' }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS,
