@@ -196,13 +196,19 @@ describe('credentialed attachment tools', () => {
   })
 
   it('lists every injectable name for the permission auto-allow set', () => {
-    expect(allAttachmentReadTools().map((t) => t.name)).toEqual(['readSlackFile', 'readTelegramFile', 'readQQFile'])
+    expect(allAttachmentReadTools().map((t) => t.name)).toEqual([
+      'readSlackFile',
+      'readTelegramFile',
+      'readQQFile',
+      'readDingTalkFile'
+    ])
   })
 
   it('recognizes exactly the declared tool names at dispatch', () => {
     expect(isAttachmentReadTool('readSlackFile')).toBe(true)
     expect(isAttachmentReadTool('readTelegramFile')).toBe(true)
     expect(isAttachmentReadTool('readQQFile')).toBe(true)
+    expect(isAttachmentReadTool('readDingTalkFile')).toBe(true)
     expect(isAttachmentReadTool('readDiscordFile')).toBe(false)
     expect(isAttachmentReadTool('getCurrentChannel')).toBe(false)
     expect(isAttachmentReadTool('')).toBe(false)

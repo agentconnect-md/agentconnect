@@ -41,6 +41,7 @@ import type { ZodType } from 'zod'
 import type { SessionContext } from '../mcp/ops/context.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
+import { DINGTALK_ATTACHMENT_TOOL } from './dingtalk/attachments.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
 import { QQ_ATTACHMENT_TOOL } from './qq/attachments.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
@@ -198,7 +199,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       attachmentReadTool: QQ_ATTACHMENT_TOOL
     }
   ],
-  ['dingtalk', { platform: 'dingtalk', label: 'DingTalk' }],
+  ['dingtalk', { platform: 'dingtalk', label: 'DingTalk', attachmentReadTool: DINGTALK_ATTACHMENT_TOOL }],
   [
     'discord',
     {

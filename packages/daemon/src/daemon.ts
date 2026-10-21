@@ -4579,7 +4579,9 @@ export class Daemon {
       readAskers: async (ctx) => this.readAskersFor(ctx),
       readLookups: (agentId) => this.placeMembers.lookupsFor(agentId),
       attachmentReaderFor: (integrationId) =>
-        this.connForIntegration(integrationId) ?? this.QQConnByIntegration.get(integrationId),
+        this.connForIntegration(integrationId) ??
+        this.QQConnByIntegration.get(integrationId) ??
+        this.dingTalkConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
       // turn from `plan.thread`. The bridge context froze the opening turn's value at
       // registration, and a session that spans several threads outgrows it immediately.

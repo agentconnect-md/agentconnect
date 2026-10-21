@@ -227,8 +227,13 @@ URL, and the existing attachment pipeline applies its size limit. In a group,
 DingTalk delivers only mentions, so a file posted on its own never reaches the
 bot; quoting the file in a mention delivers its `downloadCode` in
 `repliedMsg` and the download works (**measured**). An image sent by DM did not
-arrive during the probe; the cause is **unverified**. Outbound images and files
-upload through the media API (20 MB) and send as image or file messages.
+arrive during the probe; the cause is **unverified**. An inbound image is
+fetched with the message; any other file reaches the agent through a
+`readDingTalkFile` tool that downloads it on demand. Outbound images and files
+upload through the media API (20 MB) and send as image or file messages. An
+image message names its `media_id` as `photoURL`, which DingTalk documents but
+which is **unverified** against a live app. Today only `shareFile`'s images use
+this path.
 
 ### 4.6 Questions and approvals
 
