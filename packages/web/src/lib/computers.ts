@@ -4,7 +4,7 @@
 import { useCallback } from 'react'
 import useSWR from 'swr'
 import { useFormatter } from 'next-intl'
-import type { ComputerDoctorCheck, ComputerStatus } from '@agentconnect.md/protocol/computer'
+import type { ComputerAgentAccess, ComputerDoctorCheck, ComputerStatus } from '@agentconnect.md/protocol/computer'
 import { fetchComputer, fetchComputers, type ComputerDto, type ComputerRegistrationDto } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
@@ -80,9 +80,17 @@ export function doctorCounts(computer: Pick<ComputerDto, 'doctor'>): { fail: num
   }
 }
 
-/** Agents a Computer's policy grants that the caller can see, in policy order. */
-export function grantedAgentIds(computer: Pick<ComputerDto, 'policy'>): string[] {
-  return computer.policy.allowedAgents
+const NO_ACCESS: ComputerAgentAccess = { mode: 'none', agents: [] }
+
+/** A Computer's agent access (computer-use.md §4.1); an older Control Plane that sends none reads as no agents. */
+export function agentAccessOf(computer: Pick<ComputerDto, 'agentAccess'>): ComputerAgentAccess {
+  return computer.agentAccess ?? NO_ACCESS
+}
+
+/** Whether a Computer's agent access admits this agent: it lists the agent or grants every agent. */
+export function computerGrantsAgent(computer: Pick<ComputerDto, 'agentAccess'>, agentId: string): boolean {
+  const access = agentAccessOf(computer)
+  return access.mode === 'all' || (access.mode === 'selected' && access.agents.includes(agentId))
 }
 
 export type InstallOs = 'linux' | 'macos' | 'windows' | 'docker'

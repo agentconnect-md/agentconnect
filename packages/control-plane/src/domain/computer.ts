@@ -2,6 +2,9 @@
 import {
   ComputerCapabilitiesSchema,
   ComputerDoctorReport,
+  agentAccessGrants,
+  normalizeAgentAccess,
+  type ComputerAgentAccess,
   ComputerPolicySchema,
   type ComputerCapabilities,
   type ComputerPolicy,
@@ -19,6 +22,11 @@ export {
   ComputerCapabilitiesSchema,
   ComputerDoctorReport,
   ComputerPolicySchema,
+  ComputerAgentAccess,
+  COMPUTER_AGENT_ACCESS_MODES,
+  agentAccessGrants,
+  normalizeAgentAccess,
+  type ComputerAgentAccessMode,
   type ComputerDoctorCheck,
   type ComputerKind,
   type ComputerIsolation,
@@ -81,3 +89,32 @@ export function presentComputerStatus(
   if (c.stoppedAt && c.status !== 'human_in_control') return 'paused'
   return c.status
 }
+
+/** Whether a Computer admits this agent (§4.1): its agent access lists the agent or grants every agent. */
+export const computerGrantsAgent = (c: { agentAccess: ComputerAgentAccess }, agentId: string): boolean =>
+  agentAccessGrants(c.agentAccess, agentId)
+
+/** A per-agent or ephemeral computer's access is fixed to the agent it was made for (§15.1). */
+export const agentAccessIsFixed = (c: { allocation: string | null }): boolean =>
+  c.allocation === 'per-agent' || c.allocation === 'ephemeral'
+
+/** Reads the stored agent access columns; an unknown mode reads as none. */
+export function readAgentAccess(mode: string, agentIds: readonly string[]): ComputerAgentAccess {
+  if (mode === 'all') return { mode: 'all', agents: [] }
+  if (mode === 'selected') return normalizeAgentAccess({ mode: 'selected', agents: [...agentIds] })
+  return { mode: 'none', agents: [] }
+}
+
+/** The agents whose derived Computer list a change of access moves: every agent when either side is All. */
+export function agentsAffectedByAccess(before: ComputerAgentAccess, after: ComputerAgentAccess): 'all' | string[] {
+  if (before.mode === 'all' || after.mode === 'all') return before.mode === after.mode ? [] : 'all'
+  const was = new Set(before.agents)
+  const now = new Set(after.agents)
+  return [...new Set([...was, ...now])].filter((id) => was.has(id) !== now.has(id))
+}
+
+/** An agent's usable Computers, in the order the grants were read: every one whose access admits it (§4.1). */
+export const derivedComputerIds = (
+  grants: readonly { id: string; agentAccess: ComputerAgentAccess }[],
+  agentId: string
+): string[] => grants.filter((g) => agentAccessGrants(g.agentAccess, agentId)).map((g) => g.id)

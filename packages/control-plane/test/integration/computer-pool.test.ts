@@ -291,10 +291,7 @@ function harness(cluster: FakeCluster) {
 
 async function seed(mode: 'ephemeral' | 'per-agent' | null, otherMode: 'ephemeral' | 'per-agent' | null = null) {
   await seedDaemon(prisma, DAEMON)
-  const use = (m: string | null) =>
-    m
-      ? { computerUse: { enabled: true, computers: [], managed: { mode: m } } }
-      : { computerUse: { enabled: true, computers: [] } }
+  const use = (m: string | null) => (m ? { computerUse: { managed: { mode: m } } } : {})
   await seedAgent(prisma, AGENT, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID, runtimeOverrides: use(mode) })
   await seedAgent(prisma, OTHER_AGENT, {
     daemonId: DAEMON,
@@ -393,7 +390,7 @@ describe('managed computers in the pool', () => {
     const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
       name: 'Shared browser',
       ownerUserId: DEFAULT_OWNER_ID,
-      policy: { ...defaultComputerPolicy(DEFAULT_OWNER_ID), allowedAgents: [AGENT, OTHER_AGENT] }
+      agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] }
     })
     expect(created).toMatchObject({ allocation: 'manual', ownerAgentId: null, poolPhase: 'provisioning' })
     const id = created!.id
@@ -504,7 +501,7 @@ describe('managed computers in the pool', () => {
     const manual = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
       name: 'Shared browser',
       ownerUserId: DEFAULT_OWNER_ID,
-      policy: { ...defaultComputerPolicy(DEFAULT_OWNER_ID), allowedAgents: [AGENT] }
+      agentAccess: { mode: 'selected', agents: [AGENT] }
     })
     const manualId = manual!.id
     for (let i = 0; i < 10 && (await row(manualId))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
@@ -613,7 +610,7 @@ describe('managed computers in the pool', () => {
     const bad = await on.app.http.inject({
       method: 'POST',
       url: `${ORG}/computers/pool`,
-      payload: { name: 'Desk', policy: { allowedAgents: [randomUUID()] } }
+      payload: { name: 'Desk', agentAccess: { mode: 'selected', agents: [randomUUID()] } }
     })
     expect(bad.statusCode).toBe(400)
   })

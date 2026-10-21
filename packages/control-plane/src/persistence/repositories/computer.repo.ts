@@ -2,6 +2,7 @@
 import type { Computer, ComputerRegistration, Prisma } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
+  ComputerAgentGrant,
   ComputerLiveReport,
   ComputerRecord,
   ComputerRegistrationRecord,
@@ -22,11 +23,17 @@ import {
   readComputerCapabilities,
   readComputerDoctor,
   readComputerPolicy,
+  readAgentAccess,
+  normalizeAgentAccess,
+  agentsAffectedByAccess,
+  agentAccessIsFixed,
+  type ComputerAgentAccess,
   type ComputerKind,
   type ComputerPolicy,
   type ComputerSession
 } from '../../domain/computer.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { OrgMembershipMissing } from '../errors.js'
 
 // Prisma enum members cannot hold `-`, so the client spells the wire values with `_` (the columns keep the wire spelling via @map).
@@ -56,6 +63,7 @@ function toRecord(c: Computer): ComputerRecord {
     desktopDaemonVersion: c.desktopDaemonVersion,
     driverVersion: c.driverVersion,
     policy: readComputerPolicy(c.policy, c.ownerUserId),
+    agentAccess: readAgentAccess(c.agentAccess, c.accessAgentIds),
     visibility: c.visibility as ResourceVisibility,
     sharedWith: c.sharedWith,
     lastSeenAt: c.lastSeenAt,
@@ -91,6 +99,27 @@ function toRegistrationRecord(r: ComputerRegistration): ComputerRegistrationReco
 }
 
 const policyJson = (p: ComputerPolicy) => p as unknown as Prisma.InputJsonValue
+
+const NO_ACCESS: ComputerAgentAccess = { mode: 'none', agents: [] }
+
+// Agents whose derived Computer list moved take a new revision, or a daemon refuses the changed spec at the old one.
+async function bumpAffectedAgents(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  before: ComputerAgentAccess,
+  after: ComputerAgentAccess
+): Promise<void> {
+  const affected = agentsAffectedByAccess(before, after)
+  const ids =
+    affected === 'all'
+      ? (await tx.agent.findMany({ where: { orgId }, select: { id: true } })).map((a) => a.id)
+      : affected
+  await bumpAgentConfigRevisions(tx, ids)
+}
+
+// Only a self-hosted or manual Computer is on agents' derived lists; a per-agent or ephemeral one is reached through `managed`.
+const listable = (c: Pick<Computer, 'allocation' | 'status'>): boolean =>
+  c.status !== 'revoked' && !agentAccessIsFixed({ allocation: c.allocation ? fromDbAllocation(c.allocation) : null })
 
 export class PgComputerRepo implements ComputerRepo {
   constructor(private readonly db: PrismaLike) {}
@@ -283,6 +312,43 @@ export class PgComputerRepo implements ComputerRepo {
     return this.get(orgId, id)
   }
 
+  async updateAgentAccess(
+    orgId: OrgId,
+    id: ComputerId,
+    next: (current: ComputerAgentAccess) => ComputerAgentAccess
+  ): Promise<{ before: ComputerAgentAccess; computer: ComputerRecord } | null> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The lease decisions lock the same row, so a grant taken away cannot race a lease being granted.
+      const locked = await tx.$queryRaw<Array<{ agentAccess: string; accessAgentIds: string[] }>>`
+        SELECT "agentAccess"::text AS "agentAccess", "accessAgentIds" FROM "computer"
+        WHERE "id" = ${id}::uuid AND "orgId" = ${orgId} AND "status" <> 'revoked' FOR UPDATE`
+      const row = locked[0]
+      if (!row) return null
+      const before = readAgentAccess(row.agentAccess, row.accessAgentIds)
+      const after = normalizeAgentAccess(next(before))
+      const updated = await tx.computer.update({
+        where: { id, orgId },
+        data: { agentAccess: after.mode, accessAgentIds: after.agents }
+      })
+      if (listable(updated)) await bumpAffectedAgents(tx, orgId, before, after)
+      return { before, computer: toRecord(updated) }
+    })
+  }
+
+  async listAgentGrants(orgId: OrgId): Promise<ComputerAgentGrant[]> {
+    const rows = await this.db.computer.findMany({
+      where: {
+        orgId,
+        status: { not: 'revoked' },
+        agentAccess: { not: 'none' },
+        OR: [{ allocation: null }, { allocation: 'manual' }]
+      },
+      select: { id: true, agentAccess: true, accessAgentIds: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
+    })
+    return rows.map((r) => ({ id: ComputerId(r.id), agentAccess: readAgentAccess(r.agentAccess, r.accessAgentIds) }))
+  }
+
   async setSharing(
     orgId: OrgId,
     id: ComputerId,
@@ -336,6 +402,9 @@ export class PgComputerRepo implements ComputerRepo {
         existing.status === 'revoked'
           ? existing
           : await tx.computer.update({ where: { id, orgId }, data: { status: 'revoked', revokedAt: at } })
+      if (listable(existing)) {
+        await bumpAffectedAgents(tx, orgId, readAgentAccess(existing.agentAccess, existing.accessAgentIds), NO_ACCESS)
+      }
       return { computer: toRecord(row), revokedKeyIds: live.map((k) => k.id) }
     })
   }
@@ -394,37 +463,48 @@ export class PgComputerRepo implements ComputerRepo {
   }
 
   async delete(orgId: OrgId, id: ComputerId): Promise<void> {
-    await this.db.computer.delete({ where: { id, orgId } })
+    await withAmbientTx(this.db, async (tx) => {
+      const gone = await tx.computer.delete({ where: { id, orgId } })
+      if (listable(gone)) {
+        await bumpAffectedAgents(tx, orgId, readAgentAccess(gone.agentAccess, gone.accessAgentIds), NO_ACCESS)
+      }
+    })
   }
 
   async createManaged(input: CreateManagedComputerInput): Promise<ComputerRecord | null> {
+    const access = normalizeAgentAccess(input.agentAccess)
     try {
-      const row = await this.db.computer.create({
-        data: {
-          id: input.id,
-          orgId: input.orgId,
-          name: input.name,
-          ownerUserId: input.ownerUserId,
-          kind: 'managed',
-          isolation: 'container',
-          os: 'linux',
-          osVersion: '',
-          session: 'xvfb',
-          capabilities: {},
-          desktopDaemonVersion: '',
-          driverVersion: '',
-          policy: policyJson(input.policy),
-          visibility: 'org',
-          sharedWith: [],
-          allocation: toDbAllocation(input.allocation),
-          ownerAgentId: input.ownerAgentId ?? null,
-          poolSessionId: input.poolSessionId ?? null,
-          poolPhase: 'provisioning',
-          poolPhaseAt: input.now,
-          poolActiveAt: input.now
-        }
+      return await withAmbientTx(this.db, async (tx) => {
+        const row = await tx.computer.create({
+          data: {
+            id: input.id,
+            orgId: input.orgId,
+            name: input.name,
+            ownerUserId: input.ownerUserId,
+            kind: 'managed',
+            isolation: 'container',
+            os: 'linux',
+            osVersion: '',
+            session: 'xvfb',
+            capabilities: {},
+            desktopDaemonVersion: '',
+            driverVersion: '',
+            policy: policyJson(input.policy),
+            agentAccess: access.mode,
+            accessAgentIds: access.agents,
+            visibility: 'org',
+            sharedWith: [],
+            allocation: toDbAllocation(input.allocation),
+            ownerAgentId: input.ownerAgentId ?? null,
+            poolSessionId: input.poolSessionId ?? null,
+            poolPhase: 'provisioning',
+            poolPhaseAt: input.now,
+            poolActiveAt: input.now
+          }
+        })
+        if (listable(row)) await bumpAffectedAgents(tx, input.orgId, NO_ACCESS, access)
+        return toRecord(row)
       })
-      return toRecord(row)
     } catch (err) {
       // The partial unique indexes: a concurrent acquire made the agent's or session's computer first.
       if (isUniqueViolation(err)) return null

@@ -62,7 +62,7 @@ async function start(): Promise<{ app: App; base: string }> {
   return { app, base: address.replace(/^http/, 'ws') }
 }
 
-async function registerComputer(app: App, allowedAgents: string[]): Promise<{ computerId: string; apiKey: string }> {
+async function registerComputer(app: App, agents: string[]): Promise<{ computerId: string; apiKey: string }> {
   const minted = await app.http.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
   const { token } = minted.json() as { token: string }
   const res = await app.http.inject({
@@ -80,12 +80,12 @@ async function registerComputer(app: App, allowedAgents: string[]): Promise<{ co
   })
   expect(res.statusCode).toBe(201)
   const reg = res.json() as { computerId: string; apiKey: string }
-  const policy = await app.http.inject({
+  const access = await app.http.inject({
     method: 'PUT',
-    url: `${ORG}/computers/${reg.computerId}/policy`,
-    payload: { allowedAgents }
+    url: `${ORG}/computers/${reg.computerId}/agent-access`,
+    payload: { mode: 'selected', agents }
   })
-  expect(policy.statusCode).toBe(200)
+  expect(access.statusCode).toBe(200)
   return reg
 }
 
@@ -248,8 +248,8 @@ describe('Computer data-plane credentials', () => {
     expect((await agentDaemon(OTHER_DAEMON).grant(computerId)).payload).toMatchObject({ code: 'denied' })
     const ungranted = await app.http.inject({
       method: 'PUT',
-      url: `${ORG}/computers/${computerId}/policy`,
-      payload: { allowedAgents: [] }
+      url: `${ORG}/computers/${computerId}/agent-access`,
+      payload: { mode: 'none', agents: [] }
     })
     expect(ungranted.statusCode).toBe(200)
     expect((await agentDaemon().grant(computerId)).payload).toMatchObject({ code: 'denied' })

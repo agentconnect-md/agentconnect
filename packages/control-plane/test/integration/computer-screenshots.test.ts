@@ -122,6 +122,7 @@ const offer = (sessionId: string, agentId: string, extra: Record<string, unknown
 })
 
 const policy = (over: Record<string, unknown> = {}) => ComputerPolicySchema.parse(over)
+const granting = (agentId: string) => ({ mode: 'selected' as const, agents: [agentId] })
 
 // Offer, upload and confirm one screenshot the way a desktop does.
 async function store(
@@ -131,7 +132,7 @@ async function store(
   over: Record<string, unknown> = {}
 ) {
   const signed = await h.screenshots.put(
-    { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId], ...over }) },
+    { orgId: DEFAULT_ORG_ID, computerId, policy: policy(over), agentAccess: granting(s.agentId) },
     offer(s.sessionId, s.agentId)
   )
   expect(signed.status).toBe('upload')
@@ -147,7 +148,7 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     const signed = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(s.agentId) },
       offer(s.sessionId, s.agentId)
     )
     expect(signed).toMatchObject({ status: 'upload', headers: { 'content-length': '100' } })
@@ -162,7 +163,7 @@ describe('computer screenshot storage', () => {
     expect(row.expiresAt.getTime()).toBe(T0 + 30 * DAY)
     // The same bytes again in the session need no upload.
     const again = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(s.agentId) },
       offer(s.sessionId, s.agentId)
     )
     expect(again).toEqual({ status: 'stored' })
@@ -208,7 +209,7 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     const signed = await screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(s.agentId) },
       offer(s.sessionId, s.agentId)
     )
     bucket.objects.set(new URL(signed.url!).pathname.slice(1), 100)
@@ -225,14 +226,19 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     const skipped = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId], screenshotRetentionDays: 0 }) },
+      {
+        orgId: DEFAULT_ORG_ID,
+        computerId,
+        policy: policy({ screenshotRetentionDays: 0 }),
+        agentAccess: granting(s.agentId)
+      },
       offer(s.sessionId, s.agentId)
     )
     expect(skipped.status).toBe('skipped')
     expect(await prisma.computerScreenshot.count({ where: { computerId } })).toBe(0)
     expect(h.screenshots.retentionDays(policy({ screenshotRetentionDays: 400 }))).toBe(90)
     const tooBig = await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(s.agentId) },
       offer(s.sessionId, s.agentId, { bytes: 4096 })
     )
     expect(tooBig).toMatchObject({ status: 'skipped', reason: 'too large' })
@@ -327,7 +333,7 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const s = await session()
     await h.screenshots.put(
-      { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [s.agentId] }) },
+      { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(s.agentId) },
       offer(s.sessionId, s.agentId, { sha256: 'cd'.repeat(32) })
     )
     await store(h, computerId, s)
@@ -347,7 +353,7 @@ describe('computer screenshot storage', () => {
     const computerId = await register(appAs(DEFAULT_OWNER_ID))
     const mine = await session()
     const theirs = await session('private', 'user:someone-else')
-    const granted = { orgId: DEFAULT_ORG_ID, computerId, policy: policy({ allowedAgents: [mine.agentId] }) }
+    const granted = { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(mine.agentId) }
     // Another agent's session, even one the desktop's owner cannot see.
     expect(await h.screenshots.put(granted, offer(theirs.sessionId, mine.agentId))).toMatchObject({ status: 'skipped' })
     // An agent the Computer does not grant, naming its own session.

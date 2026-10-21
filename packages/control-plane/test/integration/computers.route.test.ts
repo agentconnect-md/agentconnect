@@ -1,9 +1,8 @@
 // Computers (computer-use.md §2.2, §3.6, §4.1): registration exchange, revocation, visibility and the `computer` principal.
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
-import { seedAgent } from '../fixtures/seed.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ComputerId, OrgId } from '../../src/domain/ids.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -126,10 +125,14 @@ describe('registration exchange', () => {
       kind: 'self-hosted',
       session: 'x11',
       capabilities: { screenshot: true, textInput: 'full', displays: [{ width: 1920 }] },
-      policy: { allowedAgents: [], allowedMembers: [DEFAULT_OWNER_ID], agentMode: 'control', leaseIdleSeconds: 120 },
+      policy: { allowedMembers: [DEFAULT_OWNER_ID], agentMode: 'control', leaseIdleSeconds: 120 },
+      // A new Computer admits no agent until someone gives agents access (§4.1).
+      agentAccess: { mode: 'none', agents: [] },
       canEdit: true,
-      canEditPolicy: true
+      canEditPolicy: true,
+      canEditAgentAccess: true
     })
+    expect(read.json().policy).not.toHaveProperty('allowedAgents')
   })
 
   it('spends a token once, even under concurrent exchanges', async () => {
@@ -568,25 +571,15 @@ describe('visibility and policy', () => {
     expect(policy.statusCode).toBe(200)
   })
 
-  it('the registrant sets the policy; agents must be visible and the owner stays a member', async () => {
+  it('the registrant sets the policy and the owner stays a member', async () => {
     const app = appAs()
     const { computerId } = await register(app)
-    const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { name: 'desk-agent' })
     const bob = await makeUser('cmp-bob', 'collaborator')
-
-    const unknown = await app.app.inject({
-      method: 'PUT',
-      url: `${ORG}/computers/${computerId}/policy`,
-      payload: { allowedAgents: [randomUUID()] }
-    })
-    expect(unknown.statusCode).toBe(400)
 
     const res = await app.app.inject({
       method: 'PUT',
       url: `${ORG}/computers/${computerId}/policy`,
       payload: {
-        allowedAgents: [agentId, agentId],
         allowedMembers: [bob, 'not-a-member'],
         agentMode: 'view',
         approvals: { launchApp: 'session' },
@@ -599,7 +592,6 @@ describe('visibility and policy', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().policy).toEqual({
-      allowedAgents: [agentId],
       allowedMembers: [DEFAULT_OWNER_ID, bob],
       agentMode: 'view',
       approvals: { firstInputPerSession: true, launchApp: 'session', submitLikeKeys: true },
@@ -610,8 +602,8 @@ describe('visibility and policy', () => {
       leaseMaxSeconds: 600,
       leaseWaitSeconds: 120
     })
-    const stored = await prisma.computer.findUniqueOrThrow({ where: { id: computerId } })
-    expect((stored.policy as { allowedAgents: string[] }).allowedAgents).toEqual([agentId])
+    // The policy carries no agents: agent access is its own relation.
+    expect(res.json().agentAccess).toEqual({ mode: 'none', agents: [] })
 
     const invalid = await app.app.inject({
       method: 'PUT',

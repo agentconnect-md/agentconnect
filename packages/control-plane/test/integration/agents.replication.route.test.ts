@@ -281,24 +281,29 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(spy.upserts.at(-1)!.u.spec.secrets).toEqual({})
   })
 
-  it('PATCH stores, returns and replicates computer use, and null switches it off', async () => {
+  it('PATCH stores, returns and replicates the managed computer mode, and null switches it off', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
     const { app, spy } = withSpy()
-    const computerUse = { enabled: true, computers: [randomUUID()] }
+    const derived = { enabled: true, computers: [], managed: { mode: 'per-agent' } }
 
-    const update = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { computerUse } })
+    const update = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { computerUse: { managed: { mode: 'per-agent' } } }
+    })
     expect(update.statusCode).toBe(200)
-    expect(update.json().computerUse).toEqual(computerUse)
-    expect(spy.upserts.at(-1)?.u.spec.computerUse).toEqual(computerUse)
+    expect(update.json().computerUse).toEqual(derived)
+    expect(spy.upserts.at(-1)?.u.spec.computerUse).toEqual(derived)
     const read = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
-    expect(read.json().computerUse).toEqual(computerUse)
+    expect(read.json().computerUse).toEqual(derived)
 
+    // Which Computers an agent may use is set on each Computer, so the agent-side list is refused.
     const invalid = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${agentId}`,
-      payload: { computerUse: { enabled: true, computers: ['not-a-uuid'] } }
+      payload: { computerUse: { enabled: true, computers: [randomUUID()] } }
     })
     expect(invalid.statusCode).toBe(400)
 

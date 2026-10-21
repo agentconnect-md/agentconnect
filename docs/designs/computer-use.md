@@ -25,7 +25,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows the user Run key, on Linux a systemd user unit (§3.2, §3.3) | Validated (except the Windows install flow)       |
 | 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.desktop`), not the terminal (§3.2.1)                                                                                      | Validated                                         |
 | 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (the agent's direct path is design)   |
-| 7   | Permissions                        | Per-Computer visibility and grants with `view` / `control` modes; approvals for risky actions; hard refusals for system security surfaces and dangerous shortcuts (§4)                         | Refusals validated; approvals implemented         |
+| 7   | Permissions                        | Per-Computer visibility; agent access as one relation (No agents / Selected / All agents) set from either side; `view` / `control` modes; approvals; hard refusals (§4)                        | Refusals validated; approvals, access implemented |
 | 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
 | 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray: X11 only) |
@@ -111,6 +111,7 @@ interface Computer {
   desktopDaemonVersion: string
   driverVersion: string // the embedded Cua Driver version
   visibility: ResourceVisibility // reuses resource-visibility.md
+  agentAccess: ComputerAgentAccess // §4.1 [implemented]: which agents may use it
   policy: ComputerPolicy // §4
   lastSeenAt: string
   createdAt: string
@@ -121,7 +122,7 @@ Persistence lives in the Control Plane (`packages/control-plane/src/persistence/
 [resource-visibility.md](resource-visibility.md). **[implemented]** The `computer` table holds this record with a UUID
 `id`; `kind`, `session` and the policy are validated by `src/domain/computer.ts`. A newly registered self-hosted
 computer starts **Selected** with only its registrant in the audience (organization owners still see it by role),
-and only the registrant may change its policy; any editor may revoke or delete it. The desktop daemon reports status and capabilities in its heartbeat,
+and only the registrant may change its policy; any editor may revoke or delete it, and change its agent access (§4.1). The desktop daemon reports status and capabilities in its heartbeat,
 with `permissions`, `session`, and `viewer` taken straight from `doctor` (§3.5). Wire frames go in a new
 `packages/protocol/src/frames/computer.ts`.
 
@@ -402,7 +403,7 @@ desktop daemon ◀────────────────────�
   is signed with the Computer's current channel key (§8.2), which the CP derives and the desktop holds, so the desktop
   verifies it locally and the CP stores nothing. An agent daemon asks for one with `computer-channel/grant`
   (`computerId`, `agentId`, `sessionId`) on the daemon wire, behind `computer-channel-v1`. The CP answers only a daemon
-  that serves the agent, for an agent the policy grants, while the Computer is online; the token names the session,
+  that serves the agent, for an agent the Computer's agent access admits (§4.1), while the Computer is online; the token names the session,
   agent, daemon and the policy's `agentMode`, and lives 120 s or until its key expires, whichever is first. The agent
   daemon asks again 30 s before expiry, and once when the desktop answers 401. The reply also names the relays.
 - **The relay link.** The CP pushes `computer/relays` (the roster daemons dial) after auth and whenever it changes. The
@@ -520,11 +521,49 @@ it is then a **self-hosted computer with isolation**.
 
 ## 4. Permissions
 
-### 4.1 Who may use it [design]
+### 4.1 Who may use it [implemented]
+
+Which agents may use a Computer is **one relation**, its agent access, modelled like daemon and agent visibility
+([resource-visibility.md](resource-visibility.md)) and edited from either side: the Computer page and the agent's
+Computers card change the same value, so there is no agent-side switch to forget.
+
+```ts
+interface ComputerAgentAccess {
+  mode: 'none' | 'selected' | 'all' // none is the default: no agent may use a new Computer
+  agents: string[] // the selected agents; empty unless mode is 'selected'
+}
+```
+
+- **None** (the default), **Selected agents** (a list), or **All agents** (every agent in the organization, including
+  ones created later). A Selected list emptied by its last removal reads as None.
+- An agent's usable Computers are **derived**: every live Computer of its organization whose access is All agents or
+  lists the agent. The `computer` table stores the mode in `agentAccess` and the list in `accessAgentIds` (GIN
+  indexed); `PUT /computers/{id}/agent-access` sets the whole value, and `PUT` / `DELETE
+/computers/{id}/agent-access/agents/{agentId}` add or remove one agent for the agent's card.
+- **Authorization**: changing a Computer's agent access needs edit rights on the Computer (`canEdit`), so a viewer,
+  or a member who cannot see the Computer, cannot change it from either page. An agent newly listed must be visible
+  to the caller, and a Selected list keeps the agents the caller cannot see, as an agent's call policy keeps a hidden
+  caller. From the agent's card a member adds or removes only Computers they can edit; a Computer granted to All agents
+  shows as such there and is changed on the Computer page (409 from the per-agent routes). Removing an agent's access
+  does not touch the agent. Every change is audited as `computer_change` / `agent_access_update` with the access
+  before and after.
+- **Delivery**: the agent spec carries the derived list in the existing `computerUse` field (`{ enabled, computers,
+managed }`, with `enabled` true when the list is non-empty or a managed mode is set, and the list capped at 32), so
+  older daemons keep working unchanged. A change bumps the `configRevision` of every agent whose list moved (all of
+  the organization's agents when either side is All agents) in the same transaction and re-ships their specs, so the
+  next new session has the tools without visiting the agent page. Revoking or deleting a Computer takes it off every
+  list the same way. The lease service, the channel grant and screenshot uploads check the same access.
+- **Managed computers** (§15.1): a `manual` computer takes agent access like a self-hosted one (`POST
+/computers/pool` accepts `agentAccess`); a `per-agent` or `ephemeral` computer is implicitly Selected for the agent it
+  was made for, cannot be changed (409), and is reached through the agent's `managed` mode rather than listed among its
+  Computers.
+- **Migration** (`20261207000001_computer_agent_access_backfill`): a policy's former `allowedAgents` became the
+  Selected agents and an empty list None; an agent keeps only its `managed` mode, and only if its old switch was on.
+
+How agents use a Computer once they have access is its policy:
 
 ```ts
 interface ComputerPolicy {
-  allowedAgents: string[] // agents that may use this Computer
   allowedMembers: string[] // members who may watch / take over / manage (always includes the owner)
   agentMode: 'view' | 'control' // view: screenshots only; control: input too
   approvals: {
@@ -543,28 +582,25 @@ interface ComputerPolicy {
 }
 ```
 
-On the agent side (`packages/daemon/src/agents/agent-schema.ts`; **[implemented]** as `AgentComputerUse` in
-`packages/protocol`, set on the agent create and PATCH routes, kept in the agent's `runtimeOverrides`, returned in the
-agent DTO and shipped on the spec as value or `null`):
+On the agent side (`packages/daemon/src/agents/agent-schema.ts`; **[implemented]** as `AgentComputerSetting` in
+`packages/protocol`, set on the agent create and PATCH routes and kept in the agent's `runtimeOverrides`) only the
+managed mode remains:
 
 ```ts
 computerUse: z.object({
-  enabled: z.boolean().default(false),
-  computers: z.array(z.string()).default([]), // Computer ids the agent may use; the Computer's policy must agree too
   managed: z.object({ mode: z.enum(['ephemeral', 'per-agent']) }).optional() // [implemented] agent-driven managed computer (§15.1)
-}).optional()
+})
+  .strict()
+  .optional()
 ```
 
-**[implemented]** `managed` chooses, per agent, how the pool gives it an agent-driven managed computer: `ephemeral` creates
-a fresh one for each session that needs a computer, and `per-agent` creates the agent's own one on first use and keeps
-it, sleeping, between uses (§15.1). The pool creates either kind with the agent already in its `allowedAgents`, so it
-needs no entry in `computers`. A `manual` managed computer is not an agent setting: a user creates it from the pool and
-grants it to agents through its policy (`allowedAgents`) and their `computers` lists, exactly like a self-hosted
-computer, and several agents may share it.
+**[implemented]** `managed` chooses allocation, not access: `ephemeral` creates a fresh computer for each session that
+needs one, and `per-agent` creates the agent's own one on first use and keeps it, sleeping, between uses (§15.1). The
+agent DTO and the spec return the derived `{ enabled, computers, managed }`.
 
-Both sides must agree. A self-hosted computer by default admits only its owner's agents; sharing it with another
-member's agent shows a "no isolation" warning in the console. In the prototype the unit of grant is the **client
-token** (controllers are told apart by name), with no agent or member granularity.
+Sharing a self-hosted computer with another member's agent, whether selected or through All agents, shows a "no
+isolation" warning in the console. In the prototype the unit of grant is the **client token** (controllers are told
+apart by name), with no agent or member granularity.
 
 ### 4.2 Approvals [design]
 
@@ -743,7 +779,7 @@ Release (implemented):
 
 **[implemented]** The tools join the daemon's own bridge tool set, next to the MCP Apps tools, when the session's tool
 context is composed (`toolContextFor` in `daemon.ts`); `resolve-servers.ts` still resolves only the daemon-configured
-servers. They appear only when the agent's `computerUse` is enabled and names at least one Computer, the Control Plane
+servers. They appear only when the agent's derived `computerUse` names at least one Computer (§4.1), the Control Plane
 advertises `computer-lease-v1` and `computer-channel-v1`, and the runtime shows the model MCP image content
 (`claude-acp` and `codex-acp` as audited, or a runtime definition's `mcpImageContent`). Narrowed sessions (a
 follow-up's check, organization research, getting to know) never get them. Because they are bridge tools, they reach
@@ -997,7 +1033,7 @@ and every `computer/policy`.
   `"stored":"sha256:<hex>"` right before it (ahead of the bytes, so a trimmed timeline preview still holds it), records
   the reference as the audit entry's `screenshotRef`, and returns the call at once. In the background it offers the
   image with `computer/screenshot/put` (session, agent, hash, size, type, time). The CP signs only for an agent the
-  Computer's policy grants and a session of that agent in its org (a session it does not know yet is a retryable
+  Computer's agent access admits and a session of that agent in its org (a session it does not know yet is a retryable
   error); it reserves a `computer_screenshot` row (unique per Computer, session and hash, so a repeated screen is
   stored once) and answers with a PUT presigned for exactly that length, type and SHA-256 checksum, or `stored` /
   `skipped`. The desktop PUTs the bytes straight to the bucket and sends
@@ -1026,7 +1062,7 @@ and every `computer/policy`.
   fixes, recent activity, audit.
 - Computer detail: policy editing, an **embedded viewer** (watch / take over), pause and stop, revoke. Viewer media
   still flows between the browser and the desktop daemon, directly or through the relay, never through the Control Plane.
-- Agent settings: enable computer use and pick Computers.
+- Agent settings: the agent's Computers card lists the Computers its agent access derives, with add and remove for the ones the member can edit (§4.1).
 - **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
   owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
   `npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>` on Linux (§3.5), or
@@ -1034,9 +1070,11 @@ and every `computer/policy`.
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
-  retention, driver tools; read-only for anyone but the owner), and, for the owner, the audit as recent activity. An
-  agent's Tools tab carries the `computerUse` setting: the switch, the picked Computers, whether each one's policy
-  grants the agent, and a Grant button for that Computer's owner. The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
+  retention, driver tools; read-only for anyone but the owner), the **Agent access** card (No agents / Selected agents
+  / All agents tiles, pills on a phone, with the selected agents and a "no isolation" mark; editable by any editor of the
+  Computer, fixed for a per-agent or ephemeral one), and, for the owner, the audit as recent activity. An agent's Tools
+  tab carries its **Computers** card: the Computers whose access grants it, each marked selected or all agents, an Add
+  menu of the Computers the member can edit, and remove for a Selected one they can edit (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
 - Session page: the current lease and an action timeline with screenshots
   (**[implemented]**: a computer tool row shows the screenshots its result stored, §9).
@@ -1232,6 +1270,9 @@ alongside the second half of M1; managed computers depend on M1's CP integration
      Computers (§4.4), for managed and self-hosted ones alike.
    - **#3232**: the console for pools and modes: creating and assigning `manual` computers, the agent's `managed` mode,
      and sleeping status.
+   - **#3241** [implemented]: agent access as one relation (No agents / Selected agents / All agents, §4.1), set from
+     the Computer page or the agent's Computers card; `manual` computers are assigned to agents through it, and #3232's
+     console assigns them the same way.
    - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
      quotas per mode, counting sleeping desktops and kept volumes; billing for running and sleeping hours and kept
      volume storage, plus bandwidth and screenshot storage; egress policy (§15.4).
@@ -1302,10 +1343,10 @@ To agents the tools and permissions are identical.
 | ----------- | ------------------------------------------------------------ | ------------------------------------------ | ----------------------------------------------------------------------------------- |
 | `ephemeral` | When a session first needs a computer, from a prewarmed pool | That session only                          | Reclaimed and deleted (pod and volume) when the lease ends or the session idles out |
 | `per-agent` | On the agent's first computer use; exactly one per agent     | The owning agent's sessions, one at a time | Sleeps (pod scaled to zero or deleted, volume kept); wakes on the next use          |
-| `manual`    | By a user from the pool (API; console in #3232)              | The agents its policy grants, shared       | Stays until a user deletes it; may sleep when idle and wake on use                  |
+| `manual`    | By a user from the pool (API; console in #3232)              | The agents its agent access admits, shared | Stays until a user deletes it; may sleep when idle and wake on use                  |
 
 The agent's `computerUse.managed.mode` picks `ephemeral` or `per-agent` (§4.1); `manual` computers are assigned
-through policy like self-hosted ones. A woken computer keeps its files, browser profile, and sign-ins; a `per-agent` or
+through agent access like self-hosted ones (§4.1). A woken computer keeps its files, browser profile, and sign-ins; a `per-agent` or
 `manual` computer can be reset explicitly [design]. Sharing follows §4.4 for every mode.
 
 **The pool controller [implemented].** The Control Plane decides and the daemon pool acts, since the CP holds no

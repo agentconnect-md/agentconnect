@@ -1,11 +1,17 @@
 // Computers (computer-use.md §2.2, §3.6, §4.1): the org-scoped console surface and the public registration exchange.
-import type { FastifyInstance, FastifyRequest } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { ComputerAuditRecord, ComputerRecord } from '../../persistence/ports.js'
 import { ComputerId } from '../../domain/ids.js'
-import { ComputerPolicySchema, withOwnerMember, type ComputerPolicy } from '../../domain/computer.js'
+import {
+  ComputerPolicySchema,
+  agentAccessIsFixed,
+  withOwnerMember,
+  type ComputerAgentAccess,
+  type ComputerPolicy
+} from '../../domain/computer.js'
 import { orgOf, ctxOf, denyViewerWrite } from '../rbac.js'
 import {
   AuthorizationAction,
@@ -31,6 +37,8 @@ import {
   CreatePoolComputerBody,
   RegisterComputerBody,
   RegisteredComputerDto,
+  SetComputerAgentAccessBody,
+  ComputerAgentParams,
   SetSharingBody,
   IdParam,
   ErrorDto,
@@ -53,6 +61,11 @@ const revokedConflict = { error: 'Conflict', statusCode: 409, message: 'computer
 function canEditPolicy(c: ComputerRecord, ctx: ViewCtx): boolean {
   if (!canEdit(c, ctx)) return false
   return c.kind !== 'self-hosted' || c.ownerUserId === ctx.userId
+}
+
+/** Who may change which agents use a Computer (§4.1): any editor; a per-agent or ephemeral one follows its agent. */
+function canEditAgentAccess(c: ComputerRecord, ctx: ViewCtx): boolean {
+  return canEdit(c, ctx) && c.status !== 'revoked' && !agentAccessIsFixed(c)
 }
 
 // An audit page cursor: the last entry's time and id, opaque to callers.
@@ -113,6 +126,8 @@ function toDto(
     screenshotRetentionDays: retentionDays(c.policy),
     canEdit: canEdit(c, ctx),
     canEditPolicy: canEditPolicy(c, ctx) && c.status !== 'revoked',
+    agentAccess: c.agentAccess,
+    canEditAgentAccess: canEditAgentAccess(c, ctx),
     allocation: c.allocation,
     ownerAgentId: c.ownerAgentId,
     poolPhase: c.poolPhase,
@@ -120,11 +135,22 @@ function toDto(
   }
 }
 
-/** The agent a per-agent or ephemeral computer was made for always keeps its grant (§15.1). */
-function withPoolAgent(policy: ComputerPolicy, c: ComputerRecord): ComputerPolicy {
-  if (!c.ownerAgentId || c.allocation === 'manual' || policy.allowedAgents.includes(c.ownerAgentId)) return policy
-  return { ...policy, allowedAgents: [c.ownerAgentId, ...policy.allowedAgents] }
+const fixedAccess = {
+  error: 'Conflict',
+  statusCode: 409,
+  message: 'a per-agent or ephemeral computer is used only by the agent it was made for'
 }
+const cannotChangeAccess = { error: 'Forbidden', statusCode: 403, message: 'cannot change who uses this computer' }
+const allAgents = {
+  error: 'Conflict',
+  statusCode: 409,
+  message: 'this computer is granted to all agents; change its agent access on the computer'
+}
+const unknownAgents = (ids: string[]) => ({
+  error: 'Bad Request',
+  statusCode: 400,
+  message: `unknown agent: ${ids.join(', ')}`
+})
 
 export function computerRoutes(deps: HttpDeps) {
   return async function computerRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -138,6 +164,34 @@ export function computerRoutes(deps: HttpDeps) {
       const c = await deps.repos.computer.get(orgOf(req), ComputerId(id))
       return c && canView(c, ctxOf(req)) ? c : null
     }
+
+    const visibleAgentIds = async (req: FastifyRequest): Promise<Set<string>> =>
+      new Set((await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id as string))
+
+    // An agent newly given access must be one the caller can see; an unknown or invisible one is refused alike.
+    const invisibleAgents = async (req: FastifyRequest, ids: readonly string[]): Promise<string[]> => {
+      if (ids.length === 0) return []
+      const visible = await visibleAgentIds(req)
+      return ids.filter((id) => !visible.has(id))
+    }
+
+    // The checks every agent access write shares: the Computer, or the refusal to send.
+    const accessTarget = async (
+      req: FastifyRequest,
+      id: string
+    ): Promise<{ computer: ComputerRecord } | { status: 403 | 404 | 409; body: typeof notFound }> => {
+      const c = await getOrgComputer(req, id)
+      if (!c) return { status: 404, body: notFound }
+      if (agentAccessIsFixed(c)) return { status: 409, body: fixedAccess }
+      if (!canEdit(c, ctxOf(req))) return { status: 403, body: cannotChangeAccess }
+      if (c.status === 'revoked') return { status: 409, body: revokedConflict }
+      return { computer: c }
+    }
+
+    const accessReply = (req: FastifyRequest, reply: FastifyReply, updated: ComputerRecord | null) =>
+      updated
+        ? toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
+        : reply.code(409).send(revokedConflict)
 
     r.get(
       '/computers',
@@ -291,7 +345,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Create a pool computer',
           description:
-            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its policy’s `allowedAgents` (here or with `PUT /computers/{id}/policy`) and their `computerUse.computers`; agents granted it share it one at a time under the control lease. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 503 when the deployment runs no pool or no pool member is connected.',
+            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 503 when the deployment runs no pool or no pool member is connected.',
           operationId: 'createPoolComputer',
           body: CreatePoolComputerBody,
           response: { 201: ComputerDto, 400: ErrorDto, 403: ErrorDto, 503: ErrorDto }
@@ -308,23 +362,17 @@ export function computerRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         let policy: ComputerPolicy | undefined
         if (req.body.policy) {
-          const wanted = [...new Set(req.body.policy.allowedAgents)]
-          if (wanted.length > 0) {
-            const visible = new Set((await deps.repos.agent.list(orgOf(req), ctx)).map((a) => a.id as string))
-            const unknown = wanted.filter((id) => !visible.has(id))
-            if (unknown.length > 0) {
-              return reply
-                .code(400)
-                .send({ error: 'Bad Request', statusCode: 400, message: `unknown agent: ${unknown.join(', ')}` })
-            }
-          }
           const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.policy.allowedMembers)
-          policy = withOwnerMember({ ...req.body.policy, allowedAgents: wanted, allowedMembers: members }, ctx.userId)
+          policy = withOwnerMember({ ...req.body.policy, allowedMembers: members }, ctx.userId)
         }
+        const agentAccess: ComputerAgentAccess | undefined = req.body.agentAccess
+        const unknown = await invisibleAgents(req, agentAccess?.mode === 'selected' ? agentAccess.agents : [])
+        if (unknown.length > 0) return reply.code(400).send(unknownAgents(unknown))
         const created = await deps.computerPool.createManual(orgOf(req), {
           name: req.body.name,
           ownerUserId: ctx.userId,
-          ...(policy ? { policy } : {})
+          ...(policy ? { policy } : {}),
+          ...(agentAccess ? { agentAccess } : {})
         })
         if (!created) return reply.code(503).send(unavailable)
         return reply.code(201).send(toDto(created, ctx, deps.computers.presentedStatus(created), retentionDays))
@@ -437,7 +485,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer policy',
           description:
-            'Replaces who may use a Computer and how (allowed agents and members, view or control, approvals, app limits, quiet hours, lease limits, screenshot retention in days where 0 stores none). Omitted fields take their defaults. Only the registrant may change the policy of their own self-hosted desktop; allowed agents must be visible to the caller, and the owner always stays an allowed member.',
+            'Replaces how a Computer is used (allowed members, view or control, approvals, app limits, quiet hours, lease limits, screenshot retention in days where 0 stores none). Omitted fields take their defaults. Only the registrant may change the policy of their own self-hosted desktop, and the owner always stays an allowed member. Which agents may use it is its agent access (`PUT /computers/{id}/agent-access`).',
           operationId: 'setComputerPolicy',
           params: IdParam,
           body: ComputerPolicySchema,
@@ -454,25 +502,124 @@ export function computerRoutes(deps: HttpDeps) {
             .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s owner can change its policy' })
         }
         if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
-        // A referenced agent must be one the caller can see; an unknown or invisible one is refused alike.
-        const wanted = [...new Set(req.body.allowedAgents)]
-        if (wanted.length > 0) {
-          const visible = new Set((await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((a) => a.id as string))
-          const unknown = wanted.filter((id) => !visible.has(id))
-          if (unknown.length > 0) {
-            return reply
-              .code(400)
-              .send({ error: 'Bad Request', statusCode: 400, message: `unknown agent: ${unknown.join(', ')}` })
-          }
-        }
         const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.allowedMembers)
-        const policy = withPoolAgent(
-          withOwnerMember({ ...req.body, allowedAgents: wanted, allowedMembers: members }, c.ownerUserId),
-          c
-        )
+        const policy = withOwnerMember({ ...req.body, allowedMembers: members }, c.ownerUserId)
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
         if (!updated) return reply.code(409).send(revokedConflict)
         return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
+      }
+    )
+
+    r.put(
+      '/computers/:id/agent-access',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Set computer agent access',
+          description:
+            'Sets which agents may use a Computer: `none` (the default), `selected` with the listed `agents`, or `all` for every agent of the organization. This is the one relation an agent’s computer use derives from, so an agent granted here gets the `computer_*` tools in its next new session without any agent-side setting. Requires edit rights on the Computer; agents newly listed must be visible to the caller, and a Selected list keeps the agents the caller cannot see. An empty selection reads as `none`. A `per-agent` or `ephemeral` managed computer is used only by its own agent (409). Every change is audited.',
+          operationId: 'setComputerAgentAccess',
+          params: IdParam,
+          body: SetComputerAgentAccessBody,
+          response: { 200: ComputerDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const target = await accessTarget(req, req.params.id)
+        if (!('computer' in target)) return reply.code(target.status).send(target.body)
+        const c = target.computer
+        const wanted: ComputerAgentAccess = { mode: req.body.mode, agents: [...new Set(req.body.agents)] }
+        const visible = await visibleAgentIds(req)
+        const unknown = wanted.agents.filter((id) => !visible.has(id) && !c.agentAccess.agents.includes(id))
+        if (wanted.mode === 'selected' && unknown.length > 0) return reply.code(400).send(unknownAgents(unknown))
+        const updated = await deps.computers.setAgentAccess(
+          orgOf(req),
+          c.id,
+          (current) => {
+            if (wanted.mode !== 'selected') return wanted
+            // Agents the caller cannot see keep their access, as a hidden caller grant does on an agent's call policy.
+            const hidden = current.agents.filter((id) => !visible.has(id))
+            return { mode: 'selected', agents: [...hidden, ...wanted.agents] }
+          },
+          ctxOf(req).userId
+        )
+        return accessReply(req, reply, updated)
+      }
+    )
+
+    r.put(
+      '/computers/:id/agent-access/agents/:agentId',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Give an agent access to a computer',
+          description:
+            'Adds one agent to a Computer’s Selected agent access, switching it from `none` to `selected`; the same relation as `PUT /computers/{id}/agent-access`, for the agent’s own Computers list. Requires edit rights on the Computer and a visible agent. Idempotent. A Computer granted to all agents is changed only as a whole (409), as is a `per-agent` or `ephemeral` one.',
+          operationId: 'addComputerAgent',
+          params: ComputerAgentParams,
+          response: { 200: ComputerDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const target = await accessTarget(req, req.params.id)
+        if (!('computer' in target)) return reply.code(target.status).send(target.body)
+        const c = target.computer
+        if (c.agentAccess.mode === 'all') return reply.code(409).send(allAgents)
+        const { agentId } = req.params
+        const unknown = await invisibleAgents(req, c.agentAccess.agents.includes(agentId) ? [] : [agentId])
+        if (unknown.length > 0) return reply.code(400).send(unknownAgents(unknown))
+        let toAll = false
+        const updated = await deps.computers.setAgentAccess(
+          orgOf(req),
+          c.id,
+          (current) => {
+            // A switch to All that landed after the read keeps it; nothing here narrows it.
+            toAll = current.mode === 'all'
+            if (toAll) return current
+            return { mode: 'selected', agents: [...current.agents, agentId] }
+          },
+          ctxOf(req).userId
+        )
+        if (toAll) return reply.code(409).send(allAgents)
+        return accessReply(req, reply, updated)
+      }
+    )
+
+    r.delete(
+      '/computers/:id/agent-access/agents/:agentId',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Take an agent’s access to a computer away',
+          description:
+            'Removes one agent from a Computer’s Selected agent access; removing the last one leaves it `none`. The agent itself is not changed. Requires edit rights on the Computer. Idempotent. A Computer granted to all agents is changed only as a whole (409), as is a `per-agent` or `ephemeral` one.',
+          operationId: 'removeComputerAgent',
+          params: ComputerAgentParams,
+          response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const target = await accessTarget(req, req.params.id)
+        if (!('computer' in target)) return reply.code(target.status).send(target.body)
+        const c = target.computer
+        if (c.agentAccess.mode === 'all') return reply.code(409).send(allAgents)
+        const { agentId } = req.params
+        let toAll = false
+        const updated = await deps.computers.setAgentAccess(
+          orgOf(req),
+          c.id,
+          (current) => {
+            toAll = current.mode === 'all'
+            if (toAll) return current
+            return { mode: current.mode, agents: current.agents.filter((id) => id !== agentId) }
+          },
+          ctxOf(req).userId
+        )
+        if (toAll) return reply.code(409).send(allAgents)
+        return accessReply(req, reply, updated)
       }
     )
 
@@ -483,7 +630,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer sharing',
           description:
-            'Sets who can see a Computer in the console (Everyone vs Selected). Requires edit rights; Selected must retain at least one current organization member, and a self-hosted desktop’s registrant always stays in it. Sharing grants no agent access: the policy decides that.',
+            'Sets who can see a Computer in the console (Everyone vs Selected). Requires edit rights; Selected must retain at least one current organization member, and a self-hosted desktop’s registrant always stays in it. Sharing grants no agent access: the Computer’s agent access decides that.',
           operationId: 'setComputerSharing',
           params: IdParam,
           body: SetSharingBody,

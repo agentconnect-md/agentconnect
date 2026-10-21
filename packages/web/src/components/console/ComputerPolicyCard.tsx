@@ -1,20 +1,15 @@
 'use client'
 
-// Who may use a Computer and how (computer-use.md §4.1, §4.2): granted agents, view or control, approvals and limits.
+// How agents use a Computer once they have access (computer-use.md §4.1, §4.2): view or control, approvals and limits.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import type { ComputerPolicy } from '@agentconnect.md/protocol/computer'
 import { setComputerPolicy, type ComputerDto } from '@/lib/api'
-import { agentLabel, type Agent } from '@/lib/data'
-import { useConsoleData } from '@/lib/data-context'
-import { AttachedEmpty, AttachedRow, AttachMenu } from '@/components/console/AttachedList'
 import { FieldSelect } from '@/components/console/FieldSelect'
-import { AgentIconView } from '@/components/marks'
-import { Button, Icon, Toggle } from '@/components/ui'
+import { Button, Toggle } from '@/components/ui'
 
 /** The policy fields the form edits; the rest (app lists, quiet hours) are kept as they are. */
 export interface PolicyDraft {
-  allowedAgents: string[]
   agentMode: ComputerPolicy['agentMode']
   firstInputPerSession: boolean
   launchApp: ComputerPolicy['approvals']['launchApp']
@@ -29,7 +24,6 @@ export interface PolicyDraft {
 
 export function draftOf(policy: ComputerPolicy): PolicyDraft {
   return {
-    allowedAgents: policy.allowedAgents,
     agentMode: policy.agentMode,
     firstInputPerSession: policy.approvals.firstInputPerSession,
     launchApp: policy.approvals.launchApp,
@@ -70,7 +64,6 @@ export function policyFromDraft(
   return {
     policy: {
       ...rest,
-      allowedAgents: draft.allowedAgents,
       agentMode: draft.agentMode,
       approvals: {
         firstInputPerSession: draft.firstInputPerSession,
@@ -96,7 +89,6 @@ export function ComputerPolicyCard({
   onSaved: (next: ComputerDto) => void
 }) {
   const t = useTranslations('Computers.policy')
-  const { agents } = useConsoleData()
   const saved = useMemo(() => draftOf(computer.policy), [computer.policy])
   const [draft, setDraft] = useState(saved)
   const [saving, setSaving] = useState(false)
@@ -127,28 +119,6 @@ export function ComputerPolicyCard({
     }
   }
 
-  const byId = new Map(agents.map((a) => [a.id, a]))
-  const available = agents.filter((a) => !draft.allowedAgents.includes(a.id))
-  const menu = editable ? (
-    <AttachMenu
-      ariaLabel={t('addAgent')}
-      disabled={saving}
-      actions={[]}
-      groups={[
-        {
-          heading: t('agents'),
-          icon: 'bot',
-          emptyLabel: t('noMoreAgents'),
-          options: available.map((a) => ({
-            key: a.id,
-            name: agentLabel(a),
-            onPick: () => set('allowedAgents', [...draft.allowedAgents, a.id])
-          }))
-        }
-      ]}
-    />
-  ) : undefined
-
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg">
       <div className="cardhead flex-wrap gap-2">
@@ -159,32 +129,6 @@ export function ComputerPolicyCard({
           </span>
         )}
       </div>
-
-      <Section title={t('agentsTitle')} hint={t('agentsHint')} action={menu}>
-        {draft.allowedAgents.length === 0 ? (
-          <AttachedEmpty title={t('noAgents')} hint={t('noAgentsHint')} />
-        ) : (
-          <div className="overflow-hidden rounded-md border border-(--border-subtle)">
-            {draft.allowedAgents.map((id) => (
-              <GrantedAgent
-                key={id}
-                agent={byId.get(id)}
-                id={id}
-                computer={computer}
-                onRemove={
-                  editable && !saving
-                    ? () =>
-                        set(
-                          'allowedAgents',
-                          draft.allowedAgents.filter((v) => v !== id)
-                        )
-                    : undefined
-                }
-              />
-            ))}
-          </div>
-        )}
-      </Section>
 
       <Section title={t('accessTitle')}>
         <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
@@ -303,52 +247,6 @@ export function ComputerPolicyCard({
         </div>
       )}
     </div>
-  )
-}
-
-function GrantedAgent({
-  agent,
-  id,
-  computer,
-  onRemove
-}: {
-  agent: Agent | undefined
-  id: string
-  computer: ComputerDto
-  onRemove?: () => void
-}) {
-  const t = useTranslations('Computers.policy')
-  const picked = agent?.computerUse?.enabled === true && agent.computerUse.computers.includes(computer.id)
-  // A self-hosted desktop has no isolation from the agents of another member (§4.1).
-  const shared = agent !== undefined && agent.createdBy !== '' && agent.createdBy !== computer.ownerUserId
-  return (
-    <AttachedRow
-      mark={
-        <span className="flex h-7 w-7 flex-none overflow-hidden rounded-md">
-          {agent ? (
-            <AgentIconView icon={agent.icon} runtime={agent.runtime} size={28} />
-          ) : (
-            <Icon name="bot" size={18} />
-          )}
-        </span>
-      }
-      name={agent ? agentLabel(agent) : t('unknownAgent')}
-      meta={agent ? (picked ? t('agentPicked') : t('agentNotPicked')) : id}
-      dimmed={!agent}
-      badge={
-        shared ? (
-          <span
-            className="inline-flex flex-none items-center gap-1 rounded-full bg-(--status-paused-soft) px-2 py-[1px] font-sans text-[11px] font-semibold leading-normal text-[#9a6500]"
-            title={t('noIsolationHint')}
-          >
-            <Icon name="triangle-alert" size={12} />
-            {t('noIsolation')}
-          </span>
-        ) : undefined
-      }
-      onRemove={onRemove}
-      removeTitle={t('removeAgent')}
-    />
   )
 }
 

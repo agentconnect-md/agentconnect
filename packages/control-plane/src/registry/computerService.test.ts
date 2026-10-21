@@ -52,6 +52,7 @@ function computer(over: Partial<ComputerRecord> = {}): ComputerRecord {
     desktopDaemonVersion: '0.1.0',
     driverVersion: '0.35.2',
     policy: defaultComputerPolicy('u1'),
+    agentAccess: { mode: 'none', agents: [] },
     visibility: 'restricted',
     sharedWith: ['u1'],
     lastSeenAt: null,

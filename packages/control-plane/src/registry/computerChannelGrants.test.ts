@@ -18,11 +18,7 @@ const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const T0 = 1_760_000_100_000
 const relay = { relayId: '11111111-1111-4111-8111-111111111111', url: 'wss://relay-0.example.com/rd/ws' }
 
-function setup(
-  over: Partial<ComputerRecord> = {},
-  policy: Record<string, unknown> = { allowedAgents: [AGENT] },
-  keyDeliveryMs = 0
-) {
+function setup(over: Partial<ComputerRecord> = {}, policy: Record<string, unknown> = {}, keyDeliveryMs = 0) {
   const clock = new FakeClock(T0)
   const keys = new ComputerChannelKeys('unit-test-pepper-0123456789abcdefghij', 300, keyDeliveryMs)
   const record = {
@@ -33,6 +29,7 @@ function setup(
     status: 'online',
     lastSeenAt: new Date(T0 - 1000),
     policy: ComputerPolicySchema.parse(policy),
+    agentAccess: { mode: 'selected', agents: [AGENT] },
     ...over
   } as unknown as ComputerRecord
   const repo = {
@@ -48,7 +45,7 @@ const who = { agentId: AGENT, sessionId: 'sess-1', daemonId: DAEMON }
 
 describe('ComputerChannelGrants', () => {
   it('names the Computer, its owner and its approval policy for the approval cards', async () => {
-    const policy = { allowedAgents: [AGENT], approvals: { launchApp: 'session', submitLikeKeys: false } }
+    const policy = { approvals: { launchApp: 'session', submitLikeKeys: false } }
     const result = await setup({}, policy).grants.grant(ORG, CID, who)
     expect(result).toMatchObject({
       granted: true,
@@ -93,11 +90,7 @@ describe('ComputerChannelGrants', () => {
 
   it('signs just after a key window opens with a key the desktop already holds', async () => {
     // T0 opens a key window; the desktop's last heartbeat came before it, so it holds only the previous window's key.
-    const { grants, keys, clock, repo } = setup(
-      { lastSeenAt: new Date(T0 - 5_000) },
-      { allowedAgents: [AGENT] },
-      50_000
-    )
+    const { grants, keys, clock, repo } = setup({ lastSeenAt: new Date(T0 - 5_000) }, {}, 50_000)
     const record = await repo.get()
     const sent = [keys.current(CID, 'key_1', T0 - 1)]
     const verify = (token: string, now: number) =>
@@ -126,14 +119,17 @@ describe('ComputerChannelGrants', () => {
   })
 
   it('carries a view grant into the token', async () => {
-    const { grants } = setup({}, { allowedAgents: [AGENT], agentMode: 'view' })
+    const { grants } = setup({}, { agentMode: 'view' })
     const result = await grants.grant(ORG, CID, who)
     expect(result).toMatchObject({ granted: true, mode: 'view' })
     if (result.granted) expect(readComputerChannelToken(result.token)?.mode).toBe('view')
   })
 
   it('refuses an ungranted agent, an offline or revoked Computer, and one with no live key', async () => {
-    expect(await setup({}, { allowedAgents: [] }).grants.grant(ORG, CID, who)).toMatchObject({ code: 'denied' })
+    const none: Partial<ComputerRecord> = { agentAccess: { mode: 'none', agents: [] } }
+    expect(await setup(none).grants.grant(ORG, CID, who)).toMatchObject({ code: 'denied' })
+    const all: Partial<ComputerRecord> = { agentAccess: { mode: 'all', agents: [] } }
+    expect(await setup(all).grants.grant(ORG, CID, who)).toMatchObject({ granted: true })
     expect(await setup({ lastSeenAt: new Date(T0 - 60_000) }).grants.grant(ORG, CID, who)).toMatchObject({
       code: 'unavailable'
     })

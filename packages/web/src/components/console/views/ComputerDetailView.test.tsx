@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   revokeComputer: vi.fn(),
   deleteComputer: vi.fn(),
   setComputerPolicy: vi.fn(),
+  setComputerAgentAccess: vi.fn(),
+  refresh: vi.fn(),
   fetchComputerAudit: vi.fn()
 }))
 
@@ -34,12 +36,12 @@ vi.mock('@/lib/data-context', () => ({
         name: 'ops',
         runtime: 'claude',
         icon: GLYPH,
-        createdBy: 'u1',
-        computerUse: { enabled: true, computers: ['c1'] }
+        createdBy: 'u1'
       },
       { id: 'a2', name: 'peer', runtime: 'claude', icon: GLYPH, createdBy: 'u2' }
     ],
-    members: [{ userId: 'u2', name: 'Dana', email: null }]
+    members: [{ userId: 'u2', name: 'Dana', email: null }],
+    refresh: mocks.refresh
   })
 }))
 vi.mock('@/components/console/Shell', () => ({ useCrumbSlot: () => ({ register: () => {} }) }))
@@ -54,6 +56,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   revokeComputer: mocks.revokeComputer,
   deleteComputer: mocks.deleteComputer,
   setComputerPolicy: mocks.setComputerPolicy,
+  setComputerAgentAccess: mocks.setComputerAgentAccess,
   fetchComputerAudit: mocks.fetchComputerAudit
 }))
 
@@ -83,6 +86,8 @@ beforeEach(() => {
     mocks.revokeComputer,
     mocks.deleteComputer,
     mocks.setComputerPolicy,
+    mocks.setComputerAgentAccess,
+    mocks.refresh,
     mocks.fetchComputerAudit
   ])
     fn.mockReset()
@@ -146,28 +151,75 @@ describe('ComputerDetailView', () => {
     expect(mocks.revokeComputer).toHaveBeenCalledWith('c1')
   })
 
-  it('edits the policy: grants an agent, warns about another member’s agent, and saves', async () => {
-    mocks.setComputerPolicy.mockImplementation(async (_id: string, policy: unknown) => computer({ policy } as never))
-    const el = render(computer({ policy: { ...computer().policy, allowedAgents: ['a1', 'a2'] } }))
-    expect(el.textContent).toContain('Uses this computer')
+  it('starts with no agents, then selects agents, warns about another member’s agent, and saves the access', async () => {
+    mocks.setComputerAgentAccess.mockImplementation(async (_id: string, agentAccess: unknown) =>
+      computer({ agentAccess } as never)
+    )
+    const el = render(computer())
+    const tile = (title: string) =>
+      [...el.querySelectorAll<HTMLElement>('[role="radio"]')].find((t) => t.textContent?.includes(title))!
+    expect(tile('No agents').getAttribute('aria-checked')).toBe('true')
+    act(() => tile('Selected agents').click())
+    expect(el.textContent).toContain('Pick at least one agent')
+    // An empty selection cannot be saved.
+    expect(button(el, 'Save')[0]!.disabled).toBe(true)
+    const add = [...el.querySelectorAll('button')].find((b) => b.getAttribute('aria-haspopup') === 'menu')!
+    act(() => add.click())
+    act(() =>
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((b) => b.textContent?.includes('peer'))!
+        .click()
+    )
     expect(el.textContent).toContain('Not your agent')
+    await act(async () => button(el, 'Save')[0]!.click())
+    await settle()
+    expect(mocks.setComputerAgentAccess).toHaveBeenCalledWith('c1', { mode: 'selected', agents: ['a2'] })
+    expect(mocks.refresh).toHaveBeenCalled()
+  })
+
+  it('switches to All agents and keeps a per-agent computer read-only', async () => {
+    mocks.setComputerAgentAccess.mockImplementation(async (_id: string, agentAccess: unknown) =>
+      computer({ agentAccess } as never)
+    )
+    const el = render(computer())
+    const all = [...el.querySelectorAll<HTMLElement>('[role="radio"]')].find((t) =>
+      t.textContent?.includes('All agents')
+    )!
+    act(() => all.click())
+    expect(el.textContent).toContain('no isolation')
+    await act(async () => button(el, 'Save')[0]!.click())
+    await settle()
+    expect(mocks.setComputerAgentAccess).toHaveBeenCalledWith('c1', { mode: 'all', agents: [] })
+
+    const fixed = render(
+      computer({
+        kind: 'managed',
+        allocation: 'per-agent',
+        agentAccess: { mode: 'selected', agents: ['a1'] },
+        canEditAgentAccess: false
+      })
+    )
+    expect(fixed.textContent).toContain('Used only by the agent it was made for')
+  })
+
+  it('edits the usage policy and saves', async () => {
+    mocks.setComputerPolicy.mockImplementation(async (_id: string, policy: unknown) => computer({ policy } as never))
+    const el = render(computer())
     const idle = el.querySelector<HTMLInputElement>('input[aria-label="Idle release (seconds)"]')!
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
       setter.call(idle, '60')
       idle.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    await act(async () => button(el, 'Save')[0]!.click())
+    await act(async () => button(el, 'Save').at(-1)!.click())
     await settle()
-    expect(mocks.setComputerPolicy).toHaveBeenCalledWith(
-      'c1',
-      expect.objectContaining({ allowedAgents: ['a1', 'a2'], leaseIdleSeconds: 60 })
-    )
+    expect(mocks.setComputerPolicy).toHaveBeenCalledWith('c1', expect.objectContaining({ leaseIdleSeconds: 60 }))
   })
 
   it('keeps the policy read-only for someone who is not the owner and hides the audit', () => {
-    const el = render(computer({ canEditPolicy: false }))
+    const el = render(computer({ canEditPolicy: false, canEditAgentAccess: false }))
     expect(el.textContent).toContain('Only the owner can change this')
+    expect(el.textContent).toContain('Only editors of this computer can change this')
     expect(button(el, 'Save')).toHaveLength(0)
     expect(el.textContent).not.toContain('Recent activity')
   })

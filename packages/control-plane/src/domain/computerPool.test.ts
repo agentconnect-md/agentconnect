@@ -93,13 +93,12 @@ describe('provisionStep', () => {
 })
 
 describe('managed computer defaults', () => {
-  it('grants the agent and asks no approvals on an isolated desktop, unless a user set a policy', () => {
-    const policy = managedComputerPolicy('u1', ['a1'])
-    expect(policy.allowedAgents).toEqual(['a1'])
+  it('asks no approvals on an isolated desktop, unless a user set a policy', () => {
+    const policy = managedComputerPolicy('u1')
     expect(policy.allowedMembers).toEqual(['u1'])
     expect(policy.approvals).toEqual({ firstInputPerSession: false, launchApp: 'never-ask', submitLikeKeys: false })
-    const kept = managedComputerPolicy('u1', [], { ...policy, allowedAgents: ['a2', 'a3'], allowedMembers: ['u2'] })
-    expect(kept.allowedAgents).toEqual(['a2', 'a3'])
+    const kept = managedComputerPolicy('u1', { ...policy, agentMode: 'view', allowedMembers: ['u2'] })
+    expect(kept.agentMode).toBe('view')
     expect(kept.allowedMembers).toEqual(['u1', 'u2'])
   })
 

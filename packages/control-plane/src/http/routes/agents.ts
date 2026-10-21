@@ -41,7 +41,8 @@ import {
   DreamInfo,
   DreamListPage,
   DreamFilesPage,
-  DreamFileReadContent
+  DreamFileReadContent,
+  agentComputerUseOf
 } from '@agentconnect.md/protocol'
 /**
  * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
@@ -103,6 +104,7 @@ import {
 } from './workspace-credential.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
+import { derivedComputerIds } from '../../domain/computer.js'
 import { advertises, requiredDaemonFeatures } from '../../domain/daemon-features.js'
 import { UNPLACED, placementStrategies, resolveExecution } from '../../domain/execution.js'
 import { codeHostProviders, codeHostsOf } from '../../codehost/registry.js'
@@ -384,7 +386,9 @@ function toDto(
   placementView: PlacementView,
   // Organization entries assigned to THIS agent. Metadata only: variable values
   // plus secret KEY names, resolved without decrypting anything (design §6).
-  organizationEnvironment: AssignedOrganizationMetadata = NO_ORGANIZATION_ENVIRONMENT
+  organizationEnvironment: AssignedOrganizationMetadata = NO_ORGANIZATION_ENVIRONMENT,
+  // The Computers whose agent access grants this agent (computer-use.md §4.1).
+  computers: readonly string[] = []
 ): AgentDtoT {
   return {
     id: a.id,
@@ -425,7 +429,7 @@ function toDto(
     managedSkills: a.managedSkills,
     memory: a.memory,
     assistantMode: a.assistantMode ?? null,
-    computerUse: a.computerUse ?? null,
+    computerUse: agentComputerUseOf(a.computerUse, computers),
     status: a.status,
     placementKind: a.placementKind,
     daemonId: a.daemonId,
@@ -1510,6 +1514,10 @@ export function agentRoutes(deps: HttpDeps) {
 
     /** Assigned organization rows for ONE agent's DTO. Metadata only — this path
      *  never decrypts an organization secret (design §6). */
+    // The Computers an agent may use are derived from each Computer's agent access (computer-use.md §4.1).
+    const computersOf = async (agent: Pick<AgentRecord, 'id' | 'orgId'>): Promise<string[]> =>
+      derivedComputerIds(await deps.repos.computer.listAgentGrants(OrgId(agent.orgId)), agent.id)
+
     const organizationEnvironmentOf = async (agent: AgentRecord): Promise<AssignedOrganizationMetadata> =>
       (await deps.repos.organizationEnvironmentResolver?.metadataForAgents(agent.orgId, [agent.id]))?.get(agent.id) ??
       NO_ORGANIZATION_ENVIRONMENT
@@ -2303,7 +2311,8 @@ export function agentRoutes(deps: HttpDeps) {
               await placementViewFor(deps, agent),
               // Create already enrolled the agent into the org's `all` entries in
               // its own transaction, so the response shows what will actually apply.
-              await organizationEnvironmentOf(agent)
+              await organizationEnvironmentOf(agent),
+              await computersOf(agent)
             ),
             ...(connect ? { connect } : {})
           })
@@ -2354,6 +2363,7 @@ export function agentRoutes(deps: HttpDeps) {
         )
         // ONE batched resolve for the whole page (design §6) — never a query per agent.
         const organizationEnvironment = await organizationEnvironmentOfAll(orgOf(req), rows)
+        const computerGrants = await deps.repos.computer.listAgentGrants(orgOf(req))
         // Two batched resolves for the whole page: the named daemons, and each named set once.
         const daemonIds = [...new Set(rows.flatMap((a) => (a.daemonId ? [a.daemonId] : [])))]
         const views = new Map(
@@ -2395,7 +2405,8 @@ export function agentRoutes(deps: HttpDeps) {
             hookKinds.get(a.id) ?? [],
             iconBasesOf(deps),
             viewFor(a),
-            organizationEnvironment.get(a.id) ?? NO_ORGANIZATION_ENVIRONMENT
+            organizationEnvironment.get(a.id) ?? NO_ORGANIZATION_ENVIRONMENT,
+            derivedComputerIds(computerGrants, a.id)
           )
         )
       }
@@ -2423,7 +2434,8 @@ export function agentRoutes(deps: HttpDeps) {
           await hookKindsOf(deps, agent.id),
           iconBasesOf(deps),
           await placementViewFor(deps, agent),
-          await organizationEnvironmentOf(agent)
+          await organizationEnvironmentOf(agent),
+          await computersOf(agent)
         )
       }
     )
@@ -3006,7 +3018,8 @@ export function agentRoutes(deps: HttpDeps) {
             placementView,
             // A PATCH may also have enrolled the agent into `all` entries added
             // since its last edit, so re-resolve rather than echoing the request.
-            await organizationEnvironmentOf(agent)
+            await organizationEnvironmentOf(agent),
+            await computersOf(agent)
           )
         } catch (e) {
           if (e instanceof MemoryConnectionBusy) {
@@ -3206,7 +3219,8 @@ export function agentRoutes(deps: HttpDeps) {
             await hookKindsOf(deps, converted.id),
             iconBasesOf(deps),
             await placementViewFor(deps, converted),
-            await organizationEnvironmentOf(converted)
+            await organizationEnvironmentOf(converted),
+            await computersOf(converted)
           )
         } catch (err) {
           if (err instanceof AgentMoveConflict) return conflict(err.message)
@@ -3495,7 +3509,8 @@ export function agentRoutes(deps: HttpDeps) {
                 await hookKindsOf(deps, repaired.id),
                 iconBasesOf(deps),
                 placementViewOf(deps, target),
-                await organizationEnvironmentOf(repaired)
+                await organizationEnvironmentOf(repaired),
+                await computersOf(repaired)
               )
             } catch (err) {
               if (err instanceof AgentMoveConflict) return conflict(err.message)
@@ -3543,7 +3558,8 @@ export function agentRoutes(deps: HttpDeps) {
             await hookKindsOf(deps, moved.id),
             iconBasesOf(deps),
             placementViewOf(deps, target),
-            await organizationEnvironmentOf(moved)
+            await organizationEnvironmentOf(moved),
+            await computersOf(moved)
           )
         } catch (err) {
           if (err instanceof AgentMoveConflict) return conflict(err.message)
@@ -3756,7 +3772,8 @@ export function agentRoutes(deps: HttpDeps) {
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
             await placementViewFor(deps, agent),
-            await organizationEnvironmentOf(agent)
+            await organizationEnvironmentOf(agent),
+            await computersOf(agent)
           )
         } finally {
           release()
@@ -3837,7 +3854,8 @@ export function agentRoutes(deps: HttpDeps) {
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
             await placementViewFor(deps, agent),
-            await organizationEnvironmentOf(agent)
+            await organizationEnvironmentOf(agent),
+            await computersOf(agent)
           )
         } finally {
           release()

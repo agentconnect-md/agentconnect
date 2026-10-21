@@ -14,7 +14,9 @@ import {
   COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES,
   COMPUTER_REGISTRATION_MAX_TTL_MINUTES,
   COMPUTER_STALE_AFTER_MS,
+  agentsAffectedByAccess,
   presentComputerStatus,
+  type ComputerAgentAccess,
   type ComputerPolicy,
   type ComputerStatus
 } from '../domain/computer.js'
@@ -56,6 +58,8 @@ export interface ComputerServiceOpts {
   staleAfterMs?: number
   /** Stored screenshots, so a lowered retention applies to the ones already kept. */
   screenshots?: Pick<ComputerScreenshots, 'applyRetention'>
+  /** Re-ship the specs of agents whose derived Computer list changed; best-effort, the reconnect roster is the backstop. */
+  onAgentAccessChanged?: (orgId: OrgId, agents: 'all' | string[]) => Promise<void>
 }
 
 export class ComputerService {
@@ -161,11 +165,31 @@ export class ComputerService {
     await this.opts.screenshots?.applyRetention(id).catch(() => 0)
     // A grant taken away ends the lease it backed; a failure here leaves it to the next heartbeat.
     await this.opts.leases?.current(orgId, id).catch(() => null)
-    this.record(orgId, actorUserId, 'policy_update', {
-      computerId: id,
-      allowedAgents: policy.allowedAgents,
-      agentMode: policy.agentMode
-    })
+    this.record(orgId, actorUserId, 'policy_update', { computerId: id, agentMode: policy.agentMode })
+    return computer
+  }
+
+  /** Change which agents may use the Computer (§4.1) from what it is now; null when it was revoked or removed. */
+  async setAgentAccess(
+    orgId: OrgId,
+    id: ComputerId,
+    next: (current: ComputerAgentAccess) => ComputerAgentAccess,
+    actorUserId?: string
+  ): Promise<ComputerRecord | null> {
+    const changed = await this.computers.updateAgentAccess(orgId, id, next)
+    if (!changed) return null
+    const { before, computer } = changed
+    const affected = agentsAffectedByAccess(before, computer.agentAccess)
+    if (affected === 'all' || affected.length > 0) {
+      // Access taken away ends the lease it backed; a failure here leaves it to the next heartbeat.
+      await this.opts.leases?.current(orgId, id).catch(() => null)
+      this.record(orgId, actorUserId, 'agent_access_update', {
+        computerId: id,
+        before,
+        after: computer.agentAccess
+      })
+      await this.reship(orgId, affected)
+    }
     return computer
   }
 
@@ -200,13 +224,32 @@ export class ComputerService {
     await this.opts.leases?.preempt(orgId, id, 'revoked').catch(() => false)
     this.opts.channels?.revoke(id, 'revoked')
     this.record(orgId, actorUserId, 'revoke', { computerId: id, revokedKeyIds })
+    await this.accessGone(orgId, computer)
     return computer
   }
 
   async delete(orgId: OrgId, id: ComputerId, actorUserId?: string): Promise<void> {
+    const existing = await this.computers.get(orgId, id)
     await this.computers.delete(orgId, id)
     this.opts.channels?.revoke(id, 'deleted')
     this.record(orgId, actorUserId, 'delete', { computerId: id })
+    if (existing) await this.accessGone(orgId, existing)
+  }
+
+  /** A new Computer's agents get it in their specs at once (§4.1). */
+  async accessGranted(orgId: OrgId, computer: Pick<ComputerRecord, 'agentAccess'>): Promise<void> {
+    await this.reship(orgId, agentsAffectedByAccess({ mode: 'none', agents: [] }, computer.agentAccess))
+  }
+
+  // A revoked or deleted Computer leaves every derived list it was on.
+  private async accessGone(orgId: OrgId, computer: Pick<ComputerRecord, 'agentAccess'>): Promise<void> {
+    await this.reship(orgId, agentsAffectedByAccess(computer.agentAccess, { mode: 'none', agents: [] }))
+  }
+
+  // Best-effort: the write already landed, and the daemons' reconnect roster carries it otherwise.
+  private async reship(orgId: OrgId, affected: 'all' | string[]): Promise<void> {
+    if (affected !== 'all' && affected.length === 0) return
+    await this.opts.onAgentAccessChanged?.(orgId, affected).catch(() => {})
   }
 
   // Best-effort audit: never blocks or fails the operation, and never carries a secret.

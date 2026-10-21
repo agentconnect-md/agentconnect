@@ -5,7 +5,7 @@ import { applyAssistantModeSwitch, pruneKnowledgeReaders } from './organization-
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
 import {
-  AgentComputerUse,
+  AgentComputerSetting,
   AgentMemoryBinding,
   AssistantOnboarding,
   type AssistantModePolicy,
@@ -222,8 +222,8 @@ type RuntimeOverrides = {
   // Which memory backend the agent uses (managed | native | external). Stored in
   // the overrides bag like the sibling knobs; the daemon builds the provider from it.
   memory?: AgentMemoryBinding
-  // Computer use (computer-use.md §4.1): whether the agent gets `computer_*` tools, and for which Computers.
-  computerUse?: AgentComputerUse
+  // The managed computer mode (computer-use.md §4.1); which Computers it may use lives on each Computer.
+  computerUse?: AgentComputerSetting
 }
 
 function overridesOf(a: Agent): RuntimeOverrides {
@@ -237,11 +237,13 @@ function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemor
   return parsed.success ? parsed.data : memory
 }
 
-// A stored setting that no longer parses reads as never configured, so a read never fails on it.
-function computerUseOf(value: unknown): AgentComputerUse | undefined {
-  if (value === null || value === undefined) return undefined
-  const parsed = AgentComputerUse.safeParse(value)
-  return parsed.success ? parsed.data : undefined
+// Only the managed mode is the agent's; a pre-migration row switched off kept nothing on, and an unreadable one reads as none.
+function computerUseOf(value: unknown): AgentComputerSetting | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const { managed, enabled } = value as { managed?: unknown; enabled?: unknown }
+  if (enabled === false) return undefined
+  const parsed = AgentComputerSetting.safeParse(managed === undefined ? {} : { managed })
+  return parsed.success && parsed.data.managed ? parsed.data : undefined
 }
 
 // A stored policy that no longer parses reads as never configured, so a read never fails on it.

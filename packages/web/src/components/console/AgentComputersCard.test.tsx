@@ -9,8 +9,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   agent: undefined as unknown,
   computers: [] as unknown[],
-  updateAgent: vi.fn(),
-  setComputerPolicy: vi.fn(),
+  addComputerAgent: vi.fn(),
+  removeComputerAgent: vi.fn(),
+  refresh: vi.fn(),
   mutate: vi.fn()
 }))
 
@@ -19,7 +20,7 @@ vi.mock('next/link', () => ({
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (p: string) => `/acme${p}` }) }))
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ getAgent: () => mocks.agent, updateAgent: mocks.updateAgent })
+  useConsoleData: () => ({ getAgent: () => mocks.agent, refresh: mocks.refresh })
 }))
 vi.mock('@/lib/computers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/computers')>()),
@@ -27,7 +28,8 @@ vi.mock('@/lib/computers', async (importOriginal) => ({
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
-  setComputerPolicy: mocks.setComputerPolicy
+  addComputerAgent: mocks.addComputerAgent,
+  removeComputerAgent: mocks.removeComputerAgent
 }))
 
 const { AgentComputersCard } = await import('./AgentComputersCard')
@@ -39,55 +41,64 @@ function render(canEdit = true): HTMLDivElement {
   return host
 }
 
+const menuItems = () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+const openMenu = (el: HTMLElement) =>
+  act(() => [...el.querySelectorAll('button')].find((b) => b.getAttribute('aria-haspopup') === 'menu')!.click())
+
 beforeEach(() => {
-  mocks.updateAgent.mockReset().mockResolvedValue(undefined)
-  mocks.setComputerPolicy.mockReset().mockResolvedValue(undefined)
-  mocks.mutate.mockReset()
+  mocks.addComputerAgent.mockReset().mockResolvedValue(undefined)
+  mocks.removeComputerAgent.mockReset().mockResolvedValue(undefined)
+  mocks.refresh.mockReset()
+  mocks.mutate.mockReset().mockResolvedValue(undefined)
   mocks.agent = { id: 'a1' }
   mocks.computers = [computerFixture()]
   document.body.innerHTML = ''
 })
 
 describe('AgentComputersCard', () => {
-  it('turns computer use on for the agent', async () => {
+  it('lists no computer until one gives the agent access, and adds one the caller can edit', async () => {
+    mocks.computers = [computerFixture(), computerFixture({ id: 'c2', name: 'not-mine', canEditAgentAccess: false })]
     const el = render()
-    expect(el.textContent).toContain('Computer use is off')
-    await act(async () => el.querySelector<HTMLButtonElement>('button[role="switch"]')!.click())
-    expect(mocks.updateAgent).toHaveBeenCalledWith('a1', { computerUse: { enabled: true, computers: [] } })
-    expect(el.textContent).toContain('No computers picked')
-  })
-
-  it('shows whether each picked computer grants the agent, and lets its owner grant it', async () => {
-    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: ['c1'] } }
-    const el = render()
-    expect(el.textContent).toContain('waiting for its owner to grant this agent')
-    const grant = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Grant')!
-    await act(async () => grant.click())
-    expect(mocks.setComputerPolicy).toHaveBeenCalledWith('c1', expect.objectContaining({ allowedAgents: ['a1'] }))
+    expect(el.textContent).toContain('No computers yet')
+    openMenu(el)
+    expect(menuItems().map((b) => b.textContent)).toEqual([expect.stringContaining('ubuntu-desk')])
+    await act(async () => menuItems()[0]!.click())
+    expect(mocks.addComputerAgent).toHaveBeenCalledWith('c1', 'a1')
     expect(mocks.mutate).toHaveBeenCalled()
+    expect(mocks.refresh).toHaveBeenCalled()
   })
 
-  it('offers no grant to someone who is not the computer’s owner, and no edits without rights', () => {
-    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: ['c1'] } }
-    mocks.computers = [computerFixture({ canEditPolicy: false })]
-    const el = render(false)
-    expect([...el.querySelectorAll('button')].some((b) => b.textContent === 'Grant')).toBe(false)
-    expect(el.querySelector<HTMLButtonElement>('button[role="switch"]')!.disabled).toBe(true)
-    expect(el.querySelector('button[title="Remove from agent"]')).toBeNull()
+  it('shows the computers that grant the agent and takes away a Selected one', async () => {
+    mocks.computers = [computerFixture({ agentAccess: { mode: 'selected', agents: ['a1'] } })]
+    const el = render()
+    expect(el.textContent).toContain('ubuntu-desk')
+    expect(el.textContent).toContain('selected agents')
+    await act(async () =>
+      el.querySelector<HTMLButtonElement>('button[title="Take away this agent\'s access"]')!.click()
+    )
+    expect(mocks.removeComputerAgent).toHaveBeenCalledWith('c1', 'a1')
   })
 
-  it('shows a change made elsewhere once the saved value has caught up', async () => {
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    const draw = () => act(() => root.render(<AgentComputersCard agentId="a1" canEdit />))
-    draw()
-    await act(async () => host.querySelector<HTMLButtonElement>('button[role="switch"]')!.click())
-    expect(host.textContent).toContain('No computers picked')
-    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: [] } }
-    draw()
-    mocks.agent = { id: 'a1', computerUse: { enabled: false, computers: [] } }
-    draw()
-    expect(host.textContent).toContain('Computer use is off')
+  it('shows a computer granted to all agents without a remove, and never offers it', () => {
+    mocks.computers = [
+      computerFixture({ agentAccess: { mode: 'all', agents: [] } }),
+      computerFixture({ id: 'c2', name: 'shared-all', agentAccess: { mode: 'all', agents: [] } })
+    ]
+    const el = render()
+    expect(el.textContent).toContain('all agents')
+    expect(el.querySelector('button[title="Take away this agent\'s access"]')).toBeNull()
+    openMenu(el)
+    expect(document.body.textContent).toContain('No more computers you can give it')
+  })
+
+  it('offers no change on a computer the caller cannot edit, and names one they cannot see', () => {
+    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: ['c1', 'c9'] } }
+    mocks.computers = [
+      computerFixture({ agentAccess: { mode: 'selected', agents: ['a1'] }, canEditAgentAccess: false })
+    ]
+    const el = render()
+    expect(el.querySelector('button[title="Take away this agent\'s access"]')).toBeNull()
+    expect(el.textContent).toContain("A computer you can't see")
+    expect(el.textContent).toContain('c9')
   })
 })

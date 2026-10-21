@@ -102,6 +102,7 @@ import { DaemonAuthService } from '../../src/registry/authService.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
 import { ComputerService } from '../../src/registry/computerService.js'
+import { computerAccessFanOut } from '../../src/orchestrator/computerAccessFanOut.js'
 import type { ComputerScreenshots } from '../../src/registry/computerScreenshots.js'
 import { ComputerAuditLog } from '../../src/registry/computerAuditLog.js'
 import { ComputerChannelGrants } from '../../src/registry/computerChannelGrants.js'
@@ -308,18 +309,16 @@ export function buildHttpApp(
   const epoch = new EpochService(daemonRepo, clock)
   const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock)
   const computerRepo = new PgComputerRepo(prisma)
+  const agentRepoForComputers = new PgAgentRepo(prisma)
   // A whole ComputerScreenshots also shortens retention on a policy change, as the container wires it.
   const screenshots = depsOverrides?.computerScreenshots
-  const computerService = new ComputerService(
-    codec,
-    computerRepo,
-    apiKeyRepo,
-    auditRepo,
-    clock,
-    screenshots && 'applyRetention' in screenshots
+  const computerService = new ComputerService(codec, computerRepo, apiKeyRepo, auditRepo, clock, {
+    ...(screenshots && 'applyRetention' in screenshots
       ? { screenshots: screenshots as Pick<ComputerScreenshots, 'applyRetention'> }
-      : {}
-  )
+      : {}),
+    // Late-bound like the container: the delivery fan-out is assembled below.
+    onAgentAccessChanged: computerAccessFanOut({ agents: agentRepoForComputers, delivery: () => agentDelivery })
+  })
   const computerAudit = new ComputerAuditLog(new PgComputerAuditRepo(prisma), clock)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(TEST_API_KEY_PEPPER),
@@ -432,7 +431,8 @@ export function buildHttpApp(
     giteaSeam?.api.baseUrl,
     { routings: codeHostDecisionRoutingRepo, hooks: hookRepo },
     agentInstallationAuthRepo,
-    new PgDecisionRepo(prisma)
+    new PgDecisionRepo(prisma),
+    computerRepo
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
