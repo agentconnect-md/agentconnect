@@ -32,7 +32,8 @@ function sandbox(bundleSha: string) {
   exe(join(bin, 'sha256sum'), `echo "${bundleSha}  $1"`)
   exe(
     join(bin, 'curl'),
-    `while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done
+    `[ "$1" = --help ] && { echo ' --retry-all-errors'; exit 0; }
+while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done
 echo "$1" >> "${root}/fetched"
 file="${served}/$(basename "$1")"
 [ -f "$file" ] || exit 22

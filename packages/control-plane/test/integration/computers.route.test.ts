@@ -623,8 +623,8 @@ describe('visibility and policy', () => {
 describe('Linux installer', () => {
   const sha = createHash('sha256').update('bundle-bytes').digest('hex')
   const dist: DesktopDistribution = {
-    bundle: Buffer.from('bundle-bytes'),
-    legal: Buffer.from('MIT notices'),
+    bundle: 'bundle-bytes',
+    legal: 'MIT notices',
     sha256: sha,
     linuxInstaller: (base) => `CP_URL='${assertInstallerBaseUrl(base)}' SHA='${sha}'`
   }

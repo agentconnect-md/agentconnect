@@ -28,7 +28,11 @@ usage() {
 # Downloads $1 to $2 with curl, or with wget, which a fresh Ubuntu desktop has instead; a stalled transfer retries.
 fetch() {
   if command -v curl > /dev/null 2>&1; then
-    curl -fL --progress-bar --retry 5 --retry-all-errors --connect-timeout 20 --speed-limit 1024 --speed-time 30 \
+    # --retry-all-errors needs curl 7.71; RHEL 8 and Ubuntu 20.04 ship older ones that reject it.
+    retry_all=''
+    if curl --help all 2> /dev/null | grep -q -- '--retry-all-errors'; then retry_all='--retry-all-errors'; fi
+    # shellcheck disable=SC2086
+    curl -fL --progress-bar --retry 5 $retry_all --connect-timeout 20 --speed-limit 1024 --speed-time 30 \
       -o "$2" "$1"
   elif command -v wget > /dev/null 2>&1; then
     wget -q --show-progress --tries=5 --timeout=30 -O "$2" "$1"

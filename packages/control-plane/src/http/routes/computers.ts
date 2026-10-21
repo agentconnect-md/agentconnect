@@ -585,8 +585,7 @@ export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } 
             req.params.file === DESKTOP_BUNDLE_FILE ? 'text/javascript; charset=utf-8' : 'text/plain; charset=utf-8'
           )
         if (req.headers['if-none-match'] === etag) return reply.code(304).send(null)
-        // Both files are UTF-8 text, so the decoded string re-encodes to the bytes the ETag hashes.
-        return reply.send(body.toString('utf8'))
+        return reply.send(body)
       }
     )
     r.post(

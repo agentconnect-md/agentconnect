@@ -145,8 +145,8 @@ export function serviceStatus(): { installed: boolean; loaded: boolean; pid?: nu
 export type Answer = boolean | undefined
 
 export interface SessionProbe {
-  /** Whether logind knows this session as a graphical one (x11, wayland). */
-  graphical(id: string): Promise<Answer>
+  /** Whether logind knows this session as a graphical one (x11, wayland); null when the session is already gone. */
+  graphical(id: string): Promise<Answer | null>
   /** Whether logind still has this session open; a closing or unknown-to-logind session counts as ended. */
   live(id: string): Promise<Answer>
   /** The session the manager would start the unit for now. */
@@ -191,7 +191,7 @@ export async function sessionProperty(id: string, property: string, exec = run):
 export const logindProbe: SessionProbe = {
   async graphical(id) {
     const type = await sessionProperty(id, 'Type')
-    return type === undefined ? undefined : type !== null && GRAPHICAL_TYPES.has(type)
+    return type == null ? type : GRAPHICAL_TYPES.has(type)
   },
   async live(id) {
     const state = await sessionProperty(id, 'State')
@@ -234,6 +234,8 @@ export function watchSession(options: {
         // Unanswered: ask again next tick rather than stop following for good.
         if (graphical === undefined) return
         checked = true
+        // Already gone, as after a logout before a restart: take the end path rather than run unwatched.
+        if (graphical === null) return await end()
         if (!graphical) {
           stop()
           options.onIgnored?.(`session ${options.session} is not a graphical session; not following it`)
@@ -243,18 +245,21 @@ export function watchSession(options: {
       const live = await probe.live(options.session)
       if (live === true) unknown = 0
       if (live === true || (live === undefined && ++unknown < UNKNOWN_LIMIT)) return
-      const next = await probe.managerSession()
-      if (next && next !== options.session && (await probe.live(next)) === true) {
-        stop()
-        options.onEnded(EXIT_NEW_SESSION, `desktop session ${options.session} ended; restarting in session ${next}`)
-        return
-      }
-      await probe.forget(options.session)
-      stop()
-      options.onEnded(0, `desktop session ${options.session} ended`)
+      await end()
     } finally {
       busy = false
     }
+  }
+  const end = async (): Promise<void> => {
+    const next = await probe.managerSession()
+    if (next && next !== options.session && (await probe.live(next)) === true) {
+      stop()
+      options.onEnded(EXIT_NEW_SESSION, `desktop session ${options.session} ended; restarting in session ${next}`)
+      return
+    }
+    await probe.forget(options.session)
+    stop()
+    options.onEnded(0, `desktop session ${options.session} ended`)
   }
   const timer = setInterval(() => void tick(), options.intervalMs ?? 5000)
   timer.unref()

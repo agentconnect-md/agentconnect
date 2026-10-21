@@ -27,6 +27,11 @@ describe('desktop distribution', () => {
     expect(loadDesktopDistribution(bundleDir({ [DESKTOP_LINUX_INSTALLER_FILE]: TEMPLATE }))).toBeUndefined()
   })
 
+  it('fails loudly when an explicitly configured directory lacks the bundle or the installer', () => {
+    expect(() => loadDesktopDistribution(bundleDir({ [DESKTOP_BUNDLE_FILE]: 'x' }), true)).toThrow(/lacks/)
+    expect(() => loadDesktopDistribution(join(tmpdir(), 'no-such-desktop-bundle'), true)).toThrow(/lacks/)
+  })
+
   it('fills the installer with the base URL and the bundle checksum', () => {
     const dist = loadDesktopDistribution(
       bundleDir({
@@ -37,7 +42,8 @@ describe('desktop distribution', () => {
     )!
     const sha = createHash('sha256').update('bundle').digest('hex')
     expect(dist.sha256).toBe(sha)
-    expect(dist.legal?.toString()).toBe('MIT')
+    expect(dist.bundle).toBe('bundle')
+    expect(dist.legal).toBe('MIT')
     expect(dist.linuxInstaller('https://cp.example.com/cp/')).toBe(
       `#!/bin/sh\nCP_URL='https://cp.example.com/cp'\nBUNDLE_SHA256='${sha}'\n`
     )

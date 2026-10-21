@@ -681,7 +681,9 @@ export function buildContainer(
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
   const computerAudit = new ComputerAuditLog(repos.computerAudit, clock)
-  const desktopDistribution = loadDesktopDistribution(config.COMPUTER_DESKTOP_BUNDLE_DIR ?? defaultDesktopBundleDir())
+  const desktopDistribution = config.COMPUTER_DESKTOP_BUNDLE_DIR
+    ? loadDesktopDistribution(config.COMPUTER_DESKTOP_BUNDLE_DIR, true)
+    : loadDesktopDistribution(defaultDesktopBundleDir())
   // Screenshot storage (computer-use.md §9): this process signs and checks; desktops upload and browsers read straight from the bucket.
   const screenshotsConfig = loadComputerScreenshotsConfig({ AC_COMPUTER_SCREENSHOTS: config.AC_COMPUTER_SCREENSHOTS })
   const computerScreenshots = screenshotsConfig

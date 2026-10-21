@@ -98,6 +98,14 @@ describe('Linux service', () => {
     expect(p.forgotten).toEqual([])
   })
 
+  it('ends at once for a session that is already gone, as on a restart after logout', async () => {
+    const p = { ...probe({}, '7'), graphical: async () => null }
+    expect(await ended(p, 1000)).toEqual({ code: 0, reason: 'desktop session 7 ended' })
+    expect(p.forgotten).toEqual(['7'])
+    const q = { ...probe({ '9': true }, '9'), graphical: async () => null }
+    expect((await ended(q, 1000))?.code).toBe(EXIT_NEW_SESSION)
+  })
+
   it('does not follow a newer session that has ended too', async () => {
     const p = probe({}, '9')
     expect((await ended(p))?.code).toBe(0)

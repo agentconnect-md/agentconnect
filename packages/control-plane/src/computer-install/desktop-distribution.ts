@@ -9,8 +9,9 @@ export const DESKTOP_LEGAL_FILE = `${DESKTOP_BUNDLE_FILE}.LEGAL.txt`
 export const DESKTOP_LINUX_INSTALLER_FILE = 'install-linux.sh'
 
 export interface DesktopDistribution {
-  bundle: Buffer
-  legal?: Buffer
+  /** Decoded once at boot so each download sends the same string instead of decoding the bundle again. */
+  bundle: string
+  legal?: string
   /** Hex sha256 of the bundle, which the installer checks before running it. */
   sha256: string
   /** The Linux installer with this CP's public base URL and the bundle checksum filled in. */
@@ -38,19 +39,25 @@ function readOptional(path: string): Buffer | undefined {
   }
 }
 
-/** Loads the built desktop bundle and installer from `dir`, or undefined when this deployment ships none. */
-export function loadDesktopDistribution(dir: string): DesktopDistribution | undefined {
+/** Loads the built desktop bundle and installer from `dir`; undefined when it ships none, unless `required` (an explicit dir). */
+export function loadDesktopDistribution(dir: string, required = false): DesktopDistribution | undefined {
   const bundle = readOptional(join(dir, DESKTOP_BUNDLE_FILE))
   const template = readOptional(join(dir, DESKTOP_LINUX_INSTALLER_FILE))?.toString('utf8')
-  if (!bundle || template === undefined) return undefined
+  if (!bundle || template === undefined) {
+    if (!required) return undefined
+    throw new Error(
+      `COMPUTER_DESKTOP_BUNDLE_DIR ${dir} lacks ${DESKTOP_BUNDLE_FILE} or ${DESKTOP_LINUX_INSTALLER_FILE}`
+    )
+  }
   if (!template.includes('@CP_URL@') || !template.includes('@BUNDLE_SHA256@')) {
     throw new Error(`${join(dir, DESKTOP_LINUX_INSTALLER_FILE)} lacks its @CP_URL@ / @BUNDLE_SHA256@ placeholders`)
   }
   const legal = readOptional(join(dir, DESKTOP_LEGAL_FILE))
   const sha256 = createHash('sha256').update(bundle).digest('hex')
   return {
-    bundle,
-    ...(legal ? { legal } : {}),
+    // Both files are UTF-8 text, so the string re-encodes to the bytes the checksum hashes.
+    bundle: bundle.toString('utf8'),
+    ...(legal ? { legal: legal.toString('utf8') } : {}),
     sha256,
     linuxInstaller: (cpBaseUrl) =>
       template.replaceAll('@CP_URL@', assertInstallerBaseUrl(cpBaseUrl)).replaceAll('@BUNDLE_SHA256@', sha256)
