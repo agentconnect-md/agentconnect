@@ -144,8 +144,19 @@ async function control(
   }
   if (path === '/control/doctor' && req.method === 'GET') {
     const captureMs = Math.min(Number(query.get('captureTimeoutMs')) || 15_000, 180_000)
+    // The child checks this daemon where it listens, which `--port` / PORT may have moved from the config's.
     const output = await runSelf(
-      ['doctor', '--json', '--here', '--capture-timeout', String(captureMs)],
+      [
+        'doctor',
+        '--json',
+        '--here',
+        '--capture-timeout',
+        String(captureMs),
+        '--host',
+        options.host,
+        '--port',
+        String(options.port)
+      ],
       captureMs + 90_000
     )
     return send(res, 200, [...(JSON.parse(output) as Check[]), ...(options.localChecks?.() ?? [])])

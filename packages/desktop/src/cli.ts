@@ -471,7 +471,11 @@ function startCpChannel(options: {
   let doctorTimer: NodeJS.Timeout | undefined
   const runDoctor = async (): Promise<void> => {
     try {
-      const output = await runSelf(['doctor', '--json', '--here'], 120_000)
+      // Where this daemon listens, which `--port` / PORT may have moved from the config's.
+      const output = await runSelf(
+        ['doctor', '--json', '--here', '--host', config.host, '--port', String(config.port)],
+        120_000
+      )
       checks = localizeChecks(JSON.parse(output) as Check[])
       doctorAt = new Date()
       client.beat()
