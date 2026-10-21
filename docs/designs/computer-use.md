@@ -28,7 +28,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 7   | Permissions                        | Per-Computer visibility and grants with `view` / `control` modes; approvals for risky actions; hard refusals for system security surfaces and dangerous shortcuts (§4)                         | Refusals validated; approvals implemented         |
 | 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
-| 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray not built) |
+| 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray: X11 only) |
 | 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop; embedded in the console, direct first then TURN (§7)                                      | Implemented                                       |
 | 12  | Screenshots                        | Returned as MCP `image` content; stored in the object store with configurable retention and billing (§9)                                                                                       | Implemented (masking is design)                   |
 | 13  | Runtimes without MCP image support | Computer use is disabled; no OCR or accessibility-tree fallback                                                                                                                                | Unchanged                                         |
@@ -173,7 +173,8 @@ flowchart LR
 - **Computer core**: leases, human arbitration, owner pause, `uncertain` handling, a JSONL audit log (§4–§6).
 - **Screen stream**: one shared capture that the first viewer starts and the last one stops (§7).
 - **Keep-awake**: keeps the display awake while running (§3.4).
-- **Local UI**: the prototype uses its console window (title and keys) as indicator and emergency stop; a tray or menu bar remains the goal (§6).
+- **Local UI**: the console window (title and keys) is the indicator and emergency stop; on X11 a tray icon, a global
+  stop hotkey and keyboard activity detection join it (§6); a macOS menu bar and a Windows tray remain the goal.
 
 ### 3.2 Process shape, identity, and OS grants
 
@@ -705,12 +706,23 @@ says this, and how to read each error, in the standing instructions of every ses
 ## 6. Sharing the desktop with a human
 
 - **Input arbitration [validated]**: the daemon polls the cursor; when the pointer moves without the agent causing it,
-  input tools return `human_active` for `humanIdleSeconds` (5). Screenshots are unaffected. Keyboard activity is not
-  detected yet [to do].
+  input tools return `human_active` for `humanIdleSeconds` (5). Screenshots are unaffected.
+  **[implemented, X11]** Keyboard and mouse buttons count too: the daemon selects XInput2 raw key and button presses on
+  the root window (XI 2.1 or newer, so other clients' grabs do not hide them), skips events whose source device is an
+  XTEST device (Cua Driver, the viewer's input and xdotool all type through XTEST), and keeps only the time of the last
+  press, never which key. Capabilities report `humanActivity: 'pointer+keyboard'`; a desktop without it reads as
+  `pointer`. Wayland cannot listen globally and is #3221; macOS and Windows come with M3 and M4.
 - **Owner pause / emergency stop [validated]**: press `p` in the console window, or run `agentconnect-desktop pause`
   (over the loopback `/control`). While paused, input returns `human_in_control` and screenshots continue; `r` /
   `resume` resumes. The release adds a local global hotkey, a tray / menu bar Stop, and a console Stop; any of them
   revokes the lease and enters `paused` until the owner resumes [design].
+  **[implemented, X11]** The stop hotkey (`stopHotkey`, default `Ctrl+Alt+Shift+Escape`, grabbed on the root window
+  under every Caps Lock and Num Lock state) and the tray's "Stop all agent input" pause the desktop, which drops the
+  local lease; the next heartbeat reports `paused`, so the CP ends its lease too. Either also ends a console viewer's
+  takeover, since the person at the machine outranks a remote one. The tray's "Resume agent input" appears only for a
+  pause made on this machine (tray, hotkey, `pause`, console window), never for a console Stop or a takeover, and no
+  agent can reach it: agent input is refused while paused. A hotkey another app holds, or no tray, shows as a `warn`
+  doctor check.
   **[implemented]** The console Stop: `POST /orgs/:orgId/computers/:id/stop` (anyone who may revoke the Computer) sets
   `stoppedAt` on the Computer, ends its lease, and refuses every acquire with `human_in_control` until
   `POST …/resume` (only the policy's editor, the registrant of a self-hosted Computer, and `interactiveOnly` so no API key
@@ -722,6 +734,11 @@ says this, and how to read each error, in the standing instructions of every ses
   property: any local control an agent can reach may only tighten, never loosen, permissions.
 - **Persistent indicator**: the prototype's console window and title act as the indicator; the release adds a menu bar
   / tray icon and an "<agent> is operating" screen border, and revokes input when the indicator cannot be shown [design].
+  **[implemented, X11]** A StatusNotifierItem tray icon over the session bus (`src/linux/tray.ts`, a minimal D-Bus
+  client with no native binding): green while ready, amber with "controlled by <holder>" while an agent holds the
+  lease, red with pause bars while paused, grey while the Control Plane's authority is missing. It registers again when
+  the panel restarts. Xfce's Status Tray plugin shows it; a virtual display (Xvfb, §3.8) gets none. The screen border
+  and revoking input without an indicator are not built yet.
 - **Takeover [validated]**: a human at the machine just uses it; a remote human takes over through the viewer (§7.3).
   Meanwhile agent input returns `human_in_control` and screenshots continue.
 
@@ -1080,9 +1097,10 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
    agent setting.
 6. **Linux productization**: `setup --register`; a one-line `install.sh` (**[implemented]** for X11 with the pinned
    Node runtime, §3.5; GNOME Wayland is #3221); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
-   Wayland); keyboard activity detection (XInput2 raw events on X11; Wayland cannot listen globally, so capabilities say
-   pointer only); local indicator and stop (StatusNotifier tray plus a global hotkey; on GNOME as far as the extension
-   allows); Wayland IME text (clipboard paste behind a policy switch, §17-5).
+   Wayland); keyboard activity detection (XInput2 raw events on X11 **[implemented]**, §6; Wayland cannot listen
+   globally, so capabilities say pointer only); local indicator and stop (StatusNotifier tray plus a global hotkey
+   **[implemented]** for X11, §6; on GNOME as far as the extension allows); Wayland IME text (clipboard paste behind a
+   policy switch, §17-5). The GNOME Wayland parts are #3221.
 
 **Acceptance**:
 

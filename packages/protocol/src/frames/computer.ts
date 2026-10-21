@@ -112,6 +112,8 @@ export const ComputerCapabilitiesSchema = z.object({
   screenshot: z.boolean().default(false),
   input: z.boolean().default(false),
   textInput: z.enum(['full', 'keymap-only']).default('full'),
+  // Which human input pauses agents (§6); absent reads as pointer only, what older desktops detect.
+  humanActivity: z.enum(['pointer', 'pointer+keyboard']).optional(),
   backgroundInput: z.boolean().default(false),
   accessibilityTree: z.boolean().default(false),
   viewer: z.boolean().default(false),

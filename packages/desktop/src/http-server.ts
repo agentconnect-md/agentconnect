@@ -6,7 +6,9 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import type { Computer } from './computer.js'
 import type { McpPrincipal } from './mcp-access.js'
 import { controlHost, isLoopbackHost, isWildcardHost } from './config.js'
+import { LOCAL_OWNER_STOP_REASON } from './local-controls.js'
 import { runSelf } from './self.js'
+import type { Check } from './setup.js'
 import type { Viewer } from './viewer.js'
 
 export const CONTROL_HEADER = 'x-agentconnect-desktop'
@@ -23,6 +25,8 @@ export interface HttpServerOptions {
   log: (line: string) => void
   // Browser remote desktop under /view; its page is public, its API uses the same bearer tokens.
   viewer?: Viewer
+  // Checks only the running daemon can answer (its tray and hotkey), appended to doctor's.
+  localChecks?: () => Check[]
 }
 
 export interface RunningHttpServer {
@@ -144,10 +148,10 @@ async function control(
       ['doctor', '--json', '--here', '--capture-timeout', String(captureMs)],
       captureMs + 90_000
     )
-    return send(res, 200, JSON.parse(output))
+    return send(res, 200, [...(JSON.parse(output) as Check[]), ...(options.localChecks?.() ?? [])])
   }
   if (path === '/control/pause' && req.method === 'POST') {
-    computer.pause('stopped by the local owner')
+    computer.pause(LOCAL_OWNER_STOP_REASON)
     options.log('PAUSED by local owner: all agent input is blocked until resume')
     return send(res, 200, computer.info())
   }

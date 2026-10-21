@@ -435,6 +435,11 @@ export class Computer {
     this.cursorBaseline = position
   }
 
+  // A person pressed a key or button here (X11 raw input, never the driver's synthetic events).
+  noteHumanInput(): void {
+    this.lastHumanAt = this.now()
+  }
+
   private async readCursor(): Promise<{ x: number; y: number } | undefined> {
     const result = await this.driver.call('get_cursor_position', {})
     const x = result.structuredContent?.x

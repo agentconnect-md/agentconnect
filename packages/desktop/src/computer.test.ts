@@ -163,6 +163,18 @@ describe('Computer', () => {
     expect((await computer.click('claude', { x: 1, y: 1 })).isError).toBeUndefined()
   })
 
+  it('reports human_active after a key or button the person pressed, even before any lease', async () => {
+    const { computer, driver, advance } = setup({ actionScreenshot: false })
+    computer.noteHumanInput()
+    expect(errorOf(await computer.type('claude', { text: 'hi' }))).toMatchObject({
+      error: 'human_active',
+      retryAfterMs: 5000
+    })
+    expect(driver.inputCalls().filter((name) => name === 'type_text')).toEqual([])
+    advance(5_001)
+    expect((await computer.type('claude', { text: 'hi' })).isError).toBeUndefined()
+  })
+
   it('does not treat its own pointer moves as human input', async () => {
     const { computer, driver } = setup({ actionScreenshot: false })
     driver.handlers.move_cursor = (args) => {

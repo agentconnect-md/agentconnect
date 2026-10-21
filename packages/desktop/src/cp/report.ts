@@ -89,7 +89,7 @@ export interface DisplayInfo {
 export function capabilitiesFrom(
   checks: Check[] | undefined,
   display: DisplayInfo | undefined,
-  options: { platform?: NodeJS.Platform; session?: ComputerSession; webrtc?: boolean } = {}
+  options: { platform?: NodeJS.Platform; session?: ComputerSession; webrtc?: boolean; keyboardActivity?: boolean } = {}
 ): ComputerCapabilities {
   const platform = options.platform ?? process.platform
   const status = (name: string) => checks?.find((check) => check.name === name)?.status
@@ -112,6 +112,7 @@ export function capabilitiesFrom(
     input: driver && (platform !== 'darwin' || accessibility === true),
     // libei on GNOME Wayland sends keycodes only, so IME text is dropped (§3.2.3).
     textInput: options.session === 'wayland-gnome' ? 'keymap-only' : 'full',
+    humanActivity: options.keyboardActivity ? 'pointer+keyboard' : 'pointer',
     backgroundInput: false,
     accessibilityTree: false,
     viewer: options.webrtc !== false && ok('ffmpeg') && ok('screen capture'),

@@ -16,6 +16,7 @@ export function computerFixture(over: Partial<ComputerDto> = {}): ComputerDto {
       screenshot: true,
       input: true,
       textInput: 'full',
+      humanActivity: 'pointer+keyboard',
       backgroundInput: false,
       accessibilityTree: true,
       viewer: true,
