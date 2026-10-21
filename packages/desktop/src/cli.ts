@@ -1036,7 +1036,7 @@ async function setup(
     !ok
       ? `Fix the failed checks, then run: ${selfCommand()} doctor`
       : withService && serviceRunning
-        ? `The daemon runs as a background service: ${selfCommand()} service status | restart | stop`
+        ? `The daemon runs as a background service: ${selfCommand()}${managedEntry() ? '' : ' service'} status | restart | stop`
         : `Start the daemon with: ${selfCommand()} run`
   )
   if (!ok) process.exitCode = 1

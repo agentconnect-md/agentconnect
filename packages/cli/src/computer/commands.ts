@@ -214,7 +214,13 @@ export async function uninstall(ctx: ComputerContext, purge: boolean): Promise<v
       () => {
         // The link goes first: once its versions are gone, a dangling link fails rmSync's existence check and stays.
         removeLink(currentLink(ctx.root))
-        for (const path of [versionsDir(ctx.root), versionsJsonPath(ctx.root), join(ctx.root, 'app')])
+        // `app/` and `runtime/` are the earlier one-line installer's bundle and pinned Node.
+        for (const path of [
+          versionsDir(ctx.root),
+          versionsJsonPath(ctx.root),
+          join(ctx.root, 'app'),
+          join(ctx.root, 'runtime')
+        ])
           rmSync(path, { recursive: true, force: true })
       },
       { wait: true }
