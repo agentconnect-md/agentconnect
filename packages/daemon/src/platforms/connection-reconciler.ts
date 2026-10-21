@@ -58,6 +58,7 @@ import { consolidateLinear, linearConnKey, LinearConnection } from './linear/con
 import { consolidateGoogleChat, GoogleChatConnection } from './googlechat/connection.js'
 import type { GoogleChatWriteBudgets } from './googlechat/write-budget.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
+import { consolidateDingTalk, DingTalkConnection, dingTalkConnKey } from './dingtalk/connection.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
@@ -76,6 +77,7 @@ export type PlatformConnection =
   | LinearConnection
   | QQConnection
   | GoogleChatConnection
+  | DingTalkConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -155,6 +157,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     feishu: ReadonlyMap<string, FeishuConnection>
     linear: ReadonlyMap<string, LinearConnection>
     qq?: ReadonlyMap<string, QQConnection>
+    dingtalk?: ReadonlyMap<string, DingTalkConnection>
     googlechat: ReadonlyMap<string, GoogleChatConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
@@ -165,6 +168,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindDiscord(integrationId: string, conn: DiscordConnection, botUserId: string): void
   bindFeishu(integrationId: string, conn: FeishuConnection, botOpenId: string): void
   bindQQ?(integrationId: string, conn: QQConnection, botUserId: string): void
+  /** The robot code a mention names, which is the app's Client ID. */
+  bindDingTalk?(integrationId: string, conn: DingTalkConnection, robotCode: string): void
   /** Linear's app user IS the bot identity — the id the ingress self-echo guard matches (§7.2). */
   bindLinear(integrationId: string, conn: LinearConnection, appUserId: string): void
   /** The Chat app's `users/…` identity, once discovered; '' until then. */
@@ -242,6 +247,40 @@ export class ConnectionReconciler {
     }
   }
 
+  // One Stream client per app on this daemon: DingTalk delivers each message to one random connection (dingtalk-integration.md §3.1).
+  readonly dingTalkPool = new ConnectionPool<DingTalkConnection>('dingtalk', (conn) => dingTalkConnKey(conn.group))
+
+  async reconcileDingTalkConnections(): Promise<void> {
+    for (const [key, group] of consolidateDingTalk(this.host.transportAgents())) {
+      let conn = this.dingTalkPool.find(key)
+      if (!conn) {
+        if (!this.dingTalkPool.beginConnect(key)) continue
+        conn = new DingTalkConnection(group, {
+          log: this.log,
+          onMessage: (msg) => {
+            if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
+            this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
+          }
+        })
+        try {
+          await conn.start()
+          if (this.host.draining() || !consolidateDingTalk(this.host.transportAgents()).has(key)) {
+            await conn.stop()
+            continue
+          }
+          this.dingTalkPool.add(conn)
+        } catch {
+          await conn.stop()
+          this.log.warn('dingtalk: could not open the stream connection; retry on next reconcile')
+          continue
+        } finally {
+          this.dingTalkPool.endConnect(key)
+        }
+      }
+      for (const { integrationId } of group.integrations) this.host.bindDingTalk?.(integrationId, conn, conn.botUserId)
+    }
+  }
+
   // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
   // own opaque identity function. The pool owns the live set AND the in-flight
   // connect guard: a key is claimed BEFORE `await conn.start()` and released when
@@ -298,7 +337,8 @@ export class ConnectionReconciler {
       this.feishuPool,
       this.linearPool,
       this.QQPool,
-      this.googleChatPool
+      this.googleChatPool,
+      this.dingTalkPool
     ]
   }
 
@@ -474,8 +514,13 @@ export class ConnectionReconciler {
     const QQByIntegration = new Map<string, string>()
     for (const [key, group] of QQGroups)
       for (const { integrationId } of group.integrations) QQByIntegration.set(integrationId, key)
+    const dingTalkGroups = consolidateDingTalk(agents)
+    const dingTalkByIntegration = new Map<string, string>()
+    for (const [key, group] of dingTalkGroups)
+      for (const { integrationId } of group.integrations) dingTalkByIntegration.set(integrationId, key)
     const allDesiredIds = new Set([
       ...QQByIntegration.keys(),
+      ...dingTalkByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -488,6 +533,9 @@ export class ConnectionReconciler {
     const bindings = this.host.bindings()
     for (const [id, conn] of bindings.qq ?? []) {
       if (QQConnKey(conn.group) !== QQByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.dingtalk ?? []) {
+      if (dingTalkConnKey(conn.group) !== dingTalkByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
@@ -560,6 +608,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.discordPool, new Set([...discord.values()].map(discordConnKey)))
     await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
     await this.prunePool(this.QQPool, new Set(QQGroups.keys()))
+    await this.prunePool(this.dingTalkPool, new Set(dingTalkGroups.keys()))
     await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
     await this.prunePool(this.googleChatPool, new Set(googleChat.keys()))
   }

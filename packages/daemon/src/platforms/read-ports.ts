@@ -198,6 +198,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       attachmentReadTool: QQ_ATTACHMENT_TOOL
     }
   ],
+  ['dingtalk', { platform: 'dingtalk', label: 'DingTalk' }],
   [
     'discord',
     {

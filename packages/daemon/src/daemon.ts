@@ -499,6 +499,10 @@ import { SlackConnection, slackTsToMs, type SlackAppFactory, type SlackStatusOpt
 import { QQConnection } from './platforms/qq/connection.js'
 import { createQQTurnOutput } from './platforms/qq/surface.js'
 import { QQCommandChrome } from './platforms/qq/command-chrome.js'
+import type { DingTalkConnection } from './platforms/dingtalk/connection.js'
+import { createDingTalkTurnOutput } from './platforms/dingtalk/surface.js'
+import { dingTalkCommandChrome } from './platforms/dingtalk/command-chrome.js'
+import { dingTalkPlatformModule } from './platforms/dingtalk/module.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -1665,6 +1669,7 @@ export class Daemon {
     registry.register(feishuCommandChrome)
     registry.register(linearCommandChrome)
     registry.register(QQCommandChrome)
+    registry.register(dingTalkCommandChrome)
     registry.register(googleChatCommandChrome)
     return registry
   })()
@@ -1784,6 +1789,12 @@ export class Daemon {
             monotonicTs: () => monotonicTs()
           })
       })
+      registry.register(
+        createDingTalkTurnOutput({
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          monotonicTs: () => monotonicTs()
+        })
+      )
       // The connection is the egress port, captured at turn start and held by the turn's lease (§5).
       registry.register(
         createGoogleChatTurnOutput({
@@ -1879,6 +1890,7 @@ export class Daemon {
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Feishu conn.
   private fsConnByIntegration = new Map<string, FeishuConnection>()
   private QQConnByIntegration = new Map<string, QQConnection>()
+  private dingTalkConnByIntegration = new Map<string, DingTalkConnection>()
   // integrationId -> the LinearConnection that owns it. Linear's only reply surface is the
   // agent activity feed (§4.6), so this is the egress port every Linear write resolves through.
   private lnConnByIntegration = new Map<string, LinearConnection>()
@@ -2724,6 +2736,7 @@ export class Daemon {
         discord: this.dcConnByIntegration,
         feishu: this.fsConnByIntegration,
         qq: this.QQConnByIntegration,
+        dingtalk: this.dingTalkConnByIntegration,
         linear: this.lnConnByIntegration,
         googlechat: this.gcConnByIntegration
       }),
@@ -2747,6 +2760,7 @@ export class Daemon {
         this.sweepOrphanedApprovalCards(integrationId)
       },
       bindQQ: (id, conn, botId) => this.bind(this.QQConnByIntegration, id, conn, botId),
+      bindDingTalk: (id, conn, robotCode) => this.bind(this.dingTalkConnByIntegration, id, conn, robotCode),
       bindLinear: (integrationId, conn, appUserId) =>
         this.bind(this.lnConnByIntegration, integrationId, conn, appUserId),
       bindGoogleChat: (integrationId, conn, appUserName) => {
@@ -2842,6 +2856,7 @@ export class Daemon {
     this.fsConnByIntegration.delete(integrationId)
     this.lnConnByIntegration.delete(integrationId)
     this.QQConnByIntegration.delete(integrationId)
+    this.dingTalkConnByIntegration.delete(integrationId)
     this.gcConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
@@ -5722,6 +5737,7 @@ export class Daemon {
   /** Phase 27 — Slack connections gate boot; the long-poll/gateway platforms deliberately do not. */
   private async openPlatformConnections(agents: LoadedAgent[]): Promise<void> {
     void this.connections.reconcileQQConnections().catch(() => this.log.warn('qq: initial connect failed'))
+    void this.connections.reconcileDingTalkConnections().catch(() => this.log.warn('dingtalk: initial connect failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -6207,6 +6223,7 @@ export class Daemon {
       await this.connections.reconcileLinearConnections()
       await this.connections.reconcileGoogleChatConnections()
       await this.connections.reconcileQQConnections()
+      await this.connections.reconcileDingTalkConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -13665,7 +13682,8 @@ export class Daemon {
     linearPlatformModule(this.relayIngressHost((integrationId) => this.lnConnByIntegration.get(integrationId))),
     googleChatPlatformModule(this.relayIngressHost((integrationId) => this.gcConnByIntegration.get(integrationId))),
     feishuPlatformModule,
-    telegramPlatformModule
+    telegramPlatformModule,
+    dingTalkPlatformModule
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
@@ -16217,6 +16235,7 @@ export class Daemon {
    */
   private readonly platformTurnEgress = new Map<string, (integrationId?: string) => PlatformConnection | undefined>([
     ['qq', (id) => (id ? this.QQConnByIntegration.get(id) : undefined)],
+    ['dingtalk', (id) => (id ? this.dingTalkConnByIntegration.get(id) : undefined)],
     ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)],
     ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)]
   ])
@@ -23591,6 +23610,7 @@ export class Daemon {
     for (const [id, c] of this.dcConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.QQConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.dingTalkConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.lnConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.gcConnByIntegration) if (c === conn) out.push(id)
     return out
@@ -24311,6 +24331,7 @@ export class Daemon {
       this.connForIntegration(integrationId) ??
       this.lnConnByIntegration.get(integrationId) ??
       this.QQConnByIntegration.get(integrationId) ??
+      this.dingTalkConnByIntegration.get(integrationId) ??
       this.gcConnByIntegration.get(integrationId)
     )
   }

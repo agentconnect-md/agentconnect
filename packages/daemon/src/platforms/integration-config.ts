@@ -25,6 +25,7 @@
 import type { z, ZodType } from 'zod'
 import {
   EMPTY_DECISION_BUNDLE,
+  IntegrationDingTalkConfig,
   IntegrationQQConfig,
   type ChatAuthority,
   type DecisionBundle,
@@ -50,7 +51,8 @@ const CONFIG_SCHEMAS = {
   feishu: FeishuConfigSchema,
   linear: LinearConfigSchema,
   qq: IntegrationQQConfig,
-  googlechat: GoogleChatConfigSchema
+  googlechat: GoogleChatConfigSchema,
+  dingtalk: IntegrationDingTalkConfig
 } as const
 
 /** The union of every platform's validated config, derived from the registry
