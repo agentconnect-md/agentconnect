@@ -218,8 +218,10 @@ upload through the media API (20 MB) and send as image or file messages.
 ### 4.6 Questions and approvals
 
 Questions reuse `ElicitCardFacet` the way QQ does: a numbered text card,
-answered by quoting it with a number or an option label. The quoted message's
-`msgId` identifies the card, so ordinary chat and other quotes settle nothing.
+answered by quoting it with a number or an option label. As in §4.1, the bot
+never learns the card's `msgId`: the facet stores the card's send handle as its
+`processQueryKey` and matches a quote's `originalProcessQueryKey` against it, so
+ordinary chat and other quotes settle nothing.
 Card buttons arrive on the Stream card-callback topic and could replace the
 quote later; they are **unverified**. Tool approvals stay in the Console, with
 a notice in the conversation.
