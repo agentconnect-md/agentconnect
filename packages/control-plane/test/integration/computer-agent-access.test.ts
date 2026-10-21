@@ -257,6 +257,24 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     expect(carolAdds.statusCode).toBe(200)
   })
 
+  it('a removed member’s desktop leaves the specs of the agents it granted, at a new revision', async () => {
+    const [a] = await placedAgents('access-a')
+    const carol = await makeUser('access-carol', 'collaborator')
+    const { app: carolApp } = appAs(carol)
+    const computerId = await register(carolApp)
+    const add = await carolApp.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/agent-access/agents/${a}`
+    })
+    expect(add.statusCode).toBe(200)
+    const before = await revisionOf(a!)
+    const { app: owner, spy } = appAs()
+    expect((await owner.app.inject({ method: 'DELETE', url: `${ORG}/members/${carol}` })).statusCode).toBe(204)
+    expect(await revisionOf(a!)).toBeGreaterThan(before)
+    expect(spy.specOf(a!)).toBeDefined()
+    expect(spy.specOf(a!)?.computerUse ?? null).toBeNull()
+  })
+
   it('a Selected list stops at the cap, and a deleted agent leaves it', async () => {
     const [a, b] = await placedAgents('access-a', 'access-b')
     const { app } = appAs()

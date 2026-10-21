@@ -9,7 +9,7 @@ import type {
   ComputerRepo
 } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
-import { ComputerId, type OrgId } from '../domain/ids.js'
+import { ComputerId, OrgId } from '../domain/ids.js'
 import {
   COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES,
   COMPUTER_REGISTRATION_MAX_TTL_MINUTES,
@@ -77,9 +77,10 @@ export class ComputerService {
     return presentComputerStatus(c, this.clock.now(), this.opts.staleAfterMs ?? COMPUTER_STALE_AFTER_MS)
   }
 
-  /** A removed member's Computers were revoked in the removal transaction; end their live channels too. */
-  memberRemoved(orgId: string, userId: string): void {
+  /** A removed member's Computers were revoked in the removal transaction; end their channels and re-ship the agents that had them. */
+  async memberRemoved(orgId: string, userId: string, affected: 'all' | string[]): Promise<void> {
     this.opts.channels?.revokeOwner(orgId, userId)
+    await this.reship(OrgId(orgId), affected)
   }
 
   async createRegistration(input: {

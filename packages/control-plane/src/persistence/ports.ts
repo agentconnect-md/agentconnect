@@ -6556,9 +6556,9 @@ export interface UserRepo {
    * departing member from Selected audiences and adds a deterministic replacement
    * only where the audience would otherwise become empty. Rechecks membership
    * and, when removing another member, the acting owner's role. Refuses to remove
-   * the final owner before committing.
+   * the final owner before committing. Returns the agents whose derived Computer lists lost the member's Computers.
    */
-  removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
+  removeMember(orgId: string, userId: string, actingUserId: string): Promise<'all' | string[]>
 
   /**
    * Dry-run of `removeMember` for the confirmation dialog: the same replacement

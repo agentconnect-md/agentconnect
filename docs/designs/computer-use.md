@@ -545,7 +545,8 @@ interface ComputerAgentAccess {
   the organization so others can watch therefore lets no collaborator point agents at it, and a viewer, or a member
   who cannot see the Computer, cannot change it from either page. An agent newly listed must be visible to the caller,
   and a Selected list keeps the existing agents the caller cannot see, as an agent's call policy keeps a hidden
-  caller; it lists at most 200 agents (409 past that, so All agents is the way beyond it). Deleting an agent removes it
+  caller; it lists at most 200 agents (409 past that, so All agents is the way beyond it). A member's removal revokes
+  their Computers and bumps and re-ships the agents they granted, as a revoke does. Deleting an agent removes it
   from every Selected list in the same transaction. From the agent's card a member adds or removes only Computers they can edit; a Computer granted to All agents
   shows as such there and is changed on the Computer page (409 from the per-agent routes). Removing an agent's access
   does not touch the agent. Every change is audited as `computer_change` / `agent_access_update` with the access
@@ -555,7 +556,10 @@ managed }`, with `enabled` true when the list is non-empty or a managed mode is 
   older daemons keep working unchanged. A change bumps the `configRevision` of every agent whose list moved (all of
   the organization's agents when either side is All agents) in the same transaction and re-ships their specs, so the
   next new session has the tools without visiting the agent page. Revoking or deleting a Computer takes it off every
-  list the same way. The lease service, the channel grant and screenshot uploads check the same access.
+  list the same way. The lease service, the channel grant and screenshot uploads check the same access. Known limits:
+  the derived list keeps the 32 oldest Computers, so in an organization with more listable ones a newer All-agents
+  Computer is absent from specs without a console notice yet; and a change to or from All agents bumps and re-ships
+  every agent of the organization (concurrently, after the write), a cost that grows with the organization.
 - **Managed computers** (§15.1): a `manual` computer takes agent access like a self-hosted one (`POST
 /computers/pool` accepts `agentAccess`); a `per-agent` or `ephemeral` computer is implicitly Selected for the agent it
   was made for, cannot be changed (409), and is reached through the agent's `managed` mode rather than listed among its
@@ -635,8 +639,9 @@ the neutral notice plus the console and the approval DM. The approval DM goes to
 back to the usual chain. Beside a card in the conversation the owner gets a DM too, unless they are the asker there or
 the editor DM already went to them. On an API turn the caller answers on its own stream, and the owner's DM only says
 that the agent asked and links the session.
-Through `agent/approval-route` the owner is reached, and their answer counts, only while they may edit the agent, which
-is the default since a self-hosted Computer admits only its owner's agents. A refusal, or no live turn to ask on, returns
+Through `agent/approval-route` the owner is reached, and their answer counts, only while they may edit the agent. On a
+self-hosted Computer only its registrant grants agents (§4.1), so an agent they cannot edit acts there only by their
+own choice, and its approvals follow that agent's usual chain until a computer-owner principal joins the route. A refusal, or no live turn to ask on, returns
 a definite `approval_denied` and nothing is sent.
 
 ### 4.3 Hard refusals
@@ -1074,8 +1079,8 @@ and every `computer/policy`.
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
   retention, driver tools; read-only for anyone but the owner), the **Agent access** card (No agents / Selected agents
-  / All agents tiles, pills on a phone, with the selected agents and a "no isolation" mark; editable by any editor of the
-  Computer, fixed for a per-agent or ephemeral one), and, for the owner, the audit as recent activity. An agent's Tools
+  / All agents tiles, pills on a phone, with the selected agents and a "no isolation" mark; editable by the registrant of a
+  self-hosted desktop and by any editor of a managed one, fixed for a per-agent or ephemeral one), and, for the owner, the audit as recent activity. An agent's Tools
   tab carries its **Computers** card: the Computers whose access grants it, each marked selected or all agents, an Add
   menu of the Computers the member can edit, and remove for a Selected one they can edit (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).

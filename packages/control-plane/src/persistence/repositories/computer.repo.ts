@@ -117,6 +117,25 @@ async function bumpAffectedAgents(
   await bumpAgentConfigRevisions(tx, ids)
 }
 
+/** Bumps the agents whose derived lists lose these Computers as they are revoked in `tx`, returning them for the re-ship. */
+export async function bumpAgentsLosingComputersTx(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  computers: readonly Pick<Computer, 'allocation' | 'status' | 'agentAccess' | 'accessAgentIds'>[]
+): Promise<'all' | string[]> {
+  const ids = new Set<string>()
+  for (const c of computers.filter(listable)) {
+    const affected = agentsAffectedByAccess(readAgentAccess(c.agentAccess, c.accessAgentIds), NO_ACCESS)
+    if (affected === 'all') {
+      await bumpAffectedAgents(tx, orgId, { mode: 'all', agents: [] }, NO_ACCESS)
+      return 'all'
+    }
+    affected.forEach((id) => ids.add(id))
+  }
+  await bumpAgentConfigRevisions(tx, [...ids])
+  return [...ids]
+}
+
 // Only a self-hosted or manual Computer is on agents' derived lists; a per-agent or ephemeral one is reached through `managed`.
 const listable = (c: Pick<Computer, 'allocation' | 'status'>): boolean =>
   c.status !== 'revoked' && !agentAccessIsFixed({ allocation: c.allocation ? fromDbAllocation(c.allocation) : null })
