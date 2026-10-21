@@ -65,6 +65,9 @@ RUN AGENTCONNECT_DESKTOP_HOME=/opt/agentconnect/tools node /opt/agentconnect/age
   && chmod 755 /usr/local/bin/agentconnect-desktop
 
 COPY packages/desktop/docker/firefox.prefs /etc/firefox-esr/agentconnect.js
+# A managed pod's browser is locked to the daemon's egress forwarder when AGENTCONNECT_EGRESS_PORT is set (§15.4).
+COPY packages/desktop/docker/firefox-autoconfig.prefs /usr/lib/firefox-esr/defaults/pref/agentconnect-autoconfig.js
+COPY packages/desktop/docker/agentconnect.cfg /usr/lib/firefox-esr/agentconnect.cfg
 RUN useradd --create-home --uid 1000 --shell /bin/bash desktop && mkdir -p -m 1777 /tmp/.X11-unix
 COPY --chmod=755 packages/desktop/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 

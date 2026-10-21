@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  COMPUTER_MEDIA_USAGE_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
@@ -112,6 +113,7 @@ function build(
     onBotCredentialCheck?: ConstructorParameters<typeof RelayConnection>[1]['onBotCredentialCheck']
     /** `null` builds a CP without the tenant handler. */
     onBotTenant?: ConstructorParameters<typeof RelayConnection>[1]['onBotTenant'] | null
+    onComputerMediaUsage?: ConstructorParameters<typeof RelayConnection>[1]['onComputerMediaUsage']
     clock?: Clock
   } = {}
 ) {
@@ -173,6 +175,7 @@ function build(
     onGithubInstallation: vi.fn(async () => {}),
     onPullRequestFeedback,
     onCodeHostFeedback: over.onCodeHostFeedback,
+    ...(over.onComputerMediaUsage ? { onComputerMediaUsage: over.onComputerMediaUsage } : {}),
     relayReg,
     verifyWebchatToken,
     verifyAgentChatKey,
@@ -642,6 +645,36 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(transport.closed).toBeUndefined()
+  })
+
+  it('offers computer media usage only with a handler, which a failing store never closes the link over', async () => {
+    const usage = {
+      from: new Date(NOW - 60_000).toISOString(),
+      to: new Date(NOW).toISOString(),
+      entries: [{ computerId: '44444444-4444-4444-8444-444444444444', bytes: 4096 }]
+    }
+    const without = build()
+    await toReady(without.transport)
+    expect(without.transport.lastRep('rc/registered')!.payload).not.toMatchObject({
+      serverFeatures: expect.arrayContaining([COMPUTER_MEDIA_USAGE_FEATURE])
+    })
+    without.transport.feed('rc/computer-media-usage', usage)
+    await Promise.resolve()
+    expect(without.transport.sent.at(-1)).toMatchObject({ type: 'error' })
+
+    const onComputerMediaUsage = vi.fn(async () => {
+      throw new Error('db down')
+    })
+    const metered = build({ onComputerMediaUsage })
+    await toReady(metered.transport)
+    expect(metered.transport.lastRep('rc/registered')!.payload).toMatchObject({
+      serverFeatures: expect.arrayContaining([COMPUTER_MEDIA_USAGE_FEATURE])
+    })
+    metered.transport.feed('rc/computer-media-usage', usage)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(onComputerMediaUsage).toHaveBeenCalledWith(usage)
+    expect(metered.transport.closed).toBeUndefined()
   })
 
   it('rc/bot-channels in READY reaches the HTTP Slack snapshot handler', async () => {

@@ -14,7 +14,7 @@ metadata:
 spec:
   networkPolicyManagement: Managed
   networkPolicy:
-    # Egress only (DNS and HTTPS): the Control Plane, relays and the web; ingress is the bootstrap policy below.
+    # Egress only: DNS, HTTPS, viewer media to the relays' TURN and STUN, and the egress proxy ports; ingress is the bootstrap policy below.
     egress:
       - ports:
           - protocol: UDP
@@ -24,6 +24,20 @@ spec:
       - ports:
           - protocol: TCP
             port: 443
+          {{- range (include "agentconnect.desktopMediaPorts" . | fromJsonArray) }}
+          - protocol: {{ .protocol }}
+            port: {{ .port }}
+          {{- end }}
+      {{- with $pool.egressPorts }}
+      # Proxy ports reach only egressTo (public addresses by default), never the cluster's own 8080 listeners.
+      - to:
+          {{- toYaml $pool.egressTo | nindent 10 }}
+        ports:
+          {{- range . }}
+          - protocol: TCP
+            port: {{ . }}
+          {{- end }}
+      {{- end }}
   envVarsInjectionPolicy: Disallowed
   volumeClaimTemplatesPolicy: Disallowed
   podTemplate:

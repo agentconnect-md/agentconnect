@@ -35,6 +35,7 @@ import {
 import type { AgentRecord, ComputerRecord, ComputerRepo, ManagedComputerKey } from '../persistence/ports.js'
 import type { ComputerService } from './computerService.js'
 import type { ComputerLeaseService } from './computerLeaseService.js'
+import type { ComputerPlan } from './computerPlan.js'
 
 /** The pool members that hold the cluster credentials; the Control Plane holds none (k8s-daemon-pool.md D17). */
 export interface ComputerPoolMembers {
@@ -65,6 +66,8 @@ export interface ComputerPoolDeps {
   computers: Pick<ComputerService, 'createRegistration' | 'revoke' | 'delete' | 'presentedStatus' | 'accessGranted'>
   leases?: Pick<ComputerLeaseService, 'current' | 'preempt'>
   members: ComputerPoolMembers
+  /** Quotas checked before a desktop starts, and the metering each sweep does (§15.5); absent enforces and meters nothing. */
+  plan?: Pick<ComputerPlan, 'desktopRefusal' | 'accrue'>
   clock: Clock
   timings?: Partial<ComputerPoolTimings>
   /** How often the controller sweeps; 0 arms no timer. */
@@ -95,7 +98,15 @@ const REGISTRATION_REUSE_MARGIN_MS = 60_000
 /** A console action on a managed computer (§10): done, or why not. */
 export type ComputerPoolCommandResult =
   | { ok: true; computer: ComputerRecord }
-  | { ok: false; code: 'not_found' | 'not_allowed' | 'in_use' | 'no_pool' | 'volume_missing'; message: string }
+  | {
+      ok: false
+      code: 'not_found' | 'not_allowed' | 'in_use' | 'no_pool' | 'volume_missing' | 'quota_exceeded'
+      message: string
+    }
+
+/** A user's new `manual` computer, or why the pool cannot make it. */
+export type ComputerPoolCreateResult =
+  { ok: true; computer: ComputerRecord } | { ok: false; code: 'no_pool' | 'quota_exceeded'; message: string }
 
 const refused = (
   code: Extract<ComputerPoolCommandResult, { ok: false }>['code'],
@@ -178,18 +189,27 @@ export class ComputerPool {
       const reported = this.reportFailure(failureKey(agent.id, mode === 'ephemeral' ? req.sessionId : null))
       if (reported) return reported
       if (!this.deps.members.available()) return failed('no_pool', 'no pool member can start a managed computer now')
+      const refusal = await this.deps.plan?.desktopRefusal(orgId, { allocation: mode, adding: true })
+      if (refusal) return failed('quota_exceeded', refusal.message)
       row = await this.create(orgId, agent, mode, req.sessionId)
       if (!row) return pending('provisioning')
     }
     return await this.use(row)
   }
 
-  /** A user's `manual` computer, created from the pool (§15.1); null when no pool member can start one. */
+  /** A user's `manual` computer, created from the pool (§15.1), or why not: no pool member, or a quota. */
   async createManual(
     orgId: OrgId,
     input: { name: string; ownerUserId: string; policy?: ComputerPolicy; agentAccess?: ComputerAgentAccess }
-  ): Promise<ComputerRecord | null> {
-    if (!this.deps.members.available()) return null
+  ): Promise<ComputerPoolCreateResult> {
+    const noPool = {
+      ok: false,
+      code: 'no_pool',
+      message: 'this deployment cannot start managed computers now'
+    } as const
+    if (!this.deps.members.available()) return noPool
+    const refusal = await this.deps.plan?.desktopRefusal(orgId, { allocation: 'manual', adding: true })
+    if (refusal) return { ok: false, code: 'quota_exceeded', message: refusal.message }
     const row = await this.deps.repo.createManaged({
       id: ComputerId(randomUUID()),
       orgId,
@@ -200,11 +220,10 @@ export class ComputerPool {
       agentAccess: input.agentAccess ?? { mode: 'none', agents: [] },
       now: new Date(this.deps.clock.now())
     })
-    if (row) {
-      this.kick(row)
-      await this.deps.computers.accessGranted(orgId, row)
-    }
-    return row
+    if (!row) return noPool
+    this.kick(row)
+    await this.deps.computers.accessGranted(orgId, row)
+    return { ok: true, computer: row }
   }
 
   /** Remove a managed computer: its keys go at once, its claim and volume next, then its row. */
@@ -226,7 +245,8 @@ export class ComputerPool {
     if (!actionsOf(row).wake) return refused('not_allowed', 'this computer cannot be woken now')
     if (!this.deps.members.available()) return refused('no_pool', 'no pool member can wake this computer now')
     const result = await this.use(row)
-    if (result.state === 'failed' && result.code === 'volume_missing') return refused('volume_missing', result.message)
+    if (result.state === 'failed' && (result.code === 'volume_missing' || result.code === 'quota_exceeded'))
+      return refused(result.code, result.message)
     return { ok: true, computer: (await this.deps.repo.get(orgId, id)) ?? row }
   }
 
@@ -248,6 +268,7 @@ export class ComputerPool {
       return refused('volume_missing', 'the computer’s volume is gone, so its files and sign-ins are lost')
     }
     if (!podStopped(res.state)) return refused('in_use', 'the desktop did not stop yet; try again in a moment')
+    await this.meter(row)
     // Fenced on the activity it judged, so a session that started during the stop keeps the desktop.
     const leasedNow = this.deps.leases ? (await this.deps.leases.current(orgId, id).catch(() => null)) !== null : false
     const slept =
@@ -276,6 +297,12 @@ export class ComputerPool {
     if (!row) return refused('not_found', 'computer not found')
     if (!actionsOf(row).reset) return refused('not_allowed', 'this computer cannot be reset now')
     if (!this.deps.members.available()) return refused('no_pool', 'no pool member can reset this computer now')
+    // A reset starts a running pod, so a sleeping or failed desktop needs room for it like a wake.
+    if ((row.poolPhase === 'sleeping' || row.poolPhase === 'failed') && row.allocation) {
+      const refusal = await this.deps.plan?.desktopRefusal(orgId, { allocation: row.allocation, adding: false })
+      if (refusal) return refused('quota_exceeded', refusal.message)
+    }
+    await this.meter(row)
     const moved = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'resetting',
       at: new Date(this.deps.clock.now()),
@@ -338,6 +365,7 @@ export class ComputerPool {
 
   private async sweepRow(row: ComputerRecord, now: number): Promise<void> {
     if (!row.allocation || !row.poolPhase) return
+    await this.meter(row, now)
     // An agent's own computers go with the agent.
     if (row.allocation !== 'manual' && row.ownerAgentId && row.poolPhase !== 'reclaiming') {
       if (!(await this.deps.agents.get(row.orgId, AgentId(row.ownerAgentId)))) {
@@ -482,8 +510,14 @@ export class ComputerPool {
     await this.markActive(row.id)
     const now = new Date(this.deps.clock.now())
     if (row.poolPhase === 'awake' && isComputerReachable(this.deps.computers.presentedStatus(row))) return ready(row)
+    // A sleeping or failed desktop starting again needs room; an awake one whose pod went away already counts.
+    if ((row.poolPhase === 'sleeping' || row.poolPhase === 'failed') && row.allocation) {
+      const refusal = await this.deps.plan?.desktopRefusal(row.orgId, { allocation: row.allocation, adding: false })
+      if (refusal) return failed('quota_exceeded', refusal.message)
+    }
     if (row.poolPhase === 'sleeping' || row.poolPhase === 'awake') {
       if (!this.deps.members.available()) return failed('no_pool', 'no pool member can wake this computer now')
+      await this.meter(row)
       await this.deps.repo.setPoolPhase(row.id, { phase: 'waking', at: now, from: [row.poolPhase], error: null })
     } else if (row.poolPhase === 'failed') {
       // Waking now would bring back a lost volume's empty disk, or the old desktop a reset did not remove.
@@ -492,6 +526,7 @@ export class ComputerPool {
           refusalOf(row.poolError),
           poolErrorMessage(row.poolError ?? 'failed: this computer needs a reset')
         )
+      await this.meter(row)
       await this.deps.repo.setPoolPhase(row.id, { phase: 'provisioning', at: now, from: ['failed'], error: null })
     }
     const fresh = await this.deps.repo.get(row.orgId, row.id)
@@ -671,6 +706,7 @@ export class ComputerPool {
     if (!res?.ok || !res.state) return
     if (res.state.claim === 'missing') return await this.volumeMissing(row)
     if (!podStopped(res.state)) return
+    await this.meter(row)
     const slept = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'sleeping',
       at: new Date(this.deps.clock.now()),
@@ -733,6 +769,16 @@ export class ComputerPool {
     })
   }
 
+  // Bills the time since the last metering to the phase the row is leaving; a failed write is metered next sweep.
+  private async meter(row: ComputerRecord, now = this.deps.clock.now()): Promise<void> {
+    if (!this.deps.plan) return
+    try {
+      await this.deps.plan.accrue(row, now)
+    } catch (err) {
+      this.deps.log?.warn({ err, computerId: row.id }, 'computer-pool: metering a computer failed')
+    }
+  }
+
   private reportFailure(key: string): ComputerPoolAcquireResult | undefined {
     const failure = this.failures.get(key)
     if (!failure) return undefined
@@ -742,6 +788,7 @@ export class ComputerPool {
 
   // An idle reclaim is fenced on the activity it judged, so an acquire in between keeps the computer.
   private async reclaim(row: ComputerRecord, error: string | null, actorUserId?: string, idle = false): Promise<void> {
+    if (row.poolPhase !== 'reclaiming') await this.meter(row)
     const phases: ComputerPoolPhase[] = [
       'provisioning',
       'registering',

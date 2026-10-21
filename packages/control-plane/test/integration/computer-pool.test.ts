@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import {
+  COMPUTER_POOL_QUOTA_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
   buildComputerCpFrame,
   buildEnvelope,
@@ -35,6 +36,10 @@ import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ComputerService } from '../../src/registry/computerService.js'
 import { ComputerLeaseService } from '../../src/registry/computerLeaseService.js'
 import { ComputerPool, type ComputerPoolMembers } from '../../src/registry/computerPool.js'
+import { ComputerPlan } from '../../src/registry/computerPlan.js'
+import { DEFAULT_COMPUTER_PLAN } from '../../src/computer-plan/config.js'
+import { PgComputerUsageRepo } from '../../src/persistence/repositories/computer-usage.repo.js'
+import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { DEFAULT_COMPUTER_POOL_TIMINGS as T } from '../../src/domain/computerPool.js'
 import { defaultComputerPolicy } from '../../src/domain/computer.js'
 import { handleComputerLeaseAcquire, handleComputerLeaseRelease } from '../../src/ws/handlers/computer-lease.js'
@@ -213,7 +218,7 @@ function frame(type: string, payload: Record<string, unknown>): AnyFrame {
 }
 
 /** The pool as one CP replica runs it, with a clock the test can move forward, and an agent daemon's end of the wire. */
-function harness(cluster: FakeCluster) {
+function harness(cluster: FakeCluster, opts: { plan?: ComputerPlan; quotaAware?: boolean } = {}) {
   let offset = 0
   const clock: Clock = { ...systemClock, now: () => Date.now() + offset }
   const computerRepo = new PgComputerRepo(prisma)
@@ -235,6 +240,7 @@ function harness(cluster: FakeCluster) {
     computers,
     leases,
     members: cluster,
+    ...(opts.plan ? { plan: opts.plan } : {}),
     clock,
     advanceThrottleMs: 0
   })
@@ -256,7 +262,12 @@ function harness(cluster: FakeCluster) {
     agent: new PgAgentRepo(prisma),
     log: { error: () => {}, warn: () => {} },
     computerLeases: leases,
-    computerPool: pool
+    computerPool: pool,
+    registry: {
+      getUnscoped: async () => ({
+        capabilities: { features: opts.quotaAware ? [COMPUTER_POOL_QUOTA_FEATURE] : [] }
+      })
+    }
   } as unknown as DaemonWsDeps
   const acquireOnce = async (agentId: string, sessionId: string, computerId?: string) => {
     await handleComputerPoolAcquire(
@@ -271,6 +282,7 @@ function harness(cluster: FakeCluster) {
   return {
     pool,
     leases,
+    clock,
     later: (ms: number) => (offset += ms),
     now: () => (offset = 0),
     acquireOnce,
@@ -316,6 +328,11 @@ async function seed(mode: 'ephemeral' | 'per-agent' | null, otherMode: 'ephemera
 
 const row = (id: string) => prisma.computer.findUnique({ where: { id } })
 
+function computerOf(result: Awaited<ReturnType<ComputerPool['createManual']>>) {
+  if (!result.ok) throw new Error(`createManual refused: ${result.message}`)
+  return result.computer
+}
+
 /** The console as one user sees it, its routes driving the test's pool. */
 function consoleAs(pool: ComputerPool, userId: string = DEFAULT_OWNER_ID): HttpApp {
   const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, undefined, undefined, { computerPool: pool })
@@ -332,11 +349,13 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
 }
 
 async function manualAwake(h: ReturnType<typeof harness>): Promise<ComputerId> {
-  const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
-    name: 'Shared browser',
-    ownerUserId: DEFAULT_OWNER_ID,
-    agentAccess: { mode: 'selected', agents: [AGENT] }
-  })
+  const created = computerOf(
+    await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+      name: 'Shared browser',
+      ownerUserId: DEFAULT_OWNER_ID,
+      agentAccess: { mode: 'selected', agents: [AGENT] }
+    })
+  )
   const id = created!.id
   for (let i = 0; i < 10 && (await row(id))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
   expect(await row(id)).toMatchObject({ poolPhase: 'awake' })
@@ -428,11 +447,13 @@ describe('managed computers in the pool', () => {
     const { app, base } = await start()
     const cluster = new FakeCluster(app, base)
     const h = harness(cluster)
-    const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
-      name: 'Shared browser',
-      ownerUserId: DEFAULT_OWNER_ID,
-      agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] }
-    })
+    const created = computerOf(
+      await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+        name: 'Shared browser',
+        ownerUserId: DEFAULT_OWNER_ID,
+        agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] }
+      })
+    )
     expect(created).toMatchObject({ allocation: 'manual', ownerAgentId: null, poolPhase: 'provisioning' })
     const id = created!.id
     for (let i = 0; i < 10 && (await row(id))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
@@ -461,11 +482,13 @@ describe('managed computers in the pool', () => {
     const { app, base } = await start()
     const cluster = new FakeCluster(app, base)
     const h = harness(cluster)
-    const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
-      name: 'Shared browser',
-      ownerUserId: DEFAULT_OWNER_ID,
-      agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] }
-    })
+    const created = computerOf(
+      await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+        name: 'Shared browser',
+        ownerUserId: DEFAULT_OWNER_ID,
+        agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] }
+      })
+    )
     const id = created!.id
     for (let i = 0; i < 10 && (await row(id))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
     expect(await h.lease(id, AGENT, S1)).toMatchObject({ granted: true })
@@ -781,11 +804,13 @@ describe('managed computers in the pool', () => {
     expect(await row(id)).toBeNull()
     expect(cluster.pods.has(id)).toBe(false)
 
-    const manual = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
-      name: 'Shared browser',
-      ownerUserId: DEFAULT_OWNER_ID,
-      agentAccess: { mode: 'selected', agents: [AGENT] }
-    })
+    const manual = computerOf(
+      await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+        name: 'Shared browser',
+        ownerUserId: DEFAULT_OWNER_ID,
+        agentAccess: { mode: 'selected', agents: [AGENT] }
+      })
+    )
     const manualId = manual!.id
     for (let i = 0; i < 10 && (await row(manualId))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
     await computers.revoke(OrgId(DEFAULT_ORG_ID), ComputerId(manualId))
@@ -822,7 +847,9 @@ describe('managed computers in the pool', () => {
     await seed(null)
     const { app, base } = await start()
     const h = harness(new FakeCluster(app, base))
-    const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), { name: 'Desk', ownerUserId: DEFAULT_OWNER_ID })
+    const created = computerOf(
+      await h.pool.createManual(OrgId(DEFAULT_ORG_ID), { name: 'Desk', ownerUserId: DEFAULT_OWNER_ID })
+    )
     expect(created!.policy.approvals).toEqual(defaultComputerPolicy(DEFAULT_OWNER_ID).approvals)
     expect(created!.policy.approvals.firstInputPerSession).toBe(true)
   })
@@ -898,5 +925,100 @@ describe('managed computers in the pool', () => {
       payload: { name: 'Desk', agentAccess: { mode: 'selected', agents: [randomUUID()] } }
     })
     expect(bad.statusCode).toBe(400)
+  })
+
+  it('refuses a managed computer past the organization’s quota, telling a daemon that reads it why', async () => {
+    await seed('per-agent', 'per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const plan = new ComputerPlan(new PgComputerUsageRepo(prisma), new PlaintextSecretCipher(), systemClock, {
+      ...DEFAULT_COMPUTER_PLAN,
+      quotas: { ...DEFAULT_COMPUTER_PLAN.quotas, desktops: 1 }
+    })
+    const old = harness(cluster, { plan })
+    const ready = await old.acquire(AGENT, S1)
+    expect(ready).toMatchObject({ state: 'ready', allocation: 'per-agent' })
+    // A daemon from before quotas cannot decode the new code, so it hears `failed` with the reason.
+    const refused = await old.acquireOnce(OTHER_AGENT, S1)
+    expect(refused).toMatchObject({ state: 'failed', code: 'failed' })
+    expect((refused as { message: string }).message).toMatch(/holds 1 managed computer.*limit of 1/)
+    expect(await old.acquireOnce(OTHER_AGENT, S1, undefined)).toMatchObject({ code: 'failed' })
+    const aware = harness(cluster, { plan, quotaAware: true })
+    expect(await aware.acquireOnce(OTHER_AGENT, S1)).toMatchObject({ state: 'failed', code: 'quota_exceeded' })
+    expect(await prisma.computer.count({ where: { ownerAgentId: OTHER_AGENT } })).toBe(0)
+    // The console's manual computer is held to the same count.
+    expect(
+      await aware.pool.createManual(OrgId(DEFAULT_ORG_ID), { name: 'Desk', ownerUserId: DEFAULT_OWNER_ID })
+    ).toMatchObject({ ok: false, code: 'quota_exceeded' })
+    // Raising the organization's limit lets the next allocation through.
+    await plan.setOverride(DEFAULT_ORG_ID, { desktops: 2 })
+    expect(await aware.acquire(OTHER_AGENT, S1)).toMatchObject({ state: 'ready' })
+  })
+
+  it('refuses to wake or reset a sleeping computer while the organization runs its limit', async () => {
+    await seed('per-agent', 'per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const plan = new ComputerPlan(new PgComputerUsageRepo(prisma), new PlaintextSecretCipher(), systemClock, {
+      ...DEFAULT_COMPUTER_PLAN,
+      quotas: { ...DEFAULT_COMPUTER_PLAN.quotas, runningDesktops: 1 }
+    })
+    const h = harness(cluster, { plan, quotaAware: true })
+    const first = (await h.acquire(AGENT, S1)) as { computerId: string }
+    expect(await h.pool.sleepNow(OrgId(DEFAULT_ORG_ID), ComputerId(first.computerId))).toMatchObject({ ok: true })
+    expect(await h.acquire(OTHER_AGENT, S1)).toMatchObject({ state: 'ready' })
+    expect(await h.pool.wakeNow(OrgId(DEFAULT_ORG_ID), ComputerId(first.computerId))).toMatchObject({
+      ok: false,
+      code: 'quota_exceeded'
+    })
+    // A reset starts a running pod too, so it is no way around the limit.
+    expect(await h.pool.resetNow(OrgId(DEFAULT_ORG_ID), ComputerId(first.computerId))).toMatchObject({
+      ok: false,
+      code: 'quota_exceeded'
+    })
+    expect(await h.acquireOnce(AGENT, S1)).toMatchObject({ state: 'failed', code: 'quota_exceeded' })
+    expect(await row(first.computerId)).toMatchObject({ poolPhase: 'sleeping' })
+  })
+
+  it('meters running and sleeping time and the kept volume on every sweep', async () => {
+    await seed('per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const plan = new ComputerPlan(new PgComputerUsageRepo(prisma), new PlaintextSecretCipher(), systemClock, {
+      ...DEFAULT_COMPUTER_PLAN,
+      volumeGib: 5
+    })
+    const h = harness(cluster, { plan })
+    const { computerId } = (await h.acquire(AGENT, S1)) as { computerId: string }
+    const start0 = (await row(computerId))!.createdAt.getTime()
+    h.later(600_000)
+    await h.pool.sweep()
+    const metered = (await row(computerId))!.poolMeteredAt!.getTime()
+    const ran = await prisma.computerUsage.aggregate({
+      where: { computerId },
+      _sum: { runningSeconds: true, sleepingSeconds: true, volumeGibSeconds: true }
+    })
+    expect(ran._sum.runningSeconds).toBeGreaterThanOrEqual(Math.floor((metered - start0) / 1000))
+    expect(ran._sum.sleepingSeconds).toBe(0)
+    expect(Number(ran._sum.volumeGibSeconds)).toBe(5 * ran._sum.runningSeconds!)
+    // Idle long enough, it sleeps; the next sweeps bill sleeping time only.
+    h.later(T.sleepIdleMs + 60_000)
+    await h.pool.sweep()
+    expect(await row(computerId)).toMatchObject({ poolPhase: 'sleeping' })
+    const before = await prisma.computerUsage.aggregate({ where: { computerId }, _sum: { runningSeconds: true } })
+    h.later(3_600_000)
+    await h.pool.sweep()
+    const after = await prisma.computerUsage.aggregate({
+      where: { computerId },
+      _sum: { runningSeconds: true, sleepingSeconds: true }
+    })
+    expect(after._sum.runningSeconds).toBe(before._sum.runningSeconds)
+    expect(after._sum.sleepingSeconds).toBeGreaterThanOrEqual(3600)
+    const usage = await plan.usage(DEFAULT_ORG_ID, {
+      from: new Date(Date.now() - 86_400_000),
+      to: new Date(Date.now() + 10 * 86_400_000)
+    })
+    expect(usage.allocations).toEqual([expect.objectContaining({ allocation: 'per-agent' })])
+    expect(usage.computers).toEqual([expect.objectContaining({ computerId, kind: 'managed' })])
   })
 })

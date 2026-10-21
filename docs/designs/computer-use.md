@@ -921,6 +921,10 @@ input: DataChannel ─▶ Computer (same lease / arbitration as agents)
 - One shared capture: the first viewer starts it, the last one stops it.
 - **NAT and containers**: `rtcAddress` sets the advertised public address and `rtcPortRange` pins the UDP range (§3.8).
   In Kubernetes a managed computer's pod has no reachable UDP, so its viewer starts at the relay's TURN (§17-13).
+  **[implemented]** (#3230) The desktop pod's egress NetworkPolicy, which otherwise admits only DNS and TCP 443, also
+  admits the relays' TURN ports (UDP and TCP, and TLS), their STUN port and an external TURN's ports whenever the chart
+  turns them on (`agentconnect.desktopMediaPorts`), so the pod's half of a viewing reaches the relay; the browser's half
+  reaches the same relay from outside.
 
 **[implemented]** The console viewer. The Computer detail page embeds the viewer; nothing on it passes through the
 Control Plane, which only issues credentials:
@@ -1354,9 +1358,12 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    - **#3236** [implemented; real-network and cluster checks pending]: TURN on the relay as the viewer's fallback,
      over UDP, TCP and TLS on 443, with the CP's short-lived credentials, per-allocation bandwidth caps, idle
      timeouts and bytes-relayed metrics; managed computers start their viewer at it (§7.2).
-   - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
-     quotas per mode, counting sleeping desktops and kept volumes; billing for running and sleeping hours and kept
-     volume storage, plus bandwidth and screenshot storage; egress policy (§15.4).
+   - **#3230** [implemented; cluster, real-proxy and Cloud-value checks pending]: viewer media for pods (they usually
+     have no reachable UDP, so the desktop template admits the relays' TURN and media goes through it, §7.2); quotas
+     per organization and mode, counting sleeping desktops and kept volumes (§15.5); metering of running and sleeping
+     hours, kept volume storage, TURN bandwidth and screenshot storage into Control Plane usage (§15.5); and a
+     per-organization egress policy, the deployment's own or the organization's proxy, with the limitation stated in
+     the console (§15.4).
 4. **Licensing**: the GPL obligations of shipping ffmpeg (and other GPL packages) in a published image, such as
    providing corresponding source [legal]. Until counsel answers, the published image does not preinstall ffmpeg: the
    daemon downloads the pinned build on first start, as desktops do. The Debian packages' source obligations are open.
@@ -1525,6 +1532,76 @@ faucet site refused service because of a "hosting IP range". Managed computers m
 (residential / mobile proxies, a fixed egress per organization, or stating the limitation); this is also a real
 advantage of self-hosted computers.
 
+**The egress policy [implemented]** (#3230). AgentConnect buys and runs no proxies; an organization chooses where
+its managed computers' browser traffic leaves:
+
+- **`deployment`** (the default): the deployment's own egress, which in a cloud cluster is data-centre addresses. The
+  console's Computers page states that some sites refuse or challenge them, and that self-hosted computers use their
+  own network; `AC_COMPUTER_PLAN.egress.description` (the chart's `computerPlan.egress.description`) adds one line
+  about the deployment's egress, such as its region.
+- **`proxy`**: the organization's own HTTP or HTTPS proxy (`http(s)://host:port`, optionally with a username and
+  password), such as a residential proxy or a fixed address it operates. `PUT /orgs/:orgId/computers/egress`
+  (`interactiveOnly`, organization owners) sets it; the password is sealed under the organization's key like other
+  tenant secrets, swept by `secrets:rewrap`, and never returned. An omitted password is kept only while the URL stays
+  the same. `AC_COMPUTER_PLAN.egress.orgProxy: false` turns the choice off for a deployment.
+
+The Control Plane hands a managed desktop its organization's egress on `computer/auth/ok` (`egress`, read tolerantly
+by older desktops) and pushes a change with `computer/egress` to the desktops whose capabilities report `egress`;
+self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691): Firefox's
+autoconfig (`agentconnect.cfg`, read through `getenv`) locks its proxy to `127.0.0.1:<port>`, turns off DNS over HTTPS
+and keeps WebRTC to the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that tunnels
+`CONNECT` and forwards plain requests either straight out or through the organization's proxy with its credentials,
+which the browser never sees. Until the Control Plane names the egress the forwarder answers 503, so a desktop whose
+organization wants a proxy never goes out directly first; a desktop with no registration goes direct. A Control
+Plane that cannot read a managed desktop's egress fails its auth (the desktop redials) rather than omit it, and a
+desktop told `computer-egress-v1` never takes a missing egress as direct. The pod's NetworkPolicy admits TCP 443
+and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy, to `computerPool.egressTo`
+only (public addresses by default, so the browser cannot reach in-cluster listeners on those ports).
+Limits: only the browser is bound to the proxy (other programs in the pod keep the pod's network); SOCKS proxies and
+per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
+
+### 15.5 Quotas, metering and billing
+
+**[implemented]** (#3230; the default values are decisions to confirm for Cloud.)
+
+**Quotas.** `AC_COMPUTER_PLAN` (the chart's `computerPlan`, a JSON document with `version: 1`) sets every
+organization's defaults, and a deployment administrator (`isAdmin`, or local no-auth mode) overrides them per
+organization with `PUT /orgs/:orgId/computers/quotas`, or `PUT /admin/orgs/:orgId/computers/quotas` when not a
+member; `GET` shows members the limits and their use. Each is a count or a size, null for unlimited. They hold managed
+desktops only: a self-hosted Computer's viewers, media and screenshots neither count nor are refused.
+
+| Quota                                           | Default   | Enforced at                                                                              |
+| ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `runningDesktops`                               | 3         | allocating, waking or retrying a managed desktop (pod up or starting)                    |
+| `desktops`                                      | 10        | allocating a new one: every held desktop, sleeping and failed ones with their volume     |
+| `storageGib`                                    | unlimited | allocating a new one: held desktops × `volumeGib` (the chart's `computerPool.home.size`) |
+| `modes.<allocation>.{runningDesktops,desktops}` | none      | the same, for one allocation mode on top of the totals                                   |
+| `monthlyDesktopHours`                           | 300       | allocating, waking or retrying, against this UTC month's running hours                   |
+| `viewers`, `viewersPerComputer`                 | 5, 3      | opening or renewing a viewer token; a viewer's own renewals do not count twice           |
+| `monthlyViewerGib`                              | 100       | opening or renewing a viewer, against this UTC month's TURN bytes                        |
+| `screenshotStorageGib`                          | 10        | signing a screenshot upload, against the stored, unexpired bytes                         |
+| `screenshotRetentionDays`                       | unlimited | signing an upload, and stored ones when it drops: the shorter of it and the retention    |
+
+A refusal names the limit, the use and what to do: the agent's `computer_*` call fails `unavailable` with reason
+`quota_exceeded` (`computer-pool/acquire` answers `failed` with `quota_exceeded` to daemons that advertise
+`computer-pool-quota-v1`, `failed` with the same message to older ones), and the console's create, wake and viewer
+calls answer 429 with `code: COMPUTER_QUOTA_EXCEEDED`. A lower limit stops nothing that runs; it refuses the next
+start, and resetting a sleeping or failed desktop starts one, so it is held like a wake. The checks read counts and
+are not transactional, so concurrent allocations can pass a limit by the few that raced it.
+
+**Metering.** Each pool sweep (30 s) bills a managed desktop's time since its `poolMeteredAt` (stamped at the upgrade
+for desktops older than metering) to the phase it is in, with a compare-and-set on that column so replicas bill an interval once, and so does every phase change the
+controller makes: `provisioning`, `registering`, `awake`, `waking` and `resetting` are running, `sleeping` and `failed`
+are sleeping (the volume is kept), `reclaiming` bills nothing. The rows (`computer_usage`, per organization, UTC day
+and Computer, kept after the Computer goes) hold running and sleeping seconds, kept volume GiB-seconds (both phases ×
+`volumeGib`) and TURN bytes. Each relay counts the bytes it hands between allocations per Computer and reports them
+every minute with `rc/computer-media-usage` (behind `computer-media-usage-v1`); a report the link could not carry
+waits for the next one, and one lost with a relay process is lost usage. Viewer media that is direct or punched peer
+to peer costs the deployment nothing and is not metered. Screenshot storage stays in `computer_screenshot_usage` (§9).
+`GET /orgs/:orgId/usage/computers` returns all of it over a window, in total, by allocation, by day and per Computer,
+for the console's Usage page and the billing settlement workload alike; prices are the billing system's, not the
+Control Plane's.
+
 ## 16. Related documents
 
 - [architecture.md](architecture.md): deployment shapes; the two Computer kinds mirror them.
@@ -1560,7 +1637,8 @@ desktop (a container image, §3.8).
 9. The impact of keeping the display awake: only while a lease or viewer is active?
 10. How reliable is window-level masking on each OS; should a screenshot be refused when masking fails?
 11. When a Computer is offline or locked, do agent tool calls queue or fail at once?
-12. Managed-computer start time, Cloud quotas, billing, and egress IP policy (quotas, billing, and egress are #3230).
+12. Managed-computer start time, and the Cloud values of the quotas and prices. Quotas, metering and the egress
+    policy are decided (§15.4, §15.5); their defaults are conservative placeholders until Cloud sets them.
 13. ~~Viewer media in Kubernetes: direct per pod through hostPort / NodePort UDP, or always TURN / the relay (cost versus
     latency)?~~ **Decided (§7.2)**: a managed computer's viewer starts at the relay's TURN and never tries direct media,
     since the pool sets up no per-pod UDP; `rtcAddress` keeps direct media for a self-hosted container Computer.

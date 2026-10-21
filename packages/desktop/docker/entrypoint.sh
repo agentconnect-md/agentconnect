@@ -11,6 +11,11 @@ unset WAYLAND_DISPLAY
 export XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
 mkdir -p -m 700 "$XDG_RUNTIME_DIR"
 
+# A managed pod's browser and daemon share the egress forwarder's port, so its traffic follows the organization's egress.
+if [ -n "${AGENTCONNECT_POOL_BOOTSTRAP_PORT:-}" ]; then
+  export AGENTCONNECT_EGRESS_PORT="${AGENTCONNECT_EGRESS_PORT:-7691}"
+fi
+
 data="${AGENTCONNECT_DESKTOP_HOME:-$HOME/.agentconnect/desktop}"
 mkdir -p -m 700 "$data"
 [ -e "$data/cua-driver" ] || ln -s /opt/agentconnect/tools/cua-driver "$data/cua-driver"

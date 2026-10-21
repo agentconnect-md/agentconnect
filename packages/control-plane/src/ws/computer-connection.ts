@@ -2,6 +2,7 @@
 import {
   CloseCode,
   COMPUTER_AUDIT_FEATURE,
+  COMPUTER_EGRESS_FEATURE,
   COMPUTER_RELAYS_MAX,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
@@ -12,6 +13,7 @@ import {
   type ComputerControlLease,
   type ComputerCpFrame,
   type ComputerCpFrameType,
+  type ComputerEgress,
   type ComputerHeartbeat,
   type ComputerPolicy,
   type ComputerRelayEntry,
@@ -54,6 +56,8 @@ export interface ComputerConnDeps {
   audit?: Pick<ComputerAuditLog, 'record'>
   /** Where screenshots are stored (§9); without it the CP does not offer `computer-screenshot-v1`. */
   screenshots?: Pick<ComputerScreenshots, 'retentionDays' | 'put' | 'commit'>
+  /** A managed desktop's egress (§15.4); absent, managed desktops go direct. */
+  egress?: (orgId: string) => Promise<ComputerEgress>
   clock: Clock
   heartbeatSec: number
   /** A socket that has not authenticated by then is closed. */
@@ -76,6 +80,9 @@ export class ComputerConnection implements ComputerChannel {
   computerId = ''
   orgId = ''
   ownerUserId = ''
+  managed = false
+  // Whether the desktop reported an egress forwarder, so it can take `computer/egress`.
+  private egressCapable = false
   private principal: ComputerPrincipal | undefined
   private lastKeyId = ''
   // The lease id last told to the desktop ('' for none); undefined until the first push.
@@ -171,6 +178,16 @@ export class ComputerConnection implements ComputerChannel {
     this.computerId = principal.computerId
     this.orgId = principal.orgId
     this.ownerUserId = computer.ownerUserId
+    this.managed = computer.kind === 'managed'
+    this.egressCapable = computer.capabilities?.egress === true
+    const egress = this.managed && this.deps.egress ? await this.readEgress() : undefined
+    if ((this.state as State) === 'CLOSED') return
+    // A managed desktop never learns "direct" by omission: an unreadable egress fails the auth and it redials.
+    if (this.managed && this.deps.egress && !egress) {
+      this.sendError(frame.id, 'INTERNAL', 'egress unavailable; retry shortly', true)
+      this.close(CloseCode.SERVER_INTERNAL, 'egress unavailable')
+      return
+    }
     this.state = 'READY'
     this.deps.registry.add(this)
     const credential = this.deps.keys.current(this.computerId, principal.apiKeyId, now.getTime())
@@ -186,7 +203,8 @@ export class ComputerConnection implements ComputerChannel {
       ...(this.features().length > 0 ? { features: this.features() } : {}),
       ...(this.deps.screenshots
         ? { screenshotRetentionDays: this.deps.screenshots.retentionDays(computer.policy) }
-        : {})
+        : {}),
+      ...(egress ? { egress } : {})
     })
     // Grants still sign with the previous window's key just after a boundary, so a desktop that joins then needs it too.
     const signing = this.deps.keys.signing(this.computerId, principal.apiKeyId, now.getTime())
@@ -215,6 +233,7 @@ export class ComputerConnection implements ComputerChannel {
     const principal = this.principal!
     const now = this.deps.clock.now()
     const { status, osVersion, session, desktopDaemonVersion, driverVersion, capabilities, doctor } = beat
+    if (capabilities) this.egressCapable = capabilities.egress === true
     const live = await this.deps.repo.recordLive(
       OrgId(principal.orgId),
       ComputerId(principal.computerId),
@@ -269,6 +288,7 @@ export class ComputerConnection implements ComputerChannel {
               {
                 orgId: this.orgId,
                 computerId: this.computerId,
+                kind: computer.kind,
                 policy: computer.policy,
                 agentAccess: computer.agentAccess
               },
@@ -295,8 +315,23 @@ export class ComputerConnection implements ComputerChannel {
   private features(): string[] {
     return [
       ...(this.deps.audit ? [COMPUTER_AUDIT_FEATURE] : []),
-      ...(this.deps.screenshots ? [COMPUTER_SCREENSHOT_FEATURE] : [])
+      ...(this.deps.screenshots ? [COMPUTER_SCREENSHOT_FEATURE] : []),
+      ...(this.managed && this.deps.egress ? [COMPUTER_EGRESS_FEATURE] : [])
     ]
+  }
+
+  // Undefined when unreadable: the auth then fails rather than let a managed desktop go direct.
+  private async readEgress(): Promise<ComputerEgress | undefined> {
+    try {
+      return await this.deps.egress!(this.orgId)
+    } catch (err) {
+      this.deps.log?.warn({ err: (err as Error).message }, 'computer: egress read failed')
+      return undefined
+    }
+  }
+
+  pushEgress(egress: ComputerEgress): void {
+    if (this.state === 'READY' && this.managed && this.egressCapable) this.send('computer/egress', { egress })
   }
 
   pushPolicy(policy: ComputerPolicy): void {

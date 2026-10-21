@@ -1326,3 +1326,20 @@ describe('rc/bot-tenant (google-chat-integration.md §10.3)', () => {
     expect(RcBotTenant.safeParse({ botId: 'bot', tenantId: 'domains/0000000000' }).success).toBe(false)
   })
 })
+
+describe('computer media usage (computer-use.md §15.5)', () => {
+  const usage = {
+    from: '2026-10-20T00:00:00.000Z',
+    to: '2026-10-20T00:01:00.000Z',
+    entries: [{ computerId: '00000000-0000-4000-8000-0000000000aa', bytes: 1_048_576 }]
+  }
+
+  it('round-trips a report and refuses an empty or negative one', () => {
+    const ok = decodeRelayCpFrame(JSON.stringify(buildRelayCpFrame('rc/computer-media-usage', usage)))
+    expect(ok.ok && ok.frame.type === 'rc/computer-media-usage' && ok.frame.payload).toEqual(usage)
+    const empty = { v: 1, id: '00000000-0000-4000-8000-000000000001', ts: usage.to, type: 'rc/computer-media-usage' }
+    expect(decodeRelayCpFrame(JSON.stringify({ ...empty, payload: { ...usage, entries: [] } })).ok).toBe(false)
+    const negative = { ...usage, entries: [{ computerId: usage.entries[0]!.computerId, bytes: -1 }] }
+    expect(decodeRelayCpFrame(JSON.stringify({ ...empty, payload: negative })).ok).toBe(false)
+  })
+})

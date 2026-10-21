@@ -1,0 +1,4 @@
+// AgentConnect desktop image: load agentconnect.cfg, which reads the egress forwarder's port from the environment.
+pref("general.config.filename", "agentconnect.cfg");
+pref("general.config.obscure_value", 0);
+pref("general.config.sandbox_enabled", false);

@@ -270,3 +270,48 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "agentconnect.publicCpUrl" -}}
 {{- if .Values.apiHost }}{{ printf "https://%s" .Values.apiHost }}{{ else }}{{ printf "%s/cp" (trimSuffix "/" .Values.publicUrl) }}{{ end -}}
 {{- end -}}
+
+{{/*
+AC_COMPUTER_PLAN (computer-use.md §15.4, §15.5): quotas, egress choices, and the desktop home volume in GiB that metering bills.
+*/}}
+{{- define "agentconnect.computerPlan" -}}
+{{- $size := toString .Values.computerPool.home.size -}}
+{{- $gib := 0.0 -}}
+{{- if hasSuffix "Ti" $size }}{{ $gib = mulf (trimSuffix "Ti" $size | float64) 1024.0 }}
+{{- else if hasSuffix "Gi" $size }}{{ $gib = trimSuffix "Gi" $size | float64 }}
+{{- else if hasSuffix "Mi" $size }}{{ $gib = divf (trimSuffix "Mi" $size | float64) 1024.0 }}
+{{- else }}{{ fail (printf "computerPool.home.size must be in Mi, Gi or Ti, not %s" $size) }}{{ end -}}
+{{- $egress := dict "orgProxy" .Values.computerPlan.egress.orgProxy -}}
+{{- with .Values.computerPlan.egress.description }}{{ $_ := set $egress "description" . }}{{ end -}}
+{{- toJson (dict "version" 1 "quotas" (.Values.computerPlan.quotas | default dict) "volumeGib" $gib "egress" $egress) -}}
+{{- end }}
+
+{{/*
+Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and container ports (in-cluster LB traffic is DNATed first), and external TURN URLs.
+*/}}
+{{- define "agentconnect.desktopMediaPorts" -}}
+{{- $ports := list -}}
+{{- $turn := .Values.relay.turn -}}
+{{- if $turn.enabled -}}
+{{- range (list $turn.publicPort $turn.port) -}}
+{{- $ports = append $ports (dict "protocol" "UDP" "port" (int .)) -}}
+{{- $ports = append $ports (dict "protocol" "TCP" "port" (int .)) -}}
+{{- end -}}
+{{- if $turn.tls.secretName }}{{ range (list $turn.tls.publicPort $turn.tls.port) }}{{ $ports = append $ports (dict "protocol" "TCP" "port" (int .)) }}{{ end }}{{ end -}}
+{{- end -}}
+{{- $stun := .Values.relay.stun -}}
+{{- if $stun.enabled }}{{ range (list ($stun.publicPort | default $stun.port) $stun.port) }}{{ $ports = append $ports (dict "protocol" "UDP" "port" (int .)) }}{{ end }}{{ end -}}
+{{- range .Values.computerViewer.turn.urls -}}
+{{- $port := regexFind ":[0-9]+" (regexReplaceAll "^turns?:" . "") | trimPrefix ":" -}}
+{{- $port = $port | default (ternary "5349" "3478" (hasPrefix "turns:" .)) | int -}}
+{{- $ports = append $ports (dict "protocol" "UDP" "port" $port) -}}
+{{- $ports = append $ports (dict "protocol" "TCP" "port" $port) -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- $out := list -}}
+{{- range $ports -}}
+{{- $key := printf "%s/%d" .protocol .port -}}
+{{- if and (ne $key "TCP/443") (not (hasKey $seen $key)) }}{{ $_ := set $seen $key true }}{{ $out = append $out . }}{{ end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end }}

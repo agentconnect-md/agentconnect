@@ -436,6 +436,16 @@ computerPool:
   # Idle windows: an ephemeral desktop is reclaimed, a per-agent or manual one sleeps.
   ephemeralIdleSeconds: 600
   sleepIdleSeconds: 1800
+  # TCP ports desktops may reach besides 443 (and the relays' TURN and STUN), such as an organization's egress proxy (computer-use.md §15.4).
+  egressPorts: [3128, 8080]
+  # Where those ports may lead: public addresses only by default, so a desktop's browser cannot reach in-cluster services on them.
+  egressTo:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except: [10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16]
+    - ipBlock:
+        cidr: ::/0
+        except: ['fc00::/7', 'fe80::/10', '::1/128']
   nodeSelector: {}
   tolerations: []
 
@@ -951,6 +961,20 @@ computerScreenshots:
   # The most any Computer's policy may ask for.
   maxRetentionDays: 365
   maxBytes: 8Mi
+
+# Computer quotas, metering and egress choices (computer-use.md §15.4, §15.5), rendered as AC_COMPUTER_PLAN on the Control Plane.
+computerPlan:
+  # Defaults for every organization; a deployment administrator overrides them per organization in the console.
+  # Keys: runningDesktops, desktops, storageGib, monthlyDesktopHours, modes.{ephemeral,per-agent,manual}.{runningDesktops,desktops},
+  # viewers, viewersPerComputer, monthlyViewerGib, screenshotStorageGib, screenshotRetentionDays; null is unlimited.
+  # Empty keeps the built-in defaults: 3 running, 10 held, 300 desktop hours a month, 5 viewers (3 per Computer),
+  # 100 GiB of relayed viewer media a month and 10 GiB of screenshots.
+  quotas: {}
+  egress:
+    # Whether an organization may send its managed desktops' browser traffic through its own HTTP(S) proxy.
+    orgProxy: true
+    # One line the console shows about this deployment's own egress, such as its region; empty shows none.
+    description: ''
 
 # Console viewer media without a direct UDP path (computer-use.md §7.2): the Control Plane mints coturn REST-API credentials per viewer.
 computerViewer:

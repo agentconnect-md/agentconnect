@@ -17,6 +17,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { formatNumber } from '@/i18n/format'
+import ComputerUsageSection from '@/components/console/ComputerUsageSection'
 
 // Display text for these lives in the `Usage` message catalog, keyed by `key`.
 const RANGES = [{ key: 'd1' }, { key: 'd7' }, { key: 'd30' }, { key: 'd90' }] as const satisfies {
@@ -687,6 +688,7 @@ export default function UsageView() {
             </div>
           ))}
       </div>
+      <ComputerUsageSection range={range} />
     </div>
   )
 }

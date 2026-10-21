@@ -2932,6 +2932,97 @@ export async function fetchComputerPool(orgId?: string): Promise<ComputerPoolSta
   return apiGet<ComputerPoolStatusDto>(`${orgBase(orgId)}/computers/pool`)
 }
 
+/** One quota set (computer-use.md §15.5); null is unlimited. */
+export interface ComputerQuotas {
+  runningDesktops: number | null
+  desktops: number | null
+  storageGib: number | null
+  monthlyDesktopHours: number | null
+  modes: Partial<Record<ComputerAllocation, { runningDesktops?: number | null; desktops?: number | null }>>
+  viewers: number | null
+  viewersPerComputer: number | null
+  monthlyViewerGib: number | null
+  screenshotStorageGib: number | null
+  screenshotRetentionDays: number | null
+}
+
+export type ComputerQuotaOverride = Partial<ComputerQuotas>
+
+/** The organization's quotas: the deployment's defaults, its override, what applies and what it uses now. */
+export interface ComputerQuotaStatusDto {
+  defaults: ComputerQuotas
+  override: ComputerQuotaOverride | null
+  limits: ComputerQuotas
+  used: {
+    runningDesktops: number
+    desktops: number
+    storageGib: number
+    monthlyDesktopHours: number
+    modes: Record<ComputerAllocation, { runningDesktops: number; desktops: number }>
+    viewers: number
+    monthlyViewerGib: number
+    screenshotStorageGib: number
+  }
+  volumeGib: number
+  canEdit: boolean
+}
+
+/** Where the organization's managed computers' browser traffic leaves (computer-use.md §15.4); never the password. */
+export interface ComputerEgressDto {
+  mode: 'deployment' | 'proxy'
+  url: string | null
+  username: string | null
+  passwordSet: boolean
+  orgProxyAllowed: boolean
+  description: string | null
+  canEdit: boolean
+}
+
+export type ComputerEgressUpdate =
+  { mode: 'deployment' } | { mode: 'proxy'; url: string; username?: string | null; password?: string | null }
+
+export interface ComputerUsageRowDto {
+  runningSeconds: number
+  sleepingSeconds: number
+  volumeGibSeconds: number
+  relayedBytes: number
+}
+
+/** Metered Computer use over a window (computer-use.md §15.5). */
+export interface ComputerUsageDto {
+  from: string
+  to: string
+  totals: ComputerUsageRowDto
+  allocations: Array<ComputerUsageRowDto & { allocation: string }>
+  days: Array<ComputerUsageRowDto & { day: string }>
+  computers: Array<
+    ComputerUsageRowDto & { computerId: string; name: string | null; kind: string; allocation: string | null }
+  >
+  screenshots: { written: { count: number; bytes: number }; stored: { count: number; bytes: number } }
+}
+
+export async function fetchComputerQuotas(orgId?: string): Promise<ComputerQuotaStatusDto> {
+  return apiGet<ComputerQuotaStatusDto>(`${orgBase(orgId)}/computers/quotas`)
+}
+
+/** A deployment administrator's override; null returns the organization to the defaults. */
+export async function setComputerQuotas(override: ComputerQuotaOverride | null): Promise<ComputerQuotaStatusDto> {
+  return apiPut<ComputerQuotaStatusDto>(`${orgBase()}/computers/quotas`, { override })
+}
+
+export async function fetchComputerEgress(orgId?: string): Promise<ComputerEgressDto> {
+  return apiGet<ComputerEgressDto>(`${orgBase(orgId)}/computers/egress`)
+}
+
+export async function setComputerEgress(update: ComputerEgressUpdate): Promise<ComputerEgressDto> {
+  return apiPut<ComputerEgressDto>(`${orgBase()}/computers/egress`, update)
+}
+
+export async function fetchComputerUsage(range: UsageRange, orgId?: string): Promise<ComputerUsageDto> {
+  const { from, to } = usageWindow(range)
+  return apiGet<ComputerUsageDto>(`${orgBase(orgId)}/usage/computers?${new URLSearchParams({ from, to }).toString()}`)
+}
+
 /** A `manual` computer from the deployment's pool (computer-use.md §15.1); the caller becomes its owner. */
 export async function createPoolComputer(body: {
   name: string

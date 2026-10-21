@@ -607,6 +607,8 @@ export interface ComputerRecord extends Shareable {
   poolPhaseAt: Date | null
   poolActiveAt: Date | null
   poolError: string | null
+  /** Desktop time is metered up to here (computer-use.md §15.5); absent outside the store. */
+  poolMeteredAt?: Date | null
   createdAt: Date
   updatedAt: Date
 }
@@ -830,6 +832,64 @@ export interface ComputerScreenshotUsageTotals {
   stored: { count: number; bytes: number }
 }
 
+/** One accrual of a managed desktop's time (computer-use.md §15.5): from its last metered instant to `to`. */
+export interface ComputerAccrual {
+  computerId: string
+  orgId: string
+  allocation: string | null
+  /** The row's `poolMeteredAt` this accrual starts from; it applies only while the row still holds it. */
+  meteredAt: Date | null
+  /** Where metering starts when the row was never metered. */
+  since: Date
+  to: Date
+  state: 'running' | 'sleeping' | null
+  volumeGib: number
+}
+
+/** Metered Computer use in a window: totals, by allocation, by UTC day and by Computer. */
+export interface ComputerUsageRow {
+  runningSeconds: number
+  sleepingSeconds: number
+  volumeGibSeconds: number
+  relayedBytes: number
+}
+export interface ComputerUsageTotals {
+  totals: ComputerUsageRow
+  allocations: Array<ComputerUsageRow & { allocation: string }>
+  days: Array<ComputerUsageRow & { day: string }>
+  computers: Array<ComputerUsageRow & { computerId: string; kind: string; allocation: string | null }>
+}
+
+/** An organization's managed computer settings row, the proxy password still sealed. */
+export interface ComputerOrgSettingsRecord {
+  orgId: string
+  quotas: unknown
+  egress: unknown
+  egressProxyPassword: string | null
+  updatedAt: Date
+}
+
+export interface ComputerUsageRepo {
+  /** Bill [meteredAt ?? since, to) to the desktop's day rows and move `poolMeteredAt`; false when another sweep got there first. */
+  accrue(accrual: ComputerAccrual): Promise<boolean>
+  /** Add TURN bytes per Computer on `at`'s day; unknown Computers are dropped. Returns how many were counted. */
+  addRelayed(entries: ReadonlyArray<{ computerId: string; bytes: number }>, at: Date): Promise<number>
+  /** Managed desktops held now, by allocation and phase, reclaiming ones left out. */
+  desktopPhases(orgId: string): Promise<Array<{ allocation: string; phase: string; count: number }>>
+  /** Running seconds and relayed bytes of managed desktops metered since `from`. */
+  since(orgId: string, from: Date): Promise<{ runningSeconds: number; relayedBytes: number }>
+  usage(orgId: string, window: { from: Date; to: Date }): Promise<ComputerUsageTotals>
+  /** Note a viewer token's lifetime, so viewer quotas count it until it lapses. */
+  touchViewer(orgId: string, computerId: string, userId: string, expiresAt: Date): Promise<void>
+  /** Live viewings other than `userId`'s on `computerId`: in the organization and on that Computer. */
+  viewers(orgId: string, computerId: string, userId: string, now: Date): Promise<{ org: number; computer: number }>
+  /** Drop viewings that lapsed before `before`; returns how many. */
+  reapViewers(before: Date): Promise<number>
+  settings(orgId: string): Promise<ComputerOrgSettingsRecord | null>
+  setQuotas(orgId: string, quotas: unknown): Promise<ComputerOrgSettingsRecord>
+  setEgress(orgId: string, egress: unknown, sealedPassword: string | null): Promise<ComputerOrgSettingsRecord>
+}
+
 export interface ComputerScreenshotRepo {
   /** Reserve a row for one upload; an existing row for the same Computer, session and hash is returned instead. */
   reserve(row: Omit<ComputerScreenshotRecord, 'storedAt'>): Promise<ComputerScreenshotRecord>
@@ -848,9 +908,20 @@ export interface ComputerScreenshotRepo {
   /** Rows to collect: expired, unconfirmed since before `pendingBefore`, or of a Computer that no longer exists. */
   reapable(now: Date, pendingBefore: Date, limit: number): Promise<ComputerScreenshotRecord[]>
   /** Shorten rows kept past their Computer's retention now (its policy's days, else `defaultDays`, capped at `maxDays`). */
-  clampExpiry(retention: { defaultDays: number; maxDays: number; computerId?: string }): Promise<number>
+  /** With `orgId` and `capDays`, the organization's managed desktops only, also held to that many days. */
+  clampExpiry(retention: {
+    defaultDays: number
+    maxDays: number
+    computerId?: string
+    orgId?: string
+    capDays?: number
+  }): Promise<number>
+  /** Organizations holding stored, unexpired screenshots of a managed desktop. */
+  managedOrgs(now: Date): Promise<string[]>
   deleteRows(ids: string[]): Promise<number>
   usage(orgId: string, window: { from: Date; to: Date }, now: Date): Promise<ComputerScreenshotUsageTotals>
+  /** Bytes of the organization's stored, unexpired screenshots of managed desktops, which its quota holds. */
+  storedBytes(orgId: string, now: Date): Promise<number>
 }
 
 /** A Computer's control lease row (computer-use.md §4.4); the decisions live in `domain/computerLease.ts`. */

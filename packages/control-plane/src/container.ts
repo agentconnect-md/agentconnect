@@ -133,6 +133,7 @@ import {
   PgComputerLeaseRepo,
   PgComputerAuditRepo,
   PgComputerScreenshotRepo,
+  PgComputerUsageRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationRecordRepo,
@@ -264,6 +265,8 @@ import { loadFileTransferConfig } from './file-transfer/config.js'
 import { loadComputerScreenshotsConfig } from './computer-screenshots/config.js'
 import { createScreenshotBucket, isScreenshotObjectKey } from './computer-screenshots/bucket.js'
 import { ComputerScreenshots } from './registry/computerScreenshots.js'
+import { ComputerPlan } from './registry/computerPlan.js'
+import { loadComputerPlanConfig } from './computer-plan/config.js'
 import { defaultDesktopBundleDir, loadDesktopDistribution } from './computer-install/desktop-distribution.js'
 import {
   COMPUTER_SCREENSHOT_REAP_INTERVAL_MS,
@@ -558,6 +561,7 @@ export function buildContainer(
     computerLease: new PgComputerLeaseRepo(prisma),
     computerAudit: new PgComputerAuditRepo(prisma),
     computerScreenshot: new PgComputerScreenshotRepo(prisma),
+    computerUsage: new PgComputerUsageRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     organizationRecord: new PgOrganizationRecordRepo(prisma),
@@ -689,6 +693,18 @@ export function buildContainer(
   const desktopDistribution = config.COMPUTER_DESKTOP_BUNDLE_DIR
     ? loadDesktopDistribution(config.COMPUTER_DESKTOP_BUNDLE_DIR, true)
     : loadDesktopDistribution(defaultDesktopBundleDir())
+  // Managed computer quotas, metering and egress per organization (computer-use.md §15.4, §15.5).
+  const computerPlan = new ComputerPlan(
+    repos.computerUsage,
+    secretCipher,
+    clock,
+    loadComputerPlanConfig({ AC_COMPUTER_PLAN: config.AC_COMPUTER_PLAN }),
+    {
+      screenshotsStored: (orgId) => repos.computerScreenshot.storedBytes(orgId, new Date(clock.now())),
+      log: { warn: (o, m) => http.log.warn(o, m) }
+    }
+  )
+  computerPlan.bindChannels(computerChannels)
   // Screenshot storage (computer-use.md §9): this process signs and checks; desktops upload and browsers read straight from the bucket.
   const screenshotsConfig = loadComputerScreenshotsConfig({ AC_COMPUTER_SCREENSHOTS: config.AC_COMPUTER_SCREENSHOTS })
   const computerScreenshots = screenshotsConfig
@@ -703,7 +719,7 @@ export function buildContainer(
           repos.session,
           createScreenshotBucket({ config: screenshotsConfig, credentials, objects }),
           clock,
-          screenshotsConfig.retention,
+          { ...screenshotsConfig.retention, limits: (orgId) => computerPlan.screenshotLimits(orgId) },
           { info: (o, m) => http.log.info(o, m), warn: (o, m) => http.log.warn(o, m) }
         )
       })()
@@ -1165,7 +1181,8 @@ export function buildContainer(
       servers: () => relayRoster.turnServers()
     },
     stunUrls: () => relayRoster.stunUrls(),
-    onUse: (computerId) => computerPool?.touch(computerId)
+    onUse: (computerId) => computerPool?.touch(computerId),
+    viewerQuota: computerPlan
   })
   // Managed computers in the Kubernetes pool (computer-use.md §15.1): pool members hold the claims, this decides what they hold.
   const computerPool = config.COMPUTER_POOL_ENABLED
@@ -1175,6 +1192,7 @@ export function buildContainer(
         computers,
         leases: computerLeases,
         members: new ConnectedPoolMembers(connReg, { warn: (o, m) => http.log.warn(o, m) }),
+        plan: computerPlan,
         clock,
         timings: {
           ephemeralIdleMs: config.COMPUTER_POOL_EPHEMERAL_IDLE_SEC * 1000,
@@ -2243,6 +2261,7 @@ export function buildContainer(
     computerAudit,
     computerViewer: computerChannelGrants,
     computerLeases,
+    computerPlan,
     ...(computerPool ? { computerPool } : {}),
     ...(computerScreenshots ? { computerScreenshots } : {}),
     ...(desktopDistribution ? { desktopDistribution } : {}),
@@ -3085,6 +3104,8 @@ export function buildContainer(
         ...(observed.verifiedWith !== undefined ? { verifiedWith: observed.verifiedWith } : {})
       })
     },
+    // TURN bytes per Computer the relays forwarded, metered on the report's day (computer-use.md §15.5).
+    onComputerMediaUsage: (usage) => computerPlan.recordRelayed(usage.entries, new Date(usage.to)),
     onCodeHostFeedback: (signal) => codeHostFeedback.receive(signal),
     onPullRequestFeedback: async (signal) => {
       const orgId = await githubSignalOrg(signal)
@@ -3414,6 +3435,7 @@ export function buildContainer(
         leases: computerLeases,
         audit: computerAudit,
         ...(computerScreenshots ? { screenshots: computerScreenshots } : {}),
+        egress: (orgId) => computerPlan.egressFor(orgId),
         relays: () => relayRoster.entries(),
         clock,
         heartbeatSec: config.HEARTBEAT_SEC,
@@ -3439,6 +3461,7 @@ export function buildContainer(
       oauthReaper.start()
       computerRegistrationReaper.start()
       computerPool?.start()
+      computerPlan.start()
       computerScreenshotReaper?.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
@@ -3471,6 +3494,7 @@ export function buildContainer(
       oauthReaper.stop()
       computerRegistrationReaper.stop()
       computerPool?.stop()
+      computerPlan.stop()
       computerScreenshotReaper?.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()

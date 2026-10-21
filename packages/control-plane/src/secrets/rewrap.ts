@@ -371,5 +371,20 @@ export async function rewrapAllSecrets(
     done('feishu_app_registration', rows, values, skipped)
   }
 
+  {
+    // A managed computer egress proxy's password (computer-use.md §15.4); most organizations store none.
+    let rows = 0
+    let skipped = 0
+    for (const r of await prisma.computerOrgSettings.findMany({ where: { egressProxyPassword: { not: null } } })) {
+      const res = await prisma.computerOrgSettings.updateMany({
+        where: { orgId: r.orgId, egressProxyPassword: r.egressProxyPassword },
+        data: { egressProxyPassword: await resealNullable(r.egressProxyPassword, orgScope(OrgId(r.orgId))) }
+      })
+      if (res.count === 0) skipped += 1
+      else rows += 1
+    }
+    done('computer_org_settings', rows, rows, skipped)
+  }
+
   return stats
 }

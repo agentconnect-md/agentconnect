@@ -128,3 +128,4 @@ export { PgAgentMemoryTransactionRepo } from './repositories/agent-memory-transa
 
 export { PgProviderKeyStore } from './repositories/provider-key.repo.js'
 export { PgComputerScreenshotRepo } from './repositories/computer-screenshot.repo.js'
+export { PgComputerUsageRepo } from './repositories/computer-usage.repo.js'

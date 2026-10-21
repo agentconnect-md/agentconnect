@@ -8,7 +8,11 @@ import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgComputerScreenshotRepo } from '../../src/persistence/repositories/computer-screenshot.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
-import { ComputerScreenshots, ScreenshotSessionPendingError } from '../../src/registry/computerScreenshots.js'
+import {
+  ComputerScreenshots,
+  type ComputerScreenshotsOpts,
+  ScreenshotSessionPendingError
+} from '../../src/registry/computerScreenshots.js'
 import type { ScreenshotBucket, ScreenshotObjectKey } from '../../src/computer-screenshots/bucket.js'
 import { ComputerPolicySchema } from '../../src/domain/computer.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
@@ -51,13 +55,14 @@ class FakeBucket implements ScreenshotBucket {
   }
 }
 
-function harness() {
+function harness(limits?: ComputerScreenshotsOpts['limits']) {
   const clock = new FakeClock(T0)
   const bucket = new FakeBucket()
   const repo = new PgComputerScreenshotRepo(prisma)
   const screenshots = new ComputerScreenshots(repo, new PgSessionRepo(prisma), bucket, clock, {
     defaultDays: 30,
-    maxDays: 90
+    maxDays: 90,
+    ...(limits ? { limits } : {})
   })
   return { clock, bucket, repo, screenshots }
 }
@@ -242,6 +247,69 @@ describe('computer screenshot storage', () => {
       offer(s.sessionId, s.agentId, { bytes: 4096 })
     )
     expect(tooBig).toMatchObject({ status: 'skipped', reason: 'too large' })
+  })
+
+  it('holds an organization to its screenshot storage and retention quota', async () => {
+    const h = harness(async () => ({ storedBytes: 150, retentionDays: 7 }))
+    const computerId = await register(appAs(DEFAULT_OWNER_ID))
+    await prisma.computer.update({ where: { id: computerId }, data: { kind: 'managed' } })
+    const s = await session()
+    const target = {
+      orgId: DEFAULT_ORG_ID,
+      computerId,
+      kind: 'managed' as const,
+      policy: policy(),
+      agentAccess: granting(s.agentId)
+    }
+    const first = await h.screenshots.put(target, offer(s.sessionId, s.agentId))
+    h.bucket.objects.set(new URL(first.url!).pathname.slice(1), 100)
+    expect(await h.screenshots.commit(computerId, { sessionId: s.sessionId, sha256: SHA })).toBe(true)
+    const row = await prisma.computerScreenshot.findFirstOrThrow({ where: { computerId } })
+    expect(row.expiresAt.getTime()).toBe(T0 + 7 * DAY)
+    expect(await h.screenshots.put(target, offer(s.sessionId, s.agentId, { sha256: 'b'.repeat(64) }))).toEqual({
+      status: 'skipped',
+      reason: 'screenshot storage quota reached'
+    })
+    // A self-hosted Computer is held to its own policy only.
+    const own = { ...target, kind: 'self-hosted' as const, computerId: await register(appAs(DEFAULT_OWNER_ID)) }
+    expect(await h.screenshots.put(own, offer(s.sessionId, s.agentId, { sha256: 'c'.repeat(64) }))).toMatchObject({
+      status: 'upload'
+    })
+    expect(
+      (await prisma.computerScreenshot.findFirstOrThrow({ where: { computerId: own.computerId } })).expiresAt
+    ).toEqual(new Date(T0 + 30 * DAY))
+  })
+
+  it('shortens stored managed screenshots when the organization’s retention quota drops', async () => {
+    let retentionDays: number | null = null
+    const h = harness(async () => ({ storedBytes: null, retentionDays }))
+    const managedId = await register(appAs(DEFAULT_OWNER_ID))
+    await prisma.computer.update({ where: { id: managedId }, data: { kind: 'managed' } })
+    const ownId = await register(appAs(DEFAULT_OWNER_ID))
+    const s = await session()
+    for (const [computerId, kind] of [
+      [managedId, 'managed'],
+      [ownId, 'self-hosted']
+    ] as const) {
+      const signed = await h.screenshots.put(
+        { orgId: DEFAULT_ORG_ID, computerId, kind, policy: policy(), agentAccess: granting(s.agentId) },
+        offer(s.sessionId, s.agentId)
+      )
+      h.bucket.objects.set(new URL(signed.url!).pathname.slice(1), 100)
+      expect(await h.screenshots.commit(computerId, { sessionId: s.sessionId, sha256: SHA })).toBe(true)
+    }
+    const expiry = async (computerId: string) =>
+      (await prisma.computerScreenshot.findFirstOrThrow({ where: { computerId } })).expiresAt.getTime()
+    expect(await expiry(managedId)).toBe(T0 + 30 * DAY)
+    retentionDays = 7
+    expect(await h.screenshots.applyOrgRetention(DEFAULT_ORG_ID)).toBe(1)
+    expect(await expiry(managedId)).toBe(T0 + 7 * DAY)
+    expect(await expiry(ownId)).toBe(T0 + 30 * DAY)
+    // The reaper applies a lowered quota too, such as the deployment's plan default.
+    retentionDays = 3
+    await h.screenshots.reap()
+    expect(await expiry(managedId)).toBe(T0 + 3 * DAY)
+    expect(await expiry(ownId)).toBe(T0 + 30 * DAY)
   })
 
   it('serves a screenshot only to a member who can view both the session and the Computer', async () => {

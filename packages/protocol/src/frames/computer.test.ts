@@ -12,7 +12,8 @@ import {
   normalizeAgentAccess,
   buildComputerCpFrame,
   decodeComputerCpFrame,
-  decodeComputerCpFrameTolerant
+  decodeComputerCpFrameTolerant,
+  ComputerEgress
 } from './computer.js'
 import { buildRelayCpFrame } from './relay-cp.js'
 import {
@@ -76,6 +77,7 @@ describe('computer channel frames', () => {
       'computer/lease',
       'computer/relays',
       'computer/stop',
+      'computer/egress',
       'computer/audit',
       'computer/audit/ok',
       'computer/screenshot/put',
@@ -107,6 +109,10 @@ describe('computer channel frames', () => {
       }),
       buildComputerCpFrame('computer/stop', { stop: { at: '2026-10-20T00:00:00.000Z' } }),
       buildComputerCpFrame('computer/stop', { stop: null }),
+      buildComputerCpFrame('computer/egress', { egress: { mode: 'direct' } }),
+      buildComputerCpFrame('computer/egress', {
+        egress: { mode: 'proxy', url: 'http://proxy.example.com:8080', username: 'u', password: 'p' }
+      }),
       buildComputerCpFrame('computer/heartbeat', { status: 'busy', lease: { holder: 'sess-1', idleMs: 1200 } }),
       buildComputerCpFrame('computer/auth/ok', { ...authOk, features: [COMPUTER_AUDIT_FEATURE] }),
       buildComputerCpFrame('computer/auth/ok', {
@@ -330,5 +336,35 @@ describe('Computer agent access (computer-use.md §4.1)', () => {
   it('takes only the managed mode from an agent', () => {
     expect(AgentComputerSetting.parse({ managed: { mode: 'ephemeral' } })).toEqual({ managed: { mode: 'ephemeral' } })
     expect(AgentComputerSetting.safeParse({ enabled: true, computers: [A] }).success).toBe(false)
+  })
+})
+
+describe('managed computer egress (computer-use.md §15.4)', () => {
+  it('takes an http or https proxy with a port and keeps its credentials apart', () => {
+    for (const url of ['http://proxy.example.com:3128', 'https://10.0.0.5:8443', 'http://proxy.example.com/']) {
+      expect(ComputerEgress.safeParse({ mode: 'proxy', url }).success).toBe(true)
+    }
+    for (const url of [
+      'socks5://proxy.example.com:1080',
+      'http://user:pass@proxy.example.com:3128',
+      'http://proxy.example.com:3128/path',
+      'http://proxy.example.com:3128?x=1',
+      'not a url'
+    ]) {
+      expect(ComputerEgress.safeParse({ mode: 'proxy', url }).success).toBe(false)
+    }
+  })
+
+  it('reaches an older desktop as an auth/ok field it drops', () => {
+    const frame = buildComputerCpFrame('computer/auth/ok', {
+      ...authOk,
+      egress: { mode: 'proxy', url: 'http://proxy.example.com:3128', password: 'secret' }
+    })
+    const decoded = decodeComputerCpFrameTolerant(JSON.stringify(frame))
+    expect(decoded.ok && decoded.frame.type === 'computer/auth/ok' && decoded.frame.payload.egress).toEqual({
+      mode: 'proxy',
+      url: 'http://proxy.example.com:3128',
+      password: 'secret'
+    })
   })
 })

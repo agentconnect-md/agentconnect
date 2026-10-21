@@ -113,6 +113,13 @@ async function seedAllSecretTables(): Promise<void> {
       name: 'sweep-feishu'
     }
   })
+  await prisma.computerOrgSettings.create({
+    data: {
+      orgId: DEFAULT_ORG_ID,
+      egress: { mode: 'proxy', url: 'http://proxy.example.test:3128' },
+      egressProxyPassword: 'proxy-password-plain'
+    }
+  })
   await prisma.feishuAppRegistration.create({
     data: {
       id: randomUUID(),
@@ -189,6 +196,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(stats.map((s) => s.table).sort()).toEqual([
       'agent_secret',
       'bot_secret',
+      'computer_org_settings',
       'deployment_secret',
       'external_memory_connection_secret',
       'external_memory_grant',

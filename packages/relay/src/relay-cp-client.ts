@@ -14,9 +14,11 @@
  */
 import {
   CODEHOST_FEEDBACK_FEATURE,
+  COMPUTER_MEDIA_USAGE_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
   type RcFollowUpWatch,
   type RcCodeHostFeedback,
+  type RcComputerMediaUsage,
   type RcCodeHostFeedbackResult,
   type RcCodeHostFeedbackWatch,
   BOT_CREDENTIAL_CHECK_FEATURE,
@@ -473,6 +475,14 @@ export class RelayCpClient {
       return
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/github-installation', poke)))
+  }
+
+  /** Send TURN bytes per Computer (computer-use.md §15.5); `ready: false` keeps them for later, `taken: false` the CP meters none. */
+  reportComputerMediaUsage(usage: RcComputerMediaUsage): { ready: boolean; taken: boolean } {
+    if (this.state !== 'READY' || !this.transport) return { ready: false, taken: false }
+    if (!this.serverFeatures.has(COMPUTER_MEDIA_USAGE_FEATURE)) return { ready: true, taken: false }
+    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/computer-media-usage', usage)))
+    return { ready: true, taken: true }
   }
 
   /** Persist feedback coordinates before acknowledging the provider webhook. */

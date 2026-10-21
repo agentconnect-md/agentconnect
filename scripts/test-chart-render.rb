@@ -931,6 +931,40 @@ abort('members must claim desktops against the desktop warm pool') unless deskto
 _, desktop_cp = control_plane_of.call(desktop_docs)
 abort('the Control Plane must run the computer pool') unless
   desktop_cp.fetch('env').any? { |item| item['name'] == 'COMPUTER_POOL_ENABLED' && item['value'] == 'true' }
+# Metering bills the desktop home volume the template requests, and quotas default to the built-in ones (computer-use.md §15.5).
+desktop_plan = JSON.parse(desktop_cp.fetch('env').find { |item| item['name'] == 'AC_COMPUTER_PLAN' }&.fetch('value') || abort('missing AC_COMPUTER_PLAN'))
+abort("unexpected computer plan: #{desktop_plan}") unless
+  desktop_plan == { 'version' => 1, 'quotas' => {}, 'volumeGib' => 5, 'egress' => { 'orgProxy' => true } }
+desktop_egress = desktop_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports')
+abort("desktops reach HTTPS only, without relay TURN: #{desktop_egress}") unless
+  desktop_egress == [{ 'protocol' => 'TCP', 'port' => 443 }]
+# The proxy ports must not reach the cluster's own listeners on them, such as the Control Plane on 8080.
+proxy_rule = desktop_template.dig('spec', 'networkPolicy', 'egress', 2) || abort('missing the desktop proxy ports rule')
+abort("unexpected desktop proxy ports: #{proxy_rule['ports']}") unless
+  proxy_rule['ports'] == [3128, 8080].map { |port| { 'protocol' => 'TCP', 'port' => port } }
+proxy_v4 = proxy_rule.fetch('to', []).map { |peer| peer['ipBlock'] }.compact.find { |block| block['cidr'] == '0.0.0.0/0' }
+abort("desktop proxy ports must exclude cluster-internal ranges: #{proxy_rule['to']}") unless
+  proxy_v4 && %w[10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10].all? { |cidr| proxy_v4.fetch('except', []).include?(cidr) } &&
+  proxy_rule['to'].none? { |peer| peer.key?('podSelector') || peer.key?('namespaceSelector') }
+
+# With TURN on the relays, a desktop pod reaches it over UDP, TCP and TLS, so its viewer works with no reachable UDP (§7.2).
+turn_rendered, turn_error, turn_status = Open3.capture3(
+  *command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test',
+  '--set', 'relay.turn.enabled=true', '--set', 'relay.turn.host=turn-{ordinal}.example.test',
+  '--set', 'relay.turn.tls.secretName=turn-tls', '--set', 'relay.turn.tls.publicPort=5349',
+  '--set', 'relay.stun.enabled=true', '--set', 'relay.stun.host=stun-{ordinal}.example.test', '--set', 'relay.stun.port=3490',
+  '--set-json', 'computerViewer.turn.urls=["turns:coturn.example.test:5350?transport=tcp"]',
+  '--set', 'computerPool.home.size=1Ti', '--set-json', 'computerPlan.quotas={"desktops":null}'
+)
+abort("helm template (computer pool with relay TURN) failed:\n#{turn_error}") unless turn_status.success?
+turn_docs = YAML.load_stream(turn_rendered).compact
+turn_template = turn_docs.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-desktop' }
+turn_egress = turn_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports').map { |p| "#{p['protocol']}/#{p['port']}" }
+abort("unexpected desktop media egress: #{turn_egress}") unless
+  turn_egress == %w[TCP/443 UDP/3478 TCP/3478 UDP/3480 TCP/3480 TCP/5349 UDP/3490 UDP/5350 TCP/5350]
+_, turn_cp = control_plane_of.call(turn_docs)
+turn_plan = JSON.parse(turn_cp.fetch('env').find { |item| item['name'] == 'AC_COMPUTER_PLAN' }.fetch('value'))
+abort("unexpected computer plan: #{turn_plan}") unless turn_plan['volumeGib'] == 1024 && turn_plan['quotas'] == { 'desktops' => nil }
 
 # Without the daemon pool nothing can claim a desktop, so the Control Plane must not advertise managed computers.
 poolless_rendered, poolless_error, poolless_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test', '--set', 'daemonPool.enabled=false')

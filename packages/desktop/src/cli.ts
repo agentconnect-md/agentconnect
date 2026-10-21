@@ -64,6 +64,7 @@ import {
   tokenSha256
 } from './cp/env-registration.js'
 import { poolBootstrapPort, startPoolBootstrap } from './cp/pool-bootstrap.js'
+import { EgressForwarder, egressPort } from './egress.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
 import { scheduleDoctor } from './doctor-schedule.js'
@@ -114,6 +115,8 @@ Commands:
                                                H defaults to 127.0.0.1, --host 0.0.0.0 opens every interface;
                                                registers first when ${REGISTER_TOKEN_ENV}(_FILE) and
                                                AGENTCONNECT_CP_URL are set and no key for that CP is stored
+                                               (AGENTCONNECT_EGRESS_PORT runs the browser's egress forwarder,
+                                               as managed pods do)
   stdio [--expose-driver-tools]                serve MCP over stdio (agent runs on this machine)
   token add NAME | token list | token remove NAME
   status | pause | resume                      owner controls for the running daemon (loopback)
@@ -396,6 +399,7 @@ function startCpChannel(options: {
   createMcpServer: (principal: McpPrincipal) => McpServer
   viewer: Viewer
   local: () => LocalControls | undefined
+  egress?: EgressForwarder | undefined
 }): { client: ComputerCpClient; relays: RelayLinks; refreshDoctor(): void; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -446,7 +450,8 @@ function startCpChannel(options: {
                 capabilities: capabilitiesFrom(checks, display ?? startupDisplay, {
                   session,
                   webrtc: config.webrtc,
-                  keyboardActivity: local?.keyboard() ?? false
+                  keyboardActivity: local?.keyboard() ?? false,
+                  egress: options.egress !== undefined
                 }),
                 doctor: doctorReport([...checks, ...(local?.checks() ?? [])], doctorAt)
               }
@@ -463,6 +468,7 @@ function startCpChannel(options: {
     onReady: (ok) => computer.rename(ok.name),
     onRelays: (relays) => relayLinks.converge(relays),
     onStop: (stop) => applyConsoleStop(stop),
+    onEgress: (egress) => options.egress?.apply(egress),
     onRevoked: (reason) => {
       relayLinks.stop()
       markRevoked(dir, reason)
@@ -615,9 +621,15 @@ async function registerFromPool(dir: string): Promise<void> {
 async function run(dir: string, initial: DesktopConfig, clientName: string): Promise<void> {
   // First run sets itself up, so unzip + `run` is enough; nothing is installed as a service.
   let config = initial
+  // In a managed pod the browser's only proxy; it lets nothing out until the Control Plane names the egress (§15.4).
+  const egressAt = egressPort()
+  const egress = egressAt !== undefined ? new EgressForwarder({ port: egressAt, log }) : undefined
+  if (egress) log(`egress forwarder on 127.0.0.1:${await egress.start()}`)
   await registerFromPool(dir)
   await registerFromEnvironment(dir)
   const registration = loadRegistration(dir)
+  // A desktop no Control Plane manages has no egress policy to wait for.
+  if (!registration) egress?.apply({ mode: 'direct' })
   if (config.clients.length === 0 && !registration) {
     const issued = issueClientToken(config, clientName)
     config = issued.config
@@ -747,7 +759,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     screenSize,
     createMcpServer,
     viewer,
-    local: () => live.local
+    local: () => live.local,
+    egress
   })
   // Behind NAT the local addresses mean nothing to a client, so only the public one is printed.
   const publicBase = publicBaseUrl(config)
@@ -782,7 +795,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     live.local?.close()
     authority.close()
     releaseDisplay()
-    await Promise.allSettled([server.close(), driver.close()])
+    await Promise.allSettled([server.close(), driver.close(), egress?.stop()])
     process.exit(exitCode)
   }
   process.once('SIGINT', () => void shutdown())

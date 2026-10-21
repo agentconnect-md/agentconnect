@@ -12,6 +12,7 @@ import {
 import {
   COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
+  COMPUTER_EGRESS_FEATURE,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
   decodeComputerCpFrameTolerant,
@@ -19,6 +20,7 @@ import {
   type ComputerAuthOk,
   type ComputerControlLease,
   type ComputerCpFrame,
+  type ComputerEgress,
   type ComputerHeartbeat,
   type ComputerPolicy,
   type ComputerRelayEntry,
@@ -53,6 +55,8 @@ export interface ComputerCpClientDeps {
   onRelays?: (relays: ComputerRelayEntry[]) => void
   // The console stopped this Computer, or lifted its Stop with null (computer-use.md §6).
   onStop?: (stop: ComputerStopPush['stop']) => void
+  // A managed desktop's egress (computer-use.md §15.4): on every auth (direct when the CP names none) and on a change.
+  onEgress?: (egress: ComputerEgress) => void
   // The CP revoked or refused this key: persist it and stop for good.
   onRevoked: (reason: string) => void
   onReady?: (ok: ComputerAuthOk) => void
@@ -219,6 +223,9 @@ export class ComputerCpClient {
     this.deps.authority.syncClock(ok.serverTime)
     this.deps.authority.accept(ok.credential)
     this.deps.onPolicy?.(ok.policy)
+    // Direct only from a CP that does not name egress; one that does but sent none leaves the forwarder as it was.
+    const egress = ok.egress ?? (this.features.has(COMPUTER_EGRESS_FEATURE) ? undefined : { mode: 'direct' as const })
+    if (egress) this.deps.onEgress?.(egress)
     this.heartbeatMs = ok.heartbeatSec * 1000
     this.deps.log(`computer channel: connected as ${ok.name} (${ok.computerId})`)
     this.deps.onReady?.(ok)
@@ -255,6 +262,9 @@ export class ComputerCpClient {
         return
       case 'computer/stop':
         this.deps.onStop?.(frame.payload.stop)
+        return
+      case 'computer/egress':
+        this.deps.onEgress?.(frame.payload.egress)
         return
       case 'computer/revoke':
         return this.revoked(`${frame.payload.reason} by the Control Plane`)

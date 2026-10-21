@@ -149,6 +149,8 @@ export const ComputerCapabilitiesSchema = z.object({
   viewer: z.boolean().default(false),
   // The viewer accepts a view token's `stun` claim; desktops before relay STUN refuse such a token.
   viewerStun: z.boolean().optional(),
+  // The browser's traffic leaves through the desktop's egress forwarder, which applies `computer/egress` (§15.4).
+  egress: z.boolean().optional(),
   displays: z
     .array(
       z.object({
@@ -196,6 +198,42 @@ export const ComputerChannelCredential = z.object({
 })
 export type ComputerChannelCredential = z.infer<typeof ComputerChannelCredential>
 
+/** A proxy URL: http or https, a host and a port, no credentials or path (§15.4). */
+export const ComputerEgressProxyUrl = z
+  .string()
+  .max(512)
+  .refine((raw) => {
+    try {
+      const u = new URL(raw)
+      return (
+        (u.protocol === 'http:' || u.protocol === 'https:') &&
+        u.hostname !== '' &&
+        u.username === '' &&
+        u.password === '' &&
+        (u.pathname === '' || u.pathname === '/') &&
+        u.search === '' &&
+        u.hash === ''
+      )
+    } catch {
+      return false
+    }
+  }, 'expected http://host:port or https://host:port without credentials or a path')
+
+/** Where a managed desktop's browser traffic leaves (§15.4): straight out, or through the organization's proxy; the password is secret. */
+export const ComputerEgress = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('direct') }),
+  z.object({
+    mode: z.literal('proxy'),
+    url: ComputerEgressProxyUrl,
+    username: z.string().min(1).max(256).optional(),
+    password: z.string().min(1).max(512).optional()
+  })
+])
+export type ComputerEgress = z.infer<typeof ComputerEgress>
+
+/** The CP names a managed desktop's egress on every auth; without it the desktop keeps refusing traffic instead of going direct. */
+export const COMPUTER_EGRESS_FEATURE = 'computer-egress-v1'
+
 // D→C REQ, the first frame; the key is secret material, never logged.
 export const ComputerAuth = z
   .object({
@@ -217,7 +255,9 @@ export const ComputerAuthOk = z.object({
   // What this CP accepts on the channel beyond the base frames, such as `computer-audit-v1`.
   features: z.array(z.string().min(1).max(64)).max(32).optional(),
   // The retention in effect for this Computer's screenshots (§9); 0 or absent means none are stored.
-  screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional()
+  screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional(),
+  // A managed desktop's egress (§15.4); absent means direct unless `computer-egress-v1` is advertised. Secret, never logged.
+  egress: ComputerEgress.optional()
 })
 export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>
 
@@ -274,6 +314,10 @@ export type ComputerRelaysPush = z.infer<typeof ComputerRelaysPush>
 export const ComputerStopPush = z.object({ stop: z.object({ at: z.string().datetime() }).nullable() })
 export type ComputerStopPush = z.infer<typeof ComputerStopPush>
 
+// C→D EVT: the organization changed its egress; sent only to a desktop whose capabilities report `egress`. Never logged.
+export const ComputerEgressPush = z.object({ egress: ComputerEgress })
+export type ComputerEgressPush = z.infer<typeof ComputerEgressPush>
+
 export const COMPUTER_CP_SCHEMAS = {
   'computer/auth': ComputerAuth,
   'computer/auth/ok': ComputerAuthOk,
@@ -284,6 +328,7 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/lease': ComputerLeasePush,
   'computer/relays': ComputerRelaysPush,
   'computer/stop': ComputerStopPush,
+  'computer/egress': ComputerEgressPush,
   'computer/audit': ComputerAuditReport,
   'computer/audit/ok': ComputerAuditAck,
   'computer/screenshot/put': ComputerScreenshotPut,
@@ -306,6 +351,7 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/lease', COMPUTER_CP_SCHEMAS['computer/lease']),
   frameSchema('computer/relays', COMPUTER_CP_SCHEMAS['computer/relays']),
   frameSchema('computer/stop', COMPUTER_CP_SCHEMAS['computer/stop']),
+  frameSchema('computer/egress', COMPUTER_CP_SCHEMAS['computer/egress']),
   frameSchema('computer/audit', COMPUTER_CP_SCHEMAS['computer/audit']),
   frameSchema('computer/audit/ok', COMPUTER_CP_SCHEMAS['computer/audit/ok']),
   frameSchema('computer/screenshot/put', COMPUTER_CP_SCHEMAS['computer/screenshot/put']),

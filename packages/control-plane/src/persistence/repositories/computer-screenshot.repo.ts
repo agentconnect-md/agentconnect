@@ -119,16 +119,24 @@ export class PgComputerScreenshotRepo implements ComputerScreenshotRepo {
     return rows.map(toRecord)
   }
 
-  async clampExpiry(retention: { defaultDays: number; maxDays: number; computerId?: string }): Promise<number> {
+  async clampExpiry(retention: {
+    defaultDays: number
+    maxDays: number
+    computerId?: string
+    orgId?: string
+    capDays?: number
+  }): Promise<number> {
     const only = retention.computerId ? Prisma.sql`AND c."id" = ${retention.computerId}::uuid` : Prisma.empty
+    const org = retention.orgId ? Prisma.sql`AND c."orgId" = ${retention.orgId} AND c."kind" = 'managed'` : Prisma.empty
+    const cap = retention.capDays ?? retention.maxDays
     return this.db.$executeRaw`
       UPDATE "computer_screenshot" s
       SET "expiresAt" = s."createdAt" + make_interval(days => r.days)
       FROM (
         SELECT c."id",
-               LEAST(COALESCE((c."policy"->>'screenshotRetentionDays')::int, ${retention.defaultDays}::int), ${retention.maxDays}::int) AS days
+               LEAST(COALESCE((c."policy"->>'screenshotRetentionDays')::int, ${retention.defaultDays}::int), ${retention.maxDays}::int, ${cap}::int) AS days
         FROM "computer" c
-        WHERE TRUE ${only}
+        WHERE TRUE ${only} ${org}
       ) r
       WHERE s."computerId" = r."id" AND s."expiresAt" > s."createdAt" + make_interval(days => r.days)`
   }
@@ -155,5 +163,21 @@ export class PgComputerScreenshotRepo implements ComputerScreenshotRepo {
       written: { count: written._sum.count ?? 0, bytes: Number(written._sum.bytes ?? 0n) },
       stored: { count: stored._count._all, bytes: stored._sum.bytes ?? 0 }
     }
+  }
+
+  async storedBytes(orgId: string, now: Date): Promise<number> {
+    const [row] = await this.db.$queryRaw<Array<{ bytes: bigint | null }>>`
+      SELECT SUM(s."bytes")::bigint AS bytes
+      FROM "computer_screenshot" s JOIN "computer" c ON c."id" = s."computerId"
+      WHERE s."orgId" = ${orgId} AND c."kind" = 'managed' AND s."storedAt" IS NOT NULL AND s."expiresAt" > ${now}`
+    return Number(row?.bytes ?? 0n)
+  }
+
+  async managedOrgs(now: Date): Promise<string[]> {
+    const rows = await this.db.$queryRaw<Array<{ orgId: string }>>`
+      SELECT DISTINCT s."orgId"
+      FROM "computer_screenshot" s JOIN "computer" c ON c."id" = s."computerId"
+      WHERE c."kind" = 'managed' AND s."expiresAt" > ${now}`
+    return rows.map((r) => r.orgId)
   }
 }

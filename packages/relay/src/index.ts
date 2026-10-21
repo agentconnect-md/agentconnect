@@ -15,6 +15,7 @@ import {
   BOT_TENANT_FEATURE,
   RELAY_CP_SUBPROTOCOL,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  RC_COMPUTER_MEDIA_USAGE_MAX,
   type RcCodeHostFeedback,
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
@@ -57,6 +58,8 @@ import { startRelayOpenTelemetry } from './observability.js'
 const telemetry = startRelayOpenTelemetry()
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
+/** How often TURN bytes per Computer are reported for metering. */
+const MEDIA_USAGE_REPORT_MS = 60_000
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -470,11 +473,24 @@ async function main(): Promise<void> {
 
   log.info(`relay: health on ${config.HOST}:${config.PORT}; dialing CP at ${config.CP_URL} as "${config.RELAY_NAME}"`)
 
+  // TURN bytes per Computer go to the CP each minute for metering (computer-use.md §15.5); a closed link keeps them.
+  const reportMediaUsage = (): void => {
+    if (!relayTurn) return
+    for (const report of relayTurn.drainUsage(RC_COMPUTER_MEDIA_USAGE_MAX)) {
+      const sent = client.reportComputerMediaUsage(report)
+      if (!sent.ready) relayTurn.restoreUsage(report)
+    }
+  }
+  const mediaUsageTimer = relayTurn ? setInterval(reportMediaUsage, MEDIA_USAGE_REPORT_MS) : undefined
+  mediaUsageTimer?.unref()
+
   let shuttingDown = false
   const shutdown = async (sig: string): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     log.info(`relay: ${sig} — shutting down`)
+    if (mediaUsageTimer) clearInterval(mediaUsageTimer)
+    reportMediaUsage()
     // Drop daemon, browser and desktop sockets with 1012 (they reconnect elsewhere), then stop the CP client and server.
     for (const ws of rdServer.wss.clients) ws.close(1012, 'relay restarting')
     for (const ws of browserServer.clients) ws.close(1012, 'relay restarting')

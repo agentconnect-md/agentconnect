@@ -1,5 +1,11 @@
 // The in-memory index of live Computer channels, so a revoke, delete or policy change reaches the desktop at once.
-import type { ComputerPolicy, ComputerRelayEntry, ComputerRevoke, ComputerStopPush } from '@agentconnect.md/protocol'
+import type {
+  ComputerEgress,
+  ComputerPolicy,
+  ComputerRelayEntry,
+  ComputerRevoke,
+  ComputerStopPush
+} from '@agentconnect.md/protocol'
 
 /** The slice of a live Computer connection the registry drives; no `ws` knowledge. */
 export interface ComputerChannel {
@@ -7,6 +13,8 @@ export interface ComputerChannel {
   readonly orgId: string
   readonly ownerUserId: string
   pushPolicy(policy: ComputerPolicy): void
+  /** The organization changed its managed desktops' egress (§15.4); only a managed, capable desktop is told. */
+  pushEgress?(egress: ComputerEgress): void
   /** The console stopped or resumed the Computer. */
   pushStop(stop: ComputerStopPush['stop']): void
   /** The lease may have changed: re-read it and tell the desktop. */
@@ -71,6 +79,10 @@ export class ComputerChannelRegistry implements ComputerChannelControl {
 
   pushRelays(relays: ComputerRelayEntry[]): void {
     for (const ch of this.byComputer.values()) ch.pushRelays(relays)
+  }
+
+  pushEgress(orgId: string, egress: ComputerEgress): void {
+    for (const ch of this.byComputer.values()) if (ch.orgId === orgId) ch.pushEgress?.(egress)
   }
 
   get size(): number {
