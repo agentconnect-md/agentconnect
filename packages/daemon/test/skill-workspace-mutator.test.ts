@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -125,5 +125,44 @@ describe('runSkillWorkspaceMutation', () => {
     )
 
     await expect(restore).rejects.toThrow(/no quarantined prior skill to restore/)
+  })
+
+  it.skipIf(process.platform === 'win32')('drops a Python bytecode cache the receipt does not name', async () => {
+    const { cwd } = await workspace()
+    const canonical = await realpath(cwd)
+    const target = join(canonical, '.claude/skills/fixture')
+    const body = '---\nname: fixture\ndescription: fixture\n---\n'
+    await mkdir(join(target, '__pycache__'), { recursive: true })
+    await writeFile(join(target, 'SKILL.md'), body)
+    await writeFile(join(target, '__pycache__/run.cpython-312.pyc'), 'bytecode')
+    const stat = await lstat(canonical, { bigint: true })
+    const live = await lstat(target, { bigint: true })
+    const identity = { dev: live.dev.toString(), ino: live.ino.toString() }
+    const files = [
+      {
+        path: 'SKILL.md',
+        mode: 0o600,
+        size: Buffer.byteLength(body),
+        sha256: createHash('sha256').update(body).digest('hex')
+      }
+    ]
+    const operationId = randomUUID()
+
+    const restored = await withSkillMutationHelperLease(
+      { registerHelper: async () => {}, clearHelper: async () => {} },
+      () =>
+        runSkillWorkspaceMutation({
+          action: 'restore',
+          cwd: canonical,
+          workspaceIdentity: { dev: stat.dev.toString(), ino: stat.ino.toString() },
+          relativeRoot: '.claude/skills/fixture',
+          operationId,
+          quarantineName: `.agentconnect-skill-old-${operationId}`,
+          prior: { files, treeDigest: treeDigest(files), identity }
+        })
+    )
+
+    expect(restored).toEqual(identity)
+    await expect(lstat(join(target, '__pycache__'))).rejects.toThrow(/ENOENT/)
   })
 })

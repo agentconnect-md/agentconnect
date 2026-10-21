@@ -835,11 +835,36 @@ async function mutateAll(
   return results
 }
 
+const BYTECODE_CACHE_DIR = '__pycache__'
+
+/** Python's bytecode cache from running a bundled script is regenerated on demand, so a bundle drops it
+ *  rather than reading as edited; a cache the receipt itself names is installed content and stays. */
+async function dropBytecodeCaches(root: string, bundle: SkillBundleReceipt): Promise<void> {
+  const owned = new Set<string>()
+  for (const file of bundle.files) {
+    const parts = file.path.split('/')
+    for (let index = 1; index < parts.length; index += 1) owned.add(parts.slice(0, index).join('/'))
+  }
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.name === BYTECODE_CACHE_DIR && !owned.has(rel)) {
+        await fsp.rm(join(dir, entry.name), { recursive: true, force: true })
+      } else if (owned.has(rel)) {
+        await walk(join(dir, entry.name), rel)
+      }
+    }
+  }
+  await walk(root, '')
+}
+
 async function bundleIdentity(root: string, bundle: SkillBundleReceipt): Promise<PathIdentity | null> {
   try {
     validateReceipt(bundle)
     const before = await fsp.lstat(root, { bigint: true })
     if (!before.isDirectory() || before.isSymbolicLink()) return null
+    await dropBytecodeCaches(root, bundle)
     const inspected = await inspectLocalSkillSource(root)
     const files: SkillFileReceipt[] = inspected.files.map((file) => ({
       path: file.path,

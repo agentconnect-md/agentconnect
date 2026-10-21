@@ -108,6 +108,7 @@ const BATCH_PATH_CONCURRENCY = 8
 const SAFE_SEGMENT = /^\.?[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/
 const SAFE_BUNDLE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$/
 const RESERVED_FIRST = new Set(['.git', '.agentconnect'])
+const BYTECODE_CACHE_DIR = '__pycache__'
 const SAFE_OPERATION = /^[a-f0-9-]{36}$/
 const SAFE_QUARANTINE = /^\.agentconnect-skill-(?:new|old|trash)-[a-f0-9-]{36}$/
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/
@@ -342,6 +343,11 @@ async function inspectBundle(
         continue
       }
       if (entry.isDirectory() && stat.isDirectory()) {
+        // Python's bytecode cache from running a bundled script: regenerated on demand, so dropped rather than vouched for.
+        if (entry.name === BYTECODE_CACHE_DIR && !directories.has(rel)) {
+          await fsp.rm(abs, { recursive: true, force: true })
+          continue
+        }
         if (!directories.has(rel)) fail('skill mutation bundle contains an unexpected directory')
         await walk(abs, rel)
         continue
