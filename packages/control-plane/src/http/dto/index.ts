@@ -18,6 +18,7 @@ import {
   ComputerDoctorReport,
   ComputerPolicySchema
 } from '../../domain/computer.js'
+import { COMPUTER_ALLOCATIONS, COMPUTER_POOL_PHASES } from '../../domain/computerPool.js'
 import {
   SkillSourceFailureCode,
   AgentModelProvider,
@@ -4570,9 +4571,26 @@ export const ComputerDto = z.object({
   /** Days screenshots of this Computer are kept now: its policy's value or the deployment default; 0 stores none. */
   screenshotRetentionDays: z.number().int(),
   /** The caller may change who uses it: the registrant of a self-hosted computer, or an editor of a managed one. */
-  canEditPolicy: z.boolean()
+  canEditPolicy: z.boolean(),
+  /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
+  allocation: z.enum(COMPUTER_ALLOCATIONS).nullable(),
+  /** The agent a `per-agent` or `ephemeral` computer was made for. */
+  ownerAgentId: z.string().nullable(),
+  /** Where the pool has the computer: provisioning, registering, awake, sleeping, waking, failed or reclaiming. */
+  poolPhase: z.enum(COMPUTER_POOL_PHASES).nullable(),
+  /** Why the pool's last step for it failed, if it did. */
+  poolError: z.string().nullable()
 })
 export type ComputerDtoT = z.infer<typeof ComputerDto>
+
+/** `POST /computers/pool`: a `manual` managed computer from the Kubernetes pool (computer-use.md §15.1). */
+export const CreatePoolComputerBody = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    /** Who may use it; omitted fields take the managed defaults, and `allowedAgents` assigns it. */
+    policy: ComputerPolicySchema.optional()
+  })
+  .strict()
 export const ComputerListDto = z.array(ComputerDto)
 
 /** One call a desktop daemon served (computer-use.md §8.2); typed text appears only as `textLength`. */

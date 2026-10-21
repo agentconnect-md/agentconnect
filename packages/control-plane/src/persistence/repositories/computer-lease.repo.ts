@@ -60,7 +60,14 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
         locked.length === 1
           ? await tx.computer.findUnique({
               where: { id: computerId },
-              select: { status: true, lastSeenAt: true, policy: true, ownerUserId: true, stoppedAt: true }
+              select: {
+                status: true,
+                lastSeenAt: true,
+                policy: true,
+                ownerUserId: true,
+                stoppedAt: true,
+                poolSessionId: true
+              }
             })
           : null
       const row = computer ? await tx.computerLease.findUnique({ where: { computerId } }) : null
@@ -69,6 +76,7 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
             status: computer.status,
             lastSeenAt: computer.lastSeenAt,
             stoppedAt: computer.stoppedAt,
+            poolSessionId: computer.poolSessionId,
             policy: readComputerPolicy(computer.policy, computer.ownerUserId)
           }
         : null

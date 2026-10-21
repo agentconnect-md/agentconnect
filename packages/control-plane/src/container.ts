@@ -233,6 +233,8 @@ import { ComputerService } from './registry/computerService.js'
 import { ComputerLeaseService } from './registry/computerLeaseService.js'
 import { ComputerAuditLog } from './registry/computerAuditLog.js'
 import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
+import { ComputerPool, COMPUTER_POOL_SWEEP_MS } from './registry/computerPool.js'
+import { ConnectedPoolMembers } from './orchestrator/computerPoolMembers.js'
 import { turnConfigFrom } from './computer-viewer/turn.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
@@ -1143,8 +1145,26 @@ export function buildContainer(
       ...(config.PUBLIC_RELAY_URL ? [config.PUBLIC_RELAY_URL] : []),
       ...(await relayRoster.entries()).map((relay) => relay.url)
     ],
-    ...(computerTurn ? { turn: computerTurn } : {})
+    ...(computerTurn ? { turn: computerTurn } : {}),
+    onUse: (computerId) => computerPool?.touch(computerId)
   })
+  // Managed computers in the Kubernetes pool (computer-use.md §15.1): pool members hold the claims, this decides what they hold.
+  const computerPool = config.COMPUTER_POOL_ENABLED
+    ? new ComputerPool({
+        repo: repos.computer,
+        agents: repos.agent,
+        computers,
+        leases: computerLeases,
+        members: new ConnectedPoolMembers(connReg, { warn: (o, m) => http.log.warn(o, m) }),
+        clock,
+        timings: {
+          ephemeralIdleMs: config.COMPUTER_POOL_EPHEMERAL_IDLE_SEC * 1000,
+          sleepIdleMs: config.COMPUTER_POOL_SLEEP_IDLE_SEC * 1000
+        },
+        sweepIntervalMs: COMPUTER_POOL_SWEEP_MS,
+        log: { info: (o, m) => http.log.info(o, m), warn: (o, m) => http.log.warn(o, m) }
+      })
+    : undefined
 
   // §14.8 (resource-visibility.md): which of a gated install's reported DMs open to the
   // ordinary DM default because their counterpart is already in the agent's audience.
@@ -2199,6 +2219,7 @@ export function buildContainer(
     computers,
     computerAudit,
     computerViewer: computerChannelGrants,
+    ...(computerPool ? { computerPool } : {}),
     ...(computerScreenshots ? { computerScreenshots } : {}),
     ...(desktopDistribution ? { desktopDistribution } : {}),
     oauth,
@@ -2876,6 +2897,7 @@ export function buildContainer(
     dutyLease,
     computerLeases,
     computerChannelGrants,
+    ...(computerPool ? { computerPool } : {}),
     memberSets: repos.memberSet,
     agentBundle: (agent) => stagedAgentMoves.bundleFor(agent),
     cron: repos.cron,
@@ -3387,6 +3409,7 @@ export function buildContainer(
       hookRunReaper.start()
       oauthReaper.start()
       computerRegistrationReaper.start()
+      computerPool?.start()
       computerScreenshotReaper?.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
@@ -3418,6 +3441,7 @@ export function buildContainer(
       hookRunReaper.stop()
       oauthReaper.stop()
       computerRegistrationReaper.stop()
+      computerPool?.stop()
       computerScreenshotReaper?.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()

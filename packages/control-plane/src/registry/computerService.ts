@@ -83,6 +83,8 @@ export class ComputerService {
     createdByUserId: string
     name?: string
     ttlMinutes?: number
+    /** A managed computer's own row (§15.1): the token keys it rather than creating a Computer. */
+    computerId?: ComputerId
   }): Promise<IssuedComputerRegistration> {
     const ttl = Math.min(
       Math.max(1, Math.floor(input.ttlMinutes ?? COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES)),
@@ -95,11 +97,13 @@ export class ComputerService {
       hash: minted.hash,
       displayTail: minted.displayTail,
       ...(input.name ? { name: input.name } : {}),
+      ...(input.computerId ? { computerId: input.computerId } : {}),
       expiresAt: new Date(this.clock.now() + ttl * 60_000)
     })
     this.record(input.orgId, input.createdByUserId, 'registration_create', {
       registrationId: registration.id,
-      displayTail: registration.displayTail
+      displayTail: registration.displayTail,
+      ...(input.computerId ? { computerId: input.computerId } : {})
     })
     return { registration, token: minted.token }
   }

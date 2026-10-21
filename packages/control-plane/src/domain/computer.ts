@@ -66,13 +66,17 @@ export function readComputerDoctor(raw: unknown): ComputerDoctorReport | null {
 /** A live status older than this reads as offline: its channel died without a clean close (three heartbeats). */
 export const COMPUTER_STALE_AFTER_MS = 45_000
 
+/** Whether a presented status can take a call now: not offline, sleeping or revoked. */
+export const isComputerReachable = (status: ComputerStatus): boolean =>
+  status !== 'offline' && status !== 'sleeping' && status !== 'revoked'
+
 /** The status to show and to gate on: a stale live one has gone offline, and a console Stop reads as paused. */
 export function presentComputerStatus(
   c: { status: ComputerStatus; lastSeenAt: Date | null; stoppedAt?: Date | null },
   nowMs: number,
   staleAfterMs = COMPUTER_STALE_AFTER_MS
 ): ComputerStatus {
-  if (c.status === 'offline' || c.status === 'revoked') return c.status
+  if (c.status === 'offline' || c.status === 'sleeping' || c.status === 'revoked') return c.status
   if (!c.lastSeenAt || nowMs - c.lastSeenAt.getTime() > staleAfterMs) return 'offline'
   if (c.stoppedAt && c.status !== 'human_in_control') return 'paused'
   return c.status

@@ -24,6 +24,12 @@ import {
 import { AuthReq, AuthOk } from './frames/auth.js'
 import { ComputerLeaseAcquire, ComputerLeaseAcquireResult, ComputerLeaseRelease } from './frames/computer-lease.js'
 import { ComputerChannelGrantRequest, ComputerChannelGrantResult } from './frames/computer-channel.js'
+import {
+  ComputerPoolAcquire,
+  ComputerPoolAcquireResult,
+  ComputerPoolOp,
+  ComputerPoolOpResult
+} from './frames/computer-pool.js'
 import { RegisterReq, RegisterOk, RelayRosterUpdate, CapabilitiesUpdate } from './frames/register.js'
 import { CollabRoutesSnapshot } from './frames/collab.js'
 import { RouteAssign, RouteAssignAck, RouteUpdate, Drain, DrainProgress, DrainDone } from './frames/route.js'
@@ -379,6 +385,11 @@ export const FRAME_SCHEMAS = {
   // Computer data-plane tokens (computer-use.md §3.7), behind COMPUTER_CHANNEL_FEATURE.
   'computer-channel/grant': ComputerChannelGrantRequest,
   'computer-channel/grant/result': ComputerChannelGrantResult,
+  // Managed computers (computer-use.md §15.1): acquire behind COMPUTER_POOL_FEATURE, claims behind COMPUTER_POOL_MEMBER_FEATURE.
+  'computer-pool/acquire': ComputerPoolAcquire,
+  'computer-pool/acquire/result': ComputerPoolAcquireResult,
+  'computer-pool/op': ComputerPoolOp,
+  'computer-pool/op/result': ComputerPoolOpResult,
   'agent/detach': AgentDetach,
   'agent/activate': AgentActivate,
   'agent/activity': AgentActivity,
@@ -787,6 +798,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('computer-lease/release', FRAME_SCHEMAS['computer-lease/release']),
   frame('computer-channel/grant', FRAME_SCHEMAS['computer-channel/grant']),
   frame('computer-channel/grant/result', FRAME_SCHEMAS['computer-channel/grant/result']),
+  frame('computer-pool/acquire', FRAME_SCHEMAS['computer-pool/acquire']),
+  frame('computer-pool/acquire/result', FRAME_SCHEMAS['computer-pool/acquire/result']),
+  frame('computer-pool/op', FRAME_SCHEMAS['computer-pool/op']),
+  frame('computer-pool/op/result', FRAME_SCHEMAS['computer-pool/op/result']),
   frame('agent/detach', FRAME_SCHEMAS['agent/detach']),
   frame('agent/activate', FRAME_SCHEMAS['agent/activate']),
   frame('agent/activity', FRAME_SCHEMAS['agent/activity']),

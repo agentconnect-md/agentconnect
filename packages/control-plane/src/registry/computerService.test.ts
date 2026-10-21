@@ -58,6 +58,13 @@ function computer(over: Partial<ComputerRecord> = {}): ComputerRecord {
     revokedAt: null,
     stoppedAt: null,
     stoppedByUserId: null,
+    allocation: null,
+    ownerAgentId: null,
+    poolSessionId: null,
+    poolPhase: null,
+    poolPhaseAt: null,
+    poolActiveAt: null,
+    poolError: null,
     createdAt: new Date(NOW),
     updatedAt: new Date(NOW),
     ...over

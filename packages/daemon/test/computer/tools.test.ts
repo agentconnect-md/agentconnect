@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ComputerApprovals, ComputerLeaseAcquireResult } from '@agentconnect.md/protocol'
+import type {
+  ComputerApprovals,
+  ComputerLeaseAcquireResult,
+  ComputerPoolAcquire,
+  ComputerPoolAcquireResult
+} from '@agentconnect.md/protocol'
 import { ComputerChannelError, type ComputerMcpConnection } from '../../src/computer/data-plane.js'
 import {
   COMPUTER_TOOLS,
@@ -46,6 +51,9 @@ function setup(
     connectError?: (attempt: number) => Error | undefined
     approvals?: ComputerApprovals | null
     approve?: (ask: ComputerApprovalAsk) => Promise<ComputerApprovalAnswer>
+    managed?: 'ephemeral' | 'per-agent'
+    pool?: (req: ComputerPoolAcquire) => ComputerPoolAcquireResult
+    poolServes?: boolean
   } = {}
 ) {
   const asks: ComputerApprovalAsk[] = []
@@ -73,10 +81,27 @@ function setup(
     ),
     computerLeaseRelease: vi.fn(async () => undefined)
   }
+  const poolCalls: ComputerPoolAcquire[] = []
+  const sleeps: number[] = []
   const deps: ComputerToolsDeps = {
     grants: { computerChannelGrant: vi.fn() },
     leases,
     computersFor: () => granted,
+    managedModeFor: () => options.managed,
+    ...(options.pool
+      ? {
+          pool: {
+            computerPoolAcquire: async (req: ComputerPoolAcquire) => {
+              poolCalls.push(req)
+              return options.pool!(req)
+            }
+          },
+          poolServes: () => options.poolServes ?? true,
+          sleep: async (ms: number) => {
+            sleeps.push(ms)
+          }
+        }
+      : {}),
     orgFor: () => 'org_1',
     sessionIdFor: async () => 'out-1',
     now: options.now ?? (() => T0),
@@ -117,7 +142,18 @@ function setup(
       return conn as unknown as ComputerMcpConnection
     }
   }
-  return { tools: new ComputerTools(deps), calls, connects, closes, closedAttempts, leases, asks, metas }
+  return {
+    tools: new ComputerTools(deps),
+    calls,
+    connects,
+    closes,
+    closedAttempts,
+    leases,
+    asks,
+    metas,
+    poolCalls,
+    sleeps
+  }
 }
 
 const parse = (result: { mcpContent: Array<{ type: string; text?: string }> }) =>
@@ -470,5 +506,154 @@ describe('computer approvals', () => {
     const { tools, asks } = setup({ approvals: null })
     await tools.call(ctx(), 'computer_key', { keys: ['return'] })
     expect(asks[0]?.reasons).toEqual(['first_input', 'submit'])
+  })
+})
+
+describe('managed computers (§15.1)', () => {
+  const M = '00000000-0000-4000-8000-0000000000aa'
+
+  it('offers the tools to an agent with only a managed mode when the CP runs the pool', () => {
+    const use = { enabled: true, computers: [], managed: { mode: 'ephemeral' as const } }
+    expect(computerToolsOffered({ computerUse: use, controlPlaneServes: true, runtimeShowsImages: true })).toBe(false)
+    expect(
+      computerToolsOffered({ computerUse: use, controlPlaneServes: true, runtimeShowsImages: true, poolServes: true })
+    ).toBe(true)
+  })
+
+  it('allocates the session computer, waits while it comes up, then forwards to it', async () => {
+    const answers: ComputerPoolAcquireResult[] = [
+      { state: 'pending', phase: 'provisioning', retryAfterMs: 2000 },
+      { state: 'pending', phase: 'registering', computerId: M, retryAfterMs: 2000 },
+      { state: 'ready', computerId: M, allocation: 'ephemeral' }
+    ]
+    const { tools, calls, poolCalls, sleeps } = setup({
+      granted: [],
+      managed: 'ephemeral',
+      pool: () => answers.shift()!
+    })
+    const out = await tools.call(ctx(), 'computer_screenshot', {})
+    expect(out?.result.mcpIsError).toBeUndefined()
+    expect(calls).toEqual([{ computer: M, name: 'computer_screenshot', args: {} }])
+    expect(poolCalls).toEqual([
+      { agentId: AGENT, sessionId: 'out-1' },
+      { agentId: AGENT, sessionId: 'out-1' },
+      { agentId: AGENT, sessionId: 'out-1' }
+    ])
+    expect(sleeps).toEqual([2000, 2000])
+    // The next call goes straight to it, and computer_list shows it.
+    await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+    expect(poolCalls).toHaveLength(3)
+    expect(calls.at(-1)).toMatchObject({ computer: M, name: 'computer_click' })
+    const listed = await tools.call(ctx(), 'computer_list', {})
+    expect(JSON.parse((listed!.result.mcpContent[0] as { text: string }).text)).toEqual([
+      expect.objectContaining({ computer: M })
+    ])
+  })
+
+  it('fails with a clear error when the pool refuses or the computer does not come up in time', async () => {
+    const refused = setup({
+      granted: [],
+      managed: 'per-agent',
+      pool: () => ({ state: 'failed', code: 'volume_missing', message: 'the volume is gone' })
+    })
+    expect(parse((await refused.tools.call(ctx(), 'computer_screenshot', {}))!.result)).toMatchObject({
+      error: 'unavailable',
+      reason: 'volume_missing',
+      message: 'the volume is gone'
+    })
+    expect(refused.calls).toEqual([])
+
+    let now = T0
+    const slow = setup({
+      now: () => now,
+      granted: [],
+      managed: 'ephemeral',
+      pool: () => {
+        now += 30_000
+        return { state: 'pending', phase: 'waking', computerId: M, retryAfterMs: 30_000 }
+      }
+    })
+    const result = parse((await slow.tools.call(ctx(), 'computer_screenshot', {}))!.result)
+    expect(result).toMatchObject({ error: 'unavailable', phase: 'waking', computer: M })
+    expect(String(result.message)).toMatch(/still waking after 180s/)
+    expect(slow.calls).toEqual([])
+  })
+
+  it('wakes a granted pool computer before its first call, and again after it fell asleep', async () => {
+    let asleep = false
+    const { tools, calls, poolCalls } = setup({
+      granted: [C1],
+      pool: (req) => {
+        asleep = false
+        return { state: 'ready', computerId: req.computerId!, allocation: 'manual' }
+      },
+      callTool: async () => {
+        if (asleep) throw new ComputerChannelError('unavailable', 'this computer is asleep')
+        return { content: [{ type: 'text', text: '{}' }, IMAGE] }
+      }
+    })
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(poolCalls).toEqual([{ agentId: AGENT, sessionId: 'out-1', computerId: C1 }])
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(poolCalls).toHaveLength(1)
+
+    // It slept between turns: the refusal sent nothing, so it is woken and the call is made once more.
+    asleep = true
+    const out = await tools.call(ctx(), 'computer_screenshot', {})
+    expect(out?.result.mcpIsError).toBeUndefined()
+    expect(poolCalls).toHaveLength(2)
+    expect(calls).toHaveLength(4)
+  })
+
+  it('moves to the replacement when the session computer was reclaimed between calls', async () => {
+    const M2 = '00000000-0000-4000-8000-0000000000ab'
+    const answers: ComputerPoolAcquireResult[] = [
+      { state: 'ready', computerId: M, allocation: 'ephemeral' },
+      { state: 'ready', computerId: M2, allocation: 'ephemeral' }
+    ]
+    let reclaimed = false
+    const { tools, calls, poolCalls } = setup({
+      granted: [],
+      managed: 'ephemeral',
+      pool: () => answers.shift()!,
+      callTool: async (_params, attempt) => {
+        if (reclaimed && attempt === 1) throw new ComputerChannelError('unavailable', 'this computer is gone')
+        return { content: [{ type: 'text', text: '{}' }, IMAGE] }
+      }
+    })
+    await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+    expect(calls.at(-1)).toMatchObject({ computer: M })
+    reclaimed = true
+    const out = await tools.call(ctx(), 'computer_click', { x: 3, y: 4 })
+    expect(out?.result.mcpIsError).toBeUndefined()
+    expect(poolCalls).toHaveLength(2)
+    expect(calls.at(-1)).toMatchObject({ computer: M2, name: 'computer_click' })
+    // The held id named the old computer, so later calls go to the replacement too.
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(calls.at(-1)).toMatchObject({ computer: M2, name: 'computer_screenshot' })
+    expect(poolCalls).toHaveLength(2)
+  })
+
+  it('never asks a Control Plane without the pool, and keeps self-hosted Computers as they were', async () => {
+    const { tools, calls, poolCalls } = setup({
+      granted: [C1],
+      managed: 'ephemeral',
+      poolServes: false,
+      pool: () => ({ state: 'ready', computerId: M })
+    })
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(poolCalls).toEqual([])
+    expect(calls).toEqual([{ computer: C1, name: 'computer_screenshot', args: {} }])
+  })
+
+  it('refuses another computer id, and keeps a held one ahead of the managed one', async () => {
+    const { tools } = setup({ granted: [], managed: 'ephemeral', pool: () => ({ state: 'ready', computerId: M }) })
+    expect(parse((await tools.call(ctx(), 'computer_screenshot', { computer: C2 }))!.result)).toMatchObject({
+      error: 'denied'
+    })
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(parse((await tools.call(ctx(), 'computer_screenshot', { computer: M }))!.result)).not.toMatchObject({
+      error: expect.anything()
+    })
   })
 })

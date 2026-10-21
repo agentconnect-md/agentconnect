@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { COMPUTER_MANAGED_MODES } from './frames/computer-pool.js'
 
 /** The most Computers one agent may name. */
 export const AGENT_COMPUTERS_MAX = 32
@@ -10,6 +11,8 @@ export const AgentComputerUse = z.object({
     .array(z.uuid())
     .max(AGENT_COMPUTERS_MAX)
     .refine((ids) => new Set(ids).size === ids.length, { message: 'computer ids must be unique' })
-    .default([])
+    .default([]),
+  // An agent-driven managed computer from the pool (§15.1): a fresh one per session, or the agent's own kept one.
+  managed: z.object({ mode: z.enum(COMPUTER_MANAGED_MODES) }).optional()
 })
 export type AgentComputerUse = z.infer<typeof AgentComputerUse>

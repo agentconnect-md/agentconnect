@@ -90,6 +90,7 @@ import {
 import { autoMergeSet, autoMergeState, type AutoMergeControlDeps } from './automerge.js'
 import { sandboxKeepAlive, type SandboxKeepAliveDeps } from './sandbox-keepalive.js'
 import { runtimeProbe, type RuntimeProbeDeps } from './runtime-probe.js'
+import { computerPoolOp, type ComputerPoolControlDeps } from './computer-pool.js'
 import {
   workspaceDelete,
   workspaceMkdir,
@@ -135,6 +136,7 @@ export interface ControlDeps
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
     RuntimeProbeDeps,
+    ComputerPoolControlDeps,
     WorkspaceControlDeps {}
 
 /** Every dispatchable C→D control frame kind, by wire type. A type absent here is ignored. */
@@ -184,6 +186,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['daemon/restart', daemonRestart],
   ['daemon/upgrade', daemonUpgrade],
   ['daemon/runtimes/probe', runtimeProbe],
+  ['computer-pool/op', computerPoolOp],
   ['session/list', sessionList],
   ['session/history', sessionHistory],
   ['image/original/resolve', sharedImageResolve],

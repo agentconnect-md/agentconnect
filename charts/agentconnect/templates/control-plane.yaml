@@ -208,6 +208,15 @@ spec:
             # the app's identity contract.
             - name: DAEMON_POOL_ENABLED
               value: 'true'
+            {{- if .Values.computerPool.enabled }}
+            # Managed computers (computer-use.md §15.1): allocate, sleep and reclaim desktops through pool members.
+            - name: COMPUTER_POOL_ENABLED
+              value: 'true'
+            - name: COMPUTER_POOL_EPHEMERAL_IDLE_SEC
+              value: {{ .Values.computerPool.ephemeralIdleSeconds | quote }}
+            - name: COMPUTER_POOL_SLEEP_IDLE_SEC
+              value: {{ .Values.computerPool.sleepIdleSeconds | quote }}
+            {{- end }}
             {{- end }}
             {{- with (include "agentconnect.emailFrom" .) }}
             # Sender the waitlist flow shows users ("check your inbox for mail from …"). Only

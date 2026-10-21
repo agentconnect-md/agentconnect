@@ -130,9 +130,12 @@ import {
   AGENT_EXISTS_MAX,
   COMPUTER_CHANNEL_FEATURE,
   COMPUTER_LEASE_FEATURE,
+  COMPUTER_POOL_FEATURE,
   ComputerChannelGrantResult,
   type ComputerChannelGrantRequest,
   ComputerLeaseAcquireResult,
+  type ComputerPoolAcquire,
+  ComputerPoolAcquireResult,
   type ComputerLeaseAcquire,
   type ComputerLeaseRelease,
   ExecutorCandidatesResult,
@@ -180,6 +183,7 @@ import type { AssistantControlDeps } from './control/assistant.js'
 import type { AutoMergeControlDeps } from './control/automerge.js'
 import type { SandboxKeepAliveDeps } from './control/sandbox-keepalive.js'
 import type { RuntimeProbeDeps } from './control/runtime-probe.js'
+import type { ComputerPoolControlDeps } from './control/computer-pool.js'
 import { GitMessagePasses, UploadBegins, type WorkspaceReadDeps } from './control/workspace.js'
 import type { ConfigApply } from './config-apply.js'
 import type { Logger } from '../log.js'
@@ -250,6 +254,7 @@ export interface CpClientDeps
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
     RuntimeProbeDeps,
+    ComputerPoolControlDeps,
     CodeHostControlDeps,
     WorkspaceReadDeps {
   // Credential leases must not lengthen when the wall clock moves backward.
@@ -432,6 +437,7 @@ export class CpClient {
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
       runtimeProbe: deps.runtimeProbe,
+      computerPoolOp: deps.computerPoolOp,
       executorPrepare: deps.executorPrepare,
       executorRelease: deps.executorRelease,
       agentWake: deps.agentWake,
@@ -1521,6 +1527,19 @@ export class CpClient {
     if (rep.type !== 'ack' || rep.payload.ok !== true) {
       throw new WireError('INTERNAL', `computer-lease/release was refused (${rep.type})`, false)
     }
+  }
+
+  /** `computer-pool/acquire` (computer-use.md §15.1): the session's managed computer, or wake a granted one; pending asks again. */
+  async computerPoolAcquire(payload: ComputerPoolAcquire, orgId?: string): Promise<ComputerPoolAcquireResult> {
+    this.requireReady('computer-pool/acquire')
+    if (!this.supportsServerFeature(COMPUTER_POOL_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer computer-pool/acquire', false)
+    }
+    const rep = await this.request('computer-pool/acquire', payload, orgId)
+    if (rep.type !== 'computer-pool/acquire/result') {
+      throw new WireError('INTERNAL', `expected computer-pool/acquire/result, got ${rep.type}`, false)
+    }
+    return ComputerPoolAcquireResult.parse(rep.payload)
   }
 
   /**

@@ -169,6 +169,13 @@ spec:
             {{- include "agentconnect.daemonPoolClusterEnv" . | nindent 12 }}
             - name: AC_K8S_SHIM_PORT
               value: {{ .Values.daemonPool.shimPort | quote }}
+            {{- if .Values.computerPool.enabled }}
+            # Managed computers (computer-use.md §15.1): claim desktops from this warm pool and push each its registration.
+            - name: AC_K8S_DESKTOP_WARM_POOL
+              value: {{ include "agentconnect.desktopWarmPoolName" . | quote }}
+            - name: AC_K8S_DESKTOP_BOOTSTRAP_PORT
+              value: {{ .Values.computerPool.bootstrapPort | quote }}
+            {{- end }}
             # The sink the readiness probe below reads: the daemon serves GET /readyz here and
             # answers 200 only once startup finished, the control plane acknowledged registration
             # and the install-wide runtime probe returned — 503 otherwise, including from SIGTERM

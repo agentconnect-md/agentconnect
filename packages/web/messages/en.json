@@ -6271,6 +6271,7 @@
       "paused": "Paused",
       "human_in_control": "Person in control",
       "busy": "Agent working",
+      "sleeping": "Asleep",
       "revoked": "Revoked"
     },
     "os": {

@@ -5,7 +5,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { ComputerAuditRecord, ComputerRecord } from '../../persistence/ports.js'
 import { ComputerId } from '../../domain/ids.js'
-import { ComputerPolicySchema, withOwnerMember } from '../../domain/computer.js'
+import { ComputerPolicySchema, withOwnerMember, type ComputerPolicy } from '../../domain/computer.js'
 import { orgOf, ctxOf, denyViewerWrite } from '../rbac.js'
 import {
   AuthorizationAction,
@@ -28,6 +28,7 @@ import {
   ComputerRegistrationStatusDto,
   ComputerViewerGrantDto,
   CreateComputerRegistrationBody,
+  CreatePoolComputerBody,
   RegisterComputerBody,
   RegisteredComputerDto,
   SetSharingBody,
@@ -111,8 +112,18 @@ function toDto(
     updatedAt: c.updatedAt.toISOString(),
     screenshotRetentionDays: retentionDays(c.policy),
     canEdit: canEdit(c, ctx),
-    canEditPolicy: canEditPolicy(c, ctx) && c.status !== 'revoked'
+    canEditPolicy: canEditPolicy(c, ctx) && c.status !== 'revoked',
+    allocation: c.allocation,
+    ownerAgentId: c.ownerAgentId,
+    poolPhase: c.poolPhase,
+    poolError: c.poolError
   }
+}
+
+/** The agent a per-agent or ephemeral computer was made for always keeps its grant (§15.1). */
+function withPoolAgent(policy: ComputerPolicy, c: ComputerRecord): ComputerPolicy {
+  if (!c.ownerAgentId || c.allocation === 'manual' || policy.allowedAgents.includes(c.ownerAgentId)) return policy
+  return { ...policy, allowedAgents: [c.ownerAgentId, ...policy.allowedAgents] }
 }
 
 export function computerRoutes(deps: HttpDeps) {
@@ -272,6 +283,54 @@ export function computerRoutes(deps: HttpDeps) {
       }
     )
 
+    // A user's `manual` computer from the Kubernetes pool (§15.1): it is started now and sleeps when idle.
+    r.post(
+      '/computers/pool',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Create a pool computer',
+          description:
+            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its policy’s `allowedAgents` (here or with `PUT /computers/{id}/policy`) and their `computerUse.computers`; agents granted it share it one at a time under the control lease. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 503 when the deployment runs no pool or no pool member is connected.',
+          operationId: 'createPoolComputer',
+          body: CreatePoolComputerBody,
+          response: { 201: ComputerDto, 400: ErrorDto, 403: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const unavailable = {
+          error: 'Service Unavailable',
+          statusCode: 503,
+          message: 'this deployment cannot start managed computers now'
+        }
+        if (!deps.computerPool) return reply.code(503).send(unavailable)
+        const ctx = ctxOf(req)
+        let policy: ComputerPolicy | undefined
+        if (req.body.policy) {
+          const wanted = [...new Set(req.body.policy.allowedAgents)]
+          if (wanted.length > 0) {
+            const visible = new Set((await deps.repos.agent.list(orgOf(req), ctx)).map((a) => a.id as string))
+            const unknown = wanted.filter((id) => !visible.has(id))
+            if (unknown.length > 0) {
+              return reply
+                .code(400)
+                .send({ error: 'Bad Request', statusCode: 400, message: `unknown agent: ${unknown.join(', ')}` })
+            }
+          }
+          const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.policy.allowedMembers)
+          policy = withOwnerMember({ ...req.body.policy, allowedAgents: wanted, allowedMembers: members }, ctx.userId)
+        }
+        const created = await deps.computerPool.createManual(orgOf(req), {
+          name: req.body.name,
+          ownerUserId: ctx.userId,
+          ...(policy ? { policy } : {})
+        })
+        if (!created) return reply.code(503).send(unavailable)
+        return reply.code(201).send(toDto(created, ctx, deps.computers.presentedStatus(created), retentionDays))
+      }
+    )
+
     // Stop only tightens, so anyone who may revoke the Computer may stop it; resuming is the policy owner's.
     r.post(
       '/computers/:id/stop',
@@ -407,7 +466,10 @@ export function computerRoutes(deps: HttpDeps) {
           }
         }
         const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.allowedMembers)
-        const policy = withOwnerMember({ ...req.body, allowedAgents: wanted, allowedMembers: members }, c.ownerUserId)
+        const policy = withPoolAgent(
+          withOwnerMember({ ...req.body, allowedAgents: wanted, allowedMembers: members }, c.ownerUserId),
+          c
+        )
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
         if (!updated) return reply.code(409).send(revokedConflict)
         return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
@@ -481,7 +543,8 @@ export function computerRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Computers],
           summary: 'Delete a computer',
-          description: 'Removes a Computer and, by cascade, every key it holds.',
+          description:
+            'Removes a Computer and, by cascade, every key it holds. A managed computer from the pool is revoked at once, and its pod and volume are deleted before its record goes.',
           operationId: 'deleteComputer',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
@@ -493,6 +556,11 @@ export function computerRoutes(deps: HttpDeps) {
         if (!c) return reply.code(404).send(notFound)
         if (!canEdit(c, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
+        }
+        // A pool computer's keys go at once and its row once its pod and volume are deleted.
+        if (c.kind === 'managed' && c.poolPhase && deps.computerPool) {
+          await deps.computerPool.remove(orgOf(req), c.id, ctxOf(req).userId)
+          return reply.code(204).send(null)
         }
         await deps.computers.delete(orgOf(req), c.id, ctxOf(req).userId)
         return reply.code(204).send(null)

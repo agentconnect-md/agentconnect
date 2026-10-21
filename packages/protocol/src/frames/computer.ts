@@ -27,6 +27,8 @@ export * from '../computer-channel-token.js'
 // The console viewer's relay route, TURN servers and DataChannel renewal (§7, §10).
 export * from '../computer-viewer.js'
 export * from './computer-keys.js'
+// Managed computers in the Kubernetes pool (§15.1).
+export * from './computer-pool.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 
@@ -50,9 +52,10 @@ export const COMPUTER_STATUSES = [
   'paused',
   'human_in_control',
   'busy',
+  'sleeping',
   'revoked'
 ] as const
-/** What a connected desktop daemon reports; `offline` and `revoked` are the CP's own verdicts. */
+/** What a connected desktop daemon reports; `offline`, `sleeping` and `revoked` are the CP's own verdicts. */
 export const COMPUTER_LIVE_STATUSES = ['online', 'locked', 'paused', 'human_in_control', 'busy'] as const
 
 export type ComputerKind = (typeof COMPUTER_KINDS)[number]

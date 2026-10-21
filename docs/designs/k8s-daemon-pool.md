@@ -602,6 +602,11 @@ process still intends to remove. Rather than one durable obligation per
 failure mode, a single **orphan reconciler**
 (`packages/daemon/src/k8s/orphan-reconciler.ts`) sweeps the sandbox namespace.
 
+Desktop claims for managed computers ([computer-use.md](computer-use.md) §15.1)
+share the namespace but carry `agentconnect.md/computer` and never
+`agentconnect.md/agent`, so this sweep never takes them for an agent's pod; the
+Control Plane's pool controller deletes a desktop claim whose Computer is gone.
+
 **It is a CronJob, not a timer.** The deployment runs
 `agentconnect-daemon reconcile --once` on a schedule (every 10 minutes) with
 `concurrencyPolicy: Forbid`: one shot per run, and the cluster — not the daemon

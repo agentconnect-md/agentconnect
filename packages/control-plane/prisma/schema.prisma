@@ -4489,7 +4489,16 @@ enum ComputerStatus {
   paused
   human_in_control
   busy
+  // A managed computer the pool scaled to zero, its volume kept (computer-use.md §15.1).
+  sleeping
   revoked
+}
+
+// How a managed computer relates to agents (computer-use.md §15.1); a self-hosted computer has none.
+enum ComputerAllocation {
+  ephemeral
+  per_agent @map("per-agent")
+  manual
 }
 
 model Computer {
@@ -4519,6 +4528,16 @@ model Computer {
   // A console Stop: agents are refused and the desktop held paused until someone resumes it there (computer-use.md §6).
   stoppedAt            DateTime?          @db.Timestamptz(6)
   stoppedByUserId      String?
+  // Managed only (computer-use.md §15.1): the allocation mode, the agent a per-agent or ephemeral one was made for, and an ephemeral one's session.
+  allocation           ComputerAllocation?
+  ownerAgentId         String?            @db.Uuid
+  poolSessionId        String?
+  // The pool controller's own phase: provisioning, registering, awake, sleeping, waking or reclaiming.
+  poolPhase            String?
+  poolPhaseAt          DateTime?          @db.Timestamptz(6)
+  // The last lease, grant, viewer or allocation activity; idle detection sleeps or reclaims from it.
+  poolActiveAt         DateTime?          @db.Timestamptz(6)
+  poolError            String?
   createdAt            DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
 
@@ -4532,6 +4551,8 @@ model Computer {
   @@index([orgId])
   @@index([ownerUserId])
   @@index([sharedWith], type: Gin)
+  @@index([poolPhase])
+  @@index([ownerAgentId])
   @@map("computer")
 }
 

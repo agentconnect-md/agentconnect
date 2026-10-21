@@ -120,6 +120,9 @@ import {
   AGENT_WAKE_FEATURE,
   SESSION_WAKE_FEATURE,
   RUNTIME_PROBE_FEATURE,
+  COMPUTER_POOL_MEMBER_FEATURE,
+  COMPUTER_POOL_FEATURE,
+  type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WAKE_FEATURE,
@@ -654,7 +657,10 @@ import {
 } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
-import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { resolveK8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { DesktopPool, desktopPoolSettings } from './k8s/desktop-pool.js'
+import { SandboxApi } from './k8s/sandbox-api.js'
+import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.js'
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
@@ -1949,6 +1955,8 @@ export class Daemon {
   private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
+  /** Desktop claims for managed computers, on a member whose deployment configures a desktop warm pool. */
+  private desktopPool?: DesktopPool
   // An undefined entry awaits retry; a promise is the one takeover already in flight.
   private readonly k8sAdoptions = new Map<string, Promise<void> | undefined>()
   private microsandbox?: MicrosandboxManager
@@ -2020,6 +2028,9 @@ export class Daemon {
       computerLeaseRelease: (payload, orgId) => this.computerCp().computerLeaseRelease(payload, orgId)
     },
     computersFor: (agentId) => this.grantedComputers(agentId),
+    managedModeFor: (agentId) => this.managedComputerMode(agentId),
+    pool: { computerPoolAcquire: (payload, orgId) => this.computerCp().computerPoolAcquire(payload, orgId) },
+    poolServes: () => this.cpClient?.supportsServerFeature(COMPUTER_POOL_FEATURE) === true,
     orgFor: (agentId) => this.orgForAgent(agentId),
     sessionIdFor: (ctx) =>
       this.store.ensureOutwardSessionId(
@@ -3613,6 +3624,24 @@ export class Daemon {
       // Workspace git, files, path clearing and session retirement then run where the workspace is; an agent with no bound channel answers undefined for those, yet its workspace still reads as off this disk, which decides what operations exist at all: an in-place conversion has no pod-side rollback.
       this.wirePlaneResolver(this.k8sPlane)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
+      this.startDesktopPool()
+    }
+  }
+
+  /** Managed computers (computer-use.md §15.1): a member with a desktop warm pool serves the CP's desktop claim ops. */
+  private startDesktopPool(): void {
+    try {
+      const settings = desktopPoolSettings(process.env)
+      if (!settings) return
+      const namespace = resolveK8sPlaneSettings({ env: process.env }).sandboxNamespace
+      this.desktopPool = new DesktopPool({
+        api: new SandboxApi(new K8sHttp(loadInClusterConfig()), namespace),
+        settings,
+        log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+      })
+      this.log.info(`k8s: serving desktop claims for managed computers from warm pool ${settings.warmPoolName}`)
+    } catch (error) {
+      this.log.warn(`k8s: desktop claims disabled: ${(error as Error).message}`)
     }
   }
 
@@ -8353,6 +8382,8 @@ export class Daemon {
       ...(this.k8s ? [AUTO_MERGE_SESSION_FEATURE] : []),
       // A managed pool refreshes on its timer alone; only a deployment that opts in takes requests.
       ...(this.k8sProbeOnDemand ? [RUNTIME_PROBE_FEATURE] : []),
+      // Only a member with a desktop warm pool creates desktop claims for managed computers.
+      ...(this.desktopPool ? [COMPUTER_POOL_MEMBER_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -27354,6 +27385,7 @@ export class Daemon {
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       k8sPlane: () => this.k8sPlane,
+      desktopPool: () => this.desktopPool,
       // Before the start-up probe is scheduled a request has nothing to add: that probe is about to run.
       runtimeProbeRequest: () => (this.k8sProbeOnDemand ? () => this.k8sProbeSchedule?.request() : undefined),
       workspaceFilesFor: (id, scope) => this.workspaceFilesFor(id, scope),
@@ -28350,6 +28382,12 @@ export class Daemon {
     return use?.enabled === true ? use.computers : []
   }
 
+  /** The agent's managed computer mode (computer-use.md §15.1); undefined while computer use is off. */
+  private managedComputerMode(agentId: string): ComputerManagedMode | undefined {
+    const use = this.agents.get(agentId)?.computerUse
+    return use?.enabled === true ? use.managed?.mode : undefined
+  }
+
   /** Whether an agent's sessions get the `computer_*` tools (computer-use.md §5.2). */
   private offersComputerTools(agent: Pick<LoadedAgent, 'computerUse' | 'runtime'>): boolean {
     // Most agents never enabled it; only theirs reach the CP client's feature table.
@@ -28360,6 +28398,7 @@ export class Daemon {
       controlPlaneServes:
         cp?.supportsServerFeature(COMPUTER_LEASE_FEATURE) === true &&
         cp.supportsServerFeature(COMPUTER_CHANNEL_FEATURE),
+      poolServes: cp?.supportsServerFeature(COMPUTER_POOL_FEATURE) === true,
       runtimeShowsImages: showsMcpImages(agent.runtime, this.runtimes[agent.runtime])
     })
   }

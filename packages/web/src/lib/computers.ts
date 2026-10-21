@@ -54,6 +54,7 @@ const TONES: Record<ComputerStatus, ComputerStatusTone> = {
   human_in_control: PAUSED,
   locked: PAUSED,
   offline: { dot: 'var(--text-tertiary)', bg: 'var(--surface-sunken)', text: 'var(--text-secondary)' },
+  sleeping: { dot: 'var(--text-tertiary)', bg: 'var(--surface-sunken)', text: 'var(--text-secondary)' },
   revoked: { dot: 'var(--status-error)', bg: 'var(--status-error-soft)', text: 'var(--status-error)' }
 }
 

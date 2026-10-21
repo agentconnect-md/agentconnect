@@ -44,6 +44,7 @@ import { handleDutyFetch } from './duty-fetch.js'
 import { handleExecutorCandidates, handleExecutorPrepare, handleExecutorRelease } from './executor.js'
 import { handleAgentExists } from './agent-exists.js'
 import { handleComputerLeaseAcquire, handleComputerLeaseRelease } from './computer-lease.js'
+import { handleComputerPoolAcquire } from './computer-pool.js'
 import { handleComputerChannelGrant } from './computer-channel.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
@@ -123,6 +124,7 @@ export class FrameRouter {
       'computer-lease/acquire': handleComputerLeaseAcquire,
       'computer-lease/release': handleComputerLeaseRelease,
       'computer-channel/grant': handleComputerChannelGrant,
+      'computer-pool/acquire': handleComputerPoolAcquire,
       'hook/report': handleHookReport,
       'hook/preparing': handleHookPreparing,
       'hook/start': handleHookStart,

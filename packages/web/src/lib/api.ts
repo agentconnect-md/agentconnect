@@ -419,6 +419,8 @@ export interface AgentDto {
 export interface AgentComputerUse {
   enabled: boolean
   computers: string[]
+  /** An agent-driven managed computer from the pool (computer-use.md §15.1); kept on every save. */
+  managed?: { mode: 'ephemeral' | 'per-agent' }
 }
 
 export interface SharingInput {
@@ -2816,6 +2818,11 @@ export interface ComputerDto {
   canEdit: boolean
   screenshotRetentionDays: number
   canEditPolicy: boolean
+  /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
+  allocation?: 'ephemeral' | 'per-agent' | 'manual' | null
+  ownerAgentId?: string | null
+  poolPhase?: 'provisioning' | 'registering' | 'awake' | 'sleeping' | 'waking' | 'failed' | 'reclaiming' | null
+  poolError?: string | null
 }
 
 export interface ComputerAuditEntryDto {

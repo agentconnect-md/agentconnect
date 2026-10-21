@@ -30,6 +30,8 @@ export interface LeaseComputer {
   policy: ComputerPolicy
   /** A console Stop: no lease stands or is granted until someone resumes the Computer (§6). */
   stoppedAt?: Date | null
+  /** An ephemeral managed computer serves only the session it was made for (§15.1). */
+  poolSessionId?: string | null
 }
 
 export interface LeaseClock {
@@ -141,9 +143,12 @@ export function decideAcquire(
   if (!computer.policy.allowedAgents.includes(req.agentId))
     return refuse('denied', 'this agent is not granted this computer')
   if (computer.policy.agentMode !== 'control') return refuse('denied', 'agents may only view this computer')
+  if (computer.poolSessionId && computer.poolSessionId !== req.sessionId)
+    return refuse('denied', 'this computer belongs to another session')
   if (computer.stoppedAt) return refuse('human_in_control', 'this computer was stopped from the console')
   const status = presentComputerStatus(computer, clock.now, clock.staleAfterMs)
   if (status === 'offline') return refuse('unavailable', 'this computer is offline')
+  if (status === 'sleeping') return refuse('unavailable', 'this computer is asleep')
   if (status === 'paused') return refuse('human_in_control', 'the owner paused this computer')
   if (status === 'human_in_control') return refuse('human_in_control', 'a person is controlling this computer')
   // The max limit bounds the session, not one lease: it may not take the Computer again until its turn ends.
