@@ -7,6 +7,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { win32 } from 'node:path'
 import { nodeSatisfies } from './node-engines.js'
 import { versionDir, versionsDir } from './paths.js'
 import {
@@ -22,6 +23,11 @@ const SECCOMP_HELPER_PATHS = [
   'dist/vendor/seccomp/x64/apply-seccomp',
   'dist/vendor/seccomp/arm64/apply-seccomp'
 ] as const
+
+// Windows' own bsdtar: a GNU tar earlier on PATH (Git's) reads `D:\…` as a remote host and fails.
+export function tarCommand(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  return platform === 'win32' ? win32.join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
+}
 
 /** npm normalizes non-`bin` payload files to 0644 while packing, including the
  * native sandbox-runtime helpers staged by the daemon build. Restore their
@@ -96,7 +102,7 @@ export async function installTarget(
   try {
     // npm tarballs wrap everything under `package/`; --strip-components=1 lands
     // dist/ + package.json directly in tmp. tar reads the tarball from stdin.
-    execFileSync('tar', ['-xzf', '-', '-C', tmp, '--strip-components=1'], { input: buf })
+    execFileSync(tarCommand(), ['-xzf', '-', '-C', tmp, '--strip-components=1'], { input: buf })
 
     // Re-verify engines against the authoritative extracted manifest.
     const manifest = JSON.parse(readFileSync(`${tmp}/package.json`, 'utf8')) as { engines?: { node?: string } }

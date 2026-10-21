@@ -171,7 +171,11 @@ describe('agentconnect computer (end to end)', () => {
     expect(seen.argv).toEqual(['setup', '--host', '0.0.0.0', '--no-service'])
     expect(seen.self).toMatch(/ computer$/)
     expect(JSON.parse(cli(['desktop', 'pause']).stdout).argv).toEqual(['pause'])
-    expect(JSON.parse(cli(['computer', 'restart']).stdout).argv).toEqual(['service', 'restart'])
+    const restart = cli(['computer', 'restart'])
+    if (process.platform === 'win32') {
+      expect(restart.status).toBe(1)
+      expect(restart.stderr).toMatch(/restart is not supported on Windows yet/)
+    } else expect(JSON.parse(restart.stdout).argv).toEqual(['service', 'restart'])
     expect(ok.status).toBe(0)
     const failed = cli(['desktop', 'doctor'], { FAKE_DESKTOP_EXIT: '1' })
     // doctor names the version first, then hands over to the daemon.

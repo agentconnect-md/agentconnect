@@ -94,13 +94,14 @@ export async function upgradeComputer(
     return target.version
   }
 
+  let running = service.running
   const rollback = async (reason: string): Promise<never> => {
     ops.log(`${reason} — rolling back to ${before}`)
     useVersion(root, before!, missing(selfCommand)(before!))
     await ops
       .refresh(before!)
       .catch((err: Error) => ops.log(`could not restore the service from ${before}: ${err.message}`))
-    if (service.running) await ops.restart(before!)
+    if (running) await ops.restart(before!)
     throw new Error(`upgrade to ${target.version} failed (${reason}) — rolled back to ${before}`)
   }
 
@@ -109,15 +110,19 @@ export async function upgradeComputer(
   } catch (err) {
     return rollback(`service install from ${target.version} failed: ${(err as Error).message}`)
   }
-  if (!service.running) {
+  // Installing the unit starts a stopped service inside a desktop session, which then needs the same health check.
+  if (!running) running = (await ops.status(target.version).catch(() => undefined))?.running ?? false
+  if (!running) {
     ops.log(`service ${service.label} is not running (no desktop session?) — ${target.version} starts with it`)
     prune()
     return target.version
   }
-  try {
-    await ops.restart(target.version)
-  } catch (err) {
-    return rollback(`restart failed: ${(err as Error).message}`)
+  if (service.running) {
+    try {
+      await ops.restart(target.version)
+    } catch (err) {
+      return rollback(`restart failed: ${(err as Error).message}`)
+    }
   }
   const health = await ops.health(target.version)
   if (!health.healthy) return rollback(`health check failed: ${health.reason}`)

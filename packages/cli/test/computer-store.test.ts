@@ -262,6 +262,19 @@ describe('upgradeComputer', () => {
     expect(ops.calls).toEqual(['install 2.0.0', 'refresh 2.0.0'])
   })
 
+  it('health-checks a stopped service that installing the new unit started, and rolls back when it fails', async () => {
+    const root = tmp('ac-computer-')
+    seed(root, '1.0.0')
+    // Stopped before the upgrade; `service install` in a desktop session starts it.
+    const ops = fakeOps({
+      status: async (v) => ({ installed: true, running: v === '2.0.0', label: 'unit' }),
+      health: async () => ({ healthy: false, reason: 'pid changed 11 → 12 (crash-looping)' })
+    })
+    await expect(upgradeComputer(root, {}, ops, 'ac computer')).rejects.toThrow(/rolled back to 1\.0\.0/)
+    expect(currentVersion(root)).toBe('1.0.0')
+    expect(ops.calls).toEqual(['install 2.0.0', 'refresh 2.0.0', 'refresh 1.0.0', 'restart 1.0.0'])
+  })
+
   it('only switches current when no service runs the store (no unit, or a platform whose service is the app)', async () => {
     for (const over of [
       { status: async () => ({ installed: false, running: false, label: 'unit' }) },
