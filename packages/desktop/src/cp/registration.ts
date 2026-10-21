@@ -14,6 +14,8 @@ export const Registration = z.object({
   // The Computer key: authenticates only the Computer channel; never logged or printed.
   apiKey: z.string().min(1),
   registeredAt: z.string().datetime(),
+  // sha256 of the registration token this key was spent from, so a restart can tell a new token from the spent one.
+  tokenSha256: z.string().optional(),
   // Set once the CP revoked the key; the daemon then refuses all input until it is registered again.
   revokedAt: z.string().datetime().optional(),
   revokedReason: z.string().optional()

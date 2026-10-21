@@ -13,7 +13,8 @@ daemon is involved yet.
 ## Status: M0 prototype
 
 This package is the prototype merged as milestone M0 of the design's development plan (§14.3).
-It is private, not published to npm, and not part of any AgentConnect release.
+The npm package stays private and is not published to npm; the `desktop` container image built from it
+is published with each AgentConnect release (see [Run in Docker](#run-in-docker)).
 
 **What works today**
 
@@ -226,7 +227,8 @@ static ffmpeg (6.0, libx264).
 
 The `desktop` image (`ghcr.io/agentconnect-md/desktop`, amd64 and arm64, published with each release) is a
 Debian trixie desktop with Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, the pinned Node.js, and the daemon
-with Cua Driver and ffmpeg preinstalled. The entrypoint starts Xvfb on `:1` (`RESOLUTION`, default
+with Cua Driver preinstalled. ffmpeg (GPL) is not in the image: the daemon downloads the pinned, sha256-checked
+build on first start into the volume, and the viewer polls screenshots until it is there. The entrypoint starts Xvfb on `:1` (`RESOLUTION`, default
 `1600x900x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
 `desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `firefox-esr`; `none` turns it
 off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the browser, then the session, with exit
@@ -242,18 +244,19 @@ docker run -d --name desktop --hostname desktop-1 --shm-size=1g --restart unless
   ghcr.io/agentconnect-md/desktop:latest
 ```
 
-| Variable                            | Meaning                                                                                                     |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `AGENTCONNECT_REGISTER_TOKEN`       | the one-time registration token; only the daemon sees it, and it is never printed                           |
-| `AGENTCONNECT_REGISTER_TOKEN_FILE`  | a file holding the token instead, such as a Docker or Kubernetes secret under `/run/secrets`                |
-| `AGENTCONNECT_CP_URL`               | the Control Plane URL the console prints with the token                                                     |
-| `AGENTCONNECT_COMPUTER_NAME`        | the name to register with when the console gave none; defaults to the container hostname                    |
-| `PUBLIC_URL`                        | how clients outside reach the published port, printed instead of the container address                      |
-| `RTC_ADDRESS`, `RTC_PORTS`          | the public IP offered as the only WebRTC candidate (defaults to `PUBLIC_URL`'s host), and a fixed UDP range |
-| `RESOLUTION`, `LISTEN_HOST`, `PORT` | the screen, and where the daemon listens inside the container (`0.0.0.0:7681`)                              |
+| Variable                            | Meaning                                                                                                                                                               |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENTCONNECT_REGISTER_TOKEN`       | the one-time registration token; the session, browser and driver never see it, and it is never printed (`docker inspect` and `docker exec` still do: prefer the file) |
+| `AGENTCONNECT_REGISTER_TOKEN_FILE`  | a file holding the token instead, such as a Docker or Kubernetes secret under `/run/secrets`                                                                          |
+| `AGENTCONNECT_CP_URL`               | the Control Plane URL the console prints with the token                                                                                                               |
+| `AGENTCONNECT_COMPUTER_NAME`        | the name to register with when the console gave none; defaults to the container hostname                                                                              |
+| `PUBLIC_URL`                        | how clients outside reach the published port, printed instead of the container address                                                                                |
+| `RTC_ADDRESS`, `RTC_PORTS`          | the public IP offered as the only WebRTC candidate (defaults to `PUBLIC_URL`'s host), and a fixed UDP range                                                           |
+| `RESOLUTION`, `LISTEN_HOST`, `PORT` | the screen, and where the daemon listens inside the container (`0.0.0.0:7681`)                                                                                        |
 
-The token is spent on the first start; later starts find the stored key for the same Control Plane and leave
-the variable unused, so keep the volume. After a revoke, give the container a new token. Without a token the
+The token is spent on the first start; the stored key remembers its sha256, so later starts with the same token
+and Control Plane leave it unused (keep the volume). A different token, such as a new one after a revoke or for
+another org, is spent and replaces the stored key. Without a token the
 daemon runs in local mode and writes its first client token to `~/.agentconnect/desktop/client-token` instead of
 the log (`docker exec desktop cat /home/desktop/.agentconnect/desktop/client-token`).
 
@@ -446,8 +449,9 @@ CI runs two more jobs on pull requests that touch this package (`.github/workflo
   `bundle/.meta/`, attributes every bundled input to its npm package, and fails on AGPL / FSL / BSL (Business Source) /
   SSPL / GPL, on a license missing from its allowlist, on forbidden licenses in the extracted `*.LEGAL.txt`, on
   ffmpeg or Cua Driver inside an artifact, and on any undeclared executable or archive. The macOS app is scanned the
-  same way when built (CI builds only the Linux bundle). The Docker image carries distribution packages and ffmpeg
-  (GPL) as they always have; the distribution question of design §11 is open with counsel.
+  same way when built (CI builds only the Linux bundle). The Docker image carries Debian packages under their own
+  licenses but no ffmpeg, which it downloads on first start while the distribution question of design §11 is open
+  with counsel.
 
 macOS and Linux also work for local development (`init` installs the matching driver
 build). On macOS, `--direct` attributes Accessibility and Screen Recording to the terminal

@@ -13,7 +13,9 @@ mkdir -p -m 700 "$XDG_RUNTIME_DIR"
 
 data="${AGENTCONNECT_DESKTOP_HOME:-$HOME/.agentconnect/desktop}"
 mkdir -p -m 700 "$data"
-for tool in cua-driver ffmpeg; do [ -e "$data/$tool" ] || ln -s "/opt/agentconnect/tools/$tool" "$data/$tool"; done
+[ -e "$data/cua-driver" ] || ln -s /opt/agentconnect/tools/cua-driver "$data/cua-driver"
+# An earlier image linked a preinstalled ffmpeg here; drop the dangling link so the daemon can download its own.
+[ -L "$data/ffmpeg" ] && [ ! -e "$data/ffmpeg" ] && rm -f "$data/ffmpeg"
 
 # The container filesystem survives `docker restart`, and so would a stale X lock.
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
@@ -39,6 +41,12 @@ supervise_browser() {
   trap 'exit 0' TERM INT
   local pause=1 started pid window steady status
   while true; do
+    # A second launch would only open another window in the instance holding the profile, so wait for that one to exit.
+    if pgrep -u "$(id -u)" -x "$(basename "$BROWSER")" > /dev/null; then
+      sleep 2 &
+      wait $!
+      continue
+    fi
     started=$(date +%s)
     # shellcheck disable=SC2086 -- BROWSER_URL is optional and never contains spaces
     "$BROWSER" ${BROWSER_URL:-} > /tmp/browser.log 2>&1 &

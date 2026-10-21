@@ -49,7 +49,6 @@ import {
   loadRegistration,
   markRevoked,
   registerOrKeep,
-  RegistrationTokenRefused,
   registrationPath,
   saveRegistration,
   type Registration
@@ -57,10 +56,10 @@ import {
 import { capabilitiesFrom, computerOs, doctorReport, isolationKind, osVersion, sessionKind } from './cp/report.js'
 import {
   COMPUTER_NAME_ENV,
-  keepsRegistration,
   REGISTER_TOKEN_ENV,
+  registerFromEnv,
   registrationFromEnv,
-  staysRevoked
+  tokenSha256
 } from './cp/env-registration.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
@@ -352,15 +351,10 @@ function buildComputer(
   return { driver, computer }
 }
 
-// Exchanges a console registration token for this desktop's Computer key and stores it 0600 (computer-use.md §3.6).
-async function registerComputer(
-  dir: string,
-  token: string,
-  cpUrl: string | undefined,
-  name: string | undefined
-): Promise<Registration> {
+// Exchanges a console registration token for this desktop's Computer key (computer-use.md §3.6).
+function exchangeFor(token: string, cpUrl: string | undefined, name: string | undefined): Promise<Registration> {
   if (!cpUrl) throw new Error('--cp-url is required with a registration token (the console prints it)')
-  const registration = await exchangeRegistrationToken(cpUrl, token, {
+  return exchangeRegistrationToken(cpUrl, token, {
     name: (name ?? (process.env[COMPUTER_NAME_ENV]?.trim() || hostname())).slice(0, 120),
     isolation: isolationKind(),
     os: computerOs(),
@@ -369,6 +363,16 @@ async function registerComputer(
     desktopDaemonVersion: DESKTOP_DAEMON_VERSION,
     driverVersion: CUA_DRIVER_VERSION
   })
+}
+
+// Spends the token and stores the key 0600, with the token's hash so a container restart can recognize it.
+async function registerComputer(
+  dir: string,
+  token: string,
+  cpUrl: string | undefined,
+  name: string | undefined
+): Promise<Registration> {
+  const registration = { ...(await exchangeFor(token, cpUrl, name)), tokenSha256: tokenSha256(token) }
   saveRegistration(registration, dir)
   console.log(`Registered as computer ${registration.computerId}; key stored in ${registrationPath(dir)} (mode 0600).`)
   return registration
@@ -550,23 +554,25 @@ async function loadDriverTools(driver: CuaDriver, config: DesktopConfig): Promis
   return exposedDriverTools(await driver.listTools())
 }
 
-// A container registers from its environment on first start; a stored key for the same CP keeps the spent token unused.
+// A container registers from its environment on first start; later starts with the same token keep the stored key.
 async function registerFromEnvironment(dir: string): Promise<void> {
   const wanted = registrationFromEnv()
   // Nothing this daemon starts (doctor, the driver, apps an agent launches) inherits the token.
   delete process.env[REGISTER_TOKEN_ENV]
-  if (!wanted) return
-  const current = loadRegistration(dir)
-  if (current && keepsRegistration(current, wanted.cpUrl)) {
-    log(`registered as computer ${current.computerId}; the registration token in the environment is not used again`)
-    return
-  }
-  try {
-    await registerComputer(dir, wanted.token, wanted.cpUrl, wanted.name)
-  } catch (error) {
-    // A revoked desktop restarting with its spent token keeps running revoked rather than crash-looping.
-    if (!(error instanceof RegistrationTokenRefused) || !current || !staysRevoked(current, wanted.cpUrl)) throw error
-    log(`registration refused (${error.message}); keeping computer ${current.computerId}, which refuses all input`)
+  const outcome = await registerFromEnv({
+    wanted,
+    load: () => loadRegistration(dir),
+    exchange: (want) => exchangeFor(want.token, want.cpUrl, want.name),
+    save: (registration) => saveRegistration(registration, dir)
+  })
+  if (outcome.kind === 'kept') {
+    log(`registered as computer ${outcome.registration.computerId}; the registration token is not used again`)
+  } else if (outcome.kind === 'registered') {
+    log(`registered as computer ${outcome.registration.computerId}; key stored in ${registrationPath(dir)} (mode 0600)`)
+  } else if (outcome.kind === 'stays-revoked') {
+    log(
+      `registration refused (${outcome.reason}); keeping computer ${outcome.registration.computerId}, which refuses all input`
+    )
   }
 }
 
