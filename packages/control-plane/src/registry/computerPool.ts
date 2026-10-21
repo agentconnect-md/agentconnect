@@ -186,11 +186,16 @@ export class ComputerPool {
 
   /** A grant, lease or viewer used the computer; idle detection starts over. */
   touch(computerId: string): void {
+    void this.markActive(computerId)
+  }
+
+  // Written before an acquire answers, so a sweep's idle decision taken earlier no longer matches the row.
+  private async markActive(computerId: string): Promise<void> {
     const now = this.deps.clock.now()
     const last = this.touchedAt.get(computerId) ?? 0
     if (now - last < TOUCH_THROTTLE_MS) return
     this.touchedAt.set(computerId, now)
-    void this.deps.repo.touchPoolActive(ComputerId(computerId), new Date(now)).catch(() => undefined)
+    await this.deps.repo.touchPoolActive(ComputerId(computerId), new Date(now)).catch(() => undefined)
   }
 
   /** One controller pass over every managed row: timeouts, sleep, reclaim, and claims nobody owns. */
@@ -268,7 +273,7 @@ export class ComputerPool {
         return await this.sleep(row)
       case 'reclaim':
         this.deps.log?.info({ computerId: row.id, reason: action.reason }, 'computer-pool: reclaiming an idle computer')
-        return await this.reclaim(row, null)
+        return await this.reclaim(row, null, undefined, true)
       case 'timeout':
         return row.poolPhase === 'waking'
           ? await this.wakeFailed(row, action.message)
@@ -344,7 +349,7 @@ export class ComputerPool {
 
   // Bring a found row toward ready and say where it stands.
   private async use(row: ComputerRecord): Promise<ComputerPoolAcquireResult> {
-    this.touch(row.id)
+    await this.markActive(row.id)
     const now = new Date(this.deps.clock.now())
     if (row.poolPhase === 'awake' && isComputerReachable(this.deps.computers.presentedStatus(row))) return ready(row)
     if (row.poolPhase === 'sleeping' || row.poolPhase === 'awake') {
@@ -505,6 +510,9 @@ export class ComputerPool {
   }
 
   private async sleep(row: ComputerRecord): Promise<void> {
+    // A use since the sweep's snapshot keeps it awake.
+    const current = await this.deps.repo.getUnscoped(row.id)
+    if (current?.poolActiveAt?.getTime() !== row.poolActiveAt?.getTime()) return
     const res = await this.deps.members.op(this.ensure(row, false, false))
     if (!res?.ok || !res.state) return
     if (res.state.claim === 'missing') return await this.volumeMissing(row)
@@ -513,7 +521,8 @@ export class ComputerPool {
       phase: 'sleeping',
       at: new Date(this.deps.clock.now()),
       from: ['awake'],
-      status: 'sleeping'
+      status: 'sleeping',
+      activeAt: row.poolActiveAt
     })
     if (slept) this.deps.log?.info({ computerId: row.id }, 'computer-pool: idle computer is asleep')
   }
@@ -564,15 +573,17 @@ export class ComputerPool {
     return this.deps.clock.now() - failure.at < FAILURE_REPORT_MS ? failed(failure.code, failure.message) : undefined
   }
 
-  private async reclaim(row: ComputerRecord, error: string | null, actorUserId?: string): Promise<void> {
+  // An idle reclaim is fenced on the activity it judged, so an acquire in between keeps the computer.
+  private async reclaim(row: ComputerRecord, error: string | null, actorUserId?: string, idle = false): Promise<void> {
     const phases: ComputerPoolPhase[] = ['provisioning', 'registering', 'awake', 'sleeping', 'waking', 'failed']
     const moved = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'reclaiming',
       at: new Date(this.deps.clock.now()),
       from: phases,
-      ...(error ? { error } : {})
+      ...(error ? { error } : {}),
+      ...(idle ? { activeAt: row.poolActiveAt } : {})
     })
-    if (!moved && row.poolPhase !== 'reclaiming') return
+    if (!moved && (idle || row.poolPhase !== 'reclaiming')) return
     if (error && row.ownerAgentId && row.allocation !== 'manual') {
       this.failures.set(failureKey(row.ownerAgentId, row.poolSessionId), {
         code: poolErrorCode(error) ?? 'failed',

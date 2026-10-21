@@ -112,6 +112,8 @@ class FakeCluster implements ComputerPoolMembers {
   neverConnects = false
   /** The pod cannot reach the Control Plane, so a pushed registration never lands. */
   pushFails = false
+  /** Runs once, inside the next op, to interleave work with a sweep. */
+  during?: (op: ComputerPoolOp) => Promise<void>
   registrations = 0
 
   constructor(
@@ -126,6 +128,9 @@ class FakeCluster implements ComputerPoolMembers {
   async op(op: ComputerPoolOp): Promise<ComputerPoolOpResult | undefined> {
     if (!this.up) return undefined
     this.ops.push(op)
+    const during = this.during
+    this.during = undefined
+    await during?.(op)
     if (op.op === 'list') {
       return {
         ok: true,
@@ -540,6 +545,29 @@ describe('managed computers in the pool', () => {
     const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), { name: 'Desk', ownerUserId: DEFAULT_OWNER_ID })
     expect(created!.policy.approvals).toEqual(defaultComputerPolicy(DEFAULT_OWNER_ID).approvals)
     expect(created!.policy.approvals.firstInputPerSession).toBe(true)
+  })
+
+  it('keeps an idle computer that a session acquired while the sweep was running', async () => {
+    await seed('ephemeral')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const h = harness(cluster)
+    const first = ((await h.acquire(AGENT, S1)) as { computerId: string }).computerId
+    const second = ((await h.acquire(AGENT, S2)) as { computerId: string }).computerId
+    h.later(T.ephemeralIdleMs + 60_000)
+    // While the sweep deletes the first, idle computer, the second session uses its own.
+    let reacquired: ComputerPoolAcquireResult | undefined
+    cluster.during = async () => {
+      // Its desktop kept heartbeating through the idle time the clock skipped.
+      await prisma.computer.update({ where: { id: second }, data: { lastSeenAt: new Date(h.later(0) + Date.now()) } })
+      reacquired = await h.acquireOnce(AGENT, S2)
+    }
+    await h.pool.sweep()
+    h.now()
+    expect(reacquired).toMatchObject({ state: 'ready', computerId: second })
+    expect(await row(first)).toBeNull()
+    expect(await row(second)).toMatchObject({ poolPhase: 'awake', status: 'online' })
+    expect(cluster.pods.has(second)).toBe(true)
   })
 
   it('refuses without a pool member, and without a managed setting', async () => {

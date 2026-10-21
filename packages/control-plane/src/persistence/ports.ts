@@ -645,6 +645,8 @@ export interface PoolPhaseWrite {
   error?: string | null
   /** The status to show with the phase, such as `sleeping`. */
   status?: 'sleeping' | 'offline'
+  /** Applied only while the row's activity is still this, so a use after an idle decision cancels it. */
+  activeAt?: Date | null
 }
 
 export interface ComputerRegistrationRecord {

@@ -454,7 +454,12 @@ export class PgComputerRepo implements ComputerRepo {
 
   async setPoolPhase(id: ComputerId, write: PoolPhaseWrite): Promise<boolean> {
     const written = await this.db.computer.updateMany({
-      where: { id, kind: 'managed', ...(write.from ? { poolPhase: { in: [...write.from] } } : {}) },
+      where: {
+        id,
+        kind: 'managed',
+        ...(write.from ? { poolPhase: { in: [...write.from] } } : {}),
+        ...(write.activeAt !== undefined ? { poolActiveAt: write.activeAt } : {})
+      },
       data: {
         poolPhase: write.phase,
         poolPhaseAt: write.at,
