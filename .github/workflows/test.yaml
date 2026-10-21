@@ -112,6 +112,8 @@ jobs:
       - name: Lint · Format · Typecheck
         env:
           pnpm_config_enable_pre_post_scripts: false
+          # The full-repository ESLint pass exceeds Node's default 4 GiB heap.
+          NODE_OPTIONS: --max-old-space-size=8192
         run: pnpm --workspace-concurrency=5 run "/^(lint|format:check|typecheck:ci)$/"
       # Runs even when the static pass failed: one job must not report a lint error in place of a
       # broken build, which is what the two jobs it replaces would each have said on their own.
