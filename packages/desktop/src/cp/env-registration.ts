@@ -1,6 +1,7 @@
 // Registration from the environment, for containers: a token variable or secret file plus the CP URL (computer-use.md §3.6).
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { cpBaseUrl, type Registration } from './registration.js'
+import { cpBaseUrl, RegistrationTokenRefused, type Registration } from './registration.js'
 
 export const REGISTER_TOKEN_ENV = 'AGENTCONNECT_REGISTER_TOKEN'
 export const REGISTER_TOKEN_FILE_ENV = 'AGENTCONNECT_REGISTER_TOKEN_FILE'
@@ -36,10 +37,47 @@ export function registrationFromEnv(
   return { token, cpUrl, ...(name ? { name } : {}) }
 }
 
-/** A stored, unrevoked key for the same CP already answers the token, which is one-time and spent by now. */
-export const keepsRegistration = (current: Registration | undefined, cpUrl: string): boolean =>
-  Boolean(current && !current.revokedAt && current.cpUrl === cpBaseUrl(cpUrl))
+export const tokenSha256 = (token: string): string => createHash('sha256').update(token).digest('hex')
+
+/** A live key for the same CP spent from this very token answers it; a different token is spent again. */
+export const keepsRegistration = (current: Registration | undefined, wanted: EnvRegistration): boolean =>
+  Boolean(
+    current &&
+    !current.revokedAt &&
+    current.cpUrl === cpBaseUrl(wanted.cpUrl) &&
+    current.tokenSha256 === tokenSha256(wanted.token)
+  )
 
 /** A refused token keeps only a revoked key for the same CP, so a restart with the spent token stays up, revoked. */
 export const staysRevoked = (current: Registration | undefined, cpUrl: string): boolean =>
   Boolean(current?.revokedAt && current.cpUrl === cpBaseUrl(cpUrl))
+
+export type EnvRegistrationOutcome =
+  | { kind: 'none' }
+  | { kind: 'kept'; registration: Registration }
+  | { kind: 'registered'; registration: Registration }
+  | { kind: 'stays-revoked'; registration: Registration; reason: string }
+
+/** What `run` does with the environment's token: keep the stored key, spend the token, or stay revoked; else throw. */
+export async function registerFromEnv(options: {
+  wanted: EnvRegistration | undefined
+  load: () => Registration | undefined
+  exchange: (wanted: EnvRegistration) => Promise<Registration>
+  save: (registration: Registration) => void
+}): Promise<EnvRegistrationOutcome> {
+  const { wanted } = options
+  if (!wanted) return { kind: 'none' }
+  const current = options.load()
+  if (current && keepsRegistration(current, wanted)) return { kind: 'kept', registration: current }
+  try {
+    const registration = { ...(await options.exchange(wanted)), tokenSha256: tokenSha256(wanted.token) }
+    options.save(registration)
+    return { kind: 'registered', registration }
+  } catch (error) {
+    // A revoked desktop restarting with its spent token keeps running revoked rather than crash-looping.
+    if (error instanceof RegistrationTokenRefused && current && staysRevoked(current, wanted.cpUrl)) {
+      return { kind: 'stays-revoked', registration: current, reason: error.message }
+    }
+    throw error
+  }
+}
