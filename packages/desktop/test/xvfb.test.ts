@@ -144,6 +144,29 @@ describe('desktop daemon on Xvfb', () => {
     await call('computer_release')
   })
 
+  it('ignores synthetic keys but stops every agent on the stop hotkey (computer-use.md §6)', async () => {
+    // xdotool sends through XTEST like the driver does, so it is not a person at the keyboard.
+    spawnSync('xdotool', ['key', 'shift'])
+    await call('computer_move', { x: 100, y: 100 })
+    const status = async () =>
+      (
+        JSON.parse((await call('computer_list'))[0]!.text!) as { status: string; paused: { reason: string } | null }[]
+      )[0]!
+    expect((await status()).status).toBe('busy')
+    spawnSync('xdotool', ['key', 'ctrl+alt+shift+Escape'])
+    const paused = await until('the hotkey pause', 10_000, async () => {
+      const now = await status()
+      return now.status === 'paused' ? now : undefined
+    })
+    expect(paused.paused?.reason).toBe('stopped with the stop hotkey')
+    await expect(call('computer_move', { x: 120, y: 120 })).rejects.toThrow(/human_in_control/)
+    const resumed = await fetch(`${base}/control/resume`, {
+      method: 'POST',
+      headers: { 'x-agentconnect-desktop': '1' }
+    })
+    expect(resumed.status).toBe(200)
+  })
+
   it('serves a screenshot frame to the viewer', async () => {
     const response = await fetch(`${base}/view/api/frame`, { headers: { authorization: `Bearer ${token}` } })
     expect(response.status).toBe(200)

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { DEFAULT_STOP_HOTKEY } from './linux/x11-local.js'
 
 export const DEFAULT_HOST = '127.0.0.1'
 export const DEFAULT_PORT = 7681
@@ -47,6 +48,8 @@ export const DesktopConfig = z.object({
   actionScreenshot: z.boolean().default(true),
   actionSettleMs: z.number().int().min(0).max(5000).default(400),
   allowSystemKeys: z.boolean().default(false),
+  // Global hotkey that stops all agent input (X11); an empty string turns it off. It can only stop, never resume.
+  stopHotkey: z.string().max(64).default(DEFAULT_STOP_HOTKEY),
   exposeDriverTools: z.boolean().default(false),
   driverCallTimeoutMs: z.number().int().min(1000).max(300_000).default(30_000),
   // WebRTC viewer at /view: ffmpeg screen capture to H.264; falls back to screenshot polling without ffmpeg.

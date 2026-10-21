@@ -19,13 +19,15 @@ describe('Control Plane report', () => {
       { screenWidth: 1920, screenHeight: 1080, scale: 1 },
       {
         platform: 'linux',
-        session: 'x11'
+        session: 'x11',
+        keyboardActivity: true
       }
     )
     expect(caps).toEqual({
       screenshot: true,
       input: true,
       textInput: 'full',
+      humanActivity: 'pointer+keyboard',
       backgroundInput: false,
       accessibilityTree: false,
       viewer: true,
@@ -46,7 +48,13 @@ describe('Control Plane report', () => {
       undefined,
       { platform: 'darwin', session: 'aqua' }
     )
-    expect(caps).toMatchObject({ screenshot: true, input: false, viewer: false, displays: [] })
+    expect(caps).toMatchObject({
+      screenshot: true,
+      input: false,
+      viewer: false,
+      displays: [],
+      humanActivity: 'pointer'
+    })
     expect(capabilitiesFrom(linuxChecks, undefined, { platform: 'linux', session: 'wayland-gnome' }).textInput).toBe(
       'keymap-only'
     )

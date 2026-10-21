@@ -271,6 +271,11 @@ function ComputerDetail({
                   ? t('detail.inputFull')
                   : t('detail.inputKeymap')}
             </Row>
+            <Row label={t('detail.activity')}>
+              {computer.capabilities.humanActivity === 'pointer+keyboard'
+                ? t('detail.activityKeyboard')
+                : t('detail.activityPointer')}
+            </Row>
             <Row label={t('detail.viewer')}>
               {computer.capabilities.viewer ? t('detail.available') : t('detail.unavailable')}
             </Row>

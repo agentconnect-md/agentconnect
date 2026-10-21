@@ -36,6 +36,7 @@ import { appBundlePath, runSelf, selfCommand } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
+import { startLocalControls, type LocalControls } from './local-controls.js'
 import { RelayLinks } from './cp/relay-links.js'
 import {
   channelPrincipal,
@@ -387,6 +388,7 @@ function startCpChannel(options: {
   screenSize: Record<string, unknown>
   createMcpServer: (principal: McpPrincipal) => McpServer
   viewer: Viewer
+  local: () => LocalControls | undefined
 }): { client: ComputerCpClient; relays: RelayLinks; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -424,6 +426,7 @@ function startCpChannel(options: {
     report: () => {
       const display = computer.info().display as { screenWidth: number; screenHeight: number; scale: number } | null
       const lease = computer.leaseActivity()
+      const local = options.local()
       return {
         status: computer.liveStatus(),
         ...(lease ? { lease } : {}),
@@ -433,8 +436,12 @@ function startCpChannel(options: {
           // Capabilities come from doctor, so they are reported only once it has run.
           ...(checks && doctorAt
             ? {
-                capabilities: capabilitiesFrom(checks, display ?? startupDisplay, { session, webrtc: config.webrtc }),
-                doctor: doctorReport(checks, doctorAt)
+                capabilities: capabilitiesFrom(checks, display ?? startupDisplay, {
+                  session,
+                  webrtc: config.webrtc,
+                  keyboardActivity: local?.keyboard() ?? false
+                }),
+                doctor: doctorReport([...checks, ...(local?.checks() ?? [])], doctorAt)
               }
             : {})
         }
@@ -587,7 +594,11 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     process.title = `AgentConnect Desktop — ${status}`
   }
   // Filled once built; the authority and status callbacks below fire only after that.
-  const live: { viewer?: Viewer; channel?: { client: ComputerCpClient; relays: RelayLinks; stop(): void } } = {}
+  const live: {
+    viewer?: Viewer
+    channel?: { client: ComputerCpClient; relays: RelayLinks; stop(): void }
+    local?: LocalControls
+  } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
     registered: Boolean(registration),
@@ -627,6 +638,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     (status) => {
       setTitle(status)
       live.channel?.client.beat()
+      live.local?.update()
     },
     () => authority.refusal(),
     auditReport?.sink,
@@ -662,6 +674,13 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined
   )
   live.viewer = viewer
+  live.local = await startLocalControls({
+    computer,
+    refusal: () => authority.refusal(),
+    stopHotkey: config.stopHotkey,
+    headless: sessionKind() === 'xvfb',
+    log
+  })
   const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
     createComputerMcpServer({ computer, client, driverTools, viewOnly, ...(agent ? { agent } : {}) })
   const server = await startHttpServer({
@@ -677,7 +696,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     },
     createMcpServer,
     log,
-    viewer
+    viewer,
+    localChecks: () => live.local?.checks() ?? []
   })
   live.channel = startCpChannel({
     dir,
@@ -688,7 +708,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     driver,
     screenSize,
     createMcpServer,
-    viewer
+    viewer,
+    local: () => live.local
   })
   // Behind NAT the local addresses mean nothing to a client, so only the public one is printed.
   const publicBase = publicBaseUrl(config)
@@ -720,6 +741,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     screenshotStore?.stop()
     await auditReport?.flush()
     live.channel?.stop()
+    live.local?.close()
     authority.close()
     releaseDisplay()
     await Promise.allSettled([server.close(), driver.close()])

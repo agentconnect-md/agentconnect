@@ -35,8 +35,8 @@ It is private, not published to npm, and not part of any AgentConnect release.
 - Plain HTTP with a bearer token. The daemon listens on `127.0.0.1` by default; other machines
   can reach it only when you pass `--host 0.0.0.0` (or another address) explicitly, and then the
   token is the only protection.
-- One display, no audio, no clipboard sync; keyboard activity is not detected (only pointer
-  movement); no tray icon, screen border, or global stop hotkey.
+- One display, no audio, no clipboard sync; no screen border. Keyboard activity, the tray icon
+  and the global stop hotkey exist on X11 only (Wayland is #3221; macOS and Windows have none).
 - Builds are unsigned (macOS `.app` is ad-hoc signed; no Windows installer), so OS grants do not
   survive a rebuild.
 - CI covers X11 under Xvfb only (see [Development](#development)); the real-session matrix of design
@@ -361,10 +361,19 @@ process-kill, clipboard, and file-transfer tools are never exposed.
   `computer_busy`. The lease is taken on first input, expires after `leaseIdleSeconds`
   (120) idle or `leaseMaxSeconds` (1800), and is freed by `computer_release`.
 - **Human first**: pointer movement the agent did not cause blocks input for
-  `humanIdleSeconds` (5) with `human_active`. Keyboard activity is not detected yet.
-- **Emergency stop**: press `p` in the daemon console, or run `agentconnect-desktop pause`.
-  Input then returns `human_in_control` until `r` / `agentconnect-desktop resume`;
-  screenshots keep working.
+  `humanIdleSeconds` (5) with `human_active`. On X11, a key or mouse button pressed on a real
+  device does too (XInput2 raw events; XTEST input from the driver, the viewer or xdotool is
+  ignored, and no key is recorded).
+- **Emergency stop**: press `p` in the daemon console, run `agentconnect-desktop pause`, or on
+  X11 press `Ctrl+Alt+Shift+Escape` (`stopHotkey` in `config.json`, `""` turns it off) or
+  choose _Stop all agent input_ in the tray icon. Input then returns `human_in_control` until
+  `r` / `agentconnect-desktop resume`, or the tray's _Resume agent input_, which appears only
+  for a pause made on this machine; screenshots keep working. The hotkey and the tray can only
+  stop: an agent that sends the hotkey stops itself, and no agent input reaches the tray while
+  paused.
+- **Indicator** (X11): a tray icon shows green when ready, amber with the holder while an agent
+  controls the desktop, red when paused, and grey without the Control Plane. It needs a status
+  tray in the panel (Xfce's Status Tray plugin); `doctor` warns when there is none.
 - **No replay**: a timeout, driver crash, or cancellation returns `uncertain` with a fresh
   screenshot. The action is never retried automatically.
 - **Audit**: every call is appended to `audit.log` in the data dir; typed text is
@@ -422,7 +431,7 @@ at a development build instead. See
 Data dir: `%LOCALAPPDATA%\AgentConnect\desktop` on Windows, `~/.agentconnect/desktop`
 elsewhere (`AGENTCONNECT_DESKTOP_HOME` overrides). `config.json` also holds
 `maxImageDimension`, `leaseIdleSeconds`, `leaseMaxSeconds`, `humanIdleSeconds`,
-`actionScreenshot`, `actionSettleMs`, `allowSystemKeys`, `exposeDriverTools`,
+`actionScreenshot`, `actionSettleMs`, `allowSystemKeys`, `stopHotkey`, `exposeDriverTools`,
 `driverPath`, `driverCallTimeoutMs`, `keepAwake`, and the viewer's `webrtc`, `ffmpegPath`, `streamFps`,
 `streamMaxWidth`, `streamBitrateKbps`, `rtcAddress`, and `rtcPortRange`.
 
@@ -464,8 +473,8 @@ that starts the daemon.
 - `computer_scroll` uses Cua Driver's `direction` + `amount` instead of `dx/dy`.
 - `computer_*` input uses Cua Driver's desktop scope, which moves the real pointer.
   Background, window-scoped input (design §6) is reachable through the `cua_*` tools.
-- No tray icon, screen-border indicator, or global hotkey: the console window and its
-  title serve as indicator and stop control.
+- No screen-border indicator, and the tray icon and global hotkey are X11 only: elsewhere the
+  console window and its title serve as indicator and stop control.
 - The human takeover path is the built-in `/view` page (WebRTC). The design does not specify
   this part.
 - Cua Driver runs as a `cua-driver mcp --direct` child process (design open question 2),
