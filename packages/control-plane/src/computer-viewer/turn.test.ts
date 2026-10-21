@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { turnConfigFrom, turnCredentials } from './turn.js'
+import { relayTurnSecret, turnConfigFrom, turnCredentials } from './turn.js'
 
 describe('TURN for the console viewer', () => {
   it('is off without settings and fails fast when half configured or malformed', () => {
@@ -28,5 +28,13 @@ describe('TURN for the console viewer', () => {
     const server = turnCredentials(config, 'viewer-u1', 1_000_000_500)
     expect(server.username).toBe('1000600:viewer-u1')
     expect(server.credential).toBe(createHmac('sha1', config.secret).update('1000600:viewer-u1').digest('base64'))
+  })
+
+  it('derives the relay TURN secret from the pepper, stable and domain-separated', () => {
+    const secret = relayTurnSecret('p'.repeat(32))
+    expect(secret).toBe(relayTurnSecret('p'.repeat(32)))
+    expect(secret).not.toBe(relayTurnSecret('q'.repeat(32)))
+    expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(secret).not.toContain('p'.repeat(8))
   })
 })

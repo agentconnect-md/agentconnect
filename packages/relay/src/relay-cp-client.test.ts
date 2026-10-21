@@ -234,6 +234,38 @@ describe('RelayCpClient', () => {
     expect(transport.lastReq('rc/register')!.payload).toMatchObject({ stunUrl: 'stun:stun-0.example:3478' })
   })
 
+  it('registers its TURN URLs only once rc/auth/ok hands over the TURN secret', async () => {
+    const turnUrls = ['turn:turn-0.example:3478?transport=udp', 'turns:turn-0.example:443?transport=tcp']
+    for (const secret of [undefined, 't'.repeat(43)]) {
+      const onSecret = vi.fn()
+      const { client, transport } = makeClient({ turn: { urls: turnUrls, onSecret } })
+      client.start()
+      await flush()
+      const auth = transport.lastReq('rc/auth')!
+      transport.inject(
+        buildRelayCpFrame(
+          'rc/auth/ok',
+          {
+            heartbeatSec: 15,
+            serverTime: '2026-07-07T00:00:00.000Z',
+            ...(secret ? { computerTurnSecret: secret } : {})
+          },
+          { corr: auth.id }
+        )
+      )
+      await flush()
+      const register = transport.lastReq('rc/register')!.payload as { turnUrls?: string[] }
+      if (secret) {
+        expect(onSecret).toHaveBeenCalledWith(secret)
+        expect(register.turnUrls).toEqual(turnUrls)
+      } else {
+        expect(onSecret).not.toHaveBeenCalled()
+        expect(register.turnUrls).toBeUndefined()
+      }
+      await client.stop()
+    }
+  })
+
   it('applies a replay that arrives in the same turn as rc/registered, after onReady', async () => {
     const calls: string[] = []
     const { client, transport } = makeClient({

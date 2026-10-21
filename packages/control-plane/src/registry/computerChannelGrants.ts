@@ -1,5 +1,6 @@
 // Computer data-plane credentials (computer-use.md §3.7, §8.2): per-session tokens the desktop verifies; no screen byte reaches the CP.
 import {
+  COMPUTER_ICE_SERVERS_MAX,
   COMPUTER_RELAYS_MAX,
   COMPUTER_STUN_URLS_MAX,
   COMPUTER_VIEWER_TOKEN_TTL_MS,
@@ -31,8 +32,10 @@ export interface ComputerChannelGrantOpts {
   tokenTtlMs?: number
   /** Where a browser reaches the desktop's viewer API: the relay pool's public origin first, then each relay. */
   viewerRelays?: () => Promise<string[]>
-  /** TURN for viewer media without a direct UDP path; absent means direct only. */
+  /** An external TURN (COMPUTER_TURN_*) for viewer media without a direct UDP path; it takes precedence over the relays' own. */
   turn?: TurnConfig
+  /** The relays' own TURN servers (computer-use.md §7.2): each alive relay's URLs, and the secret it checks credentials with. */
+  relayTurn?: { secret: string; ttlSec: number; servers: () => Promise<string[][]> }
   /** The relays' STUN addresses, for hole punching viewer media when the Computer's policy allows it. */
   stunUrls?: () => Promise<string[]>
   /** Told of every grant, so a managed computer an agent or a viewer is using does not idle out (§15.1). */
@@ -49,6 +52,7 @@ export type ViewerGrantResult =
       relays: string[]
       iceServers: ComputerIceServer[]
       stunUrls: string[]
+      directMedia: boolean
     }
   | { granted: false; code: 'unavailable' | 'no_relay'; message: string }
 
@@ -143,8 +147,8 @@ export class ComputerChannelGrants {
     const credential = this.keys.signing(computerId, apiKeyId, now)
     this.opts.onUse?.(computerId)
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
-    // The desktop and the browser each get their own TURN username, so coturn's logs tell them apart.
-    const turn = this.opts.turn
+    // The desktop and the browser each get their own TURN username, so the TURN server tells them apart.
+    const turn = await this.turnServers()
     // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.
     const stun =
       computer.capabilities.viewerStun === true && viewerPeerToPeerAllowed(computer.policy, computer)
@@ -159,7 +163,9 @@ export class ComputerChannelGrants {
         exp,
         usr: who.userId,
         mode: who.mode,
-        ...(turn ? { ice: [turnCredentials(turn, `computer-${computerId}`, now)] } : {}),
+        ...(turn.length > 0
+          ? { ice: turn.map((server) => turnCredentials(server, `computer-${computerId}`, now)) }
+          : {}),
         ...(stun.length > 0 ? { stun } : {})
       },
       Buffer.from(credential.key, 'base64url')
@@ -171,9 +177,21 @@ export class ComputerChannelGrants {
       expiresInMs: exp - now,
       mode: who.mode,
       relays,
-      iceServers: turn ? [turnCredentials(turn, `viewer-${who.userId}`, now)] : [],
-      stunUrls: stun
+      iceServers: turn.map((server) => turnCredentials(server, `viewer-${who.userId}`, now)),
+      stunUrls: stun,
+      // A managed computer's pod has no UDP a browser can reach, so its viewer starts at TURN.
+      directMedia: computer.kind !== 'managed'
     }
+  }
+
+  // External TURN is the operator's explicit choice; otherwise the relays' own, the same relay first for both peers.
+  private async turnServers(): Promise<TurnConfig[]> {
+    if (this.opts.turn) return [this.opts.turn]
+    const relay = this.opts.relayTurn
+    if (!relay) return []
+    return (await relay.servers())
+      .slice(0, COMPUTER_ICE_SERVERS_MAX)
+      .map((urls) => ({ urls, secret: relay.secret, ttlSec: relay.ttlSec }))
   }
 
   /** A relay's `rc/verify` of a desktop's `cr/hello`: the token must be signed with that Computer's live channel key. */

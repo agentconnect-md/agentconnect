@@ -8,7 +8,8 @@
  * per-relay `RELAY_API_KEY`). Credentials are secret material — never logged.
  */
 import { z } from 'zod'
-import { ComputerStunUrl } from '@agentconnect.md/protocol/computer-viewer'
+import { isIPv4 } from 'node:net'
+import { COMPUTER_TURN_URLS_MAX, ComputerStunUrl, ComputerTurnUrl } from '@agentconnect.md/protocol/computer-viewer'
 
 export const RelayConfigSchema = z
   .object({
@@ -61,7 +62,55 @@ export const RelayConfigSchema = z
     RELAY_STUN_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
     RELAY_STUN_HOST: z.string().min(1).default('0.0.0.0'),
     // The public `stun:<host>:<port>` that reaches this instance's STUN port with the client's source address intact.
-    RELAY_STUN_URL: ComputerStunUrl.optional()
+    RELAY_STUN_URL: ComputerStunUrl.optional(),
+    // TURN for viewer media when punching fails (computer-use.md §7.2): UDP and TCP on this port (unset ⇒ none), IPv4 bind host.
+    RELAY_TURN_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
+    RELAY_TURN_HOST: z.string().refine(isIPv4, 'an IPv4 address').default('0.0.0.0'),
+    // The public `turn:` / `turns:` URLs that reach this instance's TURN ports, comma-separated.
+    RELAY_TURN_URLS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        (value ?? '')
+          .split(',')
+          .map((url) => url.trim())
+          .filter(Boolean)
+      )
+      .pipe(z.array(ComputerTurnUrl).max(COMPUTER_TURN_URLS_MAX)),
+    // TURN over TLS, for networks that only let 443 out; the certificate is re-read hourly so a rotated one is picked up.
+    RELAY_TURN_TLS_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
+    RELAY_TURN_TLS_CERT_FILE: z.string().min(1).optional(),
+    RELAY_TURN_TLS_KEY_FILE: z.string().min(1).optional(),
+    RELAY_TURN_REALM: z.string().min(1).max(127).default('agentconnect'),
+    // The IPv4 address relayed candidates carry; peers are only this instance's allocations, so it is an identifier, not a socket.
+    RELAY_TURN_RELAYED_ADDRESS: z.string().refine(isIPv4, 'an IPv4 address').optional(),
+    RELAY_TURN_MAX_ALLOCATIONS: z.coerce.number().int().positive().default(400),
+    RELAY_TURN_MAX_ALLOCATIONS_PER_USER: z.coerce.number().int().positive().default(16),
+    // Per allocation, what its client may send to its peer; the default fits the viewer's 2.5 Mbps stream and its bursts.
+    RELAY_TURN_MAX_BPS: z.coerce.number().int().min(64_000).default(10_000_000),
+    RELAY_TURN_IDLE_TIMEOUT_SEC: z.coerce.number().int().min(10).max(3600).default(120)
+  })
+  .refine((c) => c.RELAY_TURN_URLS.length === 0 || c.RELAY_TURN_PORT !== undefined, {
+    message: 'RELAY_TURN_URLS advertises a TURN server, so RELAY_TURN_PORT must be set too',
+    path: ['RELAY_TURN_URLS']
+  })
+  .refine((c) => c.RELAY_TURN_PORT === undefined || c.RELAY_TURN_URLS.length > 0, {
+    message: 'RELAY_TURN_PORT serves TURN, so RELAY_TURN_URLS must name the public addresses that reach it',
+    path: ['RELAY_TURN_URLS']
+  })
+  .refine(
+    (c) =>
+      [c.RELAY_TURN_TLS_PORT, c.RELAY_TURN_TLS_CERT_FILE, c.RELAY_TURN_TLS_KEY_FILE].every((v) => v === undefined) ||
+      (c.RELAY_TURN_PORT !== undefined &&
+        [c.RELAY_TURN_TLS_PORT, c.RELAY_TURN_TLS_CERT_FILE, c.RELAY_TURN_TLS_KEY_FILE].every((v) => v !== undefined)),
+    {
+      message: 'TURN over TLS needs RELAY_TURN_PORT plus all of RELAY_TURN_TLS_PORT, _CERT_FILE and _KEY_FILE',
+      path: ['RELAY_TURN_TLS_PORT']
+    }
+  )
+  .refine((c) => c.RELAY_TURN_PORT === undefined || c.RELAY_TURN_PORT !== c.RELAY_STUN_PORT, {
+    message: 'RELAY_TURN_PORT answers STUN Binding requests too, so it cannot share RELAY_STUN_PORT',
+    path: ['RELAY_TURN_PORT']
   })
   .refine((c) => !c.RELAY_STUN_URL || c.RELAY_STUN_PORT !== undefined, {
     message: 'RELAY_STUN_URL advertises a STUN server, so RELAY_STUN_PORT must be set too',

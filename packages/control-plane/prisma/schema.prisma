@@ -2589,6 +2589,8 @@ model Relay {
   features   String[]  @default([])
   // This instance's public `stun:` address for viewer hole punching (computer-use.md §7.2); null when it serves none.
   stunUrl    String?
+  // This instance's public `turn:` / `turns:` addresses for viewer media without a punched path (§7.2); empty when none.
+  turnUrls   String[]  @default([])
   lastSeenAt DateTime? @db.Timestamptz(6) // rc/heartbeat; drives the failover sweeper
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
 

@@ -74,6 +74,33 @@ describe('RelayConfigSchema — exactly-one-credential boot guard (§8)', () => 
       }).success
     ).toBe(false)
   })
+  it('serves TURN only with a port and the public URLs that reach it, and TLS only in full', () => {
+    const off = RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN })
+    expect(off).toMatchObject({ RELAY_TURN_URLS: [], RELAY_TURN_MAX_BPS: 10_000_000, RELAY_TURN_IDLE_TIMEOUT_SEC: 120 })
+    const urls = 'turn:turn-0.example.test:3478?transport=udp, turns:turn-0.example.test:443?transport=tcp'
+    const on = RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN, RELAY_TURN_PORT: '3480', RELAY_TURN_URLS: urls })
+    expect(on.RELAY_TURN_URLS).toEqual([
+      'turn:turn-0.example.test:3478?transport=udp',
+      'turns:turn-0.example.test:443?transport=tcp'
+    ])
+    const parse = (extra: Record<string, string>) =>
+      RelayConfigSchema.safeParse({ ...BASE, RELAY_TOKEN: TOKEN, ...extra }).success
+    expect(parse({ RELAY_TURN_URLS: urls })).toBe(false)
+    expect(parse({ RELAY_TURN_PORT: '3480' })).toBe(false)
+    expect(parse({ RELAY_TURN_PORT: '3480', RELAY_TURN_URLS: 'stun:turn.example.test:3478' })).toBe(false)
+    expect(parse({ RELAY_TURN_PORT: '3480', RELAY_TURN_URLS: urls, RELAY_TURN_TLS_PORT: '5349' })).toBe(false)
+    expect(
+      parse({
+        RELAY_TURN_PORT: '3480',
+        RELAY_TURN_URLS: urls,
+        RELAY_TURN_TLS_PORT: '5349',
+        RELAY_TURN_TLS_CERT_FILE: '/tls/tls.crt',
+        RELAY_TURN_TLS_KEY_FILE: '/tls/tls.key'
+      })
+    ).toBe(true)
+    expect(parse({ RELAY_TURN_PORT: '3478', RELAY_TURN_URLS: urls, RELAY_STUN_PORT: '3478' })).toBe(false)
+    expect(parse({ RELAY_TURN_PORT: '3480', RELAY_TURN_URLS: urls, RELAY_TURN_HOST: '::' })).toBe(false)
+  })
   it('probes credentials hourly unless RELAY_CREDENTIAL_PROBE_INTERVAL_SEC overrides it', () => {
     expect(RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN }).RELAY_CREDENTIAL_PROBE_INTERVAL_SEC).toBe(3600)
     const tuned = RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN, RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: '600' })

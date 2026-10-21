@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import {
   ComputerPolicySchema,
@@ -162,10 +163,16 @@ describe('ComputerChannelGrants', () => {
 
 describe('ComputerChannelGrants.grantViewer', () => {
   const turn = { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 }
+  const relaySecret = 'r'.repeat(43)
+  const relayTurn = [
+    ['turn:turn-0.example.com:3478?transport=udp', 'turns:turn-0.example.com:443?transport=tcp'],
+    ['turn:turn-1.example.com:3478?transport=udp'],
+    ['turn:turn-2.example.com:3478?transport=udp']
+  ]
   const stun = ['stun:stun-0.example.com:3478', 'stun:stun-1.example.com:3478', 'stun:stun-2.example.com:3478']
   const viewer = (
     over: Partial<ComputerRecord> = {},
-    opts: { relays?: string[]; withTurn?: boolean; policy?: Record<string, unknown> } = {}
+    opts: { relays?: string[]; withTurn?: boolean; relayTurn?: string[][]; policy?: Record<string, unknown> } = {}
   ) => {
     const { repo, keys, clock } = setup(over, opts.policy)
     const grants = new ComputerChannelGrants(repo, keys, clock, {
@@ -173,6 +180,9 @@ describe('ComputerChannelGrants.grantViewer', () => {
       relays: async () => [relay],
       viewerRelays: async () => opts.relays ?? ['https://relay.example.com', 'https://relay.example.com', relay.url],
       ...(opts.withTurn ? { turn } : {}),
+      ...(opts.relayTurn
+        ? { relayTurn: { secret: relaySecret, ttlSec: 21_600, servers: async () => opts.relayTurn! } }
+        : {}),
       stunUrls: async () => stun
     })
     return { grants, keys }
@@ -206,6 +216,36 @@ describe('ComputerChannelGrants.grantViewer', () => {
     if (!result.granted) throw new Error('refused')
     expect(result.iceServers).toEqual([])
     expect(readComputerChannelToken(result.token)?.ice).toBeUndefined()
+  })
+
+  it('names the relays’ own TURN servers to both peers, in the same order, when no external TURN is configured', async () => {
+    const result = await viewer({}, { relayTurn }).grants.grantViewer(ORG, CID, { userId: 'user_owner', mode: 'view' })
+    if (!result.granted) throw new Error('refused')
+    const username = `${T0 / 1000 + 21_600}:viewer-user_owner`
+    expect(result.iceServers).toEqual([
+      { urls: relayTurn[0], username, credential: createHmac('sha1', relaySecret).update(username).digest('base64') },
+      expect.objectContaining({ urls: relayTurn[1], username })
+    ])
+    const ice = readComputerChannelToken(result.token)?.ice
+    expect(ice?.map((server) => server.urls)).toEqual(relayTurn.slice(0, 2))
+    expect(ice?.[0]?.username).toBe(`${T0 / 1000 + 21_600}:computer-${CID}`)
+    // An external TURN is the operator's explicit choice and takes precedence.
+    const external = await viewer({}, { relayTurn, withTurn: true }).grants.grantViewer(ORG, CID, {
+      userId: 'user_owner',
+      mode: 'view'
+    })
+    if (!external.granted) throw new Error('refused')
+    expect(external.iceServers.map((server) => server.urls)).toEqual([turn.urls])
+  })
+
+  it('starts a managed computer’s viewer at TURN, since its pod has no reachable UDP', async () => {
+    const self = await viewer().grants.grantViewer(ORG, CID, { userId: 'user_owner', mode: 'view' })
+    const managed = await viewer({ kind: 'managed' }).grants.grantViewer(ORG, CID, {
+      userId: 'user_owner',
+      mode: 'view'
+    })
+    expect(self).toMatchObject({ granted: true, directMedia: true })
+    expect(managed).toMatchObject({ granted: true, directMedia: false })
   })
 
   it('names the relays’ STUN servers to both peers while only the owner may watch', async () => {

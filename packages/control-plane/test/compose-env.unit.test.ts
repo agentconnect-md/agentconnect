@@ -58,6 +58,18 @@ describe('compose.yaml service environment', () => {
     expect(stun).toMatch(/^ {6}- \$\{AGENTCONNECT_STUN_PORT:-3479\}:3478\/udp$/m)
   })
 
+  it('has compose.relay-turn.yaml run TURN on the relay and advertise this host’s UDP and TCP addresses', () => {
+    const turn = readFileSync(fileURLToPath(new URL('../../../compose.relay-turn.yaml', import.meta.url)), 'utf8')
+    expect(turn).toMatch(/^ {6}- RELAY_TURN_PORT=3480$/m)
+    expect(turn).toMatch(
+      /^ {6}- RELAY_TURN_URLS=turn:\$\{AGENTCONNECT_RELAY_TURN_HOST:\?[^}]+\}:\$\{AGENTCONNECT_RELAY_TURN_PORT:-3480\}\?transport=udp,turn:\$\{AGENTCONNECT_RELAY_TURN_HOST\}:\$\{AGENTCONNECT_RELAY_TURN_PORT:-3480\}\?transport=tcp$/m
+    )
+    expect(turn).toMatch(/^ {6}- \$\{AGENTCONNECT_RELAY_TURN_PORT:-3480\}:3480\/udp$/m)
+    expect(turn).toMatch(/^ {6}- \$\{AGENTCONNECT_RELAY_TURN_PORT:-3480\}:3480\/tcp$/m)
+    // No secret in the file: the Control Plane hands the relay the one it mints credentials from.
+    expect(turn).not.toMatch(/SECRET/)
+  })
+
   it('passes the usage batch-ingress credential through without inventing a default', () => {
     // Bare passthrough, NOT `=${...:-default}`: a stock default would stand up an
     // authenticated write endpoint, with a published token, on every local stack.

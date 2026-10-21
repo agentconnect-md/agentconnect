@@ -265,6 +265,26 @@ describe('ComputerViewerSession', () => {
     expect(calls.find((c) => c.url.endsWith('rtc/offer'))?.body).toEqual({ transport: 'direct' })
   })
 
+  it('starts at TURN for a desktop without reachable UDP, and still tries direct when no TURN is issued', async () => {
+    const { calls, fetchImpl } = relayFetch()
+    const { createPeer } = peers((config) => (config.iceTransportPolicy === 'relay' ? 'connected' : 'failed'))
+    const { session } = open({ fetch: fetchImpl, createPeer, grant: grant({ directMedia: false }) })
+    await session.start()
+    expect(session.snapshot()).toMatchObject({ phase: 'live', path: 'turn', notes: [] })
+    expect(calls.filter((c) => c.url.endsWith('rtc/offer')).map((c) => c.body)).toEqual([{ transport: 'turn' }])
+
+    const noTurn = relayFetch()
+    const { session: fallback } = open({
+      fetch: noTurn.fetchImpl,
+      createPeer: peers(() => 'failed').createPeer,
+      grant: grant({ directMedia: false, iceServers: [] })
+    })
+    await fallback.start()
+    expect(noTurn.calls.filter((c) => c.url.endsWith('rtc/offer')).map((c) => c.body)).toEqual([
+      { transport: 'direct' }
+    ])
+  })
+
   it('falls back to screenshots over the relay without TURN', async () => {
     const { calls, fetchImpl } = relayFetch()
     const { createPeer } = peers(() => 'failed')

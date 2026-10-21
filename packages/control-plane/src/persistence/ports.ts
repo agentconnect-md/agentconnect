@@ -993,6 +993,8 @@ export interface RelayRecord {
   features: string[]
   /** This instance's public STUN address (rc/register.stunUrl), or null when it serves none. */
   stunUrl: string | null
+  /** This instance's public TURN addresses (rc/register.turnUrls), empty when it serves none. */
+  turnUrls: string[]
   lastSeenAt: Date | null
   createdAt: Date
 }
@@ -1006,7 +1008,8 @@ export interface RelayRepo {
     daemonUrl: string,
     at: Date,
     features?: string[],
-    stunUrl?: string | null
+    stunUrl?: string | null,
+    turnUrls?: string[]
   ): Promise<RelayRecord>
   /** Bump `lastSeenAt` on `rc/heartbeat` (liveness for the failover sweeper). Returns
    *  false when the row is gone (already swept) — the caller forces a re-register so a

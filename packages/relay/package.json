@@ -38,6 +38,7 @@
     "@agentconnect.md/message": "workspace:*",
     "@agentconnect.md/observability": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
     "@slack/web-api": "^8.2.0",
     "fastify": "^5.12.5",
     "jose": "^6.2.12",

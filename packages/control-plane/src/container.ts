@@ -235,7 +235,7 @@ import { ComputerAuditLog } from './registry/computerAuditLog.js'
 import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
 import { ComputerPool, COMPUTER_POOL_SWEEP_MS } from './registry/computerPool.js'
 import { ConnectedPoolMembers } from './orchestrator/computerPoolMembers.js'
-import { turnConfigFrom } from './computer-viewer/turn.js'
+import { relayTurnSecret, turnConfigFrom } from './computer-viewer/turn.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -1149,6 +1149,8 @@ export function buildContainer(
   )
   // Viewers reach the desktop through the relay pool's public origin, then any relay it dialed (computer-use.md §7, §10).
   const computerTurn = turnConfigFrom(config)
+  // Relays that serve TURN check viewer credentials with this; they receive it on rc/auth/ok (computer-use.md §7.2).
+  const computerRelayTurnSecret = relayTurnSecret(config.API_KEY_PEPPER)
   const computerChannelGrants = new ComputerChannelGrants(repos.computer, computerChannelKeys, clock, {
     staleAfterMs: missedBeatsMs,
     relays: () => relayRoster.entries(),
@@ -1157,6 +1159,11 @@ export function buildContainer(
       ...(await relayRoster.entries()).map((relay) => relay.url)
     ],
     ...(computerTurn ? { turn: computerTurn } : {}),
+    relayTurn: {
+      secret: computerRelayTurnSecret,
+      ttlSec: config.COMPUTER_TURN_TTL_SEC,
+      servers: () => relayRoster.turnServers()
+    },
     stunUrls: () => relayRoster.stunUrls(),
     onUse: (computerId) => computerPool?.touch(computerId)
   })
@@ -3018,6 +3025,7 @@ export function buildContainer(
     verifyAhpBrowser: (req) => ahpAuthorization.verifyBrowser(req),
     verifyComputerRelayToken: (credential, computerId) =>
       computerChannelGrants.verifyRelayToken(credential, computerId),
+    computerTurnSecret: computerRelayTurnSecret,
     relays: repos.relay,
     relayReg,
     clock,
