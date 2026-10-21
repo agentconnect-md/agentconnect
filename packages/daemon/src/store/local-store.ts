@@ -7972,20 +7972,8 @@ export class LocalStore {
     return undefined
   }
 
-  /**
-   * The session thread a Telegram message belongs to, recovered from the transcript
-   * (every conversational `text` row carries its platform message id in `ts`, and
-   * Telegram message ids are unique per chat). Backs reply-based session continuity:
-   * a human reply to a bot message (`reply_to_message.message_id`) resolves to the
-   * session that bot message was posted in. Undefined when the id was never recorded
-   * as text (e.g. a reply to transient chrome, or an unknown message).
-   *
-   * The one transcript read with no org fence, because it runs BEFORE routing picks an
-   * agent. It is safe unfenced: `channel` is the physical-bot-scoped transcript key, one
-   * integration owns that bot, one org owns that integration — and it returns a thread id,
-   * never content.
-   */
-  async telegramThreadForMessage(channel: string, messageId: string): Promise<string | undefined> {
+  /** The thread a recorded platform message id (`ts`) was filed under; unfenced because it runs before routing and returns no content. */
+  async threadForPlatformMessage(channel: string, messageId: string): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
         `SELECT thread FROM transcript WHERE channel = ? AND ts = ? AND kind = 'text'

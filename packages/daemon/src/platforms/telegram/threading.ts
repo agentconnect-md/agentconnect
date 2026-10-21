@@ -11,13 +11,7 @@
  */
 import { isAppendCoordinate } from '../../session/append-coordinate.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
-
-/** The one host capability Telegram threading needs: resolving which session a
- *  replied-to message already belongs to. Basic groups carry no
- *  `message_thread_id`, so the transcript is the only way to place a reply. */
-export interface TelegramThreadingHost {
-  threadForMessage(transcriptChannel: string, messageId: string): Promise<string | undefined>
-}
+import type { ThreadingHost } from '../contract.js'
 
 /** The platform message id carried in the `<platform>:<chat>:<id>` msgId grammar. */
 export function telegramMessageId(msg: NormalizedMessage): string {
@@ -44,7 +38,7 @@ export function telegramMessageId(msg: NormalizedMessage): string {
  * other platforms or when the thread is already set.
  */
 export async function canonicalizeTelegramThread(
-  host: TelegramThreadingHost,
+  host: ThreadingHost,
   msg: NormalizedMessage,
   transcriptChannel: string
 ): Promise<void> {

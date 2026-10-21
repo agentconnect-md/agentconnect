@@ -440,6 +440,11 @@ export interface RelayIngressStrategy {
   receiptId?(normalized: NormalizedMessage): string
 }
 
+/** The host lookup a thread strategy places a reply with: the thread a recorded message id was filed under. */
+export interface ThreadingHost {
+  threadForMessage(transcriptChannel: string, messageId: string): Promise<string | undefined>
+}
+
 /** One platform's daemon module: the per-platform (not per-connection) members core looks up by platform id. */
 export interface DaemonPlatformModule {
   readonly platformId: string
@@ -447,4 +452,6 @@ export interface DaemonPlatformModule {
   readonly relayIngress?: RelayIngressStrategy
   /** The id a synced organization matches this platform's chat member to a console account by; undefined refuses the action. Absent ⇒ the actor's `userId`. */
   chatMemberKey?(actor: InteractionActor): string | undefined
+  /** Set `msg.thread` in place before the channel record; absent ⇒ the thread normalize set stands. */
+  canonicalizeThread?(host: ThreadingHost, msg: NormalizedMessage, transcriptChannel: string): Promise<void>
 }
