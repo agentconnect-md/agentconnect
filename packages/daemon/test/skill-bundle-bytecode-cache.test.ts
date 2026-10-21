@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -75,6 +75,31 @@ describe.skipIf(process.platform === 'win32')('Python bytecode caches in an inst
     expect(await readFile(join(target, 'scripts/run.py'), 'utf8')).toBe('print(2)\n')
     expect(existsSync(join(target, 'scripts/__pycache__'))).toBe(false)
     expect(existsSync(join(target, '__pycache__'))).toBe(false)
+  })
+
+  it('only reads a cache when the skill is unchanged, even through a parent alias outside the workspace', async () => {
+    const skill = '---\nname: py-skill\ndescription: fixture\n---\n'
+    const unchanged = {
+      ...options,
+      fingerprint: 'v1',
+      candidates: [await candidate(join(root, 'v1'), 'py:v1', { 'SKILL.md': skill, 'scripts/run.py': 'print(1)\n' })]
+    }
+    await reconcileSkillBundles(unchanged)
+    const cache = join(cwd, ...BUNDLE.split('/'), 'scripts/__pycache__/run.cpython-312.pyc')
+    await mkdir(join(cache, '..'))
+    await writeFile(cache, 'bytecode')
+
+    expect((await reconcileSkillBundles(unchanged)).conflicts).toEqual([])
+    expect(await readFile(cache, 'utf8')).toBe('bytecode')
+
+    const outside = join(root, 'outside-claude')
+    await rename(join(cwd, '.claude'), outside)
+    await symlink(outside, join(cwd, '.claude'))
+    await reconcileSkillBundles(unchanged).catch(() => undefined)
+
+    expect(await readFile(join(outside, 'skills/py-skill/scripts/__pycache__/run.cpython-312.pyc'), 'utf8')).toBe(
+      'bytecode'
+    )
   })
 
   it('keeps a cache the receipt itself installed', async () => {
