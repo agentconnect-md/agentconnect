@@ -352,6 +352,26 @@ describe('ComputerTools', () => {
       expect(calls).toHaveLength(1)
     })
 
+    it('hands back a grant that arrives after the turn stopped, and sends nothing', async () => {
+      let running = true
+      const { tools, leases, calls } = setup({ canRun: () => running })
+      leases.computerLeaseAcquire.mockImplementationOnce(async () => queued(1))
+      leases.computerLeaseAcquire.mockImplementationOnce(async () => {
+        running = false
+        return granted
+      })
+      const handled = await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+      expect(parse(handled!.result)).toMatchObject({
+        error: 'computer_busy',
+        message: "this session's turn ended while it waited for this computer"
+      })
+      expect(leases.computerLeaseRelease).toHaveBeenCalledWith(
+        { computerId: C1, agentId: AGENT, sessionId: 'out-1' },
+        'org_1'
+      )
+      expect(calls).toEqual([])
+    })
+
     it('does not ask again through a lost CP link once the turn no longer runs', async () => {
       let running = true
       const { tools, leases, calls, sleeps } = setup({ canRun: () => running })

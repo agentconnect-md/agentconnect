@@ -736,7 +736,18 @@ export class ComputerTools {
         }
         throw new ComputerToolError('unavailable', `the control lease could not be taken: ${(error as Error).message}`)
       }
-      if (result.granted) break
+      if (result.granted) {
+        // A grant that lands after the turn stopped is handed back, and the input is not sent.
+        if (wait && this.deps.canRun?.(ctx) === false) {
+          await this.deps.leases
+            .computerLeaseRelease({ computerId, agentId: state.agentId, sessionId: state.sessionId }, state.orgId)
+            .catch((error: Error) =>
+              this.deps.log?.debug(`computer: releasing a stopped turn's grant failed: ${error.message}`)
+            )
+          throw this.waitEnded(computerId, wait)
+        }
+        break
+      }
       const holder = result.holder
         ? { holder: result.holder.agentName ?? result.holder.agentId, holderSessionId: result.holder.sessionId }
         : {}
