@@ -67,7 +67,7 @@ export const TELEGRAM_CALLBACK_ANSWER_LIMIT = 200
  *
  * Telegram has no threads outside forum topics, so session continuity in a group runs
  * off the reply chain: a reply to a recorded bot message resolves back to the session
- * that message was posted in (LocalStore.telegramThreadForMessage). The line makes that
+ * that message was posted in (LocalStore.threadForPlatformMessage). The line makes that
  * invisible rule visible. Plain text, because the agent's reply is sent without a
  * parse_mode (see the header note) — the leading ↩️ carries the "small print" weight.
  */

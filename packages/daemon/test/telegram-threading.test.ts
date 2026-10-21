@@ -6,6 +6,7 @@ import { Daemon } from '../src/daemon.js'
 import { routeRules } from '../src/router/routing-table.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { canonicalizeTelegramThread } from '../src/platforms/telegram/threading.js'
 import type { TelegramConnection } from '../src/telegram/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
@@ -305,35 +306,35 @@ describe('canonicalizeTelegramThread', () => {
   it('roots a fresh group @mention at its own message (tg:<id>)', async () => {
     const daemon = await boot()
     const m = tg(100, { mentionedBots: ['mybot'] })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBe('tg:100')
   })
 
   it('uses the forum-topic id as the thread', async () => {
     const daemon = await boot()
     const m = tg(101, { topicId: '555', mentionedBots: ['mybot'] })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBe('555')
   })
 
   it('§6.5: keys off the GENERIC coordinates alone (post-window emission)', async () => {
     const daemon = await boot()
     const topic = tg(103, { topicId: '555', mentionedBots: ['mybot'] })
-    await (daemon as any).canonicalizeTelegramThread(topic)
+    await (daemon as any).canonicalizeThread(topic)
     expect(topic.thread).toBe('555')
     const reply = tg(104, { threadRoot: '6' })
-    await (daemon as any).canonicalizeTelegramThread(reply)
+    await (daemon as any).canonicalizeThread(reply)
     expect(reply.thread).toBe('tg:6')
     // The generic field wins when both are present (dual-shape window).
     const both = tg(105, { topicId: '7' })
-    await (daemon as any).canonicalizeTelegramThread(both)
+    await (daemon as any).canonicalizeThread(both)
     expect(both.thread).toBe('7')
   })
 
   it('collapses a DM to one continuous session (dm)', async () => {
     const daemon = await boot()
     const m = tg(102, { channel: '42', isDm: true })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBe('dm')
   })
 
@@ -341,13 +342,13 @@ describe('canonicalizeTelegramThread', () => {
     const daemon = await boot()
     // The opening @mention (message 6) is top-level: no topic, no root, no reply.
     const mention = tg(6, { mentionedBots: ['mybot'] })
-    await (daemon as any).canonicalizeTelegramThread(mention)
+    await (daemon as any).canonicalizeThread(mention)
     expect(mention.thread).toBe('tg:6')
     // A later reply in that thread carries Telegram's native message_thread_id = 6
     // (the root) — even though it directly replies to the bot's message 7. It must key
     // to the SAME session as the mention (regression: was mis-keyed to the bare id).
     const reply = tg(8, { threadRoot: '6', replyTo: '7' })
-    await (daemon as any).canonicalizeTelegramThread(reply)
+    await (daemon as any).canonicalizeThread(reply)
     expect(reply.thread).toBe('tg:6')
   })
 
@@ -356,10 +357,10 @@ describe('canonicalizeTelegramThread', () => {
     // Only a real forum topic yields the bare numeric thread (postable as
     // message_thread_id); a reply-thread root is prefixed so it never is.
     const forum = tg(9, { topicId: '6' })
-    await (daemon as any).canonicalizeTelegramThread(forum)
+    await (daemon as any).canonicalizeThread(forum)
     expect(forum.thread).toBe('6')
     const replyThread = tg(10, { threadRoot: '6' })
-    await (daemon as any).canonicalizeTelegramThread(replyThread)
+    await (daemon as any).canonicalizeThread(replyThread)
     expect(replyThread.thread).toBe('tg:6')
   })
 
@@ -375,7 +376,7 @@ describe('canonicalizeTelegramThread', () => {
       text: 'answer'
     })
     const m = tg(600, { replyTo: '500' })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBe('tg:100')
   })
 
@@ -384,14 +385,27 @@ describe('canonicalizeTelegramThread', () => {
     // No message_thread_id (basic group) and message 999 was never recorded (cold /
     // restarted): fall back to rooting the thread on the replied-to message.
     const m = tg(700, { replyTo: '999' })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBe('tg:999')
   })
 
   it('leaves non-telegram messages untouched', async () => {
     const daemon = await boot()
     const m = { ...tg(1), platform: 'slack' as const, thread: undefined }
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
+    expect(m.thread).toBeUndefined()
+  })
+
+  it('resolves Telegram through the platform module registry', async () => {
+    const daemon = await boot()
+    expect((daemon as any).platformModules.get('telegram')?.canonicalizeThread).toBe(canonicalizeTelegramThread)
+  })
+
+  it('leaves the thread untouched on a registered platform without a thread strategy', async () => {
+    const daemon = await boot()
+    expect((daemon as any).platformModules.get('feishu')?.canonicalizeThread).toBeUndefined()
+    const m = { ...tg(1, { replyTo: '500' }), platform: 'feishu' as const, thread: undefined }
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBeUndefined()
   })
 })
@@ -465,7 +479,7 @@ describe('reply-based session continuity (routing)', () => {
 
     // A human reply to the bot's message (no @mention).
     const m = tg(600, { replyTo: '500' })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     const routed = routeRules(m, (daemon as any).mergedRules(), await owner(daemon, m.channel, m.thread!))
     expect(routed).toMatchObject({ agentId: 'bot-a', via: 'thread' })
   })
@@ -490,7 +504,7 @@ describe('reply-based session continuity (routing)', () => {
     const daemon = await boot()
     makeTelegramRoutable(daemon)
     const m = tg(800, { mentionedBots: ['mybot'] })
-    await (daemon as any).canonicalizeTelegramThread(m)
+    await (daemon as any).canonicalizeThread(m)
     expect(m.thread).toBe('tg:800')
     const routed = routeRules(m, (daemon as any).mergedRules(), await owner(daemon, m.channel, m.thread!))
     expect(routed).toMatchObject({ agentId: 'bot-a', via: 'mention' })
@@ -840,10 +854,10 @@ describe('continue-the-topic hint delivery', () => {
 
     expect(conn.postMessage.mock.calls[0]![1]).toBe('answer\n\n↩️ hint')
     // The recorded row keeps the agent's words AND the real message id — the reply chain
-    // resolves through it (LocalStore.telegramThreadForMessage).
+    // resolves through it (LocalStore.threadForPlatformMessage).
     const rows = await (daemon as any).store.threadTranscript('-100', 'tg:100')
     expect(rows.at(-1)).toMatchObject({ text: 'answer', ts: 'out-9' })
-    expect(await (daemon as any).store.telegramThreadForMessage('-100', 'out-9')).toBe('tg:100')
+    expect(await (daemon as any).store.threadForPlatformMessage('-100', 'out-9')).toBe('tg:100')
     expect(p.turnState).toMatchObject({ lastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
   })
 

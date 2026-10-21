@@ -1066,8 +1066,8 @@ import { parseGoogleChatApprovalClick } from './platforms/googlechat/approval-ca
 import type { RelayIngressHost } from './platforms/relay-ingress-host.js'
 import type { ChannelInfoSource } from './messages/channel-name-resolver.js'
 import { PlatformModuleRegistry } from './platforms/registry.js'
+import { telegramPlatformModule } from './platforms/telegram/module.js'
 import {
-  canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
   telegramMessageId as telegramMessageIdExternal,
   telegramReplyTarget as telegramReplyTargetExternal
 } from './platforms/telegram/threading.js'
@@ -12143,15 +12143,15 @@ export class Daemon {
     return telegramMessageIdExternal(msg)
   }
 
-  /** Telegram thread canonicalization — the platform's own conversation model
-   *  ({@link canonicalizeTelegramThreadExternal}); core only supplies the
-   *  transcript lookup a reply needs to be placed. */
-  private async canonicalizeTelegramThread(msg: NormalizedMessage): Promise<void> {
-    await canonicalizeTelegramThreadExternal(
-      { threadForMessage: async (channel, id) => await this.store.telegramThreadForMessage(channel, id) },
-      msg,
-      transcriptChannelKey(msg.channel, msg.transportScope)
-    )
+  /** The platform module's thread strategy, if it has one; core only supplies the transcript lookup a reply is placed by. */
+  private async canonicalizeThread(msg: NormalizedMessage): Promise<void> {
+    await this.platformModules
+      .get(msg.platform)
+      ?.canonicalizeThread?.(
+        { threadForMessage: async (channel, id) => await this.store.threadForPlatformMessage(channel, id) },
+        msg,
+        transcriptChannelKey(msg.channel, msg.transportScope)
+      )
   }
 
   /** Telegram's reply anchor for a turn ({@link telegramReplyTargetExternal}). */
@@ -12642,9 +12642,8 @@ export class Daemon {
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     if (msg.sender.avatarUrl && msg.transportScope)
       await this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
-    // Telegram reply-based session threading, ABOVE the record: it is the normalization that
-    // produces the physical thread step 1 writes, and it has no store writes. No-op elsewhere.
-    await this.canonicalizeTelegramThread(msg)
+    // Above the record: it produces the physical thread step 1 writes, and has no store writes.
+    await this.canonicalizeThread(msg)
     // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
     this.placeTrust.observe(msg, srcIntegrationIds ?? [])
     // Step 1 (message-intake.md §5): the channel record is written before anything may drop the message.
@@ -13664,7 +13663,8 @@ export class Daemon {
   private readonly platformModules = new PlatformModuleRegistry([
     linearPlatformModule(this.relayIngressHost((integrationId) => this.lnConnByIntegration.get(integrationId))),
     googleChatPlatformModule(this.relayIngressHost((integrationId) => this.gcConnByIntegration.get(integrationId))),
-    feishuPlatformModule
+    feishuPlatformModule,
+    telegramPlatformModule
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
