@@ -968,7 +968,7 @@ Control Plane, which only issues credentials:
   ChannelBind: an expired one can neither open nor refresh an allocation, and an allocation's lifetime never runs
   past its credential's expiry. Both peers are relay-only, so every peer is another allocation on the same relay:
   relayed addresses are virtual (`RELAY_TURN_RELAYED_ADDRESS`, by default one per relay in 198.18.0.0/15), a
-  permission or channel may name only that address and is kept per peer port, so it names one peer allocation, and
+  permission or channel may name only that address and is kept per peer port, so it names one peer allocation (a ChannelBind holds it for the channel's 10 minutes), and
   data is handed from one allocation to another in process only when each has permitted the other: an allocation no
   peer of a viewing permitted can neither reach it nor be charged to it.
   The relay opens no relayed port range, sends to no other address, and cannot be used as a proxy. Resources are
@@ -1562,8 +1562,8 @@ desktop (a container image, §3.8).
 11. When a Computer is offline or locked, do agent tool calls queue or fail at once?
 12. Managed-computer start time, Cloud quotas, billing, and egress IP policy (quotas, billing, and egress are #3230).
 13. ~~Viewer media in Kubernetes: direct per pod through hostPort / NodePort UDP, or always TURN / the relay (cost versus
-    latency)?~~ **Decided (§7.2)**: a managed computer's viewer starts at the relay's TURN; per-pod UDP stays possible
-    through `rtcAddress` and is not set up by the pool.
+    latency)?~~ **Decided (§7.2)**: a managed computer's viewer starts at the relay's TURN and never tries direct media,
+    since the pool sets up no per-pod UDP; `rtcAddress` keeps direct media for a self-hosted container Computer.
 14. Does a container Computer ship a default browser configuration (extensions, language, proxy), managed by the
     organization or set by the agent?
 15. ~~Can several agents drive one Computer at once, for example through several sessions on one Linux host?~~

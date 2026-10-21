@@ -329,7 +329,8 @@ export class TurnServer {
     const now = this.now()
     allocation.channels.set(channel, { peerPort: peer.port, expiresAt: now + CHANNEL_MS })
     allocation.channelByPeer.set(peer.port, channel)
-    allocation.permissions.set(peer.port, now + PERMISSION_MS)
+    // A channel keeps its peer's permission for the channel's lifetime (coturn does the same), so clients renewing channels only keep relaying.
+    allocation.permissions.set(peer.port, Math.max(allocation.permissions.get(peer.port) ?? 0, now + CHANNEL_MS))
     this.reply(client, message, [], credential.key)
   }
 
@@ -476,7 +477,9 @@ export class TurnServer {
   private nonceValid(nonce: string): boolean {
     const [expires = '', mac = ''] = nonce.split('.')
     const expected = createHmac('sha256', this.nonceKey).update(expires).digest('base64url').slice(0, 22)
-    if (mac.length !== expected.length || !timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) return false
+    const given = Buffer.from(mac)
+    const wanted = Buffer.from(expected)
+    if (given.length !== wanted.length || !timingSafeEqual(given, wanted)) return false
     return parseInt(expires, 36) > this.now()
   }
 

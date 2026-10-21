@@ -137,6 +137,13 @@ describe('TurnServer authentication', () => {
     expect(lifetimeOf(await client.allocate([[ATTR.lifetime, Buffer.from([0, 0, 0x0e, 0x10])]]))).toBe(120)
   })
 
+  it('rejects a malformed nonce whose characters are multibyte without throwing', async () => {
+    const client = new TestTurnClient(link(), credential('viewer-u1'))
+    await client.allocate()
+    client.nonce = `x.${'é'.repeat(22)}`
+    expect(errorCode(await client.send(METHOD.refresh, []))).toBe(438)
+  })
+
   it('answers a stale nonce with 438 and a fresh one', async () => {
     const client = new TestTurnClient(link(), credential('viewer-u1', 7200))
     await client.allocate()
@@ -293,6 +300,31 @@ describe('TurnServer relaying', () => {
     expect(desktop.received).toEqual([{ peer: 0x4001, data: Buffer.from('defgh') }])
     // Rebinding the channel to another peer is refused.
     expect(errorCode(await desktop.bind(0x4001, { address: RELAYED, port: 1 }))).toBe(400)
+  })
+
+  it('keeps a bound channel permitted for the channel lifetime, past the 300 s permission', async () => {
+    const desktop = new TestTurnClient(link(), credential('computer-c1'))
+    const viewer = new TestTurnClient(link(), credential('viewer-u1'))
+    await desktop.allocate()
+    await viewer.allocate()
+    await desktop.bind(0x4000, viewer.relayed!)
+    await viewer.bind(0x4001, desktop.relayed!)
+    // werift renews channels every 500 s; traffic in between keeps the allocations alive.
+    for (let t = 0; t < 5; t++) {
+      now += 100_000
+      desktop.sendOnChannel(0x4000, Buffer.from('v'))
+      viewer.sendOnChannel(0x4001, Buffer.from('i'))
+      await desktop.refresh()
+      await viewer.refresh()
+      server.sweep()
+    }
+    expect(viewer.received).toHaveLength(5)
+    expect(desktop.received).toHaveLength(5)
+    await desktop.bind(0x4000, viewer.relayed!)
+    await viewer.bind(0x4001, desktop.relayed!)
+    now += 100_000
+    desktop.sendOnChannel(0x4000, Buffer.from('v'))
+    expect(viewer.received).toHaveLength(6)
   })
 
   it('caps what one allocation sends per second and drops the excess', async () => {
