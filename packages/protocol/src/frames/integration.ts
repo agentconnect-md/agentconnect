@@ -76,6 +76,13 @@ export type IntegrationSlackConfig = z.infer<typeof IntegrationSlackConfig>
 export const IntegrationQQConfig = z.object({ appId: z.string().min(1), appSecret: z.string().min(1) })
 export type IntegrationQQConfig = z.infer<typeof IntegrationQQConfig>
 
+// The DingTalk payload (dingtalk-integration.md §2): an internal app's credentials, whose Client ID is also the inbound `robotCode`.
+export const IntegrationDingTalkConfig = z.object({
+  clientId: z.string().min(1), // Client ID (formerly AppKey), semi-public
+  clientSecret: z.string().min(1) // Client Secret (plaintext — never log)
+})
+export type IntegrationDingTalkConfig = z.infer<typeof IntegrationDingTalkConfig>
+
 /**
  * The Telegram config payload — long-polling + routing (grammY). Telegram has a
  * SINGLE BotFather HTTP token — no app-level token and no signing secret

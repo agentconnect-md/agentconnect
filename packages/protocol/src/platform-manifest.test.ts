@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { continuableOrigin, originKindOf } from './frames/route.js'
-import { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
+import { DEFAULT_MANIFEST, DINGTALK_PLATFORM, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
 
 /**
  * The §5 manifest's load-bearing claim is not its field values — those are
@@ -72,11 +72,12 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.ownerAsDefault).toBe(false)
   })
 
-  it('declares addressing by construction on Linear and Google Chat, and nowhere else', () => {
+  it('declares addressing by construction on Linear, Google Chat and DingTalk, and nowhere else', () => {
     // The decision gate reads it: a follow-up in a session the agent holds is a continuation on a
-    // platform whose every delivery already addresses the app — Linear's events, Google's mentions.
+    // platform whose every delivery already addresses the app — Linear's events, Google's and DingTalk's mentions.
     expect(manifestFor('linear').addressedByConstruction).toBe(true)
     expect(manifestFor(GOOGLE_CHAT_PLATFORM).addressedByConstruction).toBe(true)
+    expect(manifestFor(DINGTALK_PLATFORM).addressedByConstruction).toBe(true)
     for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq'])
       expect(manifestFor(p).addressedByConstruction, p).toBe(false)
     expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
@@ -84,10 +85,10 @@ describe('platform manifest', () => {
 
   it('lets rooms append everywhere but Linear, DMs only on Slack, and group DMs nowhere', () => {
     // The spec projection reads it to give an assistant-mode agent one session per place; an unknown id forces nothing.
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM])
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, DINGTALK_PLATFORM])
       expect(manifestFor(p).appendKinds, p).toContain('channel')
     expect(manifestFor('linear').appendKinds).toEqual([])
-    for (const p of ['telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, 'linear'])
+    for (const p of ['telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, DINGTALK_PLATFORM, 'linear'])
       expect(manifestFor(p).appendKinds, p).not.toContain('im')
     expect(manifestFor('slack').appendKinds).toContain('im')
     for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, 'linear'])
@@ -118,6 +119,20 @@ describe('platform manifest', () => {
     // A chat origin the console composer may not continue.
     expect(originKindOf(GOOGLE_CHAT_PLATFORM)).toBe('chat')
     expect(continuableOrigin(GOOGLE_CHAT_PLATFORM)).toBe(false)
+  })
+
+  it('keeps DingTalk on the conservative arm of every axis it did not earn, with DMs recognizable by key', () => {
+    // DingTalk delivers only mentions in a group, a group may append, and a DM key names its member.
+    const { platform, ...axes } = manifestFor(DINGTALK_PLATFORM)
+    expect(platform).toBe('dingtalk')
+    expect(axes).toEqual({
+      ...DEFAULT_MANIFEST,
+      dmChannelPattern: /^dm:/,
+      addressedByConstruction: true,
+      appendKinds: ['channel']
+    })
+    expect(axes.dmChannelPattern?.test('dm:user-0001')).toBe(true)
+    expect(axes.dmChannelPattern?.test('cid-example-group')).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {

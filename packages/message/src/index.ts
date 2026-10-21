@@ -1,5 +1,6 @@
 export * from './attachment-mention.js'
 export * from './command-text.js'
+export * from './dingtalk-message.js'
 export * from './discord-message.js'
 export * from './telegram-message.js'
 export * from './slack-mention-address.js'
