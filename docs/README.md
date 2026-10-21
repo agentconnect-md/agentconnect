@@ -47,6 +47,7 @@ the picture it draws.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
 - [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, the shared group-context dependency, and why QQ has no approval card.
 - **(draft)** [dingtalk-integration.md](designs/dingtalk-integration.md) — Proposed DingTalk integration: per-organization internal apps over Stream, never-redelivered messages, card progress with Markdown answers, and the edition quota.
+- **(draft)** [teams-integration.md](designs/teams-integration.md) — Proposed Microsoft Teams integration: relay ingress with Bot Framework token checks, resource-specific consent filtered like Slack, DingTalk's reply chain for group chats, and Adaptive Card approvals.
 - **(draft)** [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with HTTPS relay ingress, threaded replies, durable admission, and a Pub/Sub alternative.
 - **(draft)** [voice-meeting-participation.md](designs/voice-meeting-participation.md) — Agents in voice calls: joining and transcribing Google Meet through a meeting runner first, then speaking, Discord voice channels, the console microphone, and Zoom, Teams, and huddles on the same runner seam.
 
