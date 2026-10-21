@@ -37,6 +37,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 16  | Container form                     | The same desktop daemon runs in a **Linux container** (Xvfb, Xfce, a browser) as a Computer without a physical desktop; it is the preferred base for managed computers (§3.8, §15)             | Validated (Docker on OrbStack)                    |
 | 17  | Development order                  | Linux desktop daemon (with the shared CP work) → Docker and the Linux managed computer → macOS → Windows (§14)                                                                                 | Plan                                              |
 | 18  | Later                              | **Managed computers**: containers on Linux; the earlier VM desktop pool design for macOS and Windows (§15, appendices)                                                                         | Design                                            |
+| 19  | Managed allocation and sharing     | Managed computers are `ephemeral` (per session), `per-agent` (one per agent, sleeps between uses) or `manual` (user-created, shared); shared Computers queue for the lease (§4.4, §15.1)       | Design                                            |
 
 ## 1. Background and goals
 
@@ -94,7 +95,9 @@ interface Computer {
   os: 'macos' | 'windows' | 'linux'
   osVersion: string
   session: 'aqua' | 'console' | 'rdp' | 'x11' | 'xvfb' | 'wayland-gnome' // the prototype's doctor already tells these apart
-  status: 'online' | 'offline' | 'locked' | 'paused' | 'human_in_control' | 'busy' | 'revoked'
+  status: 'online' | 'offline' | 'locked' | 'paused' | 'human_in_control' | 'busy' | 'sleeping' | 'revoked' // sleeping: managed only
+  allocation?: 'ephemeral' | 'per-agent' | 'manual' // managed only (§15.1) [design]
+  ownerAgentId?: string // the owning agent of a per-agent computer [design]
   capabilities: {
     screenshot: boolean
     input: boolean
@@ -121,6 +124,12 @@ computer starts **Selected** with only its registrant in the audience (organizat
 and only the registrant may change its policy; any editor may revoke or delete it. The desktop daemon reports status and capabilities in its heartbeat,
 with `permissions`, `session`, and `viewer` taken straight from `doctor` (§3.5). Wire frames go in a new
 `packages/protocol/src/frames/computer.ts`.
+
+**[design]** A managed computer also carries its `allocation` mode (§15.1); a self-hosted computer has none. A
+`per-agent` computer names its one owning agent in `ownerAgentId`, and the pool keeps at most one per agent. `sleeping`
+means the pool scaled the pod to zero (or deleted it) while keeping its volume; it applies to `per-agent` and `manual`
+computers, and the next use wakes the computer with its files, browser profile, and sign-ins intact. An `ephemeral`
+computer never sleeps: it is deleted, pod and volume, when it is reclaimed.
 
 ### 2.3 Relation to existing concepts
 
@@ -496,6 +505,7 @@ interface ComputerPolicy {
   quietHours?: { tz: string; ranges: string[] } // no use outside these windows
   leaseIdleSeconds: number // idle release, default 120 (validated)
   leaseMaxSeconds: number // cap on one control lease, default 1800 (validated)
+  leaseWaitSeconds: number // [design] how long an acquire waits in the FIFO lease queue before `computer_busy` (§4.4)
   screenshotRetentionDays?: number // days stored screenshots are kept (§9); 0 = never written, absent = deployment default
 }
 ```
@@ -507,9 +517,17 @@ agent DTO and shipped on the spec as value or `null`):
 ```ts
 computerUse: z.object({
   enabled: z.boolean().default(false),
-  computers: z.array(z.string()).default([]) // Computer ids the agent may use; the Computer's policy must agree too
+  computers: z.array(z.string()).default([]), // Computer ids the agent may use; the Computer's policy must agree too
+  managed: z.object({ mode: z.enum(['ephemeral', 'per-agent']) }).optional() // [design] agent-driven managed computer (§15.1)
 }).optional()
 ```
+
+**[design]** `managed` chooses, per agent, how the pool gives it an agent-driven managed computer: `ephemeral` creates
+a fresh one for each session that needs a computer, and `per-agent` creates the agent's own one on first use and keeps
+it, sleeping, between uses (§15.1). The pool creates either kind with the agent already in its `allowedAgents`, so it
+needs no entry in `computers`. A `manual` managed computer is not an agent setting: a user creates it from the pool and
+grants it to agents through its policy (`allowedAgents`) and their `computers` lists, exactly like a self-hosted
+computer, and several agents may share it.
 
 Both sides must agree. A self-hosted computer by default admits only its owner's agents; sharing it with another
 member's agent shows a "no isolation" warning in the console. In the prototype the unit of grant is the **client
@@ -606,6 +624,22 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   (§3.7) binds a call to its session through its channel token, and the `computer_*` tools take the lease with
   `computer-lease/acquire` before every input tool and `computer_acquire`, and give it up with `computer-lease/release`
   on `computer_release` (§5.2). The session is the outward session id its `event/session` milestones carry.
+
+**Sharing and the wait queue [design]** (#3231). Sharing works the same for managed and self-hosted Computers: one
+desktop is one display and one control lease. A Computer granted to several agents (a shared self-hosted desktop or a
+`manual` managed computer) is used first come, first served, and its holder releases the lease when its turn ends
+(above). Another session's acquire no longer fails at once with `computer_busy`: it waits in a **FIFO queue** per
+Computer for at most `leaseWaitSeconds`, set by the Computer's policy and bounded by the deployment, and gets the lease
+when the sessions ahead of it are done. `computer_busy`, still naming the holder, becomes the result of a wait that
+times out. Pre-emption by a human, revocation, and policy changes behave as above; a waiting session that loses its
+grant or ends leaves the queue. Screenshots, cursor position, and viewers need no lease and never wait.
+
+**One desktop, one controller.** A display has one pointer and one keyboard focus, and XTest input on Linux is
+display-wide, so several agents cannot drive one Computer at once, whatever the OS. Linux could run several independent
+displays (Xvfb or Xorg) on one host, each with its own desktop daemon and driver, but each would in effect be a separate
+Computer. Several displays per pod are not offered: they would share one user, home directory, and browser profile,
+which conflict; isolation would be weaker; and the saving is negligible, because the roughly 0.9 GB each display costs is
+mostly Xfce and Firefox. Agents that must work in parallel get separate Computers.
 
 ## 5. Agent tool interface
 
@@ -1124,18 +1158,30 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    builds published to a registry; a smaller image (target under 1 GB); an optional Chromium variant.
 2. **Self-hosted containers**: a docker compose example; a user runs it on their own server and it registers as a
    Computer with `kind: 'self-hosted'`, `isolation: 'container'`.
-3. **Linux managed computers**: `kind: 'managed'`; pods created on demand in the Kubernetes pool (reusing
-   [k8s-daemon-pool.md](k8s-daemon-pool.md) and SandboxClaim); allocation, prewarming, and reclamation; reset policies
-   (`per-lease` with a fresh volume, `on-release-idle`, `never`); pods usually have no reachable UDP, so viewer media
-   goes through TURN or the relay; quotas and billing (concurrent desktops, desktop hours, bandwidth, screenshot
-   storage); egress policy (§15.4).
+3. **Linux managed computers** [design]: `kind: 'managed'`; pods in the Kubernetes pool (reusing
+   [k8s-daemon-pool.md](k8s-daemon-pool.md) and SandboxClaim), split across four issues:
+   - **#3199**: the three allocation modes (§15.1) and the pool controller that creates, prewarms, sleeps, wakes, and
+     reclaims them. `ephemeral` computers come from a small prewarmed pool so a session gets one in seconds, and are
+     deleted (pod and volume) when the session's lease ends or it idles out; a `per-agent` computer is created on the
+     agent's first use and sleeps (pod scaled to zero or deleted, volume kept) between uses; a `manual` computer is
+     created by a user through the API and stays until a user deletes it, sleeping when idle. A `per-agent` or `manual`
+     computer can be reset explicitly. These modes replace the earlier reset policies (`per-lease`, `on-release-idle`,
+     `never`, Appendix A).
+   - **#3231**: the FIFO lease wait queue for shared Computers (§4.4), for managed and self-hosted ones alike.
+   - **#3232**: the console for pools and modes: creating and assigning `manual` computers, the agent's `managed` mode,
+     and sleeping status.
+   - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
+     quotas per mode, counting sleeping desktops and kept volumes; billing for running and sleeping hours and kept
+     volume storage, plus bandwidth and screenshot storage; egress policy (§15.4).
 4. **Licensing**: the GPL obligations of shipping ffmpeg (and other GPL packages) in a published image, such as
    providing corresponding source [legal]. Until counsel answers, the published image does not preinstall ffmpeg: the
    daemon downloads the pinned build on first start, as desktops do. The Debian packages' source obligations are open.
 
 **Acceptance**: one `docker run` with a registration token produces a usable Computer in the console; in Kubernetes, an
 agent that asks for a managed computer gets a fresh desktop within seconds and completes a browser task, and its data
-is wiped on reclamation; without direct UDP, the viewer works through TURN / the relay.
+is wiped on reclamation; a `per-agent` computer wakes on the agent's next use with its files and sign-ins intact; two
+agents sharing a `manual` computer take turns through the lease queue; without direct UDP, the viewer works through TURN
+/ the relay.
 
 ### 14.6 M3: macOS
 
@@ -1183,21 +1229,34 @@ works; lock screen and UAC prompts return definite errors; no rules or autostart
 Mirrors the managed daemon pool: Computers operated by AgentConnect (or a self-hosting operator), `kind: 'managed'`.
 To agents the tools and permissions are identical.
 
-|                   | Self-hosted computer                                                | Managed computer                                  |
-| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------- |
-| Who runs the host | The user / organization                                             | AgentConnect Cloud or the self-hosting operator   |
-| Lifecycle         | Starts when the user logs in                                        | Created, leased, reclaimed, and reset by the pool |
-| Isolation         | None (the user's real desktop), or a container the user runs (§3.8) | Container or VM                                   |
-| Data and sessions | The user's own                                                      | Must be prepared in the image                     |
-| Egress            | The user's network (usually residential)                            | Data-centre IP with a weaker reputation (§15.4)   |
-| OS license        | None needed                                                         | The operator's responsibility (§15.3)             |
+**Allocation modes [design]** (#3199). How a managed computer relates to agents is its `allocation` (§2.2):
+
+| Mode        | Created                                                      | Used by                                    | After use                                                                           |
+| ----------- | ------------------------------------------------------------ | ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `ephemeral` | When a session first needs a computer, from a prewarmed pool | That session only                          | Reclaimed and deleted (pod and volume) when the lease ends or the session idles out |
+| `per-agent` | On the agent's first computer use; exactly one per agent     | The owning agent's sessions, one at a time | Sleeps (pod scaled to zero or deleted, volume kept); wakes on the next use          |
+| `manual`    | By a user from the pool (API; console in #3232)              | The agents its policy grants, shared       | Stays until a user deletes it; may sleep when idle and wake on use                  |
+
+The agent's `computerUse.managed.mode` picks `ephemeral` or `per-agent` (§4.1); `manual` computers are assigned
+through policy like self-hosted ones. A woken computer keeps its files, browser profile, and sign-ins; a `per-agent` or
+`manual` computer can be reset explicitly. Sharing follows §4.4 for every mode.
+
+|                   | Self-hosted computer                                                | Managed computer                                                                                               |
+| ----------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Who runs the host | The user / organization                                             | AgentConnect Cloud or the self-hosting operator                                                                |
+| Lifecycle         | Starts when the user logs in                                        | By allocation mode: `ephemeral` per session, `per-agent` sleeps between uses, `manual` until a user deletes it |
+| Isolation         | None (the user's real desktop), or a container the user runs (§3.8) | Container or VM                                                                                                |
+| Data and sessions | The user's own                                                      | Prepared in the image; kept on the volume for `per-agent` and `manual`                                         |
+| Egress            | The user's network (usually residential)                            | Data-centre IP with a weaker reputation (§15.4)                                                                |
+| OS license        | None needed                                                         | The operator's responsibility (§15.3)                                                                          |
 
 ### 15.2 Implementation reference (details in Appendix A)
 
 - The image runs **the same desktop daemon** (with the viewer), so the Control Plane and agents need not tell the two
   sources apart.
 - **Linux**: the §3.8 container image (Xvfb, Xfce, a browser) is validated and runs in Kubernetes pods (or microsandbox
-  VMs); pool management (prewarming, leases, `per-lease` / `on-release-idle` reset) is in §14.5. neko (Apache-2.0) is
+  VMs); pool management (the `ephemeral` / `per-agent` / `manual` allocation modes with prewarming, sleep, wake, and
+  reclamation, §15.1) is in §14.5. neko (Apache-2.0) is
   no longer needed because the built-in viewer provides WebRTC watching.
 - **macOS**: Lume (MIT) VMs on Apple Silicon hosts. **Windows**: dockur/windows (MIT) or KubeVirt (Apache-2.0);
   sequential reuse plus snapshot rollback.
@@ -1254,10 +1313,14 @@ desktop (a container image, §3.8).
 9. The impact of keeping the display awake: only while a lease or viewer is active?
 10. How reliable is window-level masking on each OS; should a screenshot be refused when masking fails?
 11. When a Computer is offline or locked, do agent tool calls queue or fail at once?
-12. Managed-computer start time, Cloud quotas, billing, and egress IP policy.
+12. Managed-computer start time, Cloud quotas, billing, and egress IP policy (quotas, billing, and egress are #3230).
 13. Viewer media in Kubernetes: direct per pod through hostPort / NodePort UDP, or always TURN / the relay (cost versus latency)?
 14. Does a container Computer ship a default browser configuration (extensions, language, proxy), managed by the
     organization or set by the agent?
+15. ~~Can several agents drive one Computer at once, for example through several sessions on one Linux host?~~
+    **Decided (§4.4)**: no. A display has one pointer, one keyboard focus, and display-wide XTest input; extra displays
+    per pod are effectively separate Computers and are not offered. A shared Computer is used in turn through the FIFO
+    lease queue (#3231), and parallel agents get separate Computers.
 
 ## Appendix A: VM desktop pool design summary (reference for managed computers)
 
@@ -1267,6 +1330,9 @@ From draft 3, for when managed computers are built:
   new one, then a queue; leases renewed by session heartbeats; one input lock per desktop, which `computer_lock` can
   hold briefly; human takeover pre-empts the input lock.
 - **Reset policies**: `per-lease`, `on-release-idle`, `never`; Windows forces sequential reuse plus snapshot rollback.
+  **Superseded** for Linux managed computers by the allocation modes (§15.1): `ephemeral` is roughly a fresh desktop
+  per lease, while `per-agent` and `manual` keep their volume and can be reset explicitly. The `dedicated` / `shared`
+  desktop pool modes above likewise map to `per-agent` and `manual`.
 - **Images**: `trycua/cua-xfce` was planned but dropped because it ships `cua-spacesd` (FSL-1.1-MIT); replaced by our
   own Xvfb / Xvnc plus Xfce image (now validated, §3.8) running the desktop daemon.
 - **Launch**: microsandbox (`packages/daemon/src/microsandbox/launch.ts`) or a Kubernetes SandboxClaim; Windows through
