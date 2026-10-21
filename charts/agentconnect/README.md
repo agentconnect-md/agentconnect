@@ -389,7 +389,7 @@ browser can reach, start their viewer at TURN.
 | `relay.turn.tls.secretName`                | `''`           | `kubernetes.io/tls` Secret for TURN over TLS; empty serves no TLS   |
 | `relay.turn.tls.port` / `tls.publicPort`   | `5349` / `443` | Container and public port for TURN over TLS                         |
 | `relay.turn.maxAllocations`                | `400`          | Allocations one pod holds; a viewing takes up to four               |
-| `relay.turn.maxAllocationsPerCredential`   | `16`           | Allocations one viewer or desktop credential holds                  |
+| `relay.turn.maxAllocationsPerCredential`   | `16`           | Allocations one viewer or desktop holds, across its credentials     |
 | `relay.turn.maxBitsPerSecond`              | `10000000`     | What one allocation may send to its peer; the excess is dropped     |
 | `relay.turn.idleTimeoutSeconds`            | `120`          | An allocation that relays nothing for this long is deleted          |
 | `relay.turn.service.type` / `.annotations` | `LoadBalancer` | Each pod's TURN Service and its load balancer settings              |

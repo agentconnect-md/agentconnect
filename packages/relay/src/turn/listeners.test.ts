@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { restCredential, streamLink, TestTurnClient, udpLink, type TurnLink } from '../../test/turn-client.js'
 import { CLASS } from './codec.js'
-import { startTurnListeners, type TurnListeners } from './listeners.js'
+import { startTurnListeners, type TurnListenerOptions, type TurnListeners } from './listeners.js'
 import { TurnServer } from './server.js'
 
 const SECRET = 'k'.repeat(40)
@@ -51,7 +51,14 @@ function selfSigned(): { certFile: string; keyFile: string } {
   return { certFile, keyFile }
 }
 
-async function start(tls?: { certFile: string; keyFile: string }): Promise<{ turn: TurnServer; ports: TurnListeners }> {
+async function start(
+  tls?: { certFile: string; keyFile: string },
+  limits: Partial<
+    Pick<TurnListenerOptions, 'maxPendingConnections' | 'maxPendingPerAddress' | 'firstFrameTimeoutMs'>
+  > = {
+    maxPendingConnections: 4
+  }
+): Promise<{ turn: TurnServer; ports: TurnListeners }> {
   const turn = new TurnServer({
     realm: 'agentconnect',
     relayedAddress: '198.18.1.1',
@@ -65,6 +72,7 @@ async function start(tls?: { certFile: string; keyFile: string }): Promise<{ tur
     port: 0,
     ...(tls ? { tls: { port: 0, ...tls } } : {}),
     maxConnections: 4,
+    ...limits,
     log: quiet
   })
   cleanup.push(() => ports.close())
@@ -115,6 +123,27 @@ describe('TURN listeners', () => {
     cleanup.push(() => links.forEach((l) => l.close()))
     const extra = await streamLink(ports.tcpPort)
     await expect.poll(() => extra.socket.destroyed || extra.socket.readableEnded).toBe(true)
+  })
+
+  it('caps unallocated connections per remote IP, and frees the slot once one allocates', async () => {
+    const { ports } = await start(undefined, { maxPendingConnections: 4, maxPendingPerAddress: 2 })
+    const [a, b] = await Promise.all([streamLink(ports.tcpPort), streamLink(ports.tcpPort)])
+    cleanup.push(
+      () => a.close(),
+      () => b.close()
+    )
+    const refused = await streamLink(ports.tcpPort)
+    await expect.poll(() => refused.socket.destroyed || refused.socket.readableEnded).toBe(true)
+    expect((await new TestTurnClient(a, credential('viewer-u1')).allocate()).cls).toBe(CLASS.success)
+    const next = await streamLink(ports.tcpPort)
+    cleanup.push(() => next.close())
+    expect((await new TestTurnClient(next, credential('viewer-u1')).allocate()).cls).toBe(CLASS.success)
+  })
+
+  it('closes a connection that sends nothing before the first-frame deadline', async () => {
+    const { ports } = await start(undefined, { maxPendingConnections: 4, firstFrameTimeoutMs: 100 })
+    const silent = await streamLink(ports.tcpPort)
+    await expect.poll(() => silent.socket.destroyed || silent.socket.readableEnded).toBe(true)
   })
 
   it('closes a stream that sends garbage', async () => {

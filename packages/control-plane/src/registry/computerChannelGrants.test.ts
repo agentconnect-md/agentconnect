@@ -9,7 +9,7 @@ import {
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { ComputerId, OrgId } from '../domain/ids.js'
 import type { ComputerRecord } from '../persistence/ports.js'
-import { ComputerChannelGrants, COMPUTER_CHANNEL_TOKEN_TTL_MS } from './computerChannelGrants.js'
+import { ComputerChannelGrants, COMPUTER_CHANNEL_TOKEN_TTL_MS, rendezvous } from './computerChannelGrants.js'
 import { ComputerChannelKeys } from './computerChannelKeys.js'
 
 const ORG = OrgId('org_1')
@@ -222,12 +222,13 @@ describe('ComputerChannelGrants.grantViewer', () => {
     const result = await viewer({}, { relayTurn }).grants.grantViewer(ORG, CID, { userId: 'user_owner', mode: 'view' })
     if (!result.granted) throw new Error('refused')
     const username = `${T0 / 1000 + 21_600}:viewer-user_owner`
+    const chosen = rendezvous(relayTurn, CID).slice(0, 2)
     expect(result.iceServers).toEqual([
-      { urls: relayTurn[0], username, credential: createHmac('sha1', relaySecret).update(username).digest('base64') },
-      expect.objectContaining({ urls: relayTurn[1], username })
+      { urls: chosen[0], username, credential: createHmac('sha1', relaySecret).update(username).digest('base64') },
+      expect.objectContaining({ urls: chosen[1], username })
     ])
     const ice = readComputerChannelToken(result.token)?.ice
-    expect(ice?.map((server) => server.urls)).toEqual(relayTurn.slice(0, 2))
+    expect(ice?.map((server) => server.urls)).toEqual(chosen)
     expect(ice?.[0]?.username).toBe(`${T0 / 1000 + 21_600}:computer-${CID}`)
     // An external TURN is the operator's explicit choice and takes precedence.
     const external = await viewer({}, { relayTurn, withTurn: true }).grants.grantViewer(ORG, CID, {
@@ -236,6 +237,20 @@ describe('ComputerChannelGrants.grantViewer', () => {
     })
     if (!external.granted) throw new Error('refused')
     expect(external.iceServers.map((server) => server.urls)).toEqual([turn.urls])
+  })
+
+  it('spreads Computers across all the TURN relays, each Computer keeping a stable pick', () => {
+    const relays = Array.from({ length: 6 }, (_, i) => [`turn:turn-${i}.example.com:3478?transport=udp`])
+    const picks = Array.from({ length: 60 }, (_, i) => rendezvous(relays, `cmp_${i}`).slice(0, 2))
+    expect(new Set(picks.map((pick) => pick[0]![0])).size).toBeGreaterThan(2)
+    expect(new Set(picks.flat().map((urls) => urls[0])).size).toBe(6)
+    expect(rendezvous([...relays].reverse(), 'cmp_7')).toEqual(rendezvous(relays, 'cmp_7'))
+    // A relay leaving moves only the Computers that had picked it.
+    const without = relays.slice(1)
+    for (let i = 0; i < 60; i++) {
+      const before = rendezvous(relays, `cmp_${i}`)[0]!
+      if (before !== relays[0]) expect(rendezvous(without, `cmp_${i}`)[0]).toEqual(before)
+    }
   })
 
   it('starts a managed computer’s viewer at TURN, since its pod has no reachable UDP', async () => {

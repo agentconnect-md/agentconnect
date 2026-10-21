@@ -47,7 +47,7 @@ export interface TurnClient {
 export interface TurnLimits {
   /** Allocations this instance holds at once; more get 508. */
   maxAllocations: number
-  /** Allocations one credential holds at once; more get 486. */
+  /** Allocations one subject (`viewer-<user>` / `computer-<id>`) holds at once, across its credentials; more get 486. */
   maxAllocationsPerUser: number
   /** What one allocation may send to its peers, in bits per second, with a one-second burst; the excess is dropped. */
   maxBitsPerSecond: number
@@ -91,8 +91,8 @@ interface Allocation {
   lastActivityAt: number
   allocateTransaction: Buffer
   allocateResponse: Buffer
-  /** Peer IP → expiry; the only IP a permission may name is the relayed address. */
-  permissions: Map<string, number>
+  /** Peer relayed port → expiry; every peer shares the relayed IP, so a permission names one peer allocation by its port. */
+  permissions: Map<number, number>
   channels: Map<number, { peerPort: number; expiresAt: number }>
   channelByPeer: Map<number, number>
   tokens: number
@@ -193,7 +193,8 @@ export class TurnServer {
       else if (now >= allocation.expiresAt) this.remove(allocation, 'expired')
       else if (now - allocation.lastActivityAt >= this.opts.limits.idleTimeoutMs) this.remove(allocation, 'idle')
       else {
-        for (const [ip, expiresAt] of allocation.permissions) if (now >= expiresAt) allocation.permissions.delete(ip)
+        for (const [peer, expiresAt] of allocation.permissions)
+          if (now >= expiresAt) allocation.permissions.delete(peer)
         for (const [channel, binding] of allocation.channels) {
           if (now < binding.expiresAt) continue
           allocation.channels.delete(channel)
@@ -226,7 +227,8 @@ export class TurnServer {
       this.metrics.allocation('capacity')
       return this.fail(client, message, 508, 'Insufficient Capacity', credential.key)
     }
-    if ((this.perUser.get(credential.username) ?? 0) >= this.opts.limits.maxAllocationsPerUser) {
+    const holder = quotaKey(credential.username)
+    if ((this.perUser.get(holder) ?? 0) >= this.opts.limits.maxAllocationsPerUser) {
       this.metrics.allocation('quota')
       return this.fail(client, message, 486, 'Allocation Quota Reached', credential.key)
     }
@@ -268,7 +270,7 @@ export class TurnServer {
     }
     this.byClient.set(client.key, allocation)
     this.byPort.set(relayedPort, allocation)
-    this.perUser.set(credential.username, (this.perUser.get(credential.username) ?? 0) + 1)
+    this.perUser.set(holder, (this.perUser.get(holder) ?? 0) + 1)
     this.metrics.allocation('created')
     client.send(response)
   }
@@ -302,7 +304,8 @@ export class TurnServer {
       return this.fail(client, message, 443, 'Peer Address Family Mismatch', credential.key)
     if (peers.some((peer) => peer!.address !== this.opts.relayedAddress))
       return this.fail(client, message, 403, 'Forbidden', credential.key)
-    allocation.permissions.set(this.opts.relayedAddress, this.now() + PERMISSION_MS)
+    const expiresAt = this.now() + PERMISSION_MS
+    for (const peer of peers) allocation.permissions.set(peer!.port, expiresAt)
     this.reply(client, message, [], credential.key)
   }
 
@@ -326,7 +329,7 @@ export class TurnServer {
     const now = this.now()
     allocation.channels.set(channel, { peerPort: peer.port, expiresAt: now + CHANNEL_MS })
     allocation.channelByPeer.set(peer.port, channel)
-    allocation.permissions.set(this.opts.relayedAddress, now + PERMISSION_MS)
+    allocation.permissions.set(peer.port, now + PERMISSION_MS)
     this.reply(client, message, [], credential.key)
   }
 
@@ -353,13 +356,13 @@ export class TurnServer {
     this.relay(allocation, binding.peerPort, frame.subarray(4, 4 + length))
   }
 
-  // Hands one datagram from `from` to the allocation whose relayed port is `peerPort`, as the network would.
+  // Hands one datagram from `from` to the allocation whose relayed port is `peerPort`, only when each has permitted the other.
   private relay(from: Allocation, peerPort: number, data: Buffer): void {
     const now = this.now()
-    if (!permitted(from, now, this.opts.relayedAddress)) return this.metrics.dropped(data.length, 'no_permission')
+    if (!permitted(from, now, peerPort)) return this.metrics.dropped(data.length, 'no_permission')
     const to = this.byPort.get(peerPort)
     if (!to || to === from) return this.metrics.dropped(data.length, 'no_peer')
-    if (!permitted(to, now, this.opts.relayedAddress)) return this.metrics.dropped(data.length, 'no_permission')
+    if (!permitted(to, now, from.relayedPort)) return this.metrics.dropped(data.length, 'no_permission')
     if (!this.take(from, data.length, now)) return this.metrics.dropped(data.length, 'bandwidth')
     const channel = to.channelByPeer.get(from.relayedPort)
     const frame =
@@ -511,9 +514,10 @@ export class TurnServer {
     if (this.byClient.get(allocation.client.key) !== allocation) return
     this.byClient.delete(allocation.client.key)
     this.byPort.delete(allocation.relayedPort)
-    const left = (this.perUser.get(allocation.username) ?? 1) - 1
-    if (left > 0) this.perUser.set(allocation.username, left)
-    else this.perUser.delete(allocation.username)
+    const holder = quotaKey(allocation.username)
+    const left = (this.perUser.get(holder) ?? 1) - 1
+    if (left > 0) this.perUser.set(holder, left)
+    else this.perUser.delete(holder)
     this.metrics.ended(reason, allocation.client.transport)
     const who =
       allocation.subject.kind === 'computer' ? `computer ${allocation.subject.computerId}` : allocation.subject.kind
@@ -525,9 +529,14 @@ export class TurnServer {
   }
 }
 
-function permitted(allocation: Allocation, now: number, address: string): boolean {
-  const expiresAt = allocation.permissions.get(address)
+function permitted(allocation: Allocation, now: number, peerPort: number): boolean {
+  const expiresAt = allocation.permissions.get(peerPort)
   return expiresAt !== undefined && now < expiresAt
+}
+
+// The quota holder is the subject after `<expiry>:`, so fresh grants for one user share one quota.
+function quotaKey(username: string): string {
+  return username.slice(username.indexOf(':') + 1)
 }
 
 // XOR-MAPPED-ADDRESS for an IPv4-mapped IPv6 source; this server listens on IPv4.

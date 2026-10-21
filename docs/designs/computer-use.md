@@ -962,16 +962,21 @@ Control Plane, which only issues credentials:
   networks that only let 443 out. It registers its public URLs (`RELAY_TURN_URLS`) on `rc/register` (`turnUrls`),
   but only once `rc/auth/ok` has handed it `computerTurnSecret`, the secret the CP mints credentials from (derived
   from `API_KEY_PEPPER`, so there is nothing to configure); the CP keeps the URLs on the relay row and names up to two
-  relays to both peers in the same order, each as one ICE server with its own credentials. Credentials are the REST
+  relays to both peers in the same order, picked per Computer by rendezvous hashing so viewings spread over every
+  relay, each as one ICE server with its own credentials. Credentials are the REST
   scheme below, checked as long-term credentials (RFC 8489 §9.2) on every Allocate, Refresh, CreatePermission and
   ChannelBind: an expired one can neither open nor refresh an allocation, and an allocation's lifetime never runs
   past its credential's expiry. Both peers are relay-only, so every peer is another allocation on the same relay:
   relayed addresses are virtual (`RELAY_TURN_RELAYED_ADDRESS`, by default one per relay in 198.18.0.0/15), a
-  permission or channel may name only that address, and data is handed from one allocation to the other in process.
+  permission or channel may name only that address and is kept per peer port, so it names one peer allocation, and
+  data is handed from one allocation to another in process only when each has permitted the other: an allocation no
+  peer of a viewing permitted can neither reach it nor be charged to it.
   The relay opens no relayed port range, sends to no other address, and cannot be used as a proxy. Resources are
   bounded: a token bucket per allocation (`RELAY_TURN_MAX_BPS`, 10 Mbps), an idle timeout (120 s without relayed
-  data), at most `RELAY_TURN_MAX_ALLOCATIONS` (400) per relay and 16 per credential, and a 30 s deadline for a TCP or
-  TLS connection to allocate. Metrics: `agentconnect.relay.turn.relayed_bytes` by direction and `computer.id` (feeds
+  data), at most `RELAY_TURN_MAX_ALLOCATIONS` (400) per relay and 16 per subject (`viewer-<user>` or
+  `computer-<id>`, across that subject's grants), and for TCP and TLS a 5 s deadline for the first frame, a 30 s
+  deadline to allocate, and at most a quarter of the connection budget, and 8 per remote IP, open without an
+  allocation. Metrics: `agentconnect.relay.turn.relayed_bytes` by direction and `computer.id` (feeds
   #3230 billing), dropped bytes by reason, allocations by outcome, and active allocations; each ended allocation
   logs its bytes. The chart's `relay.turn` gives each pod a UDP+TCP(+TLS) `LoadBalancer` Service;
   `compose.relay-turn.yaml` does the same for one relay. In-process rather than a coturn sidecar: the relay already

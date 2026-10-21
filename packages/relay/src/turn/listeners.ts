@@ -8,8 +8,12 @@ import { splitStreamFrames } from './codec.js'
 import { noTurnMetrics, type TurnMetrics } from './metrics.js'
 import type { TurnServer, TurnTransport } from './server.js'
 
+// A connection that has not sent a well-formed frame within this long is closed.
+const STREAM_FIRST_FRAME_TIMEOUT_MS = 5_000
 // A connection that has not allocated within this long is closed.
 const STREAM_ALLOCATE_TIMEOUT_MS = 30_000
+// Connections one remote IP may hold open before allocating.
+const STREAM_MAX_PENDING_PER_IP = 8
 // Writes queued on a slow stream past this are dropped rather than buffered.
 const STREAM_MAX_BUFFERED_BYTES = 512 * 1024
 // A partial frame never exceeds one STUN or ChannelData message.
@@ -24,6 +28,12 @@ export interface TurnListenerOptions {
   tls?: { port: number; certFile: string; keyFile: string }
   /** Concurrent TCP and TLS connections, each of which can hold one allocation. */
   maxConnections: number
+  /** Of those, how many may be open without an allocation yet; defaults to a quarter. */
+  maxPendingConnections?: number
+  /** Unallocated connections one remote IP may hold; defaults to 8. */
+  maxPendingPerAddress?: number
+  /** How long a connection may stay silent before its first well-formed frame; defaults to 5 s. */
+  firstFrameTimeoutMs?: number
   log: Logger
   metrics?: TurnMetrics
 }
@@ -62,9 +72,31 @@ export async function startTurnListeners(opts: TurnListenerOptions): Promise<Tur
 
   let connectionId = 0
   const sockets = new Set<Socket>()
+  // Unallocated connections, in total and per remote IP, so idle sockets cannot starve allocated ones.
+  const maxPending = opts.maxPendingConnections ?? Math.max(1, Math.floor(opts.maxConnections / 4))
+  const maxPendingPerAddress = opts.maxPendingPerAddress ?? STREAM_MAX_PENDING_PER_IP
+  const pendingByAddress = new Map<string, number>()
+  let pendingTotal = 0
   const accept = (transport: TurnTransport) => (socket: Socket) => {
-    if (sockets.size >= opts.maxConnections) return void socket.destroy()
+    const remote = socket.remoteAddress ?? ''
+    if (
+      sockets.size >= opts.maxConnections ||
+      pendingTotal >= maxPending ||
+      (pendingByAddress.get(remote) ?? 0) >= maxPendingPerAddress
+    )
+      return void socket.destroy()
     sockets.add(socket)
+    pendingTotal++
+    pendingByAddress.set(remote, (pendingByAddress.get(remote) ?? 0) + 1)
+    let pending = true
+    const settle = () => {
+      if (!pending) return
+      pending = false
+      pendingTotal--
+      const left = (pendingByAddress.get(remote) ?? 1) - 1
+      if (left > 0) pendingByAddress.set(remote, left)
+      else pendingByAddress.delete(remote)
+    }
     const key = `${transport}:${socket.remoteAddress}:${socket.remotePort}:${++connectionId}`
     const client = {
       key,
@@ -78,20 +110,26 @@ export async function startTurnListeners(opts: TurnListenerOptions): Promise<Tur
       end: () => socket.end()
     }
     socket.setNoDelay(true)
+    const firstFrame = setTimeout(() => socket.destroy(), opts.firstFrameTimeoutMs ?? STREAM_FIRST_FRAME_TIMEOUT_MS)
+    firstFrame.unref()
     const deadline = setTimeout(() => {
       if (!opts.turn.holds(key)) socket.destroy()
     }, STREAM_ALLOCATE_TIMEOUT_MS)
     deadline.unref()
-    let pending = Buffer.alloc(0)
+    let partial = Buffer.alloc(0)
     socket.on('data', (chunk: Buffer) => {
-      const { frames, rest, bad } = splitStreamFrames(pending.length ? Buffer.concat([pending, chunk]) : chunk)
+      const { frames, rest, bad } = splitStreamFrames(partial.length ? Buffer.concat([partial, chunk]) : chunk)
+      if (frames.length > 0) clearTimeout(firstFrame)
       for (const frame of frames) opts.turn.handle(client, frame)
+      if (pending && opts.turn.holds(key)) settle()
       if (bad || rest.length > STREAM_MAX_PENDING_BYTES) return void socket.destroy()
-      pending = Buffer.from(rest)
+      partial = Buffer.from(rest)
     })
     socket.on('error', () => socket.destroy())
     socket.on('close', () => {
+      clearTimeout(firstFrame)
       clearTimeout(deadline)
+      settle()
       sockets.delete(socket)
       opts.turn.clientClosed(key)
     })

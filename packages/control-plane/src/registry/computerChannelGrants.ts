@@ -1,4 +1,5 @@
 // Computer data-plane credentials (computer-use.md §3.7, §8.2): per-session tokens the desktop verifies; no screen byte reaches the CP.
+import { createHash } from 'node:crypto'
 import {
   COMPUTER_ICE_SERVERS_MAX,
   COMPUTER_RELAYS_MAX,
@@ -148,7 +149,7 @@ export class ComputerChannelGrants {
     this.opts.onUse?.(computerId)
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
     // The desktop and the browser each get their own TURN username, so the TURN server tells them apart.
-    const turn = await this.turnServers()
+    const turn = await this.turnServers(computerId)
     // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.
     const stun =
       computer.capabilities.viewerStun === true && viewerPeerToPeerAllowed(computer.policy, computer)
@@ -184,12 +185,12 @@ export class ComputerChannelGrants {
     }
   }
 
-  // External TURN is the operator's explicit choice; otherwise the relays' own, the same relay first for both peers.
-  private async turnServers(): Promise<TurnConfig[]> {
+  // External TURN is the operator's explicit choice; otherwise the relays' own, spread per Computer, the same relay first for both peers.
+  private async turnServers(computerId: string): Promise<TurnConfig[]> {
     if (this.opts.turn) return [this.opts.turn]
     const relay = this.opts.relayTurn
     if (!relay) return []
-    return (await relay.servers())
+    return rendezvous(await relay.servers(), computerId)
       .slice(0, COMPUTER_ICE_SERVERS_MAX)
       .map((urls) => ({ urls, secret: relay.secret, ttlSec: relay.ttlSec }))
   }
@@ -212,4 +213,16 @@ export class ComputerChannelGrants {
     })
     return verified ? { ok: true, computerId, orgId: computer.orgId } : refused
   }
+}
+
+// Highest-random-weight order of the relays for one Computer: stable per Computer, spread across Computers, little churn as relays come and go.
+export function rendezvous(servers: string[][], computerId: string): string[][] {
+  const weight = (urls: string[]) =>
+    createHash('sha256')
+      .update(`${computerId}\n${urls.join(' ')}`)
+      .digest('hex')
+  return servers
+    .map((urls) => ({ urls, weight: weight(urls) }))
+    .sort((a, b) => (a.weight < b.weight ? 1 : a.weight > b.weight ? -1 : 0))
+    .map(({ urls }) => urls)
 }

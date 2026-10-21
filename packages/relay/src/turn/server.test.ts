@@ -195,6 +195,18 @@ describe('TurnServer allocations', () => {
     expect(events.filter((e) => e === 'allocation:capacity')).toHaveLength(1)
   })
 
+  it('counts the quota per subject, so fresh grants for the same viewer share it', async () => {
+    server = make({ maxAllocationsPerUser: 2 })
+    const first = new TestTurnClient(link(), credential('viewer-u1', 600))
+    expect((await first.allocate()).cls).toBe(CLASS.success)
+    expect((await new TestTurnClient(link(), credential('viewer-u1', 900)).allocate()).cls).toBe(CLASS.success)
+    expect(errorCode(await new TestTurnClient(link(), credential('viewer-u1', 1200)).allocate())).toBe(486)
+    expect((await new TestTurnClient(link(), credential('viewer-u2', 600)).allocate()).cls).toBe(CLASS.success)
+    // Releasing one frees the shared quota for the next grant.
+    expect(lifetimeOf(await first.refresh(0))).toBe(0)
+    expect((await new TestTurnClient(link(), credential('viewer-u1', 1500)).allocate()).cls).toBe(CLASS.success)
+  })
+
   it('deletes an allocation on a zero-lifetime Refresh, and a stream allocation when its connection closes', async () => {
     const client = new TestTurnClient(link(), credential('viewer-u1'))
     await client.allocate()
@@ -245,9 +257,30 @@ describe('TurnServer relaying', () => {
     await viewer.allocate()
     await desktop.permit(viewer.relayed!)
     desktop.sendTo(viewer.relayed!, Buffer.from('x'))
-    desktop.sendTo({ address: RELAYED, port: viewer.relayed!.port ^ 1 }, Buffer.from('y'))
+    const nobody = { address: RELAYED, port: viewer.relayed!.port ^ 1 }
+    desktop.sendTo(nobody, Buffer.from('y'))
+    await desktop.permit(nobody)
+    desktop.sendTo(nobody, Buffer.from('z'))
     expect(viewer.received).toEqual([])
-    expect(events).toEqual(expect.arrayContaining(['dropped:1:no_permission', 'dropped:1:no_peer']))
+    expect(events.filter((e) => e === 'dropped:1:no_permission')).toHaveLength(2)
+    expect(events).toContain('dropped:1:no_peer')
+  })
+
+  it('isolates allocations: a third credential holder cannot reach a viewing it was not permitted into', async () => {
+    const [desktop, viewer] = await pair()
+    const intruder = new TestTurnClient(link(), credential('viewer-mallory'))
+    await intruder.allocate()
+    expect((await intruder.permit(viewer.relayed!)).cls).toBe(CLASS.success)
+    expect((await intruder.bind(0x4000, desktop.relayed!)).cls).toBe(CLASS.success)
+    intruder.sendTo(viewer.relayed!, Buffer.from('spam'))
+    intruder.sendOnChannel(0x4000, Buffer.from('spam'))
+    expect(viewer.received).toEqual([])
+    expect(desktop.received).toEqual([])
+    expect(events.filter((e) => e.startsWith('relayed:'))).toEqual([])
+    expect(events.filter((e) => e === 'dropped:4:no_permission')).toHaveLength(2)
+    // Neither peer of the viewing can send to the intruder either, since neither permitted it.
+    desktop.sendTo(intruder.relayed!, Buffer.from('leak'))
+    expect(intruder.received).toEqual([])
   })
 
   it('uses ChannelData once a channel is bound, padded on a stream transport', async () => {
