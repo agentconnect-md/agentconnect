@@ -35,9 +35,14 @@ import {
   type ComputerDtoT
 } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
+import { DESKTOP_BUNDLE_FILE, DESKTOP_LEGAL_FILE } from '../../computer-install/desktop-distribution.js'
 
 /** The registration exchange's path under the versioned API; the public form is `/v1` + this. */
 export const COMPUTER_REGISTER_PATH = '/computers/register'
+/** The Linux one-line installer (computer-use.md §3.5); the public form is `/v1` + this. */
+export const COMPUTER_LINUX_INSTALLER_PATH = '/computers/install.sh'
+/** The files the installer downloads, under the bundle's sha256; only these names are served. */
+export const COMPUTER_DESKTOP_FILES_PATH = '/computers/desktop'
 
 const notFound = { error: 'Not Found', statusCode: 404, message: 'computer not found' }
 const revokedConflict = { error: 'Conflict', statusCode: 409, message: 'computer is revoked' }
@@ -229,7 +234,10 @@ export function computerRoutes(deps: HttpDeps) {
           displayTail: issued.registration.displayTail,
           name: issued.registration.name,
           expiresAt: issued.registration.expiresAt.toISOString(),
-          exchangeUrl: `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_REGISTER_PATH}`
+          exchangeUrl: `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_REGISTER_PATH}`,
+          linuxInstallerUrl: deps.desktopDistribution
+            ? `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_LINUX_INSTALLER_PATH}`
+            : null
         })
       }
     )
@@ -491,10 +499,95 @@ export function computerRoutes(deps: HttpDeps) {
   }
 }
 
+const noDistribution = {
+  error: 'Not Found',
+  statusCode: 404,
+  message: 'this Control Plane ships no desktop daemon bundle'
+}
+
+const otherBundle = {
+  error: 'Not Found',
+  statusCode: 404,
+  message: 'this Control Plane holds a different desktop bundle; retry in a minute if it is being upgraded'
+}
+
 /** The unauthenticated exchange: the registration token in the body is the credential. */
 export function computerRegisterRoutes(deps: HttpDeps, opts: { hide?: boolean } = {}) {
   return async function computerRegisterRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    // Public like the exchange: the installer holds no secret, and the token travels as its argument.
+    r.get(
+      COMPUTER_LINUX_INSTALLER_PATH,
+      {
+        schema: {
+          ...(opts.hide ? { hide: true } : {}),
+          tags: [Tag.Computers],
+          summary: 'Get the Linux desktop installer',
+          description:
+            'A POSIX shell script that installs the desktop daemon for the current Linux desktop user on a pinned Node.js runtime, checks the bundle’s sha256, installs the systemd user service and, given `--register <token>`, registers the desktop as a Computer. 404 when this Control Plane ships no desktop daemon bundle.',
+          operationId: 'getComputerLinuxInstaller',
+          security: [],
+          response: { 200: z.string(), 400: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const dist = deps.desktopDistribution
+        if (!dist) return reply.code(404).send(noDistribution)
+        let script: string
+        try {
+          script = dist.linuxInstaller(publicBaseUrl(req, deps.config))
+        } catch {
+          return reply
+            .code(400)
+            .send({ error: 'Bad Request', statusCode: 400, message: 'the request host is not a usable URL' })
+        }
+        return reply
+          .header('Content-Type', 'text/x-shellscript; charset=utf-8')
+          .header('Cache-Control', 'no-store')
+          .header('X-Content-Type-Options', 'nosniff')
+          .send(script)
+      }
+    )
+    r.get(
+      `${COMPUTER_DESKTOP_FILES_PATH}/:sha256/:file`,
+      {
+        schema: {
+          ...(opts.hide ? { hide: true } : {}),
+          tags: [Tag.Computers],
+          summary: 'Download the desktop daemon',
+          description:
+            'The desktop daemon bundle (`agentconnect-desktop.mjs`, whose sha256 is also the `ETag`) and its third-party license notices (`agentconnect-desktop.mjs.LEGAL.txt`), as the Linux installer downloads them. The path names the bundle sha256 the installer embeds; a Control Plane holding a different bundle, such as a replica mid-upgrade, answers 404 so the installer retries.',
+          operationId: 'getComputerDesktopFile',
+          security: [],
+          params: z.object({
+            sha256: z.string().regex(/^[0-9a-f]{64}$/),
+            file: z.enum([DESKTOP_BUNDLE_FILE, DESKTOP_LEGAL_FILE])
+          }),
+          response: {
+            200: z.string(),
+            304: z.null().describe('Not modified: the `If-None-Match` ETag matches'),
+            404: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const dist = deps.desktopDistribution
+        const body = req.params.file === DESKTOP_BUNDLE_FILE ? dist?.bundle : dist?.legal
+        if (!dist || !body) return reply.code(404).send(noDistribution)
+        if (req.params.sha256 !== dist.sha256) return reply.code(404).send(otherBundle)
+        const etag = `"${dist.sha256}"`
+        reply
+          .header('ETag', etag)
+          .header('Cache-Control', 'no-cache')
+          .header('X-Content-Type-Options', 'nosniff')
+          .header(
+            'Content-Type',
+            req.params.file === DESKTOP_BUNDLE_FILE ? 'text/javascript; charset=utf-8' : 'text/plain; charset=utf-8'
+          )
+        if (req.headers['if-none-match'] === etag) return reply.code(304).send(null)
+        return reply.send(body)
+      }
+    )
     r.post(
       COMPUTER_REGISTER_PATH,
       {

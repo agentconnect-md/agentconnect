@@ -31,6 +31,19 @@ const errorOf = (output: ToolOutput): Record<string, unknown> => {
 }
 
 describe('Computer', () => {
+  it('describes the machine from its profile and the startup screen size until the first capture', async () => {
+    const computer = new Computer({
+      driver: new FakeDriver(),
+      config: testConfig(),
+      profile: { name: 'browser-1', osVersion: 'Debian GNU/Linux 13 (trixie)', session: 'xvfb', isolation: 'container' }
+    })
+    expect(computer.info()).toMatchObject({ name: 'browser-1', session: 'xvfb', isolation: 'container', display: null })
+    computer.setScreenSize({ screenWidth: 1600, screenHeight: 900, scale: 1 })
+    expect(computer.info().display).toEqual({ screenWidth: 1600, screenHeight: 900, scale: 1 })
+    await computer.screenshot('claude')
+    expect(computer.info().display).toMatchObject({ screenshotWidth: expect.any(Number) })
+  })
+
   it('captures before the first coordinate action and returns a post-action screenshot', async () => {
     const { driver, computer } = setup()
     const output = await computer.click('claude', { x: 10, y: 20 })

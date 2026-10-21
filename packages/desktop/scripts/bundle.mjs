@@ -32,5 +32,7 @@ writeFileSync(join(out, '.meta', 'agentconnect-desktop.mjs.json'), JSON.stringif
 copyFileSync(join(root, 'scripts/install.ps1'), join(out, 'install.ps1'))
 copyFileSync(join(root, 'scripts/install.sh'), join(out, 'install.sh'))
 chmodSync(join(out, 'install.sh'), 0o755)
+// The Linux one-line installer; the Control Plane serves it with its URL and this bundle's sha256 filled in.
+copyFileSync(join(root, 'scripts/install-linux.sh'), join(out, 'install-linux.sh'))
 copyFileSync(join(root, 'README.md'), join(out, 'README.md'))
 console.log(`bundle ready in ${out}`)

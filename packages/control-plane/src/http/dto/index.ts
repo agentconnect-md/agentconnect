@@ -4665,7 +4665,9 @@ export const ComputerRegistrationDto = z.object({
   name: z.string().nullable(),
   expiresAt: z.string(),
   /** Where the desktop daemon exchanges the token for its Computer key. */
-  exchangeUrl: z.string()
+  exchangeUrl: z.string(),
+  /** The Linux one-line installer this CP serves, or null when it ships no desktop daemon bundle. */
+  linuxInstallerUrl: z.string().nullable()
 })
 
 /** A short-lived viewer credential for the console's embedded viewer (computer-use.md §7, §10). */

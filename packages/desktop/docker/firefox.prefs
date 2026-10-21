@@ -1,0 +1,11 @@
+// AgentConnect desktop image: the browser is restarted unattended, so no first-run, crash or safe-mode prompts.
+pref("toolkit.startup.max_resumed_crashes", -1);
+pref("browser.sessionstore.max_resumed_crashes", 3);
+pref("browser.aboutwelcome.enabled", false);
+pref("browser.startup.homepage_override.mstone", "ignore");
+pref("startup.homepage_welcome_url", "");
+pref("startup.homepage_welcome_url.additional", "");
+pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+pref("datareporting.policy.firstRunURL", "");
+pref("browser.tabs.warnOnClose", false);
+pref("browser.warnOnQuit", false);

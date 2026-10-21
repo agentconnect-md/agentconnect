@@ -6212,7 +6212,7 @@
       "description": "Run one command on the desktop you want to add, in a terminal inside its signed-in graphical session. It installs the desktop daemon as a background service and registers it with this organization. You will be its owner.",
       "os": "Operating system",
       "osHint": {
-        "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland. The service starts with your session.",
+        "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland. Run it in a terminal on the desktop as yourself, not as root; the service then starts with every session.",
         "macos": "macOS asks you to allow Accessibility and Screen Recording for AgentConnect the first time.",
         "windows": "Run it in a normal PowerShell of the signed-in user, not as administrator."
       },

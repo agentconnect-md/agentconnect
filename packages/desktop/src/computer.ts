@@ -74,6 +74,21 @@ export interface ComputerDeps {
   refusal?: () => string | undefined
   // Stores the screenshots an agent session's call returned and marks them in its output (computer-use.md §9).
   screenshots?: ScreenshotStash
+  // What computer_list reports about this machine; defaults to the hostname and kernel release.
+  profile?: ComputerProfile
+}
+
+export interface ComputerProfile {
+  name: string
+  osVersion: string
+  session: string
+  isolation: string
+}
+
+export interface ScreenSize {
+  screenWidth: number
+  screenHeight: number
+  scale: number
 }
 
 /** Takes the images of one call's output for storage; returns the output with their references, or undefined to leave it. */
@@ -112,6 +127,9 @@ export class Computer {
   private readonly platform: NodeJS.Platform
   private readonly refusal: () => string | undefined
   private readonly screenshots: ScreenshotStash | undefined
+  private readonly profile: ComputerProfile | undefined
+  // The driver's screen size at startup, reported until the first capture measures it.
+  private screen: ScreenSize | undefined
   private lastStatus = ''
   private lease: Lease | undefined
   // The control lease the Control Plane last told about (computer-use.md §4.4); only its holder session may take control.
@@ -137,6 +155,11 @@ export class Computer {
     this.platform = deps.platform ?? process.platform
     this.refusal = deps.refusal ?? (() => undefined)
     this.screenshots = deps.screenshots
+    this.profile = deps.profile
+  }
+
+  setScreenSize(size: ScreenSize | undefined): void {
+    this.screen = size && size.screenWidth > 0 && size.screenHeight > 0 ? size : undefined
   }
 
   // ---- Control Plane authority (computer-use.md §8.2): checked before every screenshot, input and viewer frame ----
@@ -302,10 +325,11 @@ export class Computer {
   info(): Record<string, unknown> {
     this.expireLease()
     return {
-      name: hostname(),
+      name: this.profile?.name ?? hostname(),
       kind: 'self-hosted',
       os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
-      osVersion: release(),
+      osVersion: this.profile?.osVersion ?? release(),
+      ...(this.profile ? { session: this.profile.session, isolation: this.profile.isolation } : {}),
       status: this.paused ? 'paused' : this.lease ? 'busy' : 'online',
       paused: this.paused ?? null,
       // Set while the Control Plane's authority is missing: every tool and viewer call is refused.
@@ -330,7 +354,7 @@ export class Computer {
             screenHeight: this.capture.screenHeight,
             scale: this.capture.scale
           }
-        : null,
+        : (this.screen ?? null),
       humanIdleSeconds: this.config.humanIdleSeconds
     }
   }

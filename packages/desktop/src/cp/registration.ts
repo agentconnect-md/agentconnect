@@ -95,6 +95,14 @@ const RegisteredResponse = z.object({
   channelUrl: z.string().url().optional()
 })
 
+/** The CP refused the token itself: unknown, spent or expired. */
+export class RegistrationTokenRefused extends Error {
+  constructor() {
+    super('the registration token is invalid, spent or expired; create a new one')
+    this.name = 'RegistrationTokenRefused'
+  }
+}
+
 /** Spend a one-time registration token for this desktop's Computer key. */
 export async function exchangeRegistrationToken(
   cpUrl: string,
@@ -109,7 +117,7 @@ export async function exchangeRegistrationToken(
     body: JSON.stringify({ token, ...profile }),
     signal: AbortSignal.timeout(30_000)
   })
-  if (response.status === 401) throw new Error('the registration token is invalid, spent or expired; create a new one')
+  if (response.status === 401) throw new RegistrationTokenRefused()
   if (!response.ok) throw new Error(`registration failed: HTTP ${response.status} ${await response.text()}`)
   const body = RegisteredResponse.parse(await response.json())
   return {
@@ -120,5 +128,21 @@ export async function exchangeRegistrationToken(
     apiKeyId: body.apiKeyId,
     apiKey: body.apiKey,
     registeredAt: new Date().toISOString()
+  }
+}
+
+/** Re-running the console's command finds its token spent; a stored, unrevoked key for the same CP is still good. */
+export async function registerOrKeep(
+  dir: string,
+  cpUrl: string | undefined,
+  register: () => Promise<Registration>
+): Promise<{ registration: Registration; kept: boolean }> {
+  try {
+    return { registration: await register(), kept: false }
+  } catch (error) {
+    if (!(error instanceof RegistrationTokenRefused) || !cpUrl) throw error
+    const current = loadRegistration(dir)
+    if (!current || current.revokedAt || cpBaseUrl(cpUrl) !== current.cpUrl) throw error
+    return { registration: current, kept: true }
   }
 }
