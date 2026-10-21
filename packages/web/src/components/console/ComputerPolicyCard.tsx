@@ -16,7 +16,7 @@ export interface PolicyDraft {
   launchApp: ComputerPolicy['approvals']['launchApp']
   submitLikeKeys: boolean
   exposeDriverTools: boolean
-  /** The effective setting; it is stored only once it differs from the owner-only default. */
+  /** The effective setting; it is stored only while it differs from the default. */
   viewerPeerToPeer: boolean
   leaseIdleSeconds: string
   leaseMaxSeconds: string
@@ -25,14 +25,19 @@ export interface PolicyDraft {
   screenshotRetentionDays: string
 }
 
-export function draftOf(policy: ComputerPolicy, ownerUserId?: string | null): PolicyDraft {
+/** Whose Computer the policy is for, which decides the peer-to-peer default. */
+export type PolicyOwner = Pick<ComputerDto, 'ownerUserId' | 'kind'>
+
+const NO_OWNER: PolicyOwner = { ownerUserId: '', kind: 'self-hosted' }
+
+export function draftOf(policy: ComputerPolicy, owner: PolicyOwner = NO_OWNER): PolicyDraft {
   return {
     agentMode: policy.agentMode,
     firstInputPerSession: policy.approvals.firstInputPerSession,
     launchApp: policy.approvals.launchApp,
     submitLikeKeys: policy.approvals.submitLikeKeys,
     exposeDriverTools: policy.exposeDriverTools,
-    viewerPeerToPeer: viewerPeerToPeerAllowed(policy, ownerUserId),
+    viewerPeerToPeer: viewerPeerToPeerAllowed(policy, owner),
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
     leaseMaxSeconds: String(policy.leaseMaxSeconds),
     leaseWaitSeconds: String(policy.leaseWaitSeconds),
@@ -52,7 +57,7 @@ const wholeIn = (raw: string, min: number, max: number): number | null => {
 export function policyFromDraft(
   base: ComputerPolicy,
   draft: PolicyDraft,
-  ownerUserId?: string | null
+  owner: PolicyOwner = NO_OWNER
 ): { policy: ComputerPolicy } | { problem: PolicyProblem } {
   const idle = wholeIn(draft.leaseIdleSeconds, 10, 3600)
   if (idle === null) return { problem: 'idleRange' }
@@ -68,8 +73,7 @@ export function policyFromDraft(
   void _drop
   void _p2p
   // Left unset while it matches the default, so sharing the Computer later still turns hole punching off.
-  const p2pDefault =
-    base.viewerPeerToPeer === undefined && draft.viewerPeerToPeer === viewerPeerToPeerAllowed(base, ownerUserId)
+  const p2pDefault = draft.viewerPeerToPeer === viewerPeerToPeerAllowed({ ...base, viewerPeerToPeer: undefined }, owner)
   return {
     policy: {
       ...rest,
@@ -99,7 +103,10 @@ export function ComputerPolicyCard({
   onSaved: (next: ComputerDto) => void
 }) {
   const t = useTranslations('Computers.policy')
-  const saved = useMemo(() => draftOf(computer.policy, computer.ownerUserId), [computer.policy, computer.ownerUserId])
+  const saved = useMemo(
+    () => draftOf(computer.policy, { ownerUserId: computer.ownerUserId, kind: computer.kind }),
+    [computer.policy, computer.ownerUserId, computer.kind]
+  )
   const [draft, setDraft] = useState(saved)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -112,7 +119,7 @@ export function ComputerPolicyCard({
   }, [saved, base])
   const editable = computer.canEditPolicy
   const dirty = !sameDraft(draft, saved)
-  const result = policyFromDraft(computer.policy, draft, computer.ownerUserId)
+  const result = policyFromDraft(computer.policy, draft, computer)
   const problem = 'problem' in result ? result.problem : null
   const set = <K extends keyof PolicyDraft>(key: K, value: PolicyDraft[K]) => setDraft((d) => ({ ...d, [key]: value }))
 

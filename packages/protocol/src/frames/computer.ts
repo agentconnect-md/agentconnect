@@ -147,6 +147,8 @@ export const ComputerCapabilitiesSchema = z.object({
   backgroundInput: z.boolean().default(false),
   accessibilityTree: z.boolean().default(false),
   viewer: z.boolean().default(false),
+  // The viewer accepts a view token's `stun` claim; desktops before relay STUN refuse such a token.
+  viewerStun: z.boolean().optional(),
   displays: z
     .array(
       z.object({

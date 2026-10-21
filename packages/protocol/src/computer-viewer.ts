@@ -1,5 +1,6 @@
 // The console's embedded viewer (computer-use.md §7, §10): signaling rides the relay; media goes direct, hole-punched, or via TURN.
 import { z } from 'zod'
+import type { ComputerKind } from './frames/computer.js'
 
 /** The desktop's viewer API prefix; the relay forwards only paths under it besides `/mcp`. */
 export const COMPUTER_VIEWER_API_PREFIX = '/view/api/'
@@ -47,11 +48,14 @@ export const ComputerStunUrl = z
 /** The most STUN servers one viewer token or grant names. */
 export const COMPUTER_STUN_URLS_MAX = 2
 
-/** Whether viewer media may hole-punch through relay STUN: the policy's explicit setting, else on while only the owner may watch. */
+/** Whether viewer media may hole-punch: the policy's explicit setting, else on only for a self-hosted Computer only its owner may watch. */
 export const viewerPeerToPeerAllowed = (
   policy: { allowedMembers: readonly string[]; viewerPeerToPeer?: boolean | undefined },
-  ownerUserId: string | null | undefined
-): boolean => policy.viewerPeerToPeer ?? policy.allowedMembers.every((member) => member === ownerUserId)
+  computer: { ownerUserId: string | null | undefined; kind: ComputerKind }
+): boolean =>
+  policy.viewerPeerToPeer ??
+  // A managed Computer's editors may watch it too, so it is never owner-only by default.
+  (computer.kind === 'self-hosted' && policy.allowedMembers.every((member) => member === computer.ownerUserId))
 
 /** `POST /view/api/rtc/candidate` body: one browser candidate trickled to the desktop; null ends the browser's gathering. */
 export const ComputerViewerCandidate = z.object({

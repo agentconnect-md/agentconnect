@@ -468,6 +468,12 @@ describe('console viewer', () => {
         lastSeenAt: new Date()
       }
     })
+    // A desktop that predates relay STUN would refuse a token carrying it, so it gets none.
+    expect((await app.app.inject({ method: 'POST', url })).json()).toMatchObject({ stunUrls: [] })
+    await prisma.computer.update({
+      where: { id: computerId },
+      data: { capabilities: { viewer: true, viewerStun: true } }
+    })
     const punched = (await app.app.inject({ method: 'POST', url })).json() as { token: string; stunUrls: string[] }
     expect(punched.stunUrls).toEqual(['stun:stun-0.example.com:3478'])
     expect(readComputerChannelToken(punched.token)?.stun).toEqual(['stun:stun-0.example.com:3478'])

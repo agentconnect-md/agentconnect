@@ -22,11 +22,18 @@ describe('relayComputerViewBase', () => {
 
 describe('viewerPeerToPeerAllowed', () => {
   it('follows an explicit setting, and otherwise allows hole punching only while just the owner may watch', () => {
-    expect(viewerPeerToPeerAllowed({ allowedMembers: [] }, 'owner')).toBe(true)
-    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner'] }, 'owner')).toBe(true)
-    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner', 'peer'] }, 'owner')).toBe(false)
-    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner', 'peer'], viewerPeerToPeer: true }, 'owner')).toBe(true)
-    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner'], viewerPeerToPeer: false }, 'owner')).toBe(false)
+    const own = { ownerUserId: 'owner', kind: 'self-hosted' as const }
+    expect(viewerPeerToPeerAllowed({ allowedMembers: [] }, own)).toBe(true)
+    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner'] }, own)).toBe(true)
+    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner', 'peer'] }, own)).toBe(false)
+    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner', 'peer'], viewerPeerToPeer: true }, own)).toBe(true)
+    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner'], viewerPeerToPeer: false }, own)).toBe(false)
+  })
+
+  it('defaults off for a managed Computer, whose editors may watch too, unless the policy turns it on', () => {
+    const managed = { ownerUserId: 'owner', kind: 'managed' as const }
+    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner'] }, managed)).toBe(false)
+    expect(viewerPeerToPeerAllowed({ allowedMembers: ['owner'], viewerPeerToPeer: true }, managed)).toBe(true)
   })
 })
 

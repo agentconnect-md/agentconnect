@@ -40,7 +40,8 @@ export const ComputerChannelTokenClaims = z
     ice: z.array(ComputerIceServer).max(COMPUTER_ICE_SERVERS_MAX).optional(),
     stun: z.array(ComputerStunUrl).max(COMPUTER_STUN_URLS_MAX).optional()
   })
-  .strict()
+  // Unknown claims are stripped, not refused, so a later additive claim does not lock out older desktops.
+  .strip()
   .refine((c) => c.aud !== 'mcp' || (c.ses !== undefined && c.agt !== undefined && c.mode !== undefined), {
     message: 'an mcp token names its session, agent and mode'
   })

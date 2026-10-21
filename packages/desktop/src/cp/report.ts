@@ -116,6 +116,7 @@ export function capabilitiesFrom(
     backgroundInput: false,
     accessibilityTree: false,
     viewer: options.webrtc !== false && ok('ffmpeg') && ok('screen capture'),
+    viewerStun: true,
     displays:
       display && display.screenWidth > 0 && display.screenHeight > 0
         ? [

@@ -6527,7 +6527,7 @@
       "driverTools": "Expose driver tools",
       "driverToolsHint": "Also offer agents the driver's own window-level tools. Off by default.",
       "peerToPeer": "Peer-to-peer viewing",
-      "peerToPeerHint": "Let the viewer’s video go straight between browser and desktop across networks. This shows viewers the desktop’s public IP address. On by default only while just the owner may watch.",
+      "peerToPeerHint": "Let the viewer’s video go straight between browser and desktop across networks. This shows viewers the desktop’s public IP address. On by default only for a self-hosted Computer that just its owner may watch.",
       "problem": {
         "idleRange": "Idle release must be a whole number from 10 to 3600.",
         "maxRange": "Longest control must be a whole number from 60 to 86400.",

@@ -31,6 +31,7 @@ describe('Control Plane report', () => {
       backgroundInput: false,
       accessibilityTree: false,
       viewer: true,
+      viewerStun: true,
       displays: [{ id: 'primary', width: 1920, height: 1080, scale: 1 }],
       permissions: { portal: false }
     })

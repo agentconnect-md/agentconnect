@@ -948,9 +948,12 @@ Control Plane, which only issues credentials:
   from TURN over UDP to TURN over TCP by itself. With neither connected within 12 s, the page polls `/frame`
   through the relay (about 5 fps at 1600×900).
 - **Privacy.** A server-reflexive candidate shows the desktop's public IP to the viewer's browser, so the Computer
-  policy's `viewerPeerToPeer` decides whether a viewing gets STUN. Unset, it is on while only the owner may watch and
-  off once other members may; the owner can set it either way on the policy card. Without it the ladder starts at
-  the ICE-lite direct step.
+  policy's `viewerPeerToPeer` decides whether a viewing gets STUN. Unset, it is on for a self-hosted Computer while
+  only the owner may watch, and off once other members may or for a managed Computer, whose editors may watch too;
+  the owner can set it either way on the policy card. A desktop gets a token's `stun` claim only once its
+  capabilities report `viewerStun`, since desktops before it refuse unknown claims; channel-token claims are now
+  parsed leniently so a later additive claim needs no such gate. Without it the ladder starts at the ICE-lite
+  direct step.
 - **STUN deployment.** The chart's `relay.stun` gives each relay pod a UDP `LoadBalancer` Service with
   `externalTrafficPolicy: Local` (STUN must see the client's own source address) and a per-ordinal public host;
   `compose.stun.yaml` does the same for one relay. The relay keeps no state per client and no media.

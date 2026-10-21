@@ -26,6 +26,8 @@ function setup(over: Partial<ComputerRecord> = {}, policy: Record<string, unknow
     orgId: ORG,
     name: 'Desk',
     ownerUserId: 'user_owner',
+    kind: 'self-hosted',
+    capabilities: { viewer: true, viewerStun: true },
     status: 'online',
     lastSeenAt: new Date(T0 - 1000),
     policy: ComputerPolicySchema.parse(policy),
@@ -234,6 +236,39 @@ describe('ComputerChannelGrants.grantViewer', () => {
     })
     if (!optedOut.granted) throw new Error('refused')
     expect(optedOut.stunUrls).toEqual([])
+  })
+
+  it('mints no STUN claim for a desktop that does not advertise viewer STUN, which would refuse the token', async () => {
+    const old = await viewer({ capabilities: { viewer: true } } as Partial<ComputerRecord>).grants.grantViewer(
+      ORG,
+      CID,
+      {
+        userId: 'user_owner',
+        mode: 'control'
+      }
+    )
+    if (!old.granted) throw new Error('refused')
+    expect(old.stunUrls).toEqual([])
+    expect(readComputerChannelToken(old.token)?.stun).toBeUndefined()
+  })
+
+  it('keeps a managed Computer off peer to peer by default, since its editors may watch too', async () => {
+    const managed = await viewer({ kind: 'managed' }).grants.grantViewer(ORG, CID, {
+      userId: 'user_owner',
+      mode: 'control'
+    })
+    if (!managed.granted) throw new Error('refused')
+    expect(managed.stunUrls).toEqual([])
+    const optedIn = await viewer({ kind: 'managed' }, { policy: { viewerPeerToPeer: true } }).grants.grantViewer(
+      ORG,
+      CID,
+      {
+        userId: 'user_owner',
+        mode: 'control'
+      }
+    )
+    if (!optedIn.granted) throw new Error('refused')
+    expect(optedIn.stunUrls).toHaveLength(2)
   })
 
   it('refuses an offline or revoked Computer, and a deployment without a relay', async () => {

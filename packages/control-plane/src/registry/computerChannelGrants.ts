@@ -145,10 +145,11 @@ export class ComputerChannelGrants {
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
     // The desktop and the browser each get their own TURN username, so coturn's logs tell them apart.
     const turn = this.opts.turn
-    // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it gets STUN.
-    const stun = viewerPeerToPeerAllowed(computer.policy, computer.ownerUserId)
-      ? [...new Set(await (this.opts.stunUrls?.() ?? Promise.resolve([])))].slice(0, COMPUTER_STUN_URLS_MAX)
-      : []
+    // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.
+    const stun =
+      computer.capabilities.viewerStun === true && viewerPeerToPeerAllowed(computer.policy, computer)
+        ? [...new Set(await (this.opts.stunUrls?.() ?? Promise.resolve([])))].slice(0, COMPUTER_STUN_URLS_MAX)
+        : []
     const token = signComputerChannelToken(
       {
         aud: 'view',

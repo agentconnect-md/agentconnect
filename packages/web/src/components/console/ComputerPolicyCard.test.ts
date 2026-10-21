@@ -28,14 +28,29 @@ describe('the policy form', () => {
   })
 
   it('shows peer-to-peer viewing on for an owner-only Computer and stores it only once changed', () => {
-    const draft = draftOf(policy, 'u1')
+    const owner = { ownerUserId: 'u1', kind: 'self-hosted' as const }
+    const draft = draftOf(policy, owner)
     expect(draft.viewerPeerToPeer).toBe(true)
-    expect(policyFromDraft(policy, draft, 'u1')).toEqual({ policy })
-    const off = policyFromDraft(policy, { ...draft, viewerPeerToPeer: false }, 'u1')
+    expect(policyFromDraft(policy, draft, owner)).toEqual({ policy })
+    const off = policyFromDraft(policy, { ...draft, viewerPeerToPeer: false }, owner)
     expect('policy' in off && off.policy.viewerPeerToPeer).toBe(false)
     const shared = { ...policy, allowedMembers: ['u1', 'u2'] }
-    expect(draftOf(shared, 'u1').viewerPeerToPeer).toBe(false)
-    const on = policyFromDraft(shared, { ...draftOf(shared, 'u1'), viewerPeerToPeer: true }, 'u1')
+    expect(draftOf(shared, owner).viewerPeerToPeer).toBe(false)
+    const on = policyFromDraft(shared, { ...draftOf(shared, owner), viewerPeerToPeer: true }, owner)
+    expect('policy' in on && on.policy.viewerPeerToPeer).toBe(true)
+  })
+
+  it('drops a stored setting once toggled back to the default, so sharing later still turns it off', () => {
+    const owner = { ownerUserId: 'u1', kind: 'self-hosted' as const }
+    const stored = { ...policy, viewerPeerToPeer: false }
+    const result = policyFromDraft(stored, { ...draftOf(stored, owner), viewerPeerToPeer: true }, owner)
+    expect('policy' in result && 'viewerPeerToPeer' in result.policy).toBe(false)
+  })
+
+  it('defaults peer-to-peer viewing off for a managed Computer, whose editors may watch too', () => {
+    const owner = { ownerUserId: 'u1', kind: 'managed' as const }
+    expect(draftOf(policy, owner).viewerPeerToPeer).toBe(false)
+    const on = policyFromDraft(policy, { ...draftOf(policy, owner), viewerPeerToPeer: true }, owner)
     expect('policy' in on && on.policy.viewerPeerToPeer).toBe(true)
   })
 
