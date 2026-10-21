@@ -35,6 +35,8 @@ function telegramBotId(botToken: string): string | undefined {
 
 const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string | undefined>([
   ['qq', (int) => platformIntegrationConfig('qq', int)?.appId],
+  // The Client ID survives a secret rotation and names one organization's internal app.
+  ['dingtalk', (int) => platformIntegrationConfig('dingtalk', int)?.clientId],
   // A shared bot has no app token to key on; a socket integration keys on it.
   [
     'slack',
@@ -90,6 +92,7 @@ const LIVE_TENANT_SCOPE = new Set(['slack'])
 
 const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => Promise<string | undefined>>([
   ['qq', async (_host, int) => platformIntegrationConfig('qq', int)?.appId],
+  ['dingtalk', async (_host, int) => platformIntegrationConfig('dingtalk', int)?.clientId],
   // The auth.test workspace id; a not-yet-authenticated connection falls back to the minted scope rather than throw.
   ['slack', async (host, int) => host.liveWorkspaceId(int.id) || (await host.minted(int.id))],
   // The public bot id prefix survives a BotFather token rotation.
