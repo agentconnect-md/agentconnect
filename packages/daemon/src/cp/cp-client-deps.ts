@@ -1,4 +1,5 @@
 import type { DecisionEvaluationReader } from '../decisions/evaluations.js'
+import type { DesktopPool } from '../k8s/desktop-pool.js'
 import type { DecisionModelEvaluationReader } from '../decisions/model-evaluations.js'
 import type { DecisionApiGateEvaluationReader } from '../decisions/api-gate-evaluations.js'
 import type { DecisionEvaluator } from '../decisions/evaluator.js'
@@ -179,6 +180,8 @@ export interface CpClientSeamHost {
   k8sPlane(): K8sRuntimePlane | undefined
   /** A cluster member's requested re-probe, or undefined where the deployment takes no requests. */
   runtimeProbeRequest(): (() => void) | undefined
+  /** This member's desktop claims for managed computers, or undefined where it serves none (computer-use.md §15.1). */
+  desktopPool(): DesktopPool | undefined
   workspaceFilesFor: WorkspaceFilesResolver
   /** Pool members and their sandbox pods reach the transfer bucket in-cluster; everything else over its public origin. */
   transferNetwork(): TransferNetwork
@@ -446,6 +449,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       message: (req) => workspaceGit.message(req)
     },
     ...(host.runtimeProbeRequest() ? { runtimeProbe: host.runtimeProbeRequest()! } : {}),
+    ...(host.desktopPool() ? { computerPoolOp: (op) => host.desktopPool()!.handle(op) } : {}),
     // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
     // reclaim decision, so it needs neither of the workspace coordinators.
     taskReader: { list: async (req) => host.listBackgroundTasks(req) },

@@ -409,6 +409,36 @@ daemonPool:
     nodeSelector: {}
     tolerations: []
 
+# Managed computers (computer-use.md §15.1): desktop pods the daemon pool claims; needs daemonPool and apiHost or publicUrl.
+computerPool:
+  enabled: false
+  # `<image.registry>/desktop:<tag>` unless `image` pins a full reference.
+  repository: ''
+  tag: ''
+  image: ''
+  # Pull secrets in sandboxNamespace, only for a private desktop image.
+  imagePullSecrets: []
+  # Prewarmed desktops (a standing pod and volume each) so a session gets one in seconds; 0 starts cold.
+  warmReplicas: 1
+  # The port a desktop's pool bootstrap listens on; only daemon-pool members may reach it.
+  bootstrapPort: 7690
+  resolution: 1600x900x24
+  # The desktop's home (key, browser profile, files): kept while asleep, deleted with an ephemeral desktop.
+  home:
+    size: 5Gi
+    storageClass: standard
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 3Gi
+  # Idle windows: an ephemeral desktop is reclaimed, a per-agent or manual one sleeps.
+  ephemeralIdleSeconds: 600
+  sleepIdleSeconds: 1800
+  nodeSelector: {}
+  tolerations: []
+
 controlPlane:
   image: control-plane
   # Per-component tag override; empty ⇒ the shared image.tag. Set it to the

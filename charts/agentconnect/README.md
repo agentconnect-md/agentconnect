@@ -367,6 +367,25 @@ bucket at `sourceCache.publicEndpoint` (or `endpoint`); a desktop's PUT is not a
 request, and the console shows a screenshot with a plain `<img>`, so no CORS rule is
 needed for either.
 
+### Managed computers
+
+`computerPool.enabled` (off by default) lets the daemon pool run Linux desktops as managed
+Computers ([design](../../docs/designs/computer-use.md#151-positioning)): the chart renders a
+desktop `SandboxTemplate` from the desktop image, its warm pool, and a NetworkPolicy that admits
+only pool members to a desktop's bootstrap port, and turns the pool on in the members and the
+Control Plane. Desktops register at the public Control Plane URL, so `apiHost` or `publicUrl`
+is required.
+
+| Value                               | Default              | Meaning                                                       |
+| ----------------------------------- | -------------------- | ------------------------------------------------------------- |
+| `computerPool.warmReplicas`         | `1`                  | Prewarmed desktops, so an `ephemeral` computer starts at once |
+| `computerPool.home.size`            | `5Gi`                | A desktop's home volume, kept while it sleeps                 |
+| `computerPool.home.storageClass`    | `standard`           | Storage class of the home volume                              |
+| `computerPool.resources`            | 500m, 1Gi / 3Gi      | One desktop's requests and memory limit                       |
+| `computerPool.ephemeralIdleSeconds` | `600`                | Idle time before an `ephemeral` desktop is deleted            |
+| `computerPool.sleepIdleSeconds`     | `1800`               | Idle time before a `per-agent` or `manual` desktop sleeps     |
+| `computerPool.image` / `repository` | `<registry>/desktop` | The desktop image, tagged like the release by default         |
+
 ## Node maintenance
 
 The Control Plane runs as one replica, and it also serves the API. Evicting its pod, as a

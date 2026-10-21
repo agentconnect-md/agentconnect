@@ -834,4 +834,36 @@ abort('a store host with a scheme must be refused') if store_refused_status.succ
 _, no_origin, no_origin_status = Open3.capture3(*command, '--set', 'sourceCache.store.host=objects.example.test')
 abort('a store without publicUrl must be refused') if no_origin_status.success? || !no_origin.include?('publicUrl is required')
 
+# Managed computers (computer-use.md §15.1): off by default; on, the desktop template, warm pool, bootstrap policy and both env sides render.
+abort('the computer pool must be off by default') if documents.any? { |doc| doc.dig('metadata', 'name').to_s.include?('-desktop') }
+_, no_cp_url, no_cp_url_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true')
+abort('a computer pool without a public CP URL must be refused') if no_cp_url_status.success? || !no_cp_url.include?('apiHost or publicUrl')
+desktop_rendered, desktop_error, desktop_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test')
+abort("helm template (computer pool) failed:\n#{desktop_error}") unless desktop_status.success?
+desktop_docs = YAML.load_stream(desktop_rendered).compact
+desktop_find = lambda do |kind, name|
+  desktop_docs.find { |doc| doc['kind'] == kind && doc.dig('metadata', 'name') == name } || abort("missing #{kind}/#{name}")
+end
+desktop_template = desktop_find.call('SandboxTemplate', 'example-agentconnect-desktop')
+desktop_pod = desktop_template.dig('spec', 'podTemplate', 'spec')
+desktop_container = desktop_pod.fetch('containers').first
+desktop_env = desktop_container.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort("unexpected desktop env: #{desktop_env}") unless
+  desktop_env['AGENTCONNECT_CP_URL'] == 'https://app.example.test/cp' && desktop_env['AGENTCONNECT_POOL_BOOTSTRAP_PORT'] == '7690'
+abort('desktops must never be handed a registration token through the template') if desktop_env.key?('AGENTCONNECT_REGISTER_TOKEN')
+abort('a desktop pod gets no Kubernetes credential') unless desktop_pod['automountServiceAccountToken'] == false
+abort('the desktop home must be the claim volume') unless desktop_template.dig('spec', 'volumeClaimTemplates', 0, 'metadata', 'name') == 'home'
+abort('the desktop warm pool must mint from the desktop template') unless
+  desktop_find.call('SandboxWarmPool', 'example-agentconnect-desktop-pool').dig('spec', 'sandboxTemplateRef', 'name') == 'example-agentconnect-desktop'
+bootstrap_policy = desktop_find.call('NetworkPolicy', 'example-agentconnect-desktop-bootstrap')
+abort('only pool members may reach the desktop bootstrap') unless
+  bootstrap_policy.dig('spec', 'ingress', 0, 'ports') == [{ 'protocol' => 'TCP', 'port' => 7690 }] &&
+  bootstrap_policy.dig('spec', 'ingress', 0, 'from', 0, 'podSelector', 'matchLabels', 'app.kubernetes.io/component') == 'daemon-pool'
+_, desktop_member = pool_member.call(desktop_docs)
+desktop_member_env = desktop_member.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('members must claim desktops against the desktop warm pool') unless desktop_member_env['AC_K8S_DESKTOP_WARM_POOL'] == 'example-agentconnect-desktop-pool'
+_, desktop_cp = control_plane_of.call(desktop_docs)
+abort('the Control Plane must run the computer pool') unless
+  desktop_cp.fetch('env').any? { |item| item['name'] == 'COMPUTER_POOL_ENABLED' && item['value'] == 'true' }
+
 puts 'chart render contract: ok'

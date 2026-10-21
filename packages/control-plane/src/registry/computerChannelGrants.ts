@@ -13,7 +13,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, type OrgId } from '../domain/ids.js'
-import { presentComputerStatus } from '../domain/computer.js'
+import { isComputerReachable, presentComputerStatus } from '../domain/computer.js'
 import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerChannelKeys } from './computerChannelKeys.js'
 import { turnCredentials, type TurnConfig } from '../computer-viewer/turn.js'
@@ -31,6 +31,8 @@ export interface ComputerChannelGrantOpts {
   viewerRelays?: () => Promise<string[]>
   /** TURN for viewer media without a direct UDP path; absent means direct only. */
   turn?: TurnConfig
+  /** Told of every grant, so a managed computer an agent or a viewer is using does not idle out (§15.1). */
+  onUse?: (computerId: string) => void
 }
 
 export type ViewerGrantResult =
@@ -70,9 +72,12 @@ export class ComputerChannelGrants {
     if (!computer || computer.status === 'revoked') return refuse('unavailable', 'this computer was revoked or removed')
     if (!computer.policy.allowedAgents.includes(who.agentId))
       return refuse('denied', 'this agent is not granted this computer')
+    if (computer.poolSessionId && computer.poolSessionId !== who.sessionId)
+      return refuse('denied', 'this computer belongs to another session')
     const now = this.clock.now()
-    if (presentComputerStatus(computer, now, this.opts.staleAfterMs) === 'offline')
-      return refuse('unavailable', 'this computer is offline')
+    const status = presentComputerStatus(computer, now, this.opts.staleAfterMs)
+    if (!isComputerReachable(status))
+      return refuse('unavailable', status === 'sleeping' ? 'this computer is asleep' : 'this computer is offline')
     const apiKeyId = await this.repo.liveKeyId(ComputerId(computerId), new Date(now))
     if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
     // A key every live desktop holds: just after a window opens the newest may not have reached it yet.
@@ -96,6 +101,7 @@ export class ComputerChannelGrants {
       Buffer.from(credential.key, 'base64url')
     )
     const relays = (await this.opts.relays()).slice(0, COMPUTER_RELAYS_MAX)
+    this.opts.onUse?.(computerId)
     return {
       granted: true,
       token,
@@ -123,13 +129,15 @@ export class ComputerChannelGrants {
     const computer = await this.repo.get(orgId, ComputerId(computerId))
     if (!computer || computer.status === 'revoked') return refuse('unavailable', 'this computer was revoked or removed')
     const now = this.clock.now()
-    if (presentComputerStatus(computer, now, this.opts.staleAfterMs) === 'offline')
-      return refuse('unavailable', 'this computer is offline')
+    const status = presentComputerStatus(computer, now, this.opts.staleAfterMs)
+    if (!isComputerReachable(status))
+      return refuse('unavailable', status === 'sleeping' ? 'this computer is asleep' : 'this computer is offline')
     const apiKeyId = await this.repo.liveKeyId(ComputerId(computerId), new Date(now))
     if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
     const relays = [...new Set(await (this.opts.viewerRelays?.() ?? Promise.resolve([])))].slice(0, COMPUTER_RELAYS_MAX)
     if (relays.length === 0) return refuse('no_relay', 'no relay is configured, so the viewer cannot reach the desktop')
     const credential = this.keys.signing(computerId, apiKeyId, now)
+    this.opts.onUse?.(computerId)
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
     // The desktop and the browser each get their own TURN username, so coturn's logs tell them apart.
     const turn = this.opts.turn

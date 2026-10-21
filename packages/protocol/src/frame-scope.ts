@@ -33,7 +33,10 @@ export const INSTALL_WIDE_FRAME_TYPES: ReadonlySet<FrameType> = new Set<FrameTyp
   'duty/claim',
   'duty/claim/ok',
   'agent/exists',
-  'agent/exists/ok'
+  'agent/exists/ok',
+  // Desktop claims sit in the install's one sandbox namespace, whatever org their Computer belongs to.
+  'computer-pool/op',
+  'computer-pool/op/result'
 ])
 
 // Generic replies inherit their request's scope; one that correlates to nothing names nothing and is dropped.

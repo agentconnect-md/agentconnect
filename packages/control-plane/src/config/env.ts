@@ -99,6 +99,20 @@ const CoreConfigShape = {
   COMPUTER_TURN_SECRET: z.string().min(16).optional(),
   // How long minted TURN credentials stay valid; an allocation refresh after this fails, so it bounds one viewing.
   COMPUTER_TURN_TTL_SEC: z.coerce.number().int().min(300).max(86_400).default(21_600),
+  // Managed computers in the Kubernetes pool (computer-use.md §15.1); 'true' needs pool members that serve desktop claims.
+  COMPUTER_POOL_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  // How long an ephemeral managed computer may sit idle before it is reclaimed, pod and volume.
+  COMPUTER_POOL_EPHEMERAL_IDLE_SEC: z.coerce.number().int().min(60).max(86_400).default(600),
+  // How long a per-agent or manual managed computer may sit idle before it sleeps, its volume kept.
+  COMPUTER_POOL_SLEEP_IDLE_SEC: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(7 * 86_400)
+    .default(1800),
   // Failover sweeper: a `relay` row whose lastSeenAt predates now−RELAY_STALE_SEC is
   // swept (its roster entry drops), sweeping every RELAY_REAP_INTERVAL_SEC. Default
   // 3×heartbeat / 1×heartbeat, mirroring the daemon watchdog's freeze threshold.

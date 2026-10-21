@@ -387,6 +387,32 @@ export class SandboxApi {
     }
   }
 
+  /** Switch a Sandbox no launch fences, such as a desktop's (computer-use.md §15.1): only this incarnation, only from `observed`. */
+  async setOperatingModeIfCurrent(
+    name: string,
+    mode: OperatingMode,
+    observed: OperatingMode,
+    uid: string
+  ): Promise<Sandbox> {
+    try {
+      return await this.http.json<Sandbox>({
+        method: 'PATCH',
+        path: `${this.sandboxes()}/${name}`,
+        contentType: 'application/json-patch+json',
+        body: [
+          { op: 'test', path: '/metadata/uid', value: uid },
+          { op: 'test', path: '/spec/operatingMode', value: observed },
+          { op: 'replace', path: '/spec/operatingMode', value: mode }
+        ]
+      })
+    } catch (err) {
+      if (err instanceof K8sApiError && err.isUnprocessable) {
+        throw new OperatingModeRejectedError(name, observed, mode, err)
+      }
+      throw err
+    }
+  }
+
   /** Verify a token the shim presented and learn which pod it belongs to. `audiences`
    *  is required: omitting it would accept a token minted for something else.
    *  TokenReview is cluster-scoped, hence its own ClusterRole rather than the Role. */

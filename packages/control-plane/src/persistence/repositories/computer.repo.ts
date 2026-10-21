@@ -7,10 +7,14 @@ import type {
   ComputerRegistrationRecord,
   ComputerRepo,
   CreateComputerRegistrationInput,
+  CreateManagedComputerInput,
+  ManagedComputerKey,
+  PoolPhaseWrite,
   RegisterComputerInput,
   ResourceVisibility,
   ViewCtx
 } from '../ports.js'
+import { isComputerPoolPhase, type ComputerAllocation } from '../../domain/computerPool.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import { ComputerId, OrgId } from '../../domain/ids.js'
 import {
@@ -30,6 +34,10 @@ const toDbKind = (k: ComputerKind) => (k === 'self-hosted' ? 'self_hosted' : k)
 const fromDbKind = (k: Computer['kind']): ComputerKind => (k === 'self_hosted' ? 'self-hosted' : k)
 const toDbSession = (s: ComputerSession) => (s === 'wayland-gnome' ? 'wayland_gnome' : s)
 const fromDbSession = (s: Computer['session']): ComputerSession => (s === 'wayland_gnome' ? 'wayland-gnome' : s)
+const toDbAllocation = (a: ComputerAllocation): NonNullable<Computer['allocation']> =>
+  a === 'per-agent' ? 'per_agent' : a
+const fromDbAllocation = (a: NonNullable<Computer['allocation']>): ComputerAllocation =>
+  a === 'per_agent' ? 'per-agent' : a
 
 function toRecord(c: Computer): ComputerRecord {
   return {
@@ -54,10 +62,19 @@ function toRecord(c: Computer): ComputerRecord {
     revokedAt: c.revokedAt,
     stoppedAt: c.stoppedAt,
     stoppedByUserId: c.stoppedByUserId,
+    allocation: c.allocation ? fromDbAllocation(c.allocation) : null,
+    ownerAgentId: c.ownerAgentId,
+    poolSessionId: c.poolSessionId,
+    poolPhase: isComputerPoolPhase(c.poolPhase) ? c.poolPhase : null,
+    poolPhaseAt: c.poolPhaseAt,
+    poolActiveAt: c.poolActiveAt,
+    poolError: c.poolError,
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   }
 }
+
+const isUniqueViolation = (err: unknown): boolean => (err as { code?: unknown })?.code === 'P2002'
 
 function toRegistrationRecord(r: ComputerRegistration): ComputerRegistrationRecord {
   return {
@@ -80,12 +97,14 @@ export class PgComputerRepo implements ComputerRepo {
 
   async createRegistration(input: CreateComputerRegistrationInput): Promise<ComputerRegistrationRecord> {
     return withAmbientTx(this.db, async (tx) => {
-      // The registrant must still be a member when the token is minted, and again when it is spent.
-      await lockResourceWriteMemberships(tx, {
-        orgId: input.orgId,
-        visibility: 'org',
-        actorUserId: input.createdByUserId
-      })
+      // The registrant must still be a member when the token is minted, and again when it is spent; the pool mints its own.
+      if (!input.computerId) {
+        await lockResourceWriteMemberships(tx, {
+          orgId: input.orgId,
+          visibility: 'org',
+          actorUserId: input.createdByUserId
+        })
+      }
       const row = await tx.computerRegistration.create({
         data: {
           orgId: input.orgId,
@@ -93,7 +112,8 @@ export class PgComputerRepo implements ComputerRepo {
           hash: input.hash,
           displayTail: input.displayTail,
           name: input.name ?? null,
-          expiresAt: input.expiresAt
+          expiresAt: input.expiresAt,
+          ...(input.computerId ? { computerId: input.computerId } : {})
         }
       })
       return toRegistrationRecord(row)
@@ -105,6 +125,7 @@ export class PgComputerRepo implements ComputerRepo {
       return await withAmbientTx(this.db, async (tx) => {
         const registration = await tx.computerRegistration.findUnique({ where: { hash: input.registrationHash } })
         if (!registration) return null
+        if (registration.computerId) return await this.registerBound(tx, registration, input)
         const owner = registration.createdByUserId
         // Lock the org and membership before the token row, the same order member removal takes them.
         const memberships = await lockResourceWriteMemberships(tx, {
@@ -165,6 +186,53 @@ export class PgComputerRepo implements ComputerRepo {
       if (err instanceof OrgMembershipMissing) return null
       throw err
     }
+  }
+
+  // A pool-minted token keys the managed row it was minted for; its earlier keys are revoked, as only one pod holds it.
+  private async registerBound(
+    tx: Prisma.TransactionClient,
+    registration: ComputerRegistration,
+    input: RegisterComputerInput
+  ): Promise<{ computer: ComputerRecord; apiKeyId: string } | null> {
+    const computerId = registration.computerId!
+    const consumed = await tx.computerRegistration.updateMany({
+      where: { id: registration.id, consumedAt: null, expiresAt: { gt: input.now } },
+      data: { consumedAt: input.now }
+    })
+    if (consumed.count !== 1) return null
+    const existing = await tx.computer.findUnique({ where: { id: computerId } })
+    if (!existing || existing.orgId !== registration.orgId || existing.revokedAt || existing.kind !== 'managed')
+      return null
+    await tx.apiKey.updateMany({
+      where: { computerId, revokedAt: null },
+      data: { revokedAt: input.now, revokedReason: 'managed computer re-registered' }
+    })
+    const p = input.profile
+    const computer = await tx.computer.update({
+      where: { id: computerId },
+      data: {
+        isolation: p.isolation,
+        os: p.os,
+        osVersion: p.osVersion,
+        session: toDbSession(p.session),
+        capabilities: p.capabilities as unknown as Prisma.InputJsonValue,
+        desktopDaemonVersion: p.desktopDaemonVersion,
+        driverVersion: p.driverVersion
+      }
+    })
+    const key = await tx.apiKey.create({
+      data: {
+        principalType: 'computer',
+        orgId: registration.orgId,
+        computerId,
+        hash: input.key.hash,
+        displayTail: input.key.displayTail,
+        createdByUserId: existing.ownerUserId,
+        expiresAt: null
+      },
+      select: { id: true }
+    })
+    return { computer: toRecord(computer), apiKeyId: key.id }
   }
 
   async get(orgId: OrgId, id: ComputerId): Promise<ComputerRecord | null> {
@@ -297,8 +365,9 @@ export class PgComputerRepo implements ComputerRepo {
   }
 
   async markOffline(orgId: OrgId, id: ComputerId, at: Date): Promise<void> {
+    // A pod the pool put to sleep closes its channel too; it stays sleeping.
     await this.db.computer.updateMany({
-      where: { id, orgId, status: { notIn: ['revoked', 'offline'] } },
+      where: { id, orgId, status: { notIn: ['revoked', 'offline', 'sleeping'] } },
       data: { status: 'offline', lastSeenAt: at }
     })
   }
@@ -326,5 +395,97 @@ export class PgComputerRepo implements ComputerRepo {
 
   async delete(orgId: OrgId, id: ComputerId): Promise<void> {
     await this.db.computer.delete({ where: { id, orgId } })
+  }
+
+  async createManaged(input: CreateManagedComputerInput): Promise<ComputerRecord | null> {
+    try {
+      const row = await this.db.computer.create({
+        data: {
+          id: input.id,
+          orgId: input.orgId,
+          name: input.name,
+          ownerUserId: input.ownerUserId,
+          kind: 'managed',
+          isolation: 'container',
+          os: 'linux',
+          osVersion: '',
+          session: 'xvfb',
+          capabilities: {},
+          desktopDaemonVersion: '',
+          driverVersion: '',
+          policy: policyJson(input.policy),
+          visibility: 'org',
+          sharedWith: [],
+          allocation: toDbAllocation(input.allocation),
+          ownerAgentId: input.ownerAgentId ?? null,
+          poolSessionId: input.poolSessionId ?? null,
+          poolPhase: 'provisioning',
+          poolPhaseAt: input.now,
+          poolActiveAt: input.now
+        }
+      })
+      return toRecord(row)
+    } catch (err) {
+      // The partial unique indexes: a concurrent acquire made the agent's or session's computer first.
+      if (isUniqueViolation(err)) return null
+      throw err
+    }
+  }
+
+  async findManaged(orgId: OrgId, key: ManagedComputerKey): Promise<ComputerRecord | null> {
+    const where = {
+      orgId,
+      kind: 'managed' as const,
+      allocation: toDbAllocation(key.allocation),
+      ownerAgentId: key.ownerAgentId,
+      ...(key.allocation === 'ephemeral' ? { poolSessionId: key.poolSessionId } : {})
+    }
+    const live = await this.db.computer.findFirst({
+      where: { ...where, NOT: { poolPhase: 'reclaiming' } },
+      orderBy: { createdAt: 'desc' }
+    })
+    if (live) return toRecord(live)
+    const reclaiming = await this.db.computer.findFirst({
+      where: { ...where, poolPhase: 'reclaiming' },
+      orderBy: { poolPhaseAt: 'desc' }
+    })
+    return reclaiming ? toRecord(reclaiming) : null
+  }
+
+  async setPoolPhase(id: ComputerId, write: PoolPhaseWrite): Promise<boolean> {
+    const written = await this.db.computer.updateMany({
+      where: { id, kind: 'managed', ...(write.from ? { poolPhase: { in: [...write.from] } } : {}) },
+      data: {
+        poolPhase: write.phase,
+        poolPhaseAt: write.at,
+        ...(write.error !== undefined ? { poolError: write.error } : {}),
+        ...(write.status ? { status: write.status } : {})
+      }
+    })
+    return written.count === 1
+  }
+
+  async touchPoolActive(id: ComputerId, at: Date): Promise<void> {
+    await this.db.computer.updateMany({
+      where: { id, kind: 'managed', poolPhase: { not: null } },
+      data: { poolActiveAt: at }
+    })
+  }
+
+  async listPool(): Promise<ComputerRecord[]> {
+    const rows = await this.db.computer.findMany({
+      where: { kind: 'managed', poolPhase: { not: null } },
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
+  async orgOwnerUserId(orgId: OrgId): Promise<string | null> {
+    const owner = await this.db.membership.findFirst({
+      where: { orgId, role: 'owner' },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true }
+    })
+    return owner?.userId ?? null
   }
 }

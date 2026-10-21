@@ -6271,6 +6271,7 @@
       "paused": "已暂停",
       "human_in_control": "有人正在操作",
       "busy": "Agent 正在操作",
+      "sleeping": "休眠中",
       "revoked": "已吊销"
     },
     "os": {

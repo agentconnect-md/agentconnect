@@ -1,0 +1,141 @@
+{{- if and .Values.daemonPool.enabled .Values.computerPool.enabled }}
+{{- if not (or .Values.apiHost .Values.publicUrl) }}{{ fail "computerPool.enabled needs apiHost or publicUrl: desktop pods register with the Control Plane's public URL" }}{{ end }}
+{{- $sandboxNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
+{{- $pool := .Values.computerPool }}
+# Managed computers (computer-use.md §15.1): a member claims a desktop and pushes it a one-time registration.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ include "agentconnect.desktopTemplateName" . }}
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "desktop") | nindent 4 }}
+spec:
+  networkPolicyManagement: Managed
+  networkPolicy:
+    # Egress only (DNS and HTTPS): the Control Plane, relays and the web; ingress is the bootstrap policy below.
+    egress:
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - ports:
+          - protocol: TCP
+            port: 443
+  envVarsInjectionPolicy: Disallowed
+  volumeClaimTemplatesPolicy: Disallowed
+  podTemplate:
+    metadata:
+      labels:
+        # From birth, so a warm spare is already inside the bootstrap ingress policy.
+        agentconnect.md/desktop: 'true'
+    spec:
+      automountServiceAccountToken: false
+      {{- with $pool.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $pool.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $pool.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: desktop
+          image: {{ include "agentconnect.desktopImage" . | quote }}
+          env:
+            - name: AGENTCONNECT_CP_URL
+              value: {{ include "agentconnect.publicCpUrl" . | quote }}
+            # Pool mode: wait for the member's registration push instead of a token in the env.
+            - name: AGENTCONNECT_POOL_BOOTSTRAP_PORT
+              value: {{ $pool.bootstrapPort | quote }}
+            - name: RESOLUTION
+              value: {{ $pool.resolution | quote }}
+          ports:
+            - name: bootstrap
+              containerPort: {{ $pool.bootstrapPort }}
+          # Ready once the bootstrap listens, so a warm spare is claimable before it is registered.
+          readinessProbe:
+            tcpSocket:
+              port: bootstrap
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+          resources:
+            {{- toYaml $pool.resources | nindent 12 }}
+          volumeMounts:
+            - name: home
+              mountPath: /home/desktop
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        # Firefox needs more shared memory than the runtime's 64 MiB default.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  # The desktop's home: deleting the claim deletes it, which is how an ephemeral desktop is wiped.
+  volumeClaimTemplates:
+    - metadata:
+        name: home
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: {{ $pool.home.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $pool.home.size | quote }}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: {{ include "agentconnect.desktopWarmPoolName" . }}
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "desktop") | nindent 4 }}
+spec:
+  replicas: {{ $pool.warmReplicas }}
+  sandboxTemplateRef:
+    name: {{ include "agentconnect.desktopTemplateName" . }}
+  updateStrategy:
+    type: Recreate
+---
+# Only daemon-pool members reach a desktop's bootstrap; the registration it takes is a credential.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-desktop-bootstrap
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      agentconnect.md/desktop: 'true'
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "daemon-pool") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $pool.bootstrapPort }}
+{{- end }}

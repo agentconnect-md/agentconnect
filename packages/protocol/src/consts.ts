@@ -374,6 +374,12 @@ export const COMPUTER_LEASE_FEATURE = 'computer-lease-v1'
 /** CP answers `computer-channel/grant` with a per-session token for a desktop daemon's `/mcp` (computer-use.md §3.7). */
 export const COMPUTER_CHANNEL_FEATURE = 'computer-channel-v1'
 
+/** CP answers `computer-pool/acquire` (computer-use.md §15.1); without it an agent's managed computer setting offers no tools. */
+export const COMPUTER_POOL_FEATURE = 'computer-pool-v1'
+
+/** Pool member serves `computer-pool/op`: it creates, suspends, resumes and deletes desktop claims in its sandbox namespace. */
+export const COMPUTER_POOL_MEMBER_FEATURE = 'computer-pool-member-v1'
+
 // ── GitLab.com code-host features (gitlab-com-integration.md §17.3) ─────────
 // Each string is advertised only when its COMPLETE slice is live; the CP must
 // never place a GitLab-shaped workspace, grant, or hook on a peer without it.

@@ -81,6 +81,7 @@ import type { OAuthService } from '../registry/oauthService.js'
 import type { ComputerService } from '../registry/computerService.js'
 import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
 import type { ComputerChannelGrants } from '../registry/computerChannelGrants.js'
+import type { ComputerPool } from '../registry/computerPool.js'
 import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
 import type { DesktopDistribution } from '../computer-install/desktop-distribution.js'
 import type { GithubService } from '../github/service.js'
@@ -443,6 +444,8 @@ export interface HttpDeps {
   desktopDistribution?: DesktopDistribution
   /** Viewer tokens for the console's embedded viewer (computer-use.md §7, §10). */
   computerViewer: Pick<ComputerChannelGrants, 'grantViewer'>
+  /** Managed computers in the Kubernetes pool (computer-use.md §15.1); absent when the deployment runs none. */
+  computerPool?: Pick<ComputerPool, 'createManual' | 'remove' | 'acquire'>
   /** The per-Computer audit the desktop daemons report (computer-use.md §8.2). */
   computerAudit: Pick<ComputerAuditLog, 'list'>
   /** Stored screenshots (computer-use.md §9); absent when no bucket is configured. */

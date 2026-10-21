@@ -251,3 +251,22 @@ app.kubernetes.io/component: {{ .component }}
 {{- fail "sourceCache.credentials.source must be serviceAccount or secret" }}
 {{- end }}
 {{- end }}
+
+{{/* Managed computers (computer-use.md §15.1): the desktop image, template and warm pool, release-prefixed and derived. */}}
+{{- define "agentconnect.desktopImage" -}}
+{{- $repository := .Values.computerPool.repository | default (printf "%s/desktop" .Values.image.registry) -}}
+{{- .Values.computerPool.image | default (printf "%s:%s" $repository (.Values.computerPool.tag | default (include "agentconnect.imageTag" .))) -}}
+{{- end -}}
+
+{{- define "agentconnect.desktopTemplateName" -}}
+{{- printf "%s-desktop" (include "agentconnect.fullname" .) -}}
+{{- end -}}
+
+{{- define "agentconnect.desktopWarmPoolName" -}}
+{{- printf "%s-desktop-pool" (include "agentconnect.fullname" .) -}}
+{{- end -}}
+
+{{/* The Control Plane's public origin, as daemons and desktops reach it: the api host, else `<publicUrl>/cp`. */}}
+{{- define "agentconnect.publicCpUrl" -}}
+{{- if .Values.apiHost }}{{ printf "https://%s" .Values.apiHost }}{{ else }}{{ printf "%s/cp" (trimSuffix "/" .Values.publicUrl) }}{{ end -}}
+{{- end -}}

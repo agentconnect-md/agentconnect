@@ -94,6 +94,7 @@ import type {
   ComputerStatus
 } from '../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerLease.js'
+import type { ComputerAllocation, ComputerPoolPhase } from '../domain/computerPool.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
@@ -592,6 +593,16 @@ export interface ComputerRecord extends Shareable {
   /** A console Stop that stands until someone resumes the Computer there (computer-use.md §6). */
   stoppedAt: Date | null
   stoppedByUserId: string | null
+  /** Managed only (computer-use.md §15.1); null for a self-hosted Computer. */
+  allocation: ComputerAllocation | null
+  /** The agent a per-agent or ephemeral computer was made for. */
+  ownerAgentId: string | null
+  /** The one session an ephemeral computer serves. */
+  poolSessionId: string | null
+  poolPhase: ComputerPoolPhase | null
+  poolPhaseAt: Date | null
+  poolActiveAt: Date | null
+  poolError: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -604,6 +615,36 @@ export interface CreateComputerRegistrationInput {
   displayTail: string
   name?: string
   expiresAt: Date
+  /** A managed computer's own row: spending the token keys that row instead of creating one. */
+  computerId?: ComputerId
+}
+
+export interface CreateManagedComputerInput {
+  id: ComputerId
+  orgId: OrgId
+  name: string
+  ownerUserId: string
+  allocation: ComputerAllocation
+  ownerAgentId?: string
+  poolSessionId?: string
+  policy: ComputerPolicy
+  now: Date
+}
+
+/** Which live managed computer an agent already has: its own, or its session's. */
+export type ManagedComputerKey =
+  | { allocation: 'per-agent'; ownerAgentId: string }
+  | { allocation: 'ephemeral'; ownerAgentId: string; poolSessionId: string }
+
+export interface PoolPhaseWrite {
+  phase: ComputerPoolPhase
+  at: Date
+  /** Applied only while the row is in one of these phases. */
+  from?: readonly ComputerPoolPhase[]
+  /** null clears it; undefined keeps it. */
+  error?: string | null
+  /** The status to show with the phase, such as `sleeping`. */
+  status?: 'sleeping' | 'offline'
 }
 
 export interface ComputerRegistrationRecord {
@@ -693,6 +734,18 @@ export interface ComputerRepo {
   reapRegistrations(expiredBefore: Date): Promise<number>
   /** Delete the row; its keys cascade. Throws P2025 for a missing or foreign id. */
   delete(orgId: OrgId, id: ComputerId): Promise<void>
+  /** Create a managed computer's row in `provisioning`; null when the agent or session already has its live one. */
+  createManaged(input: CreateManagedComputerInput): Promise<ComputerRecord | null>
+  /** The agent's live (not reclaiming) per-agent computer, or its session's ephemeral one; else the newest reclaiming one. */
+  findManaged(orgId: OrgId, key: ManagedComputerKey): Promise<ComputerRecord | null>
+  /** Move a managed row to a phase; false when it is gone or not in `from`. */
+  setPoolPhase(id: ComputerId, write: PoolPhaseWrite): Promise<boolean>
+  /** Stamp use, so idle detection starts over. */
+  touchPoolActive(id: ComputerId, at: Date): Promise<void>
+  /** Every managed row with a pool phase, across organizations, for the controller's sweep. */
+  listPool(): Promise<ComputerRecord[]>
+  /** Who owns a pool computer made for an agent with no creator: the organization's earliest owner. */
+  orgOwnerUserId(orgId: OrgId): Promise<string | null>
 }
 
 /** One stored audit entry (computer-use.md §8.2): what a desktop daemon served, typed text by its length only. */

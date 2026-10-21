@@ -57,11 +57,13 @@ import {
 import { capabilitiesFrom, computerOs, doctorReport, isolationKind, osVersion, sessionKind } from './cp/report.js'
 import {
   COMPUTER_NAME_ENV,
+  CP_URL_ENV,
   REGISTER_TOKEN_ENV,
   registerFromEnv,
   registrationFromEnv,
   tokenSha256
 } from './cp/env-registration.js'
+import { poolBootstrapPort, startPoolBootstrap } from './cp/pool-bootstrap.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
 import { scheduleDoctor } from './doctor-schedule.js'
@@ -591,9 +593,29 @@ async function registerFromEnvironment(dir: string): Promise<void> {
   }
 }
 
+// A pool pod waits for the member that claimed it to push a registration, or keeps the key its volume holds.
+async function registerFromPool(dir: string): Promise<void> {
+  const port = poolBootstrapPort()
+  if (port === undefined) return
+  const cpUrl = process.env[CP_URL_ENV]?.trim()
+  if (!cpUrl) throw new Error(`${CP_URL_ENV} is required in the managed computer pool`)
+  const pool = await startPoolBootstrap({
+    port,
+    load: () => loadRegistration(dir),
+    register: async (token, name) => {
+      const registration = { ...(await exchangeFor(token, cpUrl, name)), tokenSha256: tokenSha256(token) }
+      saveRegistration(registration, dir)
+      return registration
+    },
+    log
+  })
+  await pool.registered
+}
+
 async function run(dir: string, initial: DesktopConfig, clientName: string): Promise<void> {
   // First run sets itself up, so unzip + `run` is enough; nothing is installed as a service.
   let config = initial
+  await registerFromPool(dir)
   await registerFromEnvironment(dir)
   const registration = loadRegistration(dir)
   if (config.clients.length === 0 && !registration) {

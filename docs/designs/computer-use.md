@@ -96,8 +96,8 @@ interface Computer {
   osVersion: string
   session: 'aqua' | 'console' | 'rdp' | 'x11' | 'xvfb' | 'wayland-gnome' // the prototype's doctor already tells these apart
   status: 'online' | 'offline' | 'locked' | 'paused' | 'human_in_control' | 'busy' | 'sleeping' | 'revoked' // sleeping: managed only
-  allocation?: 'ephemeral' | 'per-agent' | 'manual' // managed only (§15.1) [design]
-  ownerAgentId?: string // the owning agent of a per-agent computer [design]
+  allocation?: 'ephemeral' | 'per-agent' | 'manual' // managed only (§15.1) [implemented]
+  ownerAgentId?: string // the agent a per-agent or ephemeral computer was made for [implemented]
   capabilities: {
     screenshot: boolean
     input: boolean
@@ -125,11 +125,15 @@ and only the registrant may change its policy; any editor may revoke or delete i
 with `permissions`, `session`, and `viewer` taken straight from `doctor` (§3.5). Wire frames go in a new
 `packages/protocol/src/frames/computer.ts`.
 
-**[design]** A managed computer also carries its `allocation` mode (§15.1); a self-hosted computer has none. A
+**[implemented]** A managed computer also carries its `allocation` mode (§15.1); a self-hosted computer has none. A
 `per-agent` computer names its one owning agent in `ownerAgentId`, and the pool keeps at most one per agent. `sleeping`
 means the pool scaled the pod to zero (or deleted it) while keeping its volume; it applies to `per-agent` and `manual`
 computers, and the next use wakes the computer with its files, browser profile, and sign-ins intact. An `ephemeral`
-computer never sleeps: it is deleted, pod and volume, when it is reclaimed.
+computer never sleeps: it is deleted, pod and volume, when it is reclaimed. The `computer` table adds `allocation`,
+`ownerAgentId`, `poolSessionId` (the one session an `ephemeral` computer serves), the pool controller's `poolPhase`
+(`provisioning`, `registering`, `awake`, `sleeping`, `waking`, `failed`, `reclaiming`) with its time, `poolActiveAt` and
+`poolError`; partial unique indexes keep one live `per-agent` computer per agent and one live `ephemeral` one per agent
+session. `sleeping` is a CP verdict like `offline`: the lease service and the channel grant refuse it as `unavailable`.
 
 ### 2.3 Relation to existing concepts
 
@@ -531,11 +535,11 @@ agent DTO and shipped on the spec as value or `null`):
 computerUse: z.object({
   enabled: z.boolean().default(false),
   computers: z.array(z.string()).default([]), // Computer ids the agent may use; the Computer's policy must agree too
-  managed: z.object({ mode: z.enum(['ephemeral', 'per-agent']) }).optional() // [design] agent-driven managed computer (§15.1)
+  managed: z.object({ mode: z.enum(['ephemeral', 'per-agent']) }).optional() // [implemented] agent-driven managed computer (§15.1)
 }).optional()
 ```
 
-**[design]** `managed` chooses, per agent, how the pool gives it an agent-driven managed computer: `ephemeral` creates
+**[implemented]** `managed` chooses, per agent, how the pool gives it an agent-driven managed computer: `ephemeral` creates
 a fresh one for each session that needs a computer, and `per-agent` creates the agent's own one on first use and keeps
 it, sleeping, between uses (§15.1). The pool creates either kind with the agent already in its `allowedAgents`, so it
 needs no entry in `computers`. A `manual` managed computer is not an agent setting: a user creates it from the pool and
@@ -1171,7 +1175,7 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    builds published to a registry; a smaller image (target under 1 GB); an optional Chromium variant.
 2. **Self-hosted containers** [implemented]: a docker compose example; a user runs it on their own server and it registers as a
    Computer with `kind: 'self-hosted'`, `isolation: 'container'`. See the self-hosted block in §3.8.
-3. **Linux managed computers** [design]: `kind: 'managed'`; pods in the Kubernetes pool (reusing
+3. **Linux managed computers** [#3199 implemented, the rest design]: `kind: 'managed'`; pods in the Kubernetes pool (reusing
    [k8s-daemon-pool.md](k8s-daemon-pool.md) and SandboxClaim), split across four issues:
    - **#3199**: the three allocation modes (§15.1) and the pool controller that creates, prewarms, sleeps, wakes, and
      reclaims them. `ephemeral` computers come from a small prewarmed pool so a session gets one in seconds, and are
@@ -1242,7 +1246,7 @@ works; lock screen and UAC prompts return definite errors; no rules or autostart
 Mirrors the managed daemon pool: Computers operated by AgentConnect (or a self-hosting operator), `kind: 'managed'`.
 To agents the tools and permissions are identical.
 
-**Allocation modes [design]** (#3199). How a managed computer relates to agents is its `allocation` (§2.2):
+**Allocation modes [implemented]** (#3199). How a managed computer relates to agents is its `allocation` (§2.2):
 
 | Mode        | Created                                                      | Used by                                    | After use                                                                           |
 | ----------- | ------------------------------------------------------------ | ------------------------------------------ | ----------------------------------------------------------------------------------- |
@@ -1252,7 +1256,53 @@ To agents the tools and permissions are identical.
 
 The agent's `computerUse.managed.mode` picks `ephemeral` or `per-agent` (§4.1); `manual` computers are assigned
 through policy like self-hosted ones. A woken computer keeps its files, browser profile, and sign-ins; a `per-agent` or
-`manual` computer can be reset explicitly. Sharing follows §4.4 for every mode.
+`manual` computer can be reset explicitly [design]. Sharing follows §4.4 for every mode.
+
+**The pool controller [implemented].** The Control Plane decides and the daemon pool acts, since the CP holds no
+cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
+
+- **Allocation.** An agent daemon asks with `computer-pool/acquire` (`agentId`, `sessionId`, and `computerId` to wake a
+  granted one) on the daemon wire, behind `computer-pool-v1`, which the CP advertises when `COMPUTER_POOL_ENABLED`. The
+  CP (`registry/computerPool.ts`, decisions in `domain/computerPool.ts`) finds or creates the agent's `per-agent` row or
+  the session's `ephemeral` row and answers `ready`, `pending` with a phase and `retryAfterMs`, or `failed` with a code
+  (`not_configured`, `no_pool`, `denied`, `volume_missing`, `failed`). A pool-made computer is owned by the agent's
+  creator (else the organization's earliest owner), is visible to the organization, grants its agent, and asks no
+  approvals by default (§4.2): it is an isolated, fresh desktop where nothing is a person's. Its policy can still be
+  edited, and its own agent always stays granted.
+- **Claims.** The CP sends `computer-pool/op` (`ensure` with `running` and `create`, `delete`, `list`; install-wide) to
+  a connected pool member that advertises `computer-pool-member-v1`, which a member does when the deployment sets
+  `AC_K8S_DESKTOP_WARM_POOL`. The member (`packages/daemon/src/k8s/desktop-pool.ts`) creates the claim
+  `desktop-<computerId>` against the desktop warm pool, so an `ephemeral` computer is usually a prewarmed pod; it
+  labels the claim `agentconnect.md/computer`, never `agentconnect.md/agent`, so the agent orphan sweep leaves it alone.
+  Sleep and wake switch the Sandbox's operating mode, guarded by its uid, and keep the claim and its home volume;
+  reclamation deletes the claim, which deletes the volume. A wake never creates a claim, so a lost volume is reported
+  instead of replaced silently.
+- **Registration.** A claim carries no environment, so a desktop pod starts in pool mode
+  (`AGENTCONNECT_POOL_BOOTSTRAP_PORT`) and waits. Once its pod is ready, the member that claimed it dials the pod, as it
+  dials an agent pod's shim (D3), and pushes a one-time registration token the CP minted for that very row
+  (`POST /pool/register`); the desktop spends it at `/v1/computers/register`, which keys the existing managed row
+  instead of creating one and revokes the row's earlier keys. The key lives on the home volume, so a woken desktop
+  reconnects without registering again. `GET /pool/status` says whether the pod holds a key and for which Computer. A
+  NetworkPolicy admits only daemon-pool members to that port.
+- **Phases.** `provisioning` (claimed, pod not up or not registered) → `registering` (registered, channel not online yet)
+  → `awake` → `sleeping` → `waking` → `awake`; `reclaiming` revokes the keys first, then deletes the claim, then the row.
+  The controller sweeps every 30 s: a pod never ready within 5 minutes, or a registered desktop not online within 2,
+  fails; an agent's computer is then reclaimed and the next use gets a fresh one, and a `manual` one stays `failed` for
+  its user to see. A wake not online within 5 minutes goes back to sleep. Idle detection reads the control lease and
+  the last grant, viewer grant, or acquire (`poolActiveAt`): an idle `ephemeral` computer is reclaimed after
+  `COMPUTER_POOL_EPHEMERAL_IDLE_SEC` (600), and an idle `per-agent` or `manual` one sleeps after
+  `COMPUTER_POOL_SLEEP_IDLE_SEC` (1800). An awake computer offline for a minute is woken again (an evicted pod), a
+  deleted agent's computers are reclaimed, and a desktop claim with no row is deleted after 10 minutes.
+- **The agent's tools.** With `computerUse.managed` set, the tools are offered when the CP advertises `computer-pool-v1`
+  even with no `computers` listed. A call with no explicit `computer` and no held lease targets the session's managed
+  computer, asking `computer-pool/acquire` until it is ready for at most 180 s and failing with `unavailable`, its
+  reason and phase otherwise; nothing reaches a desktop meanwhile. A granted pool computer is woken before the session's
+  first call to it, and once more when a call is refused because it fell asleep since.
+- **API and deployment.** `POST /orgs/:orgId/computers/pool` creates a `manual` computer (503 without a pool member);
+  `PUT …/computers/:id/policy` assigns it; `GET …/computers` lists managed computers with `allocation`,
+  `ownerAgentId`, `poolPhase`, and `poolError`; `DELETE …/computers/:id` reclaims a managed one. The chart's
+  `computerPool` values render the desktop SandboxTemplate, its warm pool and the bootstrap NetworkPolicy, and set the
+  member and CP variables; desktops register at the public CP URL.
 
 |                   | Self-hosted computer                                                | Managed computer                                                                                               |
 | ----------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -1269,7 +1319,7 @@ through policy like self-hosted ones. A woken computer keeps its files, browser 
   sources apart.
 - **Linux**: the §3.8 container image (Xvfb, Xfce, a browser) is validated and runs in Kubernetes pods (or microsandbox
   VMs); pool management (the `ephemeral` / `per-agent` / `manual` allocation modes with prewarming, sleep, wake, and
-  reclamation, §15.1) is in §14.5. neko (Apache-2.0) is
+  reclamation, §15.1) is implemented against the fake API server and a simulated cluster; a real cluster run is pending. neko (Apache-2.0) is
   no longer needed because the built-in viewer provides WebRTC watching.
 - **macOS**: Lume (MIT) VMs on Apple Silicon hosts. **Windows**: dockur/windows (MIT) or KubeVirt (Apache-2.0);
   sequential reuse plus snapshot rollback.
