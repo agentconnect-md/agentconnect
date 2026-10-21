@@ -7,7 +7,8 @@ test('a partial npm retry skips completed packages and compares against each pac
   const current = new Map([
     ['daemon', '1.0.0'],
     ['cli', '1.0.0'],
-    ['setup', '0.9.0']
+    ['setup', '0.9.0'],
+    ['desktop', '1.0.0']
   ])
   const calls = []
   let failSetup = true
@@ -39,7 +40,9 @@ test('a partial npm retry skips completed packages and compares against each pac
     ['setup', 'v0.9.0', '1.0.1', 'prepare'],
     ['setup', 'v0.9.0', 'latest', 'publish'],
     ['setup', 'v0.9.0', '1.0.1', 'prepare'],
-    ['setup', 'v0.9.0', 'latest', 'publish']
+    ['setup', 'v0.9.0', 'latest', 'publish'],
+    ['desktop', 'v1.0.0', '1.0.1', 'prepare'],
+    ['desktop', 'v1.0.0', 'latest', 'publish']
   ])
 })
 
@@ -60,4 +63,19 @@ test('registry errors fail publication instead of treating an unknown version as
   await assert.rejects(readPublishedVersion('@example/package', 'latest'), /registry returned 503/)
   t.mock.method(globalThis, 'fetch', async () => new Response('', { status: 404 }))
   assert.equal(await readPublishedVersion('@example/package', '1.0.0'), undefined)
+})
+
+test('a package npm has never seen publishes with no baseline, so its first release always builds', async () => {
+  const calls = []
+  await publishPackages('v2.6.0', {
+    readVersion: async (name, selector) => (name.endsWith('/desktop') || selector !== 'latest' ? undefined : '2.5.0'),
+    execute: (script, args) => calls.push([/publish-(.+)-if-changed/.exec(script)[1], ...args])
+  })
+  assert.deepEqual(
+    calls.filter(([component]) => component === 'desktop'),
+    [
+      ['desktop', '', '2.6.0', 'prepare'],
+      ['desktop', '', 'latest', 'publish']
+    ]
+  )
 })

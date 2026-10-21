@@ -4684,8 +4684,6 @@ export const ComputerRegistrationDto = z.object({
   expiresAt: z.string(),
   /** Where the desktop daemon exchanges the token for its Computer key. */
   exchangeUrl: z.string(),
-  /** The Linux one-line installer this CP serves, or null when it ships no desktop daemon bundle. */
-  linuxInstallerUrl: z.string().nullable(),
   /** The desktop image reference for a Docker Computer, at the version this CP runs. */
   desktopImage: z.string()
 })

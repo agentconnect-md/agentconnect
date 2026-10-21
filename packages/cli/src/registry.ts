@@ -1,14 +1,10 @@
-/**
- * npm registry client for daemon version resolution + download (cli-daemon-split.md
- * §5.1, §9). Security boundary: the CLI only ever fetches the ONE fixed package
- * name from its configured registry — never a CP-supplied URL/name/tarball. The
- * registry base is CLI-local config (`AGENTCONNECT_NPM_REGISTRY`), defaulting to
- * npmjs.org; it is deliberately NOT sourced from the Control Plane.
- */
+// npm registry client (cli-daemon-split.md §5.1, §9): only the fixed package names below, from the CLI-local registry, never a CP-supplied one.
 import { createHash } from 'node:crypto'
 import type { Channel } from './version-store.js'
 
 export const DAEMON_PKG = '@agentconnect.md/daemon'
+// The computer (desktop) daemon, managed by `agentconnect computer …` (computer-use.md §3.5).
+export const DESKTOP_PKG = '@agentconnect.md/desktop'
 
 interface DistInfo {
   tarball: string
@@ -47,29 +43,31 @@ async function fetchPackument(pkg: string): Promise<Packument> {
   return (await res.json()) as Packument
 }
 
-/**
- * Resolve which daemon version to install: an explicit `--to <version>` (must
- * exist), otherwise the channel's dist-tag (stable → `latest`, rc → `rc`).
- */
-export async function resolveDaemonTarget(opts: { to?: string; channel: Channel }): Promise<ResolvedTarget> {
-  const pkg = await fetchPackument(DAEMON_PKG)
+export type ManagedPackage = typeof DAEMON_PKG | typeof DESKTOP_PKG
+
+// Resolves an explicit `--to <version>` (must exist), otherwise the channel's dist-tag (stable → `latest`, rc → `rc`).
+export async function resolveDaemonTarget(
+  opts: { to?: string; channel: Channel },
+  name: ManagedPackage = DAEMON_PKG
+): Promise<ResolvedTarget> {
+  const pkg = await fetchPackument(name)
   const versions = pkg.versions ?? {}
 
   let version: string
   if (opts.to) {
     if (!versions[opts.to]) {
-      throw new Error(`${DAEMON_PKG}@${opts.to} does not exist in the registry`)
+      throw new Error(`${name}@${opts.to} does not exist in the registry`)
     }
     version = opts.to
   } else {
     const tag = opts.channel === 'rc' ? 'rc' : 'latest'
     const tagged = pkg['dist-tags']?.[tag]
-    if (!tagged) throw new Error(`${DAEMON_PKG} has no '${tag}' dist-tag in the registry`)
+    if (!tagged) throw new Error(`${name} has no '${tag}' dist-tag in the registry`)
     version = tagged
   }
 
   const entry = versions[version]
-  if (!entry?.dist?.tarball) throw new Error(`${DAEMON_PKG}@${version} has no downloadable tarball`)
+  if (!entry?.dist?.tarball) throw new Error(`${name}@${version} has no downloadable tarball`)
   return {
     version,
     tarball: entry.dist.tarball,

@@ -9,7 +9,13 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { nodeSatisfies } from './node-engines.js'
 import { versionDir, versionsDir } from './paths.js'
-import { downloadTarball, resolveDaemonTarget, verifyTarball, type ResolvedTarget } from './registry.js'
+import {
+  downloadTarball,
+  resolveDaemonTarget,
+  verifyTarball,
+  type ManagedPackage,
+  type ResolvedTarget
+} from './registry.js'
 import { isInstalled, type Channel } from './version-store.js'
 
 const SECCOMP_HELPER_PATHS = [
@@ -35,15 +41,25 @@ export function repairDaemonBundleModes(root: string): void {
  */
 const VERSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
 
-/** Resolve the version to install/upgrade to, without downloading. `async` so a
- *  rejected version surfaces as a rejected promise, matching the declared type
- *  rather than throwing before the caller has one to catch. */
-export async function resolveTarget(opts: { to?: string; channel: Channel }): Promise<ResolvedTarget> {
+// Resolves without downloading; `async` so a rejected version surfaces as a rejected promise.
+export async function resolveTarget(
+  opts: { to?: string; channel: Channel },
+  name?: ManagedPackage
+): Promise<ResolvedTarget> {
   if (opts.to !== undefined && !VERSION_TOKEN.test(opts.to)) {
     throw new Error(`invalid version ${JSON.stringify(opts.to)}`)
   }
-  return resolveDaemonTarget(opts)
+  return name ? resolveDaemonTarget(opts, name) : resolveDaemonTarget(opts)
 }
+
+/** What a version store holds: its name in messages, the entry a valid bundle must contain, and post-extract repair. */
+export interface StorePackage {
+  label: string
+  entry: string
+  repair?: (dir: string) => void
+}
+
+export const DAEMON_STORE: StorePackage = { label: 'daemon', entry: 'dist/index.js', repair: repairDaemonBundleModes }
 
 /**
  * Ensure `target.version` is installed under `versions/<v>`. Returns the version.
@@ -53,21 +69,22 @@ export async function installTarget(
   root: string,
   target: ResolvedTarget,
   onLog: (msg: string) => void = () => {},
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; pkg?: StorePackage } = {}
 ): Promise<string> {
+  const { label, entry, repair } = opts.pkg ?? DAEMON_STORE
   if (!opts.force && isInstalled(root, target.version)) {
-    onLog(`daemon ${target.version} already installed`)
+    onLog(`${label} ${target.version} already installed`)
     return target.version
   }
 
   // Fail before downloading if the version declares an incompatible Node.
   if (!nodeSatisfies(target.enginesNode, process.versions.node)) {
     throw new Error(
-      `daemon ${target.version} requires Node ${target.enginesNode} but this CLI runs on ${process.versions.node} — upgrade Node first`
+      `${label} ${target.version} requires Node ${target.enginesNode} but this CLI runs on ${process.versions.node} — upgrade Node first`
     )
   }
 
-  onLog(`downloading daemon ${target.version}…`)
+  onLog(`downloading ${label} ${target.version}…`)
   const buf = await downloadTarball(target.tarball)
   verifyTarball(buf, target)
 
@@ -85,13 +102,13 @@ export async function installTarget(
     const manifest = JSON.parse(readFileSync(`${tmp}/package.json`, 'utf8')) as { engines?: { node?: string } }
     if (!nodeSatisfies(manifest.engines?.node, process.versions.node)) {
       throw new Error(
-        `daemon ${target.version} requires Node ${manifest.engines?.node} but this CLI runs on ${process.versions.node} — upgrade Node first`
+        `${label} ${target.version} requires Node ${manifest.engines?.node} but this CLI runs on ${process.versions.node} — upgrade Node first`
       )
     }
-    if (!existsSync(`${tmp}/dist/index.js`)) {
-      throw new Error(`daemon ${target.version} tarball has no dist/index.js — refusing to install`)
+    if (!existsSync(`${tmp}/${entry}`)) {
+      throw new Error(`${label} ${target.version} tarball has no ${entry} — refusing to install`)
     }
-    repairDaemonBundleModes(tmp)
+    repair?.(tmp)
 
     // Atomic publish. A racing install that already produced `dest` wins; drop
     // tmp — except a forced re-install, whose point is replacing the existing dir.
@@ -109,6 +126,6 @@ export async function installTarget(
     rmSync(tmp, { recursive: true, force: true })
     throw err
   }
-  onLog(`installed daemon ${target.version}`)
+  onLog(`installed ${label} ${target.version}`)
   return target.version
 }

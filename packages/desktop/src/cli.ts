@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, networkInterfaces } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
@@ -32,7 +32,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
-import { appBundlePath, runSelf, selfCommand } from './self.js'
+import { appBundlePath, managedEntry, runSelf, selfCommand, serviceEntry } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
@@ -90,7 +90,7 @@ import {
   type SetupContext
 } from './setup.js'
 
-const help = (): string => `${selfCommand()} — prototype desktop daemon (Cua Driver + computer_* MCP tools)
+const help = (): string => `${selfCommand()} — the AgentConnect computer daemon (Cua Driver + computer_* MCP tools)
 
 Usage: ${selfCommand()} <command> [options]
 
@@ -256,7 +256,7 @@ async function main(): Promise<void> {
       return serviceCommand(dir, loadConfig(dir), rest[0])
     case 'autostart': {
       const action = rest[0]
-      if (action === 'enable') enableAutostart(dir, resolve(process.argv[1]!))
+      if (action === 'enable') enableAutostart(dir, serviceEntry())
       else if (action === 'disable') disableAutostart(dir)
       else if (action === 'start') startAutostartNow(dir)
       else throw new Error('usage: autostart enable | disable | start')
@@ -944,7 +944,7 @@ function serviceCommand(dir: string, config: DesktopConfig, action: string | und
 }
 
 function linuxServiceCommand(dir: string, config: DesktopConfig, action: string | undefined): void {
-  if (action === 'install') linuxService.installService(dir, resolve(process.argv[1]!))
+  if (action === 'install') linuxService.installService(dir, serviceEntry(), Boolean(managedEntry()))
   else if (action === 'uninstall') linuxService.uninstallService()
   else if (action === 'start') linuxService.startService()
   else if (action === 'stop') linuxService.stopService()
@@ -971,7 +971,7 @@ async function setupLinuxService(dir: string, config: DesktopConfig): Promise<Ch
     console.log(`A daemon started by hand is already on port ${config.port}; stop it so the service can take over.`)
     return undefined
   }
-  linuxService.installService(dir, resolve(process.argv[1]!))
+  linuxService.installService(dir, serviceEntry(), Boolean(managedEntry()))
   console.log(`Installed and started the systemd user service ${linuxService.unitPath()}.`)
   if (!(await waitForDaemon(config, 60_000))) {
     console.log(`The service did not come up; see: journalctl --user -u ${linuxService.UNIT}`)
@@ -1014,7 +1014,7 @@ async function setup(
     checks = await setupMacApp(dir, config)
   } else if (process.platform === 'linux' && withService && !linuxService.inGraphicalSession()) {
     // Over SSH there is no display to check or approve against; the session's autostart entry starts the service.
-    linuxService.installService(dir, resolve(process.argv[1]!))
+    linuxService.installService(dir, serviceEntry(), Boolean(managedEntry()))
     console.log(`Installed the systemd user service ${linuxService.unitPath()}.`)
     console.log('No graphical session in this shell: the service starts when you next log in to the desktop.')
     console.log(`Then check it there with: ${selfCommand()} doctor`)

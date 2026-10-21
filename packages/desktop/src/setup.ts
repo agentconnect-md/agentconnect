@@ -10,6 +10,7 @@ import { appBundlePath, selfCommand } from './self.js'
 import { loadRegistration, registrationPath, type Registration } from './cp/registration.js'
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
 import { screencastTokenPath, waylandSession } from './stream/wayland-capture.js'
+import { DESKTOP_DAEMON_VERSION } from './version.js'
 
 export type CheckStatus = 'ok' | 'info' | 'warn' | 'fail'
 
@@ -143,6 +144,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
   const checks: Check[] = []
   const { config } = ctx
   const registration = registrationCheck(ctx.dir)
+  checks.push({ name: 'version', status: 'ok', detail: `desktop daemon ${DESKTOP_DAEMON_VERSION}` })
   checks.push(
     config.clients.length > 0
       ? {

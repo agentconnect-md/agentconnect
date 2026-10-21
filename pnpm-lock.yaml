@@ -492,6 +492,9 @@ importers:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      json:
+        specifier: ^11.0.0
+        version: 11.0.0
       postject:
         specifier: 1.0.0-alpha.6
         version: 1.0.0-alpha.6
@@ -2702,6 +2705,7 @@ packages:
   '@opentelemetry/sdk-trace-web@2.11.0':
     resolution: {integrity: sha512-8hgLI437x8VRKzgUr+WRcHFp9AeaHmveKRsPIMNele9tethgCKprakRRqZCWyt41ilALHATfspUMl1An0OTMUQ==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
 

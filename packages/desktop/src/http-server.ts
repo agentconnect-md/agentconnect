@@ -10,6 +10,7 @@ import { LOCAL_OWNER_STOP_REASON } from './local-controls.js'
 import { runSelf } from './self.js'
 import type { Check } from './setup.js'
 import type { Viewer } from './viewer.js'
+import { DESKTOP_DAEMON_VERSION } from './version.js'
 
 export const CONTROL_HEADER = 'x-agentconnect-desktop'
 
@@ -134,7 +135,9 @@ async function control(
   if (!isLoopback(req)) return send(res, 403, 'control endpoints are loopback-only')
   if (req.headers.origin || req.headers[CONTROL_HEADER] !== '1') return send(res, 403, 'forbidden')
   const { computer } = options
-  if (path === '/control/status' && req.method === 'GET') return send(res, 200, computer.info())
+  // The version lets the CLI's upgrade health check tell the new daemon from the old one.
+  if (path === '/control/status' && req.method === 'GET')
+    return send(res, 200, { ...computer.info(), version: DESKTOP_DAEMON_VERSION })
   // Checks run as children of the daemon, so on macOS they see the daemon's (the .app's) permissions.
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams
   if (path === '/control/permissions' && req.method === 'GET') {

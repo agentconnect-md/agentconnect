@@ -1,24 +1,30 @@
 {
-  "private": true,
   "name": "@agentconnect.md/desktop",
-  "version": "0.0.0-prototype",
-  "description": "Prototype desktop daemon: embeds Cua Driver and exposes the computer_* tools over MCP (docs/designs/computer-use.md M0)",
+  "version": "2.0.0-dev",
+  "description": "AgentConnect computer daemon: drives a desktop through Cua Driver and serves the computer_* tools over MCP; installed and upgraded by agentconnect computer",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/desktop"
+  },
   "type": "module",
   "bin": {
-    "agentconnect-desktop": "dist/cli.js"
+    "agentconnect-desktop": "dist/agentconnect-desktop.mjs"
   },
   "files": [
-    "dist"
+    "dist/agentconnect-desktop.mjs",
+    "dist/agentconnect-desktop.mjs.LEGAL.txt"
   ],
   "scripts": {
     "build": "pnpm --filter \"{.}...\" build:package",
-    "build:package": "tsc -p tsconfig.json",
+    "build:package": "node scripts/bundle.mjs --dist",
     "bundle": "node scripts/bundle.mjs",
     "bundle:macos": "node scripts/build-macos-app.mjs",
     "clean": "rm -rf dist bundle",
     "dev": "tsx src/cli.ts run",
     "license-scan": "tsx scripts/license-scan.ts",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:xvfb": "node scripts/bundle.mjs && vitest run -c vitest.xvfb.config.ts",
@@ -38,12 +44,22 @@
     "@types/node": "^24.19.1",
     "@types/ws": "^8.18.2",
     "esbuild": "0.28.2",
+    "json": "^11.0.0",
     "postject": "1.0.0-alpha.6",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },
+  "keywords": [
+    "agentconnect",
+    "computer-use",
+    "desktop",
+    "mcp"
+  ],
   "engines": {
     "node": ">=24.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

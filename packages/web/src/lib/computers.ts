@@ -90,10 +90,10 @@ export type InstallOs = 'linux' | 'macos' | 'windows' | 'docker'
 const CLI = '@agentconnect.md/cli'
 const DEFAULT_DESKTOP_IMAGE = 'ghcr.io/agentconnect-md/desktop:latest'
 
-/** The one-line command that installs the desktop daemon's service and registers this desktop (computer-use.md §3.6). */
+/** The one-line command that installs the computer daemon and registers this desktop (computer-use.md §3.5, §3.6). */
 export function computerInstallCommand(
   os: InstallOs,
-  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'linuxInstallerUrl' | 'desktopImage'>
+  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'desktopImage'>
 ): string {
   // PowerShell takes double quotes; POSIX shells single quotes, which keep the token literal.
   const q = (value: string) => (os === 'windows' ? `"${value}"` : `'${value}'`)
@@ -101,9 +101,7 @@ export function computerInstallCommand(
   if (os === 'docker') {
     return `docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped --shm-size=1g -v agentconnect-desktop:/home/desktop -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL=${q(registration.exchangeUrl)} -e AGENTCONNECT_REGISTER_TOKEN=${q(registration.token)} ${registration.desktopImage ?? DEFAULT_DESKTOP_IMAGE}`
   }
-  // A fresh Ubuntu desktop has wget but neither curl nor Node.js; the CP-served installer brings a pinned runtime.
-  if (os === 'linux' && registration.linuxInstallerUrl) {
-    return `wget -nv -O- ${q(registration.linuxInstallerUrl)} | sh -s -- --register ${q(registration.token)}`
-  }
-  return `npx -y ${CLI} desktop setup --register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}`
+  const register = `--register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}`
+  // Linux installs the daemon from npm into the CLI's version store; macOS and Windows run setup in their installed app (M3 / M4).
+  return `npx -y ${CLI} computer ${os === 'linux' ? 'install' : 'setup'} ${register}`
 }

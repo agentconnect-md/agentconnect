@@ -352,9 +352,7 @@ describe('openapi plane', () => {
         [`${base}/{id}/sharing`, 'put', 'setComputerSharing'],
         [`${base}/{id}/stop`, 'post', 'stopComputer'],
         [`${base}/registrations/{id}`, 'get', 'getComputerRegistration'],
-        ['/api/v1/computers/register', 'post', 'registerComputer'],
-        ['/api/v1/computers/install.sh', 'get', 'getComputerLinuxInstaller'],
-        ['/api/v1/computers/desktop/{sha256}/{file}', 'get', 'getComputerDesktopFile']
+        ['/api/v1/computers/register', 'post', 'registerComputer']
       ]
       for (const [path, method, operationId] of expected) {
         const op = doc.paths?.[path]?.[method]
@@ -364,9 +362,8 @@ describe('openapi plane', () => {
       }
       // The desktop daemon presents its registration token in the body, not a bearer.
       expect(doc.paths['/api/v1/computers/register'].post.security).toEqual([])
-      // The installer and the bundle it downloads are fetched before any credential exists.
-      expect(doc.paths['/api/v1/computers/install.sh'].get.security).toEqual([])
-      expect(doc.paths['/api/v1/computers/desktop/{sha256}/{file}'].get.security).toEqual([])
+      // Desktops install from npm through the CLI (computer-use.md §3.5); the CP serves no installer or bundle.
+      expect(doc.paths['/api/v1/computers/install.sh']).toBeUndefined()
       // Resume loosens the console Stop, so it is interactive-only and undocumented.
       expect(doc.paths?.[`${base}/{id}/resume`]?.post).toBeUndefined()
       // The `/v1` alias serves the handed-out exchange URL without documenting it twice.

@@ -6214,7 +6214,7 @@
       "os": "Platform",
       "docker": "Docker",
       "osHint": {
-        "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland. Run it in a terminal on the desktop as yourself, not as root; the service then starts with every session.",
+        "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland, with Node.js 24.12 or later. Run it in a terminal on the desktop as yourself, not as root; the service then starts with every session, and `agentconnect computer upgrade` updates it.",
         "macos": "macOS asks you to allow Accessibility and Screen Recording for AgentConnect the first time.",
         "windows": "Run it in a normal PowerShell of the signed-in user, not as administrator.",
         "docker": "A Linux desktop with Firefox in a container, on any host with Docker. To use docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."

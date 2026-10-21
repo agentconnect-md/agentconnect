@@ -14,12 +14,13 @@ import { currentVersion, isInstalled, listInstalled, readMeta, writeMeta } from 
  * the version it replaced as `previous` (the rollback target). No-op if already
  * current. §5 / §5.4.
  */
-export function useVersion(root: string, version: string): void {
-  if (!isInstalled(root, version)) {
-    throw new Error(
-      `daemon ${version} is not installed — run \`${cliCommand({ root })} version install ${version}\` first`
-    )
-  }
+export function useVersion(
+  root: string,
+  version: string,
+  missing = (): string =>
+    `daemon ${version} is not installed — run \`${cliCommand({ root })} version install ${version}\` first`
+): void {
+  if (!isInstalled(root, version)) throw new Error(missing())
   const prev = currentVersion(root)
   if (prev === version) return
 
