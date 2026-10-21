@@ -401,7 +401,8 @@ Where there is no physical desktop (a server, a NAS, Kubernetes), a "Linux deskt
 image running **the same desktop daemon**. The prototype was built and run on a Mac with OrbStack:
 
 - **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, pinned Node 24, and the desktop
-  daemon; Cua Driver and ffmpeg are downloaded and checksummed at build time. It runs as the non-root user `desktop`,
+  daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
+  daemon downloads the pinned build on first start into the volume, as on desktops (§7.4, §11). It runs as the non-root user `desktop`,
   without systemd. `/home/desktop` is a volume holding the token, config, audit log, and browser profile. The image is
   1.26 GB and builds in about 100 s.
 - **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1600x900x24`), a session D-Bus, and Xfce, then runs the daemon in
@@ -412,14 +413,17 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   (context: the repository root) for `linux/amd64` and `linux/arm64` with every release, through the same
   `docker-bake.hcl` target, effective-version and alias steps as the other images. The bundle stage runs once on the
   build platform. The image leaves out Mesa's software GL stack (Xvfb runs without GLX and Firefox renders in
-  software), the CJK serif faces, npm and the driver's unused SDK library: 913 MiB on arm64 and 935 MiB on amd64
+  software), the CJK serif faces, npm, ffmpeg and the driver's unused SDK library: 864 MiB on arm64 and about 860 MiB on amd64
   (uncompressed). The PR job `Desktop image` builds both arches natively and runs `docker/smoke.sh` on them: size
-  under 1 GiB, healthy, every `doctor` check ok, a maximized browser, and `docker stop` exiting 0.
+  under 1 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a maximized browser, registration against
+  a stub Control Plane (one exchange, the key kept on restart, the token absent from the log and from the session's
+  and browser's environments), and `docker stop` exiting 0.
 - **Registration [implemented]**: `run` spends `AGENTCONNECT_REGISTER_TOKEN` (or the file named by
   `AGENTCONNECT_REGISTER_TOKEN_FILE`, such as a Docker or Kubernetes secret) at `AGENTCONNECT_CP_URL` before it starts,
-  with `AGENTCONNECT_COMPUTER_NAME` or the hostname as the name the console did not give. A stored, unrevoked key for
-  the same CP leaves the spent token unused on every later start; a revoked desktop restarted with its spent token
-  keeps running revoked instead of crash-looping, and a new token registers it again. The entrypoint hands the token
+  with `AGENTCONNECT_COMPUTER_NAME` or the hostname as the name the console did not give. The stored key records the
+  sha256 of the token it was spent from: a live key for the same CP and the same token leaves the token unused on
+  every later start; a different token (another org, or after a revoke) is spent; a revoked desktop restarted with its
+  spent token keeps running revoked instead of crash-looping. The entrypoint hands the token
   to the daemon alone, the daemon drops it from its environment before starting anything, and no output names it. An
   unregistered daemon started without a terminal writes its first client token to `client-token` (0600) in the data
   directory rather than to the log.
@@ -429,7 +433,8 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   online with `isolation: 'container'`, `session: 'xvfb'`, one 1600×900 display and all nine `doctor` checks ok.
 - **Browser [implemented]**: the entrypoint keeps one Firefox ESR window open and maximized (`wmctrl`), restarting it
   with a 2–30 s backoff when it exits or crashes; prefs turn off the first-run, crash and safe-mode prompts that would
-  block an unattended restart. `BROWSER=none` turns it off.
+  block an unattended restart. While another instance holds the profile (Firefox restarting itself, or one an agent
+  started), the supervisor waits for it instead of opening a second window. `BROWSER=none` turns it off.
 - **Health [implemented]**: `HEALTHCHECK` runs `doctor --json --daemon`, which asks the running daemon and fails when
   none answers or a required check fails, a revoked key included.
 - **WebRTC and NAT**: by default the daemon advertises the local address the browser reached it on, which in bridge
@@ -461,7 +466,8 @@ docker run -d --name desktop --hostname "$NAME" --shm-size=1g -v desktop-home:/h
 
 The prototype's gaps (container IP in the output, a token readable only from `docker logs`, no CP registration, an
 empty `display`, an unmanaged browser, an unpublished 1.26 GB image) are closed as above. Still open: no audio or
-clipboard, no Chromium variant, and the GPL distribution question for the preinstalled ffmpeg (§11, §14.8).
+clipboard, no Chromium variant, and the source obligations of the Debian packages in the published image (§11). ffmpeg
+is downloaded on first start rather than preinstalled until counsel answers its distribution question (§14.8).
 
 **Positioning**: containers start in seconds, are isolated, can hand each task a fresh desktop, and need no OS grants,
 which suits managed computers and multi-tenancy. The costs are an image of about 0.9 GB, configuring the public address
@@ -928,15 +934,15 @@ and every `computer/policy`.
 
 ### 11.1 Dependencies
 
-| Component                            | License                    | Use                                                            | Distribution                                                                                                                                                                                          |
-| ------------------------------------ | -------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cua Driver (`libs/cua-driver`)       | MIT                        | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                                       |
-| werift                               | MIT                        | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                                         |
-| Node.js (SEA)                        | MIT                        | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                                    |
-| ffmpeg (with libx264)                | GPL                        | Viewer encoding                                                | **Not bundled** on desktops: downloaded from a third-party build and checked on first run; preinstalled in the published container image, as in the prototype, while counsel's answer is open [legal] |
-| GStreamer, PipeWire, python3-gi      | LGPL and others            | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                                       |
-| libei                                | MIT                        | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                                      |
-| Xvfb, Xfce, Firefox ESR, Debian base | MIT / GPL / MPL and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                                            |
+| Component                            | License                    | Use                                                            | Distribution                                                                                                                                                                      |
+| ------------------------------------ | -------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cua Driver (`libs/cua-driver`)       | MIT                        | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                   |
+| werift                               | MIT                        | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                     |
+| Node.js (SEA)                        | MIT                        | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                |
+| ffmpeg (with libx264)                | GPL                        | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal] |
+| GStreamer, PipeWire, python3-gi      | LGPL and others            | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                   |
+| libei                                | MIT                        | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                  |
+| Xvfb, Xfce, Firefox ESR, Debian base | MIT / GPL / MPL and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                        |
 
 xdotool and wayvnc are no longer needed. Never used: `cua-spacesd`, the Cua HTML5 viewer and streaming crates
 (FSL-1.1-MIT); `cua-perception` (AGPL models); ydotool, RustDesk (AGPL-3.0); Sunshine (GPL-3.0); the official nut.js
@@ -1106,8 +1112,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    goes through TURN or the relay; quotas and billing (concurrent desktops, desktop hours, bandwidth, screenshot
    storage); egress policy (§15.4).
 4. **Licensing**: the GPL obligations of shipping ffmpeg (and other GPL packages) in a published image, such as
-   providing corresponding source [legal]. Still open: the published image keeps the prototype's preinstalled ffmpeg
-   until counsel answers.
+   providing corresponding source [legal]. Until counsel answers, the published image does not preinstall ffmpeg: the
+   daemon downloads the pinned build on first start, as desktops do. The Debian packages' source obligations are open.
 
 **Acceptance**: one `docker run` with a registration token produces a usable Computer in the console; in Kubernetes, an
 agent that asks for a managed computer gets a fresh desktop within seconds and completes a browser task, and its data
@@ -1148,8 +1154,8 @@ works; lock screen and UAC prompts return definite errors; no rules or autostart
 - Upstream Cua Driver changes: pin the version and run the whole platform matrix before upgrading.
 - macOS grant models change between releases (macOS 27 renamed Accessibility): `doctor` and `setup` probe real
   capability rather than relying on pane names.
-- ffmpeg's GPL obligations and the OS licensing of remote watching [legal] may change how M2 (ffmpeg preinstalled in
-  the image) and the viewer are distributed; M2 needs an answer before it starts.
+- ffmpeg's GPL obligations and the OS licensing of remote watching [legal] may change how the viewer is distributed;
+  until counsel answers, M2's published image downloads ffmpeg on first start instead of preinstalling it.
 - TURN bandwidth cost and latency affect managed-computer pricing.
 
 ## 15. Later: managed computers

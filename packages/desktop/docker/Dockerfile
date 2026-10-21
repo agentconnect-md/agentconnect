@@ -33,8 +33,8 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.title="AgentConnect desktop" \
   org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Firefox ESR) that registers as an AgentConnect Computer" \
   org.opencontainers.image.source="https://github.com/agentconnect-md/agentconnect" \
-  org.opencontainers.image.licenses="Apache-2.0" \
   org.opencontainers.image.version="${VERSION}"
+# No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright).
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 # Nothing here renders with OpenGL (Firefox draws in software), so Mesa's LLVM backend and the CJK serif faces stay out.
@@ -57,9 +57,8 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     rm /tmp/node.tar.xz; node --version
 
 COPY --from=bundle /app/packages/desktop/bundle/agentconnect-desktop.mjs /app/packages/desktop/bundle/agentconnect-desktop.mjs.LEGAL.txt /opt/agentconnect/
-# Pinned Cua Driver and ffmpeg live in the image; the entrypoint links them into the data dir so first start downloads nothing.
+# The pinned Cua Driver lives in the image; GPL ffmpeg is not bundled, the daemon downloads it on first start (§11).
 RUN AGENTCONNECT_DESKTOP_HOME=/opt/agentconnect/tools node /opt/agentconnect/agentconnect-desktop.mjs install-driver \
-  && AGENTCONNECT_DESKTOP_HOME=/opt/agentconnect/tools node /opt/agentconnect/agentconnect-desktop.mjs install-ffmpeg \
   && rm -f /opt/agentconnect/tools/cua-driver/*/libcua_driver_sdk.so /opt/agentconnect/tools/cua-driver/*/cua_driver_node_runtime.node \
   && chmod -R a+rX /opt/agentconnect \
   && printf '#!/bin/sh\nexec node /opt/agentconnect/agentconnect-desktop.mjs "$@"\n' > /usr/local/bin/agentconnect-desktop \

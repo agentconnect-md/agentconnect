@@ -64,7 +64,7 @@ jobs:
             # No workspace deps, so only its own files and the root install, Node, tsconfig and reporter config reach it.
             echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
             # The image bundles protocol and connection from source and installs from the root manifests.
-            echo "desktopImage=$(any '^(packages/(desktop|protocol|connection)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.pnpmfile\.mjs$|patches/|tsconfig\.base\.json$|\.github/workflows/test\.yaml$)')"
+            echo "desktopImage=$(any '^(packages/(desktop|protocol|connection)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.pnpmfile\.mjs$|patches/|scripts/|\.dockerignore$|docker-bake\.hcl$|tsconfig\.base\.json$|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
   # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
