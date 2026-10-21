@@ -709,7 +709,8 @@ export class ComputerTools {
   ): Promise<{ waitedMs: number; position: number } | undefined> {
     const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
     // One wait keeps one stamp, so the CP knows its later asks and a turn end can drop it.
-    const requestedAt = new Date(this.now()).toISOString()
+    const startedAt = this.now()
+    const requestedAt = new Date(startedAt).toISOString()
     let wait: LeaseWait | undefined
     for (;;) {
       let result: ComputerLeaseAcquireResult
@@ -728,23 +729,23 @@ export class ComputerTools {
         // A CP replica lost mid-wait: ask again through the reconnect while the wait has time left.
         if (wait && this.now() < wait.until) {
           // A stopped turn gives up its wait instead of asking again with the old stamp.
-          if (this.deps.canRun?.(ctx) === false) throw this.waitEnded(computerId, wait)
+          if (this.deps.canRun?.(ctx) === false) throw this.waitEnded(computerId, wait.since)
           this.deps.log?.debug(`computer: queued acquire failed, asking again: ${(error as Error).message}`)
           await sleep(COMPUTER_LEASE_RETRY_MS)
-          if (this.deps.canRun?.(ctx) === false) throw this.waitEnded(computerId, wait)
+          if (this.deps.canRun?.(ctx) === false) throw this.waitEnded(computerId, wait.since)
           continue
         }
         throw new ComputerToolError('unavailable', `the control lease could not be taken: ${(error as Error).message}`)
       }
       if (result.granted) {
-        // A grant that lands after the turn stopped is handed back, and the input is not sent.
-        if (wait && this.deps.canRun?.(ctx) === false) {
+        // A grant that lands after the turn stopped, even on the first held ask, is handed back unused.
+        if (this.deps.canRun?.(ctx) === false) {
           await this.deps.leases
             .computerLeaseRelease({ computerId, agentId: state.agentId, sessionId: state.sessionId }, state.orgId)
             .catch((error: Error) =>
               this.deps.log?.debug(`computer: releasing a stopped turn's grant failed: ${error.message}`)
             )
-          throw this.waitEnded(computerId, wait)
+          throw this.waitEnded(computerId, wait?.since ?? startedAt)
         }
         break
       }
@@ -767,10 +768,10 @@ export class ComputerTools {
     return wait ? { waitedMs: this.now() - wait.since, position: wait.first } : undefined
   }
 
-  private waitEnded(computerId: string, wait: LeaseWait): ComputerToolError {
+  private waitEnded(computerId: string, since: number): ComputerToolError {
     return new ComputerToolError('computer_busy', "this session's turn ended while it waited for this computer", {
       computer: computerId,
-      waitedMs: this.now() - wait.since
+      waitedMs: this.now() - since
     })
   }
 
