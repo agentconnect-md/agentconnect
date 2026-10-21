@@ -36,7 +36,7 @@ import { appBundlePath, runSelf, selfCommand } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
-import { startLocalControls, type LocalControls } from './local-controls.js'
+import { DAEMON_CONSOLE_STOP_REASON, startLocalControls, type LocalControls } from './local-controls.js'
 import { RelayLinks } from './cp/relay-links.js'
 import {
   channelPrincipal,
@@ -1013,7 +1013,7 @@ function installConsoleControls(computer: Computer): void {
   process.stdin.on('data', (data: Buffer) => {
     const key = data.toString('utf8')
     if (key === '\u0003') return void process.emit('SIGINT')
-    if (key === 'p') computer.pause('stopped from the daemon console')
+    if (key === 'p') computer.pause(DAEMON_CONSOLE_STOP_REASON)
     else if (key === 'r') computer.resume()
     else if (key === 's') console.error(JSON.stringify(computer.info(), null, 2))
   })

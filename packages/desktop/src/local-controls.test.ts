@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CONSOLE_STOP_REASON } from './cp/console-stop.js'
 import {
   HOTKEY_STOP_REASON,
+  LOCAL_OWNER_STOP_REASON,
   TRAY_STOP_REASON,
   startLocalControls,
   trayState,
@@ -190,7 +191,7 @@ describe('local controls', () => {
     expect(trayState(computer, undefined)).toMatchObject({ tone: 'paused', canResume: false })
     computer.pause(CONSOLE_STOP_REASON)
     expect(trayState(computer, undefined)).toMatchObject({ tone: 'paused', canResume: false })
-    computer.pause('stopped by the local owner')
+    computer.pause(LOCAL_OWNER_STOP_REASON)
     expect(trayState(computer, undefined).canResume).toBe(true)
   })
 })

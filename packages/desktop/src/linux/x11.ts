@@ -255,6 +255,7 @@ export function request(opcode: number, minor: number, body: Buffer): Buffer {
 }
 
 export const OP_GRAB_KEY = 33
+export const OP_UNGRAB_KEY = 34
 export const OP_QUERY_EXTENSION = 98
 export const OP_GET_KEYBOARD_MAPPING = 101
 export const OP_GET_MODIFIER_MAPPING = 119

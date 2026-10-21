@@ -447,7 +447,10 @@ export class DBusConnection {
   private signalListener: (message: Message) => void = () => undefined
   private closeListener: () => void = () => undefined
 
-  private constructor(private readonly socket: Socket) {
+  private constructor(
+    private readonly socket: Socket,
+    private readonly callTimeoutMs: number
+  ) {
     socket.on('data', (chunk: Buffer) => this.receive(chunk))
     socket.on('error', () => this.close())
     socket.on('close', () => this.close())
@@ -483,7 +486,7 @@ export class DBusConnection {
       socket.on('data', onData)
       socket.write(`\0AUTH EXTERNAL ${Buffer.from(String(uid), 'latin1').toString('hex')}\r\n`)
     })
-    const connection = new DBusConnection(socket)
+    const connection = new DBusConnection(socket, timeoutMs)
     const hello = await connection.call({
       destination: 'org.freedesktop.DBus',
       path: '/org/freedesktop/DBus',
@@ -514,10 +517,27 @@ export class DBusConnection {
     member: string
     signature?: string
     body?: unknown[]
+    timeoutMs?: number
   }): Promise<unknown[]> {
     if (this.closed) throw new Error('D-Bus connection closed')
     const serial = this.nextSerial()
-    const reply = new Promise<Message>((resolve, reject) => this.pending.set(serial, { resolve, reject }))
+    const timeoutMs = call.timeoutMs ?? this.callTimeoutMs
+    const reply = new Promise<Message>((resolve, reject) => {
+      // The bus's default reply timeout is unbounded, so a hung peer would otherwise stall the caller forever.
+      const timer = setTimeout(() => {
+        this.pending.delete(serial)
+        reject(
+          new Error(
+            `D-Bus call ${call.interface}.${call.member} to ${call.destination} timed out after ${timeoutMs} ms`
+          )
+        )
+      }, timeoutMs)
+      timer.unref?.()
+      this.pending.set(serial, {
+        resolve: (message) => (clearTimeout(timer), resolve(message)),
+        reject: (error) => (clearTimeout(timer), reject(error))
+      })
+    })
     this.socket.write(
       encodeMessage({
         type: MessageType.MethodCall,

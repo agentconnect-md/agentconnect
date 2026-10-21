@@ -3,6 +3,7 @@ import {
   OP_GET_KEYBOARD_MAPPING,
   OP_GET_MODIFIER_MAPPING,
   OP_GRAB_KEY,
+  OP_UNGRAB_KEY,
   X11Connection,
   X11Error,
   queryExtension,
@@ -208,9 +209,17 @@ export class X11LocalControls implements X11LocalState {
     )
     // The grab must ignore Caps Lock and Num Lock, so it is taken once per combination of them.
     const extras = [0, LOCK_MASK, numLock, LOCK_MASK | numLock].filter((mask, i, all) => all.indexOf(mask) === i)
+    const taken: number[] = []
     try {
-      for (const extra of extras) await this.x.checked(grabKey(this.x.setup.root, hotkey.modifiers | extra, keycode))
+      for (const extra of extras) {
+        await this.x.checked(grabKey(this.x.setup.root, hotkey.modifiers | extra, keycode))
+        taken.push(hotkey.modifiers | extra)
+      }
     } catch (error) {
+      // Grabs left behind would swallow the combination in those lock states without stopping anything.
+      for (const modifiers of taken) {
+        await this.x.checked(ungrabKey(this.x.setup.root, modifiers, keycode)).catch(() => undefined)
+      }
       if (error instanceof X11Error && error.code === BAD_ACCESS)
         throw new Error(`${hotkey.label} is taken by another app`)
       throw error
@@ -274,4 +283,11 @@ function grabKey(root: number, modifiers: number, keycode: number): Buffer {
   body[8] = 1
   // owner_events = false sits in the request's second byte.
   return request(OP_GRAB_KEY, 0, body)
+}
+
+function ungrabKey(root: number, modifiers: number, keycode: number): Buffer {
+  const body = Buffer.alloc(8)
+  body.writeUInt32LE(root, 0)
+  body.writeUInt16LE(modifiers, 4)
+  return request(OP_UNGRAB_KEY, keycode, body)
 }

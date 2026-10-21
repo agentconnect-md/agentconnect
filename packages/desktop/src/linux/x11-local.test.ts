@@ -54,7 +54,7 @@ class FakeX {
   sequence = 0
   private server: Server
 
-  constructor(readonly options: { xinput?: boolean; grabTaken?: boolean } = {}) {
+  constructor(readonly options: { xinput?: boolean; grabTaken?: boolean; takenAfter?: number } = {}) {
     this.server = createServer((socket) => this.serve(socket))
   }
 
@@ -165,8 +165,14 @@ class FakeX {
       body[24 + 4] = 10
       return void socket.write(reply(sequence, body, 1))
     }
+    if (opcode === 34) {
+      const modifiers = request.readUInt16LE(8)
+      const index = this.grabs.findIndex((grab) => grab.keycode === request[1] && grab.modifiers === modifiers)
+      if (index >= 0) this.grabs.splice(index, 1)
+      return
+    }
     if (opcode === 33) {
-      if (this.options.grabTaken) {
+      if (this.options.grabTaken || this.options.takenAfter === this.grabs.length) {
         const error = Buffer.alloc(32)
         error[1] = 10
         error.writeUInt16LE(sequence, 2)
@@ -238,6 +244,10 @@ describe.skipIf(process.platform === 'win32')('X11LocalControls', () => {
     const taken = await start({ grabTaken: true })
     expect(taken.controls.hotkeyProblem).toBe('Ctrl+Escape is taken by another app')
     taken.controls.close()
+    const partly = await start({ takenAfter: 2 })
+    expect(partly.controls.hotkeyProblem).toBe('Ctrl+Escape is taken by another app')
+    expect(partly.x.grabs).toEqual([])
+    partly.controls.close()
     const bare = await start({ xinput: false })
     expect(bare.controls.keyboardProblem).toBe('the X server has no XInput extension')
     expect(bare.controls.hotkeyProblem).toBeUndefined()

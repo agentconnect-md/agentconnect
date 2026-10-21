@@ -29,7 +29,7 @@ class FakeBus {
   private readonly replies = new Map<number, (message: Message) => void>()
   private readonly server: Server
 
-  constructor(readonly options: { watcher?: boolean } = {}) {
+  constructor(readonly options: { watcher?: boolean | 'hang' } = {}) {
     this.server = createServer((socket) => this.serve(socket))
   }
 
@@ -129,6 +129,7 @@ class FakeBus {
     }
     if (message.member === 'AddMatch') return answer('', [])
     if (message.member === 'RegisterStatusNotifierItem') {
+      if (this.options.watcher === 'hang') return
       if (this.options.watcher === false) {
         return socket.write(
           encodeMessage({
@@ -154,7 +155,7 @@ afterEach(() => {
   for (const bus of buses.splice(0)) bus.close()
 })
 
-async function start(options: ConstructorParameters<typeof FakeBus>[0] = {}) {
+async function start(options: ConstructorParameters<typeof FakeBus>[0] = {}, timeoutMs = 1000) {
   const bus = new FakeBus(options)
   buses.push(bus)
   await bus.listen()
@@ -164,7 +165,7 @@ async function start(options: ConstructorParameters<typeof FakeBus>[0] = {}) {
     onResume: () => clicks.resume++,
     hotkeyLabel: 'Ctrl+Alt+Shift+Escape',
     log: () => undefined,
-    connect: () => DBusConnection.session(`unix:path=${bus.path}`, 1000)
+    connect: () => DBusConnection.session(`unix:path=${bus.path}`, 1000, timeoutMs)
   })
   return { bus, tray, clicks }
 }
@@ -243,6 +244,12 @@ describe.skipIf(process.platform === 'win32')('Tray', () => {
     bus.ownerChanged('org.kde.StatusNotifierWatcher', '')
     await settle()
     expect(tray.problem).toBe('the system tray went away')
+    tray.close()
+  })
+
+  it('gives up on a watcher that never answers instead of hanging startup', async () => {
+    const { tray } = await start({ watcher: 'hang' }, 150)
+    expect(tray.problem).toMatch(/RegisterStatusNotifierItem .* timed out after 150 ms/)
     tray.close()
   })
 })

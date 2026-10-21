@@ -5,12 +5,14 @@ import { Tray, type TrayState } from './linux/tray.js'
 
 export const TRAY_STOP_REASON = 'stopped from the tray'
 export const HOTKEY_STOP_REASON = 'stopped with the stop hotkey'
+export const LOCAL_OWNER_STOP_REASON = 'stopped by the local owner'
+export const DAEMON_CONSOLE_STOP_REASON = 'stopped from the daemon console'
 // Pauses the owner made on this machine; only these may be lifted from the tray.
 export const LOCAL_STOP_REASONS = new Set([
   TRAY_STOP_REASON,
   HOTKEY_STOP_REASON,
-  'stopped by the local owner',
-  'stopped from the daemon console'
+  LOCAL_OWNER_STOP_REASON,
+  DAEMON_CONSOLE_STOP_REASON
 ])
 
 export interface LocallyControlled {
