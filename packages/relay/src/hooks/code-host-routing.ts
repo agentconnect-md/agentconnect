@@ -232,6 +232,10 @@ export function createCodeHostRouter<E>(
       for (const { rule } of candidates) fireSelected(rule, selection, scope)
       return
     }
+    if (verdict.targets.length === 0) {
+      deps.log.info(`${label}: routing chose no target ${routingId}:${deliveryKey} (${eventAction})`)
+      return
+    }
     // Only a candidate may fire; dispatchHookFire re-reads and fences every selected rule against the captured one.
     const byHook = new Map(candidates.map((candidate) => [candidate.rule.hookId, candidate.rule]))
     for (const target of verdict.targets) {

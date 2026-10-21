@@ -26,6 +26,7 @@ import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
   githubRuleVerdict,
+  githubRuleMatch,
   githubTeamOwner,
   buildGithubContext,
   buildTrustedGithubMetadata,
@@ -1134,6 +1135,18 @@ describe('github ingress', () => {
       expect(h.reports).toHaveLength(0)
     })
 
+    it('logs a host answer that selects no target', async () => {
+      log.info.mockClear()
+      h.table.upsert(routed())
+      h.routeAck = (msg) => ({ msgId: msg.msgId, accepted: true, hookRoute: { targets: [] } })
+      await post('issues', issuesPayload())
+      await flush()
+      expect(fires()).toHaveLength(0)
+      expect(log.info).toHaveBeenCalledWith(
+        `github ingress: routing chose no target ${ROUTING}:gh-delivery-1 (issues:opened)`
+      )
+    })
+
     it.each<[string, (h: Harness) => RcHookAssign['routing']]>([
       ['the host daemon is offline', () => routingFor(ROUTING, { agentId: AGENT, daemonId: DAEMON_C })],
       [
@@ -1511,6 +1524,27 @@ describe('github ingress', () => {
   })
 
   describe('matching', () => {
+    it('logs a thread event on receipt and names why it fired nothing', async () => {
+      log.info.mockClear()
+      await post('pull_request', pullPayload())
+      expect(log.info).toHaveBeenCalledWith(
+        `github ingress: received pull_request:opened gh-delivery-1 (github:${REPO_ID}#77)`
+      )
+      expect(log.info).toHaveBeenCalledWith(
+        `github ingress: no rule for pull_request:opened gh-delivery-1 (github:${REPO_ID}#77, 0 rules)`
+      )
+
+      log.info.mockClear()
+      h.table.upsert(rule({}, { events: ['issues:opened'] }))
+      h.table.upsert(rule({ hookId: HOOK_B }, { events: ['pull_request:*'], labelFilter: ['ready'] }))
+      await post('pull_request', pullPayload())
+      await flush()
+      expect(h.sent).toHaveLength(0)
+      expect(log.info).toHaveBeenCalledWith(
+        `github ingress: matched no rule gh-delivery-1 (pull_request:opened github:${REPO_ID}#77; ${HOOK}=event, ${HOOK_B}=label_filter; 0 narrowed by mention)`
+      )
+    })
+
     it('an exact event:action hit fires the daemon with the perThread sessionKey', async () => {
       h.table.upsert(rule())
       const res = await post('issues', issuesPayload())
@@ -3582,6 +3616,31 @@ describe('buildTrustedGithubMetadata acknowledgement targets', () => {
       rule({}, { events: ['issues:opened'] })
     )
     expect(github?.issueCommentId).toBeUndefined()
+  })
+})
+
+describe('githubRuleMatch (pure predicate)', () => {
+  const ctx: GithubMatchCtx = {
+    event: 'issues',
+    eventAction: 'issues:opened',
+    installationId: String(INSTALLATION),
+    labels: ['bug'],
+    senderType: 'User',
+    mentionText: undefined,
+    commentSubjectFamily: undefined
+  }
+
+  it('names the gate each no-match failed', () => {
+    expect(githubRuleMatch(rule(), ctx)).toEqual({ verdict: 'needs-authz' })
+    expect(githubRuleMatch(rule(), { ...ctx, eventAction: 'issues:closed' })).toEqual({
+      verdict: 'no-match',
+      reason: 'lifecycle'
+    })
+    expect(githubRuleMatch(rule(), { ...ctx, senderType: 'Bot' })).toMatchObject({ reason: 'bot_sender' })
+    expect(githubRuleMatch(rule(), { ...ctx, installationId: '1' })).toMatchObject({ reason: 'installation' })
+    expect(githubRuleMatch(rule({}, { events: ['issues:labeled'] }), ctx)).toMatchObject({ reason: 'event' })
+    expect(githubRuleMatch(rule({}, { mentionOnly: true }), ctx)).toMatchObject({ reason: 'mention_only' })
+    expect(githubRuleMatch(rule({}, { labelFilter: ['ready'] }), ctx)).toMatchObject({ reason: 'label_filter' })
   })
 })
 
