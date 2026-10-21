@@ -150,9 +150,10 @@ session. `sleeping` is a CP verdict like `offline`: the lease service and the ch
 ### 3.1 Components [validated]
 
 The desktop daemon is a Node program bundled into one `.mjs` (on macOS, a Node single executable application inside a
-signed `.app`, §3.2.1). The package is `packages/desktop` with the CLI entry `agentconnect desktop …`, which the CLI routes to the
-installed desktop daemon ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-desktop-daemon)); the standalone
-`agentconnect-desktop` bin stays for development.
+signed `.app`, §3.2.1). The package is `packages/desktop`, published to npm as `@agentconnect.md/desktop` (bin
+`agentconnect-desktop`) like the agent daemon. `@agentconnect.md/cli` installs, upgrades and runs it as
+`agentconnect computer …` (`desktop` is a hidden alias), from its own version store in the desktop data directory
+([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon)).
 
 ```mermaid
 flowchart LR
@@ -287,15 +288,25 @@ the service's own identity, grants, and session rather than the caller's termina
 Session 0 / RDP / Wayland / X11); driver; macOS grants; a real screenshot; display wake; ffmpeg plus a real one-frame
 capture; the Linux GNOME helper, portal, and PipeWire dependencies; the Windows firewall rule; whether the daemon runs.
 
-**[implemented]** Linux one-line install (X11; GNOME Wayland is #3221). The Control Plane serves
-`GET /v1/computers/install.sh` (also under `/api/v1`, no auth) and `GET /v1/computers/desktop/<sha256>/<file>` for the daemon
-bundle and its license notices, from the desktop package's built `bundle/` (`COMPUTER_DESKTOP_BUNDLE_DIR`; the CP image
-ships it). The bundle path names its sha256, so a replica holding another bundle mid-upgrade answers 404 and the
-installer retries. The script carries the CP's public URL and the bundle's sha256, refuses root, downloads the pinned official
-Node.js (picked over a single executable: one checked tarball per architecture, no Linux SEA build to maintain), checks
-both checksums, installs under `~/.agentconnect/desktop`, and runs `setup --register`. A re-run with a spent token keeps
-the stored key. The registration response names the installer as `linuxInstallerUrl`, and the console shows
-`wget -nv -O- <url> | sh -s -- --register <token>` (a fresh Ubuntu desktop has wget but not curl or Node.js).
+**[implemented]** Install, upgrade and diagnose through the CLI (#3239; Linux first, GNOME Wayland is #3221). A release
+publishes `@agentconnect.md/desktop` to npm with the other packages (`scripts/publish-desktop-if-changed.sh`: the same
+channels and dist-tags, provenance through trusted publishing, a self-contained esbuild bundle in `dist/` with the
+release version baked in, and the §11 license scan run on exactly what ships). Cua Driver and ffmpeg are not in the
+package: they stay pinned, checksummed downloads at `setup` / first start. A Linux host is assumed to have Node.js
+(the daemon's `engines`), and the console's **Add Computer** shows
+`npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>`. `install` resolves the
+package from the CLI-local registry (never a CP-supplied URL), verifies its integrity and `engines`, extracts it to
+`versions/<v>` in the data directory, points `current` at it and runs `setup --register`; the systemd user unit and the
+Windows Run-key launcher run `current/dist/agentconnect-desktop.mjs`. `upgrade` installs side by side, switches
+`current`, rewrites and restarts the unit, and requires a stable pid plus the daemon answering as the new version on
+its loopback `/control/status`; otherwise it restores the previous version. Config, the Computer key and the grants
+live beside the store and are never touched, so an upgrade does not register again. `doctor` names the installed
+version (also its first check, which the console shows), and `status`, `versions`, `start` / `stop` / `restart` and
+`uninstall [--purge]` complete the set ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon)).
+The Control Plane no longer serves an installer or the bundle; installs from the earlier `install.sh` keep their data
+directory, and `computer install` moves their service onto the store. Validated on Ubuntu 26.04 Xfce on Xorg (arm64)
+against a local registry: install and register, online across logout / login and reboot, upgrade without a new
+registration, and rollback from a version whose daemon crashes.
 
 ### 3.6 Registration and pairing [design]
 
@@ -986,8 +997,8 @@ and every `computer/policy`.
 - Agent settings: enable computer use and pick Computers.
 - **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
   owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
-  `agentconnect desktop setup --register <token> --cp-url <exchange URL>` (through `npx @agentconnect.md/cli`) quoted
-  for the chosen OS, or on Linux the one-line installer of §3.5 when the CP ships the desktop bundle, and follows `GET …/computers/registrations/:id`, which
+  `npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>` on Linux (§3.5), or
+  `computer setup` with the same arguments on macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
@@ -1031,8 +1042,9 @@ an image with it needs counsel first [legal]; native capture plus OS hardware en
 
 ### 12.1 Code
 
-The prototype lives in `packages/desktop` (`@agentconnect.md/desktop`, `0.0.0-prototype`) on the
-`dev/yulong/cua-driver-daemon-mcp` branch, and merges in M0 (§14.3). Main files: `src/computer.ts` (lease, arbitration, pause, `uncertain`),
+The prototype lived in `packages/desktop` (`@agentconnect.md/desktop`) on the
+`dev/yulong/cua-driver-daemon-mcp` branch and merged in M0 (§14.3); the package is now versioned and published with
+each release (§3.5). Main files: `src/computer.ts` (lease, arbitration, pause, `uncertain`),
 `src/tools.ts` (`computer_*` and the `cua_*` pass-through), `src/http-server.ts`, `src/viewer.ts` /
 `src/viewer-page.ts`, `src/stream/` (`ffmpeg.ts`, `rtc.ts`, `screen-stream.ts`, `wayland-capture.ts`),
 `src/keep-awake.ts`, `src/setup.ts`, `src/service-macos.ts`, `src/service-linux.ts`, `scripts/build-macos-app.mjs`,
@@ -1123,7 +1135,7 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
   screen stream; `setup` / `doctor` and services; the macOS app build; the Docker image.
 - CI: lint, typecheck, unit tests; a new Linux integration job (Xvfb plus the real Cua Driver: screenshot, input, one
   viewer frame); a license scan of release artifacts (fails on AGPL / FSL / BSL / SSPL / GPL).
-- CLI: an `agentconnect desktop …` subcommand in `@agentconnect.md/cli`; the standalone bin is for development only.
+- CLI: an `agentconnect desktop …` subcommand in `@agentconnect.md/cli` (now `agentconnect computer …`, §3.5).
 - Tighten defaults: listen on `127.0.0.1` unless `0.0.0.0` is asked for explicitly.
 
 **Acceptance**: main builds, CI is green, the Xvfb integration test passes.
@@ -1146,8 +1158,8 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
 5. **Console**: the Computers page (list, status, `doctor` results with fixes, policy, granted agents); "Add Computer"
    producing the install command; an embedded viewer on the detail page (watch, take over, pause, stop, revoke); the
    agent setting.
-6. **Linux productization**: `setup --register`; a one-line `install.sh` (**[implemented]** for X11 with the pinned
-   Node runtime, §3.5; GNOME Wayland is #3221); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
+6. **Linux productization**: `setup --register`; a one-line install (**[implemented]** for X11, first as a CP-served
+   `install.sh`, now `agentconnect computer install` from npm, §3.5; GNOME Wayland is #3221); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
    Wayland); keyboard activity detection (XInput2 raw events on X11 **[implemented]**, §6; Wayland cannot listen
    globally, so capabilities say pointer only); local indicator and stop (StatusNotifier tray plus a global hotkey
    **[implemented]** for X11, §6; on GNOME as far as the extension allows); Wayland IME text (clipboard paste behind a
@@ -1193,6 +1205,11 @@ alongside the second half of M1; managed computers depend on M1's CP integration
 4. **Licensing**: the GPL obligations of shipping ffmpeg (and other GPL packages) in a published image, such as
    providing corresponding source [legal]. Until counsel answers, the published image does not preinstall ffmpeg: the
    daemon downloads the pinned build on first start, as desktops do. The Debian packages' source obligations are open.
+
+5. **The computer daemon on npm** [#3239 implemented]: `@agentconnect.md/desktop` is published with each release and
+   managed by `agentconnect computer install / upgrade / doctor / status / uninstall` (§3.5), replacing the CP-served
+   Linux installer. The desktop image still bundles the daemon from the workspace at the release commit rather than
+   installing the published package; macOS (`.app`) and Windows packaging stay in M3 / M4.
 
 **Acceptance**: one `docker run` with a registration token produces a usable Computer in the console; in Kubernetes, an
 agent that asks for a managed computer gets a fresh desktop within seconds and completes a browser task, and its data

@@ -1,5 +1,5 @@
 // `agentconnect computer …`: install, upgrade and diagnose the computer daemon from npm (computer-use.md §3.5); other commands pass through.
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Command } from 'commander'
@@ -187,7 +187,16 @@ function removeLegacyLauncher(root: string, log: (m: string) => void): void {
   }
 }
 
-async function uninstall(ctx: ComputerContext, purge: boolean): Promise<void> {
+// Removes a symlink (or Windows junction) itself, never what it points at.
+function removeLink(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch {
+    rmSync(path, { recursive: true, force: true })
+  }
+}
+
+export async function uninstall(ctx: ComputerContext, purge: boolean): Promise<void> {
   const off = ctx.host.platform === 'win32' ? ['autostart', 'disable'] : ['service', 'uninstall']
   const launch = tryLaunch(ctx, off)
   if (launch) {
@@ -203,12 +212,9 @@ async function uninstall(ctx: ComputerContext, purge: boolean): Promise<void> {
       ctx.root,
       'uninstall',
       () => {
-        for (const path of [
-          versionsDir(ctx.root),
-          currentLink(ctx.root),
-          versionsJsonPath(ctx.root),
-          join(ctx.root, 'app')
-        ])
+        // The link goes first: once its versions are gone, a dangling link fails rmSync's existence check and stays.
+        removeLink(currentLink(ctx.root))
+        for (const path of [versionsDir(ctx.root), versionsJsonPath(ctx.root), join(ctx.root, 'app')])
           rmSync(path, { recursive: true, force: true })
       },
       { wait: true }

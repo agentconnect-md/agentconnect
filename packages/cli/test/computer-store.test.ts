@@ -15,7 +15,7 @@ import {
   upgradeComputer,
   type ComputerOps
 } from '../src/computer/store.js'
-import { setupArgs, targetOpts } from '../src/computer/commands.js'
+import { runComputer, setupArgs, targetOpts, uninstall, type ComputerContext } from '../src/computer/commands.js'
 import { installTarget, resolveTarget } from '../src/install.js'
 import { DESKTOP_PKG, type ResolvedTarget } from '../src/registry.js'
 import { useVersion } from '../src/version-ops.js'
@@ -375,5 +375,64 @@ describe('computer command arguments', () => {
     })
     expect(() => targetOpts({ channel: 'beta' })).toThrow(/unknown channel/)
     expect(() => targetOpts({ keep: '-1' })).toThrow(/invalid --keep/)
+  })
+})
+
+describe('agentconnect computer install / uninstall', () => {
+  function context(): ComputerContext & { launches: DesktopLaunch[]; lines: string[] } {
+    const home = tmp('ac-computer-home-')
+    const launches: DesktopLaunch[] = []
+    const lines: string[] = []
+    return {
+      self: 'ac computer',
+      host: { env: { AGENTCONNECT_DESKTOP_HOME: join(home, 'desktop') }, platform: 'linux', home, exists: existsSync },
+      root: join(home, 'desktop'),
+      node: '/n',
+      run: async (launch) => {
+        launches.push(launch)
+        return { code: 0, stdout: '' }
+      },
+      log: (m) => void lines.push(m),
+      launches,
+      lines
+    }
+  }
+
+  it('installs from the registry, then runs setup on the store entry with registration and extra options', async () => {
+    const ctx = context()
+    await runComputer(
+      ['computer', 'install', '--register', 'tok', '--cp-url', 'https://cp/v1/computers/register', '--host', '0.0.0.0'],
+      'ac',
+      ctx
+    )
+    expect(currentVersion(ctx.root)).toBe('2.6.0')
+    expect(ctx.launches.at(-1)).toEqual({
+      command: '/n',
+      args: [
+        storeEntry(ctx.root, 'linux'),
+        'setup',
+        '--register',
+        'tok',
+        '--cp-url',
+        'https://cp/v1/computers/register',
+        '--host',
+        '0.0.0.0'
+      ],
+      serviceEntry: storeEntry(ctx.root, 'linux')
+    })
+  })
+
+  it('removes the service, versions and legacy bundle but keeps the key, unless purged', async () => {
+    const ctx = context()
+    await runComputer(['computer', 'install', '--no-setup'], 'ac', ctx)
+    writeFileSync(join(ctx.root, 'computer-key.json'), '{}')
+    mkdirSync(join(ctx.root, 'app'))
+    await uninstall(ctx, false)
+    expect(ctx.launches.at(-1)!.args.slice(1)).toEqual(['service', 'uninstall'])
+    expect(currentVersion(ctx.root)).toBeNull()
+    for (const gone of ['versions', 'current', 'app']) expect(existsSync(join(ctx.root, gone))).toBe(false)
+    expect(existsSync(join(ctx.root, 'computer-key.json'))).toBe(true)
+    await uninstall(ctx, true)
+    expect(existsSync(ctx.root)).toBe(false)
   })
 })
