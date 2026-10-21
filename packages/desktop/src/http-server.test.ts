@@ -1,12 +1,16 @@
 import { networkInterfaces } from 'node:os'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Computer } from './computer.js'
 import { authenticate, issueClientToken } from './config.js'
 import { CONTROL_HEADER, startHttpServer, type RunningHttpServer } from './http-server.js'
 import { FakeDriver, testConfig } from './testing.js'
 import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer } from './viewer.js'
+import { runSelf } from './self.js'
+
+// Doctor and permissions run in a child of the daemon; the tests read the arguments instead of spawning one.
+vi.mock('./self.js', () => ({ runSelf: vi.fn(async () => '[]') }))
 
 let running: RunningHttpServer | undefined
 afterEach(async () => {
@@ -119,6 +123,26 @@ describe('desktop HTTP server', () => {
       200
     )
     expect(computer.info().status).toBe('paused')
+  })
+
+  it('runs doctor against the host and port this daemon listens on', async () => {
+    const { url } = await start()
+    const base = url.replace(/\/mcp$/, '')
+    const response = await fetch(`${base}/control/doctor?captureTimeoutMs=1000`, { headers: { [CONTROL_HEADER]: '1' } })
+    expect(response.status).toBe(200)
+    const [args, timeoutMs] = vi.mocked(runSelf).mock.calls.at(-1)!
+    expect(args).toEqual([
+      'doctor',
+      '--json',
+      '--here',
+      '--capture-timeout',
+      '1000',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      '0'
+    ])
+    expect(timeoutMs).toBe(91_000)
   })
 
   it('serves the viewer page publicly and its API to token holders only', async () => {

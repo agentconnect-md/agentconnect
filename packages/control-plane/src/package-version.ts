@@ -15,3 +15,8 @@ export function readPackageVersion(): string | undefined {
 export function releaseTag(version: string | undefined = readPackageVersion()): string | undefined {
   return version && /^\d+\.\d+\.\d+(-rc\.\d+)?$/.test(version) ? `v${version}` : undefined
 }
+
+/** The desktop image matching this CP's release, so the console never pairs a CP with a newer or older desktop. */
+export function desktopImage(override: string | undefined, release: string | undefined = releaseTag()): string {
+  return override ?? `ghcr.io/agentconnect-md/desktop:${release ?? 'latest'}`
+}

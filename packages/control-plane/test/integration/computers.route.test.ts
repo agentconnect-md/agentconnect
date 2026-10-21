@@ -645,6 +645,8 @@ describe('Linux installer', () => {
     expect(without.json().linuxInstallerUrl).toBeNull()
     const res = await withDist().app.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
     expect(res.json().linuxInstallerUrl).toBe('https://cp.example.com/v1/computers/install.sh')
+    // A checkout carries the dev version, so the console's Docker command falls back to latest.
+    expect(without.json().desktopImage).toBe('ghcr.io/agentconnect-md/desktop:latest')
   })
 
   it('serves the installer filled in for this CP, and the bundle by checksum, on both prefixes without auth', async () => {

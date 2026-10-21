@@ -91,6 +91,8 @@ const CoreConfigShape = {
   COMPUTER_CREDENTIAL_TTL_SEC: z.coerce.number().int().min(60).max(3600).default(300),
   // Where the built desktop daemon bundle and Linux installer live (computer-use.md §3.5); unset ⇒ packages/desktop/bundle.
   COMPUTER_DESKTOP_BUNDLE_DIR: z.string().min(1).optional(),
+  // The desktop image the console's Docker command runs (computer-use.md §3.8); unset ⇒ GHCR's image at this CP's release.
+  COMPUTER_DESKTOP_IMAGE: z.string().min(1).optional(),
   // TURN for the console viewer when no direct UDP path exists (computer-use.md §7.2): comma-separated turn:/turns: URLs.
   COMPUTER_TURN_URLS: z.string().optional(),
   // coturn's `static-auth-secret` (use-auth-secret); the CP mints per-viewer credentials from it and never sends it out.

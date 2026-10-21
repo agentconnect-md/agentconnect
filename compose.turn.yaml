@@ -19,6 +19,8 @@ services:
       - --external-ip=${AGENTCONNECT_TURN_EXTERNAL_IP:?set AGENTCONNECT_TURN_EXTERNAL_IP to this host's public IP}
       - --min-port=${AGENTCONNECT_TURN_MIN_PORT:-49160}
       - --max-port=${AGENTCONNECT_TURN_MAX_PORT:-49199}
+      # WebRTC relays peers over UDP only, so refuse RFC 6062 TCP allocations that would reach any TCP port on this host.
+      - --no-tcp-relay
       # Both viewer peers are relay-only, so a peer is always this server's own relay address, public or container-side.
       - --denied-peer-ip=0.0.0.0-255.255.255.255
       - --allowed-peer-ip=${AGENTCONNECT_TURN_EXTERNAL_IP}

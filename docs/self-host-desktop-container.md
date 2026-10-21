@@ -37,12 +37,14 @@ In the console, open **Computers → Add computer**, pick **Docker**, give it a 
 
 ```sh
 docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped \
-  --shm-size=1g -v agentconnect-desktop:/home/desktop \
+  --shm-size=1g -v agentconnect-desktop:/home/desktop -e LISTEN_HOST=127.0.0.1 \
   -e AGENTCONNECT_CP_URL='https://cp.example.com/v1/computers/register' \
-  -e AGENTCONNECT_REGISTER_TOKEN='<one-time token>' ghcr.io/agentconnect-md/desktop:latest
+  -e AGENTCONNECT_REGISTER_TOKEN='<one-time token>' ghcr.io/agentconnect-md/desktop:v2.6.0
 ```
 
-The dialog shows the Computer once it is online. The token works once and expires after an hour. The volume
+The image tag is the release your Control Plane runs (`latest` from a development build), and
+`COMPUTER_DESKTOP_IMAGE` on the Control Plane names another image or registry. Agents and the console come
+through the relay, so the daemon listens on loopback only. The dialog shows the Computer once it is online. The token works once and expires after an hour. The volume
 keeps the key the token bought, so keep the volume and the command can run again unchanged.
 
 ## Run it with Docker Compose
@@ -141,8 +143,11 @@ Open UDP and TCP `3478` and UDP `49160-49199` on that host. Each viewing takes a
 `AGENTCONNECT_TURN_MIN_PORT` / `AGENTCONNECT_TURN_MAX_PORT` for many viewers at once. The Control Plane mints
 credentials per viewer and per desktop from the shared secret (`COMPUTER_TURN_URLS`, `COMPUTER_TURN_SECRET`,
 `COMPUTER_TURN_TTL_SEC`; one viewing lasts at most the TTL, 6 h by default) and never sends the secret out.
-Because both ends always relay, the overlay lets coturn reach only its own relay addresses, so the TURN server
-cannot be used to reach anything else on your network. The Helm chart sets the same three variables from
+Because both ends always relay, the overlay refuses TCP relays and lets coturn send UDP only to
+`AGENTCONNECT_TURN_EXTERNAL_IP` and its own container, so the TURN server cannot reach the rest of your network.
+coturn cannot limit that allowance by port: anyone holding minted credentials can send UDP to any port on the
+external IP, from the host itself. Run no other UDP service on that address, or have the host firewall drop UDP
+from the coturn container to ports outside the relay range. The Helm chart sets the same three variables from
 `computerViewer.turn`.
 
 ## Keep the token out of the environment

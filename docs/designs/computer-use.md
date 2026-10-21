@@ -485,7 +485,8 @@ next to it) runs the image on a user's server, and the console's **Add Computer*
 only dials out, so the console viewer's signaling and screenshots go through the relay, and its video is direct when
 `RTC_ADDRESS` and the published UDP range reach the browser, through TURN otherwise. The stack's `compose.turn.yaml`
 adds coturn with `use-auth-secret` and sets `COMPUTER_TURN_URLS` / `COMPUTER_TURN_SECRET` (§7.2); since both peers
-are relay-only, it lets coturn reach only its own relay addresses. The desktop reruns `doctor` as soon as the first
+are relay-only, it refuses TCP relays and lets coturn send UDP only to the host's external IP and its own container
+(any UDP port there, since coturn has no per-port allowance; the guide says to keep other UDP services off it). The desktop reruns `doctor` as soon as the first
 start's ffmpeg download lands rather than 30 minutes later, and takes the name the Control Plane knows it by from
 `computer/auth/ok`, so `computer_list` and the console agree. The example keeps the daemon's own port on loopback (agents and the console arrive through the relay), and the daemon's own `doctor` runs check it on the port it listens on, which matters with `network_mode: host`. Verified on an Ubuntu 26.04 arm64 server against a
 Control Plane and relay on another host: registration from the console's token, an agent completing a Firefox task,

@@ -44,8 +44,9 @@ describe('compose.yaml service environment', () => {
     const turn = readFileSync(fileURLToPath(new URL('../../../compose.turn.yaml', import.meta.url)), 'utf8')
     expect(turn).toMatch(/^ {6}- COMPUTER_TURN_URLS=turn:\S+\?transport=udp,turn:\S+\?transport=tcp$/m)
     expect(turn).toMatch(/^ {6}- COMPUTER_TURN_SECRET=\$\{AGENTCONNECT_TURN_SECRET\}$/m)
-    // Relay-only peers reach only coturn's own relay addresses, so the server is no proxy into the network.
+    // Relay-only UDP peers reach only this host's external IP and the container, so the server is no proxy into the network.
     expect(turn).toContain('--denied-peer-ip=0.0.0.0-255.255.255.255')
+    expect(turn).toMatch(/^ {6}- --no-tcp-relay$/m)
   })
 
   it('passes the usage batch-ingress credential through without inventing a default', () => {

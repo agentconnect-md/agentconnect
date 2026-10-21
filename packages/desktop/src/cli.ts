@@ -64,6 +64,7 @@ import {
 } from './cp/env-registration.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
+import { scheduleDoctor } from './doctor-schedule.js'
 import * as linuxService from './service-linux.js'
 import {
   installService,
@@ -468,9 +469,12 @@ function startCpChannel(options: {
   })
   const applyConsoleStop = consoleStopHandler(computer, () => client.beat())
   // Doctor runs in a child of the daemon, so it sees the service's own session and grants.
-  let doctorTimer: NodeJS.Timeout | undefined
-  const runDoctor = async (): Promise<void> => {
-    try {
+  client.start()
+  // Runs never overlap, so a refresh during the first run reports right after it.
+  const doctor = scheduleDoctor({
+    intervalMs: DOCTOR_INTERVAL_MS,
+    onError: (error) => log(`doctor for the Control Plane report failed: ${error.message}`),
+    run: async () => {
       // Where this daemon listens, which `--port` / PORT may have moved from the config's.
       const output = await runSelf(
         ['doctor', '--json', '--here', '--host', config.host, '--port', String(config.port)],
@@ -479,24 +483,14 @@ function startCpChannel(options: {
       checks = localizeChecks(JSON.parse(output) as Check[])
       doctorAt = new Date()
       client.beat()
-    } catch (error) {
-      log(`doctor for the Control Plane report failed: ${(error as Error).message}`)
     }
-    if (doctorTimer) clearTimeout(doctorTimer)
-    doctorTimer = setTimeout(() => void runDoctor(), DOCTOR_INTERVAL_MS)
-    doctorTimer.unref()
-  }
-  client.start()
-  // Runs never overlap, so a refresh during the first run reports right after it.
-  let doctorRuns = runDoctor()
+  })
   return {
     client,
     relays: relayLinks,
-    refreshDoctor() {
-      doctorRuns = doctorRuns.then(runDoctor)
-    },
+    refreshDoctor: () => doctor.refresh(),
     stop() {
-      if (doctorTimer) clearTimeout(doctorTimer)
+      doctor.stop()
       relayLinks.stop()
       client.stop()
     }

@@ -49,6 +49,7 @@ function harness() {
   const revoked: string[] = []
   const leases: unknown[] = []
   const stops: unknown[] = []
+  const names: string[] = []
   let report: HeartbeatReport = { status: 'online', facts: { osVersion: 'Ubuntu 26.04', session: 'x11' } }
   const authority = new ChannelAuthority({
     registered: true,
@@ -65,6 +66,7 @@ function harness() {
     onPolicy: (policy) => policies.push(policy),
     onLease: (lease) => leases.push(lease),
     onStop: (stop) => stops.push(stop),
+    onReady: (ok) => names.push(ok.name),
     onRevoked: (reason) => revoked.push(reason),
     log: () => {},
     clock,
@@ -108,6 +110,7 @@ function harness() {
     revoked,
     leases,
     stops,
+    names,
     authority,
     client,
     credential,
@@ -117,6 +120,15 @@ function harness() {
 }
 
 describe('ComputerCpClient', () => {
+  it('hands the name the Control Plane knows the desktop by to onReady', async () => {
+    const h = harness()
+    h.client.start()
+    await settle()
+    h.authOk(h.transports[0]!)
+    await settle()
+    expect(h.names).toEqual(['desk'])
+  })
+
   it('hands a console Stop and its lifting on', async () => {
     const h = harness()
     h.client.start()

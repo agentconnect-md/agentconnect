@@ -17,6 +17,7 @@ import {
 } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { publicBaseUrl } from '../oauth/base.js'
+import { desktopImage } from '../../package-version.js'
 import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
 import {
   ComputerAuditPageDto,
@@ -237,7 +238,8 @@ export function computerRoutes(deps: HttpDeps) {
           exchangeUrl: `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_REGISTER_PATH}`,
           linuxInstallerUrl: deps.desktopDistribution
             ? `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_LINUX_INSTALLER_PATH}`
-            : null
+            : null,
+          desktopImage: desktopImage(deps.config.COMPUTER_DESKTOP_IMAGE)
         })
       }
     )
