@@ -954,6 +954,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       model: 'opus',
       modelProvider,
       reasoningEffort: 'high',
+      permissionMode: 'auto',
       chatActions: 'approve',
       env: { GITHUB_TOKEN: 'ghp_x', DEPLOY_ENV: 'production' }
     })
@@ -992,6 +993,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(cleared.model).toBe('opus')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       model: 'opus',
+      permissionMode: 'auto',
       chatActions: 'approve',
       env: {}
     })
@@ -1029,7 +1031,11 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     // Values are persisted row-per-key in agent_secret behind the AgentSecretStore
     // seam — NEVER in the agent row's runtimeOverrides bag, never a response.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
-    expect(row?.runtimeOverrides).toEqual({ chatActions: 'approve', env: { PUBLIC_URL: 'https://x' } })
+    expect(row?.runtimeOverrides).toEqual({
+      permissionMode: 'auto',
+      chatActions: 'approve',
+      env: { PUBLIC_URL: 'https://x' }
+    })
     const secretRows = await prisma.agentSecret.findMany({ where: { agentId: created.id }, orderBy: { key: 'asc' } })
     expect(secretRows.map((s) => ({ key: s.key, value: s.value }))).toEqual([
       { key: 'API_KEY', value: 'sk-1' },
@@ -1106,6 +1112,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: false,
       showStatusBar: false,
       fastMode: true,
+      permissionMode: 'agent',
       chatActions: 'settings'
     })
 
@@ -1145,6 +1152,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       showFooter: true,
       showStatusBar: true,
+      permissionMode: 'agent',
       chatActions: 'talk'
     })
 
@@ -1168,6 +1176,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const created = create.json() as { id: string; chatActions: string }
     expect(created.chatActions).toBe('approve')
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
+      permissionMode: 'auto',
       chatActions: 'approve'
     })
 
@@ -1292,6 +1301,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     const created = create.json() as { id: string; mcpServers: string[] }
     expect(created.mcpServers).toEqual(['github', 'metrics'])
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
+      permissionMode: 'auto',
       chatActions: 'approve',
       mcpServers: ['github', 'metrics']
     })
@@ -1316,6 +1326,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((cleared.json() as { mcpServers: string[] }).mcpServers).toEqual([])
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       model: 'opus',
+      permissionMode: 'auto',
       chatActions: 'approve'
     })
 

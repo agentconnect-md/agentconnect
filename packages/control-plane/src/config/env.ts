@@ -204,9 +204,9 @@ const CoreConfigShape = {
   // signed in for every org, so the deployment names it. Empty runtime ⇒ never
   // place on the pool (born unplaced, as before); an install with no pool member
   // ignores both keys.
-  PRESET_AGENT_POOL_RUNTIME: z.string().default('dsh-acp'),
+  PRESET_AGENT_POOL_RUNTIME: z.string().default('claude-acp'),
   // Model pinned on that placement; empty ⇒ leave it to the runtime's own default.
-  PRESET_AGENT_POOL_MODEL: z.string().default('deepseek-official::deepseek-flash'),
+  PRESET_AGENT_POOL_MODEL: z.string().default('default'),
   // (SLACK_PLATFORM_* and FEISHU/LARK_PLATFORM_* moved into the provider env
   // shapes spread above.)
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.

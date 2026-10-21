@@ -19,7 +19,9 @@ import {
   modelTooltip,
   permissionModeChoicesFor,
   runtimeCanDream,
+  newAgentModelFor,
   preferredModelFor,
+  preselectedPermissionMode,
   PLAYGROUND_CHANNEL_FILTER,
   resolvedPermissionMode,
   permissionModeOptions,
@@ -484,6 +486,56 @@ describe('preferredModelFor', () => {
   it("returns '' when nothing is advertised (runtime default is the only choice)", () => {
     expect(preferredModelFor(daemonWith([]), 'codex')).toBe('')
     expect(preferredModelFor(undefined, 'codex')).toBe('')
+  })
+})
+
+describe('newAgentModelFor', () => {
+  const daemonWith = (models: string[]): Pick<DaemonRow, 'runtimeModels'> => ({
+    runtimeModels: [
+      {
+        runtime: 'claude-acp',
+        version: '1',
+        models,
+        acpProtocolVersion: null,
+        mcpCapabilities: null,
+        modelCatalog: { models: [], defaultModel: 'b', source: 'native', observedAt: '2026-07-18T00:00:00Z' }
+      }
+    ]
+  })
+
+  it('prefers the advertised default entry, else the preselected model', () => {
+    expect(newAgentModelFor(daemonWith(['a', 'default', 'b']), 'claude-acp')).toBe('default')
+    expect(newAgentModelFor(daemonWith(['a', 'b']), 'claude-acp')).toBe('b')
+    expect(newAgentModelFor(undefined, 'claude-acp')).toBe('')
+  })
+})
+
+describe('preselectedPermissionMode', () => {
+  const offered = (values: string[]) => values.map((v) => ({ v, l: v }))
+  const catalog = (modes: string[], defaultMode: string): RuntimeModelCatalog => ({
+    models: [],
+    permissionModes: modes.map((value) => ({ value })),
+    defaultPermissionMode: defaultMode,
+    source: 'acp',
+    observedAt: '2026-07-18T00:00:00Z'
+  })
+
+  it('takes the auto mode, else full access, else the runtime default', () => {
+    const claude = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']
+    expect(preselectedPermissionMode('claude-acp', offered(claude), catalog(claude, 'default'))).toBe('auto')
+    const noAuto = ['default', 'plan', 'bypassPermissions']
+    expect(preselectedPermissionMode('claude-acp', offered(noAuto), catalog(noAuto, 'default'))).toBe(
+      'bypassPermissions'
+    )
+    const dsh = ['read-only', 'workspace-write', 'danger-full-access']
+    expect(preselectedPermissionMode('dsh-acp', offered(dsh), catalog(dsh, 'workspace-write'))).toBe(
+      'danger-full-access'
+    )
+    expect(preselectedPermissionMode('opencode', offered(['build', 'plan']), catalog(['build', 'plan'], 'build'))).toBe(
+      'build'
+    )
+    // Before a catalog arrives, the static table answers.
+    expect(preselectedPermissionMode('claude-acp', offered(claude), undefined)).toBe('auto')
   })
 })
 

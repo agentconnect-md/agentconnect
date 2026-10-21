@@ -11,7 +11,9 @@ import {
   modelCapability,
   preferredModelFor,
   resolveEffortForModel,
+  permissionModeChoicesFor,
   permissionModeDefault,
+  preselectedPermissionMode,
   runtimeLabel,
   agentLabel,
   poolLabel,
@@ -286,7 +288,10 @@ export default function EditAgentModal({
           setRuntime(reset.runtime)
           setModel('')
           setEffort('')
-          setPermissionMode(permissionModeDefault(reset.runtime))
+          const catalog = target?.runtimeModels.find((r) => r.runtime === reset.runtime)?.modelCatalog ?? undefined
+          setPermissionMode(
+            preselectedPermissionMode(reset.runtime, permissionModeChoicesFor(reset.runtime, catalog), catalog)
+          )
         } else if (reset?.kind === 'model') {
           setModel('')
           setEffort('')
@@ -560,14 +565,13 @@ export default function EditAgentModal({
   const outboundEffectivePeerIds = reachability.outgoingByAgentId.get(agent.id) ?? []
   const callVisibilityEditable = agent.canEdit
 
-  // Switching runtime invalidates the model and the effort level (both vocabularies
-  // are per-runtime), so reset both to the runtime default. (MCP enablement is edited
-  // on the agent's Tools & Skills card, not here.)
+  // A runtime switch resets the per-runtime model and effort, and preselects the new runtime's auto mode, else full access, else its default.
   const onRuntimeChange = (nextRuntime: string) => {
     setRuntime(nextRuntime)
     setModel('')
     setEffort('')
-    setPermissionMode(permissionModeDefault(nextRuntime))
+    const catalog = modelSource?.runtimeModels.find((r) => r.runtime === nextRuntime)?.modelCatalog ?? undefined
+    setPermissionMode(preselectedPermissionMode(nextRuntime, permissionModeChoicesFor(nextRuntime, catalog), catalog))
   }
 
   const normalizedDisplayName = displayName.trim() ? displayName.trim() : null
@@ -604,7 +608,10 @@ export default function EditAgentModal({
     ...(showFooter !== initialShowFooter.current ? { showFooter } : {}),
     ...(showStatusBar !== initialShowStatusBar.current ? { showStatusBar } : {}),
     ...(fastMode !== initialFastMode.current ? { fastMode } : {}),
-    ...(permissionMode !== initialPermissionMode.current ? { permissionMode } : {}),
+    // A runtime switch always sends its mode: without one the Control Plane picks the new runtime's own.
+    ...(permissionMode !== initialPermissionMode.current || runtime.trim() !== initialRuntime.current
+      ? { permissionMode }
+      : {}),
     ...(chatActions !== initialChatActions.current ? { chatActions } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
     // Saved before any move, so it is asked of the saved placement.

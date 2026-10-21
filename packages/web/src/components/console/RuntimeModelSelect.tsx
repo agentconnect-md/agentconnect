@@ -21,8 +21,8 @@ import {
   modelOptionsFor,
   permissionModeChoicesFor,
   permissionModeDefault,
+  preselectedPermissionMode,
   resolveEffortForModel,
-  resolvedPermissionMode,
   runtimeLabel,
   runtimeWarning,
   selectableRuntimeIds,
@@ -226,7 +226,7 @@ export function RuntimeModelSelect({
     const mode =
       runtime === value.runtime && modes.some((option) => option.v === permission)
         ? permission
-        : resolvedPermissionMode(permissionModeDefault(runtime), modes, catalog)
+        : preselectedPermissionMode(runtime, modes, catalog)
     onChange({
       runtime,
       model,

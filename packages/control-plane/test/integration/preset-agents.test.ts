@@ -107,11 +107,11 @@ describe('org-creation seam (POST /orgs)', () => {
     expect(((agent.runtimeOverrides ?? {}) as { skills?: string[] }).skills ?? []).toEqual([])
   })
 
-  it('an install running a pool is born placed on it, with the deployment’s runtime and model', async () => {
+  it('an install running a pool is born placed on it, with the deployment’s runtime and model in its auto mode', async () => {
     await seedPoolMember(prisma, randomUUID())
     const org = await prisma.org.create({ data: { slug: `pool-born-${randomUUID().slice(0, 8)}` } })
 
-    await provisionPresetAgents(prisma, { orgId: org.id, pool: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
+    await provisionPresetAgents(prisma, { orgId: org.id, pool: { runtime: 'claude-acp', model: 'default' } })
 
     const agent = await prisma.agent.findUniqueOrThrow({
       where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
@@ -120,8 +120,8 @@ describe('org-creation seam (POST /orgs)', () => {
     expect(agent.setId).toBe(await poolSetId(prisma))
     expect(agent.daemonId).toBeNull() // a set names no machine
     expect(agent.status).toBe('active') // a placed agent is active from row one
-    expect(agent.runtime).toBe('dsh-acp')
-    expect((agent.runtimeOverrides as { model?: string }).model).toBe('deepseek-v4-flash')
+    expect(agent.runtime).toBe('claude-acp')
+    expect(agent.runtimeOverrides).toMatchObject({ model: 'default', permissionMode: 'auto' })
 
     // Born placed ⇒ born settled: nothing may auto-place it again, or fight a later unplace.
     const row = await prisma.presetAgent.findUniqueOrThrow({
@@ -135,7 +135,7 @@ describe('org-creation seam (POST /orgs)', () => {
     // membership says whether this deployment actually runs a pool.
     const org = await prisma.org.create({ data: { slug: `no-pool-${randomUUID().slice(0, 8)}` } })
 
-    await provisionPresetAgents(prisma, { orgId: org.id, pool: { runtime: 'dsh-acp', model: 'deepseek-v4-flash' } })
+    await provisionPresetAgents(prisma, { orgId: org.id, pool: { runtime: 'claude-acp', model: 'default' } })
 
     const agent = await prisma.agent.findUniqueOrThrow({
       where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }

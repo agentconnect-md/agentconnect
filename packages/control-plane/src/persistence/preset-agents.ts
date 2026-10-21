@@ -89,7 +89,7 @@ export const PRESET_AGENT_SKILLS: readonly string[] = [`${PRESET_SKILL_SOURCE.na
  * runtime deferred, the shape every pool-less install keeps.
  */
 export interface PresetPoolPlacement {
-  /** Runtime id the pool image ships and holds credentials for (e.g. `dsh-acp`). */
+  /** Runtime id the pool image ships and holds credentials for (e.g. `claude-acp`). */
   runtime: string
   /** Model pinned on the agent; absent ⇒ the runtime's own default model. */
   model?: string
