@@ -315,10 +315,13 @@ export class ComputerViewerSession {
       if (video) video.srcObject = event.streams[0] ?? new MediaStream([event.track])
     }
     pc.ondatachannel = (event) => this.attachChannel(event.channel)
+    // Only a peer that once connected starts recovery; a failed attempt just fails its own ladder step.
+    let established = false
     const connected = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no connection within ${timeoutMs / 1000} s`)), timeoutMs)
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
+          established = true
           clearTimeout(timer)
           resolve()
         } else if (pc.connectionState === 'failed') {
@@ -327,6 +330,7 @@ export class ComputerViewerSession {
         }
         // Once live, a dropped peer falls back to the next path instead of freezing.
         if (
+          established &&
           this.pc === pc &&
           this.state.phase === 'live' &&
           ['failed', 'closed', 'disconnected'].includes(pc.connectionState)

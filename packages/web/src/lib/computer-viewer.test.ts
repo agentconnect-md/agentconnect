@@ -47,10 +47,10 @@ class FakeChannel {
 }
 
 function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed', onCreate?: () => void) {
-  const created: { config: RTCConfiguration; channel: FakeChannel; closed: boolean }[] = []
+  const created: { config: RTCConfiguration; channel: FakeChannel; closed: boolean; drop: () => void }[] = []
   const createPeer = (config: RTCConfiguration) => {
     onCreate?.()
-    const record = { config, channel: new FakeChannel(), closed: false }
+    const record = { config, channel: new FakeChannel(), closed: false, drop: () => undefined as void }
     created.push(record)
     const pc = {
       connectionState: 'new',
@@ -69,6 +69,10 @@ function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed', on
       close() {
         record.closed = true
       }
+    }
+    record.drop = () => {
+      pc.connectionState = 'disconnected'
+      pc.onconnectionstatechange?.()
     }
     // The connection settles once the answer has been posted, as ICE would.
     setTimeout(() => {
@@ -221,6 +225,26 @@ describe('ComputerViewerSession', () => {
     grants.mockRejectedValue(Object.assign(new Error('this computer is offline'), { status: 409 }))
     await expect(session.api('GET', 'status')).rejects.toThrow(/not connected to any relay/)
     expect(session.snapshot()).toMatchObject({ phase: 'error', error: 'this computer is offline' })
+  })
+
+  it('runs one recovery ladder when a live peer drops and its direct replacement fails', async () => {
+    const { calls, fetchImpl } = relayFetch()
+    let attempts = 0
+    const { created, createPeer } = peers((config) =>
+      config.iceTransportPolicy === 'relay' || attempts++ === 0 ? 'connected' : 'failed'
+    )
+    const { session } = open({ fetch: fetchImpl, createPeer })
+    await session.start()
+    expect(session.snapshot().path).toBe('direct')
+    created[0]!.drop()
+    await vi.waitFor(() => expect(session.snapshot().path).toBe('turn'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(calls.filter((c) => c.url.endsWith('rtc/offer')).map((c) => c.body)).toEqual([
+      { transport: 'direct' },
+      { transport: 'direct' },
+      { transport: 'turn' }
+    ])
+    expect(created.map((c) => c.closed)).toEqual([true, true, false])
   })
 
   it('closes a peer that connects after the viewer was stopped mid-ladder, without pinging', async () => {
