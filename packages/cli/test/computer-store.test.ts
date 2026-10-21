@@ -262,13 +262,14 @@ describe('upgradeComputer', () => {
     expect(ops.calls).toEqual(['install 2.0.0', 'refresh 2.0.0'])
   })
 
-  it('health-checks a stopped service that installing the new unit started, and rolls back when it fails', async () => {
+  it('health-checks a stopped service that installing the new unit starts, and rolls back when it fails', async () => {
     const root = tmp('ac-computer-')
     seed(root, '1.0.0')
-    // Stopped before the upgrade; `service install` in a desktop session starts it.
+    // Stopped before the upgrade; `service install` in a desktop session starts it, and the new version dies at once.
     const ops = fakeOps({
-      status: async (v) => ({ installed: true, running: v === '2.0.0', label: 'unit' }),
-      health: async () => ({ healthy: false, reason: 'pid changed 11 → 12 (crash-looping)' })
+      refreshStarts: true,
+      status: async () => ({ installed: true, running: false, label: 'unit' }),
+      health: async () => ({ healthy: false, reason: 'not running' })
     })
     await expect(upgradeComputer(root, {}, ops, 'ac computer')).rejects.toThrow(/rolled back to 1\.0\.0/)
     expect(currentVersion(root)).toBe('1.0.0')
@@ -349,6 +350,15 @@ describe('realComputerOps against the installed daemon', () => {
     const ops = realComputerOps(root, { run: async () => ({ code: 1, stdout: 'boom' }), log: () => {} })
     expect(await ops.status('1.0.0')).toEqual({ installed: false, running: false, label: 'computer daemon service' })
     await expect(ops.refresh('1.0.0')).rejects.toThrow(/service install exited 1: boom/)
+  })
+
+  it('knows the Linux unit install starts the service only inside a desktop session', () => {
+    const ops = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv) =>
+      realComputerOps(tmp('ac-computer-'), { run: async () => ({ code: 0, stdout: '' }), log: () => {}, platform, env })
+    expect(ops('linux', { DISPLAY: ':0' }).refreshStarts).toBe(true)
+    expect(ops('linux', { WAYLAND_DISPLAY: 'wayland-0' }).refreshStarts).toBe(true)
+    expect(ops('linux', {}).refreshStarts).toBe(false)
+    expect(ops('darwin', { DISPLAY: ':0' }).refreshStarts).toBe(false)
   })
 
   it('upgrades end to end from the fake registry with the scripted daemon', async () => {

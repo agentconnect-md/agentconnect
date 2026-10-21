@@ -92,7 +92,6 @@ run(join(root, 'node_modules', '.bin', 'postject'), [
   '--macho-segment-name',
   'NODE_SEA'
 ])
-const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
 writeFileSync(
   join(app, 'Contents', 'Info.plist'),
   `<?xml version="1.0" encoding="UTF-8"?>

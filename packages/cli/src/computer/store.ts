@@ -24,6 +24,8 @@ export interface ComputerOps {
   status: (version: string) => Promise<ComputerServiceState>
   /** Rewrites the service from that version, so a changed unit or autostart entry reaches the host. */
   refresh: (version: string) => Promise<void>
+  /** Whether `refresh` also (re)starts the service now, as the Linux unit install does inside a desktop session. */
+  refreshStarts?: boolean
   restart: (version: string) => Promise<void>
   health: (version: string) => Promise<HealthResult>
   prune: (opts: AutoPruneOpts) => string[]
@@ -110,8 +112,8 @@ export async function upgradeComputer(
   } catch (err) {
     return rollback(`service install from ${target.version} failed: ${(err as Error).message}`)
   }
-  // Installing the unit starts a stopped service inside a desktop session, which then needs the same health check.
-  if (!running) running = (await ops.status(target.version).catch(() => undefined))?.running ?? false
+  // A refresh that starts a stopped service activates the new version, so it gets the same health check and rollback.
+  running ||= Boolean(ops.refreshStarts)
   if (!running) {
     ops.log(`service ${service.label} is not running (no desktop session?) — ${target.version} starts with it`)
     prune()
@@ -153,6 +155,7 @@ export interface RealOpsOptions {
   run: EntryRunner
   log: (m: string) => void
   platform?: NodeJS.Platform
+  env?: NodeJS.ProcessEnv
   node?: string
   /** How long the restarted daemon has to answer with the new version on its loopback controls. */
   readyMs?: number
@@ -200,6 +203,9 @@ export function realComputerOps(root: string, o: RealOpsOptions): ComputerOps {
     serviceRunsStore: platform === 'linux',
     status,
     refresh: (version) => service(version, 'install'),
+    // Mirrors `inGraphicalSession` in packages/desktop/src/service-linux.ts, which the child inherits this env for.
+    refreshStarts:
+      platform === 'linux' && Boolean((o.env ?? process.env).DISPLAY || (o.env ?? process.env).WAYLAND_DISPLAY),
     restart: (version) => service(version, 'restart'),
     health: async (version) => {
       const settled = await checkServiceHealthy(
