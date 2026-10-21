@@ -39,3 +39,7 @@ export function registrationFromEnv(
 /** A stored, unrevoked key for the same CP already answers the token, which is one-time and spent by now. */
 export const keepsRegistration = (current: Registration | undefined, cpUrl: string): boolean =>
   Boolean(current && !current.revokedAt && current.cpUrl === cpBaseUrl(cpUrl))
+
+/** A refused token keeps only a revoked key for the same CP, so a restart with the spent token stays up, revoked. */
+export const staysRevoked = (current: Registration | undefined, cpUrl: string): boolean =>
+  Boolean(current?.revokedAt && current.cpUrl === cpBaseUrl(cpUrl))

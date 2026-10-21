@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { keepsRegistration, registrationFromEnv } from './env-registration.js'
+import { keepsRegistration, registrationFromEnv, staysRevoked } from './env-registration.js'
 import type { Registration } from './registration.js'
 
 const registration: Registration = {
@@ -54,5 +54,14 @@ describe('registration from the environment', () => {
       keepsRegistration({ ...registration, revokedAt: '2026-10-02T00:00:00.000Z' }, 'https://cp.example.com')
     ).toBe(false)
     expect(keepsRegistration(registration, 'https://other.example.com')).toBe(false)
+  })
+
+  it('stays up on a refused token only when the stored key is revoked and belongs to the same CP', () => {
+    const revoked = { ...registration, revokedAt: '2026-10-02T00:00:00.000Z' }
+    expect(staysRevoked(revoked, 'https://cp.example.com/')).toBe(true)
+    expect(staysRevoked(revoked, 'https://other.example.com')).toBe(false)
+    expect(staysRevoked(registration, 'https://other.example.com')).toBe(false)
+    expect(staysRevoked(registration, 'https://cp.example.com')).toBe(false)
+    expect(staysRevoked(undefined, 'https://cp.example.com')).toBe(false)
   })
 })

@@ -55,7 +55,13 @@ import {
   type Registration
 } from './cp/registration.js'
 import { capabilitiesFrom, computerOs, doctorReport, isolationKind, osVersion, sessionKind } from './cp/report.js'
-import { COMPUTER_NAME_ENV, keepsRegistration, REGISTER_TOKEN_ENV, registrationFromEnv } from './cp/env-registration.js'
+import {
+  COMPUTER_NAME_ENV,
+  keepsRegistration,
+  REGISTER_TOKEN_ENV,
+  registrationFromEnv,
+  staysRevoked
+} from './cp/env-registration.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
 import * as linuxService from './service-linux.js'
@@ -559,7 +565,7 @@ async function registerFromEnvironment(dir: string): Promise<void> {
     await registerComputer(dir, wanted.token, wanted.cpUrl, wanted.name)
   } catch (error) {
     // A revoked desktop restarting with its spent token keeps running revoked rather than crash-looping.
-    if (!(error instanceof RegistrationTokenRefused) || !current) throw error
+    if (!(error instanceof RegistrationTokenRefused) || !current || !staysRevoked(current, wanted.cpUrl)) throw error
     log(`registration refused (${error.message}); keeping computer ${current.computerId}, which refuses all input`)
   }
 }
