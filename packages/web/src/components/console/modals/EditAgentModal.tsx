@@ -11,9 +11,8 @@ import {
   modelCapability,
   preferredModelFor,
   resolveEffortForModel,
-  permissionModeChoicesFor,
   permissionModeDefault,
-  preselectedPermissionMode,
+  runtimeSwitchPermissionMode,
   runtimeLabel,
   agentLabel,
   poolLabel,
@@ -288,10 +287,7 @@ export default function EditAgentModal({
           setRuntime(reset.runtime)
           setModel('')
           setEffort('')
-          const catalog = target?.runtimeModels.find((r) => r.runtime === reset.runtime)?.modelCatalog ?? undefined
-          setPermissionMode(
-            preselectedPermissionMode(reset.runtime, permissionModeChoicesFor(reset.runtime, catalog), catalog)
-          )
+          setPermissionMode(runtimeSwitchPermissionMode(target, reset.runtime))
         } else if (reset?.kind === 'model') {
           setModel('')
           setEffort('')
@@ -570,8 +566,7 @@ export default function EditAgentModal({
     setRuntime(nextRuntime)
     setModel('')
     setEffort('')
-    const catalog = modelSource?.runtimeModels.find((r) => r.runtime === nextRuntime)?.modelCatalog ?? undefined
-    setPermissionMode(preselectedPermissionMode(nextRuntime, permissionModeChoicesFor(nextRuntime, catalog), catalog))
+    setPermissionMode(runtimeSwitchPermissionMode(modelSource, nextRuntime))
   }
 
   const normalizedDisplayName = displayName.trim() ? displayName.trim() : null

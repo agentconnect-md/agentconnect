@@ -59,6 +59,7 @@ import {
   MOCK_MODE,
   resolveEffortForModel,
   permissionModeChoicesFor,
+  preselectedPermissionMode,
   resolvedPermissionMode,
   supportsModes,
   type Agent,
@@ -339,9 +340,12 @@ export default function HomeView() {
 
   const permissionList = agent ? permissionModeChoicesFor(selectedRuntime, modelCatalog) : []
   const showPermission = agent ? !!modelCatalog?.permissionModes?.length || supportsModes(selectedRuntime) : false
-  const permissionMode = showPermission
-    ? resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
-    : ''
+  // Another runtime than the agent's preselects its auto mode, else full access, else its default.
+  const permissionMode = !showPermission
+    ? ''
+    : selectedRuntime !== agent?.runtime
+      ? preselectedPermissionMode(selectedRuntime, permissionList, modelCatalog)
+      : resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
   const permissionPreset = runtime.permissionPreset ?? permissionMode
   const permissionChoices = localizedPermissionChoices(permissionList, permissionT)
 

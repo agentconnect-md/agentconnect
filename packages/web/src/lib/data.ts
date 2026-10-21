@@ -1115,6 +1115,15 @@ export function preselectedPermissionMode(
   )
 }
 
+/** The mode a switch to `runtime` preselects, among the modes the daemon reports for it. */
+export function runtimeSwitchPermissionMode(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string
+): string {
+  const catalog = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.modelCatalog ?? undefined
+  return preselectedPermissionMode(runtime, permissionModeChoicesFor(runtime, catalog), catalog)
+}
+
 // ── read-only display of an agent's effective runtime config ────────────────
 // The Add/Edit pickers resolve a blank model to the owning daemon's advertised
 // default and label effort/permission with the runtime's OWN catalog names

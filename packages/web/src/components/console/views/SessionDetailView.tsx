@@ -38,6 +38,7 @@ import {
   POOL_PLACEMENT,
   platName,
   preferredModelFor,
+  runtimeSwitchPermissionMode,
   rosterParticipantName,
   runtimeDefaultModel,
   runtimeLabel,
@@ -6339,19 +6340,14 @@ export default function SessionDetailView() {
                                     target.model,
                                     currentEffort
                                   )
-                                  setRuntimeSelection({
-                                    ...target,
-                                    effort,
-                                    permissionPreset:
-                                      target.runtime === agentRuntime ? runtimeSelection?.permissionPreset : undefined
-                                  })
+                                  // Another runtime preselects its auto mode, else full access, else its default.
+                                  const permissionPreset =
+                                    target.runtime === agentRuntime
+                                      ? runtimeSelection?.permissionPreset
+                                      : runtimeSwitchPermissionMode(modelSource || undefined, target.runtime)
+                                  setRuntimeSelection({ ...target, effort, permissionPreset })
                                   if (beforeFirstTurn) {
-                                    pgStageRuntime(session.id, {
-                                      ...target,
-                                      effort,
-                                      permissionMode:
-                                        target.runtime === agentRuntime ? runtimeSelection?.permissionPreset : undefined
-                                    })
+                                    pgStageRuntime(session.id, { ...target, effort, permissionMode: permissionPreset })
                                   } else {
                                     pgSetModel(session.id, session.agentId ?? '', target.model, webchatConversationId)
                                     if (effort !== currentEffort)
