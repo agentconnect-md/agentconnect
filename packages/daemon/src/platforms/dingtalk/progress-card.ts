@@ -60,6 +60,8 @@ export class DingTalkProgressCard implements TurnAcknowledgement {
   private lastPushAt = -Infinity
   private timer: unknown
   private chain: Promise<void> = Promise.resolve()
+  // One flush pending or in flight at a time, so slow requests cannot queue a burst.
+  private flushing = false
   private live = true
   private inputting = false
   private settled = false
@@ -170,20 +172,32 @@ export class DingTalkProgressCard implements TurnAcknowledgement {
   }
 
   private schedule(): void {
-    if (!this.live || this.timer !== undefined) return
+    if (!this.live || this.timer !== undefined || this.flushing) return
     const wait = Math.max(0, this.lastPushAt + this.interval - this.now())
     this.timer = this.setTimer(() => {
       this.timer = undefined
+      this.flushing = true
       this.chain = this.chain.then(() => this.push())
     }, wait)
   }
 
   private async push(): Promise<void> {
+    try {
+      await this.flush()
+    } finally {
+      this.flushing = false
+    }
+    if (this.latest && this.latest.text !== this.pushed) this.schedule()
+  }
+
+  private async flush(): Promise<void> {
     await this.opening
     const snapshot = this.latest
     const id = this.outTrackId
     if (!this.live || !id || !snapshot || snapshot.text === this.pushed || this.updates >= DINGTALK_CARD_MAX_UPDATES)
       return
+    // Re-check at send time: card creation or a backoff may have moved the deadline since this flush was queued.
+    if (this.now() < this.lastPushAt + this.interval) return
     this.lastPushAt = this.now()
     try {
       if (!this.inputting) {
@@ -203,6 +217,5 @@ export class DingTalkProgressCard implements TurnAcknowledgement {
         await this.quota.note(error)
       }
     }
-    if (this.latest && this.latest.text !== this.pushed) this.schedule()
   }
 }

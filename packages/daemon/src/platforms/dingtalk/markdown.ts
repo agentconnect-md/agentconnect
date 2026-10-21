@@ -5,6 +5,7 @@ import { FENCE } from '../../messages/split-markdown-bytes.js'
 
 // A no-break space survives where DingTalk drops a plain one; needs live verification on each client.
 const KEEP_SPACE = ' '
+const INLINE_STYLES = new Set(['emphasis', 'strong', 'inlineCode', 'link'])
 
 interface Edit {
   start: number
@@ -16,18 +17,19 @@ interface Edit {
 export function rewriteDingTalkMarkdown(text: string): string {
   if (!text) return text
   const edits: Edit[] = []
-  const visit = (node: Nodes): void => {
+  const visit = (node: Nodes, index: number): void => {
     const start = node.position?.start.offset
     const end = node.position?.end.offset
     if (start !== undefined && end !== undefined) {
       if (node.type === 'emphasis' || node.type === 'strong') underscoreToAsterisk(text, start, end, edits)
-      if (['emphasis', 'strong', 'inlineCode', 'link'].includes(node.type) && text[start - 1] === ' ')
+      // Only a space between inline siblings: a first child's space belongs to its list, heading or quote marker.
+      if (INLINE_STYLES.has(node.type) && index > 0 && text[start - 1] === ' ' && /\S/.test(text[start - 2] ?? ''))
         edits.push({ start: start - 1, end: start, text: KEEP_SPACE })
       if (node.type === 'code') dropFenceLanguage(text, start, edits)
     }
-    if ('children' in node) for (const child of node.children) visit(child)
+    if ('children' in node) node.children.forEach((child, i) => visit(child, i))
   }
-  visit(fromMarkdown(text))
+  visit(fromMarkdown(text), 0)
   let out = text
   for (const edit of edits.sort((a, b) => b.start - a.start))
     out = out.slice(0, edit.start) + edit.text + out.slice(edit.end)
