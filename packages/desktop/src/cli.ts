@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, networkInterfaces } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -49,11 +49,14 @@ import {
   loadRegistration,
   markRevoked,
   registerOrKeep,
+  RegistrationTokenRefused,
   registrationPath,
   saveRegistration,
   type Registration
 } from './cp/registration.js'
 import { capabilitiesFrom, computerOs, doctorReport, isolationKind, osVersion, sessionKind } from './cp/report.js'
+import { COMPUTER_NAME_ENV, keepsRegistration, REGISTER_TOKEN_ENV, registrationFromEnv } from './cp/env-registration.js'
+import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
 import * as linuxService from './service-linux.js'
 import {
@@ -95,16 +98,19 @@ Commands:
   init [--client NAME] [--host H] [--port P]   non-interactive part of setup: config + token + Cua Driver
   install-driver                               download and verify the pinned Cua Driver build
   install-ffmpeg                               download the pinned ffmpeg (${FFMPEG_VERSION}) for the WebRTC viewer
-  run [--host H] [--port P] [--expose-driver-tools] [--rtc-address A] [--rtc-ports MIN-MAX]
+  run [--host H] [--port P] [--expose-driver-tools] [--public-url URL] [--rtc-address A] [--rtc-ports MIN-MAX]
                                                foreground: serve MCP at http://H:P/mcp and the remote
                                                desktop viewer at http://H:P/view until Ctrl+C
                                                (first run creates the token and downloads the driver);
-                                               H defaults to 127.0.0.1, --host 0.0.0.0 opens every interface
+                                               H defaults to 127.0.0.1, --host 0.0.0.0 opens every interface;
+                                               registers first when ${REGISTER_TOKEN_ENV}(_FILE) and
+                                               AGENTCONNECT_CP_URL are set and no key for that CP is stored
   stdio [--expose-driver-tools]                serve MCP over stdio (agent runs on this machine)
   token add NAME | token list | token remove NAME
   status | pause | resume                      owner controls for the running daemon (loopback)
-  doctor                                       check install, session, permissions, capture, firewall
-                                               (read-only; exits 1 when a required check fails)
+  doctor [--json] [--daemon]                   check install, session, permissions, capture, firewall
+                                               (read-only; exits 1 when a required check fails);
+                                               --daemon also fails when no daemon answers (health checks)
   autostart enable | disable | start           Windows: start 'run' at logon (per-user Run key)
   service install | uninstall | start | stop | restart | status
                                                background service: macOS .app LaunchAgent (the app holds
@@ -126,12 +132,14 @@ async function main(): Promise<void> {
     options: {
       host: { type: 'string' },
       port: { type: 'string' },
+      'public-url': { type: 'string' },
       'rtc-address': { type: 'string' },
       'rtc-ports': { type: 'string' },
       client: { type: 'string', default: 'claude' },
       'expose-driver-tools': { type: 'boolean' },
       json: { type: 'boolean' },
       here: { type: 'boolean' },
+      daemon: { type: 'boolean' },
       prompt: { type: 'boolean' },
       'capture-timeout': { type: 'string' },
       'no-service': { type: 'boolean' },
@@ -149,6 +157,7 @@ async function main(): Promise<void> {
     ...(values.host ? { host: values.host } : {}),
     ...(values.port ? { port: Number(values.port) } : {}),
     ...(values['expose-driver-tools'] ? { exposeDriverTools: true } : {}),
+    ...(values['public-url'] ? { publicUrl: DesktopConfig.shape.publicUrl.parse(values['public-url']) } : {}),
     ...(values['rtc-address'] ? { rtcAddress: values['rtc-address'] } : {}),
     ...(values['rtc-ports'] ? { rtcPortRange: parsePortRange(values['rtc-ports']) } : {})
   })
@@ -202,10 +211,17 @@ async function main(): Promise<void> {
     case 'resume':
       return controlCommand(overrides(loadConfig(dir)), command)
     case 'doctor': {
-      const config = loadConfig(dir)
+      const config = overrides(loadConfig(dir))
       // On macOS the daemon's permissions are what matter; a running daemon checks from inside itself.
       const remote = process.platform !== 'win32' && !values.here ? await daemonDoctor(config) : undefined
       const captureMs = Number(values['capture-timeout']) || 15_000
+      if (values.daemon && !remote) {
+        const down: Check = { name: 'daemon', status: 'fail', detail: `no daemon answers on ${controlBaseUrl(config)}` }
+        if (values.json) console.log(JSON.stringify([down]))
+        else printChecks([down])
+        process.exitCode = 1
+        return
+      }
       const checks = remote ?? (await doctor(setupContext(dir, config), captureMs))
       if (values.json) console.log(JSON.stringify(checks))
       else {
@@ -248,15 +264,23 @@ const lanAddresses = (): string[] =>
     .filter((net) => net && net.family === 'IPv4' && !net.internal)
     .map((net) => net!.address)
 
-function printClientSetup(config: DesktopConfig, client: string, token: string): void {
+// With tokenFile the token goes to that 0600 file instead of the output, which a service or container log keeps.
+function printClientSetup(config: DesktopConfig, client: string, token: string, tokenFile?: string): void {
   const host = urlHost(isWildcardHost(config.host) ? (lanAddresses()[0] ?? hostname()) : config.host)
-  console.log(`\nClient "${client}" token (shown once, stored only as a hash):\n  ${token}\n`)
+  const base = publicBaseUrl(config) ?? `http://${host}:${config.port}`
+  let shown = token
+  if (tokenFile) {
+    rmSync(tokenFile, { force: true })
+    writeFileSync(tokenFile, `${token}\n`, { mode: 0o600, flag: 'wx' })
+    shown = '<token>'
+    console.log(`\nClient "${client}" token written to ${tokenFile} (mode 0600); read it with: cat ${tokenFile}\n`)
+  } else {
+    console.log(`\nClient "${client}" token (shown once, stored only as a hash):\n  ${token}\n`)
+  }
   console.log('Register with Claude Code:')
-  console.log(
-    `  claude mcp add --transport http computer http://${host}:${config.port}/mcp --header "Authorization: Bearer ${token}"\n`
-  )
+  console.log(`  claude mcp add --transport http computer ${base}/mcp --header "Authorization: Bearer ${shown}"\n`)
   console.log(`Remote desktop in a browser (the token stays in the URL fragment, never sent to the server):`)
-  console.log(`  http://${host}:${config.port}/view#token=${token}\n`)
+  console.log(`  ${base}/view#token=${shown}\n`)
   if (isLoopbackHost(config.host)) {
     console.log('Reachable from this machine only; use --host 0.0.0.0 (trusted networks) or an SSH tunnel for others.')
   } else {
@@ -299,7 +323,8 @@ function buildComputer(
   onStatus?: (status: string) => void,
   refusal?: () => string | undefined,
   report?: AuditSink,
-  screenshots?: ScreenshotStash
+  screenshots?: ScreenshotStash,
+  name = process.env[COMPUTER_NAME_ENV]?.trim() || hostname()
 ) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
@@ -315,7 +340,8 @@ function buildComputer(
     log,
     ...(onStatus ? { onStatus } : {}),
     ...(refusal ? { refusal } : {}),
-    ...(screenshots ? { screenshots } : {})
+    ...(screenshots ? { screenshots } : {}),
+    profile: { name: name.slice(0, 120), osVersion: osVersion(), session: sessionKind(), isolation: isolationKind() }
   })
   return { driver, computer }
 }
@@ -329,7 +355,7 @@ async function registerComputer(
 ): Promise<Registration> {
   if (!cpUrl) throw new Error('--cp-url is required with a registration token (the console prints it)')
   const registration = await exchangeRegistrationToken(cpUrl, token, {
-    name: (name ?? hostname()).slice(0, 120),
+    name: (name ?? (process.env[COMPUTER_NAME_ENV]?.trim() || hostname())).slice(0, 120),
     isolation: isolationKind(),
     os: computerOs(),
     osVersion: osVersion(),
@@ -457,7 +483,8 @@ function buildViewer(
   computer: Computer,
   refusal?: () => string | undefined,
   // A console member's CP-issued view token; local client tokens work only on the local port, never through a relay.
-  consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined
+  consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined,
+  advertiseAddress?: string
 ): Viewer {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
@@ -488,7 +515,7 @@ function buildViewer(
         log,
         onMessage: (principal, message) => viewer.channelMessage(principal, message),
         reauthorize: (token) => consoleViewer?.(`Bearer ${token}`),
-        ...(config.rtcAddress ? { advertiseAddress: config.rtcAddress } : {}),
+        ...(advertiseAddress ? { advertiseAddress } : {}),
         ...(config.rtcPortRange ? { portRange: config.rtcPortRange } : {})
       })
     : undefined
@@ -517,15 +544,37 @@ async function loadDriverTools(driver: CuaDriver, config: DesktopConfig): Promis
   return exposedDriverTools(await driver.listTools())
 }
 
+// A container registers from its environment on first start; a stored key for the same CP keeps the spent token unused.
+async function registerFromEnvironment(dir: string): Promise<void> {
+  const wanted = registrationFromEnv()
+  // Nothing this daemon starts (doctor, the driver, apps an agent launches) inherits the token.
+  delete process.env[REGISTER_TOKEN_ENV]
+  if (!wanted) return
+  const current = loadRegistration(dir)
+  if (current && keepsRegistration(current, wanted.cpUrl)) {
+    log(`registered as computer ${current.computerId}; the registration token in the environment is not used again`)
+    return
+  }
+  try {
+    await registerComputer(dir, wanted.token, wanted.cpUrl, wanted.name)
+  } catch (error) {
+    // A revoked desktop restarting with its spent token keeps running revoked rather than crash-looping.
+    if (!(error instanceof RegistrationTokenRefused) || !current) throw error
+    log(`registration refused (${error.message}); keeping computer ${current.computerId}, which refuses all input`)
+  }
+}
+
 async function run(dir: string, initial: DesktopConfig, clientName: string): Promise<void> {
   // First run sets itself up, so unzip + `run` is enough; nothing is installed as a service.
   let config = initial
+  await registerFromEnvironment(dir)
   const registration = loadRegistration(dir)
   if (config.clients.length === 0 && !registration) {
     const issued = issueClientToken(config, clientName)
     config = issued.config
     saveConfig(config, dir)
-    printClientSetup(config, clientName, issued.token)
+    // Without a terminal the output is a log (a service or `docker logs`), so the token goes to a file instead.
+    printClientSetup(config, clientName, issued.token, process.stdout.isTTY ? undefined : join(dir, 'client-token'))
   }
   if (!config.driverPath && !existsSync(installedDriverPath(dir))) await installDriver(dir)
   const setTitle = (status: string): void => {
@@ -581,6 +630,12 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   if (registration?.revokedAt)
     log(`this computer was revoked (${registration.revokedReason ?? 'revoked'}); all input is refused`)
   const screenSize = (await driver.call('get_screen_size', {})).structuredContent ?? {}
+  const sized = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  computer.setScreenSize({
+    screenWidth: sized(screenSize.width),
+    screenHeight: sized(screenSize.height),
+    scale: sized(screenSize.scale_factor) || 1
+  })
   log(`Cua Driver ${driver.version ?? '?'} started (${resolveDriverPath(dir, config.driverPath)})`)
   if (process.platform === 'darwin') await warnMissingMacPermissions(driver)
   // Under launchd the .app asks for its own grants once; the dialogs appear on the Mac's screen.
@@ -597,7 +652,8 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     config,
     computer,
     () => authority.refusal(),
-    registration ? (header) => viewerPrincipal(header, authority, () => registration.computerId) : undefined
+    registration ? (header) => viewerPrincipal(header, authority, () => registration.computerId) : undefined,
+    config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined
   )
   live.viewer = viewer
   const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
@@ -628,10 +684,15 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     createMcpServer,
     viewer
   })
-  const urls = isWildcardHost(config.host)
-    ? [server.url, ...lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`)]
-    : [server.url]
-  log(`MCP endpoint ${urls.join(' , ')} (clients: ${config.clients.map((client) => client.name).join(', ')})`)
+  // Behind NAT the local addresses mean nothing to a client, so only the public one is printed.
+  const publicBase = publicBaseUrl(config)
+  const urls = publicBase
+    ? [`${publicBase}/mcp`]
+    : isWildcardHost(config.host)
+      ? [server.url, ...lanAddresses().map((ip) => `http://${ip}:${config.port}/mcp`)]
+      : [server.url]
+  const clients = config.clients.map((client) => client.name).join(', ')
+  log(`MCP endpoint ${urls.join(' , ')} (${clients ? `clients: ${clients}` : 'Control Plane session tokens only'})`)
   log(
     `Remote desktop viewer ${urls.map((url) => url.replace(/\/mcp$/, '/view')).join(' , ')} (sign in with a client token)`
   )

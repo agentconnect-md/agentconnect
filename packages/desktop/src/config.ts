@@ -57,6 +57,8 @@ export const DesktopConfig = z.object({
   streamFps: z.number().int().min(1).max(60).default(30),
   streamMaxWidth: z.number().int().min(320).max(3840).default(1920),
   streamBitrateKbps: z.number().int().min(200).max(50_000).default(2500),
+  // Where clients reach this daemon from outside (a published port or a proxy); printed instead of the local addresses.
+  publicUrl: z.string().url().optional(),
   // Behind NAT (e.g. Docker bridge): the only ICE host address offered to viewers, instead of the one they connected to.
   rtcAddress: z.string().min(1).optional(),
   // Fixed UDP port range for WebRTC media, so it can be published or allowed through a firewall.

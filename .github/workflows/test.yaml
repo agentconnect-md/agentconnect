@@ -41,6 +41,7 @@ jobs:
       windows: ${{ steps.filter.outputs.windows }}
       microsandbox: ${{ steps.filter.outputs.microsandbox }}
       desktop: ${{ steps.filter.outputs.desktop }}
+      desktopImage: ${{ steps.filter.outputs.desktopImage }}
     steps:
       # The files API instead of a checkout; release events run every leg.
       - name: Which suites can this diff reach?
@@ -49,7 +50,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\ndesktop=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
+          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\ndesktop=true\ndesktopImage=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || everything
           files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || exit 1
           [ -n "$files" ] || { echo 'PR file list is empty' >&2; exit 1; }
@@ -62,6 +63,8 @@ jobs:
             echo "microsandbox=$(any '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)')"
             # No workspace deps, so only its own files and the root install, Node, tsconfig and reporter config reach it.
             echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
+            # The image bundles protocol and connection from source and installs from the root manifests.
+            echo "desktopImage=$(any '^(packages/(desktop|protocol|connection)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.pnpmfile\.mjs$|patches/|tsconfig\.base\.json$|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
   # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
@@ -693,6 +696,41 @@ jobs:
       - name: Scan the release bundle
         run: pnpm --filter @agentconnect.md/desktop license-scan
 
+  # The published desktop image, built natively per arch and smoke-tested: size, health, doctor, browser, stop (§3.8).
+  desktop-image:
+    name: Desktop image (${{ matrix.arch }})
+    needs: scope
+    if: ${{ needs.scope.outputs.desktopImage == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/desktop/docker/Dockerfile
+          target: desktop
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: agentconnect-desktop:ci
+          cache-from: type=gha,scope=desktop-image-${{ matrix.arch }}
+          cache-to: type=gha,scope=desktop-image-${{ matrix.arch }},mode=max
+      - name: Smoke test
+        run: packages/desktop/docker/smoke.sh agentconnect-desktop:ci
+
   # The ruleset's only CI check must need every job; `always()` keeps failed needs from skipping it.
   ci-ok:
     name: CI OK
@@ -708,7 +746,8 @@ jobs:
         daemon-store-postgres,
         integration,
         desktop-xvfb,
-        desktop-licenses
+        desktop-licenses,
+        desktop-image
       ]
     if: ${{ always() }}
     runs-on: ubuntu-latest

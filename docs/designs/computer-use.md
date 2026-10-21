@@ -395,7 +395,7 @@ desktop daemon ◀────────────────────�
   the input and lease tools. The agent daemon's side is `packages/daemon/src/computer/data-plane.ts`, and the
   `computer_*` tools on it are `packages/daemon/src/computer/tools.ts` (§5).
 
-### 3.8 Container form (Docker) [validated]
+### 3.8 Container form (Docker) [implemented]
 
 Where there is no physical desktop (a server, a NAS, Kubernetes), a "Linux desktop with a browser" is a container
 image running **the same desktop daemon**. The prototype was built and run on a Mac with OrbStack:
@@ -408,17 +408,46 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   the foreground. `docker stop` stops the daemon, closes Firefox gracefully (so no profile lock is left), then ends
   the session, with exit code 0 in under 0.9 s. Xvfb must keep its local socket (`-nolisten tcp`, never
   `-nolisten unix`).
+- **Published image [implemented]**: `ghcr.io/<owner>/desktop`, built from `packages/desktop/docker/Dockerfile`
+  (context: the repository root) for `linux/amd64` and `linux/arm64` with every release, through the same
+  `docker-bake.hcl` target, effective-version and alias steps as the other images. The bundle stage runs once on the
+  build platform. The image leaves out Mesa's software GL stack (Xvfb runs without GLX and Firefox renders in
+  software), the CJK serif faces, npm and the driver's unused SDK library: 913 MiB on arm64 and 935 MiB on amd64
+  (uncompressed). The PR job `Desktop image` builds both arches natively and runs `docker/smoke.sh` on them: size
+  under 1 GiB, healthy, every `doctor` check ok, a maximized browser, and `docker stop` exiting 0.
+- **Registration [implemented]**: `run` spends `AGENTCONNECT_REGISTER_TOKEN` (or the file named by
+  `AGENTCONNECT_REGISTER_TOKEN_FILE`, such as a Docker or Kubernetes secret) at `AGENTCONNECT_CP_URL` before it starts,
+  with `AGENTCONNECT_COMPUTER_NAME` or the hostname as the name the console did not give. A stored, unrevoked key for
+  the same CP leaves the spent token unused on every later start; a revoked desktop restarted with its spent token
+  keeps running revoked instead of crash-looping, and a new token registers it again. The entrypoint hands the token
+  to the daemon alone, the daemon drops it from its environment before starting anything, and no output names it. An
+  unregistered daemon started without a terminal writes its first client token to `client-token` (0600) in the data
+  directory rather than to the log.
+- **Profile [implemented]**: the image declares `AGENTCONNECT_DESKTOP_ISOLATION=container`, Xvfb reads as session
+  `xvfb`, and `computer_list` reports the name, OS release, session, isolation and the driver's startup screen size
+  before the first capture. The Computers API the console lists from showed a `docker run` registered this way as
+  online with `isolation: 'container'`, `session: 'xvfb'`, one 1600×900 display and all nine `doctor` checks ok.
+- **Browser [implemented]**: the entrypoint keeps one Firefox ESR window open and maximized (`wmctrl`), restarting it
+  with a 2–30 s backoff when it exits or crashes; prefs turn off the first-run, crash and safe-mode prompts that would
+  block an unattended restart. `BROWSER=none` turns it off.
+- **Health [implemented]**: `HEALTHCHECK` runs `doctor --json --daemon`, which asks the running daemon and fails when
+  none answers or a required check fails, a revoked key included.
 - **WebRTC and NAT**: by default the daemon advertises the local address the browser reached it on, which in bridge
   networking is the container IP that a remote browser cannot reach. Two settings fix this: `rtcAddress`
   (`--rtc-address` / `RTC_ADDRESS`, the public address offered as the only host candidate) and `rtcPortRange`
   (`--rtc-ports` / `RTC_PORTS`, a fixed UDP range that `-p` can publish; each viewer uses up to two ports). A second
-  container acting as a remote client fell back to screenshot polling without them and got WebRTC with them. On a Linux
-  host, `--network host` needs neither [unverified]. OrbStack lets the Mac reach container IPs directly, so "it works
-  without them" on the Mac proves nothing.
+  container acting as a remote client fell back to screenshot polling without them and got WebRTC with them.
+  `PUBLIC_URL` (`--public-url`) names where clients reach the published port: the startup output prints it, or the
+  RTC address on the listening port, instead of the container IP, and without `RTC_ADDRESS` its host (resolved to IPv4
+  when it is a name) is the candidate. A werift viewer on another machine (the Ubuntu VM, through the Mac's published
+  ports) got only the container IP and never connected by default, and connected and received H.264 with either
+  `RTC_ADDRESS` or `PUBLIC_URL` plus `RTC_PORTS`. On a Linux host, `--network host` needs neither [unverified].
+  OrbStack lets the Mac reach container IPs directly, so "it works without them" on the Mac proves nothing.
 
 ```sh
 docker run -d --name desktop --hostname "$NAME" --shm-size=1g -v desktop-home:/home/desktop \
-  -p 7681:7681 -p 7700-7709:7700-7709/udp -e RTC_ADDRESS="$HOST_IP" -e RTC_PORTS=7700-7709 agentconnect-desktop
+  -p 7681:7681 -p 7700-7709:7700-7709/udp -e PUBLIC_URL="http://$HOST_IP:7681" -e RTC_PORTS=7700-7709 \
+  -e AGENTCONNECT_CP_URL="$CP_URL" -e AGENTCONNECT_REGISTER_TOKEN="$TOKEN" ghcr.io/agentconnect-md/desktop
 ```
 
 | Measure                   | Result                                                                                                                                 |
@@ -430,13 +459,12 @@ docker run -d --name desktop --hostname "$NAME" --shm-size=1g -v desktop-home:/h
 | Persistence               | A new container on the same volume keeps a valid token, and Firefox restores its tabs                                                  |
 | Resources                 | 2–3% CPU idle; about 55% of one core while streaming (ffmpeg about 31%); about 0.9 GB memory                                           |
 
-Prototype gaps, all in M2 (§14.5): the startup output prints the container IP rather than the public address; the
-token is readable only from `docker logs` and cannot be injected through the environment or replaced by CP
-registration; `computer_list` reports an empty `display` and takes its name from the container hostname; the browser
-is neither maximized nor restarted when it exits; no audio or clipboard.
+The prototype's gaps (container IP in the output, a token readable only from `docker logs`, no CP registration, an
+empty `display`, an unmanaged browser, an unpublished 1.26 GB image) are closed as above. Still open: no audio or
+clipboard, no Chromium variant, and the GPL distribution question for the preinstalled ffmpeg (§11, §14.8).
 
 **Positioning**: containers start in seconds, are isolated, can hand each task a fresh desktop, and need no OS grants,
-which suits managed computers and multi-tenancy. The costs are an image of about 1.3 GB, configuring the public address
+which suits managed computers and multi-tenancy. The costs are an image of about 0.9 GB, configuring the public address
 and UDP ports, and no access to the user's own apps and sessions (exactly what a self-hosted computer provides). Use a
 VM when a GPU, real Xorg, or a long-lived personal desktop is needed. A user can also run the image on their own server;
 it is then a **self-hosted computer with isolation**.
@@ -900,15 +928,15 @@ and every `computer/policy`.
 
 ### 11.1 Dependencies
 
-| Component                            | License                    | Use                                                            | Distribution                                                                                                                           |
-| ------------------------------------ | -------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Cua Driver (`libs/cua-driver`)       | MIT                        | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                        |
-| werift                               | MIT                        | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                          |
-| Node.js (SEA)                        | MIT                        | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                     |
-| ffmpeg (with libx264)                | GPL                        | Viewer encoding                                                | **Not bundled** on desktops: downloaded from a third-party build and checked on first run; preinstalled in the container image [legal] |
-| GStreamer, PipeWire, python3-gi      | LGPL and others            | GNOME Wayland capture helper                                   | System packages                                                                                                                        |
-| libei                                | MIT                        | GNOME Wayland input (through Cua)                              | System component                                                                                                                       |
-| Xvfb, Xfce, Firefox ESR, Debian base | MIT / GPL / MPL and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                             |
+| Component                            | License                    | Use                                                            | Distribution                                                                                                                                                                                          |
+| ------------------------------------ | -------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cua Driver (`libs/cua-driver`)       | MIT                        | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                                       |
+| werift                               | MIT                        | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                                         |
+| Node.js (SEA)                        | MIT                        | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                                    |
+| ffmpeg (with libx264)                | GPL                        | Viewer encoding                                                | **Not bundled** on desktops: downloaded from a third-party build and checked on first run; preinstalled in the published container image, as in the prototype, while counsel's answer is open [legal] |
+| GStreamer, PipeWire, python3-gi      | LGPL and others            | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                                       |
+| libei                                | MIT                        | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                                      |
+| Xvfb, Xfce, Firefox ESR, Debian base | MIT / GPL / MPL and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                                            |
 
 xdotool and wayvnc are no longer needed. Never used: `cua-spacesd`, the Cua HTML5 viewer and streaming crates
 (FSL-1.1-MIT); `cua-perception` (AGPL models); ydotool, RustDesk (AGPL-3.0); Sunshine (GPL-3.0); the official nut.js
@@ -965,8 +993,8 @@ Control Plane registration and the Computer model, `ComputerPolicy`, approvals, 
 screenshots (all since implemented), the relay data plane, TLS (the prototype has local bearer tokens, one Computer, no CP); tray / menu bar UI,
 screen border, global hotkey, keyboard activity detection; window masking; Developer ID signing and notarization; native
 capture and hardware encoding; multiple displays; audio and clipboard; latency measurement; the Windows `install.ps1`
-setup and firewall end to end; Wayland IME text; KDE; CP registration, environment injection, Kubernetes deployment,
-and publishing for the container image.
+setup and firewall end to end; Wayland IME text; KDE; Kubernetes deployment for the container image (its CP
+registration, environment injection and publishing have since been implemented, §3.8).
 
 ## 13. Testing and evaluation
 
@@ -1065,7 +1093,7 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
 Right after M1. Image productization and self-hosted containers depend only on the Linux side (M1 item 6) and can run
 alongside the second half of M1; managed computers depend on M1's CP integration and data plane.
 
-1. **Productize the image** (the §3.8 gaps): register through an environment variable or secret file
+1. **Productize the image** (the §3.8 gaps) [implemented, except the optional Chromium variant]: register through an environment variable or secret file
    (`AGENTCONNECT_REGISTER_TOKEN`) and never print the token; use the public address (`PUBLIC_URL` / `RTC_ADDRESS`) in
    output and candidates; fill in `display` and other capabilities, with `session: 'xvfb'` and `isolation: 'container'`;
    maximize the browser and restart it if it crashes; a `HEALTHCHECK` running `doctor --json`; multi-arch amd64 / arm64
@@ -1078,7 +1106,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    goes through TURN or the relay; quotas and billing (concurrent desktops, desktop hours, bandwidth, screenshot
    storage); egress policy (§15.4).
 4. **Licensing**: the GPL obligations of shipping ffmpeg (and other GPL packages) in a published image, such as
-   providing corresponding source [legal]. Needed before M2 starts.
+   providing corresponding source [legal]. Still open: the published image keeps the prototype's preinstalled ffmpeg
+   until counsel answers.
 
 **Acceptance**: one `docker run` with a registration token produces a usable Computer in the console; in Kubernetes, an
 agent that asks for a managed computer gets a fresh desktop within seconds and completes a browser task, and its data

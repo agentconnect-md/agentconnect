@@ -24,7 +24,7 @@ It is private, not published to npm, and not part of any AgentConnect release.
   fallback, and human takeover.
 - `setup` / `doctor` on macOS, Linux (X11 and GNOME Wayland) and Windows; a macOS LaunchAgent
   (`.app` mode) and a Linux systemd user unit; Windows logon autostart.
-- A proof-of-concept Docker image (Xvfb + Xfce + Firefox ESR).
+- A Docker image (Xvfb + Xfce + Firefox ESR) that registers from its environment, amd64 and arm64.
 
 **Limits**
 
@@ -38,7 +38,7 @@ It is private, not published to npm, and not part of any AgentConnect release.
 - One display, no audio, no clipboard sync; keyboard activity is not detected (only pointer
   movement); no tray icon, screen border, or global stop hotkey.
 - Builds are unsigned (macOS `.app` is ad-hoc signed; no Windows installer), so OS grants do not
-  survive a rebuild. The Docker image is not published.
+  survive a rebuild.
 - CI covers X11 under Xvfb only (see [Development](#development)); the real-session matrix of design
   §13 is still run by hand. The `agentconnect desktop` CLI subcommand arrives with
   [#3185](https://github.com/agentconnect-md/agentconnect/issues/3185); `agentconnect-desktop` is a development bin.
@@ -222,22 +222,48 @@ static ffmpeg (6.0, libx264).
 - Tested: Ubuntu 26.04 arm64 with GNOME 50 Wayland, and with Xfce 4.20 on Xorg (LightDM, because
   GDM 50 no longer starts X11 sessions) and on Xvfb.
 
-## Run in Docker (proof of concept)
+## Run in Docker
 
-`docker/Dockerfile` builds a Debian trixie image with Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, the
-pinned Node.js, and the daemon with Cua Driver and ffmpeg preinstalled. The entrypoint starts Xvfb on
-`:1` (`RESOLUTION`, default `1600x900x24`), a session D-Bus, and Xfce, then runs `run` in the foreground
-as user `desktop`. Published ports only reach a container through its own interface, so the image passes
-`--host 0.0.0.0` explicitly (`LISTEN_HOST` overrides it). `docker stop` stops the daemon, closes Firefox, then the session. `/home/desktop` is a
-volume: config, token, audit log, and the Firefox profile survive a new container.
+The `desktop` image (`ghcr.io/agentconnect-md/desktop`, amd64 and arm64, published with each release) is a
+Debian trixie desktop with Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, the pinned Node.js, and the daemon
+with Cua Driver and ffmpeg preinstalled. The entrypoint starts Xvfb on `:1` (`RESOLUTION`, default
+`1600x900x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
+`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `firefox-esr`; `none` turns it
+off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the browser, then the session, with exit
+code 0. `/home/desktop` is a volume: the Computer key, config, audit log, and the browser profile survive a new
+container. A `HEALTHCHECK` runs `doctor --json --daemon` inside the running daemon.
+
+Register it as a Computer: create a token in the console under **Computers → Add Computer**, then
 
 ```sh
-pnpm --filter @agentconnect.md/desktop bundle
-docker build -f packages/desktop/docker/Dockerfile -t agentconnect-desktop packages/desktop
+docker run -d --name desktop --hostname desktop-1 --shm-size=1g --restart unless-stopped \
+  -v desktop-home:/home/desktop \
+  -e AGENTCONNECT_CP_URL='https://<control plane>' -e AGENTCONNECT_REGISTER_TOKEN='<token>' \
+  ghcr.io/agentconnect-md/desktop:latest
+```
+
+| Variable                            | Meaning                                                                                                     |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `AGENTCONNECT_REGISTER_TOKEN`       | the one-time registration token; only the daemon sees it, and it is never printed                           |
+| `AGENTCONNECT_REGISTER_TOKEN_FILE`  | a file holding the token instead, such as a Docker or Kubernetes secret under `/run/secrets`                |
+| `AGENTCONNECT_CP_URL`               | the Control Plane URL the console prints with the token                                                     |
+| `AGENTCONNECT_COMPUTER_NAME`        | the name to register with when the console gave none; defaults to the container hostname                    |
+| `PUBLIC_URL`                        | how clients outside reach the published port, printed instead of the container address                      |
+| `RTC_ADDRESS`, `RTC_PORTS`          | the public IP offered as the only WebRTC candidate (defaults to `PUBLIC_URL`'s host), and a fixed UDP range |
+| `RESOLUTION`, `LISTEN_HOST`, `PORT` | the screen, and where the daemon listens inside the container (`0.0.0.0:7681`)                              |
+
+The token is spent on the first start; later starts find the stored key for the same Control Plane and leave
+the variable unused, so keep the volume. After a revoke, give the container a new token. Without a token the
+daemon runs in local mode and writes its first client token to `~/.agentconnect/desktop/client-token` instead of
+the log (`docker exec desktop cat /home/desktop/.agentconnect/desktop/client-token`).
+
+The console's viewer reaches a registered container through the relay and needs no published port. For a viewer
+or MCP client that connects directly, publish the port and the UDP range and say where they are:
+
+```sh
 docker run -d --name desktop --shm-size=1g -v desktop-home:/home/desktop \
-  -p 7681:7681 -p 7700-7709:7700-7709/udp -e RTC_ADDRESS="$HOST_IP" -e RTC_PORTS=7700-7709 \
-  agentconnect-desktop
-docker logs desktop # first start prints the token and the /view link (with the container IP: use the host's)
+  -p 7681:7681 -p 7700-7709:7700-7709/udp \
+  -e PUBLIC_URL="http://$HOST_IP:7681" -e RTC_PORTS=7700-7709 ghcr.io/agentconnect-md/desktop:latest
 ```
 
 WebRTC behind NAT: by default the daemon offers the address the browser reached it on, which in bridge
@@ -245,6 +271,13 @@ networking is the container IP. `--rtc-address` (`rtcAddress`) replaces it as th
 and `--rtc-ports MIN-MAX` (`rtcPortRange`) pins the UDP ports so they can be published. Each viewer uses
 up to two ports from the range, so publish at least 8. With `--network host` on a Linux host neither is
 needed.
+
+Build it locally from the repository root, and smoke-test it the way CI does:
+
+```sh
+docker build -f packages/desktop/docker/Dockerfile -t agentconnect-desktop .
+packages/desktop/docker/smoke.sh agentconnect-desktop
+```
 
 ## Connect Claude Code
 
@@ -413,8 +446,8 @@ CI runs two more jobs on pull requests that touch this package (`.github/workflo
   `bundle/.meta/`, attributes every bundled input to its npm package, and fails on AGPL / FSL / BSL (Business Source) /
   SSPL / GPL, on a license missing from its allowlist, on forbidden licenses in the extracted `*.LEGAL.txt`, on
   ffmpeg or Cua Driver inside an artifact, and on any undeclared executable or archive. The macOS app is scanned the
-  same way when built (CI builds only the Linux bundle). The Docker image is not a release artifact yet: it carries
-  distribution packages and ffmpeg, which design §11 leaves to counsel before publishing.
+  same way when built (CI builds only the Linux bundle). The Docker image carries distribution packages and ffmpeg
+  (GPL) as they always have; the distribution question of design §11 is open with counsel.
 
 macOS and Linux also work for local development (`init` installs the matching driver
 build). On macOS, `--direct` attributes Accessibility and Screen Recording to the terminal
