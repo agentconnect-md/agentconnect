@@ -7,7 +7,7 @@ import { useTranslations } from 'next-intl'
 import type { ComputerDto } from '@/lib/api'
 import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { computerStatusTone, doctorCounts, useComputers, useAgo } from '@/lib/computers'
+import { agentAccessOf, computerStatusTone, doctorCounts, useComputers, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { LoadingState } from '@/components/marks'
@@ -89,9 +89,8 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
   const memberName = useMemberName()
   const tone = computerStatusTone(computer.status)
   const doctor = doctorCounts(computer)
-  const granted = computer.policy.allowedAgents
-    .map((id) => agents.find((a) => a.id === id))
-    .filter((a) => a !== undefined)
+  const access = agentAccessOf(computer)
+  const granted = access.agents.map((id) => agents.find((a) => a.id === id)).filter((a) => a !== undefined)
   const seen = computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never')
   const open = () => router.push(orgPath(`/computers/${computer.id}`))
   return (
@@ -129,11 +128,13 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
       </div>
       <div className="col-span-2 min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:col-span-1">
         <Icon name="bot" size={13} className="mr-[6px] inline align-[-2px] text-(--text-tertiary)" />
-        {granted.length === 0
-          ? t('noAgents')
-          : granted.length <= 2
-            ? granted.map((a) => agentLabel(a)).join(', ')
-            : t('agentCount', { count: granted.length })}
+        {access.mode === 'all'
+          ? t('allAgents')
+          : granted.length === 0
+            ? t('noAgents')
+            : granted.length <= 2
+              ? granted.map((a) => agentLabel(a)).join(', ')
+              : t('agentCount', { count: granted.length })}
       </div>
       <div className="col-span-2 min-w-0 font-sans text-[12.5px] font-normal leading-normal desktop:col-span-1">
         {doctor.total === 0 ? (

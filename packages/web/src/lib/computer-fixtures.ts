@@ -27,7 +27,6 @@ export function computerFixture(over: Partial<ComputerDto> = {}): ComputerDto {
     desktopDaemonVersion: '0.2.0',
     driverVersion: '0.35.2',
     policy: {
-      allowedAgents: [],
       allowedMembers: ['u1'],
       agentMode: 'control',
       approvals: { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true },
@@ -48,6 +47,8 @@ export function computerFixture(over: Partial<ComputerDto> = {}): ComputerDto {
     canEdit: true,
     screenshotRetentionDays: 30,
     canEditPolicy: true,
+    agentAccess: { mode: 'none', agents: [] },
+    canEditAgentAccess: true,
     ...over
   }
 }

@@ -20,7 +20,6 @@ const AGENT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const S1_HOLDER = `${AGENT_A}/s1`
 
 const policy = ComputerPolicySchema.parse({
-  allowedAgents: [AGENT_A, AGENT_B],
   leaseIdleSeconds: 120,
   leaseMaxSeconds: 1800
 })
@@ -28,6 +27,7 @@ const computer = (over: Partial<LeaseComputer> = {}): LeaseComputer => ({
   status: 'online',
   lastSeenAt: new Date(T0),
   policy,
+  agentAccess: { mode: 'selected', agents: [AGENT_A, AGENT_B] },
   ...over
 })
 const clock = (now = T0): LeaseClock => ({ now, holderTtlMs: 45_000, staleAfterMs: 45_000 })
@@ -132,7 +132,7 @@ describe('decideAcquire', () => {
     const notGranted = decideAcquire(
       CID,
       'org_1',
-      computer({ policy: { ...policy, allowedAgents: [AGENT_B] } }),
+      computer({ agentAccess: { mode: 'selected', agents: [AGENT_B] } }),
       null,
       req('s1'),
       clock()
@@ -353,7 +353,7 @@ describe('decideObserve', () => {
 
 describe('decideRead and decidePreempt', () => {
   it('ends a lease whose grant the policy took away', () => {
-    const revokedGrant = computer({ policy: { ...policy, allowedAgents: [AGENT_B] } })
+    const revokedGrant = computer({ agentAccess: { mode: 'selected', agents: [AGENT_B] } })
     expect(decideRead(revokedGrant, held(), clock()).result).toMatchObject({ lease: null, ended: { reason: 'policy' } })
     expect(decideRead(computer(), held(), clock()).result).toEqual({ lease: held() })
     expect(decideRead(computer({ status: 'revoked' }), held(), clock()).result.ended?.reason).toBe('revoked')

@@ -3389,20 +3389,16 @@
       },
       "computers": {
         "title": "电脑",
-        "enable": "使用电脑",
         "add": "添加电脑",
-        "available": "你的电脑",
-        "noMore": "没有更多可用的电脑",
-        "off": "电脑使用已关闭",
-        "offHint": "开启后，此 Agent 可以在你选择的电脑上截图、点击和输入。",
-        "empty": "尚未选择电脑",
-        "emptyHint": "选择一台电脑。电脑的所有者还需要在电脑设置中授权此 Agent。",
-        "unavailable": "电脑不可用",
-        "granted": "已授权",
-        "notGranted": "等待所有者授权此 Agent",
-        "grant": "授权",
+        "available": "你可以编辑的电脑",
+        "noMore": "没有更多可以授予它的电脑",
+        "empty": "还没有电脑",
+        "emptyHint": "在这里或电脑页面上，把你可以编辑的电脑授予此 Agent。",
+        "unavailable": "你看不到的电脑",
         "open": "打开电脑",
-        "remove": "从 Agent 移除"
+        "remove": "撤销此 Agent 的访问权限",
+        "viaSelected": "指定 Agent",
+        "viaAll": "所有 Agent"
       }
     }
   },
@@ -6441,22 +6437,34 @@
       "typed": "输入了 {count, plural, other {# 个字符}}",
       "openSession": "打开会话"
     },
-    "policy": {
+    "agentAccess": {
       "title": "Agent 访问",
-      "readOnly": "只有所有者可以修改",
-      "agentsTitle": "可以使用这台电脑的 Agent",
-      "agentsHint": "Agent 还需要在自己的设置中开启电脑使用并选择这台电脑。",
+      "readOnly": "只有这台电脑的编辑者可以修改",
+      "ownAgentOnly": "只供创建它的 Agent 使用",
+      "none": "不允许 Agent",
+      "noneDescription": "任何 Agent 都不能使用。默认设置。",
+      "selected": "指定 Agent",
+      "selectedDescription": "只有你选中的 Agent 能使用。",
+      "all": "所有 Agent",
+      "allDescription": "组织内的每个 Agent 都能使用。",
+      "allNoIsolation": "这包括其他成员的 Agent，你的桌面与它们的操作之间没有任何隔离。",
+      "selectedTitle": "可以使用这台电脑的 Agent",
       "agents": "Agents",
-      "addAgent": "授权 Agent",
-      "noMoreAgents": "没有更多可授权的 Agent",
-      "noAgents": "还没有 Agent 可以使用它",
-      "noAgentsHint": "授权一个 Agent，让它可以使用这台电脑。",
+      "addAgent": "添加 Agent",
+      "noMoreAgents": "没有更多可添加的 Agent",
+      "pickAgent": "至少选择一个 Agent",
+      "pickAgentHint": "添加可以使用这台电脑的 Agent，或选择“不允许 Agent”。",
       "unknownAgent": "你不可见的 Agent",
-      "agentPicked": "已选择这台电脑",
-      "agentNotPicked": "尚未选择这台电脑",
       "noIsolation": "不是你的 Agent",
       "noIsolationHint": "这个 Agent 属于其他成员。你的桌面与它的操作之间没有任何隔离。",
       "removeAgent": "撤销此 Agent 的访问权限",
+      "reset": "重置",
+      "save": "保存",
+      "saving": "保存中…"
+    },
+    "policy": {
+      "title": "使用策略",
+      "readOnly": "只有所有者可以修改",
       "accessTitle": "控制与批准",
       "mode": "Agent 可以",
       "modeHint": "仅查看只允许截图；控制还允许点击和输入。",
@@ -6518,6 +6526,7 @@
         "turn": "TURN 中继",
         "screenshots": "截图"
       }
-    }
+    },
+    "allAgents": "所有 Agent"
   }
 }

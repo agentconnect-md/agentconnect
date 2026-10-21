@@ -16,7 +16,8 @@ import {
   COMPUTER_STATUSES,
   ComputerCapabilitiesSchema,
   ComputerDoctorReport,
-  ComputerPolicySchema
+  ComputerPolicySchema,
+  ComputerAgentAccess
 } from '../../domain/computer.js'
 import { COMPUTER_ALLOCATIONS, COMPUTER_POOL_PHASES } from '../../domain/computerPool.js'
 import {
@@ -27,6 +28,7 @@ import {
   AssistantModeAdmission,
   AssistantModePolicy,
   AgentComputerUse,
+  AgentComputerSetting,
   COMPUTER_APPROVAL_RESULTS,
   AgentModelSelection,
   AgentRepositorySelector,
@@ -722,7 +724,7 @@ export const CreateAgentBody = z.object({
   chatActions: ChatActions.optional(), // what people can do in chat; absent ⇒ 'approve'
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-  computerUse: AgentComputerUse.optional(), // computer use (computer-use.md §4.1); absent ⇒ off
+  computerUse: AgentComputerSetting.optional(), // the managed computer mode (computer-use.md §4.1); access is set on each Computer
   // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
   execution: ExecutorStrategyName.optional(),
   env: AgentEnvBody.optional(),
@@ -781,7 +783,7 @@ export const UpdateAgentBody = z
     chatActions: ChatActions.optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-    computerUse: AgentComputerUse.nullable().optional(), // computer use (computer-use.md §4.1), replaced wholesale; null clears
+    computerUse: AgentComputerSetting.nullable().optional(), // the managed computer mode (computer-use.md §4.1); null clears
     execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
     // Same-repository capability widening only. Workspace identity/conversion
     // stays on the dedicated cold action, and downgrades are deliberately not
@@ -942,7 +944,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
-  computerUse: AgentComputerUse.nullable(), // computer use (computer-use.md §4.1); null ⇒ never configured, off
+  computerUse: AgentComputerUse.nullable(), // derived (computer-use.md §4.1): the Computers granting it and its managed mode; null ⇒ none
   // The strategy sessions run in (session-executors.md §5).
   execution: ExecutorStrategyName,
   // What the placement offers `execution`: its daemon's table, or for a group what one ready member offers; only `host` for an unplaced agent.
@@ -4570,8 +4572,12 @@ export const ComputerDto = z.object({
   canEdit: z.boolean(),
   /** Days screenshots of this Computer are kept now: its policy's value or the deployment default; 0 stores none. */
   screenshotRetentionDays: z.number().int(),
-  /** The caller may change who uses it: the registrant of a self-hosted computer, or an editor of a managed one. */
+  /** The caller may change how it is used: the registrant of a self-hosted computer, or an editor of a managed one. */
   canEditPolicy: z.boolean(),
+  /** Which agents may use it (computer-use.md §4.1): none, the selected agents, or every agent of the organization. */
+  agentAccess: ComputerAgentAccess,
+  /** The caller may change its agent access: any editor, except of a per-agent or ephemeral computer, which follows its agent. */
+  canEditAgentAccess: z.boolean(),
   /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
   allocation: z.enum(COMPUTER_ALLOCATIONS).nullable(),
   /** The agent a `per-agent` or `ephemeral` computer was made for. */
@@ -4587,10 +4593,18 @@ export type ComputerDtoT = z.infer<typeof ComputerDto>
 export const CreatePoolComputerBody = z
   .object({
     name: z.string().trim().min(1).max(120),
-    /** Who may use it; omitted fields take the managed defaults, and `allowedAgents` assigns it. */
-    policy: ComputerPolicySchema.optional()
+    /** How it is used; omitted fields take the managed defaults. */
+    policy: ComputerPolicySchema.optional(),
+    /** Which agents may use it; absent means none until someone grants them. */
+    agentAccess: ComputerAgentAccess.optional()
   })
   .strict()
+
+/** `PUT /computers/:id/agent-access`: the whole agent access (computer-use.md §4.1). */
+export const SetComputerAgentAccessBody = ComputerAgentAccess.strict()
+
+/** One agent on a Computer's Selected agent access. */
+export const ComputerAgentParams = z.object({ id: z.string(), agentId: z.uuid() })
 export const ComputerListDto = z.array(ComputerDto)
 
 /** One call a desktop daemon served (computer-use.md §8.2); typed text appears only as `textLength`. */

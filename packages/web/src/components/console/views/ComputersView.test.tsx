@@ -61,13 +61,21 @@ describe('ComputersView', () => {
   it('lists status, platform, owner, granted agents and doctor failures, and opens the detail', () => {
     mocks.computers = [
       computer({
-        policy: { ...computer().policy, allowedAgents: ['a1'] },
+        agentAccess: { mode: 'selected', agents: ['a1'] },
         doctor: {
           checkedAt: '2026-10-21T00:00:00.000Z',
           checks: [{ name: 'driver', status: 'fail', detail: 'missing', fix: 'run setup' }]
         }
       }),
-      computer({ id: 'c2', name: 'mac', os: 'macos', session: 'aqua', ownerUserId: 'u2', status: 'revoked' })
+      computer({
+        id: 'c2',
+        name: 'mac',
+        os: 'macos',
+        session: 'aqua',
+        ownerUserId: 'u2',
+        status: 'revoked',
+        agentAccess: { mode: 'all', agents: [] }
+      })
     ]
     const el = render()
     const first = el.querySelector('[data-computer-row="c1"]')!
@@ -78,6 +86,7 @@ describe('ComputersView', () => {
     const second = el.querySelector('[data-computer-row="c2"]')!
     expect(second.textContent).toContain('Revoked')
     expect(second.textContent).toContain('owned by Dana')
+    expect(second.textContent).toContain('All agents')
     expect(second.textContent).toContain('Checks not reported')
     act(() => (first as HTMLElement).click())
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/c1')

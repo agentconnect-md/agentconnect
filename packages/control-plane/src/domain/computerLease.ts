@@ -5,7 +5,13 @@ import {
   type ComputerLeaseQueued,
   type ComputerLeaseRefusal
 } from '@agentconnect.md/protocol'
-import { presentComputerStatus, type ComputerPolicy, type ComputerStatus } from './computer.js'
+import {
+  computerGrantsAgent,
+  presentComputerStatus,
+  type ComputerAgentAccess,
+  type ComputerPolicy,
+  type ComputerStatus
+} from './computer.js'
 import {
   endedWait,
   joinQueue,
@@ -42,6 +48,8 @@ export interface LeaseComputer {
   status: ComputerStatus
   lastSeenAt: Date | null
   policy: ComputerPolicy
+  /** Which agents may use it (§4.1). */
+  agentAccess: ComputerAgentAccess
   /** A console Stop: no lease stands or is granted until someone resumes the Computer (§6). */
   stoppedAt?: Date | null
   /** An ephemeral managed computer serves only the session it was made for (§15.1). */
@@ -116,7 +124,7 @@ export function leaseEnded(
   if (!computer || computer.status === 'revoked') return 'revoked'
   if (computer.stoppedAt) return 'paused'
   // A policy change that takes the holder's grant or input away ends its lease.
-  if (!computer.policy.allowedAgents.includes(lease.agentId) || computer.policy.agentMode !== 'control') return 'policy'
+  if (!computerGrantsAgent(computer, lease.agentId) || computer.policy.agentMode !== 'control') return 'policy'
   const deadline = leaseDeadline(lease, computer.policy, clock.holderTtlMs)
   return clock.now >= deadline.at ? deadline.reason : undefined
 }
@@ -158,7 +166,7 @@ export function decideAcquire(
   stored: readonly LeaseWaiter[] = []
 ): LeaseStep<AcquireOutcome> {
   // Waiters that stopped asking or lost their grant leave first; a final answer takes the session out of line.
-  const queue = keepWaiters(stored, computer?.policy ?? null, clock.now, clock.waiterTtlMs)
+  const queue = keepWaiters(stored, computer, clock.now, clock.waiterTtlMs)
   const pruned = queue.length !== stored.length ? queue : undefined
   // A turn-ended marker outlives a late ask of its wait, so a duplicate of that ask is refused too.
   const leave = () => (endedWait(queue, req) ? pruned : (withoutWaiter(queue, req) ?? pruned))
@@ -168,8 +176,7 @@ export function decideAcquire(
     result: { granted: false as const, code, message, ...(holder ? { holder } : {}) }
   })
   if (!computer || computer.status === 'revoked') return refuse('unavailable', 'this computer was revoked or removed')
-  if (!computer.policy.allowedAgents.includes(req.agentId))
-    return refuse('denied', 'this agent is not granted this computer')
+  if (!computerGrantsAgent(computer, req.agentId)) return refuse('denied', 'this agent is not granted this computer')
   if (computer.policy.agentMode !== 'control') return refuse('denied', 'agents may only view this computer')
   if (computer.poolSessionId && computer.poolSessionId !== req.sessionId)
     return refuse('denied', 'this computer belongs to another session')

@@ -3389,20 +3389,16 @@
       },
       "computers": {
         "title": "Computers",
-        "enable": "Use computers",
         "add": "Add computer",
-        "available": "Your computers",
-        "noMore": "No more computers available",
-        "off": "Computer use is off",
-        "offHint": "Turn it on to let this agent take screenshots, click and type on the computers you pick.",
-        "empty": "No computers picked",
-        "emptyHint": "Pick a computer. Its owner must also grant this agent in the computer's settings.",
-        "unavailable": "Unavailable computer",
-        "granted": "granted",
-        "notGranted": "waiting for its owner to grant this agent",
-        "grant": "Grant",
+        "available": "Computers you can edit",
+        "noMore": "No more computers you can give it",
+        "empty": "No computers yet",
+        "emptyHint": "Give this agent access to a computer you can edit, here or on the computer's page.",
+        "unavailable": "A computer you can't see",
         "open": "Open computer",
-        "remove": "Remove from agent"
+        "remove": "Take away this agent's access",
+        "viaSelected": "selected agents",
+        "viaAll": "all agents"
       }
     }
   },
@@ -6441,22 +6437,34 @@
       "typed": "typed {count, plural, one {# character} other {# characters}}",
       "openSession": "Open session"
     },
-    "policy": {
+    "agentAccess": {
       "title": "Agent access",
-      "readOnly": "Only the owner can change this",
-      "agentsTitle": "Agents that may use this computer",
-      "agentsHint": "An agent also needs computer use turned on with this computer picked in its own settings.",
+      "readOnly": "Only editors of this computer can change this",
+      "ownAgentOnly": "Used only by the agent it was made for",
+      "none": "No agents",
+      "noneDescription": "No agent can use it. The default.",
+      "selected": "Selected agents",
+      "selectedDescription": "Only the agents you pick can use it.",
+      "all": "All agents",
+      "allDescription": "Every agent in the organization can use it.",
+      "allNoIsolation": "This includes other members' agents, and your desktop has no isolation from what they do.",
+      "selectedTitle": "Agents that may use this computer",
       "agents": "Agents",
-      "addAgent": "Grant an agent",
-      "noMoreAgents": "No more agents to grant",
-      "noAgents": "No agent may use it yet",
-      "noAgentsHint": "Grant an agent to let it use this computer.",
+      "addAgent": "Add an agent",
+      "noMoreAgents": "No more agents to add",
+      "pickAgent": "Pick at least one agent",
+      "pickAgentHint": "Add the agents that may use this computer, or choose No agents.",
       "unknownAgent": "Agent not visible to you",
-      "agentPicked": "Uses this computer",
-      "agentNotPicked": "Has not picked this computer yet",
       "noIsolation": "Not your agent",
       "noIsolationHint": "This agent belongs to another member. Your desktop has no isolation from what it does.",
-      "removeAgent": "Revoke this agent's access",
+      "removeAgent": "Take away this agent's access",
+      "reset": "Reset",
+      "save": "Save",
+      "saving": "Saving…"
+    },
+    "policy": {
+      "title": "Usage policy",
+      "readOnly": "Only the owner can change this",
       "accessTitle": "Control and approvals",
       "mode": "Agents may",
       "modeHint": "View only allows screenshots; control also allows clicks and typing.",
@@ -6518,6 +6526,7 @@
         "turn": "TURN relay",
         "screenshots": "Screenshots"
       }
-    }
+    },
+    "allAgents": "All agents"
   }
 }

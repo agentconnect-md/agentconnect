@@ -1,12 +1,14 @@
 // Computer screenshot storage (computer-use.md §9): signs desktop uploads, confirms them, serves reads and collects expired objects.
 import { randomUUID } from 'node:crypto'
 import type {
+  ComputerAgentAccess,
   ComputerPolicy,
   ComputerScreenshotCommit,
   ComputerScreenshotPut,
   ComputerScreenshotPutOk
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
+import { computerGrantsAgent } from '../domain/computer.js'
 import type { ComputerScreenshotRecord, ComputerScreenshotRepo, SessionRepo } from '../persistence/ports.js'
 import { OrgId, SessionId } from '../domain/ids.js'
 import {
@@ -67,7 +69,8 @@ export class ComputerScreenshots {
     computer: {
       orgId: string
       computerId: string
-      policy: Pick<ComputerPolicy, 'screenshotRetentionDays' | 'allowedAgents'>
+      policy: Pick<ComputerPolicy, 'screenshotRetentionDays'>
+      agentAccess: ComputerAgentAccess
     },
     put: ComputerScreenshotPut
   ): Promise<ComputerScreenshotPutOk> {
@@ -75,7 +78,7 @@ export class ComputerScreenshots {
     if (days <= 0) return { status: 'skipped', reason: 'retention is 0' }
     if (put.bytes > this.bucket.maxBytes) return { status: 'skipped', reason: 'too large' }
     // The desktop names the session, so only a session of a granted agent in this org may receive its screenshots.
-    if (!computer.policy.allowedAgents.includes(put.agentId)) return { status: 'skipped', reason: 'agent not granted' }
+    if (!computerGrantsAgent(computer, put.agentId)) return { status: 'skipped', reason: 'agent not granted' }
     const session = await this.sessions.get(OrgId(computer.orgId), SessionId(put.sessionId))
     if (!session) throw new ScreenshotSessionPendingError()
     if (session.agentId !== put.agentId) return { status: 'skipped', reason: 'not this agent’s session' }

@@ -25,6 +25,7 @@ import type {
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
 import type {
+  ComputerAgentAccess,
   ComputerCapabilities,
   ComputerDoctorReport,
   ComputerPolicy,
@@ -415,11 +416,16 @@ export interface AgentDto {
 }
 
 /** The `PUT /{agents,daemons,crons}/:id/sharing` request body. */
-/** An agent's computer use setting; each named Computer's own policy must also grant the agent. */
+/** An agent's computer use as the Control Plane derives it: the Computers whose agent access grants it, and its managed mode. */
 export interface AgentComputerUse {
   enabled: boolean
   computers: string[]
-  /** An agent-driven managed computer from the pool (computer-use.md §15.1); kept on every save. */
+  /** An agent-driven managed computer from the pool (computer-use.md §15.1). */
+  managed?: { mode: 'ephemeral' | 'per-agent' }
+}
+
+/** What an agent itself sets for computer use: only its managed mode; access is set on each Computer. */
+export interface AgentComputerSetting {
   managed?: { mode: 'ephemeral' | 'per-agent' }
 }
 
@@ -1092,8 +1098,8 @@ export interface UpdateAgentInput {
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
-  /** Computer use, replaced wholesale; null clears (computer-use.md §4.1). */
-  computerUse?: AgentComputerUse | null
+  /** The managed computer mode, replaced wholesale; null clears (computer-use.md §4.1). */
+  computerUse?: AgentComputerSetting | null
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */
   execution?: string
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -2819,6 +2825,10 @@ export interface ComputerDto {
   canEdit: boolean
   screenshotRetentionDays: number
   canEditPolicy: boolean
+  /** Which agents may use it (computer-use.md §4.1); absent only on an older Control Plane. */
+  agentAccess?: ComputerAgentAccess
+  /** The caller may change its agent access: any editor, except of a per-agent or ephemeral computer. */
+  canEditAgentAccess?: boolean
   /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
   allocation?: 'ephemeral' | 'per-agent' | 'manual' | null
   ownerAgentId?: string | null
@@ -2903,6 +2913,19 @@ export async function fetchComputerRegistration(registrationId: string): Promise
 
 export async function setComputerPolicy(id: string, policy: ComputerPolicy): Promise<ComputerDto> {
   return apiPut<ComputerDto>(`${computerPath(id)}/policy`, policy)
+}
+
+export async function setComputerAgentAccess(id: string, access: ComputerAgentAccess): Promise<ComputerDto> {
+  return apiPut<ComputerDto>(`${computerPath(id)}/agent-access`, access)
+}
+
+/** Gives one agent access to a Computer, from the agent's side of the same relation. */
+export async function addComputerAgent(id: string, agentId: string): Promise<ComputerDto> {
+  return apiPut<ComputerDto>(`${computerPath(id)}/agent-access/agents/${encodeURIComponent(agentId)}`)
+}
+
+export async function removeComputerAgent(id: string, agentId: string): Promise<ComputerDto> {
+  return apiDelete<ComputerDto>(`${computerPath(id)}/agent-access/agents/${encodeURIComponent(agentId)}`)
 }
 
 export async function setComputerSharing(id: string, body: SharingInput): Promise<ComputerDto> {

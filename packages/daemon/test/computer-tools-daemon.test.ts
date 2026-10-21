@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { COMPUTER_CHANNEL_FEATURE, COMPUTER_LEASE_FEATURE } from '@agentconnect.md/protocol'
+import { COMPUTER_CHANNEL_FEATURE, COMPUTER_LEASE_FEATURE, agentComputerUseOf } from '@agentconnect.md/protocol'
 import { COMPUTER_TOOLS, COMPUTER_USE_GUIDANCE } from '../src/computer/tools.js'
 import { Daemon } from '../src/daemon.js'
 import { checkCoordinate, gettingToKnowCoordinate, researchCoordinate } from '../src/session/subsession-coordinate.js'
@@ -121,6 +121,21 @@ describe('toolContextFor and computer use', () => {
       const imageless = context()
       expect(imageless.computers).toEqual([])
       expect(imageless.instructions ?? '').not.toContain('# Computer use')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('follows the Computer list the Control Plane derives from each Computer’s agent access', async () => {
+    const { daemon, agent, context } = await boot(BOTH)
+    try {
+      // Access given on the Computer arrives as the derived spec value; the agent itself sets nothing.
+      agent.computerUse = agentComputerUseOf(undefined, [COMPUTER]) ?? undefined
+      expect(context().computers).toEqual(COMPUTER_NAMES)
+      // The last Computer taken away ships null, which clears it.
+      agent.computerUse = agentComputerUseOf(undefined, []) ?? undefined
+      expect(context().computers).toEqual([])
+      expect(context().instructions ?? '').not.toContain('# Computer use')
     } finally {
       await daemon.stop()
     }

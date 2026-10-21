@@ -103,33 +103,85 @@ function VisibilityTiles({
   labels?: { everyone: string; everyoneDescription: string; selected: string; selectedDescription: string }
 }) {
   const t = useTranslations('Common.visibility')
-  const tile = (v: ResourceVisibility, icon: string, title: string, desc: string) => {
-    const on = restricted ? v === 'restricted' : v === 'org'
-    return (
-      <div className={on ? 'ptile on items-start' : 'ptile items-start'} onClick={() => onPick(v)}>
-        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-          <Icon name={icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="font-sans text-[13px] font-semibold leading-normal">{title}</div>
-          <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-            {desc}
-          </div>
-        </div>
-        <span className={on ? dotOn : dotOff} />
-      </div>
-    )
-  }
+  return (
+    <ChoiceTiles<ResourceVisibility>
+      value={restricted ? 'restricted' : 'org'}
+      onPick={onPick}
+      options={[
+        {
+          value: 'org',
+          icon: 'globe',
+          title: labels?.everyone ?? t('everyone'),
+          description: labels?.everyoneDescription ?? t('everyoneDescription')
+        },
+        {
+          value: 'restricted',
+          icon: 'lock',
+          title: labels?.selected ?? t('selected'),
+          description: labels?.selectedDescription ?? t('selectedDescription')
+        }
+      ]}
+    />
+  )
+}
+
+/** One choice of a tile or pill group. */
+export interface ChoiceOption<T extends string> {
+  value: T
+  icon: string
+  title: string
+  description: string
+}
+
+/** The desktop radio tiles visibility uses, for any small set of choices. */
+export function ChoiceTiles<T extends string>({
+  options,
+  value,
+  onPick,
+  disabled
+}: {
+  options: readonly ChoiceOption<T>[]
+  value: T
+  onPick: (v: T) => void
+  disabled?: boolean
+}) {
   return (
     // 280px is the narrowest tile that keeps the longest description on one line beside its icon and radio.
     <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-[10px]">
-      {tile('org', 'globe', labels?.everyone ?? t('everyone'), labels?.everyoneDescription ?? t('everyoneDescription'))}
-      {tile(
-        'restricted',
-        'lock',
-        labels?.selected ?? t('selected'),
-        labels?.selectedDescription ?? t('selectedDescription')
-      )}
+      {options.map((option) => {
+        const on = option.value === value
+        return (
+          <div
+            key={option.value}
+            role="radio"
+            aria-checked={on}
+            aria-disabled={disabled}
+            className={
+              disabled
+                ? on
+                  ? 'ptile on cursor-default items-start'
+                  : 'ptile cursor-default items-start opacity-60'
+                : on
+                  ? 'ptile on items-start'
+                  : 'ptile items-start'
+            }
+            onClick={() => {
+              if (!disabled) onPick(option.value)
+            }}
+          >
+            <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+              <Icon name={option.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="font-sans text-[13px] font-semibold leading-normal">{option.title}</div>
+              <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                {option.description}
+              </div>
+            </div>
+            <span className={on ? dotOn : dotOff} />
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -272,26 +324,51 @@ function VisibilityPills({
   labels?: { everyone: string; selected: string }
 }) {
   const t = useTranslations('Common.visibility')
-  const pill = (v: ResourceVisibility, label: string) => {
-    const on = restricted ? v === 'restricted' : v === 'org'
-    return (
-      <button
-        type="button"
-        onClick={() => onPick(v)}
-        className={
-          on
-            ? 'h-9 cursor-pointer rounded-full border border-(--brand) bg-(--brand-soft) px-[14px] font-sans text-[13px] font-semibold leading-normal text-(--brand)'
-            : 'h-9 cursor-pointer rounded-full border border-(--border-default) bg-(--surface-card) px-[14px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary) transition-[background-color,border-color,color] hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)'
-        }
-      >
-        {label}
-      </button>
-    )
-  }
+  return (
+    <ChoicePills<ResourceVisibility>
+      value={restricted ? 'restricted' : 'org'}
+      onPick={onPick}
+      options={[
+        { value: 'org', title: labels?.everyone ?? t('everyone') },
+        { value: 'restricted', title: labels?.selected ?? t('selected') }
+      ]}
+    />
+  )
+}
+
+/** The phone form of {@link ChoiceTiles}: one pill per choice. */
+export function ChoicePills<T extends string>({
+  options,
+  value,
+  onPick,
+  disabled
+}: {
+  options: readonly Pick<ChoiceOption<T>, 'value' | 'title'>[]
+  value: T
+  onPick: (v: T) => void
+  disabled?: boolean
+}) {
   return (
     <div className="flex flex-wrap gap-2">
-      {pill('org', labels?.everyone ?? t('everyone'))}
-      {pill('restricted', labels?.selected ?? t('selected'))}
+      {options.map((option) => {
+        const on = option.value === value
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={on}
+            disabled={disabled}
+            onClick={() => onPick(option.value)}
+            className={
+              on
+                ? 'h-9 cursor-pointer rounded-full border border-(--brand) bg-(--brand-soft) px-[14px] font-sans text-[13px] font-semibold leading-normal text-(--brand) disabled:cursor-default'
+                : 'h-9 cursor-pointer rounded-full border border-(--border-default) bg-(--surface-card) px-[14px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary) transition-[background-color,border-color,color] hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-default disabled:opacity-60'
+            }
+          >
+            {option.title}
+          </button>
+        )
+      })}
     </div>
   )
 }

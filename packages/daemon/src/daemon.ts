@@ -28400,7 +28400,7 @@ export class Daemon {
     return picked === 'allow_once' || picked === 'allow_session' ? picked : 'deny'
   }
 
-  /** The Computers an agent may use now (computer-use.md §4.1); empty while computer use is off. */
+  /** The Computers an agent may use now (computer-use.md §4.1), as the CP derives them from each Computer's agent access. */
   private grantedComputers(agentId: string): readonly string[] {
     const use = this.agents.get(agentId)?.computerUse
     return use?.enabled === true ? use.computers : []
@@ -28414,7 +28414,7 @@ export class Daemon {
 
   /** Whether an agent's sessions get the `computer_*` tools (computer-use.md §5.2). */
   private offersComputerTools(agent: Pick<LoadedAgent, 'computerUse' | 'runtime'>): boolean {
-    // Most agents never enabled it; only theirs reach the CP client's feature table.
+    // Most agents have no Computer; only those that do reach the CP client's feature table.
     if (agent.computerUse?.enabled !== true) return false
     const cp = this.cpClient
     return computerToolsOffered({

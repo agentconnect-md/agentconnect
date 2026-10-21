@@ -302,6 +302,7 @@ import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.
 import { registerPoolMetrics } from './observability/pool-metrics.js'
 import { registerOrgMetrics } from './observability/org-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { computerAccessFanOut } from './orchestrator/computerAccessFanOut.js'
 import { SetMemoryHomeReconciler } from './orchestrator/setMemoryHomeReconciler.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
@@ -711,7 +712,13 @@ export function buildContainer(
     channels: computerChannels,
     leases: computerLeases,
     staleAfterMs: missedBeatsMs,
-    ...(computerScreenshots ? { screenshots: computerScreenshots } : {})
+    ...(computerScreenshots ? { screenshots: computerScreenshots } : {}),
+    // Lazy: the delivery fan-out is assembled below and runs only when an access change lands.
+    onAgentAccessChanged: computerAccessFanOut({
+      agents: repos.agent,
+      delivery: () => agentDelivery,
+      log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
+    })
   })
   const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
   const inviteLinks = new OrgInviteLinkService(
@@ -811,7 +818,9 @@ export function buildContainer(
     // The installation grants projected beside the allowlist, never expanded into it.
     repos.agentInstallationAuth,
     // The Decisions each chat API gate names, shipped with it.
-    repos.decision
+    repos.decision,
+    // The Computers whose agent access grants each agent (computer-use.md §4.1).
+    repos.computer
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
