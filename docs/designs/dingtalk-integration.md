@@ -115,9 +115,10 @@ connections of the same daemon both deliver during a rebalance.
 
 ### 4.1 Conversations, sessions, and identity
 
-`conversationType` `1` is a DM and `2` a group; `conversationId` identifies the
-conversation (it is the `openConversationId` the send APIs take). A group
-mention arrives with `isInAtList: true` and the bot removed from the text,
+`conversationType` `1` is a DM and `2` a group. A group is keyed by its
+`conversationId`, the `openConversationId` the group send API takes; a DM is
+keyed `dm:<senderStaffId>`, because DM sends and DM card delivery address user
+IDs, not the conversation. A group mention arrives with `isInAtList: true` and the bot removed from the text,
 leaving a leading space the adapter trims.
 
 DingTalk has no threads (the `openThreadId` field equals the conversation ID),

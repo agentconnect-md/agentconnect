@@ -1,4 +1,5 @@
 import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
+import { mimeTypeFromFileName, safeAttachmentName } from './file-name.js'
 
 interface QQUrl {
   protocol: string
@@ -85,25 +86,7 @@ function qqAttachmentMimeType(contentType: string, filename?: string, wav = fals
   const value = contentType.toLowerCase().split(';')[0]!.trim().replace('image/jpg', 'image/jpeg')
   if (value === 'voice') return wav ? 'audio/wav' : 'application/octet-stream'
   if (value !== 'file') return value || 'application/octet-stream'
-  const ext = filename?.split('.').pop()?.toLowerCase()
-  const byExtension: Record<string, string> = {
-    pdf: 'application/pdf',
-    zip: 'application/zip',
-    rar: 'application/vnd.rar',
-    '7z': 'application/x-7z-compressed',
-    doc: 'application/msword',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    xls: 'application/vnd.ms-excel',
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    ppt: 'application/vnd.ms-powerpoint',
-    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    txt: 'text/plain',
-    csv: 'text/csv',
-    mp3: 'audio/mpeg',
-    wav: 'audio/wav',
-    mp4: 'video/mp4'
-  }
-  return (ext && byExtension[ext]) || 'application/octet-stream'
+  return mimeTypeFromFileName(filename)
 }
 
 // Admit DMs and explicit group mentions before core routing; ambient messages must never activate through affinity.
@@ -144,7 +127,7 @@ export function normalizeQQMessage(
       unsupported = true
       continue
     }
-    const name = attachment.filename?.replace(/[\\/\x00-\x1f\x7f()]/g, '_').slice(0, 160)
+    const name = safeAttachmentName(attachment.filename)
     if (attachments.some((item) => item.sourceUrl === sourceUrl)) continue
     attachments.push({
       id,
