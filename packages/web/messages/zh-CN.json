@@ -1618,6 +1618,7 @@
       "linearGatedNote": "私有Agent仅会在其作为默认Agent的团队中响应。",
       "discordCannotLeaveRowHint": "Discord Bot属于服务器，而不是单个频道——请使用上方服务器标题中的“离开”操作将其移出。如果它仍在服务器中，该行会重新出现。",
       "googlechatMentionHint": "被@提及时回复。Google Chat 只投递提及了该应用的空间消息，话题里的回复也一样。",
+      "dingtalkMentionHint": "被@提及时回复。钉钉只投递@了机器人的群消息。",
       "space": {
         "thisServer": "此服务器",
         "leaveTitle": "离开{space}——Bot会离开整个服务器及其中的所有{noun}",
@@ -2125,6 +2126,10 @@
         "googlechat": {
           "create": "在 Google Cloud 中配置一个 Chat 应用",
           "existing": "一个未使用的 Google Chat 应用"
+        },
+        "dingtalk": {
+          "create": "在钉钉开发者后台创建应用",
+          "existing": "未使用的钉钉机器人"
         }
       },
       "api": {
@@ -6201,6 +6206,70 @@
         "appUnavailable": "这个项目中没有配置 Chat 应用。请启用 Google Chat API 并配置应用，然后重新连接。",
         "unreachable": "无法连接到 Google。请重试。",
         "deploymentApp": "这是部署自带的 Chat 应用，请在 Google Chat 中给它发一条消息来连接。"
+      }
+    },
+    "dingtalk": {
+      "checking": "正在检查凭据…",
+      "connect": "连接",
+      "createApp": "创建钉钉应用",
+      "walkthroughLabel": "钉钉应用设置步骤",
+      "step1": "在钉钉开发者后台创建企业内部应用并添加机器人，发布后复制它的 Client ID 和 Client Secret。标准版每月可调用 5,000 次 API、接收 3,000 条消息。",
+      "step2": "粘贴 Client ID 和 Client Secret——连接所必需",
+      "steps": {
+        "nav": {
+          "credentials": "凭证与基础信息",
+          "robot": "机器人",
+          "permissions": "权限管理",
+          "versions": "版本管理与发布"
+        },
+        "createApp": {
+          "label": "建应用",
+          "caption": "在企业内部应用中<action>创建应用</action>。名称只能包含中英文和数字，不能有空格。",
+          "title": "企业内部应用",
+          "cardTitle": "创建应用",
+          "nameLabel": "应用名称",
+          "nameValue": "MyAgent",
+          "descriptionLabel": "应用描述",
+          "descriptionValue": "编程 Agent",
+          "save": "保存"
+        },
+        "robot": {
+          "label": "机器人",
+          "caption": "<action>添加应用能力</action> → 机器人。上传消息预览图，保留 Stream 模式，然后发布。",
+          "title": "机器人配置",
+          "previewLabel": "消息预览图",
+          "modeLabel": "消息接收模式",
+          "stream": "Stream 模式",
+          "http": "HTTP 模式",
+          "publish": "发布"
+        },
+        "permissions": {
+          "label": "权限",
+          "caption": "<action>权限管理</action> → 开通 Card.Instance.Write 和 Card.Streaming.Write。",
+          "apply": "立即开通"
+        },
+        "publish": {
+          "label": "发布",
+          "caption": "<action>版本管理与发布</action> → 创建版本并设置谁能看到机器人。之后每次修改配置，都要发布新版本才会生效。",
+          "title": "创建新版本",
+          "versionLabel": "应用版本号",
+          "visibilityLabel": "应用可用范围",
+          "visibilityValue": "全部员工",
+          "save": "保存"
+        },
+        "credentials": {
+          "label": "复制",
+          "caption": "<action>凭证与基础信息</action> → 复制 Client ID 和 Client Secret。",
+          "title": "应用凭证"
+        }
+      },
+      "settings": {
+        "replace": "更换密钥",
+        "newSecret": "新的 Client Secret",
+        "save": "保存",
+        "checking": "正在检查…",
+        "close": "关闭",
+        "updated": "Client Secret 已更新。"
       }
     }
   },

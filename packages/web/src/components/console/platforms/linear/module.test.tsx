@@ -129,12 +129,13 @@ describe('the linear transcript and card semantics', () => {
     expect(note).toEqual({ key: 'linearGatedNote' })
   })
 
-  it('is the only module whose roster is derived, and one of two whose triggers are narrowed', () => {
-    // Both are capabilities core reads; neither may become "the platform is Linear". Google Chat narrows its space triggers.
+  it('is the only module whose roster is derived, and one of three whose triggers are narrowed', () => {
+    // Both are capabilities core reads; neither may become "the platform is Linear". Google Chat and DingTalk narrow their room triggers.
     for (const m of platformRegistry.all()) {
       if (m.platformId === 'linear') continue
       expect(m.channelList?.roster, m.platformId).toBeUndefined()
-      if (m.platformId !== 'googlechat') expect(m.channelList?.triggers, m.platformId).toBeUndefined()
+      if (!['googlechat', 'dingtalk'].includes(m.platformId))
+        expect(m.channelList?.triggers, m.platformId).toBeUndefined()
       expect(m.channelList?.ownerChangeWarning, m.platformId).toBeUndefined()
       expect(m.channelList?.gatedNote, m.platformId).toBeUndefined()
     }

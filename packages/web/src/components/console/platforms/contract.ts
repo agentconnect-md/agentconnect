@@ -620,6 +620,7 @@ export interface ConversationLinkInput {
 export type WebChannelListMessageKey =
   | 'discordCannotLeaveRowHint'
   | 'googlechatMentionHint'
+  | 'dingtalkMentionHint'
   | 'linearGatedNote'
   | 'ownerChange.title'
   | 'ownerChange.body'

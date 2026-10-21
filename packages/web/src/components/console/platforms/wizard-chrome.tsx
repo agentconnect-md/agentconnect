@@ -34,10 +34,12 @@ export type IdentityCardKey =
   | 'Integrations.dialog.identityCards.feishuFeishu.existing'
   | 'Integrations.dialog.identityCards.googlechat.create'
   | 'Integrations.dialog.identityCards.googlechat.existing'
+  | 'Integrations.dialog.identityCards.dingtalk.create'
+  | 'Integrations.dialog.identityCards.dingtalk.existing'
 
 /** The mode-card pair for a module with one brand. */
 export function identityCards(
-  platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat'
+  platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat' | 'dingtalk'
 ): {
   create: IdentityCardKey
   existing: IdentityCardKey
