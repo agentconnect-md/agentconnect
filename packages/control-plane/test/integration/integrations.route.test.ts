@@ -20,12 +20,13 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { BotId, OrgId } from '../../src/domain/ids.js'
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import { SLACK_BOT_EVENTS, SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import { SlackBotIdentityReconciler } from '../../src/orchestrator/slackBotIdentityReconciler.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { createFeishuAppTenantGuard } from '../../src/http/feishu-identity.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -866,6 +867,36 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(await prisma.bot.count()).toBe(0)
     expect(await prisma.botSecret.count()).toBe(0)
     expect(spy.upserts).toHaveLength(0)
+  })
+
+  it('POST installs a standalone Feishu Bot without a Login App and preserves its identity boundary on reuse', async () => {
+    const agentId = await placedAgent()
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      feishuAppTenantGuard: createFeishuAppTenantGuard(() => undefined, undefined, { loginEnabled: () => false }),
+      verifyFeishuBot: async () => ({ status: 'ok', name: 'Standalone Bot', openId: 'ou_standalone' })
+    })
+    running = app
+    const response = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId, feishu: { appId: 'cli_standalone', appSecret: 'bot-secret' } }
+    })
+    expect(response.statusCode).toBe(201)
+    const { id, botId } = response.json() as { id: string; botId: string }
+    const bot = await app.deps.repos.bot.get(OrgId(DEFAULT_ORG_ID), BotId(botId))
+    expect(bot?.platformConfig).toMatchObject({ feishuLoginBound: 'false', feishuAppId: 'cli_standalone' })
+    expect(app.deps.platforms.get('feishu')?.chatMemberTenant?.(bot!)).toBeNull()
+
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}` })).statusCode).toBe(204)
+    const reused = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId, botId }
+    })
+    expect(reused.statusCode).toBe(201)
+    expect((await app.deps.repos.bot.get(OrgId(DEFAULT_ORG_ID), BotId(botId)))?.platformConfig).toMatchObject({
+      feishuLoginBound: 'false'
+    })
   })
 
   it('POST rejects a Feishu App from a different deployment organization', async () => {

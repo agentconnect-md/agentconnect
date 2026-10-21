@@ -24,6 +24,7 @@ export interface InstallFeishuBotArgs {
   appId: string
   appSecret: string
   region: FeishuRegion
+  loginBound: boolean
   transport?: SlackTransport
   botUserId?: string
   verificationToken?: string
@@ -61,6 +62,7 @@ export async function installNewFeishuBot(
         name,
         feishuAppId: appId,
         feishuRegion: region,
+        ...(args.loginBound === false ? { platformConfig: { feishuLoginBound: 'false' } } : {}),
         transport,
         ...(args.botUserId ? { botUserId: args.botUserId } : {}),
         ...(createdByUserId ? { createdByUserId } : {})

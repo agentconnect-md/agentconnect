@@ -1978,6 +1978,9 @@ export function buildContainer(
   })
   const configuredSocialProviders =
     opts.deploymentConfig?.values.auth.mode === 'oidc' ? opts.deploymentConfig.values.auth.socialProviders : []
+  const feishuLoginRegions = (['feishu', 'lark'] as const).filter((region) =>
+    opts.deploymentConfig ? configuredSocialProviders.includes(region) : Boolean(feishuPlatformApps[region])
+  )
   const gitlabSessionAccess = new GitlabSessionAccessService({
     bindings: repos.gitlabProjectBinding,
     connections: repos.gitlabConnection,
@@ -1992,6 +1995,7 @@ export function buildContainer(
     bots: repos.bot,
     botSecrets: repos.botSecret,
     clock,
+    regions: feishuLoginRegions,
     ...(logtoIdentity ? { identity: logtoIdentity } : {}),
     ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {}),
     // Lazy over `http.log` (assigned below; only ever called at resolve time).
@@ -2537,7 +2541,10 @@ export function buildContainer(
     })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: verifyTelegramBot }
-  const feishuTenantGuard = createFeishuAppTenantGuard((region) => feishuPlatformApps[region])
+  const feishuTenantGuard = createFeishuAppTenantGuard((region) => feishuPlatformApps[region], undefined, {
+    loginEnabled: (region) => feishuLoginRegions.includes(region),
+    onFailure: (failure) => http.log.warn({ provider: 'feishu', ...failure }, 'feishu tenant verification failed')
+  })
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: verifyFeishuBot,
     tenantGuard: feishuTenantGuard,

@@ -26,6 +26,7 @@ import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
+import { createFeishuAppTenantGuard } from '../../src/http/feishu-identity.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
@@ -107,13 +108,18 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(begun.providerDomain).toBe(FEISHU_REGISTRATION_DOMAIN)
   })
 
-  it('survives a CP restart, installs the full template, and never returns credentials', async () => {
+  it('installs without regional sign-in across a CP restart and never returns credentials', async () => {
     const agentId = await placedAgent()
     await prisma.agent.update({
       where: { id: agentId },
       data: { description: 'Helps teammates solve support requests.' }
     })
     const requests: URLSearchParams[] = []
+    const tenantResolver = vi.fn(async () => ({ status: 'invalid_credentials' as const }))
+    const tenantGuard = () =>
+      createFeishuAppTenantGuard(() => ({ appId: 'cli_unused_login', appSecret: 'expired-secret' }), tenantResolver, {
+        loginEnabled: () => false
+      })
     const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
       const form = new URLSearchParams(String(init?.body))
       requests.push(form)
@@ -138,7 +144,8 @@ describe('Feishu/Lark one-click app registration', () => {
 
     // Replica A begins the flow, then disappears before the browser's first poll.
     const first = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://cp.example.test' }, undefined, undefined, {
-      feishuAppRegistration: service(fetcher)
+      feishuAppRegistration: service(fetcher),
+      feishuAppTenantGuard: tenantGuard()
     })
     const started = await first.app.inject({
       method: 'POST',
@@ -189,6 +196,7 @@ describe('Feishu/Lark one-click app registration', () => {
     const spy = new SpyControl()
     const second = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender, {
       feishuAppRegistration: service(fetcher),
+      feishuAppTenantGuard: tenantGuard(),
       verifyFeishuBot: async () => ({ status: 'ok', name: 'One-click Bot', openId: 'ou_oneclick_bot' })
     })
     running = second
@@ -212,7 +220,12 @@ describe('Feishu/Lark one-click app registration', () => {
     // by the indexed column rather than a JSON path; the gateway rides the bag.
     const bot = await prisma.bot.findFirst({ where: { externalAppId: 'cli_oneclick' } })
     expect(bot).toMatchObject({ name: 'AgentConnect Lark' })
-    expect(bot?.platformConfig).toMatchObject({ feishuAppId: 'cli_oneclick', feishuRegion: 'lark' })
+    expect(bot?.platformConfig).toMatchObject({
+      feishuAppId: 'cli_oneclick',
+      feishuRegion: 'lark',
+      feishuLoginBound: 'false'
+    })
+    expect(tenantResolver).not.toHaveBeenCalled()
     expect(await prisma.botSecret.findUnique({ where: { botId: bot!.id } })).toMatchObject({
       botToken: 'one-click-secret',
       appToken: 'cli_oneclick'
@@ -384,9 +397,47 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     expect(response.statusCode).toBe(409)
     expect(response.json()).toMatchObject({
+      code: 'FEISHU_LOGIN_APP_NOT_CONFIGURED',
       message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
     })
   })
+
+  it.each(['login_app', 'registration'] as const)(
+    'returns a readable JSON failure when %s is unavailable',
+    async (source) => {
+      const agentId = await placedAgent()
+      const begin = vi.fn(async () => {
+        throw new Error('upstream response must not be exposed')
+      })
+      const app = buildHttpApp(prisma, { CORS_ORIGIN: 'https://console.example.test' }, undefined, undefined, {
+        feishuAppTenantGuard: {
+          loginAppStatus: async () => (source === 'login_app' ? 'unavailable' : 'not_required'),
+          checkApp: async () => 'not_required'
+        },
+        feishuAppRegistration: new FeishuAppRegistrationService(
+          new PgFeishuAppRegistrationStore(prisma, new PlaintextSecretCipher()),
+          { begin, poll: async () => ({ outcome: 'pending' }) }
+        )
+      })
+      running = app
+
+      const response = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations/feishu/app`,
+        headers: { origin: 'https://console.example.test' },
+        payload: { agentId, region: 'feishu' }
+      })
+      expect(response.statusCode).toBe(503)
+      expect(response.headers['content-type']).toContain('application/json')
+      expect(response.headers['access-control-allow-origin']).toBe('https://console.example.test')
+      expect(response.json()).toMatchObject({
+        code: source === 'login_app' ? 'FEISHU_LOGIN_APP_UNAVAILABLE' : 'FEISHU_SETUP_UNAVAILABLE'
+      })
+      expect(response.body).not.toContain('upstream response')
+      expect(begin).toHaveBeenCalledTimes(source === 'login_app' ? 0 : 1)
+      expect(await prisma.bot.count()).toBe(0)
+    }
+  )
 
   it('does not reuse one user’s pending setup for a different requester', async () => {
     const begin = vi.fn(async () => ({
