@@ -2442,9 +2442,9 @@ and delivery rules are documented in [Pull-request feedback continuation](design
 
 ## A new agent's permission mode
 
-The console's form for a new agent preselects the runtime's auto mode, where the runtime's own
-review or classifier decides, or its full-access mode where the runtime offers no auto mode, so
-work nobody is watching does not stop to wait for approval. It is the same pick turning assistant
+A new agent, and an agent switched to another runtime, starts in the runtime's auto mode, where
+the runtime's own review or classifier decides, or its full-access mode where the runtime offers
+no auto mode, so work nobody is watching does not stop to wait for approval. It is the same pick turning assistant
 mode on makes (see "Assistant-mode places"), taken from the modes the runtime reports when it
 reports them. Which mode is which follows the description each runtime reports for it:
 
@@ -2461,13 +2461,18 @@ reports them. Which mode is which follows the description each runtime reports f
 | Copilot                    | Autopilot        |
 
 A runtime is listed only when the description it reports for a mode says that mode decides on its
-own or never asks. Where a listed runtime reports no auto mode, the form takes its full-access mode
+own or never asks. Where a listed runtime reports no auto mode, its full-access mode is taken
 instead (Claude Code's Bypass permissions, for one); one that reports neither, and every runtime
-not listed, keeps the mode the form always preselected. Choosing another runtime preselects that
-runtime's mode again. The person creating the agent may still pick any other mode, one that asks
-included, and with Manual the assistant mode panel warns as it always has. Only the console form
-does this: an agent created through the API or the AgentConnect MCP tools without a permission
-mode keeps the runtime's own default, as before.
+not listed, starts in the runtime's own default. Choosing another runtime, in the form, the
+agent's settings or a chat's runtime picker, preselects that runtime's mode again. The person
+choosing may still pick any other mode, one that asks included, and with Manual the assistant mode
+panel warns as it always has. The Control Plane applies the same pick to an agent created through
+the API or the AgentConnect MCP tools without a permission mode, and to an edit that changes the
+runtime without one; an edit that keeps the runtime keeps the mode.
+
+The built-in agent a new organization gets on an install that runs a daemon pool starts in Claude
+Code with its `default` model, in Auto. The console's form likewise picks a runtime's `default`
+model when the runtime offers one, so the agent follows the runtime's own recommendation.
 
 ## Agent model credentials
 

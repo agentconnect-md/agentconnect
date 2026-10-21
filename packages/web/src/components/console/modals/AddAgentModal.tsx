@@ -4,7 +4,6 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { AgentModelProvider, ChatActions } from '@agentconnect.md/protocol'
-import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { ModelProviderField } from '@/components/console/ModelProviderField'
 import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
@@ -25,11 +24,11 @@ import {
   fastModeAvailableFor,
   modelCapability,
   displayedEffort,
-  preferredModelFor,
+  newAgentModelFor,
   resolvedPermissionMode,
   resolveEffortForModel,
   permissionModeChoicesFor,
-  permissionModeDefault,
+  preselectedPermissionMode,
   type AgentCallPolicy,
   supportsModes
 } from '@/lib/data'
@@ -427,7 +426,7 @@ export default function AddAgentModal({
   const runtimeProfile = modelSource?.runtimeModels.find((r) => r.runtime === effectiveRuntime)
   const models = runtimeProfile?.models ?? []
   const modelCatalog = runtimeProfile?.modelCatalog ?? undefined
-  const selectedModel = models.includes(model) ? model : preferredModelFor(modelSource, effectiveRuntime)
+  const selectedModel = models.includes(model) ? model : newAgentModelFor(modelSource, effectiveRuntime)
   const runtimeSupportsModes = supportsModes(effectiveRuntime)
   // Dynamic-first vocabularies (runtime-model-catalog.md §7): the SELECTED
   // model's discovered capability drives the effort/fast controls, the catalog's
@@ -445,17 +444,9 @@ export default function AddAgentModal({
   const fastModeAvailable = fastModeAvailableFor(effectiveRuntime, capability)
   const permissionChoices = permissionModeChoicesFor(effectiveRuntime, modelCatalog)
   // A new agent starts in the runtime's auto mode, else its full-access one, so work nobody watches does not wait; else its own default.
-  const permissionPreselected =
-    autoOrFullAccessPermissionMode(
-      effectiveRuntime,
-      permissionChoices.map((choice) => choice.v)
-    ) ?? permissionModeDefault(effectiveRuntime)
-  // A guessed mode the reported vocabulary lacks resolves to the runtime's own default, else its first mode; nothing here is stored yet.
-  const selectedPermissionMode = resolvedPermissionMode(
-    permissionMode ?? permissionPreselected,
-    permissionChoices,
-    modelCatalog
-  )
+  const selectedPermissionMode = !permissionMode
+    ? preselectedPermissionMode(effectiveRuntime, permissionChoices, modelCatalog)
+    : resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
 
   // Probe on open: App enabled on this deployment? Any installations? Refetch on
   // window focus too — "Install GitHub app" finishes in another tab, and coming

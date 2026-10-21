@@ -10,6 +10,7 @@ import {
   AssistantOnboarding,
   type AssistantModePolicy,
   apiGateDecisionIds,
+  autoOrFullAccessPermissionMode,
   modelSelectionDecisionIds,
   type AgentApiGates,
   type AgentModelSelection,
@@ -412,6 +413,8 @@ export class PgAgentRepo implements AgentRepo {
 
   async create(input: CreateAgentInput, opts?: AgentCreateOpts): Promise<AgentRecord> {
     const ws = input.workspace ?? { mode: 'scratch' }
+    // No mode given ⇒ the runtime's auto mode, else its full-access one, else its own default.
+    const permissionMode = input.permissionMode || autoOrFullAccessPermissionMode(input.runtime)
     return this.transaction(async (tx) => {
       // Close organization deletion's no-agent-row enumeration window without
       // taking a parent-row lock in the reverse order of Hook CRUD.
@@ -491,7 +494,7 @@ export class PgAgentRepo implements AgentRepo {
             ...(input.showFooter !== undefined ? { showFooter: input.showFooter } : {}),
             ...(input.showStatusBar !== undefined ? { showStatusBar: input.showStatusBar } : {}),
             ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
-            ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+            ...(permissionMode ? { permissionMode } : {}),
             chatActions: input.chatActions ?? 'approve',
             ...(input.pause !== undefined ? { pause: input.pause } : {}),
             ...(input.env ? { env: input.env } : {}),
@@ -827,7 +830,15 @@ export class PgAgentRepo implements AgentRepo {
         if (assistantModeEditNeedsAdmission(before, after, changesDefinition)) {
           assertAssistantModeDefinition({ runtime, memory }, before?.enabled === true)
         }
-        const base = overrides ?? (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
+        let base = overrides ?? (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
+        // A runtime switch without a mode takes the new runtime's auto mode, else its full-access one, else its own default.
+        if (runtime !== row.runtime && patch.permissionMode === undefined) {
+          base = { ...base }
+          delete base.permissionMode
+          const switched = autoOrFullAccessPermissionMode(runtime)
+          if (switched) base.permissionMode = switched
+          overrides = base
+        }
         const permissionMode = assistantModePermissionModeForEdit(
           before,
           after,

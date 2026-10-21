@@ -123,8 +123,10 @@ agent. Three parts:
   as before, and a pool that arrives later never retro-places (creation has no
   later trigger; auto-placement below is the one that does).
 - **The exec config comes with the placement**, and is **deployment policy**:
-  `PRESET_AGENT_POOL_RUNTIME` (default `dsh-acp`) and `PRESET_AGENT_POOL_MODEL`
-  (default `deepseek-official::deepseek-flash`). One pool image is one runtime set shared by every
+  `PRESET_AGENT_POOL_RUNTIME` (default `claude-acp`) and `PRESET_AGENT_POOL_MODEL`
+  (default `default`, the runtime's own recommended model); its permission mode is the runtime's
+  auto mode, else its full-access one, as for any new agent (product-conventions.md, "A new
+  agent's permission mode"). One pool image is one runtime set shared by every
   org, so which runtime is installed and signed in there is the deployment's
   answer, not a per-org choice — and it must be a runtime the pool holds
   credentials for, or the org's first turn fails on a login it cannot perform. An

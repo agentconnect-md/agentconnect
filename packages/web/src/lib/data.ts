@@ -9,6 +9,7 @@ import type {
   ChannelDecisionBinding
 } from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
   CODE_HOST_PROVIDERS,
@@ -929,6 +930,12 @@ export function preferredModelFor(daemon: Pick<DaemonRow, 'runtimeModels'> | und
   return dflt && models.includes(dflt) ? dflt : models[0]!
 }
 
+/** A new agent's model: the runtime's advertised `default`, which follows the runtime's own pick, else the preselected one. */
+export function newAgentModelFor(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined, runtime: string): string {
+  const models = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.models ?? []
+  return models.includes('default') ? 'default' : preferredModelFor(daemon, runtime)
+}
+
 /** Show each runtime once, preserving an existing agent's selected compatibility id. */
 export function selectableRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'>, selected?: string): string[] {
   const profiles = daemon.runtimeModels
@@ -1092,6 +1099,29 @@ export function resolvedPermissionMode(
   const dflt = catalog.defaultPermissionMode
   if (dflt && choices.some((o) => o.v === dflt)) return dflt
   return choices[0]?.v ?? mode
+}
+
+/** A runtime chosen without a mode starts in its auto mode, else its full-access one, else its own default, among the offered modes. */
+export function preselectedPermissionMode(
+  runtime: string,
+  choices: { v: string; l: string }[],
+  catalog: RuntimeModelCatalog | undefined
+): string {
+  const offered = choices.map((choice) => choice.v)
+  return resolvedPermissionMode(
+    autoOrFullAccessPermissionMode(runtime, offered) ?? permissionModeDefault(runtime),
+    choices,
+    catalog
+  )
+}
+
+/** The mode a switch to `runtime` preselects, among the modes the daemon reports for it. */
+export function runtimeSwitchPermissionMode(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string
+): string {
+  const catalog = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.modelCatalog ?? undefined
+  return preselectedPermissionMode(runtime, permissionModeChoicesFor(runtime, catalog), catalog)
 }
 
 // ── read-only display of an agent's effective runtime config ────────────────

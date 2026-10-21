@@ -148,17 +148,19 @@ does not pretend to defend against effects it cannot defend against.
   API. It is a default, never an admission check: an editor may change the mode afterwards and
   the choice sticks while the mode stays on. While it is on, an agent whose mode asks every time
   gets a warning: its tasks will wait for approval often.
-- The console's form for a new agent preselects the same mode from the same per-runtime map,
-  narrowed to the modes the runtime reports, whether or not the agent will ever be switched on: an
-  agent that runs work nobody watches should not wait on approval by default. A runtime with
-  neither keeps the form's old preselection, the creator may still pick an asking mode, and an
-  agent created through the API or MCP without a mode keeps the runtime's default.
+- A new agent, and a runtime switch, takes the same mode from the same per-runtime map, narrowed
+  to the modes the runtime reports, whether or not the agent will ever be switched on: an agent
+  that runs work nobody watches should not wait on approval by default. A runtime with neither
+  keeps its own default, and the person choosing may still pick an asking mode. The console's
+  forms and chat runtime picker preselect it; the Control Plane applies it to a create, or an edit
+  that changes the runtime, sent without a mode.
 - The map covers every runtime that reports a mode whose own description says it decides by the
   runtime's review or classifier (auto) or never asks (full access); the form's pick per runtime
   is listed in product-conventions.md, "A new agent's permission mode". A mode whose description
   leaves approvals open, such as one that runs tools "based on configured permissions", or that
   refuses rather than asks, like `dontAsk`, stays out of the map. Only an admitted runtime (§4.1)
-  reaches the switch-on default above, so the map's other runtimes change only the form.
+  reaches the switch-on default above, so the map's other runtimes change only a new agent and a
+  runtime switch.
 - Switching it on changes no conversation's trigger, and new conversations start as any agent's
   of the same visibility do (§5.3). A place is _internal_ unless the platform detects it as
   _external_ (§5.3).
@@ -841,8 +843,8 @@ with `listTasks`.
   4. Switching assistant mode on moves an asking mode to the runtime's auto mode, else its
      full-access mode (§1.8), so requests come only from what that mode still escalates or from
      an asking mode an editor picks afterwards (asking every time gets the warning in §1.8).
-     Nothing else changes the permission mode: an agent outside assistant mode keeps its own, so
-     its tasks ask as often as that mode does.
+     Otherwise only a runtime switch sets the mode (§1.8): an agent outside assistant mode keeps
+     its own, so its tasks ask as often as that mode does.
 - **Webchat**: the Delegated group of the session-detail dock's Tasks tab (#2885) lists a
   conversation's tasks (follow-ups and approved proposals included) and stops a running one; who may
   stop is whoever may continue that session today. The tab's This turn group shows, read-only,

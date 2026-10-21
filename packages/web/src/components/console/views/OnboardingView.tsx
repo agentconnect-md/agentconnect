@@ -19,7 +19,7 @@ import {
   localDaemons,
   modelOptionsFor,
   poolLabel,
-  preferredModelFor,
+  newAgentModelFor,
   imageBinaryMissingRuntimeIds,
   loginRequiredRuntimeIds,
   selectableRuntimeIds
@@ -500,7 +500,7 @@ function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model
   const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
   const models = daemon?.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
   const [model, setModel] = useState(initial?.model ?? '')
-  const selectedModel = models.includes(model) ? model : daemon ? preferredModelFor(daemon, effectiveRuntime) : ''
+  const selectedModel = models.includes(model) ? model : daemon ? newAgentModelFor(daemon, effectiveRuntime) : ''
   const modelOptions = modelOptionsFor(daemon, effectiveRuntime, models)
   return {
     runtimeIds,

@@ -213,6 +213,8 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     expect(mocks.pgSetModel).not.toHaveBeenCalled()
     if (manual) {
       expect(mocks.pgStageRuntime).toHaveBeenCalledWith('pg_1', { runtime: 'codex', model: 'code-model' })
+      // Another runtime than the agent's starts in its auto mode.
+      expect(mocks.pgSetPermissionPreset).toHaveBeenCalledWith('pg_1', 'a1', 'agent')
     } else {
       expect(mocks.pgStageRuntime).not.toHaveBeenCalled()
       expect(mocks.pgSetEffort).not.toHaveBeenCalled()
