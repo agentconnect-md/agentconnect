@@ -1648,6 +1648,38 @@ describe('CpClient executor facts (session-executors.md §6)', () => {
   })
 })
 
+describe('CpClient computer-lease/acquire (D→C REQ)', () => {
+  const COMPUTER = '88888888-8888-4888-8888-888888888888'
+  const ask = {
+    computerId: COMPUTER,
+    agentId: CRON_AGENT_ID,
+    sessionId: 'out-1',
+    requestedAt: '2026-10-21T00:00:00.000Z',
+    waitMs: 5000
+  }
+
+  it('asks a queueing Control Plane to hold the reply, and an older one without the wait', async () => {
+    const { t, client } = await readyClient({}, ['computer-lease-v1', 'computer-lease-queue-v1'])
+    const queued = client.computerLeaseAcquire(ask)
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'computer-lease/acquire', payload: { waitMs: 5000 } })
+    const reply = {
+      granted: false,
+      code: 'computer_busy',
+      message: 'busy',
+      queued: { position: 1, waitedMs: 0, leftMs: 40_000 }
+    }
+    t.pushInbound(JSON.stringify(buildEnvelope('computer-lease/acquire/result', reply, { corr: req.id })))
+    await expect(queued).resolves.toEqual(reply)
+
+    const legacy = await readyClient({}, ['computer-lease-v1'])
+    void legacy.client.computerLeaseAcquire(ask).catch(() => undefined)
+    await tick()
+    expect(JSON.parse(legacy.t.sent[0]!).payload.waitMs).toBeUndefined()
+  })
+})
+
 describe('CpClient memory/home/migrated (D→C REQ)', () => {
   it('names the agent, stamps its org, unwraps memory/home/migrated/ok, and surfaces CONFLICT by code', async () => {
     const { client, t } = await readyClient(

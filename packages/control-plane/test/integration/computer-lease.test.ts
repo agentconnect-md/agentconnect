@@ -142,7 +142,9 @@ function frame(type: string, payload: Record<string, unknown>): AnyFrame {
 // An agent daemon's end of the daemon wire, answered by the handlers directly; a separate service plays another CP replica.
 function agentDaemon(daemonId = DAEMON) {
   const replies: Array<{ type: string; payload: unknown }> = []
+  const closing = new AbortController()
   const conn = {
+    closedSignal: closing.signal,
     daemonId,
     orgId: DEFAULT_ORG_ID,
     state: 'READY',
@@ -170,13 +172,22 @@ function agentDaemon(daemonId = DAEMON) {
     })
   } as unknown as DaemonWsDeps
   return {
-    async acquire(computerId: string, sessionId: string, agentId = AGENT, at = new Date()) {
+    async acquire(computerId: string, sessionId: string, agentId = AGENT, at = new Date(), waitMs?: number) {
       await handleComputerLeaseAcquire(
-        frame('computer-lease/acquire', { computerId, agentId, sessionId, requestedAt: at.toISOString() }),
+        frame('computer-lease/acquire', {
+          computerId,
+          agentId,
+          sessionId,
+          requestedAt: at.toISOString(),
+          ...(waitMs === undefined ? {} : { waitMs })
+        }),
         conn,
         deps
       )
       return replies.at(-1)!
+    },
+    close() {
+      closing.abort()
     },
     async release(computerId: string, sessionId: string, agentId = AGENT) {
       await handleComputerLeaseRelease(frame('computer-lease/release', { computerId, agentId, sessionId }), conn, deps)
@@ -190,7 +201,7 @@ function agentDaemon(daemonId = DAEMON) {
           phase,
           platform: 'slack',
           channel: 'C123',
-          thread: 'T9',
+          thread: sessionId === SESSION ? 'T9' : `T-${sessionId}`,
           ts: at.toISOString()
         }),
         conn,
@@ -331,6 +342,89 @@ describe('Computer control lease', () => {
       granted: false,
       code: 'denied'
     })
+    desktop.ws.close()
+  })
+
+  it("queues sessions first come, first served across replicas and hands over when the holder's turn ends", async () => {
+    await seed()
+    const { app, base } = await start()
+    const { computerId, apiKey } = await registerComputer(app, [AGENT, OTHER_AGENT])
+    const desktop = await Desktop.connect(base, apiKey)
+    // Two CP replicas over one database; each daemon's asks may reach either.
+    const replicaA = agentDaemon()
+    const replicaB = agentDaemon()
+    const THIRD = 'session-three'
+    const secondAt = new Date()
+    const thirdAt = new Date(secondAt.getTime() + 1)
+    await replicaA.session('start')
+    expect((await replicaA.acquire(computerId, SESSION)).payload).toMatchObject({ granted: true })
+    expect((await replicaA.acquire(computerId, OTHER_SESSION, OTHER_AGENT, secondAt, 0)).payload).toMatchObject({
+      granted: false,
+      code: 'computer_busy',
+      holder: { sessionId: SESSION },
+      queued: { position: 1 }
+    })
+    expect((await replicaA.acquire(computerId, THIRD, AGENT, thirdAt, 0)).payload).toMatchObject({
+      queued: { position: 2 }
+    })
+    // Replica A is gone; the queue lives in the database, so replica B keeps the order.
+    expect((await replicaB.acquire(computerId, THIRD, AGENT, thirdAt, 0)).payload).toMatchObject({
+      queued: { position: 2 }
+    })
+    expect(await prisma.computerLeaseWaiter.count({ where: { computerId } })).toBe(2)
+
+    // The second session's ask is held on replica B while the holder's turn ends through another replica.
+    const held = replicaB.acquire(computerId, OTHER_SESSION, OTHER_AGENT, secondAt, 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await agentDaemon().session('end')
+    expect((await held).payload).toMatchObject({
+      granted: true,
+      lease: { holder: { sessionId: OTHER_SESSION, agentId: OTHER_AGENT } }
+    })
+    expect((await replicaB.acquire(computerId, THIRD, AGENT, thirdAt, 0)).payload).toMatchObject({
+      holder: { sessionId: OTHER_SESSION },
+      queued: { position: 1 }
+    })
+
+    // The third session's turn ends while it waits: a late ask of that wait gets a final answer and the marker stays.
+    await replicaB.session('end', THIRD, new Date(thirdAt.getTime() + 10))
+    const ended = {
+      granted: false,
+      code: 'computer_busy',
+      message: "this session's turn ended while it waited for this computer"
+    }
+    expect((await replicaA.acquire(computerId, THIRD, AGENT, thirdAt, 0)).payload).toMatchObject(ended)
+    expect(await prisma.computerLeaseWaiter.count({ where: { computerId } })).toBe(1)
+    // A duplicate late ask of the same wait, with the Computer now free, is refused too and never takes the lease.
+    await replicaA.release(computerId, OTHER_SESSION, OTHER_AGENT)
+    expect((await replicaB.acquire(computerId, THIRD, AGENT, thirdAt, 0)).payload).toMatchObject(ended)
+    expect(await prisma.computerLeaseWaiter.count({ where: { computerId } })).toBe(1)
+    // A later turn of that session starts a fresh wait and takes the free Computer.
+    expect(
+      (await replicaB.acquire(computerId, THIRD, AGENT, new Date(thirdAt.getTime() + 20), 0)).payload
+    ).toMatchObject({ granted: true })
+    expect(await prisma.computerLeaseWaiter.count({ where: { computerId } })).toBe(0)
+    expect(desktop.unreadable).toEqual([])
+    desktop.ws.close()
+  })
+
+  it('stops a held acquire once its daemon connection closes, so a release does not grant it', async () => {
+    await seed()
+    const { app, base } = await start()
+    const { computerId, apiKey } = await registerComputer(app, [AGENT, OTHER_AGENT])
+    const desktop = await Desktop.connect(base, apiKey)
+    const holder = agentDaemon()
+    const lost = agentDaemon()
+    expect((await holder.acquire(computerId, SESSION)).payload).toMatchObject({ granted: true })
+    const startedAt = Date.now()
+    const held = lost.acquire(computerId, OTHER_SESSION, OTHER_AGENT, new Date(), 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    lost.close()
+    expect((await held).payload).toMatchObject({ granted: false, queued: { position: 1 } })
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    await holder.release(computerId, SESSION)
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    expect(await prisma.computerLease.count({ where: { computerId } })).toBe(0)
     desktop.ws.close()
   })
 })

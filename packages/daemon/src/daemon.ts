@@ -2031,6 +2031,7 @@ export class Daemon {
     managedModeFor: (agentId) => this.managedComputerMode(agentId),
     pool: { computerPoolAcquire: (payload, orgId) => this.computerCp().computerPoolAcquire(payload, orgId) },
     poolServes: () => this.cpClient?.supportsServerFeature(COMPUTER_POOL_FEATURE) === true,
+    canRun: (ctx) => this.toolTurnRunnable(ctx),
     orgFor: (agentId) => this.orgForAgent(agentId),
     sessionIdFor: (ctx) =>
       this.store.ensureOutwardSessionId(

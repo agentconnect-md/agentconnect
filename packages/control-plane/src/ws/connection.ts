@@ -60,6 +60,12 @@ export class DaemonConnection implements ConnChannel {
   /** Per-agent fencing baseline (current launch + next-expected inbound seq). */
   readonly fencing = new FencingState()
   readonly correlator: ReqRep
+  private readonly closing = new AbortController()
+
+  /** Aborts once this connection closes, so held work stops for a reply nobody will receive. */
+  get closedSignal(): AbortSignal {
+    return this.closing.signal
+  }
 
   constructor(
     readonly transport: Transport,
@@ -359,11 +365,13 @@ export class DaemonConnection implements ConnChannel {
 
   close(code: number, reason: string): void {
     this.state = 'CLOSED'
+    this.closing.abort()
     this.transport.close(code, reason)
   }
 
   private onClose(_code: number, _reason: string): void {
     this.state = 'CLOSED'
+    this.closing.abort()
     this.correlator.rejectAll(new ConnectionClosed())
     // Remove the registry entry only while it is still OURS. On reconnect the new
     // connection's auth overwrites the entry (keyed by daemonId), and a half-dead

@@ -130,6 +130,7 @@ import {
   AGENT_EXISTS_MAX,
   COMPUTER_CHANNEL_FEATURE,
   COMPUTER_LEASE_FEATURE,
+  COMPUTER_LEASE_QUEUE_FEATURE,
   COMPUTER_POOL_FEATURE,
   ComputerChannelGrantResult,
   type ComputerChannelGrantRequest,
@@ -1504,13 +1505,24 @@ export class CpClient {
     return ComputerChannelGrantResult.parse(rep.payload)
   }
 
-  /** `computer-lease/acquire` (computer-use.md §4.4): take or renew one session's control lease on a Computer. */
+  /** `computer-lease/acquire` (computer-use.md §4.4): take or renew one session's control lease; `waitMs` queues for it. */
   async computerLeaseAcquire(payload: ComputerLeaseAcquire, orgId?: string): Promise<ComputerLeaseAcquireResult> {
     this.requireReady('computer-lease/acquire')
     if (!this.supportsServerFeature(COMPUTER_LEASE_FEATURE)) {
       throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer computer-lease/acquire', false)
     }
-    const rep = await this.request('computer-lease/acquire', payload, orgId)
+    const queued = this.supportsServerFeature(COMPUTER_LEASE_QUEUE_FEATURE)
+    // An older CP knows no queue: it is asked without `waitMs` and answers busy at once.
+    const { waitMs, ...plain } = payload
+    const rep =
+      queued && waitMs !== undefined
+        ? await this.correlator.request(
+            this.scopedFrame('computer-lease/acquire', payload, orgId),
+            (e) => this.transport!.send(e),
+            // The CP holds a queued reply up to `waitMs`: one send, timed past the hold.
+            { maxTries: 1, ackTimeoutMs: waitMs + ACK_TIMEOUT_MS }
+          )
+        : await this.request('computer-lease/acquire', plain, orgId)
     if (rep.type !== 'computer-lease/acquire/result') {
       throw new WireError('INTERNAL', `expected computer-lease/acquire/result, got ${rep.type}`, false)
     }

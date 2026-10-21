@@ -593,7 +593,8 @@ describe('visibility and policy', () => {
         redactApps: ['org.keepassxc.KeePassXC'],
         quietHours: { tz: 'Asia/Shanghai', ranges: ['22:00-23:59'] },
         leaseIdleSeconds: 60,
-        leaseMaxSeconds: 600
+        leaseMaxSeconds: 600,
+        leaseWaitSeconds: 120
       }
     })
     expect(res.statusCode).toBe(200)
@@ -606,7 +607,8 @@ describe('visibility and policy', () => {
       exposeDriverTools: false,
       quietHours: { tz: 'Asia/Shanghai', ranges: ['22:00-23:59'] },
       leaseIdleSeconds: 60,
-      leaseMaxSeconds: 600
+      leaseMaxSeconds: 600,
+      leaseWaitSeconds: 120
     })
     const stored = await prisma.computer.findUniqueOrThrow({ where: { id: computerId } })
     expect((stored.policy as { allowedAgents: string[] }).allowedAgents).toEqual([agentId])

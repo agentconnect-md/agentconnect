@@ -6407,6 +6407,8 @@
       "idleHint": "Control is released after this long without input, 10 to 3600.",
       "max": "Longest control (seconds)",
       "maxHint": "The most one session may hold control, 60 to 86400.",
+      "wait": "Wait in line (seconds)",
+      "waitHint": "When another agent has control, how long an agent waits for its turn before giving up, 0 to 600.",
       "retention": "Keep screenshots (days)",
       "retentionHint": "0 stores none; blank uses the deployment's default.",
       "retentionDefault": "Default",
@@ -6416,6 +6418,7 @@
         "idleRange": "Idle release must be a whole number from 10 to 3600.",
         "maxRange": "Longest control must be a whole number from 60 to 86400.",
         "idleAboveMax": "Idle release can't be longer than the longest control.",
+        "waitRange": "Wait in line must be a whole number from 0 to 600.",
         "retentionRange": "Screenshot days must be a whole number from 0 to 3650, or blank."
       },
       "reset": "Reset",

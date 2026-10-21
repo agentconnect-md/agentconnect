@@ -1,6 +1,20 @@
 // The control lease state machine (computer-use.md §4.4): pure decisions over one Computer's lease row.
-import { computerLeaseHolderName, type ComputerLeaseHolder, type ComputerLeaseRefusal } from '@agentconnect.md/protocol'
+import {
+  computerLeaseHolderName,
+  type ComputerLeaseHolder,
+  type ComputerLeaseQueued,
+  type ComputerLeaseRefusal
+} from '@agentconnect.md/protocol'
 import { presentComputerStatus, type ComputerPolicy, type ComputerStatus } from './computer.js'
+import {
+  endedWait,
+  joinQueue,
+  keepWaiters,
+  waitersAhead,
+  withoutWaiter,
+  findWaiter,
+  type LeaseWaiter
+} from './computerLeaseQueue.js'
 
 /** One held lease; times are epoch milliseconds. */
 export interface ControlLease {
@@ -40,14 +54,17 @@ export interface LeaseClock {
   holderTtlMs: number
   /** A live Computer status older than this reads as offline. */
   staleAfterMs: number
+  /** A queued session that has not asked again for this long has left the line. */
+  waiterTtlMs?: number
 }
 
 export type LeaseEndReason =
   'idle' | 'max' | 'holder_lost' | 'released' | 'session_ended' | 'paused' | 'human_takeover' | 'policy' | 'revoked'
 
-/** The row to keep (`undefined`), replace, or delete (`null`), plus what happened. */
+/** The row to keep (`undefined`), replace, or delete (`null`), the wait queue to store when it changed, plus what happened. */
 export interface LeaseStep<R> {
   next: ControlLease | null | undefined
+  queue?: LeaseWaiter[]
   result: R
 }
 
@@ -111,6 +128,8 @@ export type AcquireOutcome =
       code: ComputerLeaseRefusal
       message: string
       holder?: ComputerLeaseHolder
+      /** The session waits in line: ask again to keep its place. */
+      queued?: ComputerLeaseQueued
       /** A lease this decision found at its max limit and marked spent. */
       ended?: { lease: ControlLease; reason: LeaseEndReason }
     }
@@ -124,19 +143,28 @@ export interface AcquireRequest {
   turnAt: number
   /** The id a fresh lease takes. */
   leaseId: string
+  /** Wait in the Computer's FIFO queue instead of failing at once with `computer_busy` (§4.4). */
+  wait?: boolean
 }
 
-/** Take the lease, or renew it for the session that holds it; anyone else gets a definite refusal. */
+/** Take the lease, or renew it for the session that holds it; anyone else waits in line or gets a definite refusal. */
 export function decideAcquire(
   computerId: string,
   orgId: string,
   computer: LeaseComputer | null,
   current: ControlLease | null,
   req: AcquireRequest,
-  clock: LeaseClock
+  clock: LeaseClock,
+  stored: readonly LeaseWaiter[] = []
 ): LeaseStep<AcquireOutcome> {
+  // Waiters that stopped asking or lost their grant leave first; a final answer takes the session out of line.
+  const queue = keepWaiters(stored, computer?.policy ?? null, clock.now, clock.waiterTtlMs)
+  const pruned = queue.length !== stored.length ? queue : undefined
+  // A turn-ended marker outlives a late ask of its wait, so a duplicate of that ask is refused too.
+  const leave = () => (endedWait(queue, req) ? pruned : (withoutWaiter(queue, req) ?? pruned))
   const refuse = (code: ComputerLeaseRefusal, message: string, holder?: ComputerLeaseHolder) => ({
     next: undefined,
+    queue: leave(),
     result: { granted: false as const, code, message, ...(holder ? { holder } : {}) }
   })
   if (!computer || computer.status === 'revoked') return refuse('unavailable', 'this computer was revoked or removed')
@@ -159,13 +187,52 @@ export function decideAcquire(
   if (current && ended === 'max' && sameHolder(current, req)) {
     return {
       next: { ...current, spentAt: clock.now },
+      queue: leave(),
       result: { granted: false, code: 'denied', message: capped, ended: { lease: current, reason: ended } }
     }
   }
   const live = current && !spent && !ended ? current : null
-  if (live && !sameHolder(live, req)) {
-    const holder = leaseHolder(live)
-    return refuse('computer_busy', `this computer is controlled by ${holder.agentName ?? holder.agentId}`, holder)
+  const holder = live && !sameHolder(live, req) ? leaseHolder(live) : undefined
+  // A late ask from a wait whose turn already ended gets a final answer, never a new place or the lease.
+  if (endedWait(queue, req))
+    return refuse('computer_busy', "this session's turn ended while it waited for this computer", holder)
+  const mine = findWaiter(queue, req)
+  const ahead = live ? 0 : waitersAhead(queue, mine?.droppedAt === null ? mine : undefined)
+  if (holder || ahead > 0) {
+    const busy = holder
+      ? `this computer is controlled by ${holder.agentName ?? holder.agentId}`
+      : `${ahead} other session${ahead === 1 ? ' is' : 's are'} waiting for this computer`
+    if (!req.wait)
+      return {
+        next: undefined,
+        queue: pruned,
+        result: { granted: false, code: 'computer_busy', message: busy, ...(holder ? { holder } : {}) }
+      }
+    const joined = joinQueue(computerId, orgId, queue, req, computer.policy, clock.now)
+    if (joined.kind === 'timed_out') {
+      const waited = Math.round(joined.waitedMs / 1000)
+      return {
+        next: undefined,
+        queue: joined.queue,
+        result: {
+          granted: false,
+          code: 'computer_busy',
+          message: `${busy}; gave up after waiting ${waited}s in line`,
+          ...(holder ? { holder } : {})
+        }
+      }
+    }
+    return {
+      next: undefined,
+      queue: joined.queue,
+      result: {
+        granted: false,
+        code: 'computer_busy',
+        message: `${busy}; waiting in line at position ${joined.queued.position}`,
+        ...(holder ? { holder } : {}),
+        queued: joined.queued
+      }
+    }
   }
   if (live) {
     const renewed = {
@@ -175,7 +242,7 @@ export function decideAcquire(
       turnAt: Math.max(live.turnAt, req.turnAt),
       daemonId: req.daemonId ?? live.daemonId
     }
-    return { next: renewed, result: { granted: true, lease: renewed, fresh: false } }
+    return { next: renewed, queue: leave(), result: { granted: true, lease: renewed, fresh: false } }
   }
   const lease: ControlLease = {
     leaseId: req.leaseId,
@@ -193,6 +260,7 @@ export function decideAcquire(
   }
   return {
     next: lease,
+    queue: leave(),
     result: {
       granted: true,
       lease,

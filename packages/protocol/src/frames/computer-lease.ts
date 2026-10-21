@@ -31,24 +31,42 @@ export type ComputerControlLease = z.infer<typeof ComputerControlLease>
 export const COMPUTER_LEASE_REFUSALS = ['computer_busy', 'human_in_control', 'unavailable', 'denied'] as const
 export type ComputerLeaseRefusal = (typeof COMPUTER_LEASE_REFUSALS)[number]
 
+/** The longest one `computer-lease/acquire` may hold its reply while queued; the daemon asks again after it. */
+export const COMPUTER_LEASE_POLL_MAX_MS = 10_000
+
+/** The longest a Computer's policy may make an acquire wait in its queue (§4.4). */
+export const COMPUTER_LEASE_WAIT_MAX_SECONDS = 600
+
 // D→C REQ on the daemon wire: take or renew the lease for one agent session; the same session renews its own.
 export const ComputerLeaseAcquire = z.object({
   computerId: z.string().uuid(),
   agentId: z.string().uuid(),
   sessionId: z.string().min(1).max(256),
   // The daemon-clock time of the request, compared with the `event/session` turn end on the same clock.
-  requestedAt: z.string().datetime()
+  requestedAt: z.string().datetime(),
+  // Behind COMPUTER_LEASE_QUEUE_FEATURE: wait in the Computer's FIFO queue, holding the reply up to this long.
+  waitMs: z.number().int().min(0).max(COMPUTER_LEASE_POLL_MAX_MS).optional()
 })
 export type ComputerLeaseAcquire = z.infer<typeof ComputerLeaseAcquire>
 
-// C→D REP to `computer-lease/acquire`; a refusal names the holder when the Computer is busy.
+/** A waiting acquire's place: `position` 1 is next; asking again with the same `requestedAt` keeps it. */
+export const ComputerLeaseQueued = z.object({
+  position: z.number().int().min(1),
+  waitedMs: z.number().int().min(0),
+  // Time left before the wait ends in `computer_busy`.
+  leftMs: z.number().int().min(0)
+})
+export type ComputerLeaseQueued = z.infer<typeof ComputerLeaseQueued>
+
+// C→D REP to `computer-lease/acquire`; a refusal names the holder when the Computer is busy, and carries `queued` while it waits.
 export const ComputerLeaseAcquireResult = z.discriminatedUnion('granted', [
   z.object({ granted: z.literal(true), lease: ComputerControlLease }),
   z.object({
     granted: z.literal(false),
     code: z.enum(COMPUTER_LEASE_REFUSALS),
     message: z.string().max(500),
-    holder: ComputerLeaseHolder.optional()
+    holder: ComputerLeaseHolder.optional(),
+    queued: ComputerLeaseQueued.optional()
   })
 ])
 export type ComputerLeaseAcquireResult = z.infer<typeof ComputerLeaseAcquireResult>

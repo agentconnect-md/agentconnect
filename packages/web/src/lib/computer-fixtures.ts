@@ -34,7 +34,8 @@ export function computerFixture(over: Partial<ComputerDto> = {}): ComputerDto {
       redactApps: [],
       exposeDriverTools: false,
       leaseIdleSeconds: 120,
-      leaseMaxSeconds: 1800
+      leaseMaxSeconds: 1800,
+      leaseWaitSeconds: 45
     },
     visibility: 'restricted',
     sharedWith: ['u1'],

@@ -538,7 +538,7 @@ interface ComputerPolicy {
   quietHours?: { tz: string; ranges: string[] } // no use outside these windows
   leaseIdleSeconds: number // idle release, default 120 (validated)
   leaseMaxSeconds: number // cap on one control lease, default 1800 (validated)
-  leaseWaitSeconds: number // [design] how long an acquire waits in the FIFO lease queue before `computer_busy` (§4.4)
+  leaseWaitSeconds: number // [implemented] wait in the FIFO lease queue before `computer_busy`, default 45, 0..600 (§4.4)
   screenshotRetentionDays?: number // days stored screenshots are kept (§9); 0 = never written, absent = deployment default
 }
 ```
@@ -615,7 +615,8 @@ Whatever the policy, the desktop daemon refuses locally:
 ### 4.4 Leases and concurrency [validated]
 
 - A Computer has at most one **control lease** at a time. The prototype takes it automatically on the first input, or
-  explicitly through `computer_acquire`; other controllers get `computer_busy` naming the holder.
+  explicitly through `computer_acquire`; other controllers wait in line, and get `computer_busy` naming the holder
+  when the wait runs out (below).
 - A lease expires after `leaseIdleSeconds` (120) idle or `leaseMaxSeconds` (1800) total, and is released by
   `computer_release`, a human takeover, or a stop. The release renews it from session heartbeats and releases it when
   the session ends [design].
@@ -630,8 +631,8 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   behind `computer-lease-v1`. The CP answers only a daemon that serves the agent. It refuses with `denied` when the
   policy does not grant the agent or is `view`; `unavailable` when the Computer is revoked, offline, or its status is
   stale; and `human_in_control` while it is `paused` or `human_in_control`. Another session's live lease gets
-  `computer_busy` with the holder (session, agent, and agent name, cut to 200 characters). The holding session's acquire
-  renews the lease in place.
+  `computer_busy` with the holder (session, agent, and agent name, cut to 200 characters), at once or, for an acquire
+  that queues, when its wait runs out (below). The holding session's acquire renews the lease in place.
   `computer-lease/release` gives it up.
 - **Expiry**: a lease ends at the first of three deadlines. `leaseIdleSeconds` runs from its last use: an acquire by
   its session, or the last input the desktop daemon reports in each heartbeat for its local lease (`lease.idleMs`). The
@@ -658,14 +659,39 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   `computer-lease/acquire` before every input tool and `computer_acquire`, and give it up with `computer-lease/release`
   on `computer_release` (§5.2). The session is the outward session id its `event/session` milestones carry.
 
-**Sharing and the wait queue [design]** (#3231). Sharing works the same for managed and self-hosted Computers: one
-desktop is one display and one control lease. A Computer granted to several agents (a shared self-hosted desktop or a
-`manual` managed computer) is used first come, first served, and its holder releases the lease when its turn ends
-(above). Another session's acquire no longer fails at once with `computer_busy`: it waits in a **FIFO queue** per
-Computer for at most `leaseWaitSeconds`, set by the Computer's policy and bounded by the deployment, and gets the lease
-when the sessions ahead of it are done. `computer_busy`, still naming the holder, becomes the result of a wait that
-times out. Pre-emption by a human, revocation, and policy changes behave as above; a waiting session that loses its
-grant or ends leaves the queue. Screenshots, cursor position, and viewers need no lease and never wait.
+**Sharing and the wait queue [implemented; live queue position and two-agent e2e pending]** (#3231). Sharing works the same for managed and self-hosted Computers:
+one desktop is one display and one control lease. A Computer granted to several agents (a shared self-hosted desktop or
+a `manual` managed computer) is used first come, first served, and its holder releases the lease when its turn ends
+(above). Another session's acquire does not fail at once with `computer_busy`: it waits in a **FIFO queue** per
+Computer for at most the policy's `leaseWaitSeconds` (default 45, 0 to 600; 0 never waits), and gets the lease when the
+sessions ahead of it are done. Screenshots, cursor position, and viewers need no lease and never wait.
+
+- **Wire**: `computer-lease/acquire` takes an optional `waitMs` (at most `COMPUTER_LEASE_POLL_MAX_MS`, 10 s), behind
+  `computer-lease-queue-v1`. With it, a busy answer carries `queued` (`position`, 1 being next; `waitedMs`; `leftMs`)
+  while the session waits, and the CP holds the reply up to `waitMs`, re-reading the queue every second or at once when
+  a lease on that replica ends. The daemon asks again with the **same `requestedAt`** until it is granted or gets an
+  answer without `queued`. An acquire without `waitMs` (an older daemon) never queues and gets `computer_busy` while
+  anyone holds or waits for the Computer, and the daemon sends `waitMs` only to a CP that advertises the feature.
+- **State**: the `computer_lease_waiter` table, one row per waiting session and Computer, changed only under the
+  Computer row's lock like the lease, so every replica sees one order (`enqueuedAt`, ties broken by agent and session).
+  The pure decisions live in `domain/computerLeaseQueue.ts`; `decideAcquire` reads the queue and grants a free
+  Computer only to the first live waiter, or to anyone when nobody waits.
+- **Leaving the line**: a wait that reaches `leaseWaitSeconds` ends with `computer_busy` naming the holder (or saying
+  how many sessions wait) and leaves the line; asking again joins at the end. A waiter that has not asked for 15 s has
+  left (its daemon was lost or gave up), and one whose agent lost its grant or `control` mode leaves too. A turn end
+  (`event/session` `end` or `problem`) stamped at or after the wait's latest `requestedAt` drops it, leaving a marker
+  so a late ask from that wait gets a final `computer_busy` instead of a new place or the lease; the session's next
+  turn, with a later stamp, joins again. `computer-lease/release` takes the session out of line too. Pre-emption by a
+  human, revocation, and policy changes refuse the waiter's next ask as above.
+- **Replica failover**: the queue lives in PostgreSQL, so a daemon whose ask lands on another replica keeps its place.
+  The daemon retries a queued ask that failed (a lost link) every second while the wait has time left.
+- **Tools**: `computer_acquire` and the input tools wait in line, stop waiting when the session's turn no longer runs,
+  and add `waited Ns in line for this computer, starting at position P` to the result of an input that waited. The
+  daemon logs each position change. Live progress while a call waits (MCP progress notifications) is not sent yet: the
+  stdio bridge relays one reply per call, and an older in-image bridge would read a progress frame as a failed call.
+- **Why 45 s**: one tool call holds the whole wait, and some runtimes cap an MCP tool call at 60 s by default (Codex's
+  `tool_timeout_sec`), so the default leaves room for the input itself. A Computer used in long turns by several agents
+  can raise it in its policy (console: Limits, "Wait in line").
 
 **One desktop, one controller.** A display has one pointer and one keyboard focus, and XTest input on Linux is
 display-wide, so several agents cannot drive one Computer at once, whatever the OS. Linux could run several independent
@@ -725,8 +751,9 @@ the daemon the same way under every execution strategy, including the sandbox im
 is not checked when the tools are offered: a call to an offline Computer gets a definite `unavailable`.
 
 Each call resolves its target (§5.1), checks the argument shape, and for an input tool or `computer_acquire` asks the
-CP for the lease first; a refusal (`computer_busy` with the holder, `human_in_control`, `denied`, `unavailable`) comes
-back as a definite error and nothing is sent. The call then goes to the desktop over the session's channel (§3.7), minus
+CP for the lease first, waiting in the Computer's queue while another session holds it (§4.4); a refusal
+(`computer_busy` with the holder after the wait, `human_in_control`, `denied`, `unavailable`) comes back as a definite
+error and nothing is sent. The call then goes to the desktop over the session's channel (§3.7), minus
 the `computer` argument, and the desktop's content, images included, is returned as is. An input whose request may have
 reached the desktop and failed in flight is never resent: it returns `uncertain` with a fresh screenshot (§5.4).
 `computer_list` asks every granted Computer for its own `computer_list` and marks one it cannot reach `unavailable`.
@@ -1201,7 +1228,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
      created by a user through the API and stays until a user deletes it, sleeping when idle. A `per-agent` or `manual`
      computer can be reset explicitly. These modes replace the earlier reset policies (`per-lease`, `on-release-idle`,
      `never`, Appendix A).
-   - **#3231**: the FIFO lease wait queue for shared Computers (§4.4), for managed and self-hosted ones alike.
+   - **#3231** [implemented; live queue position and two-agent e2e pending]: the FIFO lease wait queue for shared
+     Computers (§4.4), for managed and self-hosted ones alike.
    - **#3232**: the console for pools and modes: creating and assigning `manual` computers, the agent's `managed` mode,
      and sleeping status.
    - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
