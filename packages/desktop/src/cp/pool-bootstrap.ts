@@ -53,10 +53,7 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return body
 }
 
-/**
- * Serves `GET /pool/status` for the life of the pod, and `POST /pool/register` only until the pod holds a key.
- * The NetworkPolicy admits only pool members to this port; the token is spent once and never logged.
- */
+/** Serves GET /pool/status always and POST /pool/register until the pod holds a key; only pool members reach the port. */
 export async function startPoolBootstrap(options: PoolBootstrapOptions): Promise<PoolBootstrap> {
   let resolveRegistered!: (registration: Registration) => void
   const registered = new Promise<Registration>((resolve) => (resolveRegistered = resolve))

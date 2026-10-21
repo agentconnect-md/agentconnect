@@ -605,6 +605,35 @@ describe('managed computers (§15.1)', () => {
     expect(calls).toHaveLength(4)
   })
 
+  it('moves to the replacement when the session computer was reclaimed between calls', async () => {
+    const M2 = '00000000-0000-4000-8000-0000000000ab'
+    const answers: ComputerPoolAcquireResult[] = [
+      { state: 'ready', computerId: M, allocation: 'ephemeral' },
+      { state: 'ready', computerId: M2, allocation: 'ephemeral' }
+    ]
+    let reclaimed = false
+    const { tools, calls, poolCalls } = setup({
+      granted: [],
+      managed: 'ephemeral',
+      pool: () => answers.shift()!,
+      callTool: async (_params, attempt) => {
+        if (reclaimed && attempt === 1) throw new ComputerChannelError('unavailable', 'this computer is gone')
+        return { content: [{ type: 'text', text: '{}' }, IMAGE] }
+      }
+    })
+    await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+    expect(calls.at(-1)).toMatchObject({ computer: M })
+    reclaimed = true
+    const out = await tools.call(ctx(), 'computer_click', { x: 3, y: 4 })
+    expect(out?.result.mcpIsError).toBeUndefined()
+    expect(poolCalls).toHaveLength(2)
+    expect(calls.at(-1)).toMatchObject({ computer: M2, name: 'computer_click' })
+    // The held id named the old computer, so later calls go to the replacement too.
+    await tools.call(ctx(), 'computer_screenshot', {})
+    expect(calls.at(-1)).toMatchObject({ computer: M2, name: 'computer_screenshot' })
+    expect(poolCalls).toHaveLength(2)
+  })
+
   it('never asks a Control Plane without the pool, and keeps self-hosted Computers as they were', async () => {
     const { tools, calls, poolCalls } = setup({
       granted: [C1],

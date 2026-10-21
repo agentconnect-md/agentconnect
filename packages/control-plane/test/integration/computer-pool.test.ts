@@ -110,6 +110,8 @@ class FakeCluster implements ComputerPoolMembers {
   up = true
   neverReady = false
   neverConnects = false
+  /** The pod cannot reach the Control Plane, so a pushed registration never lands. */
+  pushFails = false
   registrations = 0
 
   constructor(
@@ -161,7 +163,7 @@ class FakeCluster implements ComputerPoolMembers {
       pod.ready = !this.neverReady
       return state({ pod: 'starting' })
     }
-    if (!pod.volume.key && op.registration) {
+    if (!pod.volume.key && op.registration && !this.pushFails) {
       // What the desktop does with a pushed token: the ordinary registration exchange.
       const res = await this.app.http.inject({
         method: 'POST',
@@ -466,6 +468,78 @@ describe('managed computers in the pool', () => {
     const replacement = await h.acquire(AGENT, S1)
     expect(replacement).toMatchObject({ state: 'ready' })
     expect((replacement as { computerId: string }).computerId).not.toBe(id)
+  })
+
+  it('replaces a revoked per-agent computer, and keeps a revoked manual one revoked', async () => {
+    await seed('per-agent', 'per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const h = harness(cluster)
+    const id = ((await h.acquire(AGENT, S1)) as { computerId: string }).computerId
+    h.later(T.sleepIdleMs + 60_000)
+    await h.pool.sweep()
+    h.now()
+    const computers = new ComputerService(
+      new ApiKeyCodec({ API_KEY_PEPPER: PEPPER }),
+      new PgComputerRepo(prisma),
+      new PgApiKeyRepo(prisma),
+      new PgAuditRepo(prisma),
+      systemClock
+    )
+    await computers.revoke(OrgId(DEFAULT_ORG_ID), ComputerId(id))
+    await h.pool.sweep()
+    // The sweep never writes a revoked computer back to sleeping; the agent's next use gets a fresh one.
+    expect((await row(id))?.status ?? 'revoked').toBe('revoked')
+    const fresh = await h.acquire(AGENT, S1)
+    expect(fresh).toMatchObject({ state: 'ready', allocation: 'per-agent' })
+    expect((fresh as { computerId: string }).computerId).not.toBe(id)
+    expect(await row(id)).toBeNull()
+    expect(cluster.pods.has(id)).toBe(false)
+
+    const manual = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+      name: 'Shared browser',
+      ownerUserId: DEFAULT_OWNER_ID,
+      policy: { ...defaultComputerPolicy(DEFAULT_OWNER_ID), allowedAgents: [AGENT] }
+    })
+    const manualId = manual!.id
+    for (let i = 0; i < 10 && (await row(manualId))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
+    await computers.revoke(OrgId(DEFAULT_ORG_ID), ComputerId(manualId))
+    await h.pool.sweep()
+    h.later(T.sleepIdleMs + 60_000)
+    await h.pool.sweep()
+    h.now()
+    expect(await row(manualId)).toMatchObject({ status: 'revoked', poolPhase: 'sleeping' })
+    expect(cluster.pods.get(manualId)!.running).toBe(false)
+    expect(await h.acquireOnce(AGENT, S1, manualId)).toMatchObject({
+      state: 'failed',
+      message: 'this computer is revoked'
+    })
+    expect(await row(manualId)).toMatchObject({ status: 'revoked', poolPhase: 'sleeping' })
+  })
+
+  it('pushes one registration again rather than minting one per pass', async () => {
+    await seed('per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    cluster.pushFails = true
+    const h = harness(cluster)
+    for (let i = 0; i < 8; i++) await h.acquireOnce(AGENT, S1)
+    const id = (await prisma.computer.findFirst({ where: { ownerAgentId: AGENT } }))!.id
+    const pushes = cluster.ops.filter((op) => op.op === 'ensure' && op.registration).length
+    expect(pushes).toBeGreaterThan(1)
+    expect(await prisma.computerRegistration.count({ where: { computerId: id } })).toBe(1)
+    cluster.pushFails = false
+    expect(await h.acquire(AGENT, S1)).toMatchObject({ state: 'ready', computerId: id })
+    expect(await prisma.computerRegistration.count({ where: { computerId: id } })).toBe(1)
+  })
+
+  it('gives a manual computer made without a policy the ordinary approvals', async () => {
+    await seed(null)
+    const { app, base } = await start()
+    const h = harness(new FakeCluster(app, base))
+    const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), { name: 'Desk', ownerUserId: DEFAULT_OWNER_ID })
+    expect(created!.policy.approvals).toEqual(defaultComputerPolicy(DEFAULT_OWNER_ID).approvals)
+    expect(created!.policy.approvals.firstInputPerSession).toBe(true)
   })
 
   it('refuses without a pool member, and without a managed setting', async () => {

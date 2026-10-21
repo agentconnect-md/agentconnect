@@ -446,8 +446,7 @@ export class ComputerTools {
     const { computer: requested, ...forwarded } = parsed.data as { computer?: string } & Record<string, unknown>
     let target: string | undefined
     const run = async (): Promise<McpContentResult> => {
-      target = await this.target(state, requested)
-      await this.awaken(state, target)
+      target = await this.awaken(state, await this.target(state, requested))
       if (name === 'computer_release') return await this.release(state, target)
       // Approval comes before the lease, so a person's answer never holds the Computer from others.
       const approval = INPUT_TOOLS.has(name) ? await this.approve(ctx, state, target, name, forwarded) : undefined
@@ -561,14 +560,16 @@ export class ComputerTools {
     return id
   }
 
-  // A granted pool Computer is woken before this session's first call to it; a self-hosted one answers ready at once.
-  private async awaken(state: SessionState, computerId: string): Promise<void> {
-    if (!this.poolOn() || state.awake.has(computerId)) return
-    if (computerId === state.managed) {
-      await this.managed(state)
-      return
+  // Wakes a pool Computer before this session's first call to it, and returns the id to call: a reclaimed managed one's successor.
+  private async awaken(state: SessionState, computerId: string): Promise<string> {
+    if (!this.poolOn() || state.awake.has(computerId)) return computerId
+    if (computerId !== state.managed) {
+      await this.poolWait(state, computerId)
+      return computerId
     }
-    await this.poolWait(state, computerId)
+    const id = await this.managed(state)
+    if (id !== computerId && state.held === computerId) state.held = undefined
+    return id
   }
 
   // Ask the pool until the computer is ready, it refuses, or the wait runs out; nothing is sent to a desktop meanwhile.

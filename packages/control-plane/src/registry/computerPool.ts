@@ -10,7 +10,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import { AgentId, ComputerId, type OrgId } from '../domain/ids.js'
-import { isComputerReachable, type ComputerPolicy } from '../domain/computer.js'
+import { defaultComputerPolicy, isComputerReachable, type ComputerPolicy } from '../domain/computer.js'
 import {
   DEFAULT_COMPUTER_POOL_TIMINGS,
   managedComputerName,
@@ -80,6 +80,10 @@ export const COMPUTER_POOL_SWEEP_MS = 30_000
 /** Orphan claims are looked for every this many sweeps. */
 const ORPHAN_SWEEP_EVERY = 10
 
+const isRevoked = (c: ComputerRecord): boolean => c.revokedAt !== null || c.status === 'revoked'
+/** A pushed registration is pushed again while this much of its lifetime remains, rather than minting another. */
+const REGISTRATION_REUSE_MARGIN_MS = 60_000
+
 const failureKey = (agentId: string, sessionId: string | null): string => `${agentId}\u0000${sessionId ?? ''}`
 
 const ready = (c: ComputerRecord): ComputerPoolAcquireResult => ({
@@ -106,6 +110,8 @@ export class ComputerPool {
   private readonly touchedAt = new Map<string, number>()
   // Why an agent's or session's computer was just reclaimed, told once to the session that asks next.
   private readonly failures = new Map<string, { code: ComputerPoolRefusal; message: string; at: number }>()
+  // The registration last pushed to each computer's pod, pushed again until it nears expiry.
+  private readonly registrations = new Map<string, { token: string; expiresAt: number }>()
   private timer: TimerHandle | undefined
   private stopped = true
   private sweeps = 0
@@ -138,7 +144,9 @@ export class ComputerPool {
         ? { allocation: 'per-agent', ownerAgentId: agent.id }
         : { allocation: 'ephemeral', ownerAgentId: agent.id, poolSessionId: req.sessionId }
     let row = await this.deps.repo.findManaged(orgId, key)
-    if (row?.poolPhase === 'reclaiming') row = null
+    // A revoked computer can never come online again, so the agent's is reclaimed and replaced.
+    if (row && row.poolPhase !== 'reclaiming' && isRevoked(row)) await this.reclaim(row, null)
+    if (row?.poolPhase === 'reclaiming' || (row && isRevoked(row))) row = null
     if (!row) {
       // A computer that just failed answers with its cause once; after that the session gets a fresh one.
       const reported = this.reportFailure(failureKey(agent.id, mode === 'ephemeral' ? req.sessionId : null))
@@ -162,7 +170,7 @@ export class ComputerPool {
       name: input.name,
       ownerUserId: input.ownerUserId,
       allocation: 'manual',
-      policy: managedComputerPolicy(input.ownerUserId, [], input.policy),
+      policy: managedComputerPolicy(input.ownerUserId, [], input.policy ?? defaultComputerPolicy(input.ownerUserId)),
       now: new Date(this.deps.clock.now())
     })
     if (row) this.kick(row)
@@ -223,6 +231,7 @@ export class ComputerPool {
         return await this.reclaim(row, null)
       }
     }
+    if (isRevoked(row) && row.poolPhase !== 'reclaiming') return await this.sweepRevoked(row)
     const status = this.deps.computers.presentedStatus(row)
     // A sleeping pod's last heartbeat may land after the pool put it to sleep; the status follows the phase.
     if (row.poolPhase === 'sleeping' && row.status !== 'sleeping' && !isComputerReachable(status)) {
@@ -265,6 +274,19 @@ export class ComputerPool {
           ? await this.wakeFailed(row, action.message)
           : await this.provisionFailed(row, action.message)
     }
+  }
+
+  // A revoked agent's computer goes; a revoked manual one keeps its volume, its pod stopped, until its user deletes it.
+  private async sweepRevoked(row: ComputerRecord): Promise<void> {
+    if (row.allocation !== 'manual') return await this.reclaim(row, null)
+    if (row.poolPhase === 'sleeping' || row.poolPhase === 'failed') return
+    const res = await this.deps.members.op(this.ensure(row, false, false))
+    if (!res?.ok) return
+    await this.deps.repo.setPoolPhase(row.id, {
+      phase: 'sleeping',
+      at: new Date(this.deps.clock.now()),
+      from: ['provisioning', 'registering', 'awake', 'waking']
+    })
   }
 
   // Creates the agent's or session's computer; null when a concurrent acquire made it first.
@@ -316,6 +338,7 @@ export class ComputerPool {
     if (c.poolSessionId && c.poolSessionId !== sessionId)
       return failed('denied', 'this computer belongs to another session')
     if (c.poolPhase === 'reclaiming') return failed('failed', 'this computer is being removed')
+    if (isRevoked(c)) return failed('failed', 'this computer is revoked')
     return await this.use(c)
   }
 
@@ -420,21 +443,15 @@ export class ComputerPool {
     if (next.kind === 'wait') return
     if (next.kind === 'fail') return await this.provisionFailed(row, next.message)
     if (next.kind === 'register') {
-      const issued = await this.deps.computers.createRegistration({
-        orgId: row.orgId,
-        createdByUserId: row.ownerUserId,
-        name: row.name,
-        ttlMinutes: REGISTRATION_TTL_MINUTES,
-        computerId: row.id
-      })
       const pushed = await this.deps.members.op({
         ...this.ensure(row, true, true),
-        registration: { token: issued.token, name: row.name }
+        registration: { token: await this.registrationToken(row), name: row.name }
       })
       const after = provisionStep(pushed?.state, row.id)
       if (after.kind === 'fail') return await this.provisionFailed(row, after.message)
       if (after.kind !== 'registered') return
     }
+    this.registrations.delete(row.id)
     const fresh = await this.deps.repo.getUnscoped(row.id)
     const now = new Date(this.deps.clock.now())
     if (fresh && isComputerReachable(this.deps.computers.presentedStatus(fresh))) {
@@ -448,6 +465,22 @@ export class ComputerPool {
     } else if (row.poolPhase === 'provisioning') {
       await this.deps.repo.setPoolPhase(row.id, { phase: 'registering', at: now, from: ['provisioning'] })
     }
+  }
+
+  // One token per computer until it nears expiry, so a pod that keeps failing to register does not mint one per pass.
+  private async registrationToken(row: ComputerRecord): Promise<string> {
+    const now = this.deps.clock.now()
+    const held = this.registrations.get(row.id)
+    if (held && held.expiresAt - now > REGISTRATION_REUSE_MARGIN_MS) return held.token
+    const issued = await this.deps.computers.createRegistration({
+      orgId: row.orgId,
+      createdByUserId: row.ownerUserId,
+      name: row.name,
+      ttlMinutes: REGISTRATION_TTL_MINUTES,
+      computerId: row.id
+    })
+    this.registrations.set(row.id, { token: issued.token, expiresAt: issued.registration.expiresAt.getTime() })
+    return issued.token
   }
 
   private async wake(row: ComputerRecord): Promise<void> {
@@ -564,6 +597,7 @@ export class ComputerPool {
     }
     this.advancedAt.delete(row.id)
     this.touchedAt.delete(row.id)
+    this.registrations.delete(row.id)
     this.deps.log?.info({ computerId: row.id }, 'computer-pool: managed computer reclaimed')
   }
 

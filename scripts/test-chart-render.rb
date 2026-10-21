@@ -866,4 +866,11 @@ _, desktop_cp = control_plane_of.call(desktop_docs)
 abort('the Control Plane must run the computer pool') unless
   desktop_cp.fetch('env').any? { |item| item['name'] == 'COMPUTER_POOL_ENABLED' && item['value'] == 'true' }
 
+# Without the daemon pool nothing can claim a desktop, so the Control Plane must not advertise managed computers.
+poolless_rendered, poolless_error, poolless_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test', '--set', 'daemonPool.enabled=false')
+abort("helm template (computer pool without daemon pool) failed:\n#{poolless_error}") unless poolless_status.success?
+_, poolless_cp = control_plane_of.call(YAML.load_stream(poolless_rendered).compact)
+abort('a computer pool without the daemon pool must leave the Control Plane pool off') if
+  poolless_cp.fetch('env').any? { |item| item['name'] == 'COMPUTER_POOL_ENABLED' }
+
 puts 'chart render contract: ok'

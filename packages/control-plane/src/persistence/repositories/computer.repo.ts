@@ -458,10 +458,12 @@ export class PgComputerRepo implements ComputerRepo {
       data: {
         poolPhase: write.phase,
         poolPhaseAt: write.at,
-        ...(write.error !== undefined ? { poolError: write.error } : {}),
-        ...(write.status ? { status: write.status } : {})
+        ...(write.error !== undefined ? { poolError: write.error } : {})
       }
     })
+    // A revoked computer stays revoked whatever phase its pod is in.
+    if (written.count === 1 && write.status)
+      await this.db.computer.updateMany({ where: { id, revokedAt: null }, data: { status: write.status } })
     return written.count === 1
   }
 

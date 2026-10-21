@@ -170,8 +170,7 @@ spec:
             - name: AC_K8S_SHIM_PORT
               value: {{ .Values.daemonPool.shimPort | quote }}
             {{- if .Values.computerPool.enabled }}
-            # Managed computers (computer-use.md §15.1): this member creates desktop claims against
-            # this warm pool and pushes each desktop its registration on the bootstrap port.
+            # Managed computers (computer-use.md §15.1): claim desktops from this warm pool and push each its registration.
             - name: AC_K8S_DESKTOP_WARM_POOL
               value: {{ include "agentconnect.desktopWarmPoolName" . | quote }}
             - name: AC_K8S_DESKTOP_BOOTSTRAP_PORT
