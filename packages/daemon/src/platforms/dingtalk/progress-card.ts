@@ -172,7 +172,8 @@ export class DingTalkProgressCard implements TurnAcknowledgement {
   }
 
   private schedule(): void {
-    if (!this.live || this.timer !== undefined || this.flushing) return
+    // At the cap the card holds its last state; only the end settles it.
+    if (!this.live || this.timer !== undefined || this.flushing || this.updates >= DINGTALK_CARD_MAX_UPDATES) return
     const wait = Math.max(0, this.lastPushAt + this.interval - this.now())
     this.timer = this.setTimer(() => {
       this.timer = undefined

@@ -4,6 +4,7 @@ import type { DingTalkCardPort } from '../src/platforms/dingtalk/card.js'
 import type { DingTalkReplyPort } from '../src/platforms/dingtalk/connection.js'
 import {
   DINGTALK_CARD_INTERVAL_MS,
+  DINGTALK_CARD_MAX_UPDATES,
   DINGTALK_QUOTA_NOTICE,
   DingTalkProgressCard,
   DingTalkQuotaNotice
@@ -231,6 +232,26 @@ describe('DingTalkProgressCard', () => {
     expect(calls.filter((c) => c.startsWith('stream'))).toEqual(['stream one'])
     await clock.advance(2 * DINGTALK_CARD_INTERVAL_MS)
     expect(calls.filter((c) => c.startsWith('stream'))).toEqual(['stream one', 'stream two'])
+  })
+
+  it('parks the card at the update cap without spinning timers, and still settles it', async () => {
+    const { calls, cards } = fakeCards()
+    const clock = fakeClock()
+    const setTimer = vi.fn(clock.opts.setTimer)
+    const { progress } = card(cards, { ...clock, opts: { ...clock.opts, setTimer } })
+    for (let i = 0; i <= DINGTALK_CARD_MAX_UPDATES; i++) {
+      progress.update(`update ${i}`, 0)
+      await clock.advance(DINGTALK_CARD_INTERVAL_MS)
+    }
+    const streams = () => calls.filter((c) => c.startsWith('stream'))
+    expect(streams()).toHaveLength(DINGTALK_CARD_MAX_UPDATES)
+    const scheduled = setTimer.mock.calls.length
+    progress.update('after the cap', 0)
+    await clock.advance(DINGTALK_CARD_INTERVAL_MS)
+    await clock.advance(DINGTALK_CARD_INTERVAL_MS)
+    expect(setTimer.mock.calls.length).toBe(scheduled)
+    await progress.end('completed')
+    expect(calls.at(-1)).toMatch(/^status 3 ✅ Finished/)
   })
 
   it('stops the card and posts the quota notice once per turn', async () => {
