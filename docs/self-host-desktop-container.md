@@ -86,6 +86,7 @@ once ffmpeg has downloaded, a few seconds after the first start.
 | `AGENTCONNECT_DESKTOP_RTC_PORTS`   | the UDP range published for direct video, `7700-7709` by default                                                       |
 | `AGENTCONNECT_DESKTOP_RESOLUTION`  | the screen, `1600x900x24` by default                                                                                   |
 | `AGENTCONNECT_DESKTOP_BROWSER`     | the browser kept open and maximized, `firefox-esr`; `none` for none. `BROWSER_URL` is the page it opens                |
+| `AGENTCONNECT_DESKTOP_PORT`        | the daemon's own port, on loopback only, `7681` by default                                                             |
 | `AGENTCONNECT_VERSION`             | the image tag; pin the version your Control Plane runs                                                                 |
 
 ## Let an agent use it
@@ -173,17 +174,18 @@ session, the browser or anything an agent launches. No log line names it.
   spent and replaces the stored key.
 - **Remove.** Delete the Computer in the console, then `docker compose down -v`. Removing the volume removes the
   key, so a removed desktop cannot come back by itself.
-- **Several desktops on one server.** Give each its own directory, or its own project with
-  `docker compose -p <name>`, and its own UDP range and token.
-- **Diagnose.** `docker compose exec desktop node /opt/agentconnect/agentconnect-desktop.mjs doctor` runs the
-  checks the console shows.
+- **Several desktops on one server.** Give each its own directory: the Compose project, and so the volume, takes
+  the directory's name. Each also needs its own token and its own `AGENTCONNECT_DESKTOP_RTC_PORTS` range.
+- **Diagnose.** `docker compose exec desktop sh -c 'agentconnect-desktop doctor --port "$PORT"'` runs the checks
+  the console shows.
 
 ## Evaluate on the stack's own host
 
 The evaluation stack in `compose.yaml` publishes its URLs as `localhost`, which inside a container means the
 container itself. To run a desktop on the same machine against it, give the desktop the host's network:
 uncomment `network_mode: host` in `compose.yaml` and remove its `ports:` block, then use
-`AGENTCONNECT_CP_URL=http://localhost:8080`. This works on Linux, OrbStack, and Docker Desktop with host
-networking turned on. For a desktop on another machine,
-publish the stack under an address that machine reaches, as in
-[self-host-caddy-https.md](self-host-caddy-https.md).
+`AGENTCONNECT_CP_URL=http://localhost:8080`. The daemon then listens on the host's loopback, so set
+`AGENTCONNECT_DESKTOP_PORT` when `7681` is taken there (a desktop daemon of your own uses it), and give it a UDP
+range nothing else uses. This works with Docker Engine on Linux, where the video is then direct, and with
+OrbStack; Docker Desktop needs host networking turned on in its settings. For a desktop on another machine,
+publish the stack under an address that machine reaches, as in [self-host-caddy-https.md](self-host-caddy-https.md).
