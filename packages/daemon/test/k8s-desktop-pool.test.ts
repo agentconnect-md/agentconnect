@@ -297,6 +297,19 @@ describe('DesktopPool', () => {
     expect(pushes).toHaveLength(1)
   })
 
+  it('runs a different op after the one in flight, so a sleep during a wake still suspends', async () => {
+    const { cluster, pool } = await setup()
+    await pool.handle(ensure(C1))
+    cluster.settle()
+    const [wake, sleep] = await Promise.all([
+      pool.handle(ensure(C1, { create: false })),
+      pool.handle(ensure(C1, { running: false, create: false }))
+    ])
+    expect(wake.state?.pod).not.toBe('suspended')
+    expect(sleep.state).toMatchObject({ pod: 'suspended' })
+    expect(cluster.sandboxes.get(desktopClaimName(C1))!.spec?.operatingMode).toBe('Suspended')
+  })
+
   it('is never collected by the agent orphan sweep', async () => {
     const { pool, api } = await setup()
     await pool.handle(ensure(C1))

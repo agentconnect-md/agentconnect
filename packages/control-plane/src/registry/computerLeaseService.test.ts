@@ -47,6 +47,12 @@ class MemoryLeaseRepo implements ComputerLeaseRepo {
   async listWaitingBySession(sessionId: string) {
     return [...this.queues.values()].flat().filter((w) => w.sessionId === sessionId)
   }
+  async listOccupancy(ids: readonly ComputerId[]) {
+    return {
+      leases: [...this.leases.values()].filter((l) => ids.includes(l.computerId as ComputerId)),
+      waiters: ids.flatMap((id) => this.queues.get(id) ?? []).filter((w) => w.droppedAt === null)
+    }
+  }
   async renewByDaemon(daemonId: string, at: Date, aliveSince: Date) {
     let n = 0
     for (const lease of this.leases.values()) {
@@ -359,5 +365,27 @@ describe('ComputerLeaseService wait queue', () => {
     expect(await service.acquire(ORG, CID, who('s2', AGENT_B), { waitMs: 30 })).toMatchObject({
       queued: { position: 1 }
     })
+  })
+
+  it('shows the console who holds the lease and who waits, in order, leaving out lapsed ones', async () => {
+    const env = setup()
+    const { service, repo } = env
+    const view = () => [{ id: CID, ...repo.computers.get(CID)! }]
+    expect((await service.occupancy(view())).get(CID)).toEqual({ holder: null, waiting: [] })
+    await service.acquire(ORG, CID, who('s1'))
+    await service.acquire(ORG, CID, who('s2', AGENT_B), waits)
+    await pass(env, 1_000)
+    await service.acquire(ORG, CID, who('s3'), waits)
+    expect((await service.occupancy(view())).get(CID)).toEqual({
+      holder: { sessionId: 's1', agentId: AGENT_A, agentName: 'Ops', acquiredAt: T0 },
+      waiting: [
+        { sessionId: 's2', agentId: AGENT_B, enqueuedAt: T0 },
+        { sessionId: 's3', agentId: AGENT_A, enqueuedAt: T0 + 1_000 }
+      ]
+    })
+    // Nobody asks again and the holder's daemon goes quiet: the view shows neither, without writing anything.
+    env.tick(60_000)
+    expect((await service.occupancy(view())).get(CID)).toEqual({ holder: null, waiting: [] })
+    expect(repo.leases.size).toBe(1)
   })
 })

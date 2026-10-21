@@ -24,6 +24,8 @@ import {
   poolError,
   poolErrorCode,
   poolErrorMessage,
+  poolActions,
+  poolNeedsReset,
   provisionStep,
   sweepAction,
   type ComputerManagedMode,
@@ -61,7 +63,7 @@ export interface ComputerPoolDeps {
   >
   agents: { get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | null> }
   computers: Pick<ComputerService, 'createRegistration' | 'revoke' | 'delete' | 'presentedStatus' | 'accessGranted'>
-  leases?: Pick<ComputerLeaseService, 'current'>
+  leases?: Pick<ComputerLeaseService, 'current' | 'preempt'>
   members: ComputerPoolMembers
   clock: Clock
   timings?: Partial<ComputerPoolTimings>
@@ -89,6 +91,25 @@ const ORPHAN_SWEEP_EVERY = 10
 const isRevoked = (c: ComputerRecord): boolean => c.revokedAt !== null || c.status === 'revoked'
 /** A pushed registration is pushed again while this much of its lifetime remains, rather than minting another. */
 const REGISTRATION_REUSE_MARGIN_MS = 60_000
+
+/** A console action on a managed computer (§10): done, or why not. */
+export type ComputerPoolCommandResult =
+  | { ok: true; computer: ComputerRecord }
+  | { ok: false; code: 'not_found' | 'not_allowed' | 'in_use' | 'no_pool' | 'volume_missing'; message: string }
+
+const refused = (
+  code: Extract<ComputerPoolCommandResult, { ok: false }>['code'],
+  message: string
+): ComputerPoolCommandResult => ({ ok: false, code, message })
+
+const actionsOf = (c: ComputerRecord) =>
+  poolActions({ allocation: c.allocation, poolPhase: c.poolPhase, poolError: c.poolError, revoked: isRevoked(c) })
+
+// The refusal a session sees for a stored pool error; a failed reset is just a failure to it.
+const refusalOf = (error: string | null | undefined): ComputerPoolRefusal =>
+  poolErrorCode(error) === 'volume_missing' ? 'volume_missing' : 'failed'
+
+const podStopped = (state: { pod?: string }): boolean => state.pod === 'suspended' || state.pod === 'none'
 
 const failureKey = (agentId: string, sessionId: string | null): string => `${agentId}\u0000${sessionId ?? ''}`
 
@@ -193,6 +214,85 @@ export class ComputerPool {
     await this.reclaim(row, null, actorUserId)
   }
 
+  /** Whether a pool member that can start, wake or sleep a desktop is connected now. */
+  available(): boolean {
+    return this.deps.members.available()
+  }
+
+  /** The console's Wake: a sleeping or failed `per-agent` or `manual` computer starts toward awake. */
+  async wakeNow(orgId: OrgId, id: ComputerId): Promise<ComputerPoolCommandResult> {
+    const row = await this.deps.repo.get(orgId, id)
+    if (!row) return refused('not_found', 'computer not found')
+    if (!actionsOf(row).wake) return refused('not_allowed', 'this computer cannot be woken now')
+    if (!this.deps.members.available()) return refused('no_pool', 'no pool member can wake this computer now')
+    const result = await this.use(row)
+    if (result.state === 'failed' && result.code === 'volume_missing') return refused('volume_missing', result.message)
+    return { ok: true, computer: (await this.deps.repo.get(orgId, id)) ?? row }
+  }
+
+  /** The console's Sleep: an awake `per-agent` or `manual` computer stops its pod and keeps its volume. */
+  async sleepNow(orgId: OrgId, id: ComputerId): Promise<ComputerPoolCommandResult> {
+    const row = await this.deps.repo.get(orgId, id)
+    if (!row) return refused('not_found', 'computer not found')
+    if (!actionsOf(row).sleep) return refused('not_allowed', 'this computer cannot be put to sleep now')
+    // A session at work on it keeps it awake; it sleeps by itself once idle.
+    if (this.deps.leases && (await this.deps.leases.current(orgId, id)) !== null)
+      return refused('in_use', 'an agent holds this computer’s control lease; try again when its turn ends')
+    if (!this.deps.members.available()) return refused('no_pool', 'no pool member can put this computer to sleep now')
+    // An answer that is not a stopped pod (an older member joined it to a wake in flight) is asked once more.
+    let res = await this.deps.members.op(this.ensure(row, false, false))
+    if (res?.ok && res.state && !podStopped(res.state)) res = await this.deps.members.op(this.ensure(row, false, false))
+    if (!res?.ok || !res.state) return refused('no_pool', 'no pool member answered')
+    if (res.state.claim === 'missing') {
+      await this.volumeMissing(row)
+      return refused('volume_missing', 'the computer’s volume is gone, so its files and sign-ins are lost')
+    }
+    if (!podStopped(res.state)) return refused('in_use', 'the desktop did not stop yet; try again in a moment')
+    // Fenced on the activity it judged, so a session that started during the stop keeps the desktop.
+    const leasedNow = this.deps.leases ? (await this.deps.leases.current(orgId, id).catch(() => null)) !== null : false
+    const slept =
+      !leasedNow &&
+      (await this.deps.repo.setPoolPhase(row.id, {
+        phase: 'sleeping',
+        at: new Date(this.deps.clock.now()),
+        from: ['awake', 'waking'],
+        status: 'sleeping',
+        error: null,
+        activeAt: row.poolActiveAt
+      }))
+    if (!slept) {
+      const now = await this.deps.repo.get(orgId, id)
+      if (now?.poolPhase === 'awake' || now?.poolPhase === 'waking')
+        await this.deps.members.op(this.ensure(now, true, false)).catch(() => undefined)
+      return refused('in_use', 'an agent started using this computer meanwhile; it sleeps by itself once idle')
+    }
+    this.deps.log?.info({ computerId: row.id }, 'computer-pool: computer put to sleep from the console')
+    return { ok: true, computer: (await this.deps.repo.get(orgId, id)) ?? row }
+  }
+
+  /** The console's Reset: a `per-agent` or `manual` computer loses its pod and volume and starts again empty. */
+  async resetNow(orgId: OrgId, id: ComputerId): Promise<ComputerPoolCommandResult> {
+    const row = await this.deps.repo.get(orgId, id)
+    if (!row) return refused('not_found', 'computer not found')
+    if (!actionsOf(row).reset) return refused('not_allowed', 'this computer cannot be reset now')
+    if (!this.deps.members.available()) return refused('no_pool', 'no pool member can reset this computer now')
+    const moved = await this.deps.repo.setPoolPhase(row.id, {
+      phase: 'resetting',
+      at: new Date(this.deps.clock.now()),
+      from: ['provisioning', 'registering', 'awake', 'sleeping', 'waking', 'failed'],
+      status: 'offline',
+      error: null
+    })
+    if (!moved) return refused('not_allowed', 'this computer changed meanwhile; try again')
+    // Whoever held it loses the desktop under them, so the lease ends now rather than at its next input.
+    await this.deps.leases?.preempt(orgId, id, 'reset').catch(() => false)
+    this.registrations.delete(row.id)
+    this.deps.log?.info({ computerId: row.id }, 'computer-pool: resetting a computer from the console')
+    const fresh = await this.deps.repo.get(orgId, id)
+    if (fresh) this.kick(fresh)
+    return { ok: true, computer: fresh ?? row }
+  }
+
   /** A grant, lease or viewer used the computer; idle detection starts over. */
   touch(computerId: string): void {
     void this.markActive(computerId)
@@ -284,9 +384,9 @@ export class ComputerPool {
         this.deps.log?.info({ computerId: row.id, reason: action.reason }, 'computer-pool: reclaiming an idle computer')
         return await this.reclaim(row, null, undefined, true)
       case 'timeout':
-        return row.poolPhase === 'waking'
-          ? await this.wakeFailed(row, action.message)
-          : await this.provisionFailed(row, action.message)
+        if (row.poolPhase === 'waking') return await this.wakeFailed(row, action.message)
+        if (row.poolPhase === 'resetting') return await this.resetFailed(row, action.message)
+        return await this.provisionFailed(row, action.message)
     }
   }
 
@@ -294,12 +394,32 @@ export class ComputerPool {
   private async sweepRevoked(row: ComputerRecord): Promise<void> {
     if (row.allocation !== 'manual') return await this.reclaim(row, null)
     if (row.poolPhase === 'sleeping' || row.poolPhase === 'failed') return
+    if (row.poolPhase === 'resetting') return await this.finishRevokedReset(row)
     const res = await this.deps.members.op(this.ensure(row, false, false))
     if (!res?.ok) return
     await this.deps.repo.setPoolPhase(row.id, {
       phase: 'sleeping',
       at: new Date(this.deps.clock.now()),
       from: ['provisioning', 'registering', 'awake', 'waking']
+    })
+  }
+
+  // A reset revoked midway still finishes its delete, then parks failed: a revoked computer is never provisioned again.
+  private async finishRevokedReset(row: ComputerRecord): Promise<void> {
+    const res = await this.deps.members.op({ op: 'delete', computerId: row.id })
+    const gone = res?.ok === true && res.state !== undefined && res.state.claim !== 'present'
+    const overdue = this.deps.clock.now() - (row.poolPhaseAt?.getTime() ?? 0) > this.timings.provisionTimeoutMs
+    if (!gone && !overdue) return
+    await this.deps.repo.setPoolPhase(row.id, {
+      phase: 'failed',
+      at: new Date(this.deps.clock.now()),
+      from: ['resetting'],
+      error: poolError(
+        'reset_failed',
+        gone
+          ? 'the computer was revoked during a reset'
+          : 'the computer was revoked and its old desktop was not removed'
+      )
     })
   }
 
@@ -366,8 +486,12 @@ export class ComputerPool {
       if (!this.deps.members.available()) return failed('no_pool', 'no pool member can wake this computer now')
       await this.deps.repo.setPoolPhase(row.id, { phase: 'waking', at: now, from: [row.poolPhase], error: null })
     } else if (row.poolPhase === 'failed') {
-      if (poolErrorCode(row.poolError) === 'volume_missing')
-        return failed('volume_missing', poolErrorMessage(row.poolError ?? 'volume_missing: the volume is gone'))
+      // Waking now would bring back a lost volume's empty disk, or the old desktop a reset did not remove.
+      if (poolNeedsReset(row.poolError))
+        return failed(
+          refusalOf(row.poolError),
+          poolErrorMessage(row.poolError ?? 'failed: this computer needs a reset')
+        )
       await this.deps.repo.setPoolPhase(row.id, { phase: 'provisioning', at: now, from: ['failed'], error: null })
     }
     const fresh = await this.deps.repo.get(row.orgId, row.id)
@@ -392,12 +516,14 @@ export class ComputerPool {
         return pending('registering', c.id)
       case 'waking':
         return pending('waking', c.id)
+      case 'resetting':
+        return pending('provisioning', c.id)
       case 'sleeping':
         return failed('failed', c.poolError ? poolErrorMessage(c.poolError) : 'this computer is asleep')
       case 'failed':
       case 'reclaiming':
         return failed(
-          poolErrorCode(c.poolError) ?? 'failed',
+          refusalOf(c.poolError),
           c.poolError ? poolErrorMessage(c.poolError) : 'this computer is being removed'
         )
       default:
@@ -442,9 +568,27 @@ export class ComputerPool {
         return
       case 'reclaiming':
         return await this.finishReclaim(row)
+      case 'resetting':
+        return await this.finishReset(row)
       default:
         return
     }
+  }
+
+  // The old claim and its volume go first; once they are gone the computer is provisioned like a new one.
+  private async finishReset(row: ComputerRecord): Promise<void> {
+    const current = await this.deps.repo.getUnscoped(row.id)
+    if (current && isRevoked(current)) return await this.finishRevokedReset(current)
+    const res = await this.deps.members.op({ op: 'delete', computerId: row.id })
+    if (!res?.ok || !res.state || res.state.claim === 'present') return
+    const moved = await this.deps.repo.setPoolPhase(row.id, {
+      phase: 'provisioning',
+      at: new Date(this.deps.clock.now()),
+      from: ['resetting'],
+      status: 'offline'
+    })
+    const fresh = moved ? await this.deps.repo.getUnscoped(row.id) : null
+    if (fresh) await this.provision(fresh)
   }
 
   private ensure(row: ComputerRecord, running: boolean, create: boolean): Extract<ComputerPoolOp, { op: 'ensure' }> {
@@ -526,7 +670,7 @@ export class ComputerPool {
     const res = await this.deps.members.op(this.ensure(row, false, false))
     if (!res?.ok || !res.state) return
     if (res.state.claim === 'missing') return await this.volumeMissing(row)
-    if (res.state.pod !== 'suspended' && res.state.pod !== 'none') return
+    if (!podStopped(res.state)) return
     const slept = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'sleeping',
       at: new Date(this.deps.clock.now()),
@@ -547,6 +691,19 @@ export class ComputerPool {
       at: new Date(this.deps.clock.now()),
       from: ['provisioning', 'registering'],
       error: poolError('failed', message)
+    })
+  }
+
+  // The old desktop outlived its reset: waking now would bring its files back, so only another reset is offered.
+  private async resetFailed(row: ComputerRecord, message: string): Promise<void> {
+    this.deps.log?.warn({ computerId: row.id, message }, 'computer-pool: managed computer reset did not finish')
+    if (row.allocation !== 'manual') return await this.reclaim(row, poolError('failed', message))
+    await this.deps.members.op(this.ensure(row, false, false)).catch(() => undefined)
+    await this.deps.repo.setPoolPhase(row.id, {
+      phase: 'failed',
+      at: new Date(this.deps.clock.now()),
+      from: ['resetting'],
+      error: poolError('reset_failed', message)
     })
   }
 
@@ -585,7 +742,15 @@ export class ComputerPool {
 
   // An idle reclaim is fenced on the activity it judged, so an acquire in between keeps the computer.
   private async reclaim(row: ComputerRecord, error: string | null, actorUserId?: string, idle = false): Promise<void> {
-    const phases: ComputerPoolPhase[] = ['provisioning', 'registering', 'awake', 'sleeping', 'waking', 'failed']
+    const phases: ComputerPoolPhase[] = [
+      'provisioning',
+      'registering',
+      'awake',
+      'sleeping',
+      'waking',
+      'failed',
+      'resetting'
+    ]
     const moved = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'reclaiming',
       at: new Date(this.deps.clock.now()),
@@ -596,7 +761,7 @@ export class ComputerPool {
     if (!moved && (idle || row.poolPhase !== 'reclaiming')) return
     if (error && row.ownerAgentId && row.allocation !== 'manual') {
       this.failures.set(failureKey(row.ownerAgentId, row.poolSessionId), {
-        code: poolErrorCode(error) ?? 'failed',
+        code: refusalOf(error),
         message: poolErrorMessage(error),
         at: this.deps.clock.now()
       })

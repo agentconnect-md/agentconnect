@@ -7,12 +7,13 @@ import { useTranslations } from 'next-intl'
 import type { ComputerDto } from '@/lib/api'
 import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { agentAccessOf, computerStatusTone, doctorCounts, useComputers, useAgo } from '@/lib/computers'
+import { agentAccessOf, computerStatusTone, doctorCounts, poolPhaseNote, useComputers, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useMemberName } from '@/components/console/computer-members'
+import { AllocationBadge, useAgentName } from '@/components/console/ComputerPoolCards'
 
 export default function ComputersView() {
   const t = useTranslations('Computers')
@@ -87,7 +88,10 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
   const { orgPath } = useOrgs()
   const { agents } = useConsoleData()
   const memberName = useMemberName()
+  const agentName = useAgentName()
   const tone = computerStatusTone(computer.status)
+  const poolNote = poolPhaseNote(computer)
+  const waiting = computer.waiting?.length ?? 0
   const doctor = doctorCounts(computer)
   const access = agentAccessOf(computer)
   const granted = access.agents.map((id) => agents.find((a) => a.id === id)).filter((a) => a !== undefined)
@@ -118,8 +122,9 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
             className="inline-flex flex-none items-center rounded-full px-2 py-[1px] font-sans text-[11px] font-semibold leading-normal"
             style={{ background: tone.bg, color: tone.text }}
           >
-            {t(`status.${computer.status}`)}
+            {poolNote ? t(`poolPhase.${poolNote}`) : t(`status.${computer.status}`)}
           </span>
+          <AllocationBadge computer={computer} />
         </div>
         <div className="mt-[2px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           {t(`os.${computer.os}`)} · {t(`session.${computer.session}`)} ·{' '}
@@ -128,13 +133,15 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
       </div>
       <div className="col-span-2 min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:col-span-1">
         <Icon name="bot" size={13} className="mr-[6px] inline align-[-2px] text-(--text-tertiary)" />
-        {access.mode === 'all'
-          ? t('allAgents')
-          : granted.length === 0
-            ? t('noAgents')
-            : granted.length <= 2
-              ? granted.map((a) => agentLabel(a)).join(', ')
-              : t('agentCount', { count: granted.length })}
+        {computer.ownerAgentId && computer.allocation !== 'manual'
+          ? t('madeFor', { agent: agentName(computer.ownerAgentId) })
+          : access.mode === 'all'
+            ? t('allAgents')
+            : granted.length === 0
+              ? t('noAgents')
+              : granted.length <= 2
+                ? granted.map((a) => agentLabel(a)).join(', ')
+                : t('agentCount', { count: granted.length })}
       </div>
       <div className="col-span-2 min-w-0 font-sans text-[12.5px] font-normal leading-normal desktop:col-span-1">
         {doctor.total === 0 ? (
@@ -157,7 +164,16 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
         )}
       </div>
       <div className="col-span-2 font-mono text-[11.5px] text-(--text-tertiary) desktop:col-span-1 desktop:text-right">
-        {computer.status === 'revoked' ? t('revoked') : t('lastSeen', { when: seen })}
+        {computer.lease ? (
+          <span data-lease-holder={computer.lease.agentId} className="font-sans text-[12px] text-(--status-info)">
+            {t('inUseBy', { agent: agentName(computer.lease.agentId, computer.lease.agentName) })}
+            {waiting > 0 && <> · {t('waitingCount', { count: waiting })}</>}
+          </span>
+        ) : computer.status === 'revoked' ? (
+          t('revoked')
+        ) : (
+          t('lastSeen', { when: seen })
+        )}
       </div>
     </div>
   )

@@ -866,6 +866,8 @@ export interface ComputerLeaseRepo {
   listBySession(sessionId: string): Promise<ControlLease[]>
   /** The queues one session waits in, at most one place per Computer. */
   listWaitingBySession(sessionId: string): Promise<LeaseWaiter[]>
+  /** The lease rows and wait queues of these Computers, read without a lock for display. */
+  listOccupancy(computerIds: readonly ComputerId[]): Promise<{ leases: ControlLease[]; waiters: LeaseWaiter[] }>
   /** Stamp `renewedAt` on every lease the daemon took whose holder was still alive at `aliveSince`; returns how many. */
   renewByDaemon(daemonId: string, at: Date, aliveSince: Date): Promise<number>
 }

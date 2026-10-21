@@ -2234,6 +2234,7 @@ export function buildContainer(
     computers,
     computerAudit,
     computerViewer: computerChannelGrants,
+    computerLeases,
     ...(computerPool ? { computerPool } : {}),
     ...(computerScreenshots ? { computerScreenshots } : {}),
     ...(desktopDistribution ? { desktopDistribution } : {}),

@@ -5,7 +5,15 @@ import { useCallback } from 'react'
 import useSWR from 'swr'
 import { useFormatter } from 'next-intl'
 import type { ComputerAgentAccess, ComputerDoctorCheck, ComputerStatus } from '@agentconnect.md/protocol/computer'
-import { fetchComputer, fetchComputers, type ComputerDto, type ComputerRegistrationDto } from '@/lib/api'
+import {
+  fetchComputer,
+  fetchComputerPool,
+  fetchComputers,
+  type ComputerDto,
+  type ComputerPoolPhase,
+  type ComputerPoolStatusDto,
+  type ComputerRegistrationDto
+} from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 
@@ -29,6 +37,31 @@ export function useComputer(id: string | undefined) {
     !MOCK_MODE && orgId && id ? ['computer', orgId, id] : null,
     ([, scoped, cid]: [string, string, string]) => fetchComputer(cid, scoped),
     { refreshInterval: COMPUTERS_REFRESH_MS }
+  )
+}
+
+/** Whether this deployment runs managed computers (computer-use.md §15.1); an older Control Plane reads as none. */
+export function useComputerPool() {
+  const { activeOrg } = useOrgs()
+  const orgId = activeOrg?.id
+  return useSWR<ComputerPoolStatusDto>(
+    !MOCK_MODE && orgId ? ['computer-pool', orgId] : null,
+    ([, scoped]: [string, string]) =>
+      fetchComputerPool(scoped).catch((): ComputerPoolStatusDto => ({ enabled: false, available: false })),
+    { refreshInterval: COMPUTERS_REFRESH_MS * 3 }
+  )
+}
+
+/** A pool phase worth naming beside the status: the computer is on its way somewhere, or stuck. */
+export function poolPhaseNote(computer: Pick<ComputerDto, 'poolPhase'>): ComputerPoolPhase | null {
+  const phase = computer.poolPhase
+  return phase && phase !== 'awake' && phase !== 'sleeping' ? phase : null
+}
+
+/** The managed computers made for this agent: its one `per-agent` desktop and any session desktops. */
+export function agentOwnComputers(computers: readonly ComputerDto[], agentId: string): ComputerDto[] {
+  return computers.filter(
+    (c) => c.ownerAgentId === agentId && (c.allocation === 'per-agent' || c.allocation === 'ephemeral')
   )
 }
 

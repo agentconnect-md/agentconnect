@@ -5,6 +5,8 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { ComputerAuditRecord, ComputerRecord } from '../../persistence/ports.js'
 import { ComputerId } from '../../domain/ids.js'
+import { poolActions } from '../../domain/computerPool.js'
+import type { LeaseOccupancy } from '../../domain/computerLease.js'
 import {
   ComputerPolicySchema,
   agentAccessIsFixed,
@@ -36,6 +38,7 @@ import {
   ComputerViewerGrantDto,
   CreateComputerRegistrationBody,
   CreatePoolComputerBody,
+  ComputerPoolStatusDto,
   RegisterComputerBody,
   RegisteredComputerDto,
   SetComputerAgentAccessBody,
@@ -95,12 +98,36 @@ const auditDto = (e: ComputerAuditRecord) => ({
   screenshotRef: e.screenshotRef
 })
 
+const occupancyDto = (occ: LeaseOccupancy | undefined) => ({
+  lease: occ?.holder
+    ? {
+        sessionId: occ.holder.sessionId,
+        agentId: occ.holder.agentId,
+        agentName: occ.holder.agentName,
+        acquiredAt: new Date(occ.holder.acquiredAt).toISOString()
+      }
+    : null,
+  waiting: (occ?.waiting ?? []).map((w) => ({
+    sessionId: w.sessionId,
+    agentId: w.agentId,
+    since: new Date(w.enqueuedAt).toISOString()
+  }))
+})
+
 function toDto(
   c: ComputerRecord,
   ctx: ViewCtx,
   status: ComputerRecord['status'],
-  retentionDays: (policy: ComputerRecord['policy']) => number
+  retentionDays: (policy: ComputerRecord['policy']) => number,
+  occ?: LeaseOccupancy
 ): ComputerDtoT {
+  const actions = poolActions({
+    allocation: c.allocation,
+    poolPhase: c.poolPhase,
+    poolError: c.poolError,
+    revoked: c.revokedAt !== null || c.status === 'revoked'
+  })
+  const editable = canEdit(c, ctx)
   return {
     id: c.id,
     name: c.name,
@@ -132,7 +159,13 @@ function toDto(
     allocation: c.allocation,
     ownerAgentId: c.ownerAgentId,
     poolPhase: c.poolPhase,
-    poolError: c.poolError
+    poolError: c.poolError,
+    poolActions: {
+      wake: editable && actions.wake,
+      sleep: editable && actions.sleep,
+      reset: editable && actions.reset
+    },
+    ...occupancyDto(occ)
   }
 }
 
@@ -159,6 +192,18 @@ export function computerRoutes(deps: HttpDeps) {
     // Without a bucket nothing is stored, whatever the policy says.
     const retentionDays = (policy: ComputerRecord['policy']): number =>
       deps.computerScreenshots?.retentionDays(policy) ?? 0
+
+    // Who holds each lease and who waits (§4.4); a display read, so a failure leaves the fields empty.
+    const occupancy = async (rows: ComputerRecord[]) =>
+      deps.computerLeases && rows.length > 0
+        ? await deps.computerLeases.occupancy(rows).catch(() => new Map<string, LeaseOccupancy>())
+        : new Map<string, LeaseOccupancy>()
+    const presentAll = async (req: FastifyRequest, rows: ComputerRecord[]): Promise<ComputerDtoT[]> => {
+      const occ = await occupancy(rows)
+      return rows.map((c) => toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays, occ.get(c.id)))
+    }
+    const present = async (req: FastifyRequest, c: ComputerRecord): Promise<ComputerDtoT> =>
+      (await presentAll(req, [c]))[0]!
 
     // The repository fences the org; visibility is the policy half, and an invisible Computer reads as absent.
     const getOrgComputer = async (req: FastifyRequest, id: string) => {
@@ -189,10 +234,8 @@ export function computerRoutes(deps: HttpDeps) {
       return { computer: c }
     }
 
-    const accessReply = (req: FastifyRequest, reply: FastifyReply, updated: ComputerRecord | null) =>
-      updated
-        ? toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
-        : reply.code(409).send(revokedConflict)
+    const accessReply = async (req: FastifyRequest, reply: FastifyReply, updated: ComputerRecord | null) =>
+      updated ? await present(req, updated) : reply.code(409).send(revokedConflict)
 
     // An access write, or the 409 for a Selected list past the cap.
     const writeAccess = async (
@@ -220,7 +263,7 @@ export function computerRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.computer.list(orgOf(req), ctxOf(req))
-        return rows.map((c) => toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays))
+        return await presentAll(req, rows)
       }
     )
 
@@ -239,7 +282,7 @@ export function computerRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const c = await getOrgComputer(req, req.params.id)
         if (!c) return reply.code(404).send(notFound)
-        return toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays)
+        return await present(req, c)
       }
     )
 
@@ -389,8 +432,90 @@ export function computerRoutes(deps: HttpDeps) {
           ...(agentAccess ? { agentAccess } : {})
         })
         if (!created) return reply.code(503).send(unavailable)
-        return reply.code(201).send(toDto(created, ctx, deps.computers.presentedStatus(created), retentionDays))
+        return reply.code(201).send(await present(req, created))
       }
+    )
+
+    r.get(
+      '/computers/pool',
+      {
+        schema: {
+          tags: [Tag.Computers],
+          summary: 'Get the computer pool status',
+          description:
+            'Says whether this deployment runs managed computers in its Kubernetes pool (`enabled`) and whether a pool member that can start, wake or sleep one is connected now (`available`). The console offers pool computers and an agent’s managed mode from it.',
+          operationId: 'getComputerPool',
+          response: { 200: ComputerPoolStatusDto }
+        }
+      },
+      async () => ({ enabled: deps.computerPool !== undefined, available: deps.computerPool?.available() ?? false })
+    )
+
+    // Wake, sleep and reset (§10, §15.1): any editor of a `per-agent` or `manual` computer, where its phase allows.
+    const poolCommand = (
+      path: 'wake' | 'sleep' | 'reset',
+      summary: string,
+      description: string,
+      operationId: string,
+      run: NonNullable<HttpDeps['computerPool']>['wakeNow']
+    ) =>
+      r.post(
+        `/computers/:id/${path}`,
+        {
+          schema: {
+            tags: [Tag.Computers],
+            summary,
+            description,
+            operationId,
+            params: IdParam,
+            response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          if (denyViewerWrite(req, reply)) return
+          const c = await getOrgComputer(req, req.params.id)
+          if (!c) return reply.code(404).send(notFound)
+          if (!canEdit(c, ctxOf(req))) {
+            return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
+          }
+          if (!deps.computerPool || c.kind !== 'managed' || !c.poolPhase) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'only a managed computer from the pool can do this'
+            })
+          }
+          const result = await run(orgOf(req), c.id)
+          if (result.ok) return await present(req, result.computer)
+          if (result.code === 'not_found') return reply.code(404).send(notFound)
+          const status = result.code === 'no_pool' ? 503 : 409
+          return reply.code(status).send({
+            error: status === 503 ? 'Service Unavailable' : 'Conflict',
+            statusCode: status,
+            message: result.message
+          })
+        }
+      )
+    poolCommand(
+      'wake',
+      'Wake a pool computer',
+      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone or whose reset did not finish (reset it instead); 503 without a pool member.',
+      'wakeComputer',
+      (orgId, id) => deps.computerPool!.wakeNow(orgId, id)
+    )
+    poolCommand(
+      'sleep',
+      'Put a pool computer to sleep',
+      'Stops the pod of an awake `per-agent` or `manual` managed computer and keeps its volume; the next use, or Wake, starts it again. 409 while a session holds its control lease or starts using it meanwhile, or for an ephemeral or self-hosted computer; 503 without a pool member.',
+      'sleepComputer',
+      (orgId, id) => deps.computerPool!.sleepNow(orgId, id)
+    )
+    poolCommand(
+      'reset',
+      'Reset a pool computer',
+      'Deletes the pod and the volume of a `per-agent` or `manual` managed computer and provisions it again, empty: its files, browser profile and sign-ins are lost, while its name, agent access and policy stay. Any control lease ends. 409 for an ephemeral or self-hosted computer; 503 without a pool member.',
+      'resetComputer',
+      (orgId, id) => deps.computerPool!.resetNow(orgId, id)
     )
 
     // Stop only tightens, so anyone who may revoke the Computer may stop it; resuming is the policy owner's.
@@ -414,10 +539,10 @@ export function computerRoutes(deps: HttpDeps) {
         if (!canEdit(c, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
         }
-        if (c.stoppedAt) return toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays)
+        if (c.stoppedAt) return await present(req, c)
         const stopped = await deps.computers.stop(orgOf(req), c.id, ctxOf(req).userId)
         if (!stopped) return reply.code(409).send(revokedConflict)
-        return toDto(stopped, ctxOf(req), deps.computers.presentedStatus(stopped), retentionDays)
+        return await present(req, stopped)
       }
     )
 
@@ -488,7 +613,7 @@ export function computerRoutes(deps: HttpDeps) {
         if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
         const resumed = await deps.computers.resume(orgOf(req), c.id, ctxOf(req).userId)
         if (!resumed) return reply.code(409).send(revokedConflict)
-        return toDto(resumed, ctxOf(req), deps.computers.presentedStatus(resumed), retentionDays)
+        return await present(req, resumed)
       }
     )
 
@@ -520,7 +645,7 @@ export function computerRoutes(deps: HttpDeps) {
         const policy = withOwnerMember({ ...req.body, allowedMembers: members }, c.ownerUserId)
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
         if (!updated) return reply.code(409).send(revokedConflict)
-        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
+        return await present(req, updated)
       }
     )
 
@@ -673,7 +798,7 @@ export function computerRoutes(deps: HttpDeps) {
           { visibility: req.body.visibility, sharedWith },
           ctxOf(req).userId
         )
-        return toDto(updated, ctxOf(req), deps.computers.presentedStatus(updated), retentionDays)
+        return await present(req, updated)
       }
     )
 
@@ -700,7 +825,7 @@ export function computerRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this computer' })
         }
         const revoked = await deps.computers.revoke(orgOf(req), c.id, ctxOf(req).userId)
-        return toDto(revoked, ctxOf(req), deps.computers.presentedStatus(revoked), retentionDays)
+        return await present(req, revoked)
       }
     )
 

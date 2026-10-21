@@ -3398,7 +3398,23 @@
         "open": "Open computer",
         "remove": "Take away this agent's access",
         "viaSelected": "selected agents",
-        "viaAll": "all agents"
+        "viaAll": "all agents",
+        "managed": {
+          "title": "Managed computer",
+          "description": "A desktop from this deployment's pool, used when the agent names no computer.",
+          "off": "Off",
+          "offDescription": "Only the computers below.",
+          "ephemeral": "New each session",
+          "ephemeralDescription": "A fresh desktop per session, deleted when it is done.",
+          "perAgent": "One for this agent",
+          "perAgentDescription": "Sleeps between uses and keeps its files and sign-ins.",
+          "notCreated": "Created on its first use",
+          "leftover": "Kept from when this agent had its own computer, and still usable by it. Delete it from its page to remove it.",
+          "sessions": "{count, plural, one {# session desktop} other {# session desktops}}",
+          "poolOff": "This deployment runs no computer pool, so this setting has no effect.",
+          "readOnly": "Only editors of this agent can change this",
+          "saving": "Saving…"
+        }
       }
     }
   },
@@ -6310,7 +6326,19 @@
       "create": "Create command",
       "minting": "Creating…",
       "open": "Open computer",
-      "close": "Close"
+      "close": "Close",
+      "source": "Where it runs",
+      "own": "Your machine",
+      "pool": "Managed",
+      "poolDescription": "A Linux desktop with Firefox from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
+      "poolName": "Name",
+      "poolNamePlaceholder": "Shared browser",
+      "poolAccess": "Agents that may use it",
+      "poolAccessHint": "Agents take turns: one has control at a time, the others wait in line.",
+      "poolUnavailable": "No pool member is connected right now, so a managed computer cannot be started. Try again in a minute.",
+      "poolCreate": "Create computer",
+      "poolCreating": "Creating…",
+      "poolError": "Could not create the computer: {message}"
     },
     "loadError": "Could not load computers: {message}",
     "empty": {
@@ -6400,7 +6428,14 @@
       "revokedBanner": "This computer was revoked. Its desktop daemon can no longer connect, and agents cannot use it. Register the desktop again to bring it back.",
       "stoppedBanner": "Stopped by {name} {when}. Agents cannot take control until it is resumed.",
       "stoppedOwnerResumes": "Only its owner can resume it.",
-      "humanBanner": "A person is using this computer, so agents are paused until they hand it back."
+      "humanBanner": "A person is using this computer, so agents are paused until they hand it back.",
+      "allocation": "Allocation",
+      "allocationValue": {
+        "ephemeral": "New for each session",
+        "per-agent": "One per agent",
+        "manual": "Pool computer, shared"
+      },
+      "ownerAgent": "Made for"
     },
     "actions": {
       "stop": "Stop",
@@ -6527,6 +6562,52 @@
         "screenshots": "Screenshots"
       }
     },
-    "allAgents": "All agents"
+    "allAgents": "All agents",
+    "allocation": {
+      "ephemeral": "Session desktop",
+      "per-agent": "Agent's own",
+      "manual": "Pool"
+    },
+    "madeFor": "for {agent}",
+    "inUseBy": "In use by {agent}",
+    "waitingCount": "{count, plural, one {# waiting} other {# waiting}}",
+    "hiddenAgent": "an agent you can't see",
+    "poolPhase": {
+      "provisioning": "Starting",
+      "registering": "Registering",
+      "awake": "Awake",
+      "sleeping": "Asleep",
+      "waking": "Waking",
+      "failed": "Failed",
+      "reclaiming": "Removing",
+      "resetting": "Resetting"
+    },
+    "pool": {
+      "title": "Managed computer",
+      "phase": "Pool state",
+      "error": "Last problem",
+      "hint": {
+        "ephemeral": "Made for one session of {agent}. It is deleted with its files when the session is done or idles out.",
+        "per-agent": "{agent}'s own desktop. It sleeps when idle, keeping its files, browser profile and sign-ins, and wakes on the agent's next use.",
+        "manual": "Shared by the agents you give access. It sleeps when idle, keeping its files and sign-ins, wakes on the next use, and stays until you delete it."
+      },
+      "wake": "Wake",
+      "sleep": "Sleep",
+      "reset": "Reset desktop",
+      "resetTitle": "Reset computer",
+      "resetBody": "{name} will lose its desktop and its disk: files, browser profile and sign-ins are deleted, and any agent working on it is stopped. It then starts again empty, with the same name, agent access and policy.",
+      "resetConfirm": "Reset",
+      "resetBusy": "Resetting…"
+    },
+    "lease": {
+      "title": "Control",
+      "note": "One agent controls the desktop at a time; others wait in line, first come first served. Screenshots and viewers need no turn.",
+      "free": "No agent has control",
+      "holder": "Has control",
+      "since": "since {when}",
+      "queue": "Waiting in line",
+      "queued": "waiting since {when}",
+      "openSession": "Open session"
+    }
   }
 }

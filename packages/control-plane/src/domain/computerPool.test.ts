@@ -6,6 +6,7 @@ import {
   poolError,
   poolErrorCode,
   poolErrorMessage,
+  poolActions,
   provisionStep,
   sweepAction,
   type PoolRow
@@ -110,5 +111,57 @@ describe('managed computer defaults', () => {
     expect(poolErrorMessage(error)).toBe('the volume is gone')
     expect(poolErrorCode(poolError('failed', 'x'))).toBe('failed')
     expect(poolErrorCode(null)).toBeUndefined()
+  })
+})
+
+describe('poolActions', () => {
+  const of = (over: Partial<Parameters<typeof poolActions>[0]> = {}) =>
+    poolActions({ allocation: 'manual', poolPhase: 'awake', poolError: null, revoked: false, ...over })
+
+  it('offers sleep and reset while awake, wake while asleep or failed', () => {
+    expect(of()).toEqual({ wake: false, sleep: true, reset: true })
+    expect(of({ poolPhase: 'sleeping' })).toEqual({ wake: true, sleep: false, reset: true })
+    expect(of({ allocation: 'per-agent', poolPhase: 'failed', poolError: poolError('failed', 'x') })).toEqual({
+      wake: true,
+      sleep: false,
+      reset: true
+    })
+  })
+
+  it('offers only reset once the volume is gone', () => {
+    expect(of({ poolPhase: 'failed', poolError: poolError('volume_missing', 'gone') })).toEqual({
+      wake: false,
+      sleep: false,
+      reset: true
+    })
+  })
+
+  it('offers only reset after a reset that did not remove the old desktop', () => {
+    expect(
+      of({ poolPhase: 'failed', poolError: poolError('reset_failed', 'the old desktop was not removed') })
+    ).toEqual({
+      wake: false,
+      sleep: false,
+      reset: true
+    })
+    expect(poolErrorCode(poolError('reset_failed', 'x'))).toBe('reset_failed')
+    expect(poolErrorMessage(poolError('reset_failed', 'x'))).toBe('x')
+  })
+
+  it('offers nothing for an ephemeral, self-hosted, revoked, resetting or reclaiming computer', () => {
+    const none = { wake: false, sleep: false, reset: false }
+    expect(of({ allocation: 'ephemeral' })).toEqual(none)
+    expect(of({ allocation: null, poolPhase: null })).toEqual(none)
+    expect(of({ revoked: true })).toEqual(none)
+    expect(of({ poolPhase: 'resetting' })).toEqual(none)
+    expect(of({ poolPhase: 'reclaiming' })).toEqual(none)
+  })
+
+  it('advances a reset until the old desktop is gone, and times it out like a provision', () => {
+    expect(sweepAction(row({ phase: 'resetting' }), false, NOW)).toEqual({ kind: 'advance' })
+    expect(sweepAction(row({ phase: 'resetting', phaseAt: NOW - T.provisionTimeoutMs - 1 }), false, NOW)).toEqual({
+      kind: 'timeout',
+      message: 'the old desktop was not removed'
+    })
   })
 })

@@ -3398,7 +3398,23 @@
         "open": "打开电脑",
         "remove": "撤销此 Agent 的访问权限",
         "viaSelected": "指定 Agent",
-        "viaAll": "所有 Agent"
+        "viaAll": "所有 Agent",
+        "managed": {
+          "title": "托管计算机",
+          "description": "智能体未指定计算机时，使用本部署资源池中的桌面。",
+          "off": "关闭",
+          "offDescription": "只使用下面的计算机。",
+          "ephemeral": "每个会话新建",
+          "ephemeralDescription": "每个会话一台全新桌面，用完即删除。",
+          "perAgent": "此智能体专属一台",
+          "perAgentDescription": "两次使用之间休眠，保留文件和登录状态。",
+          "notCreated": "首次使用时创建",
+          "leftover": "这是此智能体此前专属的计算机，它仍可使用。如需移除，请在该计算机页面删除。",
+          "sessions": "{count, plural, other {# 台会话桌面}}",
+          "poolOff": "本部署没有运行计算机资源池，此设置不会生效。",
+          "readOnly": "只有此智能体的编辑者可以修改",
+          "saving": "正在保存…"
+        }
       }
     }
   },
@@ -6310,7 +6326,19 @@
       "create": "生成命令",
       "minting": "正在生成…",
       "open": "打开电脑",
-      "close": "关闭"
+      "close": "关闭",
+      "source": "运行位置",
+      "own": "你的机器",
+      "pool": "托管",
+      "poolDescription": "从本部署的资源池创建一台带 Firefox 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
+      "poolName": "名称",
+      "poolNamePlaceholder": "共享浏览器",
+      "poolAccess": "可使用的智能体",
+      "poolAccessHint": "智能体轮流使用：同一时间只有一个控制桌面，其他的排队等待。",
+      "poolUnavailable": "当前没有连接的资源池成员，无法启动托管计算机。请稍后再试。",
+      "poolCreate": "创建计算机",
+      "poolCreating": "正在创建…",
+      "poolError": "无法创建计算机：{message}"
     },
     "loadError": "无法加载电脑：{message}",
     "empty": {
@@ -6400,7 +6428,14 @@
       "revokedBanner": "此电脑已被吊销。它的桌面守护进程无法再连接，Agent 也无法使用它。重新注册该桌面即可恢复。",
       "stoppedBanner": "{name}于{when}停止了此电脑。恢复之前 Agent 无法获得控制权。",
       "stoppedOwnerResumes": "只有所有者可以恢复。",
-      "humanBanner": "有人正在使用这台电脑，Agent 会暂停，直到对方交还控制权。"
+      "humanBanner": "有人正在使用这台电脑，Agent 会暂停，直到对方交还控制权。",
+      "allocation": "分配方式",
+      "allocationValue": {
+        "ephemeral": "每个会话新建",
+        "per-agent": "每个智能体一台",
+        "manual": "资源池计算机，共享"
+      },
+      "ownerAgent": "所属智能体"
     },
     "actions": {
       "stop": "停止",
@@ -6527,6 +6562,52 @@
         "screenshots": "截图"
       }
     },
-    "allAgents": "所有 Agent"
+    "allAgents": "所有 Agent",
+    "allocation": {
+      "ephemeral": "会话桌面",
+      "per-agent": "智能体专属",
+      "manual": "资源池"
+    },
+    "madeFor": "属于 {agent}",
+    "inUseBy": "{agent} 正在使用",
+    "waitingCount": "{count, plural, other {# 个在排队}}",
+    "hiddenAgent": "你看不到的智能体",
+    "poolPhase": {
+      "provisioning": "启动中",
+      "registering": "注册中",
+      "awake": "运行中",
+      "sleeping": "休眠",
+      "waking": "唤醒中",
+      "failed": "失败",
+      "reclaiming": "删除中",
+      "resetting": "重置中"
+    },
+    "pool": {
+      "title": "托管计算机",
+      "phase": "资源池状态",
+      "error": "最近的问题",
+      "hint": {
+        "ephemeral": "为 {agent} 的一个会话创建。会话结束或空闲超时后连同文件一起删除。",
+        "per-agent": "{agent} 专属的桌面。空闲时休眠，保留文件、浏览器配置和登录状态，智能体下次使用时唤醒。",
+        "manual": "由获得访问权的智能体共享。空闲时休眠并保留文件和登录状态，下次使用时唤醒，直到你删除它。"
+      },
+      "wake": "唤醒",
+      "sleep": "休眠",
+      "reset": "重置桌面",
+      "resetTitle": "重置计算机",
+      "resetBody": "{name} 的桌面和磁盘将被删除：文件、浏览器配置和登录状态都会丢失，正在使用它的智能体会被停止。之后它会以相同的名称、智能体访问和策略重新启动，内容为空。",
+      "resetConfirm": "重置",
+      "resetBusy": "正在重置…"
+    },
+    "lease": {
+      "title": "控制权",
+      "note": "同一时间只有一个智能体控制桌面；其他的按先来先到排队。截图和查看无需排队。",
+      "free": "没有智能体在控制",
+      "holder": "正在控制",
+      "since": "自 {when}",
+      "queue": "排队中",
+      "queued": "自 {when} 开始等待",
+      "openSession": "打开会话"
+    }
   }
 }

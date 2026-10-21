@@ -12,7 +12,10 @@ const mocks = vi.hoisted(() => ({
   addComputerAgent: vi.fn(),
   removeComputerAgent: vi.fn(),
   refresh: vi.fn(),
-  mutate: vi.fn()
+  mutate: vi.fn(),
+  updateAgent: vi.fn(),
+  pool: { enabled: false, available: false },
+  mobile: false
 }))
 
 vi.mock('next/link', () => ({
@@ -24,20 +27,23 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/lib/computers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/computers')>()),
-  useComputers: () => ({ data: mocks.computers, error: undefined, mutate: mocks.mutate })
+  useComputers: () => ({ data: mocks.computers, error: undefined, mutate: mocks.mutate }),
+  useComputerPool: () => ({ data: mocks.pool })
 }))
+vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mocks.mobile }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   addComputerAgent: mocks.addComputerAgent,
-  removeComputerAgent: mocks.removeComputerAgent
+  removeComputerAgent: mocks.removeComputerAgent,
+  updateAgent: mocks.updateAgent
 }))
 
 const { AgentComputersCard } = await import('./AgentComputersCard')
 
-function render(canEdit = true): HTMLDivElement {
+function render(canEdit = true, canEditAgent = true): HTMLDivElement {
   const host = document.createElement('div')
   document.body.appendChild(host)
-  act(() => createRoot(host).render(<AgentComputersCard agentId="a1" canEdit={canEdit} />))
+  act(() => createRoot(host).render(<AgentComputersCard agentId="a1" canEdit={canEdit} canEditAgent={canEditAgent} />))
   return host
 }
 
@@ -50,6 +56,9 @@ beforeEach(() => {
   mocks.removeComputerAgent.mockReset().mockResolvedValue(undefined)
   mocks.refresh.mockReset()
   mocks.mutate.mockReset().mockResolvedValue(undefined)
+  mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  mocks.pool = { enabled: false, available: false }
+  mocks.mobile = false
   mocks.agent = { id: 'a1' }
   mocks.computers = [computerFixture()]
   document.body.innerHTML = ''
@@ -100,5 +109,79 @@ describe('AgentComputersCard', () => {
     expect(el.querySelector('button[title="Take away this agent\'s access"]')).toBeNull()
     expect(el.textContent).toContain("A computer you can't see")
     expect(el.textContent).toContain('c9')
+  })
+
+  it('hides the managed mode where no pool runs and the agent has none', () => {
+    const el = render()
+    expect(el.querySelector('[data-managed-mode]')).toBeNull()
+  })
+
+  it('switches the agent to its own managed computer', async () => {
+    mocks.pool = { enabled: true, available: true }
+    const el = render()
+    const tile = (title: string) =>
+      [...el.querySelectorAll<HTMLElement>('[role="radio"]')].find((t) => t.textContent?.includes(title))!
+    expect(tile('Off').getAttribute('aria-checked')).toBe('true')
+    await act(async () => tile('One for this agent').click())
+    expect(mocks.updateAgent).toHaveBeenCalledWith('a1', { computerUse: { managed: { mode: 'per-agent' } } })
+    expect(mocks.refresh).toHaveBeenCalled()
+  })
+
+  it('shows a per-agent agent’s one computer, asleep, apart from the computers that grant it', () => {
+    mocks.pool = { enabled: true, available: true }
+    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: ['m1'], managed: { mode: 'per-agent' } } }
+    mocks.computers = [
+      computerFixture({
+        id: 'm1',
+        name: 'ops desktop',
+        kind: 'managed',
+        allocation: 'per-agent',
+        ownerAgentId: 'a1',
+        status: 'sleeping',
+        poolPhase: 'sleeping',
+        agentAccess: { mode: 'selected', agents: ['a1'] }
+      })
+    ]
+    const el = render()
+    const desktop = el.querySelector<HTMLElement>('[data-agent-desktop="m1"]')!
+    expect(desktop.textContent).toContain('ops desktop')
+    expect(desktop.textContent).toContain('Asleep')
+    // Not repeated as a granted computer.
+    expect(el.textContent).toContain('No computers yet')
+  })
+
+  it('says the per-agent computer comes with the first use, on a phone too, and is read-only without agent rights', async () => {
+    mocks.pool = { enabled: true, available: true }
+    mocks.mobile = true
+    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: [], managed: { mode: 'per-agent' } } }
+    const el = render(true, false)
+    expect(el.textContent).toContain('Created on its first use')
+    expect(el.textContent).toContain('Only editors of this agent can change this')
+    const pills = [...el.querySelectorAll<HTMLButtonElement>('[data-managed-mode] button[aria-pressed]')]
+    expect(pills.map((b) => b.textContent)).toEqual(['Off', 'New each session', 'One for this agent'])
+    expect(pills.every((b) => b.disabled)).toBe(true)
+    await act(async () => pills[1]!.click())
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+  })
+
+  it('still shows a per-agent desktop the agent keeps after its mode is turned off, even without a pool', () => {
+    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: ['m1'] } }
+    mocks.computers = [
+      computerFixture({
+        id: 'm1',
+        name: 'ops desktop',
+        kind: 'managed',
+        allocation: 'per-agent',
+        ownerAgentId: 'a1',
+        status: 'sleeping',
+        poolPhase: 'sleeping',
+        agentAccess: { mode: 'selected', agents: ['a1'] }
+      })
+    ]
+    const el = render()
+    expect(el.querySelector('[data-managed-mode]')?.getAttribute('data-managed-mode')).toBe('off')
+    const desktop = el.querySelector<HTMLElement>('[data-agent-desktop="m1"]')!
+    expect(desktop.textContent).toContain('ops desktop')
+    expect(desktop.textContent).toContain('still usable by it')
   })
 })

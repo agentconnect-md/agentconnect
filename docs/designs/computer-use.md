@@ -132,7 +132,7 @@ means the pool scaled the pod to zero (or deleted it) while keeping its volume; 
 computers, and the next use wakes the computer with its files, browser profile, and sign-ins intact. An `ephemeral`
 computer never sleeps: it is deleted, pod and volume, when it is reclaimed. The `computer` table adds `allocation`,
 `ownerAgentId`, `poolSessionId` (the one session an `ephemeral` computer serves), the pool controller's `poolPhase`
-(`provisioning`, `registering`, `awake`, `sleeping`, `waking`, `failed`, `reclaiming`) with its time, `poolActiveAt` and
+(`provisioning`, `registering`, `awake`, `sleeping`, `waking`, `failed`, `reclaiming`, `resetting`) with its time, `poolActiveAt` and
 `poolError`; partial unique indexes keep one live `per-agent` computer per agent and one live `ephemeral` one per agent
 session. `sleeping` is a CP verdict like `offline`: the lease service and the channel grant refuse it as `unavailable`.
 
@@ -1084,6 +1084,21 @@ and every `computer/policy`.
   tab carries its **Computers** card: the Computers whose access grants it, each marked selected or all agents, an Add
   menu of the Computers the member can edit, and remove for a Selected one they can edit (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
+- **Managed computers [implemented]** (#3232). Where the deployment runs the pool (`GET …/computers/pool` answers
+  `enabled` and whether a member is `available`), **Add Computer** offers _Your machine_ or _Managed_: a name and the
+  agent access (No agents / Selected agents / All agents) create a `manual` computer with `POST …/computers/pool`. The
+  list marks a managed computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
+  any pool phase in flight (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many
+  wait. The detail page has a **Control** card for every Computer (the lease holder with its session, and the queue in
+  order, from the DTO's `lease` and `waiting`, read without a lock and leaving out lapsed rows), and, for a managed one,
+  a **Managed computer** card with its allocation, owning agent, pool phase and last error, and the actions its
+  `poolActions` allow: **Wake** (`POST …/wake`, a sleeping or failed `per-agent` or `manual` one), **Sleep**
+  (`POST …/sleep`, an awake one no session holds) and **Reset** (`POST …/reset`, after confirmation, any `per-agent`
+  or `manual` one not being removed). An `ephemeral` computer offers none: it goes with its session. The agent's
+  Computers card starts with its **managed computer** mode (Off / New each session / One for this agent, tiles or pills
+  on a phone, editable by the agent's editors, shown where the pool runs or a mode is set) and, for `per-agent`, its
+  one computer with its state, or that it is created on first use; the agent's own managed computers are not repeated
+  among the Computers that grant it.
 - Session page: the current lease and an action timeline with screenshots
   (**[implemented]**: a computer tool row shows the screenshots its result stored, §9).
 
@@ -1276,8 +1291,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
      `never`, Appendix A).
    - **#3231** [implemented; live queue position and two-agent e2e pending]: the FIFO lease wait queue for shared
      Computers (§4.4), for managed and self-hosted ones alike.
-   - **#3232**: the console for pools and modes: creating and assigning `manual` computers, the agent's `managed` mode,
-     and sleeping status.
+   - **#3232** [implemented]: the console for pools and modes (§10): creating and assigning `manual` computers, the
+     agent's `managed` mode, sleeping status, who holds the lease or waits, and wake / sleep / reset.
    - **#3241** [implemented]: agent access as one relation (No agents / Selected agents / All agents, §4.1), set from
      the Computer page or the agent's Computers card; `manual` computers are assigned to agents through it, and #3232's
      console assigns them the same way.
@@ -1351,11 +1366,11 @@ To agents the tools and permissions are identical.
 | ----------- | ------------------------------------------------------------ | ------------------------------------------ | ----------------------------------------------------------------------------------- |
 | `ephemeral` | When a session first needs a computer, from a prewarmed pool | That session only                          | Reclaimed and deleted (pod and volume) when the lease ends or the session idles out |
 | `per-agent` | On the agent's first computer use; exactly one per agent     | The owning agent's sessions, one at a time | Sleeps (pod scaled to zero or deleted, volume kept); wakes on the next use          |
-| `manual`    | By a user from the pool (API; console in #3232)              | The agents its agent access admits, shared | Stays until a user deletes it; may sleep when idle and wake on use                  |
+| `manual`    | By a user from the pool (API or console, §10)                | The agents its agent access admits, shared | Stays until a user deletes it; may sleep when idle and wake on use                  |
 
 The agent's `computerUse.managed.mode` picks `ephemeral` or `per-agent` (§4.1); `manual` computers are assigned
 through agent access like self-hosted ones (§4.1). A woken computer keeps its files, browser profile, and sign-ins; a `per-agent` or
-`manual` computer can be reset explicitly [design]. Sharing follows §4.4 for every mode.
+`manual` computer can be reset explicitly. Sharing follows §4.4 for every mode.
 
 **The pool controller [implemented].** The Control Plane decides and the daemon pool acts, since the CP holds no
 cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
@@ -1384,7 +1399,8 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
   reconnects without registering again. `GET /pool/status` says whether the pod holds a key and for which Computer. A
   NetworkPolicy admits only daemon-pool members to that port.
 - **Phases.** `provisioning` (claimed, pod not up or not registered) → `registering` (registered, channel not online yet)
-  → `awake` → `sleeping` → `waking` → `awake`; `reclaiming` revokes the keys first, then deletes the claim, then the row.
+  → `awake` → `sleeping` → `waking` → `awake`; `reclaiming` revokes the keys first, then deletes the claim, then the row;
+  `resetting` deletes the claim and goes back to `provisioning`, keeping the row.
   The controller sweeps every 30 s: a pod never ready within 5 minutes, or a registered desktop not online within 2,
   fails; an agent's computer is then reclaimed and the next use gets a fresh one, and a `manual` one stays `failed` for
   its user to see. A wake not online within 5 minutes goes back to sleep. Idle detection reads the control lease and
@@ -1399,7 +1415,16 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
   first call to it, and once more when a call is refused because it fell asleep since.
 - **API and deployment.** `POST /orgs/:orgId/computers/pool` creates a `manual` computer (503 without a pool member);
   `PUT …/computers/:id/policy` assigns it; `GET …/computers` lists managed computers with `allocation`,
-  `ownerAgentId`, `poolPhase`, and `poolError`; `DELETE …/computers/:id` reclaims a managed one. The chart's
+  `ownerAgentId`, `poolPhase`, `poolError`, and the `poolActions` the caller may take; `DELETE …/computers/:id`
+  reclaims a managed one. `POST …/computers/:id/wake` starts a sleeping or failed `per-agent` or `manual` computer
+  toward awake; `…/sleep` puts an awake one to sleep at once, refused with 409 while a session holds its lease;
+  `…/reset` moves it to `resetting`, ends its lease, deletes the claim and its volume, and provisions the same row
+  again, empty, with a fresh registration that revokes the old key. A reset whose delete is not done within the
+  provision timeout reclaims an agent's computer and leaves a `manual` one `failed` with a `reset_failed` error, which
+  offers only another reset, never a wake that would bring the old volume back; a reset revoked midway finishes its
+  delete and parks `failed`. Console Sleep is fenced on activity and the lease like the idle sweep: a session that
+  starts during the stop wakes the pod again and the call answers 409. Each answers 409 for an `ephemeral`, self-hosted, revoked or reclaiming computer and 503
+  without a pool member. The chart's
   `computerPool` values render the desktop SandboxTemplate, its warm pool and the bootstrap NetworkPolicy, and set the
   member and CP variables; desktops register at the public CP URL.
 
