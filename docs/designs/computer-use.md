@@ -1552,8 +1552,11 @@ autoconfig (`agentconnect.cfg`, read through `getenv`) locks its proxy to `127.0
 and keeps WebRTC to the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that tunnels
 `CONNECT` and forwards plain requests either straight out or through the organization's proxy with its credentials,
 which the browser never sees. Until the Control Plane names the egress the forwarder answers 503, so a desktop whose
-organization wants a proxy never goes out directly first; a desktop with no registration goes direct. The pod's
-NetworkPolicy admits TCP 443 and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy.
+organization wants a proxy never goes out directly first; a desktop with no registration goes direct. A Control
+Plane that cannot read a managed desktop's egress fails its auth (the desktop redials) rather than omit it, and a
+desktop told `computer-egress-v1` never takes a missing egress as direct. The pod's NetworkPolicy admits TCP 443
+and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy, to `computerPool.egressTo`
+only (public addresses by default, so the browser cannot reach in-cluster listeners on those ports).
 Limits: only the browser is bound to the proxy (other programs in the pod keep the pod's network); SOCKS proxies and
 per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
 
@@ -1563,8 +1566,9 @@ per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
 
 **Quotas.** `AC_COMPUTER_PLAN` (the chart's `computerPlan`, a JSON document with `version: 1`) sets every
 organization's defaults, and a deployment administrator (`isAdmin`, or local no-auth mode) overrides them per
-organization with `PUT /orgs/:orgId/computers/quotas`; `GET` shows members the limits and their use. Each is a count
-or a size, null for unlimited:
+organization with `PUT /orgs/:orgId/computers/quotas`, or `PUT /admin/orgs/:orgId/computers/quotas` when not a
+member; `GET` shows members the limits and their use. Each is a count or a size, null for unlimited. They hold managed
+desktops only: a self-hosted Computer's viewers, media and screenshots neither count nor are refused.
 
 | Quota                                           | Default   | Enforced at                                                                              |
 | ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------- |
@@ -1576,17 +1580,17 @@ or a size, null for unlimited:
 | `viewers`, `viewersPerComputer`                 | 5, 3      | opening or renewing a viewer token; a viewer's own renewals do not count twice           |
 | `monthlyViewerGib`                              | 100       | opening or renewing a viewer, against this UTC month's TURN bytes                        |
 | `screenshotStorageGib`                          | 10        | signing a screenshot upload, against the stored, unexpired bytes                         |
-| `screenshotRetentionDays`                       | unlimited | signing an upload: the shorter of it and the Computer's retention                        |
+| `screenshotRetentionDays`                       | unlimited | signing an upload, and stored ones when it drops: the shorter of it and the retention    |
 
 A refusal names the limit, the use and what to do: the agent's `computer_*` call fails `unavailable` with reason
 `quota_exceeded` (`computer-pool/acquire` answers `failed` with `quota_exceeded` to daemons that advertise
 `computer-pool-quota-v1`, `failed` with the same message to older ones), and the console's create, wake and viewer
 calls answer 429 with `code: COMPUTER_QUOTA_EXCEEDED`. A lower limit stops nothing that runs; it refuses the next
-start. The checks read counts and are not transactional, so concurrent allocations can pass a limit by the few that
-raced it.
+start, and resetting a sleeping or failed desktop starts one, so it is held like a wake. The checks read counts and
+are not transactional, so concurrent allocations can pass a limit by the few that raced it.
 
-**Metering.** Each pool sweep (30 s) bills a managed desktop's time since its `poolMeteredAt` to the phase it is in,
-with a compare-and-set on that column so replicas bill an interval once, and so does every phase change the
+**Metering.** Each pool sweep (30 s) bills a managed desktop's time since its `poolMeteredAt` (stamped at the upgrade
+for desktops older than metering) to the phase it is in, with a compare-and-set on that column so replicas bill an interval once, and so does every phase change the
 controller makes: `provisioning`, `registering`, `awake`, `waking` and `resetting` are running, `sleeping` and `failed`
 are sleeping (the volume is kept), `reclaiming` bills nothing. The rows (`computer_usage`, per organization, UTC day
 and Computer, kept after the Computer goes) hold running and sleeping seconds, kept volume GiB-seconds (both phases ×

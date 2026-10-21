@@ -231,6 +231,9 @@ export const ComputerEgress = z.discriminatedUnion('mode', [
 ])
 export type ComputerEgress = z.infer<typeof ComputerEgress>
 
+/** The CP names a managed desktop's egress on every auth; without it the desktop keeps refusing traffic instead of going direct. */
+export const COMPUTER_EGRESS_FEATURE = 'computer-egress-v1'
+
 // D→C REQ, the first frame; the key is secret material, never logged.
 export const ComputerAuth = z
   .object({
@@ -253,7 +256,7 @@ export const ComputerAuthOk = z.object({
   features: z.array(z.string().min(1).max(64)).max(32).optional(),
   // The retention in effect for this Computer's screenshots (§9); 0 or absent means none are stored.
   screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional(),
-  // A managed desktop's egress (§15.4); absent means direct. Secret when it carries a password, never logged.
+  // A managed desktop's egress (§15.4); absent means direct unless `computer-egress-v1` is advertised. Secret, never logged.
   egress: ComputerEgress.optional()
 })
 export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>

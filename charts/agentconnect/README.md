@@ -434,10 +434,14 @@ is required.
 | `computerPool.sleepIdleSeconds`     | `1800`               | Idle time before a `per-agent` or `manual` desktop sleeps     |
 | `computerPool.image` / `repository` | `<registry>/desktop` | The desktop image, tagged like the release by default         |
 | `computerPool.egressPorts`          | `[3128, 8080]`       | TCP ports besides 443 desktops may reach, for egress proxies  |
+| `computerPool.egressTo`             | public addresses     | Where `egressPorts` may lead; private ranges are excluded     |
 
-A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists. With `relay.turn` or
+A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists on the addresses
+`egressTo` allows (public ones by default, so the browser cannot reach the cluster's own
+listeners on 8080; add a private proxy's address there if it needs one). With `relay.turn` or
 `relay.stun` on, or `computerViewer.turn.urls` set, the desktop template also admits those
-TURN and STUN ports, so a managed computer's viewer works through the relay's TURN although
+TURN and STUN ports, public and container both (in-cluster traffic to a LoadBalancer reaches the
+relay pod's port), so a managed computer's viewer works through the relay's TURN although
 its pod has no UDP a browser can reach.
 
 `computerPlan` sets every organization's Computer quotas and egress choices, rendered as

@@ -150,12 +150,14 @@ export class ComputerChannelGrants {
     if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
     const relays = [...new Set(await (this.opts.viewerRelays?.() ?? Promise.resolve([])))].slice(0, COMPUTER_RELAYS_MAX)
     if (relays.length === 0) return refuse('no_relay', 'no relay is configured, so the viewer cannot reach the desktop')
-    const quota = await this.opts.viewerQuota?.viewerRefusal(orgId, computerId, who.userId)
+    // Viewer quotas hold managed desktops only; a self-hosted one is the organization's own machine.
+    const quotaed = computer.kind === 'managed' ? this.opts.viewerQuota : undefined
+    const quota = await quotaed?.viewerRefusal(orgId, computerId, who.userId)
     if (quota) return refuse('quota_exceeded', quota.message)
     const credential = this.keys.signing(computerId, apiKeyId, now)
     this.opts.onUse?.(computerId)
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
-    await this.opts.viewerQuota?.viewerGranted(orgId, computerId, who.userId, new Date(exp))
+    await quotaed?.viewerGranted(orgId, computerId, who.userId, new Date(exp))
     // The desktop and the browser each get their own TURN username, so the TURN server tells them apart.
     const turn = await this.turnServers(computerId)
     // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.

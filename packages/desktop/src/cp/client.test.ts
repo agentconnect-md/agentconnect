@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
 import {
   buildComputerCpFrame,
+  COMPUTER_EGRESS_FEATURE,
   ComputerPolicySchema,
   type ComputerCpFrame,
   type ComputerEgress,
@@ -155,6 +156,15 @@ describe('ComputerCpClient', () => {
     h.authOk(h.transports[1]!)
     await settle()
     expect(h.egresses.at(-1)).toEqual({ mode: 'direct' })
+  })
+
+  it('keeps the forwarder as it was when a CP that names egress sends none', async () => {
+    const h = harness()
+    h.client.start()
+    await settle()
+    h.authOk(h.transports[0]!, [COMPUTER_EGRESS_FEATURE])
+    await settle()
+    expect(h.egresses).toEqual([])
   })
 
   it('hands a console Stop and its lifting on', async () => {

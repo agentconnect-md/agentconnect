@@ -955,7 +955,7 @@ describe('managed computers in the pool', () => {
     expect(await aware.acquire(OTHER_AGENT, S1)).toMatchObject({ state: 'ready' })
   })
 
-  it('refuses to wake a sleeping computer while the organization runs its limit', async () => {
+  it('refuses to wake or reset a sleeping computer while the organization runs its limit', async () => {
     await seed('per-agent', 'per-agent')
     const { app, base } = await start()
     const cluster = new FakeCluster(app, base)
@@ -968,6 +968,11 @@ describe('managed computers in the pool', () => {
     expect(await h.pool.sleepNow(OrgId(DEFAULT_ORG_ID), ComputerId(first.computerId))).toMatchObject({ ok: true })
     expect(await h.acquire(OTHER_AGENT, S1)).toMatchObject({ state: 'ready' })
     expect(await h.pool.wakeNow(OrgId(DEFAULT_ORG_ID), ComputerId(first.computerId))).toMatchObject({
+      ok: false,
+      code: 'quota_exceeded'
+    })
+    // A reset starts a running pod too, so it is no way around the limit.
+    expect(await h.pool.resetNow(OrgId(DEFAULT_ORG_ID), ComputerId(first.computerId))).toMatchObject({
       ok: false,
       code: 'quota_exceeded'
     })

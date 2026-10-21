@@ -297,6 +297,11 @@ export class ComputerPool {
     if (!row) return refused('not_found', 'computer not found')
     if (!actionsOf(row).reset) return refused('not_allowed', 'this computer cannot be reset now')
     if (!this.deps.members.available()) return refused('no_pool', 'no pool member can reset this computer now')
+    // A reset starts a running pod, so a sleeping or failed desktop needs room for it like a wake.
+    if ((row.poolPhase === 'sleeping' || row.poolPhase === 'failed') && row.allocation) {
+      const refusal = await this.deps.plan?.desktopRefusal(orgId, { allocation: row.allocation, adding: false })
+      if (refusal) return refused('quota_exceeded', refusal.message)
+    }
     await this.meter(row)
     const moved = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'resetting',

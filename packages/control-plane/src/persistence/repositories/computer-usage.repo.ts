@@ -107,7 +107,8 @@ export class PgComputerUsageRepo implements ComputerUsageRepo {
 
   async since(orgId: string, from: Date): Promise<{ runningSeconds: number; relayedBytes: number }> {
     const agg = await this.db.computerUsage.aggregate({
-      where: { orgId, day: { gte: utcDay(from.getTime()) } },
+      // Quotas hold managed desktops only, so a self-hosted Computer's relayed media is billed but not counted here.
+      where: { orgId, kind: 'managed', day: { gte: utcDay(from.getTime()) } },
       _sum: { runningSeconds: true, relayedBytes: true }
     })
     return { runningSeconds: agg._sum.runningSeconds ?? 0, relayedBytes: Number(agg._sum.relayedBytes ?? 0n) }

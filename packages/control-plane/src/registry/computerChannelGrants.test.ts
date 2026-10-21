@@ -363,7 +363,7 @@ describe('ComputerChannelGrants.grantViewer', () => {
         granted.push({ userId, expiresAt })
       }
     }
-    const { grants } = viewer({}, { viewerQuota })
+    const { grants } = viewer({ kind: 'managed' }, { viewerQuota })
     const ok = await grants.grantViewer(ORG, CID, { userId: 'u1', mode: 'view' })
     if (!ok.granted) throw new Error('refused')
     expect(granted).toEqual([{ userId: 'u1', expiresAt: new Date(ok.expiresAt) }])
@@ -373,6 +373,10 @@ describe('ComputerChannelGrants.grantViewer', () => {
       code: 'quota_exceeded',
       message: '3 people are already watching this computer'
     })
+    expect(granted).toHaveLength(1)
+    // A self-hosted Computer is the organization's own machine, so the managed viewer quota does not hold it.
+    const own = viewer({}, { viewerQuota }).grants
+    expect(await own.grantViewer(ORG, CID, { userId: 'u2', mode: 'view' })).toMatchObject({ granted: true })
     expect(granted).toHaveLength(1)
   })
 })

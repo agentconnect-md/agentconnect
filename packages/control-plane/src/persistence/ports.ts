@@ -876,7 +876,7 @@ export interface ComputerUsageRepo {
   addRelayed(entries: ReadonlyArray<{ computerId: string; bytes: number }>, at: Date): Promise<number>
   /** Managed desktops held now, by allocation and phase, reclaiming ones left out. */
   desktopPhases(orgId: string): Promise<Array<{ allocation: string; phase: string; count: number }>>
-  /** Running seconds and relayed bytes metered since `from`. */
+  /** Running seconds and relayed bytes of managed desktops metered since `from`. */
   since(orgId: string, from: Date): Promise<{ runningSeconds: number; relayedBytes: number }>
   usage(orgId: string, window: { from: Date; to: Date }): Promise<ComputerUsageTotals>
   /** Note a viewer token's lifetime, so viewer quotas count it until it lapses. */
@@ -908,10 +908,19 @@ export interface ComputerScreenshotRepo {
   /** Rows to collect: expired, unconfirmed since before `pendingBefore`, or of a Computer that no longer exists. */
   reapable(now: Date, pendingBefore: Date, limit: number): Promise<ComputerScreenshotRecord[]>
   /** Shorten rows kept past their Computer's retention now (its policy's days, else `defaultDays`, capped at `maxDays`). */
-  clampExpiry(retention: { defaultDays: number; maxDays: number; computerId?: string }): Promise<number>
+  /** With `orgId` and `capDays`, the organization's managed desktops only, also held to that many days. */
+  clampExpiry(retention: {
+    defaultDays: number
+    maxDays: number
+    computerId?: string
+    orgId?: string
+    capDays?: number
+  }): Promise<number>
+  /** Organizations holding stored, unexpired screenshots of a managed desktop. */
+  managedOrgs(now: Date): Promise<string[]>
   deleteRows(ids: string[]): Promise<number>
   usage(orgId: string, window: { from: Date; to: Date }, now: Date): Promise<ComputerScreenshotUsageTotals>
-  /** Bytes of the organization's stored, unexpired screenshots. */
+  /** Bytes of the organization's stored, unexpired screenshots of managed desktops, which its quota holds. */
   storedBytes(orgId: string, now: Date): Promise<number>
 }
 

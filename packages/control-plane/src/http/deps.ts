@@ -461,7 +461,10 @@ export interface HttpDeps {
     'status' | 'setOverride' | 'usage' | 'egressView' | 'setEgress' | 'override' | 'volumeGib'
   >
   /** Stored screenshots (computer-use.md §9); absent when no bucket is configured. */
-  computerScreenshots?: Pick<ComputerScreenshots, 'read' | 'list' | 'sign' | 'usage' | 'retentionDays'>
+  computerScreenshots?: Pick<
+    ComputerScreenshots,
+    'read' | 'list' | 'sign' | 'usage' | 'retentionDays' | 'applyOrgRetention'
+  >
   /** Embedded OAuth 2.1 AS logic (agent-assistant.md §7): DCR, PKCE code exchange, refresh. */
   oauth: OAuthService
   /** Mints the short-lived browser webchat token (§10, A4). */

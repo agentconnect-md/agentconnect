@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildComputerCpFrame, ComputerPolicySchema, type ComputerCpFrame } from '@agentconnect.md/protocol'
+import {
+  buildComputerCpFrame,
+  COMPUTER_EGRESS_FEATURE,
+  ComputerPolicySchema,
+  type ComputerCpFrame
+} from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { ComputerId, OrgId } from '../domain/ids.js'
 import { ComputerChannelKeys } from '../registry/computerChannelKeys.js'
@@ -114,7 +119,10 @@ describe('ComputerConnection', () => {
     const { transport, registry } = setup({ kind: 'managed', egress })
     transport.deliver(auth())
     await settle()
-    expect(transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({ egress: proxy })
+    expect(transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({
+      egress: proxy,
+      features: expect.arrayContaining([COMPUTER_EGRESS_FEATURE])
+    })
     // A desktop without a forwarder could not decode the push, so it is not sent one.
     registry.pushEgress('org_1', { mode: 'direct' })
     expect(transport.ofType('computer/egress')).toHaveLength(0)
@@ -123,6 +131,18 @@ describe('ComputerConnection', () => {
     registry.pushEgress('org_2', { mode: 'direct' })
     registry.pushEgress('org_1', { mode: 'direct' })
     expect(transport.ofType('computer/egress').map((f) => f.payload)).toEqual([{ egress: { mode: 'direct' } }])
+  })
+
+  it("fails a managed desktop's auth when its egress cannot be read, so it never goes direct by omission", async () => {
+    const egress = vi.fn(async () => {
+      throw new Error('kms down')
+    })
+    const { transport } = setup({ kind: 'managed', egress })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')).toHaveLength(0)
+    expect(transport.ofType('error')[0]?.payload).toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(transport.closed).toMatchObject({ reason: 'egress unavailable' })
   })
 
   it('tells a self-hosted desktop no egress: it always uses its own network', async () => {
@@ -278,7 +298,12 @@ describe('ComputerConnection', () => {
     transport.deliver(offer)
     await settle()
     expect(put).toHaveBeenCalledWith(
-      { orgId: 'org_1', computerId: CID, policy: expect.objectContaining({ screenshotRetentionDays: 7 }) },
+      {
+        orgId: 'org_1',
+        computerId: CID,
+        kind: 'self-hosted',
+        policy: expect.objectContaining({ screenshotRetentionDays: 7 })
+      },
       offered
     )
     expect(transport.ofType('computer/screenshot/put/ok')[0]).toMatchObject({

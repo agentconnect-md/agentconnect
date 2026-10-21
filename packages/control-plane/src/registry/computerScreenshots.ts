@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   ComputerAgentAccess,
+  ComputerKind,
   ComputerPolicy,
   ComputerScreenshotCommit,
   ComputerScreenshotPut,
@@ -71,12 +72,14 @@ export class ComputerScreenshots {
     computer: {
       orgId: string
       computerId: string
+      // Only a managed desktop is held to the organization's screenshot quota.
+      kind?: ComputerKind
       policy: Pick<ComputerPolicy, 'screenshotRetentionDays'>
       agentAccess: ComputerAgentAccess
     },
     put: ComputerScreenshotPut
   ): Promise<ComputerScreenshotPutOk> {
-    const limits = await this.opts.limits?.(computer.orgId)
+    const limits = computer.kind === 'managed' ? await this.opts.limits?.(computer.orgId) : undefined
     const days = Math.min(this.retentionDays(computer.policy), limits?.retentionDays ?? Number.POSITIVE_INFINITY)
     if (days <= 0) return { status: 'skipped', reason: 'retention is 0' }
     if (put.bytes > this.bucket.maxBytes) return { status: 'skipped', reason: 'too large' }
@@ -177,14 +180,27 @@ export class ComputerScreenshots {
   }
 
   /** Shorten what a Computer's screenshots are kept to its retention now; at 0 they read as absent and are collected. */
-  applyRetention(computerId: string): Promise<number> {
-    return this.repo.clampExpiry({ ...this.opts, computerId })
+  async applyRetention(computerId: string): Promise<number> {
+    return this.repo.clampExpiry({ defaultDays: this.opts.defaultDays, maxDays: this.opts.maxDays, computerId })
+  }
+
+  /** Shorten what the organization's managed desktops' screenshots are kept to its retention quota now. */
+  async applyOrgRetention(orgId: string): Promise<number> {
+    const capDays = (await this.opts.limits?.(orgId))?.retentionDays
+    if (capDays == null) return 0
+    return this.repo.clampExpiry({ defaultDays: this.opts.defaultDays, maxDays: this.opts.maxDays, orgId, capDays })
   }
 
   /** One sweep: delete expired, abandoned and orphaned screenshots, objects first; returns how many rows went. */
   async reap(): Promise<number> {
     // A lowered default or maximum, or a policy change whose clamp failed, applies to what is already stored.
-    await this.repo.clampExpiry(this.opts)
+    await this.repo.clampExpiry({ defaultDays: this.opts.defaultDays, maxDays: this.opts.maxDays })
+    // So does a lowered retention quota, whether the organization's override or the deployment's plan.
+    if (this.opts.limits)
+      for (const orgId of await this.repo.managedOrgs(new Date(this.clock.now())))
+        await this.applyOrgRetention(orgId).catch((err: Error) =>
+          this.log?.warn({ err: err.message, orgId }, 'computer-screenshots: retention quota clamp failed')
+        )
     const now = this.clock.now()
     let total = 0
     for (;;) {

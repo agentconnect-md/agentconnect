@@ -12,6 +12,7 @@ import {
 import {
   COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
+  COMPUTER_EGRESS_FEATURE,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
   decodeComputerCpFrameTolerant,
@@ -222,7 +223,9 @@ export class ComputerCpClient {
     this.deps.authority.syncClock(ok.serverTime)
     this.deps.authority.accept(ok.credential)
     this.deps.onPolicy?.(ok.policy)
-    this.deps.onEgress?.(ok.egress ?? { mode: 'direct' })
+    // Direct only from a CP that does not name egress; one that does but sent none leaves the forwarder as it was.
+    const egress = ok.egress ?? (this.features.has(COMPUTER_EGRESS_FEATURE) ? undefined : { mode: 'direct' as const })
+    if (egress) this.deps.onEgress?.(egress)
     this.heartbeatMs = ok.heartbeatSec * 1000
     this.deps.log(`computer channel: connected as ${ok.name} (${ok.computerId})`)
     this.deps.onReady?.(ok)

@@ -2,6 +2,7 @@
 import {
   CloseCode,
   COMPUTER_AUDIT_FEATURE,
+  COMPUTER_EGRESS_FEATURE,
   COMPUTER_RELAYS_MAX,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
@@ -181,6 +182,12 @@ export class ComputerConnection implements ComputerChannel {
     this.egressCapable = computer.capabilities?.egress === true
     const egress = this.managed && this.deps.egress ? await this.readEgress() : undefined
     if ((this.state as State) === 'CLOSED') return
+    // A managed desktop never learns "direct" by omission: an unreadable egress fails the auth and it redials.
+    if (this.managed && this.deps.egress && !egress) {
+      this.sendError(frame.id, 'INTERNAL', 'egress unavailable; retry shortly', true)
+      this.close(CloseCode.SERVER_INTERNAL, 'egress unavailable')
+      return
+    }
     this.state = 'READY'
     this.deps.registry.add(this)
     const credential = this.deps.keys.current(this.computerId, principal.apiKeyId, now.getTime())
@@ -281,6 +288,7 @@ export class ComputerConnection implements ComputerChannel {
               {
                 orgId: this.orgId,
                 computerId: this.computerId,
+                kind: computer.kind,
                 policy: computer.policy,
                 agentAccess: computer.agentAccess
               },
@@ -307,11 +315,12 @@ export class ComputerConnection implements ComputerChannel {
   private features(): string[] {
     return [
       ...(this.deps.audit ? [COMPUTER_AUDIT_FEATURE] : []),
-      ...(this.deps.screenshots ? [COMPUTER_SCREENSHOT_FEATURE] : [])
+      ...(this.deps.screenshots ? [COMPUTER_SCREENSHOT_FEATURE] : []),
+      ...(this.managed && this.deps.egress ? [COMPUTER_EGRESS_FEATURE] : [])
     ]
   }
 
-  // An unreadable egress leaves the desktop on what it had; the next change or reconnect tells it again.
+  // Undefined when unreadable: the auth then fails rather than let a managed desktop go direct.
   private async readEgress(): Promise<ComputerEgress | undefined> {
     try {
       return await this.deps.egress!(this.orgId)

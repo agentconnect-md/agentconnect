@@ -1,9 +1,12 @@
 // Managed computer quotas, metering and egress per organization over real Postgres (computer-use.md §15.4, §15.5).
 import { randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { exportJWK, generateKeyPair, SignJWT } from 'jose'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { PgComputerRepo, PgComputerUsageRepo } from '../../src/persistence/index.js'
+import { PgComputerRepo, PgComputerUsageRepo, PgOrgRepo } from '../../src/persistence/index.js'
 import { ComputerPlan } from '../../src/registry/computerPlan.js'
 import { DEFAULT_COMPUTER_PLAN, loadComputerPlanConfig } from '../../src/computer-plan/config.js'
 import type { SecretCipher } from '../../src/secrets/cipher.js'
@@ -27,6 +30,42 @@ class PrefixCipher implements SecretCipher {
 const apps: HttpApp[] = []
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((a) => a.close()))
+})
+
+const OIDC_AUDIENCE = 'computer-plan-test'
+let oidcServer: Server
+let oidcIssuer = ''
+let mintBearer: (subject: string, claims?: Record<string, unknown>) => Promise<string>
+
+beforeAll(async () => {
+  const { privateKey, publicKey } = await generateKeyPair('RS256')
+  const jwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'computer-plan-test', use: 'sig' }
+  oidcServer = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json')
+    if (req.url === '/.well-known/openid-configuration')
+      return void res.end(JSON.stringify({ issuer: oidcIssuer, jwks_uri: `${oidcIssuer}/jwks` }))
+    if (req.url === '/jwks') return void res.end(JSON.stringify({ keys: [jwk] }))
+    res.statusCode = 404
+    res.end('{}')
+  })
+  await new Promise<void>((resolve, reject) => {
+    oidcServer.once('error', reject)
+    oidcServer.listen(0, '127.0.0.1', resolve)
+  })
+  oidcIssuer = `http://127.0.0.1:${(oidcServer.address() as AddressInfo).port}`
+  mintBearer = (subject, claims = {}) =>
+    new SignJWT(claims)
+      .setProtectedHeader({ alg: 'RS256', kid: 'computer-plan-test' })
+      .setIssuer(oidcIssuer)
+      .setAudience(OIDC_AUDIENCE)
+      .setSubject(subject)
+      .setIssuedAt()
+      .setExpirationTime('10m')
+      .sign(privateKey)
+})
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => oidcServer.close(() => resolve()))
 })
 
 function plan(over: Partial<typeof DEFAULT_COMPUTER_PLAN> = {}) {
@@ -174,6 +213,77 @@ describe('managed computer plan', () => {
     })
     expect(usage.statusCode).toBe(200)
     expect(usage.json()).toMatchObject({ totals: { runningSeconds: 0 }, screenshots: { stored: { count: 0 } } })
+  })
+
+  it('lets a deployment administrator who is not a member set another organization’s quotas', async () => {
+    const { plan: p } = plan()
+    const other = await new PgOrgRepo(prisma).create({
+      name: 'Other',
+      slug: `other-${randomUUID().slice(0, 8)}`,
+      ownerUserId: DEFAULT_OWNER_ID
+    })
+    const app = buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE }, undefined, undefined, {
+      computerPlan: p
+    })
+    apps.push(app)
+    const admin = { authorization: `Bearer ${await mintBearer('computer-plan-admin', { roles: ['ADMIN'] })}` }
+    const member = { authorization: `Bearer ${await mintBearer('computer-plan-user')}` }
+    const url = `/api/v1/admin/orgs/${other.id}/computers/quotas`
+    const payload = { override: { desktops: 1 } }
+    // The org subtree admits members only, so the admin route is the way in.
+    expect(
+      (
+        await app.app.inject({
+          method: 'PUT',
+          url: `/api/v1/orgs/${other.id}/computers/quotas`,
+          headers: admin,
+          payload
+        })
+      ).statusCode
+    ).toBe(404)
+    const set = await app.app.inject({ method: 'PUT', url, headers: admin, payload })
+    expect(set.statusCode).toBe(200)
+    expect(set.json()).toMatchObject({ override: { desktops: 1 }, limits: { desktops: 1 }, canEdit: true })
+    expect(await p.limits(other.id)).toMatchObject({ desktops: 1 })
+    expect((await app.app.inject({ method: 'GET', url, headers: admin })).json()).toMatchObject({
+      override: { desktops: 1 }
+    })
+    expect((await app.app.inject({ method: 'PUT', url, headers: member, payload })).statusCode).toBe(403)
+    expect((await app.app.inject({ method: 'GET', url, headers: member })).statusCode).toBe(403)
+    expect(
+      (
+        await app.app.inject({
+          method: 'PUT',
+          url: '/api/v1/admin/orgs/no-such-org/computers/quotas',
+          headers: admin,
+          payload
+        })
+      ).statusCode
+    ).toBe(404)
+  })
+
+  it('holds managed desktops to the monthly viewer media quota, not self-hosted ones', async () => {
+    const { repo, plan: p } = plan({ quotas: { ...DEFAULT_COMPUTER_PLAN.quotas, monthlyViewerGib: 1 } })
+    const id = await managed()
+    const selfHosted = ComputerId(randomUUID())
+    await prisma.computer.create({
+      data: {
+        id: selfHosted,
+        orgId: DEFAULT_ORG_ID,
+        name: 'Laptop',
+        ownerUserId: DEFAULT_OWNER_ID,
+        os: 'linux',
+        osVersion: 'Ubuntu 26.04',
+        session: 'x11',
+        desktopDaemonVersion: '0.1.0',
+        driverVersion: '0.35.2',
+        policy: managedComputerPolicy(DEFAULT_OWNER_ID)
+      }
+    })
+    await repo.addRelayed([{ computerId: selfHosted, bytes: 2 * 1024 ** 3 }], new Date())
+    expect(await p.viewerRefusal(DEFAULT_ORG_ID, id, 'u1')).toBeNull()
+    await repo.addRelayed([{ computerId: id, bytes: 1024 ** 3 }], new Date())
+    expect(await p.viewerRefusal(DEFAULT_ORG_ID, id, 'u1')).toMatchObject({ quota: 'monthlyViewerGib' })
   })
 
   it('keeps an organization’s proxy password sealed, never shows it, and drops it for another proxy', async () => {

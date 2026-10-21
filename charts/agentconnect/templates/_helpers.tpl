@@ -287,19 +287,20 @@ AC_COMPUTER_PLAN (computer-use.md §15.4, §15.5): quotas, egress choices, and t
 {{- end }}
 
 {{/*
-The ports a managed desktop's viewer media leaves on (computer-use.md §7.2): the relays' TURN (UDP, TCP and TLS),
-their STUN, and an external TURN's URLs, so a pod with no reachable UDP still reaches its viewer through the relay.
+Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and container ports (in-cluster LB traffic is DNATed first), and external TURN URLs.
 */}}
 {{- define "agentconnect.desktopMediaPorts" -}}
 {{- $ports := list -}}
 {{- $turn := .Values.relay.turn -}}
 {{- if $turn.enabled -}}
-{{- $ports = append $ports (dict "protocol" "UDP" "port" (int $turn.publicPort)) -}}
-{{- $ports = append $ports (dict "protocol" "TCP" "port" (int $turn.publicPort)) -}}
-{{- if $turn.tls.secretName }}{{ $ports = append $ports (dict "protocol" "TCP" "port" (int $turn.tls.publicPort)) }}{{ end -}}
+{{- range (list $turn.publicPort $turn.port) -}}
+{{- $ports = append $ports (dict "protocol" "UDP" "port" (int .)) -}}
+{{- $ports = append $ports (dict "protocol" "TCP" "port" (int .)) -}}
+{{- end -}}
+{{- if $turn.tls.secretName }}{{ range (list $turn.tls.publicPort $turn.tls.port) }}{{ $ports = append $ports (dict "protocol" "TCP" "port" (int .)) }}{{ end }}{{ end -}}
 {{- end -}}
 {{- $stun := .Values.relay.stun -}}
-{{- if $stun.enabled }}{{ $ports = append $ports (dict "protocol" "UDP" "port" (int ($stun.publicPort | default $stun.port))) }}{{ end -}}
+{{- if $stun.enabled }}{{ range (list ($stun.publicPort | default $stun.port) $stun.port) }}{{ $ports = append $ports (dict "protocol" "UDP" "port" (int .)) }}{{ end }}{{ end -}}
 {{- range .Values.computerViewer.turn.urls -}}
 {{- $port := regexFind ":[0-9]+" (regexReplaceAll "^turns?:" . "") | trimPrefix ":" -}}
 {{- $port = $port | default (ternary "5349" "3478" (hasPrefix "turns:" .)) | int -}}

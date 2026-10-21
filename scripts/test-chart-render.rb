@@ -936,8 +936,16 @@ desktop_plan = JSON.parse(desktop_cp.fetch('env').find { |item| item['name'] == 
 abort("unexpected computer plan: #{desktop_plan}") unless
   desktop_plan == { 'version' => 1, 'quotas' => {}, 'volumeGib' => 5, 'egress' => { 'orgProxy' => true } }
 desktop_egress = desktop_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports')
-abort("desktops reach HTTPS and the default proxy ports only, without relay TURN: #{desktop_egress}") unless
-  desktop_egress == [443, 3128, 8080].map { |port| { 'protocol' => 'TCP', 'port' => port } }
+abort("desktops reach HTTPS only, without relay TURN: #{desktop_egress}") unless
+  desktop_egress == [{ 'protocol' => 'TCP', 'port' => 443 }]
+# The proxy ports must not reach the cluster's own listeners on them, such as the Control Plane on 8080.
+proxy_rule = desktop_template.dig('spec', 'networkPolicy', 'egress', 2) || abort('missing the desktop proxy ports rule')
+abort("unexpected desktop proxy ports: #{proxy_rule['ports']}") unless
+  proxy_rule['ports'] == [3128, 8080].map { |port| { 'protocol' => 'TCP', 'port' => port } }
+proxy_v4 = proxy_rule.fetch('to', []).map { |peer| peer['ipBlock'] }.compact.find { |block| block['cidr'] == '0.0.0.0/0' }
+abort("desktop proxy ports must exclude cluster-internal ranges: #{proxy_rule['to']}") unless
+  proxy_v4 && %w[10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10].all? { |cidr| proxy_v4.fetch('except', []).include?(cidr) } &&
+  proxy_rule['to'].none? { |peer| peer.key?('podSelector') || peer.key?('namespaceSelector') }
 
 # With TURN on the relays, a desktop pod reaches it over UDP, TCP and TLS, so its viewer works with no reachable UDP (§7.2).
 turn_rendered, turn_error, turn_status = Open3.capture3(
@@ -953,7 +961,7 @@ turn_docs = YAML.load_stream(turn_rendered).compact
 turn_template = turn_docs.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-desktop' }
 turn_egress = turn_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports').map { |p| "#{p['protocol']}/#{p['port']}" }
 abort("unexpected desktop media egress: #{turn_egress}") unless
-  turn_egress == %w[TCP/443 UDP/3478 TCP/3478 TCP/5349 UDP/3490 UDP/5350 TCP/5350 TCP/3128 TCP/8080]
+  turn_egress == %w[TCP/443 UDP/3478 TCP/3478 UDP/3480 TCP/3480 TCP/5349 UDP/3490 UDP/5350 TCP/5350]
 _, turn_cp = control_plane_of.call(turn_docs)
 turn_plan = JSON.parse(turn_cp.fetch('env').find { |item| item['name'] == 'AC_COMPUTER_PLAN' }.fetch('value'))
 abort("unexpected computer plan: #{turn_plan}") unless turn_plan['volumeGib'] == 1024 && turn_plan['quotas'] == { 'desktops' => nil }

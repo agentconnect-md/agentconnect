@@ -30,7 +30,7 @@ import { daemonRoutes } from './routes/daemons.js'
 import { memberSetRoutes } from './routes/member-sets.js'
 import { keyRoutes } from './routes/keys.js'
 import { computerRoutes, computerRegisterRoutes } from './routes/computers.js'
-import { computerPlanRoutes } from './routes/computer-plan.js'
+import { computerPlanAdminRoutes, computerPlanRoutes } from './routes/computer-plan.js'
 import { computerScreenshotRoutes } from './routes/computer-screenshots.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
@@ -341,6 +341,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       await api.register(orgIconRoutes(deps))
       // Unauthenticated Computer registration exchange: the one-time token in the body is the credential.
       await api.register(computerRegisterRoutes(deps))
+      // A deployment administrator's per-organization quota override, which needs no membership in it.
+      await api.register(computerPlanAdminRoutes(deps))
       // AgentConnect MCP — version root, OUTSIDE the org subtree: the org is
       // resolved from the personal API key's binding, not the URL
       // (docs/designs/agent-assistant.md §6.1). Mounted again at the public
