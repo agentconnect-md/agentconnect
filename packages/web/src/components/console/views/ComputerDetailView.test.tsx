@@ -18,7 +18,10 @@ const mocks = vi.hoisted(() => ({
   setComputerPolicy: vi.fn(),
   setComputerAgentAccess: vi.fn(),
   refresh: vi.fn(),
-  fetchComputerAudit: vi.fn()
+  fetchComputerAudit: vi.fn(),
+  wakeComputer: vi.fn(),
+  sleepComputer: vi.fn(),
+  resetComputer: vi.fn()
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }), useParams: () => ({ id: 'c1' }) }))
@@ -57,7 +60,10 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   deleteComputer: mocks.deleteComputer,
   setComputerPolicy: mocks.setComputerPolicy,
   setComputerAgentAccess: mocks.setComputerAgentAccess,
-  fetchComputerAudit: mocks.fetchComputerAudit
+  fetchComputerAudit: mocks.fetchComputerAudit,
+  wakeComputer: mocks.wakeComputer,
+  sleepComputer: mocks.sleepComputer,
+  resetComputer: mocks.resetComputer
 }))
 
 const ComputerDetailView = (await import('./ComputerDetailView')).default
@@ -88,7 +94,10 @@ beforeEach(() => {
     mocks.setComputerPolicy,
     mocks.setComputerAgentAccess,
     mocks.refresh,
-    mocks.fetchComputerAudit
+    mocks.fetchComputerAudit,
+    mocks.wakeComputer,
+    mocks.sleepComputer,
+    mocks.resetComputer
   ])
     fn.mockReset()
   mocks.fetchComputerAudit.mockResolvedValue({ entries: [], nextCursor: null })
@@ -222,5 +231,88 @@ describe('ComputerDetailView', () => {
     expect(el.textContent).toContain('Only editors of this computer can change this')
     expect(button(el, 'Save')).toHaveLength(0)
     expect(el.textContent).not.toContain('Recent activity')
+  })
+
+  it('shows a shared pool computer’s holder and line, and puts it to sleep', async () => {
+    const shared = computer({
+      kind: 'managed',
+      isolation: 'container',
+      allocation: 'manual',
+      poolPhase: 'awake',
+      agentAccess: { mode: 'selected', agents: ['a1', 'a2'] },
+      poolActions: { wake: false, sleep: true, reset: true },
+      lease: { sessionId: 's1', agentId: 'a1', agentName: 'ops', acquiredAt: new Date().toISOString() },
+      waiting: [{ sessionId: 's2', agentId: 'a2', since: new Date().toISOString() }]
+    })
+    mocks.sleepComputer.mockResolvedValue(
+      computer({ ...shared, status: 'sleeping', poolPhase: 'sleeping', lease: null, waiting: [] })
+    )
+    const el = render(shared)
+    expect(el.querySelector('[data-lease-holder="a1"]')!.textContent).toContain('ops')
+    expect(el.querySelector('[data-lease-waiter="a2"]')!.textContent).toContain('peer')
+    expect(el.querySelector('[data-lease-holder="a1"] a')!.getAttribute('href')).toBe('/acme/sessions/s1')
+    const card = el.querySelector<HTMLElement>('[data-pool-card]')!
+    expect(card.textContent).toContain('Pool computer, shared')
+    expect(button(card, 'Wake')).toHaveLength(0)
+    // On a phone the actions fill the row and are thumb-sized.
+    expect(button(card, 'Sleep')[0]!.parentElement!.className).toContain('max-desktop:[&>button]:flex-1')
+    await act(async () => button(card, 'Sleep')[0]!.click())
+    await settle()
+    expect(mocks.sleepComputer).toHaveBeenCalledWith('c1')
+    expect(mocks.mutate).toHaveBeenCalledWith(expect.objectContaining({ poolPhase: 'sleeping' }), {
+      revalidate: false
+    })
+  })
+
+  it('wakes an agent’s sleeping desktop and resets it only after confirmation', async () => {
+    const asleep = computer({
+      kind: 'managed',
+      allocation: 'per-agent',
+      ownerAgentId: 'a1',
+      status: 'sleeping',
+      poolPhase: 'sleeping',
+      agentAccess: { mode: 'selected', agents: ['a1'] },
+      canEditAgentAccess: false,
+      poolActions: { wake: true, sleep: false, reset: true },
+      lease: null,
+      waiting: []
+    })
+    mocks.wakeComputer.mockResolvedValue(computer({ ...asleep, poolPhase: 'waking' }))
+    mocks.resetComputer.mockResolvedValue(computer({ ...asleep, poolPhase: 'resetting' }))
+    const el = render(asleep)
+    expect(el.textContent).toContain('Asleep')
+    expect(el.textContent).toContain('No agent has control')
+    const card = el.querySelector<HTMLElement>('[data-pool-card]')!
+    expect(card.textContent).toContain('ops')
+    await act(async () => button(card, 'Wake')[0]!.click())
+    await settle()
+    expect(mocks.wakeComputer).toHaveBeenCalledWith('c1')
+
+    act(() => button(card, 'Reset desktop')[0]!.click())
+    expect(mocks.resetComputer).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('files, browser profile and sign-ins are deleted')
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    await act(async () => button(dialog, 'Reset')[0]!.click())
+    await settle()
+    expect(mocks.resetComputer).toHaveBeenCalledWith('c1')
+  })
+
+  it('offers no pool actions for a self-hosted computer or an ephemeral one', () => {
+    const own = render(computer())
+    expect(own.querySelector('[data-pool-card]')).toBeNull()
+    expect(own.querySelector('[data-lease-card]')).not.toBeNull()
+    act(() => root.unmount())
+    const session = render(
+      computer({
+        kind: 'managed',
+        allocation: 'ephemeral',
+        ownerAgentId: 'a1',
+        poolPhase: 'awake',
+        poolActions: { wake: false, sleep: false, reset: false }
+      })
+    )
+    const card = session.querySelector<HTMLElement>('[data-pool-card]')!
+    expect(card.textContent).toContain('New for each session')
+    expect(card.querySelectorAll('button')).toHaveLength(0)
   })
 })

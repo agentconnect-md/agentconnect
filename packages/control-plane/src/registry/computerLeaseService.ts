@@ -12,6 +12,8 @@ import {
   decideRelease,
   leaseCap,
   leaseHolder,
+  leaseOccupancy,
+  type LeaseOccupancy,
   type AcquireOutcome,
   type ControlLease,
   type DesktopReport,
@@ -174,6 +176,24 @@ export class ComputerLeaseService {
     )
     if (result.ended) this.ended(result.ended.lease, result.ended.reason)
     return result.lease && policy ? wireLease(result.lease, policy) : null
+  }
+
+  /** Who holds each Computer's lease and who waits, read without a lock for the console; lapsed ones are left out. */
+  async occupancy(computers: ReadonlyArray<LeaseComputer & { id: string }>): Promise<Map<string, LeaseOccupancy>> {
+    const { leases, waiters } = await this.repo.listOccupancy(computers.map((c) => ComputerId(c.id)))
+    const clock = {
+      now: this.clock.now(),
+      holderTtlMs: this.opts.holderTtlMs,
+      staleAfterMs: this.opts.staleAfterMs,
+      ...(this.opts.waiterTtlMs !== undefined ? { waiterTtlMs: this.opts.waiterTtlMs } : {})
+    }
+    const out = new Map<string, LeaseOccupancy>()
+    for (const c of computers) {
+      const lease = leases.find((l) => l.computerId === c.id) ?? null
+      const queue = waiters.filter((w) => w.computerId === c.id)
+      out.set(c.id, leaseOccupancy(c, lease, queue, clock))
+    }
+    return out
   }
 
   /** A person or a revoke ends the lease whoever holds it. */

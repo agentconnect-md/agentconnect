@@ -275,9 +275,15 @@ function harness(cluster: FakeCluster) {
       }
       throw new Error('the managed computer never became ready')
     },
-    async lease(computerId: string, agentId: string, sessionId: string) {
+    async lease(computerId: string, agentId: string, sessionId: string, waitMs?: number) {
       await handleComputerLeaseAcquire(
-        frame('computer-lease/acquire', { computerId, agentId, sessionId, requestedAt: new Date().toISOString() }),
+        frame('computer-lease/acquire', {
+          computerId,
+          agentId,
+          sessionId,
+          requestedAt: new Date().toISOString(),
+          ...(waitMs !== undefined ? { waitMs } : {})
+        }),
         conn,
         deps
       )
@@ -413,6 +419,93 @@ describe('managed computers in the pool', () => {
     await h.pool.remove(OrgId(DEFAULT_ORG_ID), ComputerId(id))
     expect(cluster.pods.has(id)).toBe(false)
     expect(await row(id)).toBeNull()
+  })
+
+  it('manual: the console shows the shared computer, who holds its lease and who waits', async () => {
+    await seed(null)
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const h = harness(cluster)
+    const created = await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+      name: 'Shared browser',
+      ownerUserId: DEFAULT_OWNER_ID,
+      agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] }
+    })
+    const id = created!.id
+    for (let i = 0; i < 10 && (await row(id))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
+    expect(await h.lease(id, AGENT, S1)).toMatchObject({ granted: true })
+    expect(await h.lease(id, OTHER_AGENT, S2, 0)).toMatchObject({ granted: false, queued: { position: 1 } })
+
+    const res = await app.http.inject({ method: 'GET', url: `${ORG}/computers/${id}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      allocation: 'manual',
+      poolPhase: 'awake',
+      status: 'online',
+      agentAccess: { mode: 'selected', agents: [AGENT, OTHER_AGENT] },
+      poolActions: { wake: false, sleep: true, reset: true },
+      lease: { agentId: AGENT, sessionId: S1 },
+      waiting: [{ agentId: OTHER_AGENT, sessionId: S2 }]
+    })
+    const list = await app.http.inject({ method: 'GET', url: `${ORG}/computers` })
+    expect(list.json()).toEqual([expect.objectContaining({ id, lease: expect.objectContaining({ agentId: AGENT }) })])
+
+    // The holder releases, so the one waiting takes it and nobody is left in line.
+    await h.release(id, AGENT, S1)
+    expect(await h.lease(id, OTHER_AGENT, S2, 0)).toMatchObject({ granted: true })
+    const after = await app.http.inject({ method: 'GET', url: `${ORG}/computers/${id}` })
+    expect(after.json()).toMatchObject({ lease: { agentId: OTHER_AGENT }, waiting: [] })
+  })
+
+  it('wakes, puts to sleep and resets a per-agent computer from the console', async () => {
+    await seed('per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const h = harness(cluster)
+    const org = OrgId(DEFAULT_ORG_ID)
+    const id = ComputerId(((await h.acquire(AGENT, S1)) as { computerId: string }).computerId)
+    cluster.pods.get(id)!.volume.files['notes.txt'] = 'kept'
+
+    // A session at work keeps it awake.
+    expect(await h.lease(id, AGENT, S1)).toMatchObject({ granted: true })
+    expect(await h.pool.sleepNow(org, id)).toMatchObject({ ok: false, code: 'in_use' })
+    await h.release(id, AGENT, S1)
+    expect(await h.pool.sleepNow(org, id)).toMatchObject({ ok: true })
+    expect(await row(id)).toMatchObject({ poolPhase: 'sleeping', status: 'sleeping' })
+    expect(cluster.pods.get(id)!.running).toBe(false)
+    expect(await h.pool.sleepNow(org, id)).toMatchObject({ ok: false, code: 'not_allowed' })
+
+    expect(await h.pool.wakeNow(org, id)).toMatchObject({ ok: true })
+    for (let i = 0; i < 10 && (await row(id))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
+    expect(await row(id)).toMatchObject({ poolPhase: 'awake', status: 'online' })
+    expect(cluster.pods.get(id)!.volume.files['notes.txt']).toBe('kept')
+
+    // Reset ends the lease, deletes the pod and volume, and provisions the same computer again, empty.
+    expect(await h.lease(id, AGENT, S1)).toMatchObject({ granted: true })
+    expect(await h.pool.resetNow(org, id)).toMatchObject({ ok: true })
+    expect(await prisma.computerLease.count({ where: { computerId: id } })).toBe(0)
+    for (let i = 0; i < 20 && (await row(id))?.poolPhase !== 'awake'; i++) await h.pool.sweep()
+    expect(await row(id)).toMatchObject({ poolPhase: 'awake', status: 'online', allocation: 'per_agent' })
+    expect(cluster.pods.get(id)!.volume.files).toEqual({})
+    expect(cluster.registrations).toBe(2)
+    expect(await h.acquire(AGENT, S1)).toMatchObject({ state: 'ready', computerId: id })
+  })
+
+  it('offers no wake, sleep or reset for an ephemeral or self-hosted computer', async () => {
+    await seed('ephemeral')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const h = harness(cluster)
+    const id = ComputerId(((await h.acquire(AGENT, S1)) as { computerId: string }).computerId)
+    for (const run of [h.pool.wakeNow, h.pool.sleepNow, h.pool.resetNow])
+      expect(await run.call(h.pool, OrgId(DEFAULT_ORG_ID), id)).toMatchObject({ ok: false, code: 'not_allowed' })
+    const res = await app.http.inject({ method: 'GET', url: `${ORG}/computers/${id}` })
+    expect(res.json()).toMatchObject({ poolActions: { wake: false, sleep: false, reset: false } })
+    // This app runs no pool, so its routes refuse whatever the computer.
+    const wake = await app.http.inject({ method: 'POST', url: `${ORG}/computers/${id}/wake` })
+    expect(wake.statusCode).toBe(409)
+    const pool = await app.http.inject({ method: 'GET', url: `${ORG}/computers/pool` })
+    expect(pool.json()).toEqual({ enabled: false, available: false })
   })
 
   it('fails clearly when the pod is never ready, and starts over on the next use', async () => {
@@ -604,6 +697,8 @@ describe('managed computers in the pool', () => {
     await off.app.shutdown()
     running = undefined
     const on = await start({ COMPUTER_POOL_ENABLED: 'true' })
+    const status = await on.app.http.inject({ method: 'GET', url: `${ORG}/computers/pool` })
+    expect(status.json()).toEqual({ enabled: true, available: false })
     // No member is connected to this replica, so it cannot start one.
     const none = await on.app.http.inject({ method: 'POST', url: `${ORG}/computers/pool`, payload: { name: 'Desk' } })
     expect(none.statusCode).toBe(503)

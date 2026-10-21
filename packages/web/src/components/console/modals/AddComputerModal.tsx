@@ -12,10 +12,11 @@ import {
   type ComputerDto,
   type ComputerRegistrationDto
 } from '@/lib/api'
-import { computerInstallCommand, type InstallOs, useAgo } from '@/lib/computers'
+import { computerInstallCommand, type InstallOs, useAgo, useComputerPool } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import AddPoolComputer from '@/components/console/modals/AddPoolComputer'
 
 /** How often the dialog asks whether the desktop has registered and connected. */
 export const REGISTRATION_POLL_MS = 3000
@@ -38,6 +39,8 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
   const [copied, setCopied] = useState(false)
   const [expired, setExpired] = useState(false)
   const connected = computer !== null && computer.status !== 'offline' && computer.status !== 'revoked'
+  const { data: pool } = useComputerPool()
+  const [source, setSource] = useState<'own' | 'pool'>('own')
 
   // Wait for the token to be spent, then for the new Computer's channel to report in.
   useEffect(() => {
@@ -99,6 +102,30 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // A deployment that runs the pool offers a managed computer too (computer-use.md §15.1); a minted command stays put.
+  const sourcePicker =
+    pool?.enabled && !registration ? (
+      <div className="fld mb-[14px]">
+        <span className="fldlbl">{t('source')}</span>
+        <div role="radiogroup" aria-label={t('source')} className="pillbar self-start">
+          {(['own', 'pool'] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={source === value}
+              onClick={() => setSource(value)}
+              className={source === value ? 'pill on' : 'pill'}
+            >
+              {t(value)}
+            </button>
+          ))}
+        </div>
+      </div>
+    ) : null
+  if (source === 'pool' && sourcePicker)
+    return <AddPoolComputer onClose={onClose} available={pool?.available === true} sourcePicker={sourcePicker} />
+
   return (
     <>
       <div className="modalhead">
@@ -108,6 +135,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
       </div>
       <div className="modalbody">
+        {sourcePicker}
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
           {os === 'docker' ? t('descriptionDocker') : t('description')}
         </p>

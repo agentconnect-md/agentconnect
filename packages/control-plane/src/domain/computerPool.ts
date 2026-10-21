@@ -20,7 +20,8 @@ export const COMPUTER_POOL_PHASES = [
   'sleeping',
   'waking',
   'failed',
-  'reclaiming'
+  'reclaiming',
+  'resetting'
 ] as const
 export type ComputerPoolPhase = (typeof COMPUTER_POOL_PHASES)[number]
 
@@ -118,6 +119,10 @@ export function sweepAction(
         : { kind: 'advance' }
     case 'reclaiming':
       return { kind: 'advance' }
+    case 'resetting':
+      return inPhase > t.provisionTimeoutMs
+        ? { kind: 'timeout', message: 'the old desktop was not removed' }
+        : { kind: 'advance' }
     case 'sleeping':
     case 'failed':
       return { kind: 'none' }
@@ -157,4 +162,30 @@ export function provisionStep(state: ComputerPoolClaimState | undefined, compute
 export function managedComputerName(allocation: ComputerManagedMode, agentName: string): string {
   const label = allocation === 'ephemeral' ? 'session desktop' : 'desktop'
   return `${agentName.slice(0, 160)} ${label}`
+}
+
+/** The console's actions on a managed computer (computer-use.md §10, §15.1); an ephemeral one only ever goes with its session. */
+export interface ComputerPoolActions {
+  wake: boolean
+  sleep: boolean
+  reset: boolean
+}
+
+const NO_POOL_ACTIONS: ComputerPoolActions = { wake: false, sleep: false, reset: false }
+
+/** Which of wake, sleep and reset its allocation and phase allow, before the caller's own rights. */
+export function poolActions(row: {
+  allocation: ComputerAllocation | null
+  poolPhase: ComputerPoolPhase | null
+  poolError: string | null
+  revoked: boolean
+}): ComputerPoolActions {
+  const { allocation, poolPhase: phase } = row
+  if (!allocation || allocation === 'ephemeral' || !phase || row.revoked) return NO_POOL_ACTIONS
+  if (phase === 'reclaiming' || phase === 'resetting') return NO_POOL_ACTIONS
+  return {
+    wake: phase === 'sleeping' || (phase === 'failed' && poolErrorCode(row.poolError) !== 'volume_missing'),
+    sleep: phase === 'awake' || phase === 'waking',
+    reset: true
+  }
 }

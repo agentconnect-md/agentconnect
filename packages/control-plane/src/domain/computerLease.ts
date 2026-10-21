@@ -67,7 +67,16 @@ export interface LeaseClock {
 }
 
 export type LeaseEndReason =
-  'idle' | 'max' | 'holder_lost' | 'released' | 'session_ended' | 'paused' | 'human_takeover' | 'policy' | 'revoked'
+  | 'idle'
+  | 'max'
+  | 'holder_lost'
+  | 'released'
+  | 'session_ended'
+  | 'paused'
+  | 'human_takeover'
+  | 'policy'
+  | 'revoked'
+  | 'reset'
 
 /** The row to keep (`undefined`), replace, or delete (`null`), the wait queue to store when it changed, plus what happened. */
 export interface LeaseStep<R> {
@@ -350,4 +359,28 @@ export function decidePreempt(
   return current && current.spentAt === null
     ? { next: null, result: { ended: current, reason } }
     : { next: undefined, result: null }
+}
+
+/** Who holds a Computer and who waits for it, as the console shows it (§4.4, §10). */
+export interface LeaseOccupancy {
+  holder: { sessionId: string; agentId: string; agentName: string | null; acquiredAt: number } | null
+  waiting: Array<{ sessionId: string; agentId: string; enqueuedAt: number }>
+}
+
+/** A read-only view of the lease and the line at `now`: a lease or a wait that has lapsed shows as gone. */
+export function leaseOccupancy(
+  computer: LeaseComputer | null,
+  lease: ControlLease | null,
+  queue: readonly LeaseWaiter[],
+  clock: LeaseClock
+): LeaseOccupancy {
+  const live = lease && lease.spentAt === null && !leaseEnded(lease, computer, clock) ? lease : null
+  return {
+    holder: live
+      ? { sessionId: live.sessionId, agentId: live.agentId, agentName: live.agentName, acquiredAt: live.acquiredAt }
+      : null,
+    waiting: keepWaiters(queue, computer, clock.now, clock.waiterTtlMs)
+      .filter((w) => w.droppedAt === null)
+      .map((w) => ({ sessionId: w.sessionId, agentId: w.agentId, enqueuedAt: w.enqueuedAt }))
+  }
 }

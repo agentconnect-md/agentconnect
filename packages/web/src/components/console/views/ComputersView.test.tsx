@@ -102,4 +102,38 @@ describe('ComputersView', () => {
     const header = [...el.querySelectorAll('div')].find((d) => d.className.includes('hidden min-h-[34px]'))!
     expect(header.className).toContain('desktop:flex')
   })
+
+  it('marks pool computers and names who has control and how many wait', () => {
+    mocks.computers = [
+      computer({
+        id: 'p1',
+        name: 'Shared browser',
+        kind: 'managed',
+        allocation: 'manual',
+        poolPhase: 'awake',
+        agentAccess: { mode: 'selected', agents: ['a1'] },
+        lease: { sessionId: 's1', agentId: 'a1', agentName: 'ops', acquiredAt: new Date().toISOString() },
+        waiting: [{ sessionId: 's2', agentId: 'a9', since: new Date().toISOString() }]
+      }),
+      computer({
+        id: 'p2',
+        name: 'ops desktop',
+        kind: 'managed',
+        allocation: 'per-agent',
+        ownerAgentId: 'a1',
+        status: 'sleeping',
+        poolPhase: 'sleeping'
+      }),
+      computer({ id: 'p3', name: 'starting', kind: 'managed', allocation: 'manual', poolPhase: 'resetting' })
+    ]
+    const el = render()
+    const shared = el.querySelector('[data-computer-row="p1"]')!
+    expect(shared.textContent).toContain('Pool')
+    expect(shared.querySelector('[data-lease-holder="a1"]')!.textContent).toBe('In use by Ops bot · 1 waiting')
+    const own = el.querySelector('[data-computer-row="p2"]')!
+    expect(own.textContent).toContain('Asleep')
+    expect(own.textContent).toContain("Agent's own")
+    expect(own.textContent).toContain('for Ops bot')
+    expect(el.querySelector('[data-computer-row="p3"]')!.textContent).toContain('Resetting')
+  })
 })

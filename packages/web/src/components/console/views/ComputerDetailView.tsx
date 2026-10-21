@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useFormatter, useTranslations } from 'next-intl'
 import { deleteComputer, resumeComputer, revokeComputer, stopComputer, type ComputerDto } from '@/lib/api'
-import { computerStatusTone, useComputer, useAgo } from '@/lib/computers'
+import { computerStatusTone, poolPhaseNote, useComputer, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { NotFound } from '@/components/console/NotFound'
 import { useCrumbSlot } from '@/components/console/Shell'
@@ -16,6 +16,7 @@ import { ComputerActivityCard, ComputerDoctorCard } from '@/components/console/C
 import { ComputerPolicyCard } from '@/components/console/ComputerPolicyCard'
 import { ComputerAgentAccessCard } from '@/components/console/ComputerAgentAccessCard'
 import { ComputerViewerCard } from '@/components/console/ComputerViewer'
+import { AllocationBadge, ComputerLeaseCard, ComputerPoolCard } from '@/components/console/ComputerPoolCards'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
@@ -106,6 +107,7 @@ function ComputerDetail({
   }
 
   const seen = computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never')
+  const poolNote = poolPhaseNote(computer)
   const display = computer.capabilities.displays[0]
 
   const stopButton = canStop ? (
@@ -158,6 +160,12 @@ function ComputerDetail({
               <span className="dot h-[6px] w-[6px]" style={{ background: tone.dot }} />
               {t(`status.${computer.status}`)}
             </span>
+            {poolNote && (
+              <span className="font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+                {t(`poolPhase.${poolNote}`)}
+              </span>
+            )}
+            <AllocationBadge computer={computer} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
             <Meta icon="monitor">
@@ -298,6 +306,18 @@ function ComputerDetail({
             </Row>
           </div>
         </div>
+      </div>
+
+      {/* Who has control and who waits; a managed computer adds its pool state and actions beside it. */}
+      <div
+        className={
+          computer.allocation
+            ? 'mt-4 grid grid-cols-1 items-start gap-4 desktop:mt-[18px] desktop:grid-cols-2 desktop:gap-[18px]'
+            : 'mt-4 desktop:mt-[18px]'
+        }
+      >
+        <ComputerLeaseCard computer={computer} />
+        {computer.allocation && <ComputerPoolCard computer={computer} onChanged={onChanged} />}
       </div>
 
       <div className="mt-4 desktop:mt-[18px]">

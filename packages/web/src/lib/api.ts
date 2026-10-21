@@ -2830,10 +2830,27 @@ export interface ComputerDto {
   /** The caller may change its agent access: any editor, except of a per-agent or ephemeral computer. */
   canEditAgentAccess?: boolean
   /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
-  allocation?: 'ephemeral' | 'per-agent' | 'manual' | null
+  allocation?: ComputerAllocation | null
   ownerAgentId?: string | null
-  poolPhase?: 'provisioning' | 'registering' | 'awake' | 'sleeping' | 'waking' | 'failed' | 'reclaiming' | null
+  poolPhase?: ComputerPoolPhase | null
   poolError?: string | null
+  /** The pool actions the caller may take now (computer-use.md §10); absent on an older Control Plane. */
+  poolActions?: { wake: boolean; sleep: boolean; reset: boolean }
+  /** The session that holds the control lease now (computer-use.md §4.4). */
+  lease?: { sessionId: string; agentId: string; agentName: string | null; acquiredAt: string } | null
+  /** The sessions waiting in line for the lease, first in line first. */
+  waiting?: Array<{ sessionId: string; agentId: string; since: string }>
+}
+
+export type ComputerAllocation = 'ephemeral' | 'per-agent' | 'manual'
+
+export type ComputerPoolPhase =
+  'provisioning' | 'registering' | 'awake' | 'sleeping' | 'waking' | 'failed' | 'reclaiming' | 'resetting'
+
+/** Whether the deployment runs managed computers, and whether a pool member can start one now. */
+export interface ComputerPoolStatusDto {
+  enabled: boolean
+  available: boolean
 }
 
 export interface ComputerAuditEntryDto {
@@ -2909,6 +2926,31 @@ export async function fetchComputerRegistration(registrationId: string): Promise
   return apiGet<ComputerRegistrationStatusDto>(
     `${orgBase()}/computers/registrations/${encodeURIComponent(registrationId)}`
   )
+}
+
+export async function fetchComputerPool(orgId?: string): Promise<ComputerPoolStatusDto> {
+  return apiGet<ComputerPoolStatusDto>(`${orgBase(orgId)}/computers/pool`)
+}
+
+/** A `manual` computer from the deployment's pool (computer-use.md §15.1); the caller becomes its owner. */
+export async function createPoolComputer(body: {
+  name: string
+  agentAccess?: ComputerAgentAccess
+}): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${orgBase()}/computers/pool`, body)
+}
+
+export async function wakeComputer(id: string): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${computerPath(id)}/wake`, {})
+}
+
+export async function sleepComputer(id: string): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${computerPath(id)}/sleep`, {})
+}
+
+/** Deletes a pool computer's pod and volume and provisions it again, empty. */
+export async function resetComputer(id: string): Promise<ComputerDto> {
+  return apiPost<ComputerDto>(`${computerPath(id)}/reset`, {})
 }
 
 export async function setComputerPolicy(id: string, policy: ComputerPolicy): Promise<ComputerDto> {

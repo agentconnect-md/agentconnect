@@ -4585,7 +4585,15 @@ export const ComputerDto = z.object({
   /** Where the pool has the computer: provisioning, registering, awake, sleeping, waking, failed or reclaiming. */
   poolPhase: z.enum(COMPUTER_POOL_PHASES).nullable(),
   /** Why the pool's last step for it failed, if it did. */
-  poolError: z.string().nullable()
+  poolError: z.string().nullable(),
+  /** The pool actions the caller may take now (computer-use.md §10): wake, sleep and reset a `per-agent` or `manual` computer. */
+  poolActions: z.object({ wake: z.boolean(), sleep: z.boolean(), reset: z.boolean() }),
+  /** The session that holds its control lease now (computer-use.md §4.4), if any. */
+  lease: z
+    .object({ sessionId: z.string(), agentId: z.string(), agentName: z.string().nullable(), acquiredAt: z.string() })
+    .nullable(),
+  /** The sessions waiting in line for the lease, first in line first. */
+  waiting: z.array(z.object({ sessionId: z.string(), agentId: z.string(), since: z.string() }))
 })
 export type ComputerDtoT = z.infer<typeof ComputerDto>
 
@@ -4599,6 +4607,14 @@ export const CreatePoolComputerBody = z
     agentAccess: ComputerAgentAccess.optional()
   })
   .strict()
+
+/** `GET /computers/pool`: whether this deployment runs managed computers and can start one now (computer-use.md §15.1). */
+export const ComputerPoolStatusDto = z.object({
+  /** The deployment runs the pool (`COMPUTER_POOL_ENABLED`). */
+  enabled: z.boolean(),
+  /** A pool member that can start, wake or sleep a desktop is connected now. */
+  available: z.boolean()
+})
 
 /** `PUT /computers/:id/agent-access`: the whole agent access (computer-use.md §4.1). */
 export const SetComputerAgentAccessBody = ComputerAgentAccess.strict()

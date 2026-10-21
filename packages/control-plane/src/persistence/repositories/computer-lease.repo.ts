@@ -133,6 +133,16 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
     return rows.map(toWaiter)
   }
 
+  async listOccupancy(computerIds: readonly ComputerId[]): Promise<{ leases: ControlLease[]; waiters: LeaseWaiter[] }> {
+    if (computerIds.length === 0) return { leases: [], waiters: [] }
+    const ids = [...computerIds]
+    const [leases, waiters] = await Promise.all([
+      this.db.computerLease.findMany({ where: { computerId: { in: ids } } }),
+      this.db.computerLeaseWaiter.findMany({ where: { computerId: { in: ids }, droppedAt: null } })
+    ])
+    return { leases: leases.map(toLease), waiters: waiters.map(toWaiter) }
+  }
+
   // Write only the waiters that changed: a queue is a handful of rows.
   private async storeQueue(tx: PrismaLike, computerId: ComputerId, before: LeaseWaiter[], after: LeaseWaiter[]) {
     const kept = new Set(after.map(waiterKey))

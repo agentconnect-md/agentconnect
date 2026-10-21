@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   createComputerRegistration: vi.fn(),
   fetchComputerRegistration: vi.fn(),
-  fetchComputer: vi.fn()
+  fetchComputer: vi.fn(),
+  createPoolComputer: vi.fn(),
+  refresh: vi.fn(),
+  pool: undefined as { enabled: boolean; available: boolean } | undefined
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
@@ -19,7 +22,22 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   createComputerRegistration: mocks.createComputerRegistration,
   fetchComputerRegistration: mocks.fetchComputerRegistration,
-  fetchComputer: mocks.fetchComputer
+  fetchComputer: mocks.fetchComputer,
+  createPoolComputer: mocks.createPoolComputer
+}))
+vi.mock('@/lib/computers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/computers')>()),
+  useComputerPool: () => ({ data: mocks.pool })
+}))
+// A glyph icon keeps happy-dom from fetching a runtime mark image.
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({
+    agents: [
+      { id: 'a1', name: 'ops', runtime: 'claude', icon: { kind: 'glyph', glyph: 'agentconnect' } },
+      { id: 'a2', name: 'review', runtime: 'claude', icon: { kind: 'glyph', glyph: 'agentconnect' } }
+    ],
+    refresh: mocks.refresh
+  })
 }))
 
 const { default: AddComputerModal, REGISTRATION_POLL_MS } = await import('./AddComputerModal')
@@ -36,7 +54,16 @@ const registration = {
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
-  for (const fn of Object.values(mocks)) fn.mockReset()
+  for (const fn of [
+    mocks.push,
+    mocks.createComputerRegistration,
+    mocks.fetchComputerRegistration,
+    mocks.fetchComputer,
+    mocks.createPoolComputer,
+    mocks.refresh
+  ])
+    fn.mockReset()
+  mocks.pool = undefined
   document.body.innerHTML = ''
 })
 afterEach(() => vi.useRealTimers())
@@ -139,5 +166,51 @@ describe('AddComputerModal', () => {
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(host.textContent).toContain('The command expired')
+  })
+
+  it('offers no managed option where the deployment runs no pool', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    expect(host.textContent).not.toContain('Where it runs')
+  })
+
+  it('creates a pool computer shared by two agents and opens it', async () => {
+    mocks.pool = { enabled: true, available: true }
+    mocks.createPoolComputer.mockResolvedValue(computerFixture({ id: 'p1', kind: 'managed', allocation: 'manual' }))
+    const onClose = vi.fn()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={onClose} />))
+    act(() => button('Managed').click())
+    expect(host.textContent).toContain('isolated in its own container')
+    // A name and at least one selected agent are needed.
+    expect(button('Create computer').disabled).toBe(true)
+    const input = host.querySelector<HTMLInputElement>('input.inp')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Shared browser')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(button('Create computer').disabled).toBe(true)
+    act(() => host.querySelector<HTMLInputElement>('[data-pool-agent="a1"]')!.click())
+    act(() => host.querySelector<HTMLInputElement>('[data-pool-agent="a2"]')!.click())
+    await act(async () => button('Create computer').click())
+    expect(mocks.createPoolComputer).toHaveBeenCalledWith({
+      name: 'Shared browser',
+      agentAccess: { mode: 'selected', agents: ['a1', 'a2'] }
+    })
+    expect(mocks.refresh).toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalled()
+    expect(mocks.push).toHaveBeenCalledWith('/acme/computers/p1')
+  })
+
+  it('says when no pool member can start one', () => {
+    mocks.pool = { enabled: true, available: false }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    act(() => button('Managed').click())
+    expect(host.textContent).toContain('No pool member is connected right now')
+    expect(button('Create computer').disabled).toBe(true)
   })
 })
