@@ -5,12 +5,13 @@ import { join, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  desktopArgv,
+  computerArgv,
   desktopCandidates,
   desktopDataDir,
   resolveDesktopLaunch,
   type DesktopHost
-} from '../src/desktop.js'
+} from '../src/computer/launch.js'
+import { serviceArgs } from '../src/computer/commands.js'
 import { classifyInvocation } from '../src/route.js'
 
 const host = (over: Partial<DesktopHost> = {}): DesktopHost => ({
@@ -21,11 +22,12 @@ const host = (over: Partial<DesktopHost> = {}): DesktopHost => ({
   ...over
 })
 
-describe('desktop routing', () => {
-  it('routes desktop to the desktop daemon, never to the agent daemon', () => {
-    expect(classifyInvocation(['desktop', 'doctor'])).toBe('desktop')
-    expect(classifyInvocation(['--root', '/x', 'desktop', 'setup'])).toBe('desktop')
-    expect(classifyInvocation(['desktop'])).toBe('desktop')
+describe('computer routing', () => {
+  it('routes computer and its desktop alias to the computer daemon, never to the agent daemon', () => {
+    expect(classifyInvocation(['computer', 'doctor'])).toBe('computer')
+    expect(classifyInvocation(['desktop', 'doctor'])).toBe('computer')
+    expect(classifyInvocation(['--root', '/x', 'computer', 'setup'])).toBe('computer')
+    expect(classifyInvocation(['desktop'])).toBe('computer')
   })
 
   it('does not take a desktop token that is an option value or a later argument', () => {
@@ -34,9 +36,23 @@ describe('desktop routing', () => {
   })
 })
 
-describe('desktopArgv', () => {
+describe('serviceArgs', () => {
+  it("maps start/stop/restart to the daemon's service command off Windows", () => {
+    for (const platform of ['linux', 'darwin'] as const)
+      for (const action of ['start', 'stop', 'restart'])
+        expect(serviceArgs(action, platform)).toEqual(['service', action])
+  })
+
+  it('starts the Run-key entry on Windows and rejects stop/restart there instead of a misleading service error', () => {
+    expect(serviceArgs('start', 'win32')).toEqual(['autostart', 'start'])
+    expect(() => serviceArgs('stop', 'win32')).toThrow(/stop is not supported on Windows yet/)
+    expect(() => serviceArgs('restart', 'win32')).toThrow(/restart is not supported on Windows yet/)
+  })
+})
+
+describe('computerArgv', () => {
   it('forwards everything after desktop verbatim', () => {
-    expect(desktopArgv(['desktop', 'setup', '--host', '0.0.0.0', '--port', '7690', '--no-service'])).toEqual([
+    expect(computerArgv(['desktop', 'setup', '--host', '0.0.0.0', '--port', '7690', '--no-service'])).toEqual([
       'setup',
       '--host',
       '0.0.0.0',
@@ -44,27 +60,34 @@ describe('desktopArgv', () => {
       '7690',
       '--no-service'
     ])
-    expect(desktopArgv(['desktop', 'service', 'restart'])).toEqual(['service', 'restart'])
-    expect(desktopArgv(['desktop', '--help'])).toEqual(['--help'])
-    expect(desktopArgv(['desktop'])).toEqual([])
+    expect(computerArgv(['desktop', 'service', 'restart'])).toEqual(['service', 'restart'])
+    expect(computerArgv(['desktop', '--help'])).toEqual(['--help'])
+    expect(computerArgv(['desktop'])).toEqual([])
   })
 
   it('keeps CLI options given before desktop with the CLI', () => {
-    expect(desktopArgv(['--root', '/x', 'desktop', 'doctor', '--json'])).toEqual(['doctor', '--json'])
-    expect(desktopArgv(['--root', 'desktop', 'desktop', 'pause'])).toEqual(['pause'])
-    expect(desktopArgv(['--', 'desktop', 'resume'])).toEqual(['resume'])
+    expect(computerArgv(['--root', '/x', 'desktop', 'doctor', '--json'])).toEqual(['doctor', '--json'])
+    expect(computerArgv(['--root', 'desktop', 'desktop', 'pause'])).toEqual(['pause'])
+    expect(computerArgv(['--', 'desktop', 'resume'])).toEqual(['resume'])
   })
 
   it('rejects an invocation that is not a desktop one', () => {
-    expect(() => desktopArgv(['chat', 'desktop'])).toThrow(/not a desktop invocation/)
+    expect(() => computerArgv(['chat', 'desktop'])).toThrow(/not a computer invocation/)
+    expect(computerArgv(['computer', 'install', '--register', 't'])).toEqual(['install', '--register', 't'])
   })
 })
 
 describe('resolveDesktopLaunch', () => {
-  it('runs the installed bundle under this node', () => {
+  it('runs the legacy installer bundle under this node', () => {
     const bundle = join('/home/ada', '.agentconnect', 'desktop', 'app', 'agentconnect-desktop.mjs')
-    const launch = resolveDesktopLaunch(['doctor'], host({ exists: (p) => p === bundle }), '/usr/bin/node')
+    const launch = resolveDesktopLaunch(['doctor'], host({ exists: (p: string) => p === bundle }), '/usr/bin/node')
     expect(launch).toEqual({ command: '/usr/bin/node', args: [bundle, 'doctor'] })
+  })
+
+  it('prefers the version store and names its current entry for the service', () => {
+    const store = join('/home/ada', '.agentconnect', 'desktop', 'current', 'dist', 'agentconnect-desktop.mjs')
+    const launch = resolveDesktopLaunch(['setup'], host({ exists: () => true }), '/usr/bin/node')
+    expect(launch).toEqual({ command: '/usr/bin/node', args: [store, 'setup'], serviceEntry: store })
   })
 
   it('prefers the macOS app, which owns the grants, and runs its binary directly', () => {
@@ -84,6 +107,7 @@ describe('resolveDesktopLaunch', () => {
     expect(desktopCandidates(h)).toEqual([
       app,
       join('/Applications', 'AgentConnect Desktop.app', 'Contents', 'MacOS', 'agentconnect-desktop'),
+      join('/Users/ada', '.agentconnect', 'desktop', 'current', 'dist', 'agentconnect-desktop.mjs'),
       join('/Users/ada', '.agentconnect', 'desktop', 'app', 'agentconnect-desktop.mjs')
     ])
   })
@@ -98,7 +122,9 @@ describe('resolveDesktopLaunch', () => {
   })
 
   it('names every place it looked when nothing is installed', () => {
-    expect(() => resolveDesktopLaunch(['doctor'], host())).toThrow(/not installed.*agentconnect-desktop\.mjs/)
+    expect(() => resolveDesktopLaunch(['doctor'], host())).toThrow(
+      /not installed.*current.*agentconnect-desktop\.mjs.*agentconnect computer install/
+    )
   })
 
   it('follows the desktop daemon data dir', () => {
@@ -112,7 +138,7 @@ describe('resolveDesktopLaunch', () => {
   })
 })
 
-describe('agentconnect desktop (end to end)', () => {
+describe('agentconnect computer (end to end)', () => {
   const pkg = fileURLToPath(new URL('..', import.meta.url))
   let dir = ''
   let entry = ''
@@ -138,15 +164,24 @@ describe('agentconnect desktop (end to end)', () => {
       }
     )
 
-  it('forwards the arguments after desktop and propagates the exit code', () => {
-    const ok = cli(['--root', dir, 'desktop', 'setup', '--host', '0.0.0.0', '--no-service'])
+  it('forwards the arguments after computer (or desktop) and propagates the exit code', () => {
+    const ok = cli(['--root', dir, 'computer', 'setup', '--host', '0.0.0.0', '--no-service'])
     expect(ok.stderr).toBe('')
     const seen = JSON.parse(ok.stdout) as { argv: string[]; self: string }
     expect(seen.argv).toEqual(['setup', '--host', '0.0.0.0', '--no-service'])
-    expect(seen.self).toMatch(/ desktop$/)
+    expect(seen.self).toMatch(/ computer$/)
+    expect(JSON.parse(cli(['desktop', 'pause']).stdout).argv).toEqual(['pause'])
+    const restart = cli(['computer', 'restart'])
+    if (process.platform === 'win32') {
+      expect(restart.status).toBe(1)
+      expect(restart.stderr).toMatch(/restart is not supported on Windows yet/)
+    } else expect(JSON.parse(restart.stdout).argv).toEqual(['service', 'restart'])
     expect(ok.status).toBe(0)
     const failed = cli(['desktop', 'doctor'], { FAKE_DESKTOP_EXIT: '1' })
-    expect(JSON.parse(failed.stdout).argv).toEqual(['doctor'])
+    // doctor names the version first, then hands over to the daemon.
+    const [header, , report] = failed.stdout.trim().split('\n')
+    expect(header).toMatch(/^computer daemon: not from the version store — .*fake-desktop\.mjs$/)
+    expect(JSON.parse(report!).argv).toEqual(['doctor'])
     expect(failed.status).toBe(1)
   }, 30_000)
 })

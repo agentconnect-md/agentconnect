@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { repairDaemonBundleModes } from '../src/install.js'
+import { repairDaemonBundleModes, tarCommand } from '../src/install.js'
 
 describe('repairDaemonBundleModes', () => {
   it.skipIf(process.platform === 'win32')('restores executable mode on npm-normalized seccomp helpers', () => {
@@ -26,5 +26,13 @@ describe('repairDaemonBundleModes', () => {
   it('allows bundles without the optional Linux helpers', () => {
     const root = mkdtempSync(join(tmpdir(), 'agentconnect-daemon-modes-'))
     expect(() => repairDaemonBundleModes(root)).not.toThrow()
+  })
+})
+
+describe('tarCommand', () => {
+  it("uses Windows' own tar, never a GNU tar earlier on PATH, and plain tar elsewhere", () => {
+    expect(tarCommand('win32', { SystemRoot: 'C:\\WINDOWS' })).toBe('C:\\WINDOWS\\System32\\tar.exe')
+    expect(tarCommand('win32', {})).toBe('C:\\Windows\\System32\\tar.exe')
+    expect(tarCommand('linux', {})).toBe('tar')
   })
 })

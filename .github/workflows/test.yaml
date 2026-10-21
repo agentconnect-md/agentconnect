@@ -697,6 +697,11 @@ jobs:
         run: pnpm --filter @agentconnect.md/desktop bundle
       - name: Scan the release bundle
         run: pnpm --filter @agentconnect.md/desktop license-scan
+      # The npm package (`agentconnect computer install`) ships its own bundle in dist/; scan exactly what publishes.
+      - name: Build and scan the npm package
+        run: |
+          pnpm --filter @agentconnect.md/desktop build:package
+          pnpm --filter @agentconnect.md/desktop license-scan dist
 
   # The published desktop image, built natively per arch and smoke-tested: size, health, doctor, browser, stop (§3.8).
   desktop-image:

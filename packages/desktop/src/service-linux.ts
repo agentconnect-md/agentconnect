@@ -73,12 +73,15 @@ X-GNOME-Autostart-enabled=true
 `
 }
 
-// Copies the bundle to a stable path under the data dir, so moving the unzipped folder never breaks the unit.
-export function installService(dataDir: string, script: string): void {
-  const app = join(dataDir, 'app')
-  mkdirSync(app, { recursive: true })
-  const target = join(app, 'agentconnect-desktop.mjs')
-  if (script !== target) copyFileSync(script, target)
+// A managed (version store) entry is already stable; any other bundle is copied under the data dir so moving it never breaks the unit.
+export function installService(dataDir: string, script: string, managed = false): void {
+  let target = script
+  if (!managed) {
+    const app = join(dataDir, 'app')
+    mkdirSync(app, { recursive: true })
+    target = join(app, 'agentconnect-desktop.mjs')
+    if (script !== target) copyFileSync(script, target)
+  }
   mkdirSync(join(unitPath(), '..'), { recursive: true })
   writeFileSync(unitPath(), unitFile(process.execPath, target))
   mkdirSync(join(autostartPath(), '..'), { recursive: true })

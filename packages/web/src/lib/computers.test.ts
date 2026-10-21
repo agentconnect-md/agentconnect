@@ -5,15 +5,17 @@ describe('computer console helpers', () => {
   it('builds a one-line register command quoted for each shell', () => {
     const url = 'https://cp.example.com/v1/computers/register'
     const installer = 'https://cp.example.com/v1/computers/install.sh'
-    const registration = { token: 'ac_tok', exchangeUrl: url, linuxInstallerUrl: installer }
+    const registration = { token: 'ac_tok', exchangeUrl: url, linuxInstallerUrl: null }
     expect(computerInstallCommand('linux', registration)).toBe(
+      `npx -y @agentconnect.md/cli computer install --register 'ac_tok' --cp-url '${url}'`
+    )
+    // A CP that ships the bundle keeps Linux on its installer until the npm package's first release.
+    expect(computerInstallCommand('linux', { ...registration, linuxInstallerUrl: installer })).toBe(
       `wget -nv -O- '${installer}' | sh -s -- --register 'ac_tok'`
     )
-    // A CP without the desktop bundle leaves Linux on the CLI command, like macOS and Windows.
-    expect(computerInstallCommand('linux', { ...registration, linuxInstallerUrl: null })).toBe(
-      `npx -y @agentconnect.md/cli desktop setup --register 'ac_tok' --cp-url '${url}'`
+    expect(computerInstallCommand('macos', registration)).toBe(
+      `npx -y @agentconnect.md/cli computer setup --register 'ac_tok' --cp-url '${url}'`
     )
-    expect(computerInstallCommand('macos', registration)).toContain(`--register 'ac_tok' --cp-url '${url}'`)
     expect(computerInstallCommand('windows', registration)).toContain(`--register "ac_tok" --cp-url "${url}"`)
     expect(computerInstallCommand('docker', registration)).toBe(
       `docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped --shm-size=1g -v agentconnect-desktop:/home/desktop -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL='${url}' -e AGENTCONNECT_REGISTER_TOKEN='ac_tok' ghcr.io/agentconnect-md/desktop:latest`

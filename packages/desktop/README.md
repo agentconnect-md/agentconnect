@@ -1,6 +1,6 @@
-# @agentconnect.md/desktop (prototype)
+# @agentconnect.md/desktop
 
-Prototype of the **desktop daemon** from the computer-use design
+The **computer (desktop) daemon** from the computer-use design
 ([`docs/designs/computer-use.md`](../../docs/designs/computer-use.md), tracked in [#3182](https://github.com/agentconnect-md/agentconnect/issues/3182)). It runs inside the
 logged-in desktop session, embeds [Cua Driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)
 (MIT) for screenshots and input, and exposes the design's `computer_*` tools as an MCP
@@ -10,11 +10,13 @@ It runs standalone with local client tokens, or registered with a Control Plane 
 (see [Register with a Control Plane](#register-with-a-control-plane)). No relay or AgentConnect
 daemon is involved yet.
 
-## Status: M0 prototype
+## Status
 
-This package is the prototype merged as milestone M0 of the design's development plan (§14.3).
-The npm package stays private and is not published to npm; the `desktop` container image built from it
-is published with each AgentConnect release (see [Run in Docker](#run-in-docker)).
+This package started as the prototype merged in milestone M0 of the design's development plan (§14.3).
+It is published to npm with each AgentConnect release (a self-contained bundle; Cua Driver and ffmpeg
+are pinned downloads at setup) and installed, upgraded and diagnosed by `@agentconnect.md/cli` as
+`agentconnect computer …` (see [Run on Linux](#run-on-linux)). The `desktop` container image is
+published with each release too (see [Run in Docker](#run-in-docker)).
 
 **What works today**
 
@@ -41,8 +43,8 @@ is published with each AgentConnect release (see [Run in Docker](#run-in-docker)
 - Builds are unsigned (macOS `.app` is ad-hoc signed; no Windows installer), so OS grants do not
   survive a rebuild.
 - CI covers X11 under Xvfb only (see [Development](#development)); the real-session matrix of design
-  §13 is still run by hand. The `agentconnect desktop` CLI subcommand arrives with
-  [#3185](https://github.com/agentconnect-md/agentconnect/issues/3185); `agentconnect-desktop` is a development bin.
+  §13 is still run by hand. `agentconnect computer` manages the npm package on Linux; macOS (`.app`) and
+  Windows packaging are M3 / M4, so there the bundle below is still installed by hand.
 
 ```
 Claude Code ──HTTP (Bearer token)──▶ agentconnect-desktop ──stdio MCP──▶ cua-driver mcp --direct ──▶ desktop
@@ -164,21 +166,33 @@ ditto -x -k AgentConnect-Desktop-macos-arm64.zip ~/Applications/
 
 ## Run on Linux
 
-**One-line install** (what the console's **Computers → Add Computer** shows for Linux): run it in a
-terminal inside the desktop session, as the desktop user, not root.
+**Install** (what the console's **Computers → Add Computer** shows for Linux): run it in a terminal
+inside the desktop session, as the desktop user, not root. It needs Node.js ≥ 24.12 (the official
+tarball or your distribution's package).
 
 ```bash
-wget -nv -O- https://<control plane>/v1/computers/install.sh | sh -s -- --register <token>
+npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>
 ```
 
-The Control Plane serves `install.sh` with its own URL and the bundle's sha256 filled in. The
-script downloads the pinned official Node.js 24.12.0 (x64 or arm64, sha256-checked) into
-`~/.agentconnect/desktop/runtime`, the daemon bundle into `~/.agentconnect/desktop/app`, puts an
-`agentconnect-desktop` launcher in `~/.local/bin`, then runs `setup --register`. Running it again
-upgrades in place and keeps an existing registration when the token is already spent; `--name`,
-`--cp-url` and `--no-service` pass through to `setup`. Run over SSH, it installs the service, which
-then starts at the next desktop login. The Control Plane image ships the bundle; elsewhere build it
-with `pnpm --filter @agentconnect.md/desktop bundle` or point `COMPUTER_DESKTOP_BUNDLE_DIR` at it.
+The CLI downloads `@agentconnect.md/desktop` from npm, verifies its integrity, unpacks it into
+`~/.agentconnect/desktop/versions/<version>`, points `~/.agentconnect/desktop/current` at it, and
+runs `setup --register` (Cua Driver, ffmpeg, grants, the systemd user service on `current`, then
+`doctor` inside the service). `--name`, `--no-service` and other `setup` options pass through; run
+over SSH, it installs the service, which then starts at the next desktop login. Then:
+
+```bash
+agentconnect computer doctor   # the installed version and every check, from inside the service
+agentconnect computer status   # version, service, and whether the daemon answers
+agentconnect computer upgrade  # install the channel latest (--version / --channel), restart, roll back if unhealthy
+agentconnect computer versions # installed versions
+agentconnect computer stop | start | restart
+agentconnect computer uninstall # service, autostart entry and versions; --purge also deletes config and the key
+```
+
+(`npx -y @agentconnect.md/cli` stands in for `agentconnect` without a global install.) Config, the
+Computer key and the grants stay in `~/.agentconnect/desktop`, so an upgrade keeps the
+registration; a desktop installed by the earlier `install.sh` keeps its data, and `computer install`
+moves its service onto the store. `AGENTCONNECT_NPM_REGISTRY` points the CLI at another registry.
 
 Requirements for running from source: Node.js ≥ 24.12 (the official tarball in `~/.local/node` works), a logged-in
 graphical session, and `setup` run inside it. Over SSH, export the session's `WAYLAND_DISPLAY`,
@@ -429,12 +443,13 @@ agentconnect-desktop service install|uninstall|start|stop|restart|status   (macO
 agentconnect-desktop autostart enable | disable | start      (Windows)
 ```
 
-With the AgentConnect CLI installed, every command also runs as `agentconnect desktop <command>`
-(for example `agentconnect desktop doctor`). The CLI runs `AgentConnect Desktop.app` when it is in
-`~/Applications` or `/Applications` (macOS), otherwise `app/agentconnect-desktop.mjs` in the data
-dir, where the install scripts and the Linux service put it; `AGENTCONNECT_DESKTOP_ENTRY` points it
-at a development build instead. See
-[cli-daemon-split.md §1.2](../../docs/designs/cli-daemon-split.md#12-desktop-daemon).
+With the AgentConnect CLI installed, every command also runs as `agentconnect computer <command>`
+(for example `agentconnect computer token list`; `desktop` is a hidden alias). The CLI runs
+`AgentConnect Desktop.app` when it is in `~/Applications` or `/Applications` (macOS), otherwise the
+version store's `current/dist/agentconnect-desktop.mjs`, otherwise `app/agentconnect-desktop.mjs` in
+the data dir, where the bundle's install scripts put it; `AGENTCONNECT_DESKTOP_ENTRY` points it at a
+development build instead. See
+[cli-daemon-split.md §1.2](../../docs/designs/cli-daemon-split.md#12-computer-desktop-daemon).
 
 Data dir: `%LOCALAPPDATA%\AgentConnect\desktop` on Windows, `~/.agentconnect/desktop`
 elsewhere (`AGENTCONNECT_DESKTOP_HOME` overrides). `config.json` also holds
@@ -451,6 +466,8 @@ pnpm --filter @agentconnect.md/desktop typecheck
 pnpm --filter @agentconnect.md/desktop dev          # tsx src/cli.ts run
 pnpm --filter @agentconnect.md/desktop test:xvfb    # bundle, then the Xvfb suite (needs DISPLAY, xterm, xdotool)
 pnpm --filter @agentconnect.md/desktop license-scan # scan bundle/ after `bundle` (and `bundle:macos`)
+pnpm --filter @agentconnect.md/desktop build        # the npm package's dist/ (what a release publishes)
+pnpm --filter @agentconnect.md/desktop license-scan dist
 ```
 
 CI runs two more jobs on pull requests that touch this package (`.github/workflows/test.yaml`):
@@ -466,6 +483,11 @@ CI runs two more jobs on pull requests that touch this package (`.github/workflo
   same way when built (CI builds only the Linux bundle). The Docker image carries Debian packages under their own
   licenses but no ffmpeg, which it downloads on first start while the distribution question of design §11 is open
   with counsel.
+
+A release builds `dist/` with the release version (`scripts/publish-desktop-if-changed.sh`), scans it with the same
+script, and publishes it to npm with the agent daemon's channels (`latest` / `rc`). To try the install flow without
+npm, publish to a local registry (for example verdaccio) and set `npm_config_registry` and `AGENTCONNECT_NPM_REGISTRY`
+to it.
 
 macOS and Linux also work for local development (`init` installs the matching driver
 build). On macOS, `--direct` attributes Accessibility and Screen Recording to the terminal

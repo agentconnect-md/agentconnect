@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { Command, Option } from 'commander'
 import { selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
-import { runDesktop } from './desktop.js'
+import { runComputer } from './computer/commands.js'
 import { runShell } from './run-shell.js'
 import {
   classifyInvocation,
@@ -65,10 +65,10 @@ const fail = (cmd: string, err: unknown): never => {
 
 async function main(): Promise<void> {
   let argv = process.argv.slice(2)
-  // The desktop daemon has its own data dir, so it is routed before any agent-daemon root or instance resolution.
-  if (classifyInvocation(argv) === 'desktop') {
+  // The computer daemon has its own data dir, so it is routed before any agent-daemon root or instance resolution.
+  if (classifyInvocation(argv) === 'computer') {
     setInvocation({ cliEntry: fileURLToPath(import.meta.url), path: process.env.PATH, platform: process.platform })
-    return runDesktop(argv, `${cliCommand()} desktop`)
+    return runComputer(argv, cliCommand())
   }
   // `--instance <name>` is CLI vocabulary for "that daemon's root" (service/
   // instance.ts). Resolve it here, then rewrite argv into the `--root` form the
@@ -273,11 +273,11 @@ async function main(): Promise<void> {
       }
     })
 
-  // Listed for help only: `desktop` invocations are routed to the desktop daemon before commander parses.
+  // Listed for help only: `computer` (and its hidden `desktop` alias) is routed to the computer module before commander parses.
   program
-    .command('desktop')
+    .command('computer')
     .description(
-      'Run a desktop daemon command (setup, doctor, run, service, pause, resume, …); `agentconnect desktop --help` lists them'
+      'Install, upgrade and run the computer daemon (install, upgrade, doctor, status, setup, …); `agentconnect computer --help` lists them'
     )
     .allowUnknownOption()
     .helpOption(false)

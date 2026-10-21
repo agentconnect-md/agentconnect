@@ -16,6 +16,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const arch = process.env.TARGET_ARCH ?? process.arch
 const work = join(root, 'bundle', '.macos-build')
 const out = join(root, 'bundle')
+// Baked in like scripts/bundle.mjs: the CommonJS SEA has no import.meta.url to read package.json from.
+const version =
+  process.env.AGENTCONNECT_RELEASE_VERSION || JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
 const run = (cmd, args, options = {}) => execFileSync(cmd, args, { stdio: 'inherit', ...options })
 
 async function officialNode() {
@@ -54,6 +57,7 @@ const bundled = await build({
   target: 'node24',
   // Workspace packages (protocol, connection) are bundled from source, so no prior build is needed.
   conditions: ['development'],
+  define: { __AGENTCONNECT_DESKTOP_VERSION__: JSON.stringify(version) },
   legalComments: 'linked',
   // Every bundled input, for the release license scan (scripts/license-scan.ts).
   metafile: true,
@@ -88,7 +92,6 @@ run(join(root, 'node_modules', '.bin', 'postject'), [
   '--macho-segment-name',
   'NODE_SEA'
 ])
-const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
 writeFileSync(
   join(app, 'Contents', 'Info.plist'),
   `<?xml version="1.0" encoding="UTF-8"?>

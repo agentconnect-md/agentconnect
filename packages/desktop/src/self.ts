@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { resolve } from 'node:path'
 import { isSea } from 'node:sea'
 
 // Runs this CLI again as a child; children of the daemon share its macOS permission identity.
@@ -21,3 +22,9 @@ export const appBundlePath = (): string | undefined => /^(.*\.app)\/Contents\/Ma
 
 // How the user runs this CLI: `agentconnect desktop` sets AGENTCONNECT_DESKTOP_COMMAND; the standalone bin is the fallback.
 export const selfCommand = (): string => process.env.AGENTCONNECT_DESKTOP_COMMAND?.trim() || 'agentconnect-desktop'
+
+// The CLI's version store names the stable `current` entry a service launches, so an upgrade only moves that link.
+export const SERVICE_ENTRY_ENV = 'AGENTCONNECT_DESKTOP_SERVICE_ENTRY'
+export const managedEntry = (): string | undefined => process.env[SERVICE_ENTRY_ENV]?.trim() || undefined
+// The script a service or autostart entry runs: the managed entry, else this very bundle.
+export const serviceEntry = (): string => managedEntry() ?? resolve(process.argv[1]!)
