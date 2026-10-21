@@ -727,8 +727,11 @@ export class ComputerTools {
       } catch (error) {
         // A CP replica lost mid-wait: ask again through the reconnect while the wait has time left.
         if (wait && this.now() < wait.until) {
+          // A stopped turn gives up its wait instead of asking again with the old stamp.
+          if (this.deps.canRun?.(ctx) === false) throw this.waitEnded(computerId, wait)
           this.deps.log?.debug(`computer: queued acquire failed, asking again: ${(error as Error).message}`)
           await sleep(COMPUTER_LEASE_RETRY_MS)
+          if (this.deps.canRun?.(ctx) === false) throw this.waitEnded(computerId, wait)
           continue
         }
         throw new ComputerToolError('unavailable', `the control lease could not be taken: ${(error as Error).message}`)
@@ -751,6 +754,13 @@ export class ComputerTools {
     }
     state.held = computerId
     return wait ? { waitedMs: this.now() - wait.since, position: wait.first } : undefined
+  }
+
+  private waitEnded(computerId: string, wait: LeaseWait): ComputerToolError {
+    return new ComputerToolError('computer_busy', "this session's turn ended while it waited for this computer", {
+      computer: computerId,
+      waitedMs: this.now() - wait.since
+    })
   }
 
   private async release(state: SessionState, computerId: string): Promise<McpContentResult> {

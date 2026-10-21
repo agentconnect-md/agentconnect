@@ -351,6 +351,24 @@ describe('ComputerTools', () => {
       expect(sleeps).toEqual([1000])
       expect(calls).toHaveLength(1)
     })
+
+    it('does not ask again through a lost CP link once the turn no longer runs', async () => {
+      let running = true
+      const { tools, leases, calls, sleeps } = setup({ canRun: () => running })
+      leases.computerLeaseAcquire.mockImplementationOnce(async () => queued(1))
+      leases.computerLeaseAcquire.mockImplementationOnce(async () => {
+        running = false
+        throw new Error('link lost')
+      })
+      const handled = await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+      expect(parse(handled!.result)).toMatchObject({
+        error: 'computer_busy',
+        message: "this session's turn ended while it waited for this computer"
+      })
+      expect(leases.computerLeaseAcquire).toHaveBeenCalledTimes(2)
+      expect(sleeps).toEqual([])
+      expect(calls).toEqual([])
+    })
   })
 
   it('rejects invalid arguments before acquiring or forwarding', async () => {

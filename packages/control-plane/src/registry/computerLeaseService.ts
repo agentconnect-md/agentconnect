@@ -54,6 +54,8 @@ export interface LeaseRequester {
 export interface AcquireWait {
   /** Hold the reply up to this long while the session waits in line (capped at COMPUTER_LEASE_POLL_MAX_MS). */
   waitMs: number
+  /** Aborts when the asking daemon's connection closes: the hold stops without asking again. */
+  signal?: AbortSignal
 }
 
 export type AcquireResult =
@@ -84,11 +86,15 @@ export class ComputerLeaseService {
   /** Take the lease for a session, or renew it when that session already holds it; with `wait`, queue and hold the reply a while. */
   async acquire(orgId: string, computerId: string, who: LeaseRequester, wait?: AcquireWait): Promise<AcquireResult> {
     let left = Math.min(Math.max(wait?.waitMs ?? 0, 0), COMPUTER_LEASE_POLL_MAX_MS)
+    const signal = wait?.signal
+    if (signal?.aborted) return { granted: false, code: 'unavailable', message: 'the daemon connection closed' }
     for (;;) {
       const result = await this.acquireOnce(orgId, computerId, who, wait !== undefined)
       if (result.granted || !result.queued || left <= 0) return result
       const slice = Math.min(left, this.opts.queuePollMs ?? 1000)
-      await this.pause(computerId, slice)
+      await this.pause(computerId, slice, signal)
+      // Nobody receives the reply of a closed connection: stop holding, keeping the place until it lapses.
+      if (signal?.aborted) return result
       left -= slice
     }
   }
@@ -201,19 +207,21 @@ export class ComputerLeaseService {
     return { result, policy }
   }
 
-  // Wait up to `ms` real time, or until a lease on this Computer ends on this replica.
-  private pause(computerId: string, ms: number): Promise<void> {
+  // Wait up to `ms` real time, until a lease on this Computer ends on this replica, or until `signal` aborts.
+  private pause(computerId: string, ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
       let set = this.wakers.get(computerId)
       if (!set) this.wakers.set(computerId, (set = new Set()))
       const done = () => {
         clearTimeout(timer)
+        signal?.removeEventListener('abort', done)
         set.delete(done)
         if (set.size === 0 && this.wakers.get(computerId) === set) this.wakers.delete(computerId)
         resolve()
       }
       const timer = setTimeout(done, ms)
       set.add(done)
+      signal?.addEventListener('abort', done, { once: true })
     })
   }
 

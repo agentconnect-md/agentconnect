@@ -50,7 +50,7 @@ export const handleComputerLeaseAcquire: Handler = async (frame, conn, deps) => 
         daemonId: conn.daemonId,
         turnAt: Date.parse(p.requestedAt)
       },
-      p.waitMs === undefined ? undefined : { waitMs: p.waitMs }
+      p.waitMs === undefined ? undefined : { waitMs: p.waitMs, signal: conn.closedSignal }
     )
     conn.replyTo(
       frame,

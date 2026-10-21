@@ -160,7 +160,8 @@ export function decideAcquire(
   // Waiters that stopped asking or lost their grant leave first; a final answer takes the session out of line.
   const queue = keepWaiters(stored, computer?.policy ?? null, clock.now, clock.waiterTtlMs)
   const pruned = queue.length !== stored.length ? queue : undefined
-  const leave = () => withoutWaiter(queue, req) ?? pruned
+  // A turn-ended marker outlives a late ask of its wait, so a duplicate of that ask is refused too.
+  const leave = () => (endedWait(queue, req) ? pruned : (withoutWaiter(queue, req) ?? pruned))
   const refuse = (code: ComputerLeaseRefusal, message: string, holder?: ComputerLeaseHolder) => ({
     next: undefined,
     queue: leave(),

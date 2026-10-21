@@ -659,7 +659,7 @@ the Computer, and every change takes the Computer row's lock, so replicas agree 
   `computer-lease/acquire` before every input tool and `computer_acquire`, and give it up with `computer-lease/release`
   on `computer_release` (§5.2). The session is the outward session id its `event/session` milestones carry.
 
-**Sharing and the wait queue [implemented]** (#3231). Sharing works the same for managed and self-hosted Computers:
+**Sharing and the wait queue [implemented; live queue position and two-agent e2e pending]** (#3231). Sharing works the same for managed and self-hosted Computers:
 one desktop is one display and one control lease. A Computer granted to several agents (a shared self-hosted desktop or
 a `manual` managed computer) is used first come, first served, and its holder releases the lease when its turn ends
 (above). Another session's acquire does not fail at once with `computer_busy`: it waits in a **FIFO queue** per
@@ -1228,8 +1228,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
      created by a user through the API and stays until a user deletes it, sleeping when idle. A `per-agent` or `manual`
      computer can be reset explicitly. These modes replace the earlier reset policies (`per-lease`, `on-release-idle`,
      `never`, Appendix A).
-   - **#3231** [implemented]: the FIFO lease wait queue for shared Computers (§4.4), for managed and self-hosted ones
-     alike.
+   - **#3231** [implemented; live queue position and two-agent e2e pending]: the FIFO lease wait queue for shared
+     Computers (§4.4), for managed and self-hosted ones alike.
    - **#3232**: the console for pools and modes: creating and assigning `manual` computers, the agent's `managed` mode,
      and sleeping status.
    - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
