@@ -237,6 +237,11 @@ daemon runs as its own app:
 | Windows   | User Run key         | Starts at login; the console window doubles as indicator                                                                                                                                                                                                                                         |
 | Container | Entrypoint           | The daemon runs in the foreground; `docker stop` shuts it down cleanly (§3.8)                                                                                                                                                                                                                    |
 
+- **[implemented]** Linux session following: Xfce leaves `graphical-session.target` active after logout, so the
+  autostart entry also exports the logind session id (`AGENTCONNECT_DESKTOP_SESSION`) and resets the unit's start limit;
+  the daemon polls that session and exits when it closes, dropping its display variables from the user manager (or
+  exits 75 so systemd restarts it when a newer session already imported its own). Validated on Ubuntu 26.04 Xfce on
+  Xorg across logout / login and reboot; GNOME Wayland is tracked in #3221.
 - On Linux, Cua Driver runs in its own `systemd-run --user --scope`, so apps an agent launched survive a service
   restart (without it, a restart killed them; observed).
 - Crash recovery: back within 3 s of `kill -9`, with no orphans; ffmpeg, caffeinate, and the inhibitor are cleaned up.
@@ -267,6 +272,15 @@ UI and lets the owner limit it to time windows [design].
 the service's own identity, grants, and session rather than the caller's terminal. Checks: config; session type (SSH /
 Session 0 / RDP / Wayland / X11); driver; macOS grants; a real screenshot; display wake; ffmpeg plus a real one-frame
 capture; the Linux GNOME helper, portal, and PipeWire dependencies; the Windows firewall rule; whether the daemon runs.
+
+**[implemented]** Linux one-line install (X11; GNOME Wayland is #3221). The Control Plane serves
+`GET /v1/computers/install.sh` (also under `/api/v1`, no auth) and `GET /v1/computers/desktop/<file>` for the daemon
+bundle and its license notices, from the desktop package's built `bundle/` (`COMPUTER_DESKTOP_BUNDLE_DIR`; the CP image
+ships it). The script carries the CP's public URL and the bundle's sha256, refuses root, downloads the pinned official
+Node.js (picked over a single executable: one checked tarball per architecture, no Linux SEA build to maintain), checks
+both checksums, installs under `~/.agentconnect/desktop`, and runs `setup --register`. A re-run with a spent token keeps
+the stored key. The registration response names the installer as `linuxInstallerUrl`, and the console shows
+`wget -nv -O- <url> | sh -s -- --register <token>` (a fresh Ubuntu desktop has wget but not curl or Node.js).
 
 ### 3.6 Registration and pairing [design]
 
@@ -869,8 +883,8 @@ and every `computer/policy`.
 - Agent settings: enable computer use and pick Computers.
 - **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
   owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
-  `agentconnect desktop setup --register <token> --cp-url <exchange URL>` (through `npx @agentconnect.md/cli` until the
-  one-line installer of §14.4 lands) quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
+  `agentconnect desktop setup --register <token> --cp-url <exchange URL>` (through `npx @agentconnect.md/cli`) quoted
+  for the chosen OS, or on Linux the one-line installer below when the CP ships the desktop bundle, and follows `GET …/computers/registrations/:id`, which
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot

@@ -8,6 +8,7 @@ import {
   exchangeRegistrationToken,
   loadRegistration,
   markRevoked,
+  RegistrationTokenRefused,
   registrationPath,
   saveRegistration
 } from './registration.js'
@@ -74,7 +75,14 @@ describe('registration', () => {
 
   it('names a spent or expired token plainly', async () => {
     const fetchImpl = (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch
-    await expect(exchangeRegistrationToken('https://cp', 'tok', profile, fetchImpl)).rejects.toThrow(/spent or expired/)
+    const refused = exchangeRegistrationToken('https://cp', 'tok', profile, fetchImpl)
+    await expect(refused).rejects.toThrow(/spent or expired/)
+    // setup tells a refused token apart from an unreachable CP, so re-running the install keeps a good key.
+    await expect(refused).rejects.toBeInstanceOf(RegistrationTokenRefused)
+    const down = (async () => new Response('bad gateway', { status: 502 })) as unknown as typeof fetch
+    await expect(exchangeRegistrationToken('https://cp', 'tok', profile, down)).rejects.not.toBeInstanceOf(
+      RegistrationTokenRefused
+    )
   })
 
   it.skipIf(process.platform === 'win32')('stores the key owner-only and forgets it at a revoke', () => {

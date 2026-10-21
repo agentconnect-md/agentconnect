@@ -6212,7 +6212,7 @@
       "description": "在要添加的桌面上，于已登录图形会话中的终端里运行一条命令。它会把桌面守护进程安装为后台服务并注册到此组织，你将成为它的所有者。",
       "os": "操作系统",
       "osHint": {
-        "linux": "Ubuntu，Xfce（Xorg）或 GNOME（Wayland）。服务会随你的会话启动。",
+        "linux": "Ubuntu，Xfce（Xorg）或 GNOME（Wayland）。请以你自己的身份在桌面的终端中运行，不要用 root；之后服务会随每次登录的会话启动。",
         "macos": "首次运行时，macOS 会请你为 AgentConnect 允许辅助功能和屏幕录制权限。",
         "windows": "请在已登录用户的普通 PowerShell 中运行，不要以管理员身份运行。"
       },

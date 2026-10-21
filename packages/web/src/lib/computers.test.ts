@@ -4,10 +4,17 @@ import { computerInstallCommand, computerStatusTone, doctorCounts, sortedDoctorC
 describe('computer console helpers', () => {
   it('builds a one-line register command quoted for each shell', () => {
     const url = 'https://cp.example.com/v1/computers/register'
-    expect(computerInstallCommand('linux', 'ac_tok', url)).toBe(
+    const installer = 'https://cp.example.com/v1/computers/install.sh'
+    const registration = { token: 'ac_tok', exchangeUrl: url, linuxInstallerUrl: installer }
+    expect(computerInstallCommand('linux', registration)).toBe(
+      `wget -nv -O- '${installer}' | sh -s -- --register 'ac_tok'`
+    )
+    // A CP without the desktop bundle leaves Linux on the CLI command, like macOS and Windows.
+    expect(computerInstallCommand('linux', { ...registration, linuxInstallerUrl: null })).toBe(
       `npx -y @agentconnect.md/cli desktop setup --register 'ac_tok' --cp-url '${url}'`
     )
-    expect(computerInstallCommand('windows', 'ac_tok', url)).toContain(`--register "ac_tok" --cp-url "${url}"`)
+    expect(computerInstallCommand('macos', registration)).toContain(`--register 'ac_tok' --cp-url '${url}'`)
+    expect(computerInstallCommand('windows', registration)).toContain(`--register "ac_tok" --cp-url "${url}"`)
   })
 
   it('puts failing checks first, then warnings, keeping the reported order', () => {

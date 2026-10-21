@@ -87,7 +87,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const command = registration ? computerInstallCommand(os, registration.token, registration.exchangeUrl) : null
+  const command = registration ? computerInstallCommand(os, registration) : null
   const copy = async () => {
     if (!command) return
     try {

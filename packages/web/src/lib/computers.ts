@@ -5,7 +5,7 @@ import { useCallback } from 'react'
 import useSWR from 'swr'
 import { useFormatter } from 'next-intl'
 import type { ComputerDoctorCheck, ComputerStatus } from '@agentconnect.md/protocol/computer'
-import { fetchComputer, fetchComputers, type ComputerDto } from '@/lib/api'
+import { fetchComputer, fetchComputers, type ComputerDto, type ComputerRegistrationDto } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 
@@ -89,8 +89,15 @@ export type InstallOs = 'linux' | 'macos' | 'windows'
 const CLI = '@agentconnect.md/cli'
 
 /** The one-line command that installs the desktop daemon's service and registers this desktop (computer-use.md §3.6). */
-export function computerInstallCommand(os: InstallOs, token: string, exchangeUrl: string): string {
+export function computerInstallCommand(
+  os: InstallOs,
+  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'linuxInstallerUrl'>
+): string {
   // PowerShell takes double quotes; POSIX shells single quotes, which keep the token literal.
   const q = (value: string) => (os === 'windows' ? `"${value}"` : `'${value}'`)
-  return `npx -y ${CLI} desktop setup --register ${q(token)} --cp-url ${q(exchangeUrl)}`
+  // A fresh Ubuntu desktop has wget but neither curl nor Node.js; the CP-served installer brings a pinned runtime.
+  if (os === 'linux' && registration.linuxInstallerUrl) {
+    return `wget -nv -O- ${q(registration.linuxInstallerUrl)} | sh -s -- --register ${q(registration.token)}`
+  }
+  return `npx -y ${CLI} desktop setup --register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}`
 }

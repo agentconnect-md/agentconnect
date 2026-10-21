@@ -45,9 +45,11 @@ import {
   type McpPrincipal
 } from './mcp-access.js'
 import {
+  cpBaseUrl,
   exchangeRegistrationToken,
   loadRegistration,
   markRevoked,
+  RegistrationTokenRefused,
   registrationPath,
   saveRegistration,
   type Registration
@@ -168,8 +170,9 @@ async function main(): Promise<void> {
     }
     case 'setup': {
       const config = overrides(loadConfig(dir))
-      if (values.register) await registerComputer(dir, values.register, values['cp-url'], values.name)
-      return setup(dir, config, values.register ? undefined : values.client, !values['no-service'])
+      if (values.register) await registerOrKeep(dir, values.register, values['cp-url'], values.name)
+      const registered = Boolean(values.register) || Boolean(loadRegistration(dir))
+      return setup(dir, config, registered ? undefined : values.client, !values['no-service'])
     }
     case 'register': {
       const token = rest[0] ?? values.register
@@ -333,6 +336,18 @@ async function registerComputer(
   saveRegistration(registration, dir)
   console.log(`Registered as computer ${registration.computerId}; key stored in ${registrationPath(dir)} (mode 0600).`)
   return registration
+}
+
+// Running the console's command again (say after a relogin) finds its token spent; the key it got is still good.
+async function registerOrKeep(dir: string, token: string, cpUrl: string | undefined, name: string | undefined) {
+  try {
+    await registerComputer(dir, token, cpUrl, name)
+  } catch (error) {
+    const current = loadRegistration(dir)
+    const same = current && !current.revokedAt && cpUrl && cpBaseUrl(cpUrl) === current.cpUrl
+    if (!(error instanceof RegistrationTokenRefused) || !same) throw error
+    console.log(`The token is spent; keeping this desktop's registration as computer ${current.computerId}.`)
+  }
 }
 
 const DOCTOR_INTERVAL_MS = 30 * 60_000
@@ -637,7 +652,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   installConsoleControls(computer)
 
   let stopping = false
-  const shutdown = async (): Promise<void> => {
+  const shutdown = async (exitCode = 0): Promise<void> => {
     if (stopping) return
     stopping = true
     log('shutting down')
@@ -649,10 +664,23 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     authority.close()
     releaseDisplay()
     await Promise.allSettled([server.close(), driver.close()])
-    process.exit(0)
+    process.exit(exitCode)
   }
   process.once('SIGINT', () => void shutdown())
   process.once('SIGTERM', () => void shutdown())
+  // The systemd service lives as long as the desktop session it was started for (computer-use.md §3.3).
+  const session = process.env[linuxService.SESSION_ENV]
+  if (process.platform === 'linux' && process.env.INVOCATION_ID && session) {
+    log(`following desktop session ${session}`)
+    linuxService.watchSession({
+      session,
+      onIgnored: log,
+      onEnded: (exitCode, reason) => {
+        log(reason)
+        void shutdown(exitCode)
+      }
+    })
+  }
 }
 
 // macOS grants Accessibility and Screen Recording to the app that started us (Terminal), never to an SSH session.
@@ -865,6 +893,14 @@ async function setup(
   let checks: Check[]
   if (process.platform === 'darwin' && appBundlePath()) {
     checks = await setupMacApp(dir, config)
+  } else if (process.platform === 'linux' && withService && !linuxService.inGraphicalSession()) {
+    // Over SSH there is no display to check or approve against; the session's autostart entry starts the service.
+    linuxService.installService(dir, resolve(process.argv[1]!))
+    console.log(`Installed the systemd user service ${linuxService.unitPath()}.`)
+    console.log('No graphical session in this shell: the service starts when you next log in to the desktop.')
+    console.log(`Then check it there with: ${selfCommand()} doctor`)
+    if (token && clientName) printClientSetup(config, clientName, token)
+    return
   } else {
     await setupPermissions(setupContext(dir, config))
     const serviceChecks = process.platform === 'linux' && withService ? await setupLinuxService(dir, config) : undefined

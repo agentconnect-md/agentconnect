@@ -497,7 +497,9 @@ export async function setupPermissions(ctx: SetupContext): Promise<void> {
 // Wayland: the GNOME helper extension, then the two portal consents (screen sharing, remote input), each asked once.
 async function setupLinux(ctx: SetupContext): Promise<void> {
   if (!waylandSession()) {
-    ctx.log('X11 session: no approvals needed.')
+    ctx.log(
+      process.env.DISPLAY ? 'X11 session: no approvals needed.' : 'No graphical session here: nothing to approve.'
+    )
     return
   }
   if (gnomeWayland()) {

@@ -163,7 +163,23 @@ ditto -x -k AgentConnect-Desktop-macos-arm64.zip ~/Applications/
 
 ## Run on Linux
 
-Requirements: Node.js ≥ 24.12 (the official tarball in `~/.local/node` works), a logged-in
+**One-line install** (what the console's **Computers → Add Computer** shows for Linux): run it in a
+terminal inside the desktop session, as the desktop user, not root.
+
+```bash
+wget -nv -O- https://<control plane>/v1/computers/install.sh | sh -s -- --register <token>
+```
+
+The Control Plane serves `install.sh` with its own URL and the bundle's sha256 filled in. The
+script downloads the pinned official Node.js 24.12.0 (x64 or arm64, sha256-checked) into
+`~/.agentconnect/desktop/runtime`, the daemon bundle into `~/.agentconnect/desktop/app`, puts an
+`agentconnect-desktop` launcher in `~/.local/bin`, then runs `setup --register`. Running it again
+upgrades in place and keeps an existing registration when the token is already spent; `--name`,
+`--cp-url` and `--no-service` pass through to `setup`. Run over SSH, it installs the service, which
+then starts at the next desktop login. The Control Plane image ships the bundle; elsewhere build it
+with `pnpm --filter @agentconnect.md/desktop bundle` or point `COMPUTER_DESKTOP_BUNDLE_DIR` at it.
+
+Requirements for running from source: Node.js ≥ 24.12 (the official tarball in `~/.local/node` works), a logged-in
 graphical session, and `setup` run inside it. Over SSH, export the session's `WAYLAND_DISPLAY`,
 `XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` first. `setup` downloads Cua Driver and a pinned
 static ffmpeg (6.0, libx264).
@@ -192,7 +208,9 @@ static ffmpeg (6.0, libx264).
   (`~/.config/autostart/agentconnect-desktop.desktop`). That entry imports the session's display
   variables first, for desktops such as Xfce that never activate the target.
   - The unit runs a copy of the bundle from the data dir, restarts on failure, and stops with the
-    session.
+    session. Xfce never stops `graphical-session.target`, so the autostart entry also records the
+    logind session id and the daemon exits when that session closes; the next login starts it
+    again with the new display.
   - `ExecCondition` skips it when there is no display, so it never crash-loops outside a session.
   - Cua Driver runs in its own `systemd-run --scope`, so apps an agent launched survive service
     restarts and upgrades.

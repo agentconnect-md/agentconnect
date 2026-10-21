@@ -2846,6 +2846,8 @@ export interface ComputerRegistrationDto {
   name: string | null
   expiresAt: string
   exchangeUrl: string
+  /** The CP-served Linux installer; null when this CP ships no desktop daemon bundle. */
+  linuxInstallerUrl: string | null
 }
 
 export interface ComputerRegistrationStatusDto {
