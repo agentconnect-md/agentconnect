@@ -195,6 +195,7 @@ describe('ComputerChannelGrants.grantViewer', () => {
       expect.objectContaining({ urls: turn.urls, username: `${T0 / 1000 + 3600}:viewer-user_owner` })
     ])
     expect(Date.parse(result.expiresAt) - T0).toBeLessThanOrEqual(120_000)
+    expect(result.expiresInMs).toBe(Date.parse(result.expiresAt) - T0)
   })
 
   it('carries no TURN without a configuration', async () => {

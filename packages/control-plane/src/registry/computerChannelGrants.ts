@@ -38,6 +38,7 @@ export type ViewerGrantResult =
       granted: true
       token: string
       expiresAt: string
+      expiresInMs: number
       mode: ComputerAgentMode
       relays: string[]
       iceServers: ComputerIceServer[]
@@ -149,6 +150,7 @@ export class ComputerChannelGrants {
       granted: true,
       token,
       expiresAt: new Date(exp).toISOString(),
+      expiresInMs: exp - now,
       mode: who.mode,
       relays,
       iceServers: turn ? [turnCredentials(turn, `viewer-${who.userId}`, now)] : []

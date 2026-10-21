@@ -9,7 +9,7 @@ import {
   type CrHttpResponse
 } from '@agentconnect.md/protocol/computer'
 import type { ChannelAuthority } from './cp/authority.js'
-import type { ViewerPrincipal, ViewerRequest, ViewerResponse } from './viewer.js'
+import type { ViewerPrincipal, ViewerRequest, ViewerResponse, ViewerVia } from './viewer.js'
 
 /** The caller of one MCP request: its lease holder name, and whether its policy lets it only watch. */
 export interface McpPrincipal {
@@ -78,6 +78,20 @@ export function viewerPrincipal(
   }
 }
 
+/** Viewer auth: a console view token on either path, a local client token only on the local port, never through a relay. */
+export function viewerAuthenticator(
+  member: (authorization: string | undefined) => ViewerPrincipal | undefined,
+  localClient: (authorization: string | undefined) => string | undefined
+): (authorization: string | undefined, via: ViewerVia) => ViewerPrincipal | undefined {
+  return (authorization, via) => {
+    const principal = member(authorization)
+    if (principal) return principal
+    if (via !== 'local') return undefined
+    const client = localClient(authorization)
+    return client ? { client, control: true } : undefined
+  }
+}
+
 /** Serve one `cr/http` request the relay forwarded, in process, through the same MCP server the local port serves. */
 export function createRelayedMcpHandler(deps: RelayedMcpDeps): (request: CrHttpRequest) => Promise<CrHttpResponse> {
   return async (request) => {
@@ -87,6 +101,7 @@ export function createRelayedMcpHandler(deps: RelayedMcpDeps): (request: CrHttpR
         method: request.method,
         path: pathname,
         authorization: request.headers.authorization,
+        via: 'relay',
         ...(request.body ? { body: Buffer.from(request.body, 'base64') } : {})
       })
       if (out.body.length > RELAY_COMPUTER_MAX_BODY_BYTES) return reply(500, { error: 'response too large' })

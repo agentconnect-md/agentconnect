@@ -47,11 +47,15 @@ export interface ViewerPrincipal {
   valid?: () => boolean
 }
 
+export type ViewerVia = 'local' | 'relay'
+
 /** One viewer API call, from the local port or forwarded by a relay. */
 export interface ViewerRequest {
   method: string
   path: string
   authorization: string | undefined
+  // Where it arrived; a relayed request is from the internet and may carry only a CP-issued view token.
+  via: ViewerVia
   body?: Buffer
   // The local address the browser reached, for the direct path's host candidate; unknown through a relay.
   hostAddress?: string
@@ -65,7 +69,7 @@ export interface ViewerResponse {
 
 export interface ViewerOptions {
   computer: Computer
-  authenticate: (authorization: string | undefined) => ViewerPrincipal | undefined
+  authenticate: (authorization: string | undefined, via: ViewerVia) => ViewerPrincipal | undefined
   log: (line: string) => void
   // Absent when no ffmpeg is available; the page then falls back to screenshot polling.
   rtc?: RtcSessions
@@ -197,7 +201,7 @@ export function createViewer(options: ViewerOptions): Viewer {
   }
 
   const api = async (request: ViewerRequest): Promise<ViewerResponse> => {
-    const principal = options.authenticate(request.authorization)
+    const principal = options.authenticate(request.authorization, request.via)
     if (!principal) return json(401, { error: 'unauthorized' })
     lastSeen.set(principal.client, Date.now())
     try {
@@ -261,6 +265,7 @@ export function createViewer(options: ViewerOptions): Viewer {
         method: req.method ?? 'GET',
         path,
         authorization: req.headers.authorization,
+        via: 'local',
         ...(body ? { body } : {}),
         ...(req.socket.localAddress ? { hostAddress: req.socket.localAddress } : {})
       })

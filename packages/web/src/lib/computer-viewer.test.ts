@@ -20,6 +20,7 @@ function grant(over: Partial<ComputerViewerGrantDto> = {}): ComputerViewerGrantD
   return {
     token: 'actk1.view.1',
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    expiresInMs: 120_000,
     mode: 'control',
     relays: ['https://relay-a.example.com', 'https://relay-b.example.com'],
     iceServers: [{ urls: ['turn:turn.example.com:3478'], username: '1:viewer-u1', credential: 'c' }],
@@ -33,6 +34,10 @@ class FakeChannel {
   sent: string[] = []
   onmessage: ((event: MessageEvent) => void) | null = null
   onclose: (() => void) | null = null
+  close() {
+    this.readyState = 'closed'
+    this.onclose?.()
+  }
   send(data: string) {
     this.sent.push(data)
     if (data === 'ping') return
@@ -41,9 +46,10 @@ class FakeChannel {
   }
 }
 
-function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed') {
+function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed', onCreate?: () => void) {
   const created: { config: RTCConfiguration; channel: FakeChannel; closed: boolean }[] = []
   const createPeer = (config: RTCConfiguration) => {
+    onCreate?.()
     const record = { config, channel: new FakeChannel(), closed: false }
     created.push(record)
     const pc = {
@@ -215,6 +221,52 @@ describe('ComputerViewerSession', () => {
     grants.mockRejectedValue(Object.assign(new Error('this computer is offline'), { status: 409 }))
     await expect(session.api('GET', 'status')).rejects.toThrow(/not connected to any relay/)
     expect(session.snapshot()).toMatchObject({ phase: 'error', error: 'this computer is offline' })
+  })
+
+  it('closes a peer that connects after the viewer was stopped mid-ladder, without pinging', async () => {
+    const { fetchImpl } = relayFetch()
+    let stop = () => undefined as void
+    const { created, createPeer } = peers(
+      () => 'connected',
+      () => stop()
+    )
+    const { session } = open({ fetch: fetchImpl, createPeer })
+    stop = () => session.stop()
+    await session.start()
+    expect(created).toHaveLength(1)
+    expect(created[0]!.closed).toBe(true)
+    expect(created[0]!.channel.readyState).toBe('closed')
+    expect(session.snapshot()).toMatchObject({ phase: 'stopped', path: null })
+    await new Promise((resolve) => setTimeout(resolve, 2100))
+    expect(created[0]!.channel.sent).not.toContain('ping')
+  })
+
+  it('creates no peer when stopped while the offer is in flight', async () => {
+    const { fetchImpl } = relayFetch()
+    const { created, createPeer } = peers(() => 'connected')
+    const { session } = open({
+      fetch: (async (url: string, init: RequestInit) => {
+        if (url.endsWith('rtc/offer')) session.stop()
+        return fetchImpl(url, init)
+      }) as typeof fetch,
+      createPeer
+    })
+    await session.start()
+    expect(created).toHaveLength(0)
+    expect(session.snapshot().phase).toBe('stopped')
+  })
+
+  it('schedules renewal from the grant lifetime, not from a skewed browser clock', async () => {
+    const { fetchImpl } = relayFetch()
+    const { createPeer } = peers(() => 'connected')
+    // The browser clock runs 10 minutes ahead, so `expiresAt` already looks past.
+    const skewed = grant({ expiresAt: new Date(Date.now() - 480_000).toISOString() })
+    const { session } = open({ fetch: fetchImpl, createPeer, grant: skewed })
+    const timeouts = vi.spyOn(globalThis, 'setTimeout')
+    ;(session as unknown as { grant: ComputerViewerGrantDto }).grant = skewed
+    ;(session as unknown as { scheduleRenewal: () => void }).scheduleRenewal()
+    expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), 60_000)
+    timeouts.mockRestore()
   })
 
   it('reports an error when the grant is refused', async () => {

@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { signComputerChannelToken, type ComputerChannelTokenClaims } from '@agentconnect.md/protocol/computer'
 import { Computer } from './computer.js'
-import { createRelayedMcpHandler, viewerPrincipal } from './mcp-access.js'
+import { authenticate, issueClientToken } from './config.js'
+import { createRelayedMcpHandler, viewerAuthenticator, viewerPrincipal } from './mcp-access.js'
 import { FakeDriver, testConfig } from './testing.js'
 import { createComputerMcpServer } from './tools.js'
 import { createViewer } from './viewer.js'
@@ -30,7 +31,8 @@ function viewToken(over: Partial<ComputerChannelTokenClaims> = {}, signWith = ke
 
 function harness() {
   const driver = new FakeDriver()
-  const config = testConfig({ actionScreenshot: false })
+  const issued = issueClientToken(testConfig({ actionScreenshot: false }), 'local')
+  const config = issued.config
   const computer = new Computer({ driver, config })
   const authority = new ChannelAuthority({ registered: true })
   stops.push(() => authority.close())
@@ -53,7 +55,11 @@ function harness() {
   } as unknown as RtcSessions
   const viewer = createViewer({
     computer,
-    authenticate: (header) => viewerPrincipal(header, authority, () => COMPUTER),
+    // The desktop's own wiring: view tokens anywhere, the local client token only on the local port.
+    authenticate: viewerAuthenticator(
+      (header) => viewerPrincipal(header, authority, () => COMPUTER),
+      (header) => authenticate(config, header)
+    ),
     log: () => undefined,
     rtc,
     refusal: () => authority.refusal()
@@ -79,7 +85,7 @@ function harness() {
     const res = await call(path, token, body)
     return { status: res.status, json: JSON.parse(res.body.toString() || 'null') as Record<string, unknown> }
   }
-  return { computer, authority, viewer, offers, call, json }
+  return { computer, authority, viewer, offers, call, json, localToken: issued.token }
 }
 
 describe('console viewer through the relay', () => {
@@ -137,6 +143,21 @@ describe('console viewer through the relay', () => {
     ]) {
       expect((await json('/view/api/status', token)).status).toBe(401)
     }
+  })
+
+  it('refuses a local client token through the relay, which still works on the local port', async () => {
+    const { computer, json, viewer, localToken } = harness()
+    expect((await json('/view/api/status', localToken)).status).toBe(401)
+    expect((await json('/view/api/control', localToken, { action: 'take' })).status).toBe(401)
+    expect((await json('/view/api/input', localToken, { type: 'type', text: 'hi' })).status).toBe(401)
+    expect(computer.controlledBy('local')).toBe(false)
+    const local = await viewer.api({
+      method: 'GET',
+      path: '/view/api/status',
+      authorization: `Bearer ${localToken}`,
+      via: 'local'
+    })
+    expect(local.status).toBe(200)
   })
 
   it('offers TURN only when the token carries TURN servers, and passes the transport to WebRTC', async () => {

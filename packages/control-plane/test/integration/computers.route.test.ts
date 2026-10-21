@@ -431,8 +431,16 @@ describe('console viewer', () => {
     await live(computerId)
     const res = await app.app.inject({ method: 'POST', url })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { token: string; mode: string; relays: string[]; iceServers: { username: string }[] }
+    const body = res.json() as {
+      token: string
+      expiresInMs: number
+      mode: string
+      relays: string[]
+      iceServers: { username: string }[]
+    }
     expect(body).toMatchObject({ mode: 'control', relays: ['https://relay.example.com'] })
+    expect(body.expiresInMs).toBeGreaterThan(0)
+    expect(body.expiresInMs).toBeLessThanOrEqual(120_000)
     expect(body.iceServers[0]?.username).toMatch(new RegExp(`:viewer-${DEFAULT_OWNER_ID}$`))
     expect(readComputerChannelToken(body.token)).toMatchObject({ aud: 'view', cmp: computerId, usr: DEFAULT_OWNER_ID })
 

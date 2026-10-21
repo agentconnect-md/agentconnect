@@ -230,8 +230,8 @@ export class ComputerViewerSession {
 
   private scheduleRenewal(): void {
     if (this.renewTimer) clearTimeout(this.renewTimer)
-    const left = Date.parse(this.grant!.expiresAt) - this.now()
-    this.renewTimer = setTimeout(() => void this.renew(), Math.max(5_000, left * RENEW_FRACTION))
+    // From the grant's own lifetime, not `expiresAt`: the browser clock may be off from the CP's.
+    this.renewTimer = setTimeout(() => void this.renew(), Math.max(5_000, this.grant!.expiresInMs * RENEW_FRACTION))
   }
 
   private async renew(): Promise<boolean> {
@@ -286,7 +286,8 @@ export class ComputerViewerSession {
         }
         try {
           await this.connectPeer(transport, transport === 'direct' ? DIRECT_TIMEOUT_MS : TURN_TIMEOUT_MS)
-          if (this.stopped) return
+          // Stopped mid-ladder: stop() ran before this peer existed, so close it here.
+          if (this.stopped) return this.closePeer()
           this.update({ phase: 'live', path: transport, notes, error: null })
           return
         } catch (error) {
@@ -304,6 +305,7 @@ export class ComputerViewerSession {
     const offerRes = await this.api('POST', 'rtc/offer', { transport })
     const offer = (await offerRes.json()) as { id: string; sdp: string; message?: string; error?: string }
     if (!offerRes.ok) throw new Error(offer.message ?? offer.error ?? `HTTP ${offerRes.status}`)
+    if (this.stopped) throw new Error('viewer stopped')
     const config: RTCConfiguration =
       transport === 'turn' ? { iceServers: this.grant!.iceServers, iceTransportPolicy: 'relay' } : { iceServers: [] }
     const pc = (this.deps.createPeer ?? ((c) => new RTCPeerConnection(c)))(config)
@@ -344,6 +346,8 @@ export class ComputerViewerSession {
   }
 
   private attachChannel(channel: RTCDataChannel): void {
+    // A ping would keep a stopped viewer's desktop session alive.
+    if (this.stopped) return channel.close()
     this.channel = channel
     const ping = setInterval(() => {
       if (channel.readyState === 'open') channel.send('ping')

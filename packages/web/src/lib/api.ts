@@ -2917,6 +2917,7 @@ export async function deleteComputer(id: string): Promise<void> {
 export interface ComputerViewerGrantDto {
   token: string
   expiresAt: string
+  expiresInMs: number
   mode: 'view' | 'control'
   relays: string[]
   iceServers: { urls: string[]; username: string; credential: string }[]

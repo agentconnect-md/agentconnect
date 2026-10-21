@@ -37,7 +37,13 @@ import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
 import { RelayLinks } from './cp/relay-links.js'
-import { channelPrincipal, createRelayedMcpHandler, viewerPrincipal, type McpPrincipal } from './mcp-access.js'
+import {
+  channelPrincipal,
+  createRelayedMcpHandler,
+  viewerAuthenticator,
+  viewerPrincipal,
+  type McpPrincipal
+} from './mcp-access.js'
 import {
   exchangeRegistrationToken,
   loadRegistration,
@@ -443,7 +449,7 @@ function buildViewer(
   config: DesktopConfig,
   computer: Computer,
   refusal?: () => string | undefined,
-  // A console member's CP-issued view token; local client tokens still work on the local port.
+  // A console member's CP-issued view token; local client tokens work only on the local port, never through a relay.
   consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined
 ): Viewer {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
@@ -481,12 +487,10 @@ function buildViewer(
     : undefined
   const viewer: Viewer = createViewer({
     computer,
-    authenticate: (header) => {
-      const member = consoleViewer?.(header)
-      if (member) return member
-      const client = authenticate(config, header)
-      return client ? { client, control: true } : undefined
-    },
+    authenticate: viewerAuthenticator(
+      (header) => consoleViewer?.(header),
+      (header) => authenticate(config, header)
+    ),
     log,
     ...(rtc ? { rtc } : {}),
     rtcUnavailable: () =>
