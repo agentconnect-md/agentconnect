@@ -95,6 +95,8 @@ export class RtcSessions {
       return {
         ...base,
         iceServers: (principal.stunUrls ?? []).map((urls) => ({ urls })),
+        // werift awaits STUN inside setLocalDescription (5 s by default), so a silent server must not hold the offer longer.
+        iceStunGatherTimeout: STUN_GATHER_TIMEOUT_MS / 1000,
         ...(advertiseAddress ? { iceAdditionalHostAddresses: [advertiseAddress] } : {}),
         ...(portRange ? { icePortRange: portRange } : {})
       }

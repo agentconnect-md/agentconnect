@@ -1,5 +1,6 @@
 // WebRTC between the desktop's RtcSessions and a werift peer standing in for the browser: direct, hole-punched, and through TURN.
 import { createHmac } from 'node:crypto'
+import { createSocket } from 'node:dgram'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RTCPeerConnection, type RTCDataChannel } from 'werift'
 import type { ComputerIceServer } from '@agentconnect.md/protocol/computer'
@@ -183,6 +184,24 @@ describe('viewer WebRTC', () => {
     channel.send(JSON.stringify({ seq: 1, input: { type: 'key', keys: ['escape'] } }))
     expect(await reply).toMatchObject({ seq: 1, ok: true, result: 'applied' })
     expect(messages).toHaveLength(1)
+  }, 30_000)
+
+  it('answers within the STUN deadline when the STUN server never replies, and still connects on host candidates', async () => {
+    const silent = createSocket('udp4')
+    await new Promise<void>((resolve) => silent.bind(0, '127.0.0.1', resolve))
+    opened.push(() => new Promise<void>((resolve) => silent.close(() => resolve())))
+    const stunUrls = [`stun:127.0.0.1:${silent.address().port}`]
+    const { rtc } = sessions()
+    const principal: ViewerPrincipal = { client: 'console:u1', control: true, stunUrls }
+    const started = Date.now()
+    const offer = await rtc.offer(principal, { transport: 'stun' })
+    expect(Date.now() - started).toBeLessThan(4000)
+    expect(offer.sdp).toMatch(/typ host/)
+    const connecting = Date.now()
+    const { channel } = await trickleBrowser(rtc, principal, [])
+    expect(channel.label).toBe('input')
+    // Within the browser's eight-second punch attempt, counted from the offer call.
+    expect(Date.now() - connecting).toBeLessThan(8000)
   }, 30_000)
 
   it('takes no trickled candidate on an ICE-lite session or for another viewer', async () => {
