@@ -18,6 +18,7 @@
  * This is the only spot the CP touches the appSecret to reach Feishu; it NEVER logs it.
  */
 import type { FeishuRegion } from '@agentconnect.md/protocol'
+import type { BotRecord } from '../persistence/ports.js'
 import { AGENTCONNECT_FEISHU_EVENTS, AGENTCONNECT_FEISHU_SCOPES } from './feishu-app-template.js'
 
 /** tenant-access-token exchange outcome: valid creds (with the derived bot name), creds
@@ -33,14 +34,15 @@ export type FeishuBotVerifier = (
   region?: FeishuRegion
 ) => Promise<FeishuBotVerification>
 
-/** Resolve the tenant that owns an App. The installer compares this immutable
- *  tenant_key with the login App's tenant without retaining either an App-user
- *  token or a request-bound authorization grant. */
+// Resolve an App's tenant for comparison with the Login App, without retaining a user token.
 export type FeishuAppTenantResolution =
   | { status: 'ok'; tenantKey: string }
-  | { status: 'invalid_credentials' }
-  | { status: 'unresolved' }
-  | { status: 'unavailable' }
+  | {
+      status: 'invalid_credentials' | 'unresolved' | 'unavailable'
+      stage?: 'token_exchange' | 'tenant_query'
+      httpStatus?: number
+      providerCode?: number
+    }
 
 export type FeishuAppTenantResolver = (
   appId: string,
@@ -48,13 +50,20 @@ export type FeishuAppTenantResolver = (
   region: FeishuRegion
 ) => Promise<FeishuAppTenantResolution>
 
+export type FeishuLoginAppStatus = 'ok' | 'not_required' | 'not_configured' | 'unavailable'
 export type FeishuAppTenantCheck =
-  'ok' | 'not_configured' | 'invalid_credentials' | 'unresolved' | 'unavailable' | 'org_mismatch'
+  FeishuLoginAppStatus | 'login_unavailable' | 'invalid_credentials' | 'unresolved' | 'org_mismatch'
 
 /** One same-organization rule shared by manual and one-click installs. */
 export interface FeishuAppTenantGuard {
-  loginAppStatus(region: FeishuRegion): Promise<'ok' | 'not_configured' | 'unavailable'>
+  loginAppStatus(region: FeishuRegion): Promise<FeishuLoginAppStatus>
   checkApp(appId: string, appSecret: string, region: FeishuRegion): Promise<FeishuAppTenantCheck>
+}
+
+// Preserve legacy identity behavior; standalone installs explicitly withhold the login binding.
+export function hasFeishuLoginIdentity(bot: Pick<BotRecord, 'platformConfig'>): boolean {
+  const bound = bot.platformConfig?.feishuLoginBound
+  return bound === undefined || bound === 'true'
 }
 
 /** Open-platform gateway per region. Mainland China ('feishu') vs international ('lark');
@@ -71,7 +80,9 @@ async function tenantAccessToken(
   appSecret: string,
   region: FeishuRegion,
   fetcher: typeof fetch = fetch
-): Promise<{ status: 'ok'; token: string } | { status: 'invalid' | 'unavailable' }> {
+): Promise<
+  { status: 'ok'; token: string } | { status: 'invalid' | 'unavailable'; httpStatus?: number; providerCode?: number }
+> {
   try {
     const res = await fetcher(`${REGION_BASE[region]}/auth/v3/tenant_access_token/internal`, {
       method: 'POST',
@@ -79,11 +90,15 @@ async function tenantAccessToken(
       body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
       signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
     })
-    if (!res.ok) return { status: 'unavailable' }
+    if (!res.ok) return { status: 'unavailable', httpStatus: res.status }
     const body = (await res.json()) as { code?: number; tenant_access_token?: string }
     return body.code === 0 && body.tenant_access_token
       ? { status: 'ok', token: body.tenant_access_token }
-      : { status: 'invalid' }
+      : {
+          status: 'invalid',
+          httpStatus: res.status,
+          ...(typeof body.code === 'number' && Number.isSafeInteger(body.code) ? { providerCode: body.code } : {})
+        }
   } catch {
     return { status: 'unavailable' }
   }
@@ -307,7 +322,11 @@ export const resolveFeishuAppTenant: FeishuAppTenantResolver = async (appId, app
   const base = REGION_BASE[region]
   const token = await tenantAccessToken(appId, appSecret, region)
   if (token.status !== 'ok') {
-    return { status: token.status === 'invalid' ? 'invalid_credentials' : 'unavailable' }
+    return {
+      ...token,
+      status: token.status === 'invalid' ? 'invalid_credentials' : 'unavailable',
+      stage: 'token_exchange'
+    }
   }
 
   try {
@@ -315,30 +334,52 @@ export const resolveFeishuAppTenant: FeishuAppTenantResolver = async (appId, app
       headers: { authorization: `Bearer ${token.token}` },
       signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
     })
-    if (!res.ok) return { status: 'unavailable' }
+    if (!res.ok) return { status: 'unavailable', stage: 'tenant_query', httpStatus: res.status }
     const body = (await res.json()) as { code?: number; data?: { tenant?: { tenant_key?: string } } }
-    if (body.code !== 0) return { status: 'unavailable' }
+    if (body.code !== 0) {
+      return {
+        status: 'unavailable',
+        stage: 'tenant_query',
+        httpStatus: res.status,
+        ...(typeof body.code === 'number' && Number.isSafeInteger(body.code) ? { providerCode: body.code } : {})
+      }
+    }
     const tenantKey = body.data?.tenant?.tenant_key?.trim()
-    return tenantKey ? { status: 'ok', tenantKey } : { status: 'unresolved' }
+    return tenantKey
+      ? { status: 'ok', tenantKey }
+      : { status: 'unresolved', stage: 'tenant_query', httpStatus: res.status }
   } catch {
-    return { status: 'unavailable' }
+    return { status: 'unavailable', stage: 'tenant_query' }
   }
 }
 
 export function createFeishuAppTenantGuard(
   loginAppFor: (region: FeishuRegion) => { appId: string; appSecret: string } | undefined,
-  resolve: FeishuAppTenantResolver = resolveFeishuAppTenant
+  resolve: FeishuAppTenantResolver = resolveFeishuAppTenant,
+  options: {
+    loginEnabled?: (region: FeishuRegion) => boolean
+    onFailure?: (
+      failure: Exclude<FeishuAppTenantResolution, { status: 'ok' }> & {
+        source: 'login_app' | 'bot_app'
+        region: FeishuRegion
+      }
+    ) => void
+  } = {}
 ): FeishuAppTenantGuard {
   const loginTenants = new Map<FeishuRegion, string>()
   const loginTenant = async (
     region: FeishuRegion
-  ): Promise<{ status: 'ok'; tenantKey: string } | { status: 'not_configured' | 'unavailable' }> => {
+  ): Promise<{ status: 'ok'; tenantKey: string } | { status: Exclude<FeishuLoginAppStatus, 'ok'> }> => {
+    if (options.loginEnabled && !options.loginEnabled(region)) return { status: 'not_required' }
     const cached = loginTenants.get(region)
     if (cached) return { status: 'ok', tenantKey: cached }
     const app = loginAppFor(region)
     if (!app) return { status: 'not_configured' }
     const result = await resolve(app.appId, app.appSecret, region)
-    if (result.status !== 'ok') return { status: 'unavailable' }
+    if (result.status !== 'ok') {
+      options.onFailure?.({ source: 'login_app', region, ...result })
+      return { status: 'unavailable' }
+    }
     loginTenants.set(region, result.tenantKey)
     return result
   }
@@ -349,9 +390,12 @@ export function createFeishuAppTenantGuard(
     },
     async checkApp(appId, appSecret, region) {
       const login = await loginTenant(region)
-      if (login.status !== 'ok') return login.status
+      if (login.status !== 'ok') return login.status === 'unavailable' ? 'login_unavailable' : login.status
       const candidate = await resolve(appId, appSecret, region)
-      if (candidate.status !== 'ok') return candidate.status
+      if (candidate.status !== 'ok') {
+        options.onFailure?.({ source: 'bot_app', region, ...candidate })
+        return candidate.status
+      }
       return candidate.tenantKey === login.tenantKey ? 'ok' : 'org_mismatch'
     }
   }

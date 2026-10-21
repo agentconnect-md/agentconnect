@@ -54,7 +54,7 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
             403: ErrorDto,
             404: ErrorDto,
             409: ErrorDto,
-            502: ErrorDto
+            503: ErrorDto
           }
         }
       },
@@ -118,15 +118,17 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
+            code: 'FEISHU_LOGIN_APP_NOT_CONFIGURED',
             message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
           })
         }
         if (tenant === 'unavailable') {
-          return reply.code(502).send({
-            error: 'Bad Gateway',
-            statusCode: 502,
+          return reply.code(503).send({
+            error: 'Service Unavailable',
+            statusCode: 503,
+            code: 'FEISHU_LOGIN_APP_UNAVAILABLE',
             message:
-              'Could not verify the configured Lark/Feishu Login App organization. Enable and publish the Obtain tenant information permission, then try again.'
+              'Could not verify this deployment’s Lark/Feishu Login App organization. Ask the deployment administrator to check its credentials, app status and published Obtain tenant information permission.'
           })
         }
         try {
@@ -154,9 +156,14 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
               message: error.message
             })
           }
-          return reply.code(502).send({
-            error: 'Bad Gateway',
-            statusCode: 502,
+          req.log.warn(
+            { provider: 'feishu', region: req.body.region, stage: 'app_registration' },
+            'feishu setup unavailable'
+          )
+          return reply.code(503).send({
+            error: 'Service Unavailable',
+            statusCode: 503,
+            code: 'FEISHU_SETUP_UNAVAILABLE',
             message: 'Could not start Feishu app setup. Please try again.'
           })
         }
@@ -186,10 +193,10 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
           )
           if (tenant === 'invalid_credentials') throw new FeishuRegistrationSetupError('invalid_credentials')
           if (tenant === 'org_mismatch') throw new FeishuRegistrationSetupError('org_mismatch')
-          if (tenant === 'unavailable') {
+          if (tenant === 'unavailable' || tenant === 'login_unavailable') {
             throw new Error('Lark/Feishu App organization is temporarily unavailable')
           }
-          if (tenant !== 'ok') throw new FeishuRegistrationSetupError('setup_failed')
+          if (tenant !== 'ok' && tenant !== 'not_required') throw new FeishuRegistrationSetupError('setup_failed')
 
           const check = feishu.verifyBot
             ? await feishu.verifyBot(registration.appId, registration.appSecret, registration.region)
@@ -253,6 +260,7 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
               appId: registration.appId,
               appSecret: registration.appSecret,
               region: registration.region,
+              loginBound: tenant === 'ok',
               transport: registration.transport,
               ...(check?.status === 'ok' && check.openId ? { botUserId: check.openId } : {}),
               ...(registration.transport === 'http' ? { verificationToken, encryptKey } : {}),

@@ -1,6 +1,7 @@
 import type { FeishuRegion } from '@agentconnect.md/protocol'
 import { LRUCache } from 'lru-cache'
 import { cacheOptions } from '../cache.js'
+import { hasFeishuLoginIdentity } from './feishu-identity.js'
 import type { Clock } from '../domain/clock.js'
 import { BotId } from '../domain/ids.js'
 import type { FetchLike } from '../github/api.js'
@@ -82,6 +83,7 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       bots: BotRepo
       botSecrets: BotSecretStore
       clock: Clock
+      regions: readonly FeishuRegion[]
       fetchImpl?: FetchLike
       identity?: Pick<LogtoIdentityService, 'feishuIdentitiesFor'>
       /** Optional so tests can omit it, but without one the grace leaves no trace and an app that
@@ -112,21 +114,23 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
   }
 
   get available(): boolean {
-    return this.deps.identity !== undefined
+    return this.deps.identity !== undefined && this.deps.regions.length > 0
   }
 
   async addViewerIdentities({ request, orgId, identitySet }: SessionAccessViewer): Promise<void> {
     const subject = request.oidcSubject
-    if (!subject || !this.deps.identity) return
+    if (!subject || !this.available || !this.deps.identity) return
     const [identities, apps] = await Promise.all([
       this.deps.identity.feishuIdentitiesFor(subject),
       this.deps.bots.listForOrg(orgId)
     ])
     for (const identity of identities) {
+      if (!this.deps.regions.includes(identity.region)) continue
       for (const bot of apps) {
         if (
           bot.platform === 'feishu' &&
           bot.revokedAt === null &&
+          hasFeishuLoginIdentity(bot) &&
           bot.feishuAppId &&
           (bot.feishuRegion ?? 'feishu') === identity.region
         ) {
@@ -197,7 +201,9 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       bot.orgId !== scope.orgId ||
       bot.platform !== 'feishu' ||
       bot.revokedAt !== null ||
+      !hasFeishuLoginIdentity(bot) ||
       !region ||
+      !this.deps.regions.includes(region) ||
       !appId ||
       scope.realmKey !== `${region}:${appId}`
     ) {

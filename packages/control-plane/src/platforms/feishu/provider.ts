@@ -44,6 +44,7 @@ import type { IntegrationFeishuConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, IntegrationRecord } from '../../persistence/ports.js'
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
 import type { FeishuAppTenantGuard, FeishuBotVerifier } from '../../http/feishu-identity.js'
+import { hasFeishuLoginIdentity } from '../../http/feishu-identity.js'
 import type { FeishuAppIconSyncer } from '../../http/feishu-app-icon.js'
 import type { CpConfigValidation, CpInstallTransport, CpPlatformProvider } from '../provider.js'
 
@@ -264,8 +265,18 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       if (tenant === 'not_configured') {
         return {
           ok: false,
-          status: 503,
+          status: 409,
+          code: 'FEISHU_LOGIN_APP_NOT_CONFIGURED',
           message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
+        }
+      }
+      if (tenant === 'login_unavailable') {
+        return {
+          ok: false,
+          status: 503,
+          code: 'FEISHU_LOGIN_APP_UNAVAILABLE',
+          message:
+            'Could not verify this deployment’s Lark/Feishu Login App organization. Ask the deployment administrator to check its credentials, app status and published Obtain tenant information permission.'
         }
       }
       if (tenant === 'invalid_credentials') {
@@ -280,8 +291,9 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
         return {
           ok: false,
           status: 503,
+          code: 'FEISHU_BOT_TENANT_UNAVAILABLE',
           message:
-            'Could not verify this App’s organization. Enable and publish the Obtain tenant information permission, then try again.'
+            'Could not verify this Bot App’s organization. Check its published Obtain tenant information permission and try again.'
         }
       }
       if (tenant === 'org_mismatch') {
@@ -292,8 +304,7 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
           message: 'This Bot App belongs to a different Lark/Feishu organization from this AgentConnect deployment.'
         }
       }
-      // HTTP ingress cannot call Feishu with the app secret, so the CP must
-      // resolve the bot's own open_id now (route parity: 503, inconclusive).
+      // HTTP ingress needs the CP to resolve the bot's open_id before installation.
       if (transport === 'http' && (check?.status !== 'ok' || !check.openId)) {
         return {
           ok: false,
@@ -301,15 +312,13 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
           message: 'Could not resolve this app’s bot identity. Enable the bot capability in Feishu, then try again.'
         }
       }
-      // `name` is the middle rung of the create tail's name ladder;
-      // `externalAppId` is the pasted `cli_…` app id echoed back (the D6
-      // fence's key — core persists and checks it); `botUserId` is the bot's
-      // own open_id where resolved (http demux).
+      // Preserve the app identity fence, derived name, HTTP bot identity and verified login binding.
       const name = check?.status === 'ok' ? check.name : null
       const openId = check?.status === 'ok' ? check.openId : null
       return {
         ok: true,
         identity: {
+          ...(tenant === 'not_required' ? { platformConfig: { feishuLoginBound: 'false' } } : {}),
           ...(name ? { name } : {}),
           externalAppId: credentials.appId,
           ...(openId ? { botUserId: openId } : {})
@@ -317,24 +326,12 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       }
     },
 
-    /**
-     * The create tail's platform half (§9) — the same rows `installNewFeishuBot`
-     * writes for a manual credential install (the one-click funnel keeps that
-     * function for its pre-reserved-id idempotency):
-     *
-     *  - the app id and the gateway region are durable on BOTH rows, so a freed
-     *    bot reinstalls against the region it was registered with;
-     *  - `botUserId` is the bot's own open_id where `validateConfig` resolved it
-     *    (http ingress demuxes @-mentions with it);
-     *  - the D6 fence declares the identity core checks BEFORE the write and the
-     *    copy core sends when either half of the fence fires. `'-'` is the
-     *    tenantless sentinel `BotRepo.getByExternalIdentity` documents;
-     *  - Feishu bots are single-agent — the requested `shareable` is dropped.
-     */
+    // Match the one-click install's durable identity and credentials; Feishu bots remain single-agent.
     buildNewBotInstall: ({ credentials, identity }) => ({
       bot: {
         feishuAppId: credentials.appId,
         feishuRegion: credentials.region,
+        ...(identity.platformConfig ? { platformConfig: identity.platformConfig } : {}),
         ...(identity.botUserId ? { botUserId: identity.botUserId } : {})
       },
       integration: { feishuRegion: credentials.region },
@@ -353,21 +350,12 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       }
     }),
 
-    /**
-     * D6 identity (§11): Feishu is APP-scoped with NO tenant axis, so the pair
-     * is the `cli_…` app id plus {@link TENANTLESS_SENTINEL} — a real value, so
-     * the composite unique actually fires and becomes a one-bot-per-Feishu-app
-     * fence. (Writing NULL there would silently disable it: a NULL never
-     * participates in a composite unique.)
-     *
-     * The gateway region has no generic column, so it rides the generic bag
-     * beside the app id — the durable home that lets a freed bot reinstall
-     * against the same gateway once the legacy columns are dropped.
-     */
+    // A non-null tenantless sentinel enforces one bot per app; the bag preserves region and login binding.
     projectBotIdentity: (input) => {
       const bag = {
         ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
-        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {})
+        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
+        ...(input.platformConfig?.feishuLoginBound === 'false' ? { feishuLoginBound: 'false' } : {})
       }
       return {
         ...(input.feishuAppId ? { externalAppId: input.feishuAppId, externalTenantId: TENANTLESS_SENTINEL } : {}),
@@ -375,10 +363,10 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       }
     },
 
-    // Every Bot App admitted in a region was verified against that region's one configured Login App tenant.
+    // Keep the fallback conservative across regional bots, including apps without a verified Login App tenant.
     threadFallbackRealm: (bot) => bot.feishuRegion ?? 'feishu',
     // A member is the union_id a user linked in the bot's region, as a chat's audience is matched for session access.
-    chatMemberTenant: (bot) => (bot.revokedAt ? null : (bot.feishuRegion ?? 'feishu')),
+    chatMemberTenant: (bot) => (bot.revokedAt || !hasFeishuLoginIdentity(bot) ? null : (bot.feishuRegion ?? 'feishu')),
     sessionAudienceRealm: (bot) => (bot.feishuAppId ? `${bot.feishuRegion ?? 'feishu'}:${bot.feishuAppId}` : null),
 
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):

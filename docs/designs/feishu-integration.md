@@ -186,12 +186,11 @@ IntegrationFeishuConfig }`.
   Control Plane replica resume polling/finalization without duplicate installs;
   pre-reserved bot/integration IDs make retries idempotent. Clear both secrets
   on every terminal outcome and TTL-reap old rows.
-- After approval, pass the returned App ID and App Secret directly to the same
-  bot-secret installation helper used by the manual route only after the App's
-  `tenant_key` matches the configured regional Login App's `tenant_key`. This
-  requires every new App and the Login App to belong to the same Lark/Feishu
-  organization, but does not require the same human to create or authorize
-  them. Never return either credential from the registration routes.
+- After approval, pass the returned App ID and App Secret to the bot-secret
+  installation helper. When regional sign-in is enabled, first require the
+  App's `tenant_key` to match the Login App's `tenant_key`; the authorizing human
+  may differ. Otherwise persist the Bot without a login identity binding.
+  Never return either credential from the registration routes.
 - In `src/http/dto/index.ts`:
   - Add `'feishu'` to the `platform` `[enum]` in `CreateIntegrationBody`; add
     optional `feishu: z.object({ appId, appSecret })`; and update both
@@ -388,14 +387,20 @@ All three must include `'feishu'` for end-to-end selection.
 At one-click installation, the Console starts registration and the Control
 Plane returns a provider authorization deeplink. After the user confirms the
 app and permissions, the SDK returns `appId` and `appSecret` only to the
-Control Plane. It exchanges those credentials for a tenant token, calls the
-tenant-information API, and compares the resulting `tenant_key` with the
-configured regional Login App's `tenant_key`; a mismatch fails setup before
-any Bot is installed. The manual credential path runs the same tenant check.
+Control Plane. When regional sign-in is enabled, it exchanges those credentials
+for a tenant token, calls the tenant-information API, and compares the resulting
+`tenant_key` with the Login App's `tenant_key`; a mismatch fails setup before any
+Bot is installed. The manual credential path runs the same tenant check.
 The Login App ID/Secret are mirrored from the Logto connector into deployment
 configuration so this is an App-to-App comparison rather than an inference
 from whichever human happens to be installing the Bot. Both Apps must publish
 `tenant:tenant:readonly` so their tenant can be resolved.
+When regional sign-in is disabled, neither path depends on a Login App. The Bot
+stores `platformConfig.feishuLoginBound: 'false'`, which excludes it from login
+identity projection and membership authorization even if sign-in is later enabled.
+Existing installations retain their implicit login binding. Reusing a Bot preserves
+the stored binding; thread fallback still treats all regional Bots as potentially
+ambiguous. No user token or tenant identifier is added to storage.
 `verifyFeishuBot` validates the credentials and `botSecret.put` stores
 `{ botToken: appSecret, appToken: appId }`; `integrationToSpec` then distributes
 the integration to the daemon, which persists it in `agent.json` and starts
@@ -419,7 +424,7 @@ API egress.
 - Uninstalling through `DELETE /integrations` removes only integration
   metadata. It retains the bot and credentials and marks the bot free for reuse,
   matching existing behavior.
-- Session audience checks use this already-required Bot credential to enumerate
+- For login-bound Bots, Session audience checks use the Bot credential to enumerate
   chat member `union_id` values. They do not store or refresh a human access
   token. The separately configured Login App secret is used only as the
   deployment tenant anchor during Bot installation; it is not on the Session
@@ -534,8 +539,9 @@ the sign-in App, then links to the selected Lark or Feishu Open Platform console
 - **Control Plane:** a durable registration coordinator resumes the official
   device flow across replicas, leases each poll/finalize step, and installs
   credentials server-side through the same secret-store helper as the manual
-  route. Both paths reject a Bot App whose `tenant_key` does not match the
-  configured regional Login App's organization. HTTP registrations additionally
+  route. With regional sign-in enabled, both paths reject a Bot App whose
+  `tenant_key` does not match the Login App's organization. Otherwise they install
+  independently and withhold login identity matching. HTTP registrations additionally
   configure the app's callback delivery after the relay assignment exists. App
   Secret never enters a browser response and is cleared from the pending row
   after settlement.

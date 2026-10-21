@@ -351,9 +351,34 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
     const provider = createFeishuCpProvider({ verifyBot: verifierOk() })
     expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
       ok: false,
-      status: 503,
+      status: 409,
+      code: 'FEISHU_LOGIN_APP_NOT_CONFIGURED',
       message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
     })
+  })
+
+  it.each([
+    ['login_unavailable', 'FEISHU_LOGIN_APP_UNAVAILABLE', 'Login App'],
+    ['unavailable', 'FEISHU_BOT_TENANT_UNAVAILABLE', 'Bot App']
+  ] as const)('identifies the failed app for %s', async (status, code, app) => {
+    const provider = validationProvider({
+      verifyBot: verifierOk(),
+      tenantGuard: { loginAppStatus: async () => 'ok', checkApp: async () => status }
+    })
+    expect(await provider.validateConfig(CREDS, 'socket')).toMatchObject({
+      ok: false,
+      status: 503,
+      code,
+      message: expect.stringContaining(app)
+    })
+  })
+
+  it('excludes standalone bots from login membership matching without weakening fallback ambiguity checks', () => {
+    const provider = validationProvider()
+    const standalone = bot({ platformConfig: { feishuLoginBound: 'false' } })
+    expect(provider.chatMemberTenant?.(standalone)).toBeNull()
+    expect(provider.chatMemberTenant?.(bot())).toBe('lark')
+    expect(provider.threadFallbackRealm?.(standalone)).toBe(provider.threadFallbackRealm?.(bot()))
   })
 })
 

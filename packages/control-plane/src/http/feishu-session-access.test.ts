@@ -48,6 +48,7 @@ function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Respons
       })
     } as never,
     clock: { now } as never,
+    regions: ['feishu', 'lark'],
     fetchImpl
   })
 }
@@ -62,18 +63,31 @@ function viewer(unionIds: string[] = ['on_member']): SessionAccessViewer {
 }
 
 describe('FeishuSessionAccessService', () => {
-  it('links one login union_id into every active same-region Bot App domain', async () => {
+  it('links login identities only to bound Bot Apps in enabled regions', async () => {
     const resolver = new FeishuSessionAccessService({
       bots: {
         listForOrg: async () => [
           { platform: 'feishu', feishuRegion: 'lark', feishuAppId: 'cli_one', revokedAt: null },
           { platform: 'feishu', feishuRegion: 'lark', feishuAppId: 'cli_two', revokedAt: null },
-          { platform: 'feishu', feishuRegion: 'feishu', feishuAppId: 'cli_mainland', revokedAt: null }
+          { platform: 'feishu', feishuRegion: 'feishu', feishuAppId: 'cli_mainland', revokedAt: null },
+          {
+            platform: 'feishu',
+            feishuRegion: 'lark',
+            feishuAppId: 'cli_standalone',
+            revokedAt: null,
+            platformConfig: { feishuLoginBound: 'false' }
+          }
         ]
       } as never,
       botSecrets: {} as never,
       clock: { now: () => 1_000 } as never,
-      identity: { feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }] }
+      regions: ['lark'],
+      identity: {
+        feishuIdentitiesFor: async () => [
+          { region: 'lark', unionId: 'on_member' },
+          { region: 'feishu', unionId: 'on_mainland' }
+        ]
+      }
     })
     const current = viewer([])
     current.request = { oidcSubject: 'logto-sub' } as never
@@ -81,6 +95,26 @@ describe('FeishuSessionAccessService', () => {
     await resolver.addViewerIdentities(current)
 
     expect(current.identitySet).toEqual(new Set(['feishu:lark:cli_one:on_member', 'feishu:lark:cli_two:on_member']))
+  })
+
+  it('does not grant membership access to a standalone Bot after sign-in is enabled', async () => {
+    const fetchImpl = vi.fn()
+    const resolver = new FeishuSessionAccessService({
+      bots: { getUnscoped: async () => ({ ...bot(), platformConfig: { feishuLoginBound: 'false' } }) } as never,
+      botSecrets: {} as never,
+      clock: { now: () => 1_000 } as never,
+      regions: ['lark'],
+      identity: { feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }] },
+      fetchImpl
+    })
+
+    expect(resolver.available).toBe(true)
+    await expect(resolver.resolve([scope()], viewer())).resolves.toEqual({
+      allowedScopes: [],
+      degraded: false,
+      accessIssues: []
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('uses the Lark gateway and allows a current member of a custom Bot chat', async () => {

@@ -69,4 +69,54 @@ describe('resolveFeishuAppTenant', () => {
     await expect(guard.checkApp('cli_other', 'other-secret', 'lark')).resolves.toBe('org_mismatch')
     expect(resolve.mock.calls.filter(([appId]) => appId === 'cli_login')).toHaveLength(1)
   })
+
+  it.each([undefined, { appId: 'cli_unused_login', appSecret: 'expired-secret' }])(
+    'does not require or query Login App credentials when regional sign-in is disabled (%j)',
+    async (app) => {
+      const resolve = vi.fn(async () => ({ status: 'invalid_credentials' as const }))
+      const guard = createFeishuAppTenantGuard(() => app, resolve, { loginEnabled: () => false })
+
+      await expect(guard.loginAppStatus('feishu')).resolves.toBe('not_required')
+      await expect(guard.checkApp('cli_bot', 'bot-secret', 'feishu')).resolves.toBe('not_required')
+      expect(resolve).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['login_app', 'bot_app'] as const)(
+    'attributes a token rejection to the %s without logging secrets',
+    async (source) => {
+      const fetcher = vi.fn<typeof fetch>(async () =>
+        Response.json({
+          code: 10014,
+          msg: 'upstream details must not be logged'
+        })
+      )
+      if (source === 'bot_app') {
+        fetcher.mockImplementationOnce(async () => Response.json({ code: 0, tenant_access_token: 'login-token' }))
+        fetcher.mockImplementationOnce(async () =>
+          Response.json({ code: 0, data: { tenant: { tenant_key: 'tenant_one' } } })
+        )
+      }
+      vi.stubGlobal('fetch', fetcher)
+      const onFailure = vi.fn()
+      const guard = createFeishuAppTenantGuard(
+        () => ({ appId: 'cli_login', appSecret: 'login-secret' }),
+        resolveFeishuAppTenant,
+        { loginEnabled: () => true, onFailure }
+      )
+
+      await expect(guard.checkApp('cli_bot', 'bot-secret', 'lark')).resolves.toBe(
+        source === 'login_app' ? 'login_unavailable' : 'invalid_credentials'
+      )
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+        source,
+        region: 'lark',
+        status: 'invalid_credentials',
+        stage: 'token_exchange',
+        httpStatus: 200,
+        providerCode: 10014
+      })
+      expect(fetcher).toHaveBeenCalledTimes(source === 'login_app' ? 1 : 3)
+    }
+  )
 })

@@ -1933,12 +1933,16 @@ verified regional app, never from a URL hint. Diagnostics may retain only the pr
 target, failure stage, HTTP status, and a bounded upstream error code — never account ids,
 bearer tokens, or upstream error messages.
 
-A self-deployed AgentConnect instance is bound to the organization of its Lark/Feishu
-login App. Every Bot App installation, whether one-click or manual credentials, must
-resolve that configured Login App's `tenant_key`, compare it with the candidate App's
-`tenant_key`, and reject a mismatch. The authorizing human may be any member of the same
-organization; tenant verification must not be weakened into a same-user `union_id`
-comparison or require user-token storage.
+When regional Lark/Feishu sign-in is enabled, every Bot App installation, whether
+one-click or manual credentials, must resolve that Login App's `tenant_key`, compare
+it with the candidate App's `tenant_key`, and reject a mismatch. The authorizing human
+may be any member of the same organization; tenant verification must not be weakened
+into a same-user `union_id` comparison or require user-token storage.
+When regional sign-in is disabled, Bot Apps install independently of any saved Login
+App credentials. These installations do not participate in login identity or chat
+membership matching, even if sign-in is enabled later; existing explicit console
+access rules still apply. Login App verification failures must identify the deployment
+administrator's configuration, rather than tell the user to change their Bot App.
 A reconnect that proves a different provider account must not replace the linked identity;
 the console tells the user to reconnect with the linked account or unlink before switching.
 
