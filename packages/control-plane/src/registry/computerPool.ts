@@ -10,7 +10,13 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import { AgentId, ComputerId, type OrgId } from '../domain/ids.js'
-import { defaultComputerPolicy, isComputerReachable, type ComputerPolicy } from '../domain/computer.js'
+import {
+  computerGrantsAgent,
+  defaultComputerPolicy,
+  isComputerReachable,
+  type ComputerAgentAccess,
+  type ComputerPolicy
+} from '../domain/computer.js'
 import {
   DEFAULT_COMPUTER_POOL_TIMINGS,
   managedComputerName,
@@ -54,7 +60,7 @@ export interface ComputerPoolDeps {
     | 'orgOwnerUserId'
   >
   agents: { get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | null> }
-  computers: Pick<ComputerService, 'createRegistration' | 'revoke' | 'delete' | 'presentedStatus'>
+  computers: Pick<ComputerService, 'createRegistration' | 'revoke' | 'delete' | 'presentedStatus' | 'accessGranted'>
   leases?: Pick<ComputerLeaseService, 'current'>
   members: ComputerPoolMembers
   clock: Clock
@@ -136,8 +142,7 @@ export class ComputerPool {
     const agent = await this.deps.agents.get(orgId, AgentId(req.agentId))
     if (!agent) return failed('denied', 'unknown agent')
     if (req.computerId) return await this.wakeGranted(orgId, agent, req.computerId, req.sessionId)
-    const use = agent.computerUse
-    const mode = use?.enabled === true ? use.managed?.mode : undefined
+    const mode = agent.computerUse?.managed?.mode
     if (!mode) return failed('not_configured', 'this agent has no managed computer setting')
     const key: ManagedComputerKey =
       mode === 'per-agent'
@@ -161,7 +166,7 @@ export class ComputerPool {
   /** A user's `manual` computer, created from the pool (§15.1); null when no pool member can start one. */
   async createManual(
     orgId: OrgId,
-    input: { name: string; ownerUserId: string; policy?: ComputerPolicy }
+    input: { name: string; ownerUserId: string; policy?: ComputerPolicy; agentAccess?: ComputerAgentAccess }
   ): Promise<ComputerRecord | null> {
     if (!this.deps.members.available()) return null
     const row = await this.deps.repo.createManaged({
@@ -170,10 +175,14 @@ export class ComputerPool {
       name: input.name,
       ownerUserId: input.ownerUserId,
       allocation: 'manual',
-      policy: managedComputerPolicy(input.ownerUserId, [], input.policy ?? defaultComputerPolicy(input.ownerUserId)),
+      policy: managedComputerPolicy(input.ownerUserId, input.policy ?? defaultComputerPolicy(input.ownerUserId)),
+      agentAccess: input.agentAccess ?? { mode: 'none', agents: [] },
       now: new Date(this.deps.clock.now())
     })
-    if (row) this.kick(row)
+    if (row) {
+      this.kick(row)
+      await this.deps.computers.accessGranted(orgId, row)
+    }
     return row
   }
 
@@ -315,7 +324,9 @@ export class ComputerPool {
       allocation: mode,
       ownerAgentId: agent.id,
       ...(mode === 'ephemeral' ? { poolSessionId: sessionId } : {}),
-      policy: managedComputerPolicy(owner, [agent.id]),
+      policy: managedComputerPolicy(owner),
+      // Implicitly Selected for the one agent it was made for (§15.1).
+      agentAccess: { mode: 'selected', agents: [agent.id] },
       now: new Date(this.deps.clock.now())
     })
     if (created) {
@@ -337,8 +348,7 @@ export class ComputerPool {
     sessionId: string
   ): Promise<ComputerPoolAcquireResult> {
     const c = await this.deps.repo.get(orgId, ComputerId(computerId))
-    if (!c || !c.policy.allowedAgents.includes(agent.id))
-      return failed('denied', 'this agent is not granted this computer')
+    if (!c || !computerGrantsAgent(c, agent.id)) return failed('denied', 'this agent is not granted this computer')
     if (c.kind !== 'managed' || !c.poolPhase) return ready(c)
     if (c.poolSessionId && c.poolSessionId !== sessionId)
       return failed('denied', 'this computer belongs to another session')

@@ -266,7 +266,12 @@ export class ComputerConnection implements ComputerChannel {
         !computer || computer.status === 'revoked'
           ? ({ status: 'skipped', reason: 'computer revoked' } as const)
           : await this.deps.screenshots!.put(
-              { orgId: this.orgId, computerId: this.computerId, policy: computer.policy },
+              {
+                orgId: this.orgId,
+                computerId: this.computerId,
+                policy: computer.policy,
+                agentAccess: computer.agentAccess
+              },
               put
             )
       if (this.state === 'READY') this.reply(frame, 'computer/screenshot/put/ok', reply)

@@ -2915,7 +2915,8 @@ function AgentDetail() {
           />
           <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
           <AgentDecisionsCard key={da.id} agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
-          <AgentComputersCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
+          {/* Access is the Computer's: each Computer's own edit right gates the change, not the agent's. */}
+          <AgentComputersCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX)} />
           <div className="card overflow-hidden max-desktop:rounded-lg desktop:max-w-[760px]">
             <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal desktop:py-[13px]">
               {t('tools.loadedFromWorkspace')}

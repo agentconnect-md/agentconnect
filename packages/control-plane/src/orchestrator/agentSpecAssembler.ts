@@ -29,7 +29,8 @@ import {
   type ChannelDecisionGate,
   type HookRoutingProjection,
   type ManagedSkillEntry,
-  type AgentSpec
+  type AgentSpec,
+  agentComputerUseOf
 } from '@agentconnect.md/protocol'
 import type {
   AgentInstallationAuthorizationRepo,
@@ -37,6 +38,7 @@ import type {
   AgentRepoAuthorizationRepo,
   AgentSecretStore,
   CodeHostDecisionRoutingRepo,
+  ComputerRepo,
   DecisionRepo,
   HookRepo,
   OrganizationEnvironmentResolver,
@@ -46,6 +48,7 @@ import type {
 import { isHonoredRepoGrant } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
+import { derivedComputerIds } from '../domain/computer.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { hookRoutingProjection, routingMembers } from '../hooks/hook-routing.js'
@@ -109,8 +112,16 @@ export class AgentSpecAssembler {
     // Optional for minimal test graphs: the agent's installation grants (decision 10); absent ⇒ [].
     private readonly agentInstallationAuth?: Pick<AgentInstallationAuthorizationRepo, 'listForAgent'>,
     // The Decisions an API gate names, shipped with it so admission never reads the CP; absent ⇒ no gates.
-    private readonly decisions?: Pick<DecisionRepo, 'getForAgent'>
+    private readonly decisions?: Pick<DecisionRepo, 'getForAgent'>,
+    // The Computers whose agent access grants an agent (computer-use.md §4.1); absent ⇒ none.
+    private readonly computerGrants?: Pick<ComputerRepo, 'listAgentGrants'>
   ) {}
+
+  /** The Computers an agent may use, derived from each Computer's agent access; pinned by the move bundle like grants. */
+  async computersOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<string[]> {
+    if (!this.computerGrants) return []
+    return derivedComputerIds(await this.computerGrants.listAgentGrants(OrgId(a.orgId)), a.id)
+  }
 
   /** Each chat API gate with its Decisions; a gate whose condition no longer fits its Decision is left out, so it fails open. */
   async apiGatesOf(a: Pick<AgentRecord, 'orgId' | 'apiGates'>): Promise<AgentApiGateProjections> {
@@ -142,7 +153,8 @@ export class AgentSpecAssembler {
       giteaHook,
       hookRoutings,
       additionalInstallations,
-      apiGates
+      apiGates,
+      computers
     ] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
@@ -153,7 +165,8 @@ export class AgentSpecAssembler {
       this.giteaHookOf(a),
       this.hookRoutingsOf(a),
       this.additionalInstallationsOf(a),
-      this.apiGatesOf(a)
+      this.apiGatesOf(a),
+      this.computersOf(a)
     ])
     return this.project(
       a,
@@ -166,7 +179,8 @@ export class AgentSpecAssembler {
       giteaHook,
       hookRoutings,
       additionalInstallations,
-      apiGates
+      apiGates,
+      computers
     )
   }
 
@@ -330,7 +344,8 @@ export class AgentSpecAssembler {
     giteaHook = false,
     hookRoutings?: HookRoutingProjection[],
     additionalInstallations: AgentAdditionalInstallation[] = [],
-    apiGates: AgentApiGateProjections = {}
+    apiGates: AgentApiGateProjections = {},
+    computers: readonly string[] = []
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -349,7 +364,8 @@ export class AgentSpecAssembler {
       giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook),
       hookRoutings,
       additionalInstallations,
-      apiGates
+      apiGates,
+      computers
     )
   }
 }
@@ -430,7 +446,9 @@ export function agentRecordToSpec(
   // The agent's installation grants, already sorted; always shipped beside `additionalRepos` and never merged into it.
   additionalInstallations: AgentAdditionalInstallation[] = [],
   // The chat API gates with their Decisions, already resolved by {@link AgentSpecAssembler.apiGatesOf}.
-  apiGates: AgentApiGateProjections = {}
+  apiGates: AgentApiGateProjections = {},
+  // The Computers whose agent access grants the agent, already derived by {@link AgentSpecAssembler.computersOf}.
+  computers: readonly string[] = []
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // The assembled spec always carries the host-neutral `git` arm; the per-peer
@@ -552,8 +570,8 @@ export function agentRecordToSpec(
     // #536: self-introduce-on-join. A definite column value, always shipped so a
     // toggle replicates to the owning daemon (which applies it to agent.json).
     introduceOnJoin: a.introduceOnJoin,
-    // Computer use (computer-use.md §4.1): value or null, so switching it off replicates.
-    computerUse: a.computerUse ?? null,
+    // Derived (computer-use.md §4.1): the granting Computers and the managed mode, or null so losing the last one replicates.
+    computerUse: agentComputerUseOf(a.computerUse, computers),
     // The strategy sessions run in (session-executors.md §5), always shipped.
     execution: a.execution,
     // Preset marker (preset-agents.md §3.1). Always shipped (definite record field)

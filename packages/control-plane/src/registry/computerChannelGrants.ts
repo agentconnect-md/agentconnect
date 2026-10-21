@@ -13,7 +13,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, type OrgId } from '../domain/ids.js'
-import { isComputerReachable, presentComputerStatus } from '../domain/computer.js'
+import { computerGrantsAgent, isComputerReachable, presentComputerStatus } from '../domain/computer.js'
 import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerChannelKeys } from './computerChannelKeys.js'
 import { turnCredentials, type TurnConfig } from '../computer-viewer/turn.js'
@@ -70,8 +70,7 @@ export class ComputerChannelGrants {
     })
     const computer = await this.repo.get(orgId, ComputerId(computerId))
     if (!computer || computer.status === 'revoked') return refuse('unavailable', 'this computer was revoked or removed')
-    if (!computer.policy.allowedAgents.includes(who.agentId))
-      return refuse('denied', 'this agent is not granted this computer')
+    if (!computerGrantsAgent(computer, who.agentId)) return refuse('denied', 'this agent is not granted this computer')
     if (computer.poolSessionId && computer.poolSessionId !== who.sessionId)
       return refuse('denied', 'this computer belongs to another session')
     const now = this.clock.now()

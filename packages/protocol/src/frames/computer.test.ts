@@ -8,11 +8,19 @@ import {
   computerAuditArgs,
   computerAuditText,
   ComputerPolicySchema,
+  agentAccessGrants,
+  normalizeAgentAccess,
   buildComputerCpFrame,
   decodeComputerCpFrame,
   decodeComputerCpFrameTolerant
 } from './computer.js'
 import { buildRelayCpFrame } from './relay-cp.js'
+import {
+  AGENT_COMPUTERS_MAX,
+  AgentComputerSetting,
+  AgentComputerUse,
+  agentComputerUseOf
+} from '../agent-computer-use.js'
 import { buildEnvelope, decodeEnvelope } from '../codec.js'
 
 const credential = {
@@ -279,5 +287,48 @@ describe('computer screenshot frames', () => {
     expect(ComputerPolicySchema.parse({}).screenshotRetentionDays).toBeUndefined()
     expect(ComputerPolicySchema.parse({ screenshotRetentionDays: 0 }).screenshotRetentionDays).toBe(0)
     expect(ComputerPolicySchema.safeParse({ screenshotRetentionDays: 4000 }).success).toBe(false)
+  })
+})
+
+describe('Computer agent access (computer-use.md §4.1)', () => {
+  const A = '00000000-0000-4000-8000-00000000000a'
+  const B = '00000000-0000-4000-8000-00000000000b'
+
+  it('stores agents only under Selected and reads an empty selection as none', () => {
+    expect(normalizeAgentAccess({ mode: 'selected', agents: [A, A, B] })).toEqual({ mode: 'selected', agents: [A, B] })
+    expect(normalizeAgentAccess({ mode: 'selected', agents: [] })).toEqual({ mode: 'none', agents: [] })
+    expect(normalizeAgentAccess({ mode: 'all', agents: [A] })).toEqual({ mode: 'all', agents: [] })
+    expect(normalizeAgentAccess({ mode: 'none', agents: [A] })).toEqual({ mode: 'none', agents: [] })
+  })
+
+  it('grants the listed agents under Selected, every agent under All, and none by default', () => {
+    expect(agentAccessGrants({ mode: 'selected', agents: [A] }, A)).toBe(true)
+    expect(agentAccessGrants({ mode: 'selected', agents: [A] }, B)).toBe(false)
+    expect(agentAccessGrants({ mode: 'all', agents: [] }, B)).toBe(true)
+    expect(agentAccessGrants({ mode: 'none', agents: [] }, A)).toBe(false)
+  })
+
+  it('no longer carries allowed agents in the policy', () => {
+    expect(ComputerPolicySchema.parse({ allowedAgents: [A] })).not.toHaveProperty('allowedAgents')
+  })
+
+  it('derives the spec value an older daemon reads from the derived Computers and the managed mode', () => {
+    expect(agentComputerUseOf(undefined, [])).toBeNull()
+    expect(agentComputerUseOf({}, [A])).toEqual({ enabled: true, computers: [A] })
+    expect(agentComputerUseOf({ managed: { mode: 'per-agent' } }, [])).toEqual({
+      enabled: true,
+      computers: [],
+      managed: { mode: 'per-agent' }
+    })
+    const many = Array.from(
+      { length: AGENT_COMPUTERS_MAX + 5 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+    )
+    expect(AgentComputerUse.parse(agentComputerUseOf({}, many)).computers).toHaveLength(AGENT_COMPUTERS_MAX)
+  })
+
+  it('takes only the managed mode from an agent', () => {
+    expect(AgentComputerSetting.parse({ managed: { mode: 'ephemeral' } })).toEqual({ managed: { mode: 'ephemeral' } })
+    expect(AgentComputerSetting.safeParse({ enabled: true, computers: [A] }).success).toBe(false)
   })
 })

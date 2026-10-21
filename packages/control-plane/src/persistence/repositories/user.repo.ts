@@ -31,6 +31,7 @@ import {
   isSyntheticEmail
 } from '../ports.js'
 import { OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
+import { bumpAgentsLosingComputersTx } from './computer.repo.js'
 
 const RESOURCE_AUDIENCE_TABLES = [
   'agent',
@@ -271,7 +272,7 @@ async function removeMembershipTx(
   orgId: string,
   userId: string,
   actingUserId: string
-): Promise<void> {
+): Promise<'all' | string[]> {
   await lockOrgOwnerTransition(tx, orgId)
   const membershipSnapshot = await tx.membership.findMany({
     where: { orgId },
@@ -297,16 +298,26 @@ async function removeMembershipTx(
     await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
   }
   // A departing member's own desktops leave with them: revoke the Computers and their keys (computer-use.md §3.6).
-  await revokeOwnedComputersTx(tx, orgId, userId)
+  const affected = await revokeOwnedComputersTx(tx, orgId, userId)
   // A membership-delete trigger ends GitLab OAuth authority (§9.4) on every removal path.
   await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
+  return affected
 }
 
-async function revokeOwnedComputersTx(tx: Prisma.TransactionClient, orgId: string, ownerUserId: string): Promise<void> {
+async function revokeOwnedComputersTx(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  ownerUserId: string
+): Promise<'all' | string[]> {
   // Unspent tokens leave too, so a re-added member cannot redeem one minted before the removal.
   await tx.computerRegistration.deleteMany({ where: { orgId, createdByUserId: ownerUserId, consumedAt: null } })
-  const owned = await tx.computer.findMany({ where: { orgId, ownerUserId }, select: { id: true } })
-  if (owned.length === 0) return
+  const owned = await tx.computer.findMany({
+    where: { orgId, ownerUserId },
+    select: { id: true, status: true, allocation: true, agentAccess: true, accessAgentIds: true }
+  })
+  if (owned.length === 0) return []
+  // Agents whose derived lists lose these Computers take a new revision, or a reconnect's changed spec is refused.
+  const affected = await bumpAgentsLosingComputersTx(tx, orgId, owned)
   const at = new Date()
   const ids = owned.map((c) => c.id)
   await tx.apiKey.updateMany({
@@ -317,6 +328,7 @@ async function revokeOwnedComputersTx(tx: Prisma.TransactionClient, orgId: strin
     where: { id: { in: ids }, status: { not: 'revoked' } },
     data: { status: 'revoked', revokedAt: at }
   })
+  return affected
 }
 
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
@@ -667,10 +679,10 @@ export class PgUserRepo implements UserRepo {
     return toMemberRecord(row)
   }
 
-  async removeMember(orgId: string, userId: string, actingUserId: string): Promise<void> {
-    await withAmbientTx(this.db, async (tx) => {
+  async removeMember(orgId: string, userId: string, actingUserId: string): Promise<'all' | string[]> {
+    return withAmbientTx(this.db, async (tx) => {
       await assertUserKind(tx, userId, 'human')
-      await removeMembershipTx(tx, orgId, userId, actingUserId)
+      return removeMembershipTx(tx, orgId, userId, actingUserId)
     })
   }
 

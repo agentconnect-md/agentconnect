@@ -65,7 +65,8 @@ function setup() {
     orgId: ORG,
     status: 'online',
     lastSeenAt: new Date(T0),
-    policy: ComputerPolicySchema.parse({ allowedAgents: [AGENT_A, AGENT_B] })
+    policy: ComputerPolicySchema.parse({}),
+    agentAccess: { mode: 'selected', agents: [AGENT_A, AGENT_B] }
   })
   const pushed: Array<ComputerControlLease | null> = []
   // The connection re-reads the lease on a change; the in-memory repo has committed by then.
@@ -282,10 +283,7 @@ describe('ComputerLeaseService wait queue', () => {
 
   it('never queues when the policy sets no wait', async () => {
     const env = setup()
-    env.repo.computers.get(CID)!.policy = ComputerPolicySchema.parse({
-      allowedAgents: [AGENT_A, AGENT_B],
-      leaseWaitSeconds: 0
-    })
+    env.repo.computers.get(CID)!.policy = ComputerPolicySchema.parse({ leaseWaitSeconds: 0 })
     await env.service.acquire(ORG, CID, who('s1'))
     const busy = await env.service.acquire(ORG, CID, who('s2', AGENT_B), waits)
     expect(busy).toMatchObject({ granted: false, code: 'computer_busy', holder: { sessionId: 's1' } })
@@ -334,7 +332,7 @@ describe('ComputerLeaseService wait queue', () => {
     await service.acquire(ORG, CID, who('s5', AGENT_B), waits)
     env.tick(1)
     await service.acquire(ORG, CID, who('s6'), waits)
-    env.repo.computers.get(CID)!.policy = ComputerPolicySchema.parse({ allowedAgents: [AGENT_A] })
+    env.repo.computers.get(CID)!.agentAccess = { mode: 'selected', agents: [AGENT_A] }
     expect(await service.acquire(ORG, CID, who('s6'), waits)).toMatchObject({ queued: { position: 1 } })
     expect(await service.acquire(ORG, CID, who('s5', AGENT_B), waits)).toMatchObject({ code: 'denied' })
   })

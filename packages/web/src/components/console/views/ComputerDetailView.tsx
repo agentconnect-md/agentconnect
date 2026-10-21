@@ -1,6 +1,6 @@
 'use client'
 
-// Computer detail (computer-use.md §10): viewer, status, doctor with fixes, policy, stop / resume, revoke, and activity.
+// Computer detail (computer-use.md §10): viewer, status, doctor with fixes, agent access, policy, stop / resume, revoke, and activity.
 import { useEffect, useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -14,6 +14,7 @@ import { VisibilityValue } from '@/components/console/VisibilityField'
 import { useMemberName } from '@/components/console/computer-members'
 import { ComputerActivityCard, ComputerDoctorCard } from '@/components/console/ComputerCards'
 import { ComputerPolicyCard } from '@/components/console/ComputerPolicyCard'
+import { ComputerAgentAccessCard } from '@/components/console/ComputerAgentAccessCard'
 import { ComputerViewerCard } from '@/components/console/ComputerViewer'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -297,6 +298,10 @@ function ComputerDetail({
             </Row>
           </div>
         </div>
+      </div>
+
+      <div className="mt-4 desktop:mt-[18px]">
+        <ComputerAgentAccessCard computer={computer} onSaved={onChanged} />
       </div>
 
       <div className="mt-4 desktop:mt-[18px]">

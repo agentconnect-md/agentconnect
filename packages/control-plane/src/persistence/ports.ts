@@ -35,7 +35,7 @@ import type {
   BindRule,
   AgentIcon,
   AgentMemoryBinding,
-  AgentComputerUse,
+  AgentComputerSetting,
   AssistantModePolicy,
   AssistantOnboarding,
   AssistantOnboardingHints,
@@ -90,6 +90,7 @@ import type {
   ComputerLiveStatus,
   ComputerOs,
   ComputerPolicy,
+  ComputerAgentAccess,
   ComputerSession,
   ComputerStatus
 } from '../domain/computer.js'
@@ -589,6 +590,8 @@ export interface ComputerRecord extends Shareable {
   desktopDaemonVersion: string
   driverVersion: string
   policy: ComputerPolicy
+  /** Which agents may use it (computer-use.md §4.1); the one relation both the Computer and the agent pages edit. */
+  agentAccess: ComputerAgentAccess
   lastSeenAt: Date | null
   revokedAt: Date | null
   /** A console Stop that stands until someone resumes the Computer there (computer-use.md §6). */
@@ -629,7 +632,14 @@ export interface CreateManagedComputerInput {
   ownerAgentId?: string
   poolSessionId?: string
   policy: ComputerPolicy
+  agentAccess: ComputerAgentAccess
   now: Date
+}
+
+/** A Computer that grants agents, as an agent's derived Computer list reads it (computer-use.md §4.1). */
+export interface ComputerAgentGrant {
+  id: ComputerId
+  agentAccess: ComputerAgentAccess
 }
 
 /** Which live managed computer an agent already has: its own, or its session's. */
@@ -714,6 +724,14 @@ export interface ComputerRepo {
   ): Promise<ComputerRecord | null>
   /** Replace the policy; null when the Computer is missing or revoked. */
   setPolicy(orgId: OrgId, id: ComputerId, policy: ComputerPolicy): Promise<ComputerRecord | null>
+  /** Change the agent access under the row lock from what it is now; null when the Computer is missing or revoked. */
+  updateAgentAccess(
+    orgId: OrgId,
+    id: ComputerId,
+    next: (current: ComputerAgentAccess) => ComputerAgentAccess
+  ): Promise<{ before: ComputerAgentAccess; computer: ComputerRecord } | null>
+  /** The org's live Computers an agent may be listed on, oldest first: not revoked, not `none`, not per-agent or ephemeral. */
+  listAgentGrants(orgId: OrgId): Promise<ComputerAgentGrant[]>
   setSharing(
     orgId: OrgId,
     id: ComputerId,
@@ -1058,7 +1076,7 @@ export interface CreateAgentInput {
   chatActions?: ChatActions // what people can do in chat; absent ⇒ 'approve'
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
-  computerUse?: AgentComputerUse // computer use (computer-use.md §4.1); absent ⇒ off
+  computerUse?: AgentComputerSetting // the managed computer mode (computer-use.md §4.1); absent ⇒ none
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
   // NOTE: write-only secret env vars are NOT part of the agent row — they live behind
@@ -1113,7 +1131,7 @@ export interface UpdateAgentInput {
   chatActions?: ChatActions
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
-  computerUse?: AgentComputerUse | null // computer use (computer-use.md §4.1); replaced wholesale, null clears
+  computerUse?: AgentComputerSetting | null // the managed computer mode (computer-use.md §4.1); replaced wholesale, null clears
   execution?: string // the strategy slug, resolved by the route against the placement's table
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
@@ -1209,7 +1227,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
-  computerUse?: AgentComputerUse // from runtimeOverrides.computerUse; absent ⇒ never configured, off
+  computerUse?: AgentComputerSetting // from runtimeOverrides.computerUse: the managed mode only, access lives on each Computer
   execution: string // the strategy slug sessions run in (session-executors.md §5)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
@@ -6538,9 +6556,9 @@ export interface UserRepo {
    * departing member from Selected audiences and adds a deterministic replacement
    * only where the audience would otherwise become empty. Rechecks membership
    * and, when removing another member, the acting owner's role. Refuses to remove
-   * the final owner before committing.
+   * the final owner before committing. Returns the agents whose derived Computer lists lost the member's Computers.
    */
-  removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
+  removeMember(orgId: string, userId: string, actingUserId: string): Promise<'all' | string[]>
 
   /**
    * Dry-run of `removeMember` for the confirmation dialog: the same replacement

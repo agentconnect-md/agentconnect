@@ -79,10 +79,33 @@ function isTimeZone(tz: string): boolean {
 
 const AppId = z.string().trim().min(1).max(256)
 
-/** Who may use a Computer and how (computer-use.md §4.1); every field has a safe default. */
+/** The most agents one Computer's Selected agent access may list. */
+export const COMPUTER_ACCESS_AGENTS_MAX = 200
+
+/** Which agents may use a Computer (computer-use.md §4.1): none (the default), the selected ones, or every agent in the organization. */
+export const COMPUTER_AGENT_ACCESS_MODES = ['none', 'selected', 'all'] as const
+export type ComputerAgentAccessMode = (typeof COMPUTER_AGENT_ACCESS_MODES)[number]
+
+export const ComputerAgentAccess = z.object({
+  mode: z.enum(COMPUTER_AGENT_ACCESS_MODES),
+  agents: z.array(z.uuid()).max(COMPUTER_ACCESS_AGENTS_MAX).default([])
+})
+export type ComputerAgentAccess = z.infer<typeof ComputerAgentAccess>
+
+/** The stored form: agents only under `selected`, deduplicated, and an empty selection reads as none. */
+export function normalizeAgentAccess(access: ComputerAgentAccess): ComputerAgentAccess {
+  if (access.mode !== 'selected') return { mode: access.mode, agents: [] }
+  const agents = [...new Set(access.agents)]
+  return agents.length > 0 ? { mode: 'selected', agents } : { mode: 'none', agents: [] }
+}
+
+/** Whether a Computer's agent access admits this agent. */
+export const agentAccessGrants = (access: ComputerAgentAccess, agentId: string): boolean =>
+  access.mode === 'all' || (access.mode === 'selected' && access.agents.includes(agentId))
+
+/** How a Computer may be used once an agent has access (computer-use.md §4.1); every field has a safe default. */
 export const ComputerPolicySchema = z
   .object({
-    allowedAgents: z.array(z.uuid()).max(200).default([]),
     allowedMembers: z.array(z.string().min(1).max(128)).max(500).default([]),
     agentMode: z.enum(['view', 'control']).default('control'),
     approvals: ComputerApprovalsSchema.default({

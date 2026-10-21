@@ -14,7 +14,9 @@ const T0 = 1_760_000_000_000
 const CID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const AGENT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-const policy = ComputerPolicySchema.parse({ allowedAgents: [AGENT_A, AGENT_B] })
+const policy = ComputerPolicySchema.parse({})
+const both = { mode: 'selected' as const, agents: [AGENT_A, AGENT_B] }
+const granting = { policy, agentAccess: both }
 
 const waiter = (sessionId: string, over: Partial<LeaseWaiter> = {}): LeaseWaiter => ({
   computerId: CID,
@@ -44,7 +46,7 @@ describe('the lease wait queue', () => {
         waiter('a'),
         waiter('gone', { enqueuedAt: T0 - 1, droppedAt: T0 })
       ],
-      policy,
+      granting,
       T0
     )
     expect(queue.map((w) => w.sessionId)).toEqual(['gone', 'a', 'b', 'late'])
@@ -56,10 +58,12 @@ describe('the lease wait queue', () => {
   it('lets a waiter that stopped asking or lost its grant leave', () => {
     const queue = [waiter('quiet'), waiter('asking', { polledAt: T0 + 10_000 }), waiter('b', { agentId: AGENT_B })]
     const now = T0 + LEASE_WAITER_TTL_MS
-    expect(keepWaiters(queue, policy, now).map((w) => w.sessionId)).toEqual(['asking'])
-    const viewOnly = ComputerPolicySchema.parse({ allowedAgents: [AGENT_A, AGENT_B], agentMode: 'view' })
+    expect(keepWaiters(queue, granting, now).map((w) => w.sessionId)).toEqual(['asking'])
+    const viewOnly = { policy: ComputerPolicySchema.parse({ agentMode: 'view' }), agentAccess: both }
     expect(keepWaiters(queue, viewOnly, T0)).toEqual([])
-    expect(keepWaiters(queue, ComputerPolicySchema.parse({ allowedAgents: [AGENT_B] }), T0)).toHaveLength(1)
+    expect(keepWaiters(queue, { policy, agentAccess: { mode: 'selected', agents: [AGENT_B] } }, T0)).toHaveLength(1)
+    expect(keepWaiters(queue, { policy, agentAccess: { mode: 'all', agents: [] } }, T0)).toHaveLength(3)
+    expect(keepWaiters(queue, { policy, agentAccess: { mode: 'none', agents: [] } }, T0)).toEqual([])
   })
 
   it('keeps a place across asks and times out after leaseWaitSeconds', () => {

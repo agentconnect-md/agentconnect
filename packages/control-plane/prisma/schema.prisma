@@ -4501,6 +4501,13 @@ enum ComputerAllocation {
   manual
 }
 
+// Which agents may use a Computer (computer-use.md §4.1): the one relation both the Computer and the agent pages edit.
+enum ComputerAgentAccess {
+  none
+  selected
+  all
+}
+
 model Computer {
   id                   String             @id @db.Uuid
   orgId                String
@@ -4521,6 +4528,9 @@ model Computer {
   driverVersion        String
   // ComputerPolicy (computer-use.md §4.1), validated by the domain schema on every write.
   policy               Json               @db.JsonB
+  // Agent access (§4.1): none by default, the agents in accessAgentIds when selected, or every agent of the org.
+  agentAccess          ComputerAgentAccess @default(none)
+  accessAgentIds       String[]           @default([])
   visibility           ResourceVisibility @default(org)
   sharedWith           String[]           @default([])
   lastSeenAt           DateTime?          @db.Timestamptz(6)
@@ -4552,6 +4562,7 @@ model Computer {
   @@index([orgId])
   @@index([ownerUserId])
   @@index([sharedWith], type: Gin)
+  @@index([accessAgentIds], type: Gin)
   @@index([poolPhase])
   @@index([ownerAgentId])
   @@map("computer")

@@ -1,6 +1,6 @@
 // The FIFO lease wait queue (computer-use.md §4.4): pure decisions over one Computer's waiting sessions.
 import type { ComputerLeaseQueued } from '@agentconnect.md/protocol'
-import type { ComputerPolicy } from './computer.js'
+import { computerGrantsAgent, type ComputerAgentAccess, type ComputerPolicy } from './computer.js'
 
 /** A waiter that has not asked again for this long has left the queue: its daemon was lost or gave up. */
 export const LEASE_WAITER_TTL_MS = 15_000
@@ -43,7 +43,7 @@ export function waiterOrder(a: LeaseWaiter, b: LeaseWaiter): number {
 /** The waiters still in line at `now`: one that stopped asking, or lost its grant, has left. */
 export function keepWaiters(
   queue: readonly LeaseWaiter[],
-  policy: ComputerPolicy | null,
+  computer: { policy: ComputerPolicy; agentAccess: ComputerAgentAccess } | null,
   now: number,
   ttlMs = LEASE_WAITER_TTL_MS
 ): LeaseWaiter[] {
@@ -51,7 +51,8 @@ export function keepWaiters(
     .filter(
       (w) =>
         now < w.polledAt + ttlMs &&
-        (w.droppedAt !== null || (policy?.allowedAgents.includes(w.agentId) && policy.agentMode === 'control'))
+        (w.droppedAt !== null ||
+          (computer !== null && computerGrantsAgent(computer, w.agentId) && computer.policy.agentMode === 'control'))
     )
     .sort(waiterOrder)
 }

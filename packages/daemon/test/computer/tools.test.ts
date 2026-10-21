@@ -6,6 +6,7 @@ import type {
   ComputerPoolAcquire,
   ComputerPoolAcquireResult
 } from '@agentconnect.md/protocol'
+import { agentComputerUseOf } from '@agentconnect.md/protocol'
 import { ComputerChannelError, type ComputerMcpConnection } from '../../src/computer/data-plane.js'
 import {
   COMPUTER_TOOLS,
@@ -197,6 +198,19 @@ describe('computerToolsOffered', () => {
     ).toBe(false)
     expect(computerToolsOffered({ computerUse: on, controlPlaneServes: false, runtimeShowsImages: true })).toBe(false)
     expect(computerToolsOffered({ computerUse: on, controlPlaneServes: true, runtimeShowsImages: false })).toBe(false)
+  })
+
+  it('offers the tools from the spec value the Control Plane derives from Computer agent access', () => {
+    const offered = (computers: string[], managed?: { mode: 'per-agent' }) =>
+      computerToolsOffered({
+        computerUse: agentComputerUseOf(managed ? { managed } : undefined, computers) ?? undefined,
+        controlPlaneServes: true,
+        runtimeShowsImages: true,
+        poolServes: true
+      })
+    expect(offered([C1])).toBe(true)
+    expect(offered([])).toBe(false)
+    expect(offered([], { mode: 'per-agent' })).toBe(true)
   })
 
   it('knows which runtimes show the model MCP images, and lets a runtime definition say so', () => {

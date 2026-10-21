@@ -982,9 +982,14 @@ describe('agentRecordToSpec runtime overrides', () => {
     // #536: introduceOnJoin is a definite column value, always shipped so a toggle replicates.
     expect(agentRecordToSpec({ ...base, introduceOnJoin: true }, {})).toMatchObject({ introduceOnJoin: true })
     expect(agentRecordToSpec({ ...base, introduceOnJoin: false }, {})).toMatchObject({ introduceOnJoin: false })
-    // Computer use ships as a value, or null so switching it off replicates.
-    const computerUse = { enabled: true, computers: ['00000000-0000-4000-8000-000000000001'] }
-    expect(agentRecordToSpec({ ...base, computerUse }, {})).toMatchObject({ computerUse })
+    // Computer use is derived from the granting Computers and the managed mode, or null so losing the last one replicates.
+    const C1 = '00000000-0000-4000-8000-000000000001'
+    const withComputers = (a: AgentRecord, computers: string[]) =>
+      agentRecordToSpec(a, {}, undefined, [], [], a.env, [], undefined, undefined, undefined, [], {}, computers)
+    expect(withComputers(base, [C1])).toMatchObject({ computerUse: { enabled: true, computers: [C1] } })
+    expect(withComputers({ ...base, computerUse: { managed: { mode: 'per-agent' } } }, [])).toMatchObject({
+      computerUse: { enabled: true, computers: [], managed: { mode: 'per-agent' } }
+    })
     expect(agentRecordToSpec(base, {})).toMatchObject({ computerUse: null })
   })
 

@@ -173,6 +173,8 @@ interface MoveBundle {
   hookRoutings?: HookRoutingProjection[]
   /** The chat API gates with their Decisions, pinned so activation never clears them on the target. */
   apiGates: AgentApiGateProjections
+  /** The Computers whose agent access grants the agent, pinned so activation never clears its computer use. */
+  computers: string[]
 }
 
 interface ActivationSnapshot {
@@ -891,7 +893,8 @@ export class AgentMoveService {
       { additionalRepos, additionalInstallations },
       gitlabHook,
       hookRoutings,
-      apiGates
+      apiGates,
+      computers
     ] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
@@ -902,7 +905,8 @@ export class AgentMoveService {
       this.deps.specs.workspaceGrantsOf(agent),
       this.deps.specs.gitlabHookOf(agent),
       this.deps.specs.hookRoutingsOf(agent),
-      this.deps.specs.apiGatesOf(agent)
+      this.deps.specs.apiGatesOf(agent),
+      this.deps.specs.computersOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -958,7 +962,8 @@ export class AgentMoveService {
       additionalInstallations,
       gitlabHook,
       ...(hookRoutings !== undefined ? { hookRoutings } : {}),
-      apiGates
+      apiGates,
+      computers
     }
   }
 
@@ -979,7 +984,8 @@ export class AgentMoveService {
         false,
         bundle.hookRoutings,
         bundle.additionalInstallations,
-        bundle.apiGates
+        bundle.apiGates,
+        bundle.computers
       ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons

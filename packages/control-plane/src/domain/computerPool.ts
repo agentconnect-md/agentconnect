@@ -67,18 +67,14 @@ export function poolErrorCode(error: string | null | undefined): ComputerPoolFai
 export const poolErrorMessage = (error: string): string => error.replace(/^(volume_missing|failed): /, '')
 
 /** A desktop made by and for an agent asks no approvals: it is isolated and fresh, and nothing on it is a person's (§15.1). */
-export function managedComputerPolicy(
-  ownerUserId: string,
-  agentIds: readonly string[],
-  base?: ComputerPolicy
-): ComputerPolicy {
+export function managedComputerPolicy(ownerUserId: string, base?: ComputerPolicy): ComputerPolicy {
   const policy =
     base ??
     ComputerPolicySchema.parse({
       approvals: { firstInputPerSession: false, launchApp: 'never-ask', submitLikeKeys: false }
     })
   const members = [ownerUserId, ...policy.allowedMembers.filter((id) => id !== ownerUserId)]
-  return { ...policy, allowedAgents: [...new Set([...agentIds, ...policy.allowedAgents])], allowedMembers: members }
+  return { ...policy, allowedMembers: members }
 }
 
 /** The pool's view of one managed row. */

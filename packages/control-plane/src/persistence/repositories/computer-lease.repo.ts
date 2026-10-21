@@ -3,7 +3,7 @@ import type { ComputerLease, ComputerLeaseWaiter } from '../../generated/prisma/
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type { ComputerLeaseRepo } from '../ports.js'
 import type { ComputerId, OrgId } from '../../domain/ids.js'
-import { readComputerPolicy } from '../../domain/computer.js'
+import { readAgentAccess, readComputerPolicy } from '../../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../../domain/computerLease.js'
 import type { LeaseWaiter } from '../../domain/computerLeaseQueue.js'
 
@@ -92,6 +92,8 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
                 status: true,
                 lastSeenAt: true,
                 policy: true,
+                agentAccess: true,
+                accessAgentIds: true,
                 ownerUserId: true,
                 stoppedAt: true,
                 poolSessionId: true
@@ -106,7 +108,8 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
             lastSeenAt: computer.lastSeenAt,
             stoppedAt: computer.stoppedAt,
             poolSessionId: computer.poolSessionId,
-            policy: readComputerPolicy(computer.policy, computer.ownerUserId)
+            policy: readComputerPolicy(computer.policy, computer.ownerUserId),
+            agentAccess: readAgentAccess(computer.agentAccess, computer.accessAgentIds)
           }
         : null
       const { next, queue, result } = decide(view, row ? toLease(row) : null, waiting)

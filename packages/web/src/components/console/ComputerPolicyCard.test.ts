@@ -3,7 +3,6 @@ import type { ComputerPolicy } from '@agentconnect.md/protocol/computer'
 import { draftOf, policyFromDraft } from './ComputerPolicyCard'
 
 const policy: ComputerPolicy = {
-  allowedAgents: ['a1'],
   allowedMembers: ['u1'],
   agentMode: 'control',
   approvals: { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true },
