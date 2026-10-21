@@ -111,7 +111,7 @@ export type AppendConversationKind = 'channel' | 'im' | 'mpim'
 // Google Chat's platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (google-chat-integration.md §7).
 export const GOOGLE_CHAT_PLATFORM = 'googlechat'
 
-// DingTalk's platform id; joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it (dingtalk-integration.md §6).
+// DingTalk's platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (dingtalk-integration.md §6).
 export const DINGTALK_PLATFORM = 'dingtalk'
 
 /** The conservative arm of every axis — see the fail-closed note above. */

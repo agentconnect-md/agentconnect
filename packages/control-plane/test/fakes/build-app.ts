@@ -43,6 +43,7 @@ import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
+import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -78,7 +79,8 @@ const PLATFORMS = buildCpPlatformRegistry([
   createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
   createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
   createFeishuCpProvider({}),
-  createLinearCpProvider({})
+  createLinearCpProvider({}),
+  createDingTalkCpProvider()
 ])
 
 export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<WsConfig> } = {}): DaemonApp {

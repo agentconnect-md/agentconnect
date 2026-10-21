@@ -579,7 +579,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         // Mirrors the `/sessions` route filter, which accepts the canonical
         // `Platform` set — keep the two in step (tools.test.ts guards it).
         platform: z
-          .enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq', 'googlechat'])
+          .enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream', 'qq', 'googlechat', 'dingtalk'])
           .optional(),
         channel: z.string().min(1).optional(),
         limit: z.number().int().positive().max(200).optional().describe('Page size (default 50)')

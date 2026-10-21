@@ -44,6 +44,8 @@ import { linearConnectRoutes, linearOauthCallbackRoutes } from '../platforms/lin
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
 import { googleChatAppRoutes, googleChatKeyRoutes } from '../platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from '../platforms/googlechat/claim.js'
+import { createDingTalkCpProvider } from '../platforms/dingtalk/provider.js'
+import { dingTalkCredentialRoutes } from '../platforms/dingtalk/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
@@ -92,7 +94,8 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     ],
     googleChatAppRoutesPlugin: ['GET /integrations/googlechat/app'],
     googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key'],
-    googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim']
+    googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim'],
+    dingTalkCredentialRoutesPlugin: ['PUT /bots/:id/dingtalk/credentials']
   },
   'public-callback': {
     slackOauthCallbackRoutesPlugin: ['GET /integrations/slack/oauth/callback'],
@@ -194,7 +197,8 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
         ],
         publicCallback: []
       }
-    })
+    }),
+    createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(deps)] })
   ])
 }
 
