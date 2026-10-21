@@ -1286,6 +1286,13 @@ export class PgAgentRepo implements AgentRepo {
       // and the cascading delete. Hook create/rebind/remove takes this same lock
       // before its per-hook lifecycle lock.
       await lockHookReviewAgentLifecycleScope(tx, agentId)
+      // Before the Agent row, since agent access writes lock Computer then Agent: drop it from every Selected list.
+      await tx.$executeRaw`
+        UPDATE "computer" SET
+          "accessAgentIds" = array_remove("accessAgentIds", ${agentId}::text),
+          "agentAccess" = CASE WHEN cardinality(array_remove("accessAgentIds", ${agentId}::text)) = 0
+            AND "agentAccess" = 'selected'::"ComputerAgentAccess" THEN 'none'::"ComputerAgentAccess" ELSE "agentAccess" END
+        WHERE "orgId" = ${orgId} AND "accessAgentIds" @> ARRAY[${agentId}::text]`
       // The lifecycle advisory is the documented outer scope. Take the Agent
       // row immediately after it so every relational lock below follows
       // Agent → hook/preset → cascade. A missing row still reaches the Prisma

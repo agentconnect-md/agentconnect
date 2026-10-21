@@ -15,16 +15,19 @@ export function computerAccessFanOut(deps: ComputerAccessFanOutDeps) {
   return async (orgId: OrgId, affected: 'all' | string[]): Promise<void> => {
     const wanted = affected === 'all' ? null : new Set(affected)
     const agents = (await deps.agents.list(orgId)).filter((a) => !wanted || wanted.has(a.id))
-    for (const agent of agents) {
-      await deps.delivery().upsert(agent, (err, daemonId) => {
-        if (err instanceof NoConnection)
-          deps.log?.debug({ agentId: agent.id, daemonId }, 'agent/upsert skipped: daemon offline')
-        else
-          deps.log?.warn(
-            { err, agentId: agent.id, daemonId },
-            'computer access: agent/upsert failed (backstop: reconnect roster)'
-          )
-      })
-    }
+    // Concurrent, as the org-environment fan-out is: a change to or from All agents covers every agent.
+    await Promise.all(
+      agents.map((agent) =>
+        deps.delivery().upsert(agent, (err, daemonId) => {
+          if (err instanceof NoConnection)
+            deps.log?.debug({ agentId: agent.id, daemonId }, 'agent/upsert skipped: daemon offline')
+          else
+            deps.log?.warn(
+              { err, agentId: agent.id, daemonId },
+              'computer access: agent/upsert failed (backstop: reconnect roster)'
+            )
+        })
+      )
+    )
   }
 }

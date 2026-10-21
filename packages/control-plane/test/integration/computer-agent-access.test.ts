@@ -95,6 +95,21 @@ const grantCode = async (computerId: string, agentId: string) => {
   return result.granted ? 'granted' : result.code
 }
 
+// A manual pool computer, visible to the organization and edited by any editor.
+async function manualComputer(): Promise<string> {
+  const created = await new PgComputerRepo(prisma).createManaged({
+    id: ComputerId(randomUUID()),
+    orgId: OrgId(DEFAULT_ORG_ID),
+    name: 'Shared browser',
+    ownerUserId: DEFAULT_OWNER_ID,
+    allocation: 'manual',
+    policy: defaultComputerPolicy(DEFAULT_OWNER_ID),
+    agentAccess: { mode: 'none', agents: [] },
+    now: new Date()
+  })
+  return created!.id
+}
+
 const revisionOf = async (agentId: string) =>
   (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision
 
@@ -199,7 +214,7 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${a}` })).json().computerUse).toBeNull()
   })
 
-  it('only an editor of the Computer changes its access, from either side', async () => {
+  it('only the registrant changes a self-hosted desktop’s access, and any editor a manual one’s, from either side', async () => {
     const [a] = await placedAgents('access-a')
     const viewer = await makeUser('access-viewer', 'viewer')
     const carol = await makeUser('access-carol', 'collaborator')
@@ -227,8 +242,49 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     expect((await add(appAs(viewer).app)).statusCode).toBe(403)
     const read = await appAs(viewer).app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
     expect(read.json().canEditAgentAccess).toBe(false)
-    // Any editor may, as with visibility.
-    expect((await add(appAs(carol).app)).statusCode).toBe(200)
+    // Sharing a desktop to watch lets no collaborator point agents at it: only its registrant decides.
+    expect((await put(appAs(carol).app)).statusCode).toBe(403)
+    expect((await add(appAs(carol).app)).statusCode).toBe(403)
+    const seen = await appAs(carol).app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
+    expect(seen.json().canEditAgentAccess).toBe(false)
+    expect((await add(owner)).statusCode).toBe(200)
+    // A manual pool computer takes any editor's change, as with visibility.
+    const manual = await manualComputer()
+    const carolAdds = await appAs(carol).app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${manual}/agent-access/agents/${a}`
+    })
+    expect(carolAdds.statusCode).toBe(200)
+  })
+
+  it('a Selected list stops at the cap, and a deleted agent leaves it', async () => {
+    const [a, b] = await placedAgents('access-a', 'access-b')
+    const { app } = appAs()
+    const computerId = await register(app)
+    const dead = Array.from({ length: 199 }, () => randomUUID())
+    await prisma.computer.update({
+      where: { id: computerId },
+      data: { agentAccess: 'selected', accessAgentIds: [...dead, a!] }
+    })
+    const add = (agentId: string) =>
+      app.app.inject({ method: 'PUT', url: `${ORG}/computers/${computerId}/agent-access/agents/${agentId}` })
+    expect((await add(b!)).statusCode).toBe(409)
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/computers` })).statusCode).toBe(200)
+    // Ids of agents that no longer exist are not kept as hidden on a whole-value write.
+    const put = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/computers/${computerId}/agent-access`,
+      payload: { mode: 'selected', agents: [a, b] }
+    })
+    expect(put.statusCode).toBe(200)
+    expect(put.json().agentAccess).toEqual({ mode: 'selected', agents: [a, b] })
+    // Deleting an agent takes it off every list; the last one gone leaves None.
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/agents/${a}` })).statusCode).toBe(204)
+    const afterA = await app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
+    expect(afterA.json().agentAccess).toEqual({ mode: 'selected', agents: [b] })
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/agents/${b}` })).statusCode).toBe(204)
+    const afterB = await app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
+    expect(afterB.json().agentAccess).toEqual(NONE)
   })
 
   it('a collaborator’s edit keeps the agents they cannot see', async () => {
@@ -239,12 +295,7 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     await seedAgent(prisma, hidden, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] })
     await seedAgent(prisma, visible, { daemonId: DAEMON })
     const { app: owner } = appAs()
-    const computerId = await register(owner)
-    await owner.app.inject({
-      method: 'PUT',
-      url: `${ORG}/computers/${computerId}/sharing`,
-      payload: { visibility: 'org', sharedWith: [] }
-    })
+    const computerId = await manualComputer()
     const set = (app: HttpApp, agents: string[]) =>
       app.app.inject({
         method: 'PUT',

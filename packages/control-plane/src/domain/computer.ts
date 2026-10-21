@@ -1,5 +1,6 @@
 // The Computer resource's closed vocabularies, policy and capabilities (docs/designs/computer-use.md §2.2, §4.1).
 import {
+  COMPUTER_ACCESS_AGENTS_MAX,
   ComputerCapabilitiesSchema,
   ComputerDoctorReport,
   agentAccessGrants,
@@ -13,6 +14,7 @@ import {
 
 // The vocabularies, policy and capabilities are wire contracts, so the protocol package owns them.
 export {
+  COMPUTER_ACCESS_AGENTS_MAX,
   COMPUTER_KINDS,
   COMPUTER_ISOLATIONS,
   COMPUTER_OSES,
@@ -37,6 +39,20 @@ export {
   type ComputerCapabilities,
   type ComputerPolicy
 } from '@agentconnect.md/protocol'
+
+/** A Selected agent access past the cap; the write is refused whole, so the stored list never exceeds what the DTO admits. */
+export class TooManyComputerAgents extends Error {
+  constructor() {
+    super(`a computer lists at most ${COMPUTER_ACCESS_AGENTS_MAX} agents; grant it to all agents instead`)
+  }
+}
+
+/** The stored form of an access write, refusing a Selected list over the cap. */
+export function cappedAgentAccess(access: ComputerAgentAccess): ComputerAgentAccess {
+  const normalized = normalizeAgentAccess(access)
+  if (normalized.agents.length > COMPUTER_ACCESS_AGENTS_MAX) throw new TooManyComputerAgents()
+  return normalized
+}
 
 /** Registration tokens live this long unless the console asks otherwise. */
 export const COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES = 60

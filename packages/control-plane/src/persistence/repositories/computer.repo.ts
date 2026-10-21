@@ -24,7 +24,7 @@ import {
   readComputerDoctor,
   readComputerPolicy,
   readAgentAccess,
-  normalizeAgentAccess,
+  cappedAgentAccess,
   agentsAffectedByAccess,
   agentAccessIsFixed,
   type ComputerAgentAccess,
@@ -325,7 +325,7 @@ export class PgComputerRepo implements ComputerRepo {
       const row = locked[0]
       if (!row) return null
       const before = readAgentAccess(row.agentAccess, row.accessAgentIds)
-      const after = normalizeAgentAccess(next(before))
+      const after = cappedAgentAccess(next(before))
       const updated = await tx.computer.update({
         where: { id, orgId },
         data: { agentAccess: after.mode, accessAgentIds: after.agents }
@@ -472,7 +472,7 @@ export class PgComputerRepo implements ComputerRepo {
   }
 
   async createManaged(input: CreateManagedComputerInput): Promise<ComputerRecord | null> {
-    const access = normalizeAgentAccess(input.agentAccess)
+    const access = cappedAgentAccess(input.agentAccess)
     try {
       return await withAmbientTx(this.db, async (tx) => {
         const row = await tx.computer.create({

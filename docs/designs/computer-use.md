@@ -122,7 +122,7 @@ Persistence lives in the Control Plane (`packages/control-plane/src/persistence/
 [resource-visibility.md](resource-visibility.md). **[implemented]** The `computer` table holds this record with a UUID
 `id`; `kind`, `session` and the policy are validated by `src/domain/computer.ts`. A newly registered self-hosted
 computer starts **Selected** with only its registrant in the audience (organization owners still see it by role),
-and only the registrant may change its policy; any editor may revoke or delete it, and change its agent access (§4.1). The desktop daemon reports status and capabilities in its heartbeat,
+and only the registrant may change its policy and its agent access (§4.1); any editor may revoke or delete it. The desktop daemon reports status and capabilities in its heartbeat,
 with `permissions`, `session`, and `viewer` taken straight from `doctor` (§3.5). Wire frames go in a new
 `packages/protocol/src/frames/computer.ts`.
 
@@ -540,10 +540,13 @@ interface ComputerAgentAccess {
   lists the agent. The `computer` table stores the mode in `agentAccess` and the list in `accessAgentIds` (GIN
   indexed); `PUT /computers/{id}/agent-access` sets the whole value, and `PUT` / `DELETE
 /computers/{id}/agent-access/agents/{agentId}` add or remove one agent for the agent's card.
-- **Authorization**: changing a Computer's agent access needs edit rights on the Computer (`canEdit`), so a viewer,
-  or a member who cannot see the Computer, cannot change it from either page. An agent newly listed must be visible
-  to the caller, and a Selected list keeps the agents the caller cannot see, as an agent's call policy keeps a hidden
-  caller. From the agent's card a member adds or removes only Computers they can edit; a Computer granted to All agents
+- **Authorization**: changing a Computer's agent access needs the same right as its policy: the registrant of a
+  self-hosted desktop, which has no isolation, and any editor (`canEdit`) of a managed one. Sharing a desktop with
+  the organization so others can watch therefore lets no collaborator point agents at it, and a viewer, or a member
+  who cannot see the Computer, cannot change it from either page. An agent newly listed must be visible to the caller,
+  and a Selected list keeps the existing agents the caller cannot see, as an agent's call policy keeps a hidden
+  caller; it lists at most 200 agents (409 past that, so All agents is the way beyond it). Deleting an agent removes it
+  from every Selected list in the same transaction. From the agent's card a member adds or removes only Computers they can edit; a Computer granted to All agents
   shows as such there and is changed on the Computer page (409 from the per-agent routes). Removing an agent's access
   does not touch the agent. Every change is audited as `computer_change` / `agent_access_update` with the access
   before and after.
