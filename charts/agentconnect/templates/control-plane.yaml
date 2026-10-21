@@ -218,6 +218,12 @@ spec:
               value: {{ .Values.computerPool.sleepIdleSeconds | quote }}
             {{- end }}
             {{- end }}
+            {{- if hasKey $.Values.controlPlane.extraEnv "AC_COMPUTER_PLAN" }}
+            {{- fail "controlPlane.extraEnv.AC_COMPUTER_PLAN collides with the chart-owned computerPlan values" }}
+            {{- end }}
+            # Computer quotas, the metered desktop volume size and egress choices (computer-use.md §15.4, §15.5).
+            - name: AC_COMPUTER_PLAN
+              value: {{ include "agentconnect.computerPlan" . | quote }}
             {{- with (include "agentconnect.emailFrom" .) }}
             # Sender the waitlist flow shows users ("check your inbox for mail from …"). Only
             # NAMED here — whatever actually sends the activation mail lives outside this chart,

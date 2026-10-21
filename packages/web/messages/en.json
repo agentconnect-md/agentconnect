@@ -4487,7 +4487,31 @@
     "hideSeries": "Hide {name}",
     "loadError": "Couldn't load usage: {error}",
     "emptyState": "No usage recorded in this range yet. Token usage appears here once agents run sessions.",
-    "tokensAndSessions": "{tokens} tok · {sessions} sessions"
+    "tokensAndSessions": "{tokens} tok · {sessions} sessions",
+    "computers": {
+      "title": "Computers",
+      "runningHours": "Managed computer hours",
+      "sleepingHours": "{hours} h sleeping",
+      "keptStorage": "Kept storage",
+      "keptStorageUnit": "GiB-hours of managed computer volumes",
+      "viewerMedia": "Relayed viewer video",
+      "viewerMediaUnit": "GB through the relays' TURN",
+      "screenshots": "Stored screenshots (GB)",
+      "screenshotsWritten": "{count, plural, one {# written} other {# written}} · {gb} GB",
+      "columns": {
+        "computer": "Computer",
+        "running": "Running h",
+        "sleeping": "Sleeping h",
+        "storage": "GiB-hours",
+        "media": "Video GB"
+      },
+      "removed": "Removed computer",
+      "allocation": {
+        "ephemeral": "Session",
+        "per-agent": "Per agent",
+        "manual": "Manual"
+      }
+    }
   },
   "Billing": {
     "metadata": {
@@ -6611,6 +6635,55 @@
       "queue": "Waiting in line",
       "queued": "waiting since {when}",
       "openSession": "Open session"
+    },
+    "quotas": {
+      "title": "Limits",
+      "edit": "Edit",
+      "hint": "What this organization may use. Starting a managed computer, waking one, or opening a viewer past a limit is refused with the reason, for agents and here alike.",
+      "rows": {
+        "runningDesktops": "Running managed computers",
+        "desktops": "Managed computers held, sleeping ones included",
+        "storageGib": "Managed computer storage (GiB)",
+        "monthlyDesktopHours": "Managed computer hours this month",
+        "viewers": "Open viewers",
+        "viewersPerComputer": "Viewers on one computer",
+        "monthlyViewerGib": "Relayed viewer video this month (GiB)",
+        "screenshotStorageGib": "Stored screenshots (GiB)",
+        "screenshotRetentionDays": "Longest screenshot retention (days)"
+      },
+      "unlimited": "Unlimited",
+      "usedUnlimited": "{used} · no limit",
+      "limitOnly": "up to {limit}",
+      "usedOf": "{used} of {limit}",
+      "invalid": "{label} must be a whole number of 0 or more",
+      "defaultUnlimited": "Default: no limit",
+      "defaultValue": "Default: {value}",
+      "noLimitFor": "No limit for {label}",
+      "noLimit": "No limit",
+      "editHint": "Leave a field empty to keep the deployment's default. Lower limits stop nothing that runs now; they refuse the next start, wake or viewer.",
+      "save": "Save",
+      "cancel": "Cancel",
+      "useDefaults": "Use the defaults"
+    },
+    "egress": {
+      "title": "Managed computer egress",
+      "edit": "Edit",
+      "limitation": "Managed computers browse from this deployment's data-centre addresses, which some sites refuse or challenge with CAPTCHAs. Send their browser traffic through your own proxy (a residential proxy or a fixed address) to avoid that. Self-hosted computers always use their own network.",
+      "noOrgProxy": "This deployment does not let organizations use their own proxy.",
+      "mode": "Egress",
+      "modes": {
+        "deployment": "Deployment (data-centre addresses)",
+        "proxy": "Your proxy"
+      },
+      "url": "Proxy URL",
+      "username": "Username",
+      "password": "Password",
+      "passwordSet": "Set",
+      "passwordKeep": "Unchanged",
+      "useProxy": "Send browser traffic through our proxy",
+      "proxyHint": "An http:// or https:// proxy with its port. Running managed computers switch at once; the password is stored encrypted and never shown again.",
+      "save": "Save",
+      "cancel": "Cancel"
     }
   }
 }

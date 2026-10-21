@@ -30,6 +30,7 @@ import { daemonRoutes } from './routes/daemons.js'
 import { memberSetRoutes } from './routes/member-sets.js'
 import { keyRoutes } from './routes/keys.js'
 import { computerRoutes, computerRegisterRoutes } from './routes/computers.js'
+import { computerPlanRoutes } from './routes/computer-plan.js'
 import { computerScreenshotRoutes } from './routes/computer-screenshots.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
@@ -357,6 +358,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(memberSetRoutes(deps))
           await scope.register(keyRoutes(deps))
           await scope.register(computerRoutes(deps))
+          await scope.register(computerPlanRoutes(deps))
           await scope.register(computerScreenshotRoutes(deps))
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))

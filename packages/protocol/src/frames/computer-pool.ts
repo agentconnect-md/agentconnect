@@ -23,7 +23,15 @@ export const ComputerPoolAcquire = z.object({
 export type ComputerPoolAcquire = z.infer<typeof ComputerPoolAcquire>
 
 /** Why no managed computer can be had; each is definite, so the session stops asking. */
-export const COMPUTER_POOL_REFUSALS = ['not_configured', 'no_pool', 'denied', 'volume_missing', 'failed'] as const
+export const COMPUTER_POOL_REFUSALS = [
+  'not_configured',
+  'no_pool',
+  'denied',
+  'volume_missing',
+  'failed',
+  // The organization's managed computer quota (§15.5); sent only to daemons that advertise COMPUTER_POOL_QUOTA_FEATURE.
+  'quota_exceeded'
+] as const
 export type ComputerPoolRefusal = (typeof COMPUTER_POOL_REFUSALS)[number]
 
 /** Where a pending managed computer is on its way to ready. */

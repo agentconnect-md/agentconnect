@@ -4487,7 +4487,31 @@
     "hideSeries": "隐藏{name}",
     "loadError": "无法加载用量：{error}",
     "emptyState": "此时间范围内暂无用量记录。Agent 运行会话后，Token 用量会显示在这里。",
-    "tokensAndSessions": "{tokens} tokens · {sessions} 个会话"
+    "tokensAndSessions": "{tokens} tokens · {sessions} 个会话",
+    "computers": {
+      "title": "电脑",
+      "runningHours": "托管电脑时长",
+      "sleepingHours": "休眠 {hours} 小时",
+      "keptStorage": "保留存储",
+      "keptStorageUnit": "托管电脑卷的 GiB·小时",
+      "viewerMedia": "中继的查看器视频",
+      "viewerMediaUnit": "经由中继 TURN 的 GB",
+      "screenshots": "已存截图（GB）",
+      "screenshotsWritten": "{count, plural, other {写入 # 张}} · {gb} GB",
+      "columns": {
+        "computer": "电脑",
+        "running": "运行小时",
+        "sleeping": "休眠小时",
+        "storage": "GiB·小时",
+        "media": "视频 GB"
+      },
+      "removed": "已删除的电脑",
+      "allocation": {
+        "ephemeral": "会话",
+        "per-agent": "按智能体",
+        "manual": "手动"
+      }
+    }
   },
   "Billing": {
     "metadata": {
@@ -6611,6 +6635,55 @@
       "queue": "排队中",
       "queued": "自 {when} 开始等待",
       "openSession": "打开会话"
+    },
+    "quotas": {
+      "title": "限额",
+      "edit": "编辑",
+      "hint": "本组织可使用的额度。超出限额时，启动或唤醒托管电脑、打开查看器都会被拒绝并说明原因，智能体和此处都一样。",
+      "rows": {
+        "runningDesktops": "运行中的托管电脑",
+        "desktops": "持有的托管电脑（含休眠）",
+        "storageGib": "托管电脑存储（GiB）",
+        "monthlyDesktopHours": "本月托管电脑时长",
+        "viewers": "打开的查看器",
+        "viewersPerComputer": "单台电脑的查看者",
+        "monthlyViewerGib": "本月中继的查看器视频（GiB）",
+        "screenshotStorageGib": "已存截图（GiB）",
+        "screenshotRetentionDays": "截图最长保留天数"
+      },
+      "unlimited": "不限",
+      "usedUnlimited": "{used} · 不限",
+      "limitOnly": "最多 {limit}",
+      "usedOf": "{used} / {limit}",
+      "invalid": "{label} 必须是 0 或更大的整数",
+      "defaultUnlimited": "默认：不限",
+      "defaultValue": "默认：{value}",
+      "noLimitFor": "{label} 不限",
+      "noLimit": "不限",
+      "editHint": "留空则沿用部署的默认值。降低限额不会停止正在运行的内容，只会拒绝下一次启动、唤醒或查看。",
+      "save": "保存",
+      "cancel": "取消",
+      "useDefaults": "恢复默认"
+    },
+    "egress": {
+      "title": "托管电脑出口",
+      "edit": "编辑",
+      "limitation": "托管电脑通过本部署的数据中心地址上网，部分网站会拒绝访问或要求验证码。可让其浏览器流量经由您自己的代理（住宅代理或固定地址）以避免此问题。自托管电脑始终使用自己的网络。",
+      "noOrgProxy": "本部署不允许组织使用自己的代理。",
+      "mode": "出口",
+      "modes": {
+        "deployment": "部署出口（数据中心地址）",
+        "proxy": "您的代理"
+      },
+      "url": "代理 URL",
+      "username": "用户名",
+      "password": "密码",
+      "passwordSet": "已设置",
+      "passwordKeep": "保持不变",
+      "useProxy": "浏览器流量经由我们的代理",
+      "proxyHint": "填写带端口的 http:// 或 https:// 代理。运行中的托管电脑会立即切换；密码加密保存，之后不再显示。",
+      "save": "保存",
+      "cancel": "取消"
     }
   }
 }

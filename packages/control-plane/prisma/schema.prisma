@@ -137,6 +137,7 @@ model Org {
   agentMemoryHistory        AgentMemoryHistory[]
   computers                 Computer[]
   computerRegistrations     ComputerRegistration[]
+  computerSettings          ComputerOrgSettings?
 
   @@index([createdByUserId])
   @@map("org")
@@ -4552,6 +4553,8 @@ model Computer {
   // The last lease, grant, viewer or allocation activity; idle detection sleeps or reclaims from it.
   poolActiveAt         DateTime?          @db.Timestamptz(6)
   poolError            String?
+  // Desktop time is metered up to here (computer-use.md §15.5); each sweep moves it forward with a compare-and-set.
+  poolMeteredAt        DateTime?          @db.Timestamptz(6)
   createdAt            DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
 
@@ -4709,4 +4712,51 @@ model ComputerScreenshotUsage {
 
   @@id([orgId, day])
   @@map("computer_screenshot_usage")
+}
+
+// Metered Computer use per UTC day (computer-use.md §15.5): desktop time, kept volume and viewer media; kept after the Computer goes.
+model ComputerUsage {
+  orgId            String
+  day              DateTime @db.Date
+  computerId       String   @db.Uuid
+  // `managed` or `self-hosted`, and a managed one's allocation, as they were when metered.
+  kind             String
+  allocation       String?
+  runningSeconds   Int      @default(0)
+  sleepingSeconds  Int      @default(0)
+  // Kept volume size times the time it was held, in GiB-seconds.
+  volumeGibSeconds BigInt   @default(0)
+  // Viewer media the relays forwarded over TURN for this Computer.
+  relayedBytes     BigInt   @default(0)
+
+  @@id([orgId, day, computerId])
+  @@map("computer_usage")
+}
+
+// Who is watching which Computer (§15.5): one row per viewer, alive until its token expires; viewer quotas count these.
+model ComputerViewerSession {
+  computerId String   @db.Uuid
+  userId     String
+  orgId      String
+  expiresAt  DateTime @db.Timestamptz(3)
+
+  @@id([computerId, userId])
+  @@index([orgId, expiresAt])
+  @@map("computer_viewer_session")
+}
+
+// An organization's managed computer settings (§15.4, §15.5): quota overrides a deployment admin sets, and its egress.
+model ComputerOrgSettings {
+  orgId               String   @id
+  // Partial ComputerQuotas over the deployment's defaults; null keeps the defaults.
+  quotas              Json?    @db.JsonB
+  // { mode: 'deployment' } or { mode: 'proxy', url, username? }; null is the deployment's egress.
+  egress              Json?    @db.JsonB
+  // The egress proxy's password, sealed under the organization's key; never returned.
+  egressProxyPassword String?
+  updatedAt           DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("computer_org_settings")
 }

@@ -24,6 +24,7 @@ import type {
   RcGithubRerequest,
   RcGithubRerequestResult,
   RcCodeHostDelivery,
+  RcComputerMediaUsage,
   RcGithubInstallation,
   RcPullRequestFeedback,
   RcRegister,
@@ -48,6 +49,7 @@ import type {
 import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  COMPUTER_MEDIA_USAGE_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
@@ -125,6 +127,8 @@ export interface RelayConnDeps {
   onPullRequestFeedback?: (m: RcPullRequestFeedback) => Promise<boolean>
   /** Apply a relay `rc/codehost-delivery` observation (gitea-integration.md §6, §7). Fire-and-forget. */
   onCodeHostDelivery?: (m: RcCodeHostDelivery) => Promise<void>
+  /** Meter a relay's TURN bytes per Computer (computer-use.md §15.5); absent, the CP does not offer the frame. Fire-and-forget. */
+  onComputerMediaUsage?: (m: RcComputerMediaUsage) => Promise<void>
   /** The in-memory relay index — this connection registers itself for `rc/daemon-revoke` push. */
   relayReg: RelayRegistry
   // AHP verification remains unavailable until its separately deployed service is wired.
@@ -249,6 +253,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/codehost-delivery':
           await this.handleCodeHostDelivery(frame.payload)
           return
+        case 'rc/computer-media-usage':
+          await this.deps.onComputerMediaUsage?.(frame.payload).catch(() => undefined)
+          return
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
@@ -283,6 +290,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation' ||
           type === 'rc/codehost-delivery' ||
+          (type === 'rc/computer-media-usage' && this.deps.onComputerMediaUsage !== undefined) ||
           (type === 'rc/codehost-feedback' && this.features.includes(CODEHOST_FEEDBACK_FEATURE)) ||
           (type === 'rc/pull-request-feedback' && this.features.includes(PULL_REQUEST_FEEDBACK_FEATURE))
         )
@@ -339,7 +347,8 @@ export class RelayConnection implements RelayChannel {
         BOT_CREDENTIAL_CHECK_FEATURE,
         BOT_TENANT_FEATURE,
         // Frames its MCP, hook and memory replays as snapshots, so the relay prunes instead of clearing.
-        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
+        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+        ...(this.deps.onComputerMediaUsage ? [COMPUTER_MEDIA_USAGE_FEATURE] : [])
       ]
     })
     // A relay just appeared (or reclaimed its id) — refresh the daemons' roster

@@ -4,6 +4,7 @@ import {
   buildComputerCpFrame,
   ComputerPolicySchema,
   type ComputerCpFrame,
+  type ComputerEgress,
   type ComputerPolicy
 } from '@agentconnect.md/protocol/computer'
 import { ChannelAuthority } from './authority.js'
@@ -49,6 +50,7 @@ function harness() {
   const revoked: string[] = []
   const leases: unknown[] = []
   const stops: unknown[] = []
+  const egresses: ComputerEgress[] = []
   const names: string[] = []
   let report: HeartbeatReport = { status: 'online', facts: { osVersion: 'Ubuntu 26.04', session: 'x11' } }
   const authority = new ChannelAuthority({
@@ -66,6 +68,7 @@ function harness() {
     onPolicy: (policy) => policies.push(policy),
     onLease: (lease) => leases.push(lease),
     onStop: (stop) => stops.push(stop),
+    onEgress: (egress) => egresses.push(egress),
     onReady: (ok) => names.push(ok.name),
     onRevoked: (reason) => revoked.push(reason),
     log: () => {},
@@ -83,7 +86,12 @@ function harness() {
     issuedAt: new Date(clock.now() + offsetMs).toISOString(),
     expiresAt: new Date(clock.now() + offsetMs + 300_000).toISOString()
   })
-  const authOk = (transport: FakeTransport, features?: string[], screenshotRetentionDays?: number) => {
+  const authOk = (
+    transport: FakeTransport,
+    features?: string[],
+    screenshotRetentionDays?: number,
+    egress?: ComputerEgress
+  ) => {
     const auth = transport.ofType('computer/auth')[0]!
     transport.deliver(
       buildComputerCpFrame(
@@ -97,7 +105,8 @@ function harness() {
           credential: credential(),
           policy: ComputerPolicySchema.parse({ leaseIdleSeconds: 60 }),
           ...(features ? { features } : {}),
-          ...(screenshotRetentionDays !== undefined ? { screenshotRetentionDays } : {})
+          ...(screenshotRetentionDays !== undefined ? { screenshotRetentionDays } : {}),
+          ...(egress ? { egress } : {})
         },
         { corr: auth.id }
       )
@@ -111,6 +120,7 @@ function harness() {
     leases,
     stops,
     names,
+    egresses,
     authority,
     client,
     credential,
@@ -127,6 +137,24 @@ describe('ComputerCpClient', () => {
     h.authOk(h.transports[0]!)
     await settle()
     expect(h.names).toEqual(['desk'])
+  })
+
+  it('applies the egress the Control Plane names on auth, direct when it names none, and each change', async () => {
+    const h = harness()
+    h.client.start()
+    await settle()
+    const [transport] = h.transports
+    const proxy = { mode: 'proxy' as const, url: 'http://proxy.example.com:3128', password: 'pw' }
+    h.authOk(transport!, undefined, undefined, proxy)
+    await settle()
+    transport!.deliver(buildComputerCpFrame('computer/egress', { egress: { mode: 'direct' } }))
+    expect(h.egresses).toEqual([proxy, { mode: 'direct' }])
+    transport!.close(1012)
+    h.clock.advance(60_000)
+    await settle()
+    h.authOk(h.transports[1]!)
+    await settle()
+    expect(h.egresses.at(-1)).toEqual({ mode: 'direct' })
   })
 
   it('hands a console Stop and its lifting on', async () => {

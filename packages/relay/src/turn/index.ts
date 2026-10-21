@@ -5,10 +5,15 @@ import type { Logger } from '../log.js'
 import { startTurnListeners, type TurnListeners } from './listeners.js'
 import { createTurnMetrics } from './metrics.js'
 import { TurnServer } from './server.js'
+import { meteredTurnMetrics, TurnUsageMeter, type TurnUsageReport } from './usage.js'
 
 export interface RelayTurn {
   urls: string[]
   onSecret(secret: string): void
+  /** Bytes relayed per Computer since the last call, in reports of at most `max` Computers. */
+  drainUsage(max: number): TurnUsageReport[]
+  /** Put back a report that could not be sent. */
+  restoreUsage(report: TurnUsageReport): void
   close(): Promise<void>
 }
 
@@ -24,7 +29,8 @@ export function defaultRelayedAddress(relayName: string): string {
 export async function startRelayTurn(config: RelayConfig, log: Logger): Promise<RelayTurn | undefined> {
   if (config.RELAY_TURN_PORT === undefined) return undefined
   let secret: string | undefined
-  const metrics = createTurnMetrics()
+  const usage = new TurnUsageMeter()
+  const metrics = meteredTurnMetrics(createTurnMetrics(), usage)
   const turn = new TurnServer({
     realm: config.RELAY_TURN_REALM,
     relayedAddress: config.RELAY_TURN_RELAYED_ADDRESS ?? defaultRelayedAddress(config.RELAY_NAME),
@@ -61,6 +67,8 @@ export async function startRelayTurn(config: RelayConfig, log: Logger): Promise<
     onSecret: (next) => {
       secret = next
     },
+    drainUsage: (max) => usage.drain(max),
+    restoreUsage: (report) => usage.restore(report),
     close: async () => {
       turn.close()
       await listeners.close()

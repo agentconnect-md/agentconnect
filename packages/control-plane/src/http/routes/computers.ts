@@ -60,6 +60,13 @@ export const COMPUTER_DESKTOP_FILES_PATH = '/computers/desktop'
 
 const notFound = { error: 'Not Found', statusCode: 404, message: 'computer not found' }
 const revokedConflict = { error: 'Conflict', statusCode: 409, message: 'computer is revoked' }
+/** An organization's managed computer quota refused the request (computer-use.md §15.5). */
+const quotaExceeded = (message: string) => ({
+  error: 'Too Many Requests',
+  statusCode: 429,
+  code: 'COMPUTER_QUOTA_EXCEEDED',
+  message
+})
 
 /** Who may change who uses a Computer: the registrant of their own desktop, any editor of a managed one. */
 function canEditPolicy(c: ComputerRecord, ctx: ViewCtx): boolean {
@@ -402,10 +409,10 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Create a pool computer',
           description:
-            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 503 when the deployment runs no pool or no pool member is connected.',
+            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 429 (`COMPUTER_QUOTA_EXCEEDED`) when the organization is at a managed computer quota (`GET /computers/quotas`); 503 when the deployment runs no pool or no pool member is connected.',
           operationId: 'createPoolComputer',
           body: CreatePoolComputerBody,
-          response: { 201: ComputerDto, 400: ErrorDto, 403: ErrorDto, 503: ErrorDto }
+          response: { 201: ComputerDto, 400: ErrorDto, 403: ErrorDto, 429: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -431,8 +438,10 @@ export function computerRoutes(deps: HttpDeps) {
           ...(policy ? { policy } : {}),
           ...(agentAccess ? { agentAccess } : {})
         })
-        if (!created) return reply.code(503).send(unavailable)
-        return reply.code(201).send(await present(req, created))
+        if (!created.ok && created.code === 'quota_exceeded')
+          return reply.code(429).send(quotaExceeded(created.message))
+        if (!created.ok) return reply.code(503).send(unavailable)
+        return reply.code(201).send(await present(req, created.computer))
       }
     )
 
@@ -468,7 +477,7 @@ export function computerRoutes(deps: HttpDeps) {
             description,
             operationId,
             params: IdParam,
-            response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+            response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 429: ErrorDto, 503: ErrorDto }
           }
         },
         async (req, reply) => {
@@ -488,6 +497,7 @@ export function computerRoutes(deps: HttpDeps) {
           const result = await run(orgOf(req), c.id)
           if (result.ok) return await present(req, result.computer)
           if (result.code === 'not_found') return reply.code(404).send(notFound)
+          if (result.code === 'quota_exceeded') return reply.code(429).send(quotaExceeded(result.message))
           const status = result.code === 'no_pool' ? 503 : 409
           return reply.code(status).send({
             error: status === 503 ? 'Service Unavailable' : 'Conflict',
@@ -499,7 +509,7 @@ export function computerRoutes(deps: HttpDeps) {
     poolCommand(
       'wake',
       'Wake a pool computer',
-      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone or whose reset did not finish (reset it instead); 503 without a pool member.',
+      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone or whose reset did not finish (reset it instead); 429 at a managed computer quota; 503 without a pool member.',
       'wakeComputer',
       (orgId, id) => deps.computerPool!.wakeNow(orgId, id)
     )
@@ -555,10 +565,17 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Open a computer viewer',
           description:
-            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 503 when no relay is configured.',
+            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 429 at a viewer quota (concurrent viewers, or this month’s relayed media); 503 when no relay is configured.',
           operationId: 'createComputerViewer',
           params: IdParam,
-          response: { 200: ComputerViewerGrantDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: {
+            200: ComputerViewerGrantDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            503: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -574,6 +591,7 @@ export function computerRoutes(deps: HttpDeps) {
         const mode = can(ctx, { action: AuthorizationAction.OrganizationWrite }) ? 'control' : 'view'
         const grant = await deps.computerViewer.grantViewer(orgOf(req), c.id, { userId: ctx.userId, mode })
         if (!grant.granted) {
+          if (grant.code === 'quota_exceeded') return reply.code(429).send(quotaExceeded(grant.message))
           const status = grant.code === 'no_relay' ? 503 : 409
           return reply.code(status).send({
             error: status === 503 ? 'Service Unavailable' : 'Conflict',

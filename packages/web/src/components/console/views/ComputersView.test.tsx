@@ -26,7 +26,10 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: mocks.openModal }) }))
 vi.mock('@/lib/computers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/computers')>()),
-  useComputers: () => ({ data: mocks.computers, error: undefined, isLoading: mocks.computers === undefined })
+  useComputers: () => ({ data: mocks.computers, error: undefined, isLoading: mocks.computers === undefined }),
+  useComputerPool: () => ({ data: { enabled: true, available: true } }),
+  useComputerQuotas: () => ({ data: null, mutate: vi.fn() }),
+  useComputerEgress: () => ({ data: null, mutate: vi.fn() })
 }))
 
 const ComputersView = (await import('./ComputersView')).default

@@ -53,6 +53,8 @@ function setup(
     status?: string
     stoppedAt?: () => Date | null
     keyDeliveryMs?: number
+    kind?: 'managed' | 'self-hosted'
+    egress?: ComputerConnDeps['egress']
   } = {}
 ) {
   const clock = new FakeClock(T0)
@@ -65,6 +67,7 @@ function setup(
         ({
           name: 'desk',
           ownerUserId: 'u1',
+          kind: over.kind ?? 'self-hosted',
           status: over.status ?? 'online',
           stoppedAt: over.stoppedAt ? over.stoppedAt() : null,
           policy: ComputerPolicySchema.parse({ screenshotRetentionDays: 7 })
@@ -91,7 +94,8 @@ function setup(
     ...(over.leases ? { leases: over.leases } : {}),
     ...(over.relays ? { relays: over.relays } : {}),
     ...(over.audit ? { audit: over.audit } : {}),
-    ...(over.screenshots ? { screenshots: over.screenshots } : {})
+    ...(over.screenshots ? { screenshots: over.screenshots } : {}),
+    ...(over.egress ? { egress: over.egress } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -104,6 +108,36 @@ const beat = (extra: Record<string, unknown> = {}) =>
   buildComputerCpFrame('computer/heartbeat', { status: 'online', ...extra })
 
 describe('ComputerConnection', () => {
+  it('tells a managed desktop its organization’s egress on auth, and a change once it reports a forwarder', async () => {
+    const proxy = { mode: 'proxy' as const, url: 'http://proxy.example.com:3128', password: 'pw' }
+    const egress = vi.fn(async () => proxy)
+    const { transport, registry } = setup({ kind: 'managed', egress })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({ egress: proxy })
+    // A desktop without a forwarder could not decode the push, so it is not sent one.
+    registry.pushEgress('org_1', { mode: 'direct' })
+    expect(transport.ofType('computer/egress')).toHaveLength(0)
+    transport.deliver(beat({ capabilities: { egress: true } }))
+    await settle()
+    registry.pushEgress('org_2', { mode: 'direct' })
+    registry.pushEgress('org_1', { mode: 'direct' })
+    expect(transport.ofType('computer/egress').map((f) => f.payload)).toEqual([{ egress: { mode: 'direct' } }])
+  })
+
+  it('tells a self-hosted desktop no egress: it always uses its own network', async () => {
+    const egress = vi.fn(async () => ({ mode: 'direct' as const }))
+    const { transport, registry } = setup({ egress })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]?.payload).not.toHaveProperty('egress')
+    expect(egress).not.toHaveBeenCalled()
+    transport.deliver(beat({ capabilities: { egress: true } }))
+    await settle()
+    registry.pushEgress('org_1', { mode: 'direct' })
+    expect(transport.ofType('computer/egress')).toHaveLength(0)
+  })
+
   it('tells the desktop a console Stop after auth, again while it does not show it, and the resume', async () => {
     let stoppedAt: Date | null = new Date(T0)
     const { transport, registry } = setup({ stoppedAt: () => stoppedAt })

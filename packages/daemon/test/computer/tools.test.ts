@@ -718,6 +718,20 @@ describe('managed computers (§15.1)', () => {
       message: 'the volume is gone'
     })
     expect(refused.calls).toEqual([])
+    const quota = setup({
+      granted: [],
+      managed: 'per-agent',
+      pool: () => ({
+        state: 'failed',
+        code: 'quota_exceeded',
+        message: 'this organization already runs 3 managed computer(s), its limit of 3'
+      })
+    })
+    expect(parse((await quota.tools.call(ctx(), 'computer_screenshot', {}))!.result)).toMatchObject({
+      error: 'unavailable',
+      reason: 'quota_exceeded',
+      message: 'this organization already runs 3 managed computer(s), its limit of 3'
+    })
 
     let now = T0
     const slow = setup({

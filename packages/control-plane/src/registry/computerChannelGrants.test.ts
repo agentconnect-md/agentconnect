@@ -9,7 +9,12 @@ import {
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { ComputerId, OrgId } from '../domain/ids.js'
 import type { ComputerRecord } from '../persistence/ports.js'
-import { ComputerChannelGrants, COMPUTER_CHANNEL_TOKEN_TTL_MS, rendezvous } from './computerChannelGrants.js'
+import {
+  ComputerChannelGrants,
+  COMPUTER_CHANNEL_TOKEN_TTL_MS,
+  rendezvous,
+  type ComputerChannelGrantOpts
+} from './computerChannelGrants.js'
 import { ComputerChannelKeys } from './computerChannelKeys.js'
 
 const ORG = OrgId('org_1')
@@ -172,7 +177,13 @@ describe('ComputerChannelGrants.grantViewer', () => {
   const stun = ['stun:stun-0.example.com:3478', 'stun:stun-1.example.com:3478', 'stun:stun-2.example.com:3478']
   const viewer = (
     over: Partial<ComputerRecord> = {},
-    opts: { relays?: string[]; withTurn?: boolean; relayTurn?: string[][]; policy?: Record<string, unknown> } = {}
+    opts: {
+      relays?: string[]
+      withTurn?: boolean
+      relayTurn?: string[][]
+      policy?: Record<string, unknown>
+      viewerQuota?: ComputerChannelGrantOpts['viewerQuota']
+    } = {}
   ) => {
     const { repo, keys, clock } = setup(over, opts.policy)
     const grants = new ComputerChannelGrants(repo, keys, clock, {
@@ -183,7 +194,8 @@ describe('ComputerChannelGrants.grantViewer', () => {
       ...(opts.relayTurn
         ? { relayTurn: { secret: relaySecret, ttlSec: 21_600, servers: async () => opts.relayTurn! } }
         : {}),
-      stunUrls: async () => stun
+      stunUrls: async () => stun,
+      ...(opts.viewerQuota ? { viewerQuota: opts.viewerQuota } : {})
     })
     return { grants, keys }
   }
@@ -340,5 +352,27 @@ describe('ComputerChannelGrants.grantViewer', () => {
       granted: false,
       code: 'no_relay'
     })
+  })
+
+  it('refuses a viewer past the organization’s viewer quota, and notes each one it grants', async () => {
+    const granted: Array<{ userId: string; expiresAt: Date }> = []
+    let full = false
+    const viewerQuota = {
+      viewerRefusal: async () => (full ? { message: '3 people are already watching this computer' } : null),
+      viewerGranted: async (_o: string, _c: string, userId: string, expiresAt: Date) => {
+        granted.push({ userId, expiresAt })
+      }
+    }
+    const { grants } = viewer({}, { viewerQuota })
+    const ok = await grants.grantViewer(ORG, CID, { userId: 'u1', mode: 'view' })
+    if (!ok.granted) throw new Error('refused')
+    expect(granted).toEqual([{ userId: 'u1', expiresAt: new Date(ok.expiresAt) }])
+    full = true
+    expect(await grants.grantViewer(ORG, CID, { userId: 'u2', mode: 'view' })).toEqual({
+      granted: false,
+      code: 'quota_exceeded',
+      message: '3 people are already watching this computer'
+    })
+    expect(granted).toHaveLength(1)
   })
 })

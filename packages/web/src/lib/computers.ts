@@ -8,6 +8,10 @@ import type { ComputerAgentAccess, ComputerDoctorCheck, ComputerStatus } from '@
 import {
   fetchComputer,
   fetchComputerPool,
+  fetchComputerEgress,
+  fetchComputerQuotas,
+  type ComputerEgressDto,
+  type ComputerQuotaStatusDto,
   fetchComputers,
   type ComputerDto,
   type ComputerPoolPhase,
@@ -49,6 +53,27 @@ export function useComputerPool() {
     ([, scoped]: [string, string]) =>
       fetchComputerPool(scoped).catch((): ComputerPoolStatusDto => ({ enabled: false, available: false })),
     { refreshInterval: COMPUTERS_REFRESH_MS * 3 }
+  )
+}
+
+/** The organization's Computer quotas and use (computer-use.md §15.5); null from a Control Plane before them. */
+export function useComputerQuotas() {
+  const { activeOrg } = useOrgs()
+  const orgId = activeOrg?.id
+  return useSWR<ComputerQuotaStatusDto | null>(
+    !MOCK_MODE && orgId ? ['computer-quotas', orgId] : null,
+    ([, scoped]: [string, string]) => fetchComputerQuotas(scoped).catch(() => null),
+    { refreshInterval: COMPUTERS_REFRESH_MS * 3 }
+  )
+}
+
+/** Where the organization's managed computers' browser traffic leaves (computer-use.md §15.4); null before it existed. */
+export function useComputerEgress() {
+  const { activeOrg } = useOrgs()
+  const orgId = activeOrg?.id
+  return useSWR<ComputerEgressDto | null>(
+    !MOCK_MODE && orgId ? ['computer-egress', orgId] : null,
+    ([, scoped]: [string, string]) => fetchComputerEgress(scoped).catch(() => null)
   )
 }
 

@@ -41,6 +41,11 @@ export interface ComputerChannelGrantOpts {
   stunUrls?: () => Promise<string[]>
   /** Told of every grant, so a managed computer an agent or a viewer is using does not idle out (§15.1). */
   onUse?: (computerId: string) => void
+  /** Viewer concurrency and monthly relayed media quotas (§15.5); absent enforces none. */
+  viewerQuota?: {
+    viewerRefusal(orgId: string, computerId: string, userId: string): Promise<{ message: string } | null>
+    viewerGranted(orgId: string, computerId: string, userId: string, expiresAt: Date): Promise<void>
+  }
 }
 
 export type ViewerGrantResult =
@@ -55,7 +60,7 @@ export type ViewerGrantResult =
       stunUrls: string[]
       directMedia: boolean
     }
-  | { granted: false; code: 'unavailable' | 'no_relay'; message: string }
+  | { granted: false; code: 'unavailable' | 'no_relay' | 'quota_exceeded'; message: string }
 
 export interface GrantRequester {
   agentId: string
@@ -130,7 +135,7 @@ export class ComputerChannelGrants {
     computerId: string,
     who: { userId: string; mode: ComputerAgentMode }
   ): Promise<ViewerGrantResult> {
-    const refuse = (code: 'unavailable' | 'no_relay', message: string): ViewerGrantResult => ({
+    const refuse = (code: 'unavailable' | 'no_relay' | 'quota_exceeded', message: string): ViewerGrantResult => ({
       granted: false,
       code,
       message
@@ -145,9 +150,12 @@ export class ComputerChannelGrants {
     if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
     const relays = [...new Set(await (this.opts.viewerRelays?.() ?? Promise.resolve([])))].slice(0, COMPUTER_RELAYS_MAX)
     if (relays.length === 0) return refuse('no_relay', 'no relay is configured, so the viewer cannot reach the desktop')
+    const quota = await this.opts.viewerQuota?.viewerRefusal(orgId, computerId, who.userId)
+    if (quota) return refuse('quota_exceeded', quota.message)
     const credential = this.keys.signing(computerId, apiKeyId, now)
     this.opts.onUse?.(computerId)
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
+    await this.opts.viewerQuota?.viewerGranted(orgId, computerId, who.userId, new Date(exp))
     // The desktop and the browser each get their own TURN username, so the TURN server tells them apart.
     const turn = await this.turnServers(computerId)
     // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.

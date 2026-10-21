@@ -83,6 +83,7 @@ import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
 import type { ComputerChannelGrants } from '../registry/computerChannelGrants.js'
 import type { ComputerPool } from '../registry/computerPool.js'
 import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
+import type { ComputerPlan } from '../registry/computerPlan.js'
 import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
 import type { DesktopDistribution } from '../computer-install/desktop-distribution.js'
 import type { GithubService } from '../github/service.js'
@@ -454,6 +455,11 @@ export interface HttpDeps {
   computerLeases?: Pick<ComputerLeaseService, 'occupancy'>
   /** The per-Computer audit the desktop daemons report (computer-use.md §8.2). */
   computerAudit: Pick<ComputerAuditLog, 'list'>
+  /** Managed computer quotas, metering and egress per organization (computer-use.md §15.4, §15.5); absent in older test harnesses. */
+  computerPlan?: Pick<
+    ComputerPlan,
+    'status' | 'setOverride' | 'usage' | 'egressView' | 'setEgress' | 'override' | 'volumeGib'
+  >
   /** Stored screenshots (computer-use.md §9); absent when no bucket is configured. */
   computerScreenshots?: Pick<ComputerScreenshots, 'read' | 'list' | 'sign' | 'usage' | 'retentionDays'>
   /** Embedded OAuth 2.1 AS logic (agent-assistant.md §7): DCR, PKCE code exchange, refresh. */

@@ -383,6 +383,9 @@ export const COMPUTER_POOL_FEATURE = 'computer-pool-v1'
 /** Pool member serves `computer-pool/op`: it creates, suspends, resumes and deletes desktop claims in its sandbox namespace. */
 export const COMPUTER_POOL_MEMBER_FEATURE = 'computer-pool-member-v1'
 
+/** Agent daemon reads the `quota_exceeded` refusal of `computer-pool/acquire` (computer-use.md §15.5); older ones get `failed`. */
+export const COMPUTER_POOL_QUOTA_FEATURE = 'computer-pool-quota-v1'
+
 // ── GitLab.com code-host features (gitlab-com-integration.md §17.3) ─────────
 // Each string is advertised only when its COMPLETE slice is live; the CP must
 // never place a GitLab-shaped workspace, grant, or hook on a peer without it.

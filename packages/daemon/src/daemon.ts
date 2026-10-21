@@ -122,6 +122,7 @@ import {
   RUNTIME_PROBE_FEATURE,
   COMPUTER_POOL_MEMBER_FEATURE,
   COMPUTER_POOL_FEATURE,
+  COMPUTER_POOL_QUOTA_FEATURE,
   type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
@@ -8462,7 +8463,9 @@ export class Daemon {
       // This daemon answers a relayed `executor/prepare`; whether it hosts anything is the executor facts' `enabled`, not this bit. Static.
       SESSION_EXECUTORS_V1_FEATURE,
       // multi-repository-workspaces.md decisions 15–19: this daemon selects a session's `decision` repositories before it starts; the CP refuses `decision` for a daemon without it. Static.
-      REPO_SELECTOR_V1_FEATURE
+      REPO_SELECTOR_V1_FEATURE,
+      // computer-use.md §15.5: this daemon reads the `quota_exceeded` refusal of computer-pool/acquire. Static.
+      COMPUTER_POOL_QUOTA_FEATURE
     ]
   }
 

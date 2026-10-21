@@ -77,6 +77,7 @@ function toRecord(c: Computer): ComputerRecord {
     poolPhaseAt: c.poolPhaseAt,
     poolActiveAt: c.poolActiveAt,
     poolError: c.poolError,
+    poolMeteredAt: c.poolMeteredAt,
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   }

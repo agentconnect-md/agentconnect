@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   REPO_CANDIDATES_V1_FEATURE,
   REPO_SELECTOR_V1_FEATURE,
+  COMPUTER_POOL_QUOTA_FEATURE,
   type DecisionEvaluation,
   type RepoCandidatesReply
 } from '@agentconnect.md/protocol'
@@ -164,6 +165,7 @@ describe('a new session selects its repositories once, before its host starts (d
   it('asks one Choice question over the rows and the roster, pins the hits on the row, and never asks again', async () => {
     const { internal, evaluate, repoCandidates, timeline, turn } = await start(scaffold())
     expect(internal.registrationFeatures()).toContain(REPO_SELECTOR_V1_FEATURE)
+    expect(internal.registrationFeatures()).toContain(COMPUTER_POOL_QUOTA_FEATURE)
 
     expect(await turn('first')).toMatchObject({ sessionId: 'acp-1', output: 'Done' })
 

@@ -3,6 +3,7 @@ import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
+  COMPUTER_MEDIA_USAGE_FEATURE,
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -567,6 +568,28 @@ describe('RelayCpClient', () => {
 
     transport.simulateClose(1012)
     await expect(client.reportPullRequestFeedback(signal)).rejects.toMatchObject({ retryable: true })
+  })
+
+  it('reports TURN bytes per Computer only to a CP that meters them, and says when the link is down', async () => {
+    const usage = {
+      from: '2026-10-20T00:00:00.000Z',
+      to: '2026-10-20T00:01:00.000Z',
+      entries: [{ computerId: '00000000-0000-4000-8000-0000000000aa', bytes: 2048 }]
+    }
+    const { client, transport } = makeClient()
+    expect(client.reportComputerMediaUsage(usage)).toEqual({ ready: false, taken: false })
+    client.start()
+    await flush()
+    await completeHandshake(transport)
+    expect(client.reportComputerMediaUsage(usage)).toEqual({ ready: true, taken: false })
+    expect(transport.lastReq('rc/computer-media-usage')).toBeUndefined()
+
+    const metered = makeClient()
+    metered.client.start()
+    await flush()
+    await completeHandshake(metered.transport, 15, undefined, [COMPUTER_MEDIA_USAGE_FEATURE])
+    expect(metered.client.reportComputerMediaUsage(usage)).toEqual({ ready: true, taken: true })
+    expect(metered.transport.lastReq('rc/computer-media-usage')?.payload).toEqual(usage)
   })
 
   it('sends a wake-only event only to a CP that holds follow-up watches, and applies their EVTs', async () => {

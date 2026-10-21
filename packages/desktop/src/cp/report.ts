@@ -89,7 +89,13 @@ export interface DisplayInfo {
 export function capabilitiesFrom(
   checks: Check[] | undefined,
   display: DisplayInfo | undefined,
-  options: { platform?: NodeJS.Platform; session?: ComputerSession; webrtc?: boolean; keyboardActivity?: boolean } = {}
+  options: {
+    platform?: NodeJS.Platform
+    session?: ComputerSession
+    webrtc?: boolean
+    keyboardActivity?: boolean
+    egress?: boolean
+  } = {}
 ): ComputerCapabilities {
   const platform = options.platform ?? process.platform
   const status = (name: string) => checks?.find((check) => check.name === name)?.status
@@ -117,6 +123,7 @@ export function capabilitiesFrom(
     accessibilityTree: false,
     viewer: options.webrtc !== false && ok('ffmpeg') && ok('screen capture'),
     viewerStun: true,
+    ...(options.egress ? { egress: true } : {}),
     displays:
       display && display.screenWidth > 0 && display.screenHeight > 0
         ? [

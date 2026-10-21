@@ -433,6 +433,25 @@ is required.
 | `computerPool.ephemeralIdleSeconds` | `600`                | Idle time before an `ephemeral` desktop is deleted            |
 | `computerPool.sleepIdleSeconds`     | `1800`               | Idle time before a `per-agent` or `manual` desktop sleeps     |
 | `computerPool.image` / `repository` | `<registry>/desktop` | The desktop image, tagged like the release by default         |
+| `computerPool.egressPorts`          | `[3128, 8080]`       | TCP ports besides 443 desktops may reach, for egress proxies  |
+
+A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists. With `relay.turn` or
+`relay.stun` on, or `computerViewer.turn.urls` set, the desktop template also admits those
+TURN and STUN ports, so a managed computer's viewer works through the relay's TURN although
+its pod has no UDP a browser can reach.
+
+`computerPlan` sets every organization's Computer quotas and egress choices, rendered as
+`AC_COMPUTER_PLAN` on the Control Plane
+([design](../../docs/designs/computer-use.md#155-quotas-metering-and-billing)). `quotas` takes
+any of `runningDesktops`, `desktops`, `storageGib`, `monthlyDesktopHours`, `modes.<mode>.{runningDesktops,desktops}`,
+`viewers`, `viewersPerComputer`, `monthlyViewerGib`, `screenshotStorageGib` and
+`screenshotRetentionDays`, with `null` for unlimited; empty keeps the built-in defaults (3
+running desktops, 10 held, 300 desktop hours a month, 5 viewers and 3 per Computer, 100 GiB
+of relayed viewer media a month, 10 GiB of screenshots). A deployment administrator overrides
+them per organization from the console. Metering bills `computerPool.home.size` as each
+desktop's kept volume. `computerPlan.egress.orgProxy` lets an organization send its managed
+desktops' browser traffic through its own HTTP(S) proxy, and `computerPlan.egress.description`
+is the line the console shows about the deployment's own egress.
 
 ## Node maintenance
 

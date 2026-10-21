@@ -29,6 +29,8 @@ const REAP_BATCH = 200
 export interface ComputerScreenshotsOpts {
   defaultDays: number
   maxDays: number
+  /** The organization's screenshot quota (§15.5): stored bytes and the longest retention; null is unlimited. */
+  limits?: (orgId: string) => Promise<{ storedBytes: number | null; retentionDays: number | null }>
 }
 
 export interface ComputerScreenshotLog {
@@ -74,9 +76,15 @@ export class ComputerScreenshots {
     },
     put: ComputerScreenshotPut
   ): Promise<ComputerScreenshotPutOk> {
-    const days = this.retentionDays(computer.policy)
+    const limits = await this.opts.limits?.(computer.orgId)
+    const days = Math.min(this.retentionDays(computer.policy), limits?.retentionDays ?? Number.POSITIVE_INFINITY)
     if (days <= 0) return { status: 'skipped', reason: 'retention is 0' }
     if (put.bytes > this.bucket.maxBytes) return { status: 'skipped', reason: 'too large' }
+    if (limits?.storedBytes != null) {
+      const stored = await this.repo.storedBytes(computer.orgId, new Date(this.clock.now()))
+      if (stored + put.bytes > limits.storedBytes)
+        return { status: 'skipped', reason: 'screenshot storage quota reached' }
+    }
     // The desktop names the session, so only a session of a granted agent in this org may receive its screenshots.
     if (!computerGrantsAgent(computer, put.agentId)) return { status: 'skipped', reason: 'agent not granted' }
     const session = await this.sessions.get(OrgId(computer.orgId), SessionId(put.sessionId))

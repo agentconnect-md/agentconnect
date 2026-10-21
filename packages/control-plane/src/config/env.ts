@@ -308,6 +308,8 @@ const CoreConfigShape = {
   AC_FILE_TRANSFER: z.string().optional(),
   // Computer screenshot storage (computer-use.md §9): one JSON document, parsed by computer-screenshots/config.ts.
   AC_COMPUTER_SCREENSHOTS: z.string().optional(),
+  // Managed computer quotas, metered volume size and egress choices (computer-use.md §15.4, §15.5): parsed by computer-plan/config.ts.
+  AC_COMPUTER_PLAN: z.string().optional(),
   // ── open-connector integration (docs: connectors) — opt-in ──
   // Base URL of the open-connector admin API the CP brokers connector browsing +
   // connection provisioning through. Unset ⇒ the feature is off: the connectors

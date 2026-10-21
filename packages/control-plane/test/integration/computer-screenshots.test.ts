@@ -8,7 +8,11 @@ import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgComputerScreenshotRepo } from '../../src/persistence/repositories/computer-screenshot.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
-import { ComputerScreenshots, ScreenshotSessionPendingError } from '../../src/registry/computerScreenshots.js'
+import {
+  ComputerScreenshots,
+  type ComputerScreenshotsOpts,
+  ScreenshotSessionPendingError
+} from '../../src/registry/computerScreenshots.js'
 import type { ScreenshotBucket, ScreenshotObjectKey } from '../../src/computer-screenshots/bucket.js'
 import { ComputerPolicySchema } from '../../src/domain/computer.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
@@ -51,13 +55,14 @@ class FakeBucket implements ScreenshotBucket {
   }
 }
 
-function harness() {
+function harness(limits?: ComputerScreenshotsOpts['limits']) {
   const clock = new FakeClock(T0)
   const bucket = new FakeBucket()
   const repo = new PgComputerScreenshotRepo(prisma)
   const screenshots = new ComputerScreenshots(repo, new PgSessionRepo(prisma), bucket, clock, {
     defaultDays: 30,
-    maxDays: 90
+    maxDays: 90,
+    ...(limits ? { limits } : {})
   })
   return { clock, bucket, repo, screenshots }
 }
@@ -242,6 +247,22 @@ describe('computer screenshot storage', () => {
       offer(s.sessionId, s.agentId, { bytes: 4096 })
     )
     expect(tooBig).toMatchObject({ status: 'skipped', reason: 'too large' })
+  })
+
+  it('holds an organization to its screenshot storage and retention quota', async () => {
+    const h = harness(async () => ({ storedBytes: 150, retentionDays: 7 }))
+    const computerId = await register(appAs(DEFAULT_OWNER_ID))
+    const s = await session()
+    const target = { orgId: DEFAULT_ORG_ID, computerId, policy: policy(), agentAccess: granting(s.agentId) }
+    const first = await h.screenshots.put(target, offer(s.sessionId, s.agentId))
+    h.bucket.objects.set(new URL(first.url!).pathname.slice(1), 100)
+    expect(await h.screenshots.commit(computerId, { sessionId: s.sessionId, sha256: SHA })).toBe(true)
+    const row = await prisma.computerScreenshot.findFirstOrThrow({ where: { computerId } })
+    expect(row.expiresAt.getTime()).toBe(T0 + 7 * DAY)
+    expect(await h.screenshots.put(target, offer(s.sessionId, s.agentId, { sha256: 'b'.repeat(64) }))).toEqual({
+      status: 'skipped',
+      reason: 'screenshot storage quota reached'
+    })
   })
 
   it('serves a screenshot only to a member who can view both the session and the Computer', async () => {

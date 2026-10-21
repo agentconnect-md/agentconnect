@@ -156,4 +156,12 @@ export class PgComputerScreenshotRepo implements ComputerScreenshotRepo {
       stored: { count: stored._count._all, bytes: stored._sum.bytes ?? 0 }
     }
   }
+
+  async storedBytes(orgId: string, now: Date): Promise<number> {
+    const stored = await this.db.computerScreenshot.aggregate({
+      where: { orgId, storedAt: { not: null }, expiresAt: { gt: now } },
+      _sum: { bytes: true }
+    })
+    return stored._sum.bytes ?? 0
+  }
 }

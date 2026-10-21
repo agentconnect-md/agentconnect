@@ -7,17 +7,27 @@ import { useTranslations } from 'next-intl'
 import type { ComputerDto } from '@/lib/api'
 import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { agentAccessOf, computerStatusTone, doctorCounts, poolPhaseNote, useComputers, useAgo } from '@/lib/computers'
+import {
+  agentAccessOf,
+  computerStatusTone,
+  doctorCounts,
+  poolPhaseNote,
+  useComputerPool,
+  useComputers,
+  useAgo
+} from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useMemberName } from '@/components/console/computer-members'
 import { AllocationBadge, useAgentName } from '@/components/console/ComputerPoolCards'
+import { ComputerEgressCard, ComputerQuotasCard } from '@/components/console/ComputerPlanCards'
 
 export default function ComputersView() {
   const t = useTranslations('Computers')
   const { data, error, isLoading } = useComputers()
+  const { data: pool } = useComputerPool()
   const { openModal } = useModal()
   const computers = useMemo(() => data ?? [], [data])
   const online = computers.filter((c) => c.status !== 'offline' && c.status !== 'revoked').length
@@ -77,6 +87,11 @@ export default function ComputersView() {
           </div>
         </>
       )}
+      {/* Limits and egress apply to every Computer the organization adds, so they show before the first one too. */}
+      <div className="mt-[18px] grid grid-cols-1 items-start gap-[14px] desktop:grid-cols-2">
+        <ComputerQuotasCard />
+        {pool?.enabled && <ComputerEgressCard />}
+      </div>
     </div>
   )
 }

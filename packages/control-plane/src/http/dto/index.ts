@@ -20,6 +20,8 @@ import {
   ComputerAgentAccess
 } from '../../domain/computer.js'
 import { COMPUTER_ALLOCATIONS, COMPUTER_POOL_PHASES } from '../../domain/computerPool.js'
+import { ComputerQuotaOverrideSchema, ComputerQuotasSchema } from '../../domain/computerQuotas.js'
+import { ComputerEgressUpdate } from '../../domain/computerEgress.js'
 import {
   SkillSourceFailureCode,
   AgentModelProvider,
@@ -4609,6 +4611,78 @@ export const CreatePoolComputerBody = z
   .strict()
 
 /** `GET /computers/pool`: whether this deployment runs managed computers and can start one now (computer-use.md §15.1). */
+/** An organization's managed computer quotas (computer-use.md §15.5): the deployment's defaults, its override and what applies. */
+export const ComputerQuotaStatusDto = z.object({
+  defaults: ComputerQuotasSchema,
+  override: ComputerQuotaOverrideSchema.nullable(),
+  limits: ComputerQuotasSchema,
+  /** What the organization uses now; monthly figures are for the current UTC month. */
+  used: z.object({
+    runningDesktops: z.number().int(),
+    desktops: z.number().int(),
+    storageGib: z.number(),
+    monthlyDesktopHours: z.number(),
+    modes: z.record(
+      z.enum(COMPUTER_ALLOCATIONS),
+      z.object({ runningDesktops: z.number().int(), desktops: z.number().int() })
+    ),
+    viewers: z.number().int(),
+    monthlyViewerGib: z.number(),
+    screenshotStorageGib: z.number()
+  }),
+  /** One managed desktop's volume, in GiB. */
+  volumeGib: z.number(),
+  /** Whether the caller may change the override: a deployment administrator. */
+  canEdit: z.boolean()
+})
+export const SetComputerQuotasBody = z.object({ override: ComputerQuotaOverrideSchema.nullable() }).strict()
+
+/** Where an organization's managed desktops' browser traffic leaves (§15.4); never the proxy password. */
+export const ComputerEgressDto = z.object({
+  /** `deployment`: the deployment's own (data-centre) egress; `proxy`: the organization's proxy. */
+  mode: z.enum(['deployment', 'proxy']),
+  url: z.string().nullable(),
+  username: z.string().nullable(),
+  passwordSet: z.boolean(),
+  /** Whether this deployment lets an organization use its own proxy. */
+  orgProxyAllowed: z.boolean(),
+  /** The deployment's note about its own egress, such as its region. */
+  description: z.string().nullable(),
+  canEdit: z.boolean()
+})
+export const SetComputerEgressBody = ComputerEgressUpdate
+
+const ComputerUsageRowDto = z.object({
+  runningSeconds: z.number().int(),
+  sleepingSeconds: z.number().int(),
+  /** Kept volume size times the time it was held. */
+  volumeGibSeconds: z.number().int(),
+  /** Viewer media the relays forwarded over TURN. */
+  relayedBytes: z.number().int()
+})
+/** Metered Computer use in [from, to) by UTC day (computer-use.md §15.5), with screenshot storage. */
+export const ComputerUsageDto = z.object({
+  from: z.string(),
+  to: z.string(),
+  totals: ComputerUsageRowDto,
+  /** By allocation mode; a self-hosted Computer's TURN bytes count under `self-hosted`. */
+  allocations: z.array(ComputerUsageRowDto.extend({ allocation: z.string() })),
+  days: z.array(ComputerUsageRowDto.extend({ day: z.string() })),
+  /** Per Computer; `name` is null for one removed since, or one the caller cannot see. */
+  computers: z.array(
+    ComputerUsageRowDto.extend({
+      computerId: z.string(),
+      name: z.string().nullable(),
+      kind: z.string(),
+      allocation: z.string().nullable()
+    })
+  ),
+  screenshots: z.object({
+    written: z.object({ count: z.number().int(), bytes: z.number().int() }),
+    stored: z.object({ count: z.number().int(), bytes: z.number().int() })
+  })
+})
+
 export const ComputerPoolStatusDto = z.object({
   /** The deployment runs the pool (`COMPUTER_POOL_ENABLED`). */
   enabled: z.boolean(),

@@ -1376,6 +1376,23 @@ export const RcSnapshotEnd = z.object({
 })
 export type RcSnapshotEnd = z.infer<typeof RcSnapshotEnd>
 
+// ── computer viewer media metering (computer-use.md §15.5) ───────────────────
+
+/** CP takes `rc/computer-media-usage`; a relay sends it only when the CP advertised this. */
+export const COMPUTER_MEDIA_USAGE_FEATURE = 'computer-media-usage-v1'
+export const RC_COMPUTER_MEDIA_USAGE_MAX = 1000
+
+// R→C EVT: TURN bytes this relay forwarded per Computer since its last report; best effort, a lost report is lost usage.
+export const RcComputerMediaUsage = z.object({
+  from: z.string().datetime(),
+  to: z.string().datetime(),
+  entries: z
+    .array(z.object({ computerId: z.string().uuid(), bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }))
+    .min(1)
+    .max(RC_COMPUTER_MEDIA_USAGE_MAX)
+})
+export type RcComputerMediaUsage = z.infer<typeof RcComputerMediaUsage>
+
 // ── the wire union ───────────────────────────────────────────────────────────
 
 /** `type` string → payload schema for the relay↔CP wire. */
@@ -1431,6 +1448,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/memoryconnection-unassign': RcMemoryConnectionUnassign,
   'rc/snapshot-begin': RcSnapshotBegin,
   'rc/snapshot-end': RcSnapshotEnd,
+  'rc/computer-media-usage': RcComputerMediaUsage,
   error: ErrorFrame
 } as const
 
@@ -1493,6 +1511,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/memoryconnection-unassign', RELAY_CP_SCHEMAS['rc/memoryconnection-unassign']),
   frameSchema('rc/snapshot-begin', RELAY_CP_SCHEMAS['rc/snapshot-begin']),
   frameSchema('rc/snapshot-end', RELAY_CP_SCHEMAS['rc/snapshot-end']),
+  frameSchema('rc/computer-media-usage', RELAY_CP_SCHEMAS['rc/computer-media-usage']),
   frameSchema('error', RELAY_CP_SCHEMAS['error'])
 ])
 export type RelayCpFrame = z.infer<typeof RelayCpFrame>
