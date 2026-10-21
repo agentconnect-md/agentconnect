@@ -114,21 +114,28 @@ function readinessDetail(sandbox: Sandbox): string | undefined {
 
 export class DesktopPool {
   private readonly bootstrap: DesktopBootstrap
-  private readonly inflight = new Map<string, Promise<ComputerPoolOpResult>>()
+  private readonly inflight = new Map<string, { key: string; work: Promise<ComputerPoolOpResult> }>()
 
   constructor(private readonly deps: DesktopPoolDeps) {
     this.bootstrap = deps.bootstrap ?? httpDesktopBootstrap
   }
 
-  /** Serve one `computer-pool/op`; ops on one desktop run one at a time, and a resent one joins the running one. */
+  /** Serve one `computer-pool/op`; ops on one desktop run one at a time, a resent one joins it, a different one runs after it. */
   async handle(op: ComputerPoolOp): Promise<ComputerPoolOpResult> {
     if (op.op === 'list') return await this.list().catch(failure)
-    const running = this.inflight.get(op.computerId)
-    if (running) return await running
-    const work = (op.op === 'ensure' ? this.ensure(op) : this.remove(op.computerId))
+    const id = op.computerId
+    const key = JSON.stringify(op)
+    const prior = this.inflight.get(id)
+    if (prior?.key === key) return await prior.work
+    const work: Promise<ComputerPoolOpResult> = (async () => {
+      await prior?.work
+      return op.op === 'ensure' ? await this.ensure(op) : await this.remove(id)
+    })()
       .catch(failure)
-      .finally(() => this.inflight.delete(op.computerId))
-    this.inflight.set(op.computerId, work)
+      .finally(() => {
+        if (this.inflight.get(id)?.work === work) this.inflight.delete(id)
+      })
+    this.inflight.set(id, { key, work })
     return await work
   }
 

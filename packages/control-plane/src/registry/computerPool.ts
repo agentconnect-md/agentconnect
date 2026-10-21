@@ -109,6 +109,8 @@ const actionsOf = (c: ComputerRecord) =>
 const refusalOf = (error: string | null | undefined): ComputerPoolRefusal =>
   poolErrorCode(error) === 'volume_missing' ? 'volume_missing' : 'failed'
 
+const podStopped = (state: { pod?: string }): boolean => state.pod === 'suspended' || state.pod === 'none'
+
 const failureKey = (agentId: string, sessionId: string | null): string => `${agentId}\u0000${sessionId ?? ''}`
 
 const ready = (c: ComputerRecord): ComputerPoolAcquireResult => ({
@@ -237,12 +239,15 @@ export class ComputerPool {
     if (this.deps.leases && (await this.deps.leases.current(orgId, id)) !== null)
       return refused('in_use', 'an agent holds this computer’s control lease; try again when its turn ends')
     if (!this.deps.members.available()) return refused('no_pool', 'no pool member can put this computer to sleep now')
-    const res = await this.deps.members.op(this.ensure(row, false, false))
+    // An answer that is not a stopped pod (an older member joined it to a wake in flight) is asked once more.
+    let res = await this.deps.members.op(this.ensure(row, false, false))
+    if (res?.ok && res.state && !podStopped(res.state)) res = await this.deps.members.op(this.ensure(row, false, false))
     if (!res?.ok || !res.state) return refused('no_pool', 'no pool member answered')
     if (res.state.claim === 'missing') {
       await this.volumeMissing(row)
       return refused('volume_missing', 'the computer’s volume is gone, so its files and sign-ins are lost')
     }
+    if (!podStopped(res.state)) return refused('in_use', 'the desktop did not stop yet; try again in a moment')
     // Fenced on the activity it judged, so a session that started during the stop keeps the desktop.
     const leasedNow = this.deps.leases ? (await this.deps.leases.current(orgId, id).catch(() => null)) !== null : false
     const slept =
@@ -665,7 +670,7 @@ export class ComputerPool {
     const res = await this.deps.members.op(this.ensure(row, false, false))
     if (!res?.ok || !res.state) return
     if (res.state.claim === 'missing') return await this.volumeMissing(row)
-    if (res.state.pod !== 'suspended' && res.state.pod !== 'none') return
+    if (!podStopped(res.state)) return
     const slept = await this.deps.repo.setPoolPhase(row.id, {
       phase: 'sleeping',
       at: new Date(this.deps.clock.now()),

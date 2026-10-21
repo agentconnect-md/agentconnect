@@ -596,6 +596,22 @@ describe('managed computers in the pool', () => {
     expect(cluster.pods.get(id)!.running).toBe(true)
   })
 
+  it('records sleep only once the member reports the pod stopped', async () => {
+    await seed('per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const h = harness(cluster)
+    const id = ComputerId(((await h.acquire(AGENT, S1)) as { computerId: string }).computerId)
+    const real = cluster.op.bind(cluster)
+    // A member that joins every op to a wake in flight answers running, whatever was asked.
+    cluster.op = async (op) => (op.op === 'ensure' ? await real({ ...op, running: true }) : await real(op))
+    expect(await h.pool.sleepNow(OrgId(DEFAULT_ORG_ID), id)).toMatchObject({ ok: false, code: 'in_use' })
+    expect(await row(id)).toMatchObject({ poolPhase: 'awake' })
+    cluster.op = real
+    expect(await h.pool.sleepNow(OrgId(DEFAULT_ORG_ID), id)).toMatchObject({ ok: true })
+    expect(cluster.pods.get(id)!.running).toBe(false)
+  })
+
   it('never wakes the old desktop of a reset that timed out; only another reset is offered', async () => {
     await seed(null)
     const { app, base } = await start()
