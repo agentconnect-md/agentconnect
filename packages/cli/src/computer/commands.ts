@@ -322,9 +322,11 @@ function program(ctx: ComputerContext): Command {
   return p
 }
 
-// `start`/`stop`/`restart` drive the daemon's own service command; Windows starts its Run-key entry instead.
+// `start`/`stop`/`restart` drive the daemon's own service command; Windows can only start its Run-key entry (M4).
 export function serviceArgs(action: string, platform: NodeJS.Platform): string[] {
-  return platform === 'win32' && action === 'start' ? ['autostart', 'start'] : ['service', action]
+  if (platform !== 'win32') return ['service', action]
+  if (action === 'start') return ['autostart', 'start']
+  throw new Error(`${action} is not supported on Windows yet; stop the daemon from Task Manager, then run start`)
 }
 
 export async function runComputer(
@@ -345,8 +347,16 @@ export async function runComputer(
     }
     return execComputer(launch, ctx.self)
   }
-  if (first === 'start' || first === 'stop' || first === 'restart')
-    return execComputer(launchFor(ctx, [...serviceArgs(first, ctx.host.platform), ...rest]), ctx.self)
+  if (first === 'start' || first === 'stop' || first === 'restart') {
+    let service: string[]
+    try {
+      service = serviceArgs(first, ctx.host.platform)
+    } catch (err) {
+      console.error(`${ctx.self} ${first}: ${(err as Error).message}`)
+      return void (process.exitCode = 1)
+    }
+    return execComputer(launchFor(ctx, [...service, ...rest]), ctx.self)
+  }
   if (!COMPUTER_OWNED_COMMANDS.has(first)) return execComputer(launchFor(ctx, args), ctx.self)
   await program(ctx).parseAsync(args, { from: 'user' })
 }

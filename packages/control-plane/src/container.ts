@@ -264,6 +264,7 @@ import { loadFileTransferConfig } from './file-transfer/config.js'
 import { loadComputerScreenshotsConfig } from './computer-screenshots/config.js'
 import { createScreenshotBucket, isScreenshotObjectKey } from './computer-screenshots/bucket.js'
 import { ComputerScreenshots } from './registry/computerScreenshots.js'
+import { defaultDesktopBundleDir, loadDesktopDistribution } from './computer-install/desktop-distribution.js'
 import {
   COMPUTER_SCREENSHOT_REAP_INTERVAL_MS,
   ComputerScreenshotReaper
@@ -682,6 +683,9 @@ export function buildContainer(
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
   const computerAudit = new ComputerAuditLog(repos.computerAudit, clock)
+  const desktopDistribution = config.COMPUTER_DESKTOP_BUNDLE_DIR
+    ? loadDesktopDistribution(config.COMPUTER_DESKTOP_BUNDLE_DIR, true)
+    : loadDesktopDistribution(defaultDesktopBundleDir())
   // Screenshot storage (computer-use.md §9): this process signs and checks; desktops upload and browsers read straight from the bucket.
   const screenshotsConfig = loadComputerScreenshotsConfig({ AC_COMPUTER_SCREENSHOTS: config.AC_COMPUTER_SCREENSHOTS })
   const computerScreenshots = screenshotsConfig
@@ -2217,6 +2221,7 @@ export function buildContainer(
     computerViewer: computerChannelGrants,
     ...(computerPool ? { computerPool } : {}),
     ...(computerScreenshots ? { computerScreenshots } : {}),
+    ...(desktopDistribution ? { desktopDistribution } : {}),
     oauth,
     webchatTokens,
     inviteLinks,

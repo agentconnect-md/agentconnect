@@ -40,6 +40,8 @@ if (!values.dist) {
   copyFileSync(join(root, 'scripts/install.ps1'), join(out, 'install.ps1'))
   copyFileSync(join(root, 'scripts/install.sh'), join(out, 'install.sh'))
   chmodSync(join(out, 'install.sh'), 0o755)
+  // The Control Plane's Linux one-liner until the npm package's first release; it fills in its URL and this bundle's sha256.
+  copyFileSync(join(root, 'scripts/install-linux.sh'), join(out, 'install-linux.sh'))
   copyFileSync(join(root, 'README.md'), join(out, 'README.md'))
 }
 console.log(`agentconnect-desktop ${version} bundled in ${out}`)

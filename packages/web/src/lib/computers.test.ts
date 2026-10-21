@@ -4,9 +4,14 @@ import { computerInstallCommand, computerStatusTone, doctorCounts, sortedDoctorC
 describe('computer console helpers', () => {
   it('builds a one-line register command quoted for each shell', () => {
     const url = 'https://cp.example.com/v1/computers/register'
-    const registration = { token: 'ac_tok', exchangeUrl: url }
+    const installer = 'https://cp.example.com/v1/computers/install.sh'
+    const registration = { token: 'ac_tok', exchangeUrl: url, linuxInstallerUrl: null }
     expect(computerInstallCommand('linux', registration)).toBe(
       `npx -y @agentconnect.md/cli computer install --register 'ac_tok' --cp-url '${url}'`
+    )
+    // A CP that ships the bundle keeps Linux on its installer until the npm package's first release.
+    expect(computerInstallCommand('linux', { ...registration, linuxInstallerUrl: installer })).toBe(
+      `wget -nv -O- '${installer}' | sh -s -- --register 'ac_tok'`
     )
     expect(computerInstallCommand('macos', registration)).toBe(
       `npx -y @agentconnect.md/cli computer setup --register 'ac_tok' --cp-url '${url}'`

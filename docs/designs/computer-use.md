@@ -294,7 +294,8 @@ channels and dist-tags, provenance through trusted publishing, a self-contained 
 release version baked in, and the §11 license scan run on exactly what ships). Cua Driver and ffmpeg are not in the
 package: they stay pinned, checksummed downloads at `setup` / first start. A Linux host is assumed to have Node.js
 (the daemon's `engines`), and the console's **Add Computer** shows
-`npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>`. `install` resolves the
+`npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>` once the package is on npm
+(until then, see the transition note below). `install` resolves the
 package from the CLI-local registry (never a CP-supplied URL), verifies its integrity and `engines`, extracts it to
 `versions/<v>` in the data directory, points `current` at it and runs `setup --register`; the systemd user unit and the
 Windows Run-key launcher run `current/dist/agentconnect-desktop.mjs`. `upgrade` installs side by side, switches
@@ -302,9 +303,13 @@ Windows Run-key launcher run `current/dist/agentconnect-desktop.mjs`. `upgrade` 
 its loopback `/control/status`; otherwise it restores the previous version. Config, the Computer key and the grants
 live beside the store and are never touched, so an upgrade does not register again. `doctor` names the installed
 version (also its first check, which the console shows), and `status`, `versions`, `start` / `stop` / `restart` and
-`uninstall [--purge]` complete the set ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon)).
-The Control Plane no longer serves an installer or the bundle; installs from the earlier `install.sh` keep their data
-directory, and `computer install` moves their service onto the store. Validated on Ubuntu 26.04 Xfce on Xorg (arm64)
+`uninstall [--purge]` complete the set ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon);
+on Windows only `start` until M4). Transition: the first npm publish of `@agentconnect.md/desktop` and its trusted
+publisher are set up by hand, and until the package exists a release skips it with a warning instead of failing. Until
+then the CP image keeps shipping the bundle and serving the CP-hosted `install.sh`, and the console keeps the Linux
+`wget … | sh` one-liner whenever the registration carries `linuxInstallerUrl`; a follow-up removes both after the
+first publish. Installs from that `install.sh` keep their data directory, and `computer install` moves their service
+onto the store. Validated on Ubuntu 26.04 Xfce on Xorg (arm64)
 against a local registry: install and register, online across logout / login and reboot, upgrade without a new
 registration, and rollback from a version whose daemon crashes.
 

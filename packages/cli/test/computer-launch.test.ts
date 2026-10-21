@@ -11,6 +11,7 @@ import {
   resolveDesktopLaunch,
   type DesktopHost
 } from '../src/computer/launch.js'
+import { serviceArgs } from '../src/computer/commands.js'
 import { classifyInvocation } from '../src/route.js'
 
 const host = (over: Partial<DesktopHost> = {}): DesktopHost => ({
@@ -32,6 +33,20 @@ describe('computer routing', () => {
   it('does not take a desktop token that is an option value or a later argument', () => {
     expect(classifyInvocation(['--root', 'desktop', 'chat'])).toBe('delegate')
     expect(classifyInvocation(['chat', 'desktop'])).toBe('delegate')
+  })
+})
+
+describe('serviceArgs', () => {
+  it("maps start/stop/restart to the daemon's service command off Windows", () => {
+    for (const platform of ['linux', 'darwin'] as const)
+      for (const action of ['start', 'stop', 'restart'])
+        expect(serviceArgs(action, platform)).toEqual(['service', action])
+  })
+
+  it('starts the Run-key entry on Windows and rejects stop/restart there instead of a misleading service error', () => {
+    expect(serviceArgs('start', 'win32')).toEqual(['autostart', 'start'])
+    expect(() => serviceArgs('stop', 'win32')).toThrow(/stop is not supported on Windows yet/)
+    expect(() => serviceArgs('restart', 'win32')).toThrow(/restart is not supported on Windows yet/)
   })
 })
 

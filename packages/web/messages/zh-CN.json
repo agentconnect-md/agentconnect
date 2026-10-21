@@ -6214,7 +6214,7 @@
       "os": "平台",
       "docker": "Docker",
       "osHint": {
-        "linux": "Ubuntu，Xfce（Xorg）或 GNOME（Wayland），需要 Node.js 24.12 或更高版本。请以你自己的身份在桌面的终端中运行，不要用 root；之后服务会随每次登录的会话启动，用 `agentconnect computer upgrade` 升级。",
+        "linux": "Ubuntu，Xfce（Xorg）或 GNOME（Wayland）。请以你自己的身份在桌面的终端中运行，不要用 root；之后服务会随每次登录的会话启动。",
         "macos": "首次运行时，macOS 会请你为 AgentConnect 允许辅助功能和屏幕录制权限。",
         "windows": "请在已登录用户的普通 PowerShell 中运行，不要以管理员身份运行。",
         "docker": "在任意装有 Docker 的主机上，以容器运行带 Firefox 的 Linux 桌面。如需使用 docker compose，或让查看器直连传输画面，请参阅自托管桌面容器指南。"

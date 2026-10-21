@@ -19,17 +19,37 @@ export async function readPublishedVersion(name, selector) {
   return version
 }
 
+export async function packageExists(name) {
+  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
+    method: 'HEAD',
+    signal: AbortSignal.timeout(30_000)
+  })
+  if (response.status === 404) return false
+  if (!response.ok) throw new Error(`Cannot inspect ${name}: registry returned ${response.status}`)
+  return true
+}
+
+// Packages whose first publish and trusted-publisher setup a maintainer does by hand; until then a release skips them.
+const MANUAL_FIRST_PUBLISH = new Set(['desktop'])
+
 function run(script, args) {
   execFileSync('sh', [script, ...args], { cwd: root, stdio: 'inherit' })
 }
 
-export async function publishPackages(tag, { readVersion = readPublishedVersion, execute = run } = {}) {
+export async function publishPackages(
+  tag,
+  { readVersion = readPublishedVersion, exists = packageExists, execute = run } = {}
+) {
   const version = tag?.startsWith('v') && semver.valid(tag.slice(1))
   if (!version) throw new Error('Expected a release tag such as v1.2.3 or v1.2.3-rc.1')
   const channel = semver.prerelease(version) ? 'rc' : 'latest'
 
   for (const component of ['daemon', 'cli', 'setup', 'desktop']) {
     const { name } = JSON.parse(readFileSync(new URL(`../packages/${component}/package.json`, import.meta.url)))
+    if (MANUAL_FIRST_PUBLISH.has(component) && !(await exists(name))) {
+      console.log(`::warning::${name} is not on npm yet; publish it once by hand and configure trusted publishing`)
+      continue
+    }
     const [current, existing] = await Promise.all([readVersion(name, channel), readVersion(name, version)])
     if (existing || (current && semver.gte(current, version))) {
       console.log(`${name}@${version}: already published or superseded on ${channel}; skipping`)

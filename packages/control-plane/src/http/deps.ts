@@ -83,6 +83,7 @@ import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
 import type { ComputerChannelGrants } from '../registry/computerChannelGrants.js'
 import type { ComputerPool } from '../registry/computerPool.js'
 import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
+import type { DesktopDistribution } from '../computer-install/desktop-distribution.js'
 import type { GithubService } from '../github/service.js'
 import type { CodeHostTrustedActorService } from '../codehost/trusted-actor.service.js'
 import type { McpProviderOauthService } from '../mcp-oauth/service.js'
@@ -439,6 +440,8 @@ export interface HttpDeps {
   apiKeys: ApiKeyAdmin
   /** Computer registration, revocation and the `computer` key principal (computer-use.md §3.6). */
   computers: ComputerService
+  /** The desktop daemon bundle and Linux installer this CP serves (computer-use.md §3.5); absent ⇒ none shipped. */
+  desktopDistribution?: DesktopDistribution
   /** Viewer tokens for the console's embedded viewer (computer-use.md §7, §10). */
   computerViewer: Pick<ComputerChannelGrants, 'grantViewer'>
   /** Managed computers in the Kubernetes pool (computer-use.md §15.1); absent when the deployment runs none. */

@@ -2853,6 +2853,8 @@ export interface ComputerRegistrationDto {
   name: string | null
   expiresAt: string
   exchangeUrl: string
+  /** The CP-served Linux installer; null when this CP ships no desktop daemon bundle. */
+  linuxInstallerUrl: string | null
   /** The desktop image at this CP's version; absent from a CP older than the Docker option. */
   desktopImage?: string
 }
