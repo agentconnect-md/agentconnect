@@ -36,6 +36,19 @@ describe('compose.yaml service environment', () => {
     expect(serviceEnv('web')).toContain('SOCIAL_PROVIDERS')
   })
 
+  it('passes the Computer viewer TURN settings through for compose.turn.yaml to fill', () => {
+    expect(serviceEnv('control-plane')).toEqual(
+      expect.arrayContaining(['COMPUTER_TURN_URLS', 'COMPUTER_TURN_SECRET', 'COMPUTER_TURN_TTL_SEC'])
+    )
+    expect(compose).not.toMatch(/COMPUTER_TURN_SECRET\s*=/)
+    const turn = readFileSync(fileURLToPath(new URL('../../../compose.turn.yaml', import.meta.url)), 'utf8')
+    expect(turn).toMatch(/^ {6}- COMPUTER_TURN_URLS=turn:\S+\?transport=udp,turn:\S+\?transport=tcp$/m)
+    expect(turn).toMatch(/^ {6}- COMPUTER_TURN_SECRET=\$\{AGENTCONNECT_TURN_SECRET\}$/m)
+    // Relay-only UDP peers reach only this host's external IP and the container, so the server is no proxy into the network.
+    expect(turn).toContain('--denied-peer-ip=0.0.0.0-255.255.255.255')
+    expect(turn).toMatch(/^ {6}- --no-tcp-relay$/m)
+  })
+
   it('passes the usage batch-ingress credential through without inventing a default', () => {
     // Bare passthrough, NOT `=${...:-default}`: a stock default would stand up an
     // authenticated write endpoint, with a published token, on every local stack.

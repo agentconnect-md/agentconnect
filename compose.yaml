@@ -134,6 +134,10 @@ services:
       - AC_FILE_TRANSFER
       # Opt-in Computer screenshot storage: a JSON bucket document like AC_FILE_TRANSFER plus retention (docs/designs/computer-use.md §9).
       - AC_COMPUTER_SCREENSHOTS
+      # Opt-in TURN for the Computer viewer (docs/designs/computer-use.md §7.2); compose.turn.yaml runs coturn and sets the first two.
+      - COMPUTER_TURN_URLS
+      - COMPUTER_TURN_SECRET
+      - COMPUTER_TURN_TTL_SEC
       # Bootstrap root for DB-backed deployment secrets. These values cannot be
       # stored beside the ciphertext they unlock and therefore remain startup env.
       - SECRET_CIPHER

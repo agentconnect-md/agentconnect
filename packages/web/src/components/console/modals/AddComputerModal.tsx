@@ -20,7 +20,7 @@ import { Button, Icon } from '@/components/ui'
 /** How often the dialog asks whether the desktop has registered and connected. */
 export const REGISTRATION_POLL_MS = 3000
 
-const OSES: InstallOs[] = ['linux', 'macos', 'windows']
+const OSES: InstallOs[] = ['linux', 'macos', 'windows', 'docker']
 
 export default function AddComputerModal({ onClose }: { onClose: () => void }) {
   const t = useTranslations('Computers.add')
@@ -109,7 +109,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
       </div>
       <div className="modalbody">
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-          {t('description')}
+          {os === 'docker' ? t('descriptionDocker') : t('description')}
         </p>
         <div className="fld">
           <span className="fldlbl">{t('os')}</span>
@@ -123,7 +123,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
                 onClick={() => setOs(value)}
                 className={os === value ? 'pill on' : 'pill'}
               >
-                {tc(`os.${value}`)}
+                {value === 'docker' ? t('docker') : tc(`os.${value}`)}
               </button>
             ))}
           </div>
@@ -152,7 +152,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
         {registration && command && (
           <>
             <p className="mt-[14px] mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-              {t('run')}
+              {os === 'docker' ? t('runDocker') : t('run')}
             </p>
             <div className="overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">
               <div className="flex items-center border-b border-(--gray-800)">

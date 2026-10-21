@@ -479,6 +479,19 @@ empty `display`, an unmanaged browser, an unpublished 1.26 GB image) are closed 
 clipboard, no Chromium variant, and the source obligations of the Debian packages in the published image (§11). ffmpeg
 is downloaded on first start rather than preinstalled until counsel answers its distribution question (§14.8).
 
+**Self-hosted containers [implemented]**: `packages/desktop/docker/compose.yaml` (settings in `compose.env.example`
+next to it) runs the image on a user's server, and the console's **Add Computer** offers **Docker** with the matching
+`docker run` line; the guide is [self-host-desktop-container.md](../self-host-desktop-container.md). The container
+only dials out, so the console viewer's signaling and screenshots go through the relay, and its video is direct when
+`RTC_ADDRESS` and the published UDP range reach the browser, through TURN otherwise. The stack's `compose.turn.yaml`
+adds coturn with `use-auth-secret` and sets `COMPUTER_TURN_URLS` / `COMPUTER_TURN_SECRET` (§7.2); since both peers
+are relay-only, it refuses TCP relays and lets coturn send UDP only to the host's external IP and its own container
+(any UDP port there, since coturn has no per-port allowance; the guide says to keep other UDP services off it). The desktop reruns `doctor` as soon as the first
+start's ffmpeg download lands rather than 30 minutes later, and takes the name the Control Plane knows it by from
+`computer/auth/ok`, so `computer_list` and the console agree. The example keeps the daemon's own port on loopback (agents and the console arrive through the relay), and the daemon's own `doctor` runs check it on the port it listens on, which matters with `network_mode: host`. Verified on an Ubuntu 26.04 arm64 server against a
+Control Plane and relay on another host: registration from the console's token, an agent completing a Firefox task,
+and the console viewer over each of Direct, TURN relay and Screenshots.
+
 **Positioning**: containers start in seconds, are isolated, can hand each task a fresh desktop, and need no OS grants,
 which suits managed computers and multi-tenancy. The costs are an image of about 0.9 GB, configuring the public address
 and UDP ports, and no access to the user's own apps and sessions (exactly what a self-hosted computer provides). Use a
@@ -1156,8 +1169,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    output and candidates; fill in `display` and other capabilities, with `session: 'xvfb'` and `isolation: 'container'`;
    maximize the browser and restart it if it crashes; a `HEALTHCHECK` running `doctor --json`; multi-arch amd64 / arm64
    builds published to a registry; a smaller image (target under 1 GB); an optional Chromium variant.
-2. **Self-hosted containers**: a docker compose example; a user runs it on their own server and it registers as a
-   Computer with `kind: 'self-hosted'`, `isolation: 'container'`.
+2. **Self-hosted containers** [implemented]: a docker compose example; a user runs it on their own server and it registers as a
+   Computer with `kind: 'self-hosted'`, `isolation: 'container'`. See the self-hosted block in §3.8.
 3. **Linux managed computers** [design]: `kind: 'managed'`; pods in the Kubernetes pool (reusing
    [k8s-daemon-pool.md](k8s-daemon-pool.md) and SandboxClaim), split across four issues:
    - **#3199**: the three allocation modes (§15.1) and the pool controller that creates, prewarms, sleeps, wakes, and

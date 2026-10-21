@@ -64,6 +64,7 @@ import {
 } from './cp/env-registration.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { DESKTOP_DAEMON_VERSION } from './version.js'
+import { scheduleDoctor } from './doctor-schedule.js'
 import * as linuxService from './service-linux.js'
 import {
   installService,
@@ -393,7 +394,7 @@ function startCpChannel(options: {
   createMcpServer: (principal: McpPrincipal) => McpServer
   viewer: Viewer
   local: () => LocalControls | undefined
-}): { client: ComputerCpClient; relays: RelayLinks; stop(): void } | undefined {
+}): { client: ComputerCpClient; relays: RelayLinks; refreshDoctor(): void; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
   // Until the first capture, the display comes from the driver's startup screen size.
@@ -457,6 +458,7 @@ function startCpChannel(options: {
       config.leaseMaxSeconds = policy.leaseMaxSeconds
     },
     onLease: (lease) => computer.applyControlLease(lease),
+    onReady: (ok) => computer.rename(ok.name),
     onRelays: (relays) => relayLinks.converge(relays),
     onStop: (stop) => applyConsoleStop(stop),
     onRevoked: (reason) => {
@@ -467,26 +469,28 @@ function startCpChannel(options: {
   })
   const applyConsoleStop = consoleStopHandler(computer, () => client.beat())
   // Doctor runs in a child of the daemon, so it sees the service's own session and grants.
-  let doctorTimer: NodeJS.Timeout | undefined
-  const runDoctor = async (): Promise<void> => {
-    try {
-      const output = await runSelf(['doctor', '--json', '--here'], 120_000)
+  client.start()
+  // Runs never overlap, so a refresh during the first run reports right after it.
+  const doctor = scheduleDoctor({
+    intervalMs: DOCTOR_INTERVAL_MS,
+    onError: (error) => log(`doctor for the Control Plane report failed: ${error.message}`),
+    run: async () => {
+      // Where this daemon listens, which `--port` / PORT may have moved from the config's.
+      const output = await runSelf(
+        ['doctor', '--json', '--here', '--host', config.host, '--port', String(config.port)],
+        120_000
+      )
       checks = localizeChecks(JSON.parse(output) as Check[])
       doctorAt = new Date()
       client.beat()
-    } catch (error) {
-      log(`doctor for the Control Plane report failed: ${(error as Error).message}`)
     }
-    doctorTimer = setTimeout(() => void runDoctor(), DOCTOR_INTERVAL_MS)
-    doctorTimer.unref()
-  }
-  client.start()
-  void runDoctor()
+  })
   return {
     client,
     relays: relayLinks,
+    refreshDoctor: () => doctor.refresh(),
     stop() {
-      if (doctorTimer) clearTimeout(doctorTimer)
+      doctor.stop()
       relayLinks.stop()
       client.stop()
     }
@@ -501,7 +505,8 @@ function buildViewer(
   refusal?: () => string | undefined,
   // A console member's CP-issued view token; local client tokens work only on the local port, never through a relay.
   consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined,
-  advertiseAddress?: string
+  advertiseAddress?: string,
+  onFfmpegInstalled?: () => void
 ): Viewer {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
@@ -510,7 +515,10 @@ function buildViewer(
     if (ffmpegState === 'missing' && canInstallFfmpeg() && !config.ffmpegPath) {
       ffmpegState = 'downloading'
       installFfmpeg(dir, log)
-        .then(() => (ffmpegState = ffmpegAvailable(ffmpeg()) ? 'ok' : 'missing'))
+        .then(() => {
+          ffmpegState = ffmpegAvailable(ffmpeg()) ? 'ok' : 'missing'
+          if (ffmpegState === 'ok') onFfmpegInstalled?.()
+        })
         .catch((error: Error) => {
           ffmpegState = 'missing'
           log(`ffmpeg download failed (${error.message}); the viewer falls back to screenshots`)
@@ -602,7 +610,7 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
   // Filled once built; the authority and status callbacks below fire only after that.
   const live: {
     viewer?: Viewer
-    channel?: { client: ComputerCpClient; relays: RelayLinks; stop(): void }
+    channel?: ReturnType<typeof startCpChannel>
     local?: LocalControls
   } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
@@ -677,7 +685,9 @@ async function run(dir: string, initial: DesktopConfig, clientName: string): Pro
     computer,
     () => authority.refusal(),
     registration ? (header) => viewerPrincipal(header, authority, () => registration.computerId) : undefined,
-    config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined
+    config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined,
+    // A first start downloads ffmpeg, so report the viewer then instead of at the next 30-minute doctor run.
+    () => live.channel?.refreshDoctor()
   )
   live.viewer = viewer
   live.local = await startLocalControls({
