@@ -99,7 +99,12 @@ describe('local controls', () => {
     hooks.tray!.onStop()
     expect(computer.reason).toBe(TRAY_STOP_REASON)
     controls.update()
-    expect(hooks.states.at(-1)).toEqual({ tone: 'paused', status: `paused, ${TRAY_STOP_REASON}`, canResume: true })
+    expect(hooks.states.at(-1)).toEqual({
+      tone: 'paused',
+      status: `paused, ${TRAY_STOP_REASON}`,
+      canResume: true,
+      canStop: false
+    })
     controls.close()
   })
 
@@ -181,16 +186,17 @@ describe('local controls', () => {
     expect(trayState(computer, undefined)).toEqual({
       tone: 'online',
       status: 'ready, no agent in control',
-      canResume: false
+      canResume: false,
+      canStop: true
     })
     computer.status = 'busy'
     computer.holder = 'claude'
     expect(trayState(computer, undefined)).toMatchObject({ tone: 'busy', status: 'controlled by claude' })
     expect(trayState(computer, 'not connected')).toMatchObject({ tone: 'unavailable' })
     computer.status = 'human_in_control'
-    expect(trayState(computer, undefined)).toMatchObject({ tone: 'paused', canResume: false })
+    expect(trayState(computer, undefined)).toMatchObject({ tone: 'paused', canResume: false, canStop: true })
     computer.pause(CONSOLE_STOP_REASON)
-    expect(trayState(computer, undefined)).toMatchObject({ tone: 'paused', canResume: false })
+    expect(trayState(computer, undefined)).toMatchObject({ tone: 'paused', canResume: false, canStop: false })
     computer.pause(LOCAL_OWNER_STOP_REASON)
     expect(trayState(computer, undefined).canResume).toBe(true)
   })

@@ -17,6 +17,8 @@ export interface TrayState {
   status: string
   // Only a pause the owner made locally may be lifted from the tray; a console Stop or viewer takeover may not.
   canResume: boolean
+  // Whether Stop can still change anything; a viewer takeover counts, since the owner outranks the viewer.
+  canStop: boolean
 }
 
 export interface TrayOptions {
@@ -98,7 +100,7 @@ type Props = [string, Variant][]
 export class Tray {
   // Undefined while a tray shows the icon; otherwise why it cannot.
   problem: string | undefined = 'not started'
-  private state: TrayState = { tone: 'online', status: 'online', canResume: false }
+  private state: TrayState = { tone: 'online', status: 'online', canResume: false, canStop: true }
   private revision = 1
   private readonly name: string
 
@@ -139,7 +141,12 @@ export class Tray {
       this.emit('NewToolTip')
       this.emit('NewTitle')
     }
-    if (before.tone !== state.tone || before.status !== state.status || before.canResume !== state.canResume) {
+    if (
+      before.tone !== state.tone ||
+      before.status !== state.status ||
+      before.canResume !== state.canResume ||
+      before.canStop !== state.canStop
+    ) {
       this.revision++
       this.bus.emit({
         path: MENU_PATH,
@@ -234,7 +241,7 @@ export class Tray {
         MENU.stop,
         [
           ['label', new Variant('s', `Stop all agent input${hotkey}`)],
-          ['enabled', new Variant('b', this.state.tone !== 'paused')]
+          ['enabled', new Variant('b', this.state.canStop)]
         ]
       ],
       [

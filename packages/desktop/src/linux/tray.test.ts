@@ -219,7 +219,12 @@ describe.skipIf(process.platform === 'win32')('Tray', () => {
     expect(clicks.stop).toBe(1)
     await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'Event', 'isvu', [4, 'clicked', new Variant('i', 0), 0])
     expect(clicks.resume).toBe(0)
-    const paused: TrayState = { tone: 'paused', status: 'paused, stopped from the tray', canResume: true }
+    const paused: TrayState = {
+      tone: 'paused',
+      status: 'paused, stopped from the tray',
+      canResume: true,
+      canStop: false
+    }
     tray.update(paused)
     await settle()
     expect(bus.signals.map((signal) => signal.member)).toEqual(['NewIcon', 'NewToolTip', 'NewTitle', 'LayoutUpdated'])
@@ -231,6 +236,14 @@ describe.skipIf(process.platform === 'win32')('Tray', () => {
       [[4, 'clicked', new Variant('i', 0), 0]]
     ])
     expect(clicks.resume).toBe(1)
+    tray.close()
+  })
+
+  it('keeps Stop enabled while a console viewer is in control', async () => {
+    const { bus, tray } = await start()
+    tray.update({ tone: 'paused', status: 'a console viewer is in control', canResume: false, canStop: true })
+    const group = await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'GetGroupProperties', 'aias', [[3], []])
+    expect(prop((group.body[0] as [number, unknown][])[0]![1], 'enabled')).toBe(true)
     tray.close()
   })
 

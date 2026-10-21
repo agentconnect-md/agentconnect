@@ -52,13 +52,14 @@ export function trayState(computer: LocallyControlled, refusal: string | undefin
   const live = computer.liveStatus()
   const reason = computer.pauseReason()
   const canResume = live === 'paused' && reason !== undefined && LOCAL_STOP_REASONS.has(reason)
-  if (refusal) return { tone: 'unavailable', status: 'unavailable, agents cannot act', canResume }
+  const flags = { canResume, canStop: live !== 'paused' }
+  if (refusal) return { tone: 'unavailable', status: 'unavailable, agents cannot act', ...flags }
   if (live === 'busy') {
-    return { tone: 'busy', status: `controlled by ${computer.leaseActivity()?.holder ?? 'an agent'}`, canResume }
+    return { tone: 'busy', status: `controlled by ${computer.leaseActivity()?.holder ?? 'an agent'}`, ...flags }
   }
-  if (live === 'human_in_control') return { tone: 'paused', status: 'a console viewer is in control', canResume }
-  if (live === 'paused') return { tone: 'paused', status: `paused, ${reason ?? 'stopped'}`, canResume }
-  return { tone: 'online', status: 'ready, no agent in control', canResume }
+  if (live === 'human_in_control') return { tone: 'paused', status: 'a console viewer is in control', ...flags }
+  if (live === 'paused') return { tone: 'paused', status: `paused, ${reason ?? 'stopped'}`, ...flags }
+  return { tone: 'online', status: 'ready, no agent in control', ...flags }
 }
 
 const TRAY_REFRESH_MS = 2000
