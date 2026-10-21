@@ -991,6 +991,8 @@ export interface RelayRecord {
   daemonUrl: string
   /** Advertised relay features (rc/register.features), refreshed on register. */
   features: string[]
+  /** This instance's public STUN address (rc/register.stunUrl), or null when it serves none. */
+  stunUrl: string | null
   lastSeenAt: Date | null
   createdAt: Date
 }
@@ -999,7 +1001,13 @@ export interface RelayRepo {
   /** Upsert by the unique `name` (the relay's stable identity): create with a fresh
    *  id or reclaim the existing row, refreshing `daemonUrl` + `lastSeenAt` to `at`.
    *  Atomic on the unique name so a restart racing the sweeper can't duplicate a pod. */
-  upsertByName(name: string, daemonUrl: string, at: Date, features?: string[]): Promise<RelayRecord>
+  upsertByName(
+    name: string,
+    daemonUrl: string,
+    at: Date,
+    features?: string[],
+    stunUrl?: string | null
+  ): Promise<RelayRecord>
   /** Bump `lastSeenAt` on `rc/heartbeat` (liveness for the failover sweeper). Returns
    *  false when the row is gone (already swept) — the caller forces a re-register so a
    *  relay swept during a stall doesn't linger connected-but-absent from the roster. */

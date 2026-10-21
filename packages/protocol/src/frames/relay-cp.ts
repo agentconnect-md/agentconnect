@@ -9,6 +9,7 @@ import {
   type CodeHostProvider,
   type CodeHostRepoRef
 } from '../code-host.js'
+import { ComputerStunUrl } from '../computer-viewer.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
@@ -106,7 +107,9 @@ export const RcRegister = z.object({
   daemonUrl: z.string().min(1), // per-instance-routable WSS origin daemons dial
   // Relay feature advertisement (e.g. webchat_session_continuation_v1). The
   // default keeps old relays register-compatible; absent ⇒ no features.
-  features: z.array(z.string()).default([])
+  features: z.array(z.string()).default([]),
+  // This instance's public STUN address (`stun:<host>:<port>`) for viewer hole punching; absent when it serves none.
+  stunUrl: ComputerStunUrl.optional()
 })
 export type RcRegister = z.infer<typeof RcRegister>
 

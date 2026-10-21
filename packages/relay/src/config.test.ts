@@ -51,6 +51,29 @@ describe('RelayConfigSchema — exactly-one-credential boot guard (§8)', () => 
     expect(memoryOnly.RELAY_MEMORY_ALLOWED_UPSTREAMS).toBe('memory.example.test')
     expect(memoryOnly.RELAY_MCP_ALLOWED_UPSTREAMS).toBeUndefined()
   })
+  it('serves STUN only with a port, and advertises a stun: URL only alongside one', () => {
+    const off = RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN })
+    expect(off.RELAY_STUN_PORT).toBeUndefined()
+    const on = RelayConfigSchema.parse({
+      ...BASE,
+      RELAY_TOKEN: TOKEN,
+      RELAY_STUN_PORT: '3478',
+      RELAY_STUN_URL: 'stun:stun-0.example.test:3478'
+    })
+    expect(on).toMatchObject({ RELAY_STUN_PORT: 3478, RELAY_STUN_HOST: '0.0.0.0' })
+    expect(
+      RelayConfigSchema.safeParse({ ...BASE, RELAY_TOKEN: TOKEN, RELAY_STUN_URL: 'stun:stun.example.test:3478' })
+        .success
+    ).toBe(false)
+    expect(
+      RelayConfigSchema.safeParse({
+        ...BASE,
+        RELAY_TOKEN: TOKEN,
+        RELAY_STUN_PORT: '3478',
+        RELAY_STUN_URL: 'turn:stun.example.test:3478'
+      }).success
+    ).toBe(false)
+  })
   it('probes credentials hourly unless RELAY_CREDENTIAL_PROBE_INTERVAL_SEC overrides it', () => {
     expect(RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN }).RELAY_CREDENTIAL_PROBE_INTERVAL_SEC).toBe(3600)
     const tuned = RelayConfigSchema.parse({ ...BASE, RELAY_TOKEN: TOKEN, RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: '600' })

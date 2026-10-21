@@ -375,9 +375,12 @@ once) stays as an offline / development mode.
 - **Data plane [implemented]**: tool calls and screenshot bytes travel between the agent's daemon and the desktop
   daemon over **an outbound session channel through the relay**; the decision for §17-1 follows. The Control Plane
   issues the credentials and carries no screen byte or tool body.
-- **Viewer media [implemented]**: WebRTC media is direct UDP first (ICE-lite, host candidates only, §7.2). Without a
-  direct path (behind NAT, inside a pod) signaling rides the same relay channel and media falls back to **TURN** (such
-  as coturn, BSD), not the relay; with neither, the console polls screenshots through the relay (§7.2).
+- **Viewer media [implemented]**: WebRTC media goes peer to peer between the browser and the desktop. On one network
+  it uses host candidates; across NATs the relay is the **hole-punching (STUN) server**: each relay instance answers
+  STUN Binding requests so both peers learn their server-reflexive address, and full ICE punches a direct UDP path
+  (§7.2). Signaling rides the same relay channel. When punching fails (a symmetric NAT, UDP blocked), media falls back
+  to **TURN** (such as coturn, BSD) and, later, relay UDP forwarding (#3236); with neither, the console polls
+  screenshots through the relay.
 
 **Decision (§17-1).** A user's desktop sits behind NAT and can only dial out, and the relay is already the install's
 public, per-instance ingress that daemons dial ([shared-bot-relay.md §5](shared-bot-relay.md)). So the desktop daemon
@@ -387,8 +390,10 @@ listens and its holder dials, which is the direction NAT forbids, and it carries
 one group rather than HTTP to a machine outside it. Because the desktop daemon is already a standard Streamable HTTP
 MCP server, the channel forwards HTTP and nothing else; no new tool protocol is needed. A direct connection is the
 same-network optimization: the desktop's own `/mcp` accepts the same per-session token, and choosing it needs an
-address the desktop advertises, which is still to do. Viewer media goes through TURN rather than the relay because it
-is UDP and continuous, and the relay is a bounded HTTP and WebSocket forwarder that holds no media state.
+address the desktop advertises, which is still to do. For viewer media the relay is primarily the hole-punching
+server: STUN costs it one stateless datagram per Binding request and carries no media, so the video stays peer to
+peer, and only when punching fails does it go through TURN (or relay UDP forwarding, #3236), because media is UDP
+and continuous while the relay's channel is a bounded HTTP and WebSocket forwarder that holds no media state.
 
 ```
 agent daemon ── computer-channel/grant ──▶ Control Plane      (daemon wire: control only)
@@ -899,8 +904,16 @@ signaling: POST /view/api/rtc/offer · answer (same port, same token; from the c
 input: DataChannel ─▶ Computer (same lease / arbitration as agents)
 ```
 
-- **ICE-lite, host candidates only, no STUN** (werift otherwise defaults to Google's STUN). It advertises the local
-  address the browser connected to, so it works over Tailscale and tun networks.
+- **Direct: ICE-lite, host candidates only, no STUN** (werift otherwise defaults to Google's STUN). It advertises the
+  local address the browser connected to, so it works over Tailscale and tun networks.
+- **Peer to peer: full ICE through relay STUN [implemented]**. Each relay instance answers STUN Binding requests
+  (RFC 8489, a small stateless in-process server, `packages/relay/src/stun-server.ts`) on a UDP port next to its
+  per-instance address (`RELAY_STUN_PORT`) and registers its public `stun:` URL (`RELAY_STUN_URL`) with
+  `rc/register`; the CP keeps it on the relay row. The viewer grant and the view token name up to two of them
+  (`stunUrls`, the token's `stun`). With them, the desktop gathers host and server-reflexive candidates with werift
+  (full ICE, not ICE-lite) and so does the browser; ICE checks host pairs first, so a same-network viewer still gets
+  the host path. Candidates trickle over the relay signaling: the browser posts its own to `rtc/candidate` after the
+  answer and fetches the desktop's late ones from `rtc/candidates`.
 - **Cross-internet tuning**: on a Windows → Mac link with about 93 ms RTT and 5–10 Mbps, unpaced keyframe bursts of
   about 500 KB lost 20% of packets and decoded zero frames. The fix: pace at 1.5× the bitrate; VBV buffer = bitrate / 4
   (keyframes about 78 KB); 1 s GOP; 2.5 Mbps default.
@@ -925,12 +938,22 @@ Control Plane, which only issues credentials:
   with the token as a bearer; the relay answers CORS preflights, forwards only the bearer and content type as one
   `cr/http` frame (64 KiB requests), and the desktop serves it through the same viewer API as its local `/view`. A
   relay the desktop is not attached to answers `503 computer_not_attached` and the browser tries the next one.
-- **Media.** The browser asks for `{ transport: 'direct' }` first: the desktop's ICE-lite offer with host candidates
-  (or only `rtcAddress`). If that is not connected within 6 s, and the deployment configures TURN, it asks for
+- **Media.** The browser asks for `{ transport: 'stun' }` first when the grant names STUN servers and the desktop's
+  token carries them: one full-ICE attempt covering host and punched pairs, bounded at 8 s. Otherwise it asks for
+  `{ transport: 'direct' }`: the desktop's ICE-lite offer with host candidates (or only `rtcAddress`), bounded at
+  6 s. The badge shows the path in use: Direct, Peer to peer (from the selected pair's candidate types; a host pair
+  reads Direct), TURN or Screenshots. If neither is connected in time, and the deployment configures TURN, it asks for
   `{ transport: 'turn' }`: both peers use full ICE with `iceTransportPolicy: 'relay'` through the TURN servers the
   grant names, the desktop with the credentials carried in its token and the browser with its own. werift falls back
   from TURN over UDP to TURN over TCP by itself. With neither connected within 12 s, the page polls `/frame`
   through the relay (about 5 fps at 1600×900).
+- **Privacy.** A server-reflexive candidate shows the desktop's public IP to the viewer's browser, so the Computer
+  policy's `viewerPeerToPeer` decides whether a viewing gets STUN. Unset, it is on while only the owner may watch and
+  off once other members may; the owner can set it either way on the policy card. Without it the ladder starts at
+  the ICE-lite direct step.
+- **STUN deployment.** The chart's `relay.stun` gives each relay pod a UDP `LoadBalancer` Service with
+  `externalTrafficPolicy: Local` (STUN must see the client's own source address) and a per-ordinal public host;
+  `compose.stun.yaml` does the same for one relay. The relay keeps no state per client and no media.
 - **TURN.** `COMPUTER_TURN_URLS` (comma-separated `turn:`/`turns:` URLs), `COMPUTER_TURN_SECRET` (coturn's
   `static-auth-secret` with `use-auth-secret`) and `COMPUTER_TURN_TTL_SEC` (default 6 h, which bounds one viewing,
   since a TURN allocation cannot refresh past it) turn it on; the CP mints coturn REST-API credentials per viewer
@@ -967,7 +990,7 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - A system HTTP proxy on the viewing machine (Clash) made the browser get 502 for Tailscale IPs; WebRTC media itself
   does not use the HTTP proxy. Re-check once the release goes through the relay / TLS.
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
-  encoders), display selection, audio, clipboard sync. NAT traversal (TURN, then screenshots over the relay) is done.
+  encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then TURN, then screenshots over the relay) is done.
 
 ## 8. Security and audit
 
@@ -1296,6 +1319,9 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    - **#3241** [implemented]: agent access as one relation (No agents / Selected agents / All agents, §4.1), set from
      the Computer page or the agent's Computers card; `manual` computers are assigned to agents through it, and #3232's
      console assigns them the same way.
+   - **#3235** [implemented; real-network and cluster checks pending]: the relay as the viewer's hole-punching (STUN)
+     server, with full ICE on both peers and the order host → punched → TURN / relay UDP forwarding (#3236) →
+     screenshots (§7.2).
    - **#3230**: viewer media for pods (they usually have no reachable UDP, so media goes through TURN or the relay);
      quotas per mode, counting sleeping desktops and kept volumes; billing for running and sleeping hours and kept
      volume storage, plus bandwidth and screenshot storage; egress policy (§15.4).
@@ -1485,7 +1511,8 @@ desktop (a container image, §3.8).
 1. ~~Data plane: forward tool calls through the relay, or reuse the session-executors TLS-PSK pipe? Without a direct
    path, does viewer WebRTC media go through TURN or the relay?~~ **Decided (§3.7)**: tool calls go through the relay
    over the desktop's outbound link, with CP-issued per-session tokens; direct connection is the same-network
-   optimization; viewer signaling rides the same channel and media falls back to TURN, not the relay.
+   optimization; viewer signaling rides the same channel. For media the relay is the hole-punching (STUN) server so
+   video goes peer to peer (#3235); TURN, and relay UDP forwarding (#3236), are only the fallback when punching fails.
 2. When one machine runs both an agent daemon and a desktop daemon, are they one installer, one app identity, and one
    registration flow (grant ownership on macOS especially must match)?
 3. May a Computer be shared with other members' agents; what are the default approvals and warnings?

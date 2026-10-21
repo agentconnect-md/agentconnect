@@ -228,6 +228,12 @@ describe('RelayCpClient', () => {
     expect(onReady).toHaveBeenCalledOnce()
   })
 
+  it('advertises its STUN address on rc/register when it serves one', async () => {
+    const { client, transport } = makeClient({ stunUrl: 'stun:stun-0.example:3478' })
+    await handshakeToReady(client, transport)
+    expect(transport.lastReq('rc/register')!.payload).toMatchObject({ stunUrl: 'stun:stun-0.example:3478' })
+  })
+
   it('applies a replay that arrives in the same turn as rc/registered, after onReady', async () => {
     const calls: string[] = []
     const { client, transport } = makeClient({

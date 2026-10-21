@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { ComputerViewerOfferRequest, type ComputerIceServer } from '@agentconnect.md/protocol/computer'
+import {
+  ComputerViewerCandidate,
+  ComputerViewerCandidatesRequest,
+  ComputerViewerOfferRequest,
+  type ComputerIceServer
+} from '@agentconnect.md/protocol/computer'
 import { ComputerError, type Computer, type ViewerInput } from './computer.js'
 import type { RtcSessions } from './stream/rtc.js'
 import { VIEWER_PAGE } from './viewer-page.js'
@@ -43,6 +48,8 @@ export interface ViewerPrincipal {
   control: boolean
   // TURN servers the CP issued with the token; without them only the direct path is offered.
   iceServers?: ComputerIceServer[]
+  // The relays' STUN servers the CP issued when the policy allows hole punching; without them no `stun` path.
+  stunUrls?: string[]
   // Re-checks a short-lived token; false once it lapsed or its key is gone, which closes the viewer.
   valid?: () => boolean
 }
@@ -137,7 +144,8 @@ export function createViewer(options: ViewerOptions): Viewer {
       webrtc: {
         unavailable: options.rtc ? (options.rtcUnavailable?.() ?? null) : 'disabled',
         error: options.streamError?.() ?? null,
-        turn: (principal.iceServers?.length ?? 0) > 0
+        turn: (principal.iceServers?.length ?? 0) > 0,
+        stun: (principal.stunUrls?.length ?? 0) > 0
       },
       ...info
     }
@@ -168,6 +176,9 @@ export function createViewer(options: ViewerOptions): Viewer {
       if (transport === 'turn' && !principal.iceServers?.length) {
         return json(409, { error: 'turn_unavailable', message: 'no TURN server was issued with this viewer token' })
       }
+      if (transport === 'stun' && !principal.stunUrls?.length) {
+        return json(409, { error: 'stun_unavailable', message: 'no STUN server was issued with this viewer token' })
+      }
       try {
         return json(200, await options.rtc.offer(principal, { hostAddress: request.hostAddress, transport }))
       } catch (error) {
@@ -179,6 +190,17 @@ export function createViewer(options: ViewerOptions): Viewer {
       const { id, sdp } = AnswerSchema.parse(parseJson(request.body))
       await options.rtc.answer(principal.client, id, sdp)
       return json(200, { ok: true })
+    }
+    if (path === '/view/api/rtc/candidate' && method === 'POST') {
+      if (!options.rtc) return json(503, { error: 'webrtc_unavailable' })
+      const { id, candidate } = ComputerViewerCandidate.parse(parseJson(request.body))
+      options.rtc.addCandidate(principal.client, id, candidate)
+      return json(200, { ok: true })
+    }
+    if (path === '/view/api/rtc/candidates' && method === 'POST') {
+      if (!options.rtc) return json(503, { error: 'webrtc_unavailable' })
+      const { id, after } = ComputerViewerCandidatesRequest.parse(parseJson(request.body))
+      return json(200, options.rtc.candidates(principal.client, id, after))
     }
     if (path === '/view/api/control' && method === 'POST') {
       const { action } = ControlSchema.parse(parseJson(request.body))

@@ -1,7 +1,12 @@
 // Computer channel tokens (computer-use.md §3.7, §8.2): short-lived, signed with the Computer's CP-renewed channel key.
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { COMPUTER_ICE_SERVERS_MAX, ComputerIceServer } from './computer-viewer.js'
+import {
+  COMPUTER_ICE_SERVERS_MAX,
+  COMPUTER_STUN_URLS_MAX,
+  ComputerIceServer,
+  ComputerStunUrl
+} from './computer-viewer.js'
 
 /** The token's version prefix; a token without it is never a channel token. */
 export const COMPUTER_CHANNEL_TOKEN_PREFIX = 'actk1'
@@ -30,9 +35,10 @@ export const ComputerChannelTokenClaims = z
     agt: z.string().uuid().optional(),
     dmn: z.string().uuid().optional(),
     mode: z.enum(COMPUTER_AGENT_MODES).optional(),
-    // `view` only: the member watching, and the TURN servers the desktop may relay media through.
+    // `view` only: the member watching, the TURN servers the desktop may relay media through, and the STUN servers it may punch with.
     usr: z.string().min(1).max(128).optional(),
-    ice: z.array(ComputerIceServer).max(COMPUTER_ICE_SERVERS_MAX).optional()
+    ice: z.array(ComputerIceServer).max(COMPUTER_ICE_SERVERS_MAX).optional(),
+    stun: z.array(ComputerStunUrl).max(COMPUTER_STUN_URLS_MAX).optional()
   })
   .strict()
   .refine((c) => c.aud !== 'mcp' || (c.ses !== undefined && c.agt !== undefined && c.mode !== undefined), {

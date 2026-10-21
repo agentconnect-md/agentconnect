@@ -49,6 +49,15 @@ describe('compose.yaml service environment', () => {
     expect(turn).toMatch(/^ {6}- --no-tcp-relay$/m)
   })
 
+  it('has compose.stun.yaml run STUN on the relay and advertise this host’s public address', () => {
+    const stun = readFileSync(fileURLToPath(new URL('../../../compose.stun.yaml', import.meta.url)), 'utf8')
+    expect(stun).toMatch(/^ {6}- RELAY_STUN_PORT=3478$/m)
+    expect(stun).toMatch(
+      /^ {6}- RELAY_STUN_URL=stun:\$\{AGENTCONNECT_STUN_HOST:\?[^}]+\}:\$\{AGENTCONNECT_STUN_PORT:-3479\}$/m
+    )
+    expect(stun).toMatch(/^ {6}- \$\{AGENTCONNECT_STUN_PORT:-3479\}:3478\/udp$/m)
+  })
+
   it('passes the usage batch-ingress credential through without inventing a default', () => {
     // Bare passthrough, NOT `=${...:-default}`: a stock default would stand up an
     // authenticated write endpoint, with a published token, on every local stack.

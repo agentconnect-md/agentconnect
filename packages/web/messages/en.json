@@ -6526,6 +6526,8 @@
       "retentionDefault": "Default",
       "driverTools": "Expose driver tools",
       "driverToolsHint": "Also offer agents the driver's own window-level tools. Off by default.",
+      "peerToPeer": "Peer-to-peer viewing",
+      "peerToPeerHint": "Let the viewer’s video go straight between browser and desktop across networks. This shows viewers the desktop’s public IP address. On by default only while just the owner may watch.",
       "problem": {
         "idleRange": "Idle release must be a whole number from 10 to 3600.",
         "maxRange": "Longest control must be a whole number from 60 to 86400.",
@@ -6541,7 +6543,7 @@
       "title": "Screen",
       "watch": "Watch",
       "close": "Close",
-      "idle": "Watch this computer’s screen live, and take over the mouse and keyboard when you need to. Video goes straight between your browser and the desktop, or through TURN; nothing passes through AgentConnect’s servers.",
+      "idle": "Watch this computer’s screen live, and take over the mouse and keyboard when you need to. Video goes straight between your browser and the desktop (the relay only helps them find each other), or through TURN; nothing passes through AgentConnect’s servers.",
       "offline": "The viewer opens once this computer is online.",
       "connecting": "Connecting…",
       "failed": "The viewer stopped.",
@@ -6558,6 +6560,7 @@
       "screenAlt": "Latest screenshot of the computer",
       "path": {
         "direct": "Direct",
+        "p2p": "Peer to peer",
         "turn": "TURN relay",
         "screenshots": "Screenshots"
       }

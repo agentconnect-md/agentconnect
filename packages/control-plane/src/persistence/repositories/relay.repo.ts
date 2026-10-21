@@ -18,6 +18,7 @@ function toRecord(r: Relay): RelayRecord {
     name: r.name,
     daemonUrl: r.daemonUrl,
     features: r.features,
+    stunUrl: r.stunUrl,
     lastSeenAt: r.lastSeenAt,
     createdAt: r.createdAt
   }
@@ -26,11 +27,17 @@ function toRecord(r: Relay): RelayRecord {
 export class PgRelayRepo implements RelayRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  async upsertByName(name: string, daemonUrl: string, at: Date, features: string[] = []): Promise<RelayRecord> {
+  async upsertByName(
+    name: string,
+    daemonUrl: string,
+    at: Date,
+    features: string[] = [],
+    stunUrl: string | null = null
+  ): Promise<RelayRecord> {
     const row = await this.db.relay.upsert({
       where: { name },
-      create: { id: randomUUID(), name, daemonUrl, features, lastSeenAt: at },
-      update: { daemonUrl, features, lastSeenAt: at }
+      create: { id: randomUUID(), name, daemonUrl, features, stunUrl, lastSeenAt: at },
+      update: { daemonUrl, features, stunUrl, lastSeenAt: at }
     })
     return toRecord(row)
   }

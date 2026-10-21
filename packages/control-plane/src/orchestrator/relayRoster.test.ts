@@ -13,6 +13,7 @@ function row(over: Partial<RelayRecord> = {}): RelayRecord {
     name: 'pod-0',
     daemonUrl: 'wss://relay-0.example.test',
     features: [],
+    stunUrl: null,
     lastSeenAt: new Date(NOW),
     createdAt: new Date(NOW),
     ...over
@@ -46,6 +47,16 @@ describe('RelayRoster', () => {
     const { roster, broadcaster } = make([row({ id: 'r1', daemonUrl: 'wss://r1' })])
     await roster.broadcast()
     expect(broadcaster.broadcastRelayRoster).toHaveBeenCalledWith([{ relayId: 'r1', url: 'wss://r1' }])
+  })
+
+  it('stunUrls() lists the distinct STUN addresses alive relays advertise, skipping relays without one', async () => {
+    const { roster } = make([
+      row({ id: 'r1', stunUrl: 'stun:stun-0.example.test:3478' }),
+      row({ id: 'r2', stunUrl: null }),
+      row({ id: 'r3', stunUrl: 'stun:stun-1.example.test:3478' }),
+      row({ id: 'r4', stunUrl: 'stun:stun-0.example.test:3478' })
+    ])
+    expect(await roster.stunUrls()).toEqual(['stun:stun-0.example.test:3478', 'stun:stun-1.example.test:3478'])
   })
 
   it('an empty pool broadcasts an empty roster (no relays to dial)', async () => {

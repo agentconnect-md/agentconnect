@@ -4732,7 +4732,9 @@ export const ComputerViewerGrantDto = z.object({
   /** Relay origins to try in order; the desktop is attached to each relay it dialed. */
   relays: z.array(z.string()),
   /** TURN servers with short-lived credentials for media without a direct UDP path; empty when none are configured. */
-  iceServers: z.array(z.object({ urls: z.array(z.string()), username: z.string(), credential: z.string() }))
+  iceServers: z.array(z.object({ urls: z.array(z.string()), username: z.string(), credential: z.string() })),
+  /** The relays' `stun:` addresses for hole punching media peer to peer; empty when none serve STUN or the policy turns it off. */
+  stunUrls: z.array(z.string())
 })
 
 /** Whether a desktop daemon has spent a registration token yet, for the console's Add Computer dialog. */

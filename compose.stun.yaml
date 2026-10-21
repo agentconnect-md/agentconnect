@@ -1,0 +1,11 @@
+# Optional STUN on the relay for the console's Computer viewer: browser and desktop hole-punch and send video peer to peer.
+# docker compose -f compose.yaml -f compose.stun.yaml up -d; guide: docs/self-host-desktop-container.md.
+services:
+  relay:
+    environment:
+      - RELAY_STUN_PORT=3478
+      # The address browsers and desktops reach this host's STUN port on; both learn their public address from it.
+      - RELAY_STUN_URL=stun:${AGENTCONNECT_STUN_HOST:?set AGENTCONNECT_STUN_HOST to this host's public IP or DNS name}:${AGENTCONNECT_STUN_PORT:-3479}
+    ports:
+      # Published on every interface (DNAT keeps the client's source address, which is the answer); 3479 leaves 3478 to compose.turn.yaml.
+      - ${AGENTCONNECT_STUN_PORT:-3479}:3478/udp

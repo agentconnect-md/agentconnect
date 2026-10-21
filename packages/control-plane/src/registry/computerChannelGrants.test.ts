@@ -160,13 +160,18 @@ describe('ComputerChannelGrants', () => {
 
 describe('ComputerChannelGrants.grantViewer', () => {
   const turn = { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 }
-  const viewer = (over: Partial<ComputerRecord> = {}, opts: { relays?: string[]; withTurn?: boolean } = {}) => {
-    const { repo, keys, clock } = setup(over)
+  const stun = ['stun:stun-0.example.com:3478', 'stun:stun-1.example.com:3478', 'stun:stun-2.example.com:3478']
+  const viewer = (
+    over: Partial<ComputerRecord> = {},
+    opts: { relays?: string[]; withTurn?: boolean; policy?: Record<string, unknown> } = {}
+  ) => {
+    const { repo, keys, clock } = setup(over, opts.policy)
     const grants = new ComputerChannelGrants(repo, keys, clock, {
       staleAfterMs: 45_000,
       relays: async () => [relay],
       viewerRelays: async () => opts.relays ?? ['https://relay.example.com', 'https://relay.example.com', relay.url],
-      ...(opts.withTurn ? { turn } : {})
+      ...(opts.withTurn ? { turn } : {}),
+      stunUrls: async () => stun
     })
     return { grants, keys }
   }
@@ -199,6 +204,36 @@ describe('ComputerChannelGrants.grantViewer', () => {
     if (!result.granted) throw new Error('refused')
     expect(result.iceServers).toEqual([])
     expect(readComputerChannelToken(result.token)?.ice).toBeUndefined()
+  })
+
+  it('names the relays’ STUN servers to both peers while only the owner may watch', async () => {
+    const result = await viewer().grants.grantViewer(ORG, CID, { userId: 'user_owner', mode: 'control' })
+    if (!result.granted) throw new Error('refused')
+    expect(result.stunUrls).toEqual(stun.slice(0, 2))
+    expect(readComputerChannelToken(result.token)?.stun).toEqual(stun.slice(0, 2))
+  })
+
+  it('keeps the desktop’s public IP from other members unless the policy turns peer to peer on', async () => {
+    const shared = await viewer({}, { policy: { allowedMembers: ['user_owner', 'user_other'] } }).grants.grantViewer(
+      ORG,
+      CID,
+      { userId: 'user_other', mode: 'view' }
+    )
+    if (!shared.granted) throw new Error('refused')
+    expect(shared.stunUrls).toEqual([])
+    expect(readComputerChannelToken(shared.token)?.stun).toBeUndefined()
+    const optedIn = await viewer(
+      {},
+      { policy: { allowedMembers: ['user_owner', 'user_other'], viewerPeerToPeer: true } }
+    ).grants.grantViewer(ORG, CID, { userId: 'user_other', mode: 'view' })
+    if (!optedIn.granted) throw new Error('refused')
+    expect(optedIn.stunUrls).toHaveLength(2)
+    const optedOut = await viewer({}, { policy: { viewerPeerToPeer: false } }).grants.grantViewer(ORG, CID, {
+      userId: 'user_owner',
+      mode: 'control'
+    })
+    if (!optedOut.granted) throw new Error('refused')
+    expect(optedOut.stunUrls).toEqual([])
   })
 
   it('refuses an offline or revoked Computer, and a deployment without a relay', async () => {

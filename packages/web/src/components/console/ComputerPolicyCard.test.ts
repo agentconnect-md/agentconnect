@@ -27,6 +27,18 @@ describe('the policy form', () => {
     expect('policy' in result && result.policy.quietHours).toEqual(policy.quietHours)
   })
 
+  it('shows peer-to-peer viewing on for an owner-only Computer and stores it only once changed', () => {
+    const draft = draftOf(policy, 'u1')
+    expect(draft.viewerPeerToPeer).toBe(true)
+    expect(policyFromDraft(policy, draft, 'u1')).toEqual({ policy })
+    const off = policyFromDraft(policy, { ...draft, viewerPeerToPeer: false }, 'u1')
+    expect('policy' in off && off.policy.viewerPeerToPeer).toBe(false)
+    const shared = { ...policy, allowedMembers: ['u1', 'u2'] }
+    expect(draftOf(shared, 'u1').viewerPeerToPeer).toBe(false)
+    const on = policyFromDraft(shared, { ...draftOf(shared, 'u1'), viewerPeerToPeer: true }, 'u1')
+    expect('policy' in on && on.policy.viewerPeerToPeer).toBe(true)
+  })
+
   it('refuses out-of-range or inconsistent limits the way the Control Plane would', () => {
     const draft = draftOf(policy)
     expect(policyFromDraft(policy, { ...draft, leaseIdleSeconds: '5' })).toEqual({ problem: 'idleRange' })

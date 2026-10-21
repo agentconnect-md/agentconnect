@@ -59,7 +59,7 @@ export interface RelayedMcpDeps {
   viewer?: (request: ViewerRequest) => Promise<ViewerResponse>
 }
 
-/** A console member's view token: who watches, whether they may take over, and the TURN servers issued with it. */
+/** A console member's view token: who watches, whether they may take over, and the TURN and STUN servers issued with it. */
 export function viewerPrincipal(
   authorization: string | undefined,
   authority: ChannelAuthority,
@@ -74,6 +74,7 @@ export function viewerPrincipal(
     client: `console:${claims.usr}`,
     control: claims.mode === 'control',
     iceServers: claims.ice ?? [],
+    stunUrls: claims.stun ?? [],
     valid: () => authority.verify(token, 'view', id) !== undefined
   }
 }

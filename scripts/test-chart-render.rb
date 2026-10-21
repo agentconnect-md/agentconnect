@@ -586,6 +586,37 @@ relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches']
   abort("relay route must forward #{path}") unless relay_paths.include?(path)
 end
 
+# Relay STUN for viewer hole punching: off by default, and once on each pod gets a UDP Service that keeps the client's address.
+abort('relay STUN must be off by default') if public_relay_env.key?('RELAY_STUN_PORT') ||
+                                              public_documents.any? { |doc| doc.dig('metadata', 'name').to_s.end_with?('-stun') }
+stun_rendered, stun_error, stun_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'relay.stun.enabled=true',
+  '--set', 'relay.stun.host=stun-{ordinal}.example.test'
+)
+abort("helm template (relay STUN) failed:\n#{stun_error}") unless stun_status.success?
+stun_documents = YAML.load_stream(stun_rendered).compact
+stun_relay = stun_documents.find { |doc| doc['kind'] == 'StatefulSet' && doc.dig('metadata', 'name') == 'example-agentconnect-relay' }
+stun_container = stun_relay.dig('spec', 'template', 'spec', 'containers').first
+stun_env = stun_container.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('relay must answer STUN on its UDP port') unless stun_env['RELAY_STUN_PORT'] == '3478' &&
+                                                       stun_container['ports'].any? { |p| p['name'] == 'stun' && p['protocol'] == 'UDP' }
+abort('relay must advertise its own pod’s STUN host') unless stun_env['RELAY_STUN_URL'] == 'stun:stun-$(POD_INDEX).example.test:3478'
+names = stun_container['env'].map { |item| item['name'] }
+abort('RELAY_STUN_URL must follow POD_INDEX so $(POD_INDEX) expands') unless names.index('POD_INDEX') < names.index('RELAY_STUN_URL')
+%w[0 1].each do |ordinal|
+  svc = stun_documents.find { |doc| doc['kind'] == 'Service' && doc.dig('metadata', 'name') == "example-agentconnect-relay-#{ordinal}-stun" } ||
+        abort("missing the STUN Service of relay #{ordinal}")
+  abort('a STUN Service must keep the client source address') unless svc.dig('spec', 'externalTrafficPolicy') == 'Local'
+  abort('a STUN Service must select its own pod') unless svc.dig('spec', 'selector', 'statefulset.kubernetes.io/pod-name') == "example-agentconnect-relay-#{ordinal}"
+  abort('a STUN Service carries UDP') unless svc.dig('spec', 'ports', 0, 'protocol') == 'UDP'
+end
+_, stun_refused, stun_refused_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'relay.stun.enabled=true'
+)
+abort('relay STUN without a public host must fail the render') if stun_refused_status.success? || !stun_refused.include?('relay.stun.host')
+
 # ONE safety window. The sweep calls a claim orphaned once nothing has touched it for this long, and a
 # member re-stamps the claims it holds on a cadence derived from the same number — so the value has to
 # reach BOTH surfaces from one place. A member reading a different grace than the job sweeping after it

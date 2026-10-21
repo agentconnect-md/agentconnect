@@ -11,6 +11,10 @@ ordinal as a path segment; the HTTPRoute rewrites the path onto a per-pod Servic
 the pool Service remains load-balanced for browser and webhook ingress.
 */ -}}
 {{- if include "agentconnect.relayActive" . }}
+{{- $stun := .Values.relay.stun }}
+{{- if and $stun.enabled (not $stun.host) }}
+{{- fail "relay.stun.enabled needs relay.stun.host: the public name each relay pod's STUN Service is reached on" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -62,6 +66,11 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.relay.port }}
+            {{- if $stun.enabled }}
+            - name: stun
+              containerPort: {{ $stun.port }}
+              protocol: UDP
+            {{- end }}
           env:
             - name: PORT
               value: {{ .Values.relay.port | quote }}
@@ -107,6 +116,13 @@ spec:
             # Browser and webhook traffic continues to use the pool-level public origin.
             - name: DAEMON_DIAL_URL
               value: {{ include "agentconnect.relayDaemonDialUrl" . | quote }}
+            {{- if $stun.enabled }}
+            # STUN for viewer hole punching: this pod answers on the UDP port and registers its public address.
+            - name: RELAY_STUN_PORT
+              value: {{ $stun.port | quote }}
+            - name: RELAY_STUN_URL
+              value: {{ printf "stun:%s:%v" (replace "{ordinal}" "$(POD_INDEX)" $stun.host) ($stun.publicPort | default $stun.port) | quote }}
+            {{- end }}
             # Shared relay↔CP credential — the CP must hold the SAME value (control-plane.yaml).
             - name: RELAY_TOKEN
               valueFrom:
@@ -201,6 +217,32 @@ spec:
     - name: http
       port: {{ $.Values.relay.port }}
       targetPort: http
+{{- if $stun.enabled }}
+---
+# This pod's STUN port, public and keeping the client's source address, which is the answer STUN gives.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-relay-%d-stun" (include "agentconnect.fullname" $) $ordinal }}
+  labels:
+    {{- include "agentconnect.labels" $ | nindent 4 }}
+  {{- with $stun.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $stun.service.type }}
+  {{- if ne $stun.service.type "ClusterIP" }}
+  externalTrafficPolicy: Local
+  {{- end }}
+  selector:
+    statefulset.kubernetes.io/pod-name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
+  ports:
+    - name: stun
+      port: {{ $stun.publicPort | default $stun.port }}
+      targetPort: stun
+      protocol: UDP
+{{- end }}
 {{- end }}
 {{- if gt (int .Values.relay.replicas) 1 }}
 ---

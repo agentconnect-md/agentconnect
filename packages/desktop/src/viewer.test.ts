@@ -44,12 +44,19 @@ function harness() {
     expiresAt: new Date(Date.now() + 300_000).toISOString()
   })
   const offers: unknown[] = []
+  const trickled: unknown[] = []
   const rtc = {
     offer: async (principal: unknown, options: unknown) => {
       offers.push({ principal, options })
       return { id: 'rtc-1', sdp: 'v=0' }
     },
     answer: async () => undefined,
+    addCandidate: async (client: string, id: string, candidate: unknown) =>
+      void trickled.push({ client, id, candidate }),
+    candidates: (_client: string, _id: string, after: number) => ({
+      candidates: [{ candidate: 'candidate:1 1 udp 1 203.0.113.9 5000 typ srflx', sdpMid: '0' }].slice(after),
+      done: true
+    }),
     stop: () => undefined,
     closeAll: () => undefined
   } as unknown as RtcSessions
@@ -85,7 +92,7 @@ function harness() {
     const res = await call(path, token, body)
     return { status: res.status, json: JSON.parse(res.body.toString() || 'null') as Record<string, unknown> }
   }
-  return { computer, authority, viewer, offers, call, json, localToken: issued.token }
+  return { computer, authority, viewer, offers, trickled, call, json, localToken: issued.token }
 }
 
 describe('console viewer through the relay', () => {
@@ -169,6 +176,31 @@ describe('console viewer through the relay', () => {
       { principal: { client: 'console:user-1', iceServers: ice }, options: { transport: 'turn' } },
       { options: { transport: 'direct' } }
     ])
+  })
+
+  it('offers hole punching only when the token names STUN servers, and trickles candidates both ways', async () => {
+    const { json, offers, trickled } = harness()
+    const stun = ['stun:stun-0.example.com:3478']
+    expect((await json('/view/api/status', viewToken({ stun }))).json).toMatchObject({ webrtc: { stun: true } })
+    expect((await json('/view/api/status', viewToken())).json).toMatchObject({ webrtc: { stun: false } })
+    const refused = await json('/view/api/rtc/offer', viewToken(), { transport: 'stun' })
+    expect(refused).toMatchObject({ status: 409, json: { error: 'stun_unavailable' } })
+    expect((await json('/view/api/rtc/offer', viewToken({ stun }), { transport: 'stun' })).status).toBe(200)
+    expect(offers).toMatchObject([{ principal: { stunUrls: stun }, options: { transport: 'stun' } }])
+    const candidate = { candidate: 'candidate:2 1 udp 1 198.51.100.4 6000 typ srflx', sdpMid: '0', sdpMLineIndex: 0 }
+    expect((await json('/view/api/rtc/candidate', viewToken({ stun }), { id: 'rtc-1', candidate })).status).toBe(200)
+    expect((await json('/view/api/rtc/candidate', viewToken({ stun }), { id: 'rtc-1', candidate: null })).status).toBe(
+      200
+    )
+    expect(trickled).toEqual([
+      { client: 'console:user-1', id: 'rtc-1', candidate },
+      { client: 'console:user-1', id: 'rtc-1', candidate: null }
+    ])
+    expect((await json('/view/api/rtc/candidates', viewToken({ stun }), { id: 'rtc-1' })).json).toMatchObject({
+      candidates: [{ sdpMid: '0' }],
+      done: true
+    })
+    expect((await json('/view/api/rtc/candidate', viewToken({ stun }), { id: 'rtc-1' })).status).toBe(400)
   })
 
   it('stops serving frames once the channel key is gone, and the token stops holding', async () => {

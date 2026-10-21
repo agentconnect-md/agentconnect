@@ -34,6 +34,12 @@ export class RelayRoster {
     return alive.map((r) => ({ relayId: r.id, url: r.daemonUrl }))
   }
 
+  /** The distinct STUN addresses alive relays advertise, oldest relay first, for viewer hole punching. */
+  async stunUrls(): Promise<string[]> {
+    const alive = await this.relays.listAlive(new Date(this.clock.now() - this.staleMs))
+    return [...new Set(alive.flatMap((r) => (r.stunUrl ? [r.stunUrl] : [])))]
+  }
+
   /** Recompute the roster and fan a `relay/roster` EVT to every connected daemon. */
   async broadcast(): Promise<void> {
     this.broadcaster.broadcastRelayRoster(await this.entries())

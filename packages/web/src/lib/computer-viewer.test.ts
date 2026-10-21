@@ -24,6 +24,7 @@ function grant(over: Partial<ComputerViewerGrantDto> = {}): ComputerViewerGrantD
     mode: 'control',
     relays: ['https://relay-a.example.com', 'https://relay-b.example.com'],
     iceServers: [{ urls: ['turn:turn.example.com:3478'], username: '1:viewer-u1', credential: 'c' }],
+    stunUrls: [],
     ...over
   }
 }
@@ -46,17 +47,43 @@ class FakeChannel {
   }
 }
 
-function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed', onCreate?: () => void) {
-  const created: { config: RTCConfiguration; channel: FakeChannel; closed: boolean; drop: () => void }[] = []
+// The candidate types a peer reports for its selected pair, as `getStats` would.
+const routeStats = (local: string, remote: string) =>
+  new Map<string, object>([
+    ['T', { id: 'T', type: 'transport', selectedCandidatePairId: 'P' }],
+    ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', remoteCandidateId: 'R' }],
+    ['L', { id: 'L', type: 'local-candidate', candidateType: local }],
+    ['R', { id: 'R', type: 'remote-candidate', candidateType: remote }]
+  ])
+
+function peers(
+  outcome: (config: RTCConfiguration) => 'connected' | 'failed',
+  onCreate?: () => void,
+  stats?: Map<string, object>
+) {
+  const created: {
+    config: RTCConfiguration
+    channel: FakeChannel
+    closed: boolean
+    added: RTCIceCandidateInit[]
+    drop: () => void
+  }[] = []
   const createPeer = (config: RTCConfiguration) => {
     onCreate?.()
-    const record = { config, channel: new FakeChannel(), closed: false, drop: () => undefined as void }
+    const record = {
+      config,
+      channel: new FakeChannel(),
+      closed: false,
+      added: [] as RTCIceCandidateInit[],
+      drop: () => undefined as void
+    }
     created.push(record)
     const pc = {
       connectionState: 'new',
       iceGatheringState: 'complete',
       localDescription: null as RTCSessionDescriptionInit | null,
       onconnectionstatechange: null as (() => void) | null,
+      onicecandidate: null as ((event: { candidate: { toJSON: () => RTCIceCandidateInit } | null }) => void) | null,
       ontrack: null,
       ondatachannel: null as ((event: { channel: FakeChannel }) => void) | null,
       async setRemoteDescription() {},
@@ -65,7 +92,18 @@ function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed', on
       },
       async setLocalDescription(description: RTCSessionDescriptionInit) {
         pc.localDescription = description
+        // A trickling browser reports its candidates after the answer is set, then the end of gathering.
+        queueMicrotask(() => {
+          pc.onicecandidate?.({
+            candidate: { toJSON: () => ({ candidate: 'candidate:b 1 udp 1 198.51.100.7 6000 typ srflx', sdpMid: '0' }) }
+          })
+          pc.onicecandidate?.({ candidate: null })
+        })
       },
+      async addIceCandidate(candidate: RTCIceCandidateInit) {
+        record.added.push(candidate)
+      },
+      ...(stats ? { getStats: async () => stats } : {}),
       close() {
         record.closed = true
       }
@@ -85,7 +123,7 @@ function peers(outcome: (config: RTCConfiguration) => 'connected' | 'failed', on
   return { created, createPeer }
 }
 
-function relayFetch(opts: { attachedOn?: string; offerFails?: boolean } = {}) {
+function relayFetch(opts: { attachedOn?: string; offerFails?: boolean; stun?: boolean } = {}) {
   const calls: { url: string; method: string; body?: unknown; auth: string | null }[] = []
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined
@@ -94,9 +132,17 @@ function relayFetch(opts: { attachedOn?: string; offerFails?: boolean } = {}) {
       return new Response(JSON.stringify({ error: 'computer_not_attached' }), { status: 503 })
     }
     const endpoint = url.split('/view/api/')[1]
-    if (endpoint === 'status') return Response.json(status)
-    if (endpoint === 'rtc/offer') return Response.json({ id: 'rtc-1', sdp: 'v=0 offer' })
-    if (endpoint === 'rtc/answer') return Response.json({ ok: true })
+    if (endpoint === 'status')
+      return Response.json({ ...status, webrtc: { ...status.webrtc, stun: opts.stun ?? false } })
+    if (endpoint === 'rtc/offer') return Response.json({ id: 'rtc-1', sdp: 'v=0 offer', candidates: 1 })
+    if (endpoint === 'rtc/answer' || endpoint === 'rtc/candidate') return Response.json({ ok: true })
+    if (endpoint === 'rtc/candidates') {
+      const desktop = [
+        { candidate: 'candidate:h 1 udp 2 10.0.0.9 5000 typ host', sdpMid: '0' },
+        { candidate: 'candidate:d 1 udp 1 203.0.113.9 5000 typ srflx', sdpMid: '0' }
+      ]
+      return Response.json({ candidates: desktop.slice(body.after), done: true })
+    }
     if (endpoint === 'control') return Response.json({ ...status, inControl: body.action === 'take' })
     if (endpoint === 'frame') return new Response(new Blob(['png']), { headers: { 'content-type': 'image/png' } })
     return new Response('{}', { status: 404 })
@@ -157,6 +203,66 @@ describe('ComputerViewerSession', () => {
     ])
     expect(created[0]!.closed).toBe(true)
     expect(created[1]!.config).toMatchObject({ iceTransportPolicy: 'relay', iceServers: grant().iceServers })
+  })
+
+  it('hole-punches through the relays’ STUN with one full-ICE attempt, trickling candidates both ways', async () => {
+    const { calls, fetchImpl } = relayFetch({ stun: true })
+    const stunUrls = ['stun:stun-0.example.com:3478']
+    const { created, createPeer } = peers(() => 'connected', undefined, routeStats('srflx', 'srflx'))
+    const { session } = open({ fetch: fetchImpl, createPeer, grant: grant({ stunUrls }) })
+    await session.start()
+    expect(session.snapshot()).toMatchObject({ phase: 'live', path: 'p2p', notes: ['Peer to peer: srflx → srflx'] })
+    expect(calls.filter((c) => c.url.endsWith('rtc/offer')).map((c) => c.body)).toEqual([{ transport: 'stun' }])
+    expect(created[0]!.config).toEqual({ iceServers: [{ urls: stunUrls }] })
+    // The answer goes first, then the browser's candidates in order, ending with null.
+    await vi.waitFor(() => expect(calls.filter((c) => c.url.endsWith('rtc/candidate'))).toHaveLength(2))
+    const signaling = calls.filter((c) => /rtc\/(answer|candidate)$/.test(c.url)).map((c) => c.url.split('/').at(-1))
+    expect(signaling).toEqual(['answer', 'candidate', 'candidate'])
+    expect(calls.filter((c) => c.url.endsWith('rtc/candidate')).map((c) => c.body)).toEqual([
+      { id: 'rtc-1', candidate: { candidate: 'candidate:b 1 udp 1 198.51.100.7 6000 typ srflx', sdpMid: '0' } },
+      { id: 'rtc-1', candidate: null }
+    ])
+    // The offer already carried the desktop's first candidate, so trickling starts after it.
+    expect(calls.find((c) => c.url.endsWith('rtc/candidates'))?.body).toEqual({ id: 'rtc-1', after: 1 })
+  })
+
+  it('adds the desktop’s late candidates and shows a same-network host pair as direct', async () => {
+    const { fetchImpl } = relayFetch({ stun: true })
+    const { created, createPeer } = peers(() => 'connected', undefined, routeStats('host', 'host'))
+    const { session } = open({
+      fetch: fetchImpl,
+      createPeer,
+      grant: grant({ stunUrls: ['stun:stun-0.example.com:3478'] })
+    })
+    await session.start()
+    expect(session.snapshot()).toMatchObject({ phase: 'live', path: 'direct' })
+    await vi.waitFor(() => expect(created[0]!.added).toHaveLength(1))
+    expect(created[0]!.added[0]).toMatchObject({ candidate: expect.stringContaining('203.0.113.9') })
+  })
+
+  it('falls through to TURN when hole punching fails, as behind a symmetric NAT', async () => {
+    const { calls, fetchImpl } = relayFetch({ stun: true })
+    const { createPeer } = peers((config) => (config.iceTransportPolicy === 'relay' ? 'connected' : 'failed'))
+    const { session } = open({
+      fetch: fetchImpl,
+      createPeer,
+      grant: grant({ stunUrls: ['stun:stun-0.example.com:3478'] })
+    })
+    await session.start()
+    expect(session.snapshot()).toMatchObject({ path: 'turn', notes: ['Peer to peer: ICE failed'] })
+    expect(calls.filter((c) => c.url.endsWith('rtc/offer')).map((c) => c.body)).toEqual([
+      { transport: 'stun' },
+      { transport: 'turn' }
+    ])
+  })
+
+  it('keeps the ICE-lite direct path when the desktop was issued no STUN', async () => {
+    const { calls, fetchImpl } = relayFetch({ stun: false })
+    const { createPeer } = peers(() => 'connected')
+    const { session } = open({ fetch: fetchImpl, createPeer, grant: grant({ stunUrls: ['stun:stun-0.example.com'] }) })
+    await session.start()
+    expect(session.snapshot().path).toBe('direct')
+    expect(calls.find((c) => c.url.endsWith('rtc/offer'))?.body).toEqual({ transport: 'direct' })
   })
 
   it('falls back to screenshots over the relay without TURN', async () => {

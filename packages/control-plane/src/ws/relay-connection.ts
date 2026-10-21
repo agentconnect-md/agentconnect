@@ -310,7 +310,8 @@ export class RelayConnection implements RelayChannel {
       req.name,
       req.daemonUrl,
       new Date(this.deps.clock.now()),
-      req.features
+      req.features,
+      req.stunUrl ?? null
     )
     // The socket may have closed during the upsert. onClose ran with relayId still ''
     // (so it skipped the registry remove) — proceeding to relayReg.add would register a
