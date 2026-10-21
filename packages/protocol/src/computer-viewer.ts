@@ -1,6 +1,5 @@
 // The console's embedded viewer (computer-use.md §7, §10): signaling rides the relay; media goes direct, hole-punched, or via TURN.
 import { z } from 'zod'
-import type { ComputerKind } from './frames/computer.js'
 
 /** The desktop's viewer API prefix; the relay forwards only paths under it besides `/mcp`. */
 export const COMPUTER_VIEWER_API_PREFIX = '/view/api/'
@@ -51,7 +50,7 @@ export const COMPUTER_STUN_URLS_MAX = 2
 /** Whether viewer media may hole-punch: the policy's explicit setting, else on only for a self-hosted Computer only its owner may watch. */
 export const viewerPeerToPeerAllowed = (
   policy: { allowedMembers: readonly string[]; viewerPeerToPeer?: boolean | undefined },
-  computer: { ownerUserId: string | null | undefined; kind: ComputerKind }
+  computer: { ownerUserId: string | null | undefined; kind: 'self-hosted' | 'managed' }
 ): boolean =>
   policy.viewerPeerToPeer ??
   // A managed Computer's editors may watch it too, so it is never owner-only by default.
