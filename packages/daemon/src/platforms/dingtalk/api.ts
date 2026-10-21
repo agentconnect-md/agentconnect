@@ -36,6 +36,49 @@ export class DingTalkApiError extends Error {
   }
 }
 
+/** Which edition limit refused a call: the organization's monthly quota or the app's per-API QPS (§4.4). */
+export type DingTalkLimit = 'quota' | 'rate'
+
+/** A call DingTalk refused for a usage limit rather than for its content. */
+export class DingTalkLimitError extends DingTalkApiError {
+  constructor(
+    path: string,
+    status: number,
+    code: string,
+    readonly limit: DingTalkLimit
+  ) {
+    super(path, status, code)
+    this.name = 'DingTalkLimitError'
+  }
+}
+
+const LIMIT_CODES: Record<string, DingTalkLimit> = {
+  '90020': 'quota',
+  'Forbidden.AccessDenied.ApiCountLimitForOrg': 'quota',
+  '90018': 'rate',
+  'Forbidden.AccessDenied.QpsLimitForAppkeyAndApi': 'rate'
+}
+
+/** The typed error for a refused call, mapping DingTalk's limit codes (§4.4). */
+export function dingTalkApiError(path: string, status: number, code?: string): DingTalkApiError {
+  const limit = code ? LIMIT_CODES[code] : undefined
+  return limit && code ? new DingTalkLimitError(path, status, code, limit) : new DingTalkApiError(path, status, code)
+}
+
+/** The limit behind `error`, if DingTalk refused the call for one. */
+export function dingTalkLimitOf(error: unknown): DingTalkLimit | undefined {
+  return error instanceof DingTalkLimitError ? error.limit : undefined
+}
+
+// v1.0 APIs answer `{code}` with a non-2xx status; legacy ones answer `{errcode}`, sometimes with HTTP 200.
+function errorCode(json: unknown): string | undefined {
+  const body = json as { code?: unknown; errcode?: unknown } | undefined
+  if (typeof body?.code === 'string' && body.code) return body.code
+  if (typeof body?.code === 'number') return String(body.code)
+  if (typeof body?.errcode === 'number' && body.errcode !== 0) return String(body.errcode)
+  return undefined
+}
+
 export interface DingTalkApiOptions {
   fetchImpl?: typeof fetch
   origin?: string
@@ -60,11 +103,26 @@ export class DingTalkApi {
     return this.options.now?.() ?? Date.now()
   }
 
-  private async post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
+  private post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
+    return this.request<T>('POST', path, body, headers)
+  }
+
+  /** One call with the app's access token, for the card APIs (§4.3). */
+  async call<T>(method: 'POST' | 'PUT', path: string, body: unknown): Promise<T> {
+    const token = await this.accessToken()
+    return await this.request<T>(method, path, body, { 'x-acs-dingtalk-access-token': token })
+  }
+
+  private async request<T>(
+    method: 'POST' | 'PUT',
+    path: string,
+    body: unknown,
+    headers: Record<string, string> = {}
+  ): Promise<T> {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     const signal = this.options.signal ? AbortSignal.any([this.options.signal, timeout]) : timeout
     const response = await (this.options.fetchImpl ?? fetch)(`${this.origin}${path}`, {
-      method: 'POST',
+      method,
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
       signal
@@ -76,10 +134,10 @@ export class DingTalkApi {
     } catch {
       json = undefined
     }
-    if (!response.ok || json === undefined) {
-      const code = (json as { code?: unknown } | undefined)?.code
+    const code = errorCode(json)
+    if (!response.ok || json === undefined || (code && LIMIT_CODES[code])) {
       if (response.status === 401) this.token = undefined
-      throw new DingTalkApiError(path, response.status, typeof code === 'string' ? code : undefined)
+      throw dingTalkApiError(path, response.status, code)
     }
     return json as T
   }

@@ -6,6 +6,8 @@ import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.j
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 import { isNoResponseBody } from '../../session/no-response.js'
 import type { DingTalkReplyPort } from './connection.js'
+import { DingTalkProgressView, type DingTalkCardAction } from './progress.js'
+import type { DingTalkProgressCard, DingTalkQuotaNotice } from './progress-card.js'
 
 /** The line on a group turn's last message: a group delivers only mentions, so a quote alone never reaches the bot (§4.1). */
 export const DINGTALK_CONTINUE_HINT = '↩️ To continue this topic, quote this message and @mention me.'
@@ -16,12 +18,14 @@ const PROGRESS_SPACING_MS = 15_000
 export type DingTalkAction =
   | { kind: 'post'; text: string; attributed?: boolean; recordOnly?: boolean; hint?: string }
   | { kind: 'notice'; text: string }
+  | DingTalkCardAction
 
 // Posts only completed public messages, never partial text: a plain message cannot be edited (§4.2).
 export class DingTalkConverger {
   private readonly collector = new GithubReplyCollector()
   private readonly messages = new AgentMessageRun()
   private readonly work = new WorkBoundary()
+  private readonly progress: DingTalkProgressView
   private readonly published = new Set<string>()
   private text = ''
   private phase = ''
@@ -36,6 +40,7 @@ export class DingTalkConverger {
     private readonly resolveFileLink?: WorkspaceFileLinkResolver
   ) {
     this.hint = opts.continueHint && ['low', 'medium', 'high'].includes(mode)
+    this.progress = new DingTalkProgressView(mode)
   }
 
   onUpdate(update: SessionUpdate): DingTalkAction[] {
@@ -49,6 +54,7 @@ export class DingTalkConverger {
       if (phase) this.phase = phase
     } else if (this.work.opens(update)) actions.push(...this.completeMessage())
     this.collector.onUpdate(update)
+    actions.push(...this.progress.onUpdate(update))
     return actions
   }
 
@@ -110,6 +116,10 @@ export interface DingTalkTurnState {
   /** The connection this turn leased; absent for a headless turn, which records but never posts. */
   conn?: DingTalkReplyPort
   channel: string
+  /** The turn's progress card, when one was opened at turn start (§4.3). */
+  card?: DingTalkProgressCard
+  /** The turn's one quota notice (§4.4). */
+  quota?: DingTalkQuotaNotice
 }
 
 /** The core turn as this applier sees it; `Pending` satisfies it structurally. */
@@ -134,9 +144,13 @@ export async function applyDingTalkAction(
   host: DingTalkTurnHost,
   turn: DingTalkTurn,
   state: DingTalkTurnState,
-  action: { kind: string; text?: string; recordOnly?: boolean; hint?: string }
+  action: { kind: string; text?: string; recordOnly?: boolean; hint?: string; tools?: number }
 ): Promise<void> {
   if (!action.text) return
+  if (action.kind === 'card') {
+    state.card?.update(action.text, action.tools ?? 0)
+    return
+  }
   // A notice is chrome: posted as plain text and never recorded.
   if (action.kind === 'notice') {
     if (state.conn) await state.conn.sendText(state.channel, action.text)
@@ -162,4 +176,6 @@ export async function applyDingTalkAction(
   // Each part is recorded under its process query key, which a quote of it brings back (§4.1).
   const parts = await state.conn.sendMarkdown(state.channel, action.text, action.hint ? { suffix: action.hint } : {})
   for (const part of parts) await record(part.text, part.processQueryKey ?? host.monotonicTs())
+  const refused = parts.find((part) => part.error !== undefined)
+  if (refused) await state.quota?.note(refused.error)
 }

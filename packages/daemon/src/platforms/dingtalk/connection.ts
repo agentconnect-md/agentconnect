@@ -14,6 +14,8 @@ import {
   splitForMsgParam,
   type DingTalkApiOptions
 } from './api.js'
+import { DingTalkCardClient, type DingTalkCardPort } from './card.js'
+import { rewriteDingTalkMarkdown } from './markdown.js'
 import { DingTalkStream, type DingTalkSocket, type DingTalkStreamTiming } from './stream.js'
 
 export interface DingTalkConnectionGroup {
@@ -51,12 +53,16 @@ export function consolidateDingTalk(agents: LoadedAgent[]): Map<string, DingTalk
 export interface DingTalkSentPart {
   text: string
   processQueryKey?: string
+  /** Why the part was not sent, so a quota refusal can be named (§4.4). */
+  error?: unknown
 }
 
 /** The sends a turn makes through the connection it leased. */
 export interface DingTalkReplyPort {
   sendMarkdown(channel: string, text: string, opts?: { suffix?: string }): Promise<DingTalkSentPart[]>
   sendText(channel: string, text: string): Promise<string | undefined>
+  /** The AI card calls for a turn's progress card (§4.3). */
+  readonly cards?: DingTalkCardPort
 }
 
 const SEEN_LIMIT = 2_000
@@ -67,6 +73,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   private readonly abort = new AbortController()
   private readonly api: DingTalkApi
   private readonly stream: DingTalkStream
+  readonly cards: DingTalkCardClient
   private readonly seen = new Set<string>()
   private readonly channels = new Map<string, { name?: string; isIm: boolean }>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
@@ -90,6 +97,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (deps.fetchImpl) apiOptions.fetchImpl = deps.fetchImpl
     if (deps.origin) apiOptions.origin = deps.origin
     this.api = new DingTalkApi(group, apiOptions)
+    this.cards = new DingTalkCardClient(this.api, group.clientId, deps.log)
     this.stream = new DingTalkStream({
       openConnection: () => this.api.openStream(),
       ...(deps.createSocket ? { createSocket: deps.createSocket } : {}),
@@ -192,7 +200,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   async sendMarkdown(channel: string, text: string, opts: { suffix?: string } = {}): Promise<DingTalkSentPart[]> {
     const title = dingTalkMarkdownTitle(text)
     const suffix = opts.suffix ? `\n\n${opts.suffix}` : ''
-    const parts = splitForMsgParam(text, (part) => ({ title, text: `${part}${suffix}` }))
+    // Each part is rewritten for DingTalk's dialect as it is sized, so the rewrite's growth counts against the limit.
+    const parts = splitForMsgParam(text, (part) => ({ title, text: `${rewriteDingTalkMarkdown(part)}${suffix}` }))
     const target = dingTalkTargetForChannel(channel)
     const sent: DingTalkSentPart[] = []
     let failed = false
@@ -201,7 +210,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
         sent.push({ text: part })
         continue
       }
-      const body = index === parts.length - 1 ? `${part}${suffix}` : part
+      const body = `${rewriteDingTalkMarkdown(part)}${index === parts.length - 1 ? suffix : ''}`
       try {
         const processQueryKey = await this.api.send(target, 'sampleMarkdown', JSON.stringify({ title, text: body }))
         sent.push({ text: part, ...(processQueryKey ? { processQueryKey } : {}) })
@@ -211,7 +220,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
         this.deps.log.warn(
           `dingtalk: markdown send failed (${error instanceof Error ? error.message : 'unknown error'})`
         )
-        sent.push({ text: part })
+        sent.push({ text: part, error })
       }
     }
     return sent
