@@ -3410,7 +3410,7 @@
           "perAgentDescription": "两次使用之间休眠，保留文件和登录状态。",
           "notCreated": "首次使用时创建",
           "leftover": "这是此智能体此前专属的计算机，它仍可使用。如需移除，请在该计算机页面删除。",
-          "sessions": "{count} 台会话桌面",
+          "sessions": "{count, plural, other {# 台会话桌面}}",
           "poolOff": "本部署没有运行计算机资源池，此设置不会生效。",
           "readOnly": "只有此智能体的编辑者可以修改",
           "saving": "正在保存…"
@@ -6570,7 +6570,7 @@
     },
     "madeFor": "属于 {agent}",
     "inUseBy": "{agent} 正在使用",
-    "waitingCount": "{count} 个在排队",
+    "waitingCount": "{count, plural, other {# 个在排队}}",
     "hiddenAgent": "你看不到的智能体",
     "poolPhase": {
       "provisioning": "启动中",
