@@ -371,6 +371,9 @@ export const AGENT_PLACEMENT_FEATURE = 'agent-placement-v1'
 /** CP answers `computer-lease/acquire` and `computer-lease/release` (computer-use.md §4.4); without it a daemon offers no computer tools. */
 export const COMPUTER_LEASE_FEATURE = 'computer-lease-v1'
 
+/** CP queues `computer-lease/acquire` calls that carry `waitMs` first come, first served (computer-use.md §4.4). */
+export const COMPUTER_LEASE_QUEUE_FEATURE = 'computer-lease-queue-v1'
+
 /** CP answers `computer-channel/grant` with a per-session token for a desktop daemon's `/mcp` (computer-use.md §3.7). */
 export const COMPUTER_CHANNEL_FEATURE = 'computer-channel-v1'
 

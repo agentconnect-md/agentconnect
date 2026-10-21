@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type {
   ComputerApprovals,
+  ComputerLeaseAcquire,
   ComputerLeaseAcquireResult,
   ComputerPoolAcquire,
   ComputerPoolAcquireResult
@@ -47,6 +48,9 @@ function setup(
     now?: () => number
     granted?: string[]
     lease?: ComputerLeaseAcquireResult
+    // Successive CP answers to the acquire; an Error is thrown, as a lost link would.
+    leaseSequence?: Array<ComputerLeaseAcquireResult | Error>
+    canRun?: () => boolean
     callTool?: CallTool
     connectError?: (attempt: number) => Error | undefined
     approvals?: ComputerApprovals | null
@@ -67,17 +71,23 @@ function setup(
   const callTool = options.callTool ?? (async () => ({ content: [{ type: 'text', text: '{}' }, IMAGE] }))
   const leases = {
     computerLeaseAcquire: vi.fn(
-      async (): Promise<ComputerLeaseAcquireResult> =>
-        options.lease ?? {
-          granted: true,
-          lease: {
-            leaseId: '00000000-0000-4000-8000-0000000000ee',
-            computerId: C1,
-            holder: { sessionId: 'out-1', agentId: AGENT },
-            acquiredAt: new Date(T0).toISOString(),
-            expiresAt: new Date(T0 + 1_800_000).toISOString()
+      async (_payload: ComputerLeaseAcquire, _orgId?: string): Promise<ComputerLeaseAcquireResult> => {
+        const next = options.leaseSequence?.shift()
+        if (next instanceof Error) throw next
+        return (
+          next ??
+          options.lease ?? {
+            granted: true,
+            lease: {
+              leaseId: '00000000-0000-4000-8000-0000000000ee',
+              computerId: C1,
+              holder: { sessionId: 'out-1', agentId: AGENT },
+              acquiredAt: new Date(T0).toISOString(),
+              expiresAt: new Date(T0 + 1_800_000).toISOString()
+            }
           }
-        }
+        )
+      }
     ),
     computerLeaseRelease: vi.fn(async () => undefined)
   }
@@ -101,7 +111,12 @@ function setup(
             sleeps.push(ms)
           }
         }
-      : {}),
+      : {
+          sleep: async (ms: number) => {
+            sleeps.push(ms)
+          }
+        }),
+    ...(options.canRun ? { canRun: options.canRun } : {}),
     orgFor: () => 'org_1',
     sessionIdFor: async () => 'out-1',
     now: options.now ?? (() => T0),
@@ -222,7 +237,7 @@ describe('ComputerTools', () => {
     const { tools, calls, leases } = setup({ granted: [C1, C2] })
     await tools.call(ctx(), 'computer_click', { computer: C1, x: 10, y: 20 })
     expect(leases.computerLeaseAcquire).toHaveBeenCalledWith(
-      { computerId: C1, agentId: AGENT, sessionId: 'out-1', requestedAt: new Date(T0).toISOString() },
+      { computerId: C1, agentId: AGENT, sessionId: 'out-1', requestedAt: new Date(T0).toISOString(), waitMs: 5000 },
       'org_1'
     )
     expect(calls).toEqual([{ computer: C1, name: 'computer_click', args: { x: 10, y: 20 } }])
@@ -260,6 +275,82 @@ describe('ComputerTools', () => {
     expect(handled?.result.mcpIsError).toBe(true)
     expect(parse(handled!.result)).toMatchObject({ error: 'computer_busy', holder: 'Ops', holderSessionId: 'other' })
     expect(calls).toEqual([])
+  })
+
+  describe('the lease wait queue', () => {
+    const queued = (position: number, leftMs = 30_000): ComputerLeaseAcquireResult => ({
+      granted: false,
+      code: 'computer_busy',
+      message: `this computer is controlled by Ops; waiting in line at position ${position}`,
+      holder: { sessionId: 'other', agentId: AGENT, agentName: 'Ops' },
+      queued: { position, waitedMs: 0, leftMs }
+    })
+    const granted: ComputerLeaseAcquireResult = {
+      granted: true,
+      lease: {
+        leaseId: '00000000-0000-4000-8000-0000000000ee',
+        computerId: C1,
+        holder: { sessionId: 'out-1', agentId: AGENT },
+        acquiredAt: new Date(T0).toISOString(),
+        expiresAt: new Date(T0 + 1_800_000).toISOString()
+      }
+    }
+
+    it('waits in line, keeping one request stamp, then sends the input and says how long it waited', async () => {
+      let now = T0
+      const { tools, calls, leases } = setup({
+        now: () => (now += 1_000),
+        leaseSequence: [queued(2), queued(1), granted]
+      })
+      const handled = await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+      expect(handled?.result.mcpIsError).toBeUndefined()
+      expect(calls).toEqual([{ computer: C1, name: 'computer_click', args: { x: 1, y: 2 } }])
+      const stamps = leases.computerLeaseAcquire.mock.calls.map(([payload]) => payload.requestedAt)
+      expect(new Set(stamps).size).toBe(1)
+      expect(handled?.result.mcpContent.at(-1)).toEqual({
+        type: 'text',
+        text: expect.stringMatching(/^waited \d+s in line for this computer, starting at position 2$/)
+      })
+    })
+
+    it('returns computer_busy naming the holder when the wait in line runs out, and sends nothing', async () => {
+      const { tools, calls } = setup({
+        leaseSequence: [
+          queued(1),
+          {
+            granted: false,
+            code: 'computer_busy',
+            message: 'this computer is controlled by Ops; gave up after waiting 45s in line',
+            holder: { sessionId: 'other', agentId: AGENT, agentName: 'Ops' }
+          }
+        ]
+      })
+      const handled = await tools.call(ctx(), 'computer_acquire', {})
+      expect(handled?.result.mcpIsError).toBe(true)
+      expect(parse(handled!.result)).toMatchObject({ error: 'computer_busy', holder: 'Ops', holderSessionId: 'other' })
+      expect(calls).toEqual([])
+    })
+
+    it('stops waiting once the turn no longer runs', async () => {
+      let running = true
+      const { tools, leases, calls } = setup({ canRun: () => running, leaseSequence: [queued(1), queued(1), granted] })
+      leases.computerLeaseAcquire.mockImplementationOnce(async () => {
+        running = false
+        return queued(1)
+      })
+      const handled = await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+      expect(parse(handled!.result)).toMatchObject({ error: 'computer_busy' })
+      expect(leases.computerLeaseAcquire).toHaveBeenCalledTimes(1)
+      expect(calls).toEqual([])
+    })
+
+    it('asks again through a lost CP link while the wait has time left', async () => {
+      const { tools, calls, sleeps } = setup({ leaseSequence: [queued(1), new Error('link lost'), granted] })
+      const handled = await tools.call(ctx(), 'computer_click', { x: 1, y: 2 })
+      expect(handled?.result.mcpIsError).toBeUndefined()
+      expect(sleeps).toEqual([1000])
+      expect(calls).toHaveLength(1)
+    })
   })
 
   it('rejects invalid arguments before acquiring or forwarding', async () => {

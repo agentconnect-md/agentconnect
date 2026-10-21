@@ -17,7 +17,8 @@ describe('ComputerPolicySchema', () => {
       redactApps: [],
       exposeDriverTools: false,
       leaseIdleSeconds: 120,
-      leaseMaxSeconds: 1800
+      leaseMaxSeconds: 1800,
+      leaseWaitSeconds: 45
     })
   })
 

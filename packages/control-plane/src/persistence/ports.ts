@@ -94,6 +94,7 @@ import type {
   ComputerStatus
 } from '../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerLease.js'
+import type { LeaseWaiter } from '../domain/computerLeaseQueue.js'
 import type { ComputerAllocation, ComputerPoolPhase } from '../domain/computerPool.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
@@ -837,14 +838,16 @@ export interface ComputerScreenshotRepo {
 /** A Computer's control lease row (computer-use.md §4.4); the decisions live in `domain/computerLease.ts`. */
 export interface ComputerLeaseRepo {
   get(computerId: ComputerId): Promise<ControlLease | null>
-  /** Lock the Computer row, read it and its lease, and apply `decide`'s row change in the same transaction. */
+  /** Lock the Computer row, read it, its lease and its wait queue, and apply `decide`'s changes in the same transaction. */
   step<R>(
     orgId: OrgId,
     computerId: ComputerId,
-    decide: (computer: LeaseComputer | null, lease: ControlLease | null) => LeaseStep<R>
+    decide: (computer: LeaseComputer | null, lease: ControlLease | null, queue: LeaseWaiter[]) => LeaseStep<R>
   ): Promise<R>
   /** The leases one session holds, at most one per Computer. */
   listBySession(sessionId: string): Promise<ControlLease[]>
+  /** The queues one session waits in, at most one place per Computer. */
+  listWaitingBySession(sessionId: string): Promise<LeaseWaiter[]>
   /** Stamp `renewedAt` on every lease the daemon took whose holder was still alive at `aliveSince`; returns how many. */
   renewByDaemon(daemonId: string, at: Date, aliveSince: Date): Promise<number>
 }

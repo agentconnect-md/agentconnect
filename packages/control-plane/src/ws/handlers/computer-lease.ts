@@ -39,14 +39,19 @@ export const handleComputerLeaseAcquire: Handler = async (frame, conn, deps) => 
       })
       return
     }
-    const outcome = await leases.acquire(orgId, p.computerId, {
-      sessionId: p.sessionId,
-      agentId: p.agentId,
-      // Display names are unbounded; an over-long holder name would make the lease frames undecodable.
-      agentName: (agent.displayName ?? agent.name).slice(0, COMPUTER_LEASE_AGENT_NAME_MAX),
-      daemonId: conn.daemonId,
-      turnAt: Date.parse(p.requestedAt)
-    })
+    const outcome = await leases.acquire(
+      orgId,
+      p.computerId,
+      {
+        sessionId: p.sessionId,
+        agentId: p.agentId,
+        // Display names are unbounded; an over-long holder name would make the lease frames undecodable.
+        agentName: (agent.displayName ?? agent.name).slice(0, COMPUTER_LEASE_AGENT_NAME_MAX),
+        daemonId: conn.daemonId,
+        turnAt: Date.parse(p.requestedAt)
+      },
+      p.waitMs === undefined ? undefined : { waitMs: p.waitMs }
+    )
     conn.replyTo(
       frame,
       'computer-lease/acquire/result',
@@ -56,7 +61,8 @@ export const handleComputerLeaseAcquire: Handler = async (frame, conn, deps) => 
             granted: false,
             code: outcome.code,
             message: outcome.message,
-            ...(outcome.holder ? { holder: outcome.holder } : {})
+            ...(outcome.holder ? { holder: outcome.holder } : {}),
+            ...(outcome.queued ? { queued: outcome.queued } : {})
           }
     )
   } catch (err) {

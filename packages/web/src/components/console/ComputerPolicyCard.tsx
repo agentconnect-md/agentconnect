@@ -22,6 +22,7 @@ export interface PolicyDraft {
   exposeDriverTools: boolean
   leaseIdleSeconds: string
   leaseMaxSeconds: string
+  leaseWaitSeconds: string
   /** Blank keeps the deployment's default. */
   screenshotRetentionDays: string
 }
@@ -36,11 +37,12 @@ export function draftOf(policy: ComputerPolicy): PolicyDraft {
     exposeDriverTools: policy.exposeDriverTools,
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
     leaseMaxSeconds: String(policy.leaseMaxSeconds),
+    leaseWaitSeconds: String(policy.leaseWaitSeconds),
     screenshotRetentionDays: policy.screenshotRetentionDays === undefined ? '' : String(policy.screenshotRetentionDays)
   }
 }
 
-export type PolicyProblem = 'idleRange' | 'maxRange' | 'idleAboveMax' | 'retentionRange'
+export type PolicyProblem = 'idleRange' | 'maxRange' | 'idleAboveMax' | 'waitRange' | 'retentionRange'
 
 const wholeIn = (raw: string, min: number, max: number): number | null => {
   if (!/^\d+$/.test(raw.trim())) return null
@@ -58,6 +60,8 @@ export function policyFromDraft(
   const max = wholeIn(draft.leaseMaxSeconds, 60, 86_400)
   if (max === null) return { problem: 'maxRange' }
   if (idle > max) return { problem: 'idleAboveMax' }
+  const wait = wholeIn(draft.leaseWaitSeconds, 0, 600)
+  if (wait === null) return { problem: 'waitRange' }
   const blank = draft.screenshotRetentionDays.trim() === ''
   const retention = blank ? undefined : wholeIn(draft.screenshotRetentionDays, 0, 3650)
   if (retention === null) return { problem: 'retentionRange' }
@@ -76,6 +80,7 @@ export function policyFromDraft(
       exposeDriverTools: draft.exposeDriverTools,
       leaseIdleSeconds: idle,
       leaseMaxSeconds: max,
+      leaseWaitSeconds: wait,
       ...(retention === undefined ? {} : { screenshotRetentionDays: retention })
     }
   }
@@ -226,7 +231,7 @@ export function ComputerPolicyCard({
       </Section>
 
       <Section title={t('limitsTitle')}>
-        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
           <Field label={t('idle')} detail={t('idleHint')}>
             <input
               className="inp"
@@ -245,6 +250,16 @@ export function ComputerPolicyCard({
               disabled={!editable}
               value={draft.leaseMaxSeconds}
               onChange={(e) => set('leaseMaxSeconds', e.target.value)}
+            />
+          </Field>
+          <Field label={t('wait')} detail={t('waitHint')}>
+            <input
+              className="inp"
+              inputMode="numeric"
+              aria-label={t('wait')}
+              disabled={!editable}
+              value={draft.leaseWaitSeconds}
+              onChange={(e) => set('leaseWaitSeconds', e.target.value)}
             />
           </Field>
           <Field label={t('retention')} detail={t('retentionHint')}>

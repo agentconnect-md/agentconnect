@@ -4546,6 +4546,7 @@ model Computer {
   apiKeys       ApiKey[]
   registrations ComputerRegistration[]
   lease         ComputerLease?
+  leaseWaiters  ComputerLeaseWaiter[]
   audits        ComputerAudit[]
 
   @@index([orgId])
@@ -4581,6 +4582,30 @@ model ComputerLease {
   @@index([sessionId])
   @@index([daemonId])
   @@map("computer_lease")
+}
+
+/// A session waiting in a Computer's FIFO lease queue (computer-use.md §4.4), changed only under the Computer row's lock.
+model ComputerLeaseWaiter {
+  computerId String    @db.Uuid
+  orgId      String
+  sessionId  String
+  agentId    String    @db.Uuid
+  // The agent daemon that asked last. No FK: a lost daemon just stops asking, and its place lapses.
+  daemonId   String?   @db.Uuid
+  // CP clock: the place in line.
+  enqueuedAt DateTime  @db.Timestamptz(3)
+  // CP clock: the latest ask; a waiter that stops asking leaves the line.
+  polledAt   DateTime  @db.Timestamptz(3)
+  // Daemon clock: the latest ask's requestedAt, compared with the session's turn end.
+  turnAt     DateTime  @db.Timestamptz(3)
+  // Set when the session's turn ended while it waited, so a late ask of that wait cannot rejoin the line.
+  droppedAt  DateTime? @db.Timestamptz(3)
+
+  computer Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)
+
+  @@id([computerId, agentId, sessionId])
+  @@index([sessionId])
+  @@map("computer_lease_waiter")
 }
 
 /// One call a desktop daemon served (computer-use.md §8.2); typed text is kept by its length only, never the text.

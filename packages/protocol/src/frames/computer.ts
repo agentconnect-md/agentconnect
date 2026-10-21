@@ -3,7 +3,7 @@ import { frameSchema } from '../envelope.js'
 import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
-import { ComputerControlLease } from './computer-lease.js'
+import { COMPUTER_LEASE_WAIT_MAX_SECONDS, ComputerControlLease } from './computer-lease.js'
 import { COMPUTER_RELAYS_MAX, ComputerApprovalsSchema, ComputerRelayEntry } from './computer-channel.js'
 import { ComputerAuditAck, ComputerAuditReport } from './computer-audit.js'
 import {
@@ -101,6 +101,8 @@ export const ComputerPolicySchema = z
       .optional(),
     leaseIdleSeconds: z.number().int().min(10).max(3600).default(120),
     leaseMaxSeconds: z.number().int().min(60).max(86_400).default(1800),
+    // Seconds an acquire waits in the FIFO lease queue before `computer_busy` (§4.4); 0 never waits.
+    leaseWaitSeconds: z.number().int().min(0).max(COMPUTER_LEASE_WAIT_MAX_SECONDS).default(45),
     // Days stored screenshots are kept (§9); 0 means never written, absent means the deployment's default.
     screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional()
   })

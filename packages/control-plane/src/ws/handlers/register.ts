@@ -24,6 +24,7 @@ import {
   isFrame,
   AGENT_EXISTS_FEATURE,
   COMPUTER_LEASE_FEATURE,
+  COMPUTER_LEASE_QUEUE_FEATURE,
   COMPUTER_POOL_FEATURE,
   COMPUTER_CHANNEL_FEATURE,
   AGENT_PLACEMENT_FEATURE,
@@ -167,6 +168,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       AGENT_PLACEMENT_FEATURE,
       // computer-use.md §4.4: this CP grants Computer control leases.
       ...(deps.computerLeases ? [COMPUTER_LEASE_FEATURE] : []),
+      // …and queues an acquire that carries `waitMs` first come, first served.
+      ...(deps.computerLeases ? [COMPUTER_LEASE_QUEUE_FEATURE] : []),
       // computer-use.md §3.7: this CP issues per-session data-plane tokens.
       ...(deps.computerChannelGrants ? [COMPUTER_CHANNEL_FEATURE] : []),
       // computer-use.md §15.1: this CP allocates and wakes managed computers in the pool.
