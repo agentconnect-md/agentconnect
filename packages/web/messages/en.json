@@ -3409,6 +3409,7 @@
           "perAgent": "One for this agent",
           "perAgentDescription": "Sleeps between uses and keeps its files and sign-ins.",
           "notCreated": "Created on its first use",
+          "leftover": "Kept from when this agent had its own computer, and still usable by it. Delete it from its page to remove it.",
           "sessions": "{count, plural, one {# session desktop} other {# session desktops}}",
           "poolOff": "This deployment runs no computer pool, so this setting has no effect.",
           "readOnly": "Only editors of this agent can change this",

@@ -41,7 +41,7 @@ export function AgentComputersCard({
 
   const live = (computers ?? []).filter((c) => c.status !== 'revoked')
   const visible = new Set((computers ?? []).map((c) => c.id))
-  // The agent's own managed computers show in the managed section, not as granted ones.
+  // The agent's own managed computers show in the managed section, whatever its mode, not as granted ones.
   const own = new Set(agentOwnComputers(computers ?? [], agentId).map((c) => c.id))
   // A Computer the caller can see answers for itself; the agent's derived list adds the ones they cannot.
   const granting = live.filter((c) => computerGrantsAgent(c, agentId) && !own.has(c.id))
@@ -166,9 +166,9 @@ function ManagedComputer({
   const [saving, setSaving] = useState<ManagedMode | null>(null)
   const [error, setError] = useState<string | null>(null)
   const mode: ManagedMode = getAgent(agentId)?.computerUse?.managed?.mode ?? 'off'
-  // Shown where the pool runs, or where an agent already carries a mode from an earlier setup.
-  if (!pool?.enabled && mode === 'off') return null
   const own = agentOwnComputers(computers, agentId)
+  // Shown where the pool runs, or where an agent still carries a mode or a desktop from an earlier setup.
+  if (!pool?.enabled && mode === 'off' && own.length === 0) return null
   const desktop = own.find((c) => c.allocation === 'per-agent')
   const sessions = own.filter((c) => c.allocation === 'ephemeral').length
   const shown = saving ?? mode
@@ -231,7 +231,7 @@ function ManagedComputer({
           {error}
         </div>
       )}
-      {mode === 'per-agent' && (
+      {(mode === 'per-agent' || desktop) && (
         <div
           className="mt-3 overflow-hidden rounded-md border border-(--border-subtle)"
           data-agent-desktop={desktop?.id ?? ''}
@@ -259,9 +259,14 @@ function ManagedComputer({
           ) : (
             <div className="px-3 py-[10px] font-sans text-[12.5px] text-(--text-tertiary)">{t('notCreated')}</div>
           )}
+          {desktop && mode !== 'per-agent' && (
+            <p className="m-0 border-t border-(--border-subtle) px-3 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+              {t('leftover')}
+            </p>
+          )}
         </div>
       )}
-      {mode === 'ephemeral' && sessions > 0 && (
+      {sessions > 0 && (
         <p className="m-0 mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           {t('sessions', { count: sessions })}
         </p>

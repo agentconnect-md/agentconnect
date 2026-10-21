@@ -1419,8 +1419,11 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
   reclaims a managed one. `POST …/computers/:id/wake` starts a sleeping or failed `per-agent` or `manual` computer
   toward awake; `…/sleep` puts an awake one to sleep at once, refused with 409 while a session holds its lease;
   `…/reset` moves it to `resetting`, ends its lease, deletes the claim and its volume, and provisions the same row
-  again, empty, with a fresh registration that revokes the old key (a reset not done within the provision timeout
-  fails like a provision). Each answers 409 for an `ephemeral`, self-hosted, revoked or reclaiming computer and 503
+  again, empty, with a fresh registration that revokes the old key. A reset whose delete is not done within the
+  provision timeout reclaims an agent's computer and leaves a `manual` one `failed` with a `reset_failed` error, which
+  offers only another reset, never a wake that would bring the old volume back; a reset revoked midway finishes its
+  delete and parks `failed`. Console Sleep is fenced on activity and the lease like the idle sweep: a session that
+  starts during the stop wakes the pod again and the call answers 409. Each answers 409 for an `ephemeral`, self-hosted, revoked or reclaiming computer and 503
   without a pool member. The chart's
   `computerPool` values render the desktop SandboxTemplate, its warm pool and the bootstrap NetworkPolicy, and set the
   member and CP variables; desktops register at the public CP URL.

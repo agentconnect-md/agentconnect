@@ -163,4 +163,25 @@ describe('AgentComputersCard', () => {
     await act(async () => pills[1]!.click())
     expect(mocks.updateAgent).not.toHaveBeenCalled()
   })
+
+  it('still shows a per-agent desktop the agent keeps after its mode is turned off, even without a pool', () => {
+    mocks.agent = { id: 'a1', computerUse: { enabled: true, computers: ['m1'] } }
+    mocks.computers = [
+      computerFixture({
+        id: 'm1',
+        name: 'ops desktop',
+        kind: 'managed',
+        allocation: 'per-agent',
+        ownerAgentId: 'a1',
+        status: 'sleeping',
+        poolPhase: 'sleeping',
+        agentAccess: { mode: 'selected', agents: ['a1'] }
+      })
+    ]
+    const el = render()
+    expect(el.querySelector('[data-managed-mode]')?.getAttribute('data-managed-mode')).toBe('off')
+    const desktop = el.querySelector<HTMLElement>('[data-agent-desktop="m1"]')!
+    expect(desktop.textContent).toContain('ops desktop')
+    expect(desktop.textContent).toContain('still usable by it')
+  })
 })

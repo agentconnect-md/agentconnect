@@ -56,16 +56,23 @@ export const DEFAULT_COMPUTER_POOL_TIMINGS: ComputerPoolTimings = {
 }
 
 /** Failure codes kept in `poolError` before the message, so a later acquire can name the cause. */
-export type ComputerPoolFailure = 'volume_missing' | 'failed'
+export type ComputerPoolFailure = 'volume_missing' | 'reset_failed' | 'failed'
 
 export const poolError = (code: ComputerPoolFailure, message: string): string => `${code}: ${message}`.slice(0, 500)
 
 export function poolErrorCode(error: string | null | undefined): ComputerPoolFailure | undefined {
   if (!error) return undefined
-  return error.startsWith('volume_missing:') ? 'volume_missing' : 'failed'
+  if (error.startsWith('volume_missing:')) return 'volume_missing'
+  return error.startsWith('reset_failed:') ? 'reset_failed' : 'failed'
 }
 
-export const poolErrorMessage = (error: string): string => error.replace(/^(volume_missing|failed): /, '')
+export const poolErrorMessage = (error: string): string => error.replace(/^(volume_missing|reset_failed|failed): /, '')
+
+/** Whether a failed computer may only be reset: its volume is gone, or a reset left the old claim behind. */
+export const poolNeedsReset = (error: string | null | undefined): boolean => {
+  const code = poolErrorCode(error)
+  return code === 'volume_missing' || code === 'reset_failed'
+}
 
 /** A desktop made by and for an agent asks no approvals: it is isolated and fresh, and nothing on it is a person's (§15.1). */
 export function managedComputerPolicy(ownerUserId: string, base?: ComputerPolicy): ComputerPolicy {
@@ -184,7 +191,7 @@ export function poolActions(row: {
   if (!allocation || allocation === 'ephemeral' || !phase || row.revoked) return NO_POOL_ACTIONS
   if (phase === 'reclaiming' || phase === 'resetting') return NO_POOL_ACTIONS
   return {
-    wake: phase === 'sleeping' || (phase === 'failed' && poolErrorCode(row.poolError) !== 'volume_missing'),
+    wake: phase === 'sleeping' || (phase === 'failed' && !poolNeedsReset(row.poolError)),
     sleep: phase === 'awake' || phase === 'waking',
     reset: true
   }

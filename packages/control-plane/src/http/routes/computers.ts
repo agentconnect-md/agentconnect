@@ -499,14 +499,14 @@ export function computerRoutes(deps: HttpDeps) {
     poolCommand(
       'wake',
       'Wake a pool computer',
-      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone (reset it instead); 503 without a pool member.',
+      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone or whose reset did not finish (reset it instead); 503 without a pool member.',
       'wakeComputer',
       (orgId, id) => deps.computerPool!.wakeNow(orgId, id)
     )
     poolCommand(
       'sleep',
       'Put a pool computer to sleep',
-      'Stops the pod of an awake `per-agent` or `manual` managed computer and keeps its volume; the next use, or Wake, starts it again. 409 while a session holds its control lease, or for an ephemeral or self-hosted computer; 503 without a pool member.',
+      'Stops the pod of an awake `per-agent` or `manual` managed computer and keeps its volume; the next use, or Wake, starts it again. 409 while a session holds its control lease or starts using it meanwhile, or for an ephemeral or self-hosted computer; 503 without a pool member.',
       'sleepComputer',
       (orgId, id) => deps.computerPool!.sleepNow(orgId, id)
     )

@@ -136,6 +136,18 @@ describe('poolActions', () => {
     })
   })
 
+  it('offers only reset after a reset that did not remove the old desktop', () => {
+    expect(
+      of({ poolPhase: 'failed', poolError: poolError('reset_failed', 'the old desktop was not removed') })
+    ).toEqual({
+      wake: false,
+      sleep: false,
+      reset: true
+    })
+    expect(poolErrorCode(poolError('reset_failed', 'x'))).toBe('reset_failed')
+    expect(poolErrorMessage(poolError('reset_failed', 'x'))).toBe('x')
+  })
+
   it('offers nothing for an ephemeral, self-hosted, revoked, resetting or reclaiming computer', () => {
     const none = { wake: false, sleep: false, reset: false }
     expect(of({ allocation: 'ephemeral' })).toEqual(none)
