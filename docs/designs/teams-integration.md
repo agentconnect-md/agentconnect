@@ -158,10 +158,11 @@ the client after 10 to 15.
 
 Teams documents no redelivery for message activities, but duplicates of slow
 deliveries are reported in practice. The relay's dedup table and the daemon's
-durable receipt both key on the activity ID scoped by bot, so a duplicate never
-starts a second turn. Whether a 503 is redelivered is **unverified**; if it is
-not, a message that arrives while no daemon can admit it is lost, and user
-documentation says so.
+durable receipt both key on the bot, the conversation ID, and the activity ID,
+because Teams message IDs are unique only within a conversation; a duplicate
+never starts a second turn. Whether a 503 is redelivered is **unverified**; if
+it is not, a message that arrives while no daemon can admit it is lost, and
+user documentation says so.
 
 Non-message activities the module does not act on (typing, reactions,
 `conversationUpdate`, `installationUpdate`) are answered 200 and not forwarded;
@@ -259,7 +260,8 @@ relay route is added to the chart's HTTPRoute in the same change.
 - Whether a quoted reply in a group chat carries the quoted message's ID (§4.1).
 - What the bot receives when a tenant blocks RSC consent, and who may consent in
   a group chat (§4.1).
-- Whether a 503 or a timeout is redelivered (§4.2).
+- Whether a 503 or a timeout is redelivered, and whether a redelivery keeps the
+  same activity ID (§4.2).
 - How Teams shows a text response to `Action.Execute`, and whether a refused
   clicker can be told privately in a group chat or channel (§4.4).
 - Which Entra ID the sign-in connector records, which decides approval linking
