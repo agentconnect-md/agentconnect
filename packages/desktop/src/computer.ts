@@ -127,7 +127,7 @@ export class Computer {
   private readonly platform: NodeJS.Platform
   private readonly refusal: () => string | undefined
   private readonly screenshots: ScreenshotStash | undefined
-  private readonly profile: ComputerProfile | undefined
+  private profile: ComputerProfile | undefined
   // The driver's screen size at startup, reported until the first capture measures it.
   private screen: ScreenSize | undefined
   private lastStatus = ''
@@ -320,6 +320,11 @@ export class Computer {
       })
       throw failure
     }
+  }
+
+  /** The name the Control Plane knows this Computer by, which agents then see instead of the local one. */
+  rename(name: string): void {
+    if (this.profile) this.profile = { ...this.profile, name }
   }
 
   info(): Record<string, unknown> {

@@ -38,6 +38,8 @@ describe('Computer', () => {
       profile: { name: 'browser-1', osVersion: 'Debian GNU/Linux 13 (trixie)', session: 'xvfb', isolation: 'container' }
     })
     expect(computer.info()).toMatchObject({ name: 'browser-1', session: 'xvfb', isolation: 'container', display: null })
+    computer.rename('Build server desktop')
+    expect(computer.info()).toMatchObject({ name: 'Build server desktop', isolation: 'container' })
     computer.setScreenSize({ screenWidth: 1600, screenHeight: 900, scale: 1 })
     expect(computer.info().display).toEqual({ screenWidth: 1600, screenHeight: 900, scale: 1 })
     await computer.screenshot('claude')
