@@ -138,6 +138,8 @@ import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js
 import { createSlackCpProvider, createSlackToolingCredentials } from '../../src/platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
+import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
+import { dingTalkCredentialRoutes } from '../../src/platforms/dingtalk/routes.js'
 import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
@@ -226,6 +228,8 @@ export interface PlatformStubs {
   googleChatPlatformApp?: GoogleChatPlatformAppConfig
   /** Google's token endpoint and Chat API, stubbed; absent ⇒ every credential probe is a connectivity failure. */
   googleChatFetch?: typeof fetch
+  /** DingTalk's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
+  dingTalkFetch?: typeof fetch
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -248,7 +252,8 @@ const PLATFORM_STUB_KEYS = [
   'linearPlatformApp',
   'linearFetch',
   'googleChatPlatformApp',
-  'googleChatFetch'
+  'googleChatFetch',
+  'dingTalkFetch'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -816,6 +821,10 @@ export function buildHttpApp(
         ? platformStubs.googleChatFetch(input, init)
         : Promise.reject(new TypeError('no google chat fetch stub installed'))
   }
+  const dingTalkFetch: typeof fetch = (input, init) =>
+    platformStubs.dingTalkFetch
+      ? platformStubs.dingTalkFetch(input, init)
+      : Promise.reject(new TypeError('no dingtalk fetch stub installed'))
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: async (appId, appSecret, region) =>
       platformStubs.verifyFeishuBot
@@ -913,7 +922,8 @@ export function buildHttpApp(
       get app() {
         return platformStubs.googleChatPlatformApp
       }
-    })
+    }),
+    createDingTalkCpProvider({ fetch: dingTalkFetch, installRoutes: [dingTalkCredentialRoutes(deps, dingTalkFetch)] })
   ])
 
   const app = buildHttpServer(deps)

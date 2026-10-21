@@ -76,6 +76,7 @@ import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
+import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.repo.js'
@@ -172,7 +173,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
     createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
     createFeishuCpProvider({}),
-    createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: linearTokenStore, tokenService: linearTokens })
+    createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: linearTokenStore, tokenService: linearTokens }),
+    createDingTalkCpProvider()
   ])
   const repos = {
     daemon: new PgDaemonRepo(prisma),

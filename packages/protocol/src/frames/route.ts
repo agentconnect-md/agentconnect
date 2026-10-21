@@ -38,7 +38,8 @@ export const KNOWN_PLATFORMS = [
   'hook',
   'dream',
   'qq',
-  'googlechat'
+  'googlechat',
+  'dingtalk'
 ] as const
 export type KnownPlatform = (typeof KNOWN_PLATFORMS)[number]
 export function isKnownPlatform(p: string): p is KnownPlatform {

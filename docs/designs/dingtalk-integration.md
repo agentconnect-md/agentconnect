@@ -51,11 +51,14 @@ inbound `robotCode` equals the Client ID (**measured**), so no third value is
 needed.
 
 Validation exchanges the credentials for an access token
-(`POST /v1.0/oauth2/accessToken`, 7,200-second lifetime). The token exchange
-does not reveal the organization, so the provider learns the tenant
-(`corpId`, sent as `chatbotCorpId` on every message) from the first inbound
-message through the existing `learnTenant` member, rather than storing the
-tenantless sentinel forever.
+(`POST /v1.0/oauth2/accessToken`, 7,200-second lifetime); rejected credentials
+answer HTTP 400 `invalidClientIdOrSecret`, which the Console shows as
+`DINGTALK_CREDENTIALS_INVALID`, and an unreachable service is
+`DINGTALK_CHECK_UNAVAILABLE`. The token exchange does not reveal the
+organization, so the bot's external identity is the Client ID under the
+tenantless sentinel, which keeps one bot per app. v1 needs no organization ID;
+recording `chatbotCorpId` would need a new daemon report, and waits for a
+feature that reads it.
 
 ## 3. Architecture
 

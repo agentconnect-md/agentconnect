@@ -133,6 +133,9 @@ describe('platform manifest', () => {
     })
     expect(axes.dmChannelPattern?.test('dm:user-0001')).toBe(true)
     expect(axes.dmChannelPattern?.test('cid-example-group')).toBe(false)
+    // A chat origin the console composer may not continue.
+    expect(originKindOf(DINGTALK_PLATFORM)).toBe('chat')
+    expect(continuableOrigin(DINGTALK_PLATFORM)).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
