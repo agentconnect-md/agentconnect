@@ -1,8 +1,10 @@
-// WebRTC between the desktop's RtcSessions and a werift peer standing in for the browser: direct, and through TURN.
+// WebRTC between the desktop's RtcSessions and a werift peer standing in for the browser: direct, hole-punched, and through TURN.
 import { createHmac } from 'node:crypto'
+import { createSocket } from 'node:dgram'
 import { afterEach, describe, expect, it } from 'vitest'
 import { RTCPeerConnection, type RTCDataChannel } from 'werift'
 import type { ComputerIceServer } from '@agentconnect.md/protocol/computer'
+import { startStunServer } from '../../../relay/src/stun-server.js'
 import { RtcSessions } from './rtc.js'
 import type { ScreenStream } from './screen-stream.js'
 import type { ViewerPrincipal } from '../viewer.js'
@@ -82,6 +84,52 @@ async function browser(
   return { pc, channel: open, request }
 }
 
+// The browser's side of the `stun` path: answer at once, then trickle candidates both ways over the signaling calls.
+async function trickleBrowser(
+  rtc: RtcSessions,
+  principal: ViewerPrincipal,
+  stunUrls: string[]
+): Promise<{ offerSdp: string; pc: RTCPeerConnection; channel: RTCDataChannel }> {
+  const offer = await rtc.offer(principal, { transport: 'stun' })
+  const pc = new RTCPeerConnection({ iceServers: stunUrls.map((urls) => ({ urls })), iceUseIpv6: false })
+  opened.push(() => pc.close())
+  const channel = new Promise<RTCDataChannel>((resolve) => pc.onDataChannel.subscribe(resolve))
+  let sent = Promise.resolve()
+  pc.onIceCandidate.subscribe((candidate) => {
+    const init = candidate ? candidate.toJSON() : null
+    sent = sent.then(() => rtc.addCandidate(principal.client, offer.id, init))
+  })
+  await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
+  const answer = await pc.createAnswer()
+  sent = sent.then(() => rtc.answer(principal.client, offer.id, answer.sdp))
+  await pc.setLocalDescription(answer)
+  let after = 0
+  const poll = setInterval(() => {
+    const late = rtc.candidates(principal.client, offer.id, after)
+    after += late.candidates.length
+    for (const candidate of late.candidates) {
+      void pc.addIceCandidate({
+        candidate: candidate.candidate,
+        sdpMid: candidate.sdpMid ?? undefined,
+        sdpMLineIndex: candidate.sdpMLineIndex ?? undefined
+      })
+    }
+  }, 200)
+  opened.push(() => clearInterval(poll))
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`not connected: ${pc.connectionState}`)), 20_000)
+    if (pc.connectionState === 'connected') return resolve()
+    pc.connectionStateChange.subscribe((state) => {
+      if (state === 'connected') {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
+  })
+  await sent
+  return { offerSdp: offer.sdp, pc, channel: await channel }
+}
+
 describe('viewer WebRTC', () => {
   it('connects directly with ICE-lite host candidates and carries input over the DataChannel', async () => {
     const { rtc, messages } = sessions()
@@ -114,6 +162,54 @@ describe('viewer WebRTC', () => {
     await browser(rtc, { client: 'console:u1', control: true, valid: () => valid }, { hostAddress: '127.0.0.1' })
     valid = false
     await expect.poll(() => rtc.size(), { timeout: 5000 }).toBe(0)
+  }, 30_000)
+
+  it('hole-punches with full ICE through a STUN server, trickling candidates both ways', async () => {
+    const stun = await startStunServer({
+      host: '127.0.0.1',
+      port: 0,
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+    })
+    opened.push(() => stun.close())
+    const stunUrls = [`stun:127.0.0.1:${stun.port}`]
+    const { rtc, messages } = sessions()
+    const principal: ViewerPrincipal = { client: 'console:u1', control: true, stunUrls }
+    const { offerSdp, channel } = await trickleBrowser(rtc, principal, stunUrls)
+    // Full ICE, not ICE-lite: the desktop runs its own connectivity checks.
+    expect(offerSdp).not.toMatch(/a=ice-lite/)
+    // The relay STUN server told the desktop its server-reflexive address.
+    expect(offerSdp).toMatch(/typ srflx/)
+    if (channel.readyState !== 'open') await new Promise((resolve) => channel.stateChanged.subscribe(resolve))
+    const reply = new Promise((resolve) => channel.onMessage.subscribe((data) => resolve(JSON.parse(data.toString()))))
+    channel.send(JSON.stringify({ seq: 1, input: { type: 'key', keys: ['escape'] } }))
+    expect(await reply).toMatchObject({ seq: 1, ok: true, result: 'applied' })
+    expect(messages).toHaveLength(1)
+  }, 30_000)
+
+  it('answers within the STUN deadline when the STUN server never replies, and still connects on host candidates', async () => {
+    const silent = createSocket('udp4')
+    await new Promise<void>((resolve) => silent.bind(0, '127.0.0.1', resolve))
+    opened.push(() => new Promise<void>((resolve) => silent.close(() => resolve())))
+    const stunUrls = [`stun:127.0.0.1:${silent.address().port}`]
+    const { rtc } = sessions()
+    const principal: ViewerPrincipal = { client: 'console:u1', control: true, stunUrls }
+    const started = Date.now()
+    const offer = await rtc.offer(principal, { transport: 'stun' })
+    expect(Date.now() - started).toBeLessThan(4000)
+    expect(offer.sdp).toMatch(/typ host/)
+    const connecting = Date.now()
+    const { channel } = await trickleBrowser(rtc, principal, [])
+    expect(channel.label).toBe('input')
+    // Within the browser's eight-second punch attempt, counted from the offer call.
+    expect(Date.now() - connecting).toBeLessThan(8000)
+  }, 30_000)
+
+  it('takes no trickled candidate on an ICE-lite session or for another viewer', async () => {
+    const { rtc } = sessions()
+    const offer = await rtc.offer({ client: 'console:u1', control: true }, { hostAddress: '127.0.0.1' })
+    const candidate = { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }
+    expect(() => rtc.addCandidate('console:u1', offer.id, candidate)).toThrow(/ICE-lite/)
+    expect(() => rtc.candidates('console:u2', offer.id, 0)).toThrow(/unknown viewer session/)
   }, 30_000)
 
   it.skipIf(!TURN_URL || !TURN_SECRET)(

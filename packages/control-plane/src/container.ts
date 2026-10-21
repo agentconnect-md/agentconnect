@@ -1157,6 +1157,7 @@ export function buildContainer(
       ...(await relayRoster.entries()).map((relay) => relay.url)
     ],
     ...(computerTurn ? { turn: computerTurn } : {}),
+    stunUrls: () => relayRoster.stunUrls(),
     onUse: (computerId) => computerPool?.touch(computerId)
   })
   // Managed computers in the Kubernetes pool (computer-use.md §15.1): pool members hold the claims, this decides what they hold.

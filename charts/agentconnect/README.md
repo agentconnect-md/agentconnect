@@ -343,11 +343,30 @@ and the console reads it on another; the Control Plane never holds the bytes.
 | `maxRetentionDays` | `365`   | The most a Computer's policy may ask for                |
 | `maxBytes`         | `8Mi`   | Largest screenshot stored (at most `32Mi`)              |
 
-### Computer viewer TURN
+### Computer viewer STUN and TURN
 
 The console's embedded Computer viewer sends media straight between the browser and the
-desktop when it can, and through TURN when it cannot
-([design](../../docs/designs/computer-use.md#72-media-and-network)). Run a TURN server such as
+desktop when it can: on the same network directly, and across NATs by hole punching through
+the relays' STUN. When neither connects it uses TURN
+([design](../../docs/designs/computer-use.md#72-media-and-network)).
+
+With `relay.stun.enabled`, each relay pod answers STUN Binding requests on UDP
+`relay.stun.port` behind its own `<release>-relay-<ordinal>-stun` Service and registers
+`stun:<relay.stun.host>:<port>` with the Control Plane, which hands it to both peers of a
+viewing the Computer's policy allows to go peer to peer. The Service uses
+`externalTrafficPolicy: Local` so the relay sees each client's own address; point the DNS name
+for each ordinal at its Service. STUN is stateless and carries no media.
+
+| Value                            | Default        | Meaning                                                             |
+| -------------------------------- | -------------- | ------------------------------------------------------------------- |
+| `relay.stun.enabled`             | `false`        | Answer STUN on each relay pod                                       |
+| `relay.stun.port`                | `3478`         | UDP port the relay listens on                                       |
+| `relay.stun.host`                | `''`           | Public host per pod; `{ordinal}` becomes the pod ordinal (required) |
+| `relay.stun.publicPort`          | `''`           | Public port, when the load balancer listens on another one          |
+| `relay.stun.service.type`        | `LoadBalancer` | Type of each pod's STUN Service                                     |
+| `relay.stun.service.annotations` | `{}`           | Annotations for those Services (load balancer settings)             |
+
+Run a TURN server such as
 [coturn](https://github.com/coturn/coturn) (BSD) with `use-auth-secret`, put its
 `static-auth-secret` in `secrets.existingSecret`, and list its URLs; the Control Plane mints
 short-lived credentials per viewer and never sends the secret out. Without TURN, a viewer

@@ -1,12 +1,14 @@
 // Computer data-plane credentials (computer-use.md §3.7, §8.2): per-session tokens the desktop verifies; no screen byte reaches the CP.
 import {
   COMPUTER_RELAYS_MAX,
+  COMPUTER_STUN_URLS_MAX,
   COMPUTER_VIEWER_TOKEN_TTL_MS,
   type ComputerAgentMode,
   type ComputerIceServer,
   readComputerChannelToken,
   signComputerChannelToken,
   verifyComputerChannelToken,
+  viewerPeerToPeerAllowed,
   type ComputerChannelGrantResult,
   type ComputerRelayEntry,
   type RcVerifyResult
@@ -31,6 +33,8 @@ export interface ComputerChannelGrantOpts {
   viewerRelays?: () => Promise<string[]>
   /** TURN for viewer media without a direct UDP path; absent means direct only. */
   turn?: TurnConfig
+  /** The relays' STUN addresses, for hole punching viewer media when the Computer's policy allows it. */
+  stunUrls?: () => Promise<string[]>
   /** Told of every grant, so a managed computer an agent or a viewer is using does not idle out (§15.1). */
   onUse?: (computerId: string) => void
 }
@@ -44,6 +48,7 @@ export type ViewerGrantResult =
       mode: ComputerAgentMode
       relays: string[]
       iceServers: ComputerIceServer[]
+      stunUrls: string[]
     }
   | { granted: false; code: 'unavailable' | 'no_relay'; message: string }
 
@@ -140,6 +145,11 @@ export class ComputerChannelGrants {
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
     // The desktop and the browser each get their own TURN username, so coturn's logs tell them apart.
     const turn = this.opts.turn
+    // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.
+    const stun =
+      computer.capabilities.viewerStun === true && viewerPeerToPeerAllowed(computer.policy, computer)
+        ? [...new Set(await (this.opts.stunUrls?.() ?? Promise.resolve([])))].slice(0, COMPUTER_STUN_URLS_MAX)
+        : []
     const token = signComputerChannelToken(
       {
         aud: 'view',
@@ -149,7 +159,8 @@ export class ComputerChannelGrants {
         exp,
         usr: who.userId,
         mode: who.mode,
-        ...(turn ? { ice: [turnCredentials(turn, `computer-${computerId}`, now)] } : {})
+        ...(turn ? { ice: [turnCredentials(turn, `computer-${computerId}`, now)] } : {}),
+        ...(stun.length > 0 ? { stun } : {})
       },
       Buffer.from(credential.key, 'base64url')
     )
@@ -160,7 +171,8 @@ export class ComputerChannelGrants {
       expiresInMs: exp - now,
       mode: who.mode,
       relays,
-      iceServers: turn ? [turnCredentials(turn, `viewer-${who.userId}`, now)] : []
+      iceServers: turn ? [turnCredentials(turn, `viewer-${who.userId}`, now)] : [],
+      stunUrls: stun
     }
   }
 

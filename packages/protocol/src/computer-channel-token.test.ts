@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
   COMPUTER_CHANNEL_TOKEN_MAX_TTL_MS,
@@ -49,6 +49,15 @@ describe('computer channel tokens', () => {
     expect(verify(token, { computerId: '00000000-0000-4000-8000-000000000002' })).toBeNull()
     expect(verify(token, { aud: 'relay' })).toBeNull()
     expect(verify(token, { now: claims.exp })).toBeNull()
+  })
+
+  it('reads a token whose signer added a claim this verifier does not know, dropping that claim', () => {
+    const signed = `actk1.${Buffer.from(JSON.stringify({ ...claims, later: ['x'] })).toString('base64url')}`
+    const sig = createHmac('sha256', key)
+      .update('agentconnect/computer-channel-token/v1\n' + signed)
+      .digest()
+      .toString('base64url')
+    expect(verify(`${signed}.${sig}`)).toEqual(claims)
   })
 
   it('refuses claims edited after signing', () => {

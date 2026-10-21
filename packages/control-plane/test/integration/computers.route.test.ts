@@ -1,5 +1,5 @@
 // Computers (computer-use.md §2.2, §3.6, §4.1): registration exchange, revocation, visibility and the `computer` principal.
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
@@ -9,6 +9,8 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { ComputerChannelGrants } from '../../src/registry/computerChannelGrants.js'
+import { RelayRoster } from '../../src/orchestrator/relayRoster.js'
+import { PgRelayRepo } from '../../src/persistence/repositories/relay.repo.js'
 import { ComputerChannelKeys } from '../../src/registry/computerChannelKeys.js'
 import { PgComputerRepo } from '../../src/persistence/repositories/computer.repo.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -40,7 +42,14 @@ function appAs(userId: string = DEFAULT_OWNER_ID, withRelay = false): HttpApp {
               staleAfterMs: 45_000,
               relays: async () => [],
               viewerRelays: async () => ['https://relay.example.com'],
-              turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 }
+              turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 },
+              stunUrls: () =>
+                new RelayRoster(
+                  new PgRelayRepo(prisma),
+                  { broadcastRelayRoster: () => {} },
+                  systemClock,
+                  45_000
+                ).stunUrls()
             }
           )
         }
@@ -447,6 +456,27 @@ describe('console viewer', () => {
     expect(body.expiresInMs).toBeLessThanOrEqual(120_000)
     expect(body.iceServers[0]?.username).toMatch(new RegExp(`:viewer-${DEFAULT_OWNER_ID}$`))
     expect(readComputerChannelToken(body.token)).toMatchObject({ aud: 'view', cmp: computerId, usr: DEFAULT_OWNER_ID })
+    expect(body).toMatchObject({ stunUrls: [] })
+
+    // A relay that serves STUN: the owner, the only one allowed to watch, may hole-punch through it.
+    await prisma.relay.create({
+      data: {
+        id: randomUUID(),
+        name: 'relay-stun-0',
+        daemonUrl: 'wss://relay.example.com/relays/0',
+        stunUrl: 'stun:stun-0.example.com:3478',
+        lastSeenAt: new Date()
+      }
+    })
+    // A desktop that predates relay STUN would refuse a token carrying it, so it gets none.
+    expect((await app.app.inject({ method: 'POST', url })).json()).toMatchObject({ stunUrls: [] })
+    await prisma.computer.update({
+      where: { id: computerId },
+      data: { capabilities: { viewer: true, viewerStun: true } }
+    })
+    const punched = (await app.app.inject({ method: 'POST', url })).json() as { token: string; stunUrls: string[] }
+    expect(punched.stunUrls).toEqual(['stun:stun-0.example.com:3478'])
+    expect(readComputerChannelToken(punched.token)?.stun).toEqual(['stun:stun-0.example.com:3478'])
 
     // An org owner who can see the Computer but is not one of its allowed members may not watch it.
     await app.app.inject({
@@ -466,7 +496,8 @@ describe('console viewer', () => {
     })
     const watched = await peer.app.inject({ method: 'POST', url })
     expect(watched.statusCode).toBe(200)
-    expect(watched.json()).toMatchObject({ mode: 'view' })
+    // Another member watching would learn the desktop's public IP, so no STUN unless the policy says so.
+    expect(watched.json()).toMatchObject({ mode: 'view', stunUrls: [] })
 
     await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/revoke` })
     expect((await app.app.inject({ method: 'POST', url })).statusCode).toBe(409)

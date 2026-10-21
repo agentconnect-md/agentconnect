@@ -27,6 +27,7 @@ import { RelayCpClient } from './relay-cp-client.js'
 import { buildRelayServer } from './server.js'
 import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-server.js'
 import { createComputerRelay } from './computer-relay.js'
+import { startStunServer } from './stun-server.js'
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { createAhpServer } from './ahp-server.js'
 import { WebchatRouter, bindWebchatPostAuthor, fanImageUpdate, imageUpdateBound } from './webchat-router.js'
@@ -138,6 +139,7 @@ async function main(): Promise<void> {
     auth: resolveAuth(config),
     name: config.RELAY_NAME,
     daemonUrl: config.DAEMON_DIAL_URL,
+    ...(config.RELAY_STUN_URL ? { stunUrl: config.RELAY_STUN_URL } : {}),
     heartbeatDefaultMs: config.HEARTBEAT_DEFAULT_MS,
     clock: systemClock,
     connect: (opts) =>
@@ -379,6 +381,11 @@ async function main(): Promise<void> {
     relayId: () => client.relayId,
     log
   })
+  // Bound before registering, so the CP never advertises a STUN address this instance cannot answer on.
+  const stunServer =
+    config.RELAY_STUN_PORT === undefined
+      ? undefined
+      : await startStunServer({ host: config.RELAY_STUN_HOST, port: config.RELAY_STUN_PORT, log })
   client.start()
   await server.listen({ port: config.PORT, host: config.HOST })
 
@@ -472,6 +479,7 @@ async function main(): Promise<void> {
     ahpServer.close()
     await held.relayIngress?.stopAll()
     await client.stop()
+    await stunServer?.close()
     await server.close()
     // Last, so spans from the drain above still make it out.
     await telemetry

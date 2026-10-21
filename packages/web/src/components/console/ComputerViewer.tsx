@@ -128,7 +128,7 @@ function ViewerBody({ computer, createSession }: ComputerViewerProps) {
             autoPlay
             muted
             playsInline
-            className={state?.path === 'direct' || state?.path === 'turn' ? 'block max-h-[70vh] max-w-full' : 'hidden'}
+            className={state?.path && state.path !== 'screenshots' ? 'block max-h-[70vh] max-w-full' : 'hidden'}
           />
           {state?.path === 'screenshots' && state.frameUrl && (
             <img src={state.frameUrl} alt={t('screenAlt')} className="block max-h-[70vh] max-w-full" />

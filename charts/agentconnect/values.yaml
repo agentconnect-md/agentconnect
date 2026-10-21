@@ -648,6 +648,22 @@ relay:
     # Seconds between periodic re-checks of each assigned bot's credential (jittered ±10%).
     RELAY_CREDENTIAL_PROBE_INTERVAL_SEC: '3600'
   extraEnv: {}
+  # STUN for the console viewer (computer-use.md §7.2): each relay pod answers STUN Binding requests on UDP `port`
+  # behind its own Service, so the browser and the desktop learn their public addresses and send video peer to peer
+  # (hole punching). Stateless: the relay keeps no media state. TURN (computerViewer.turn) stays the fallback.
+  stun:
+    enabled: false
+    port: 3478
+    # Public host each pod's STUN Service is reached on; `{ordinal}` becomes the pod ordinal, e.g.
+    # `stun-{ordinal}.example.com`. Required when enabled; point each name at that pod's Service address.
+    host: ''
+    # Public port, when the load balancer listens on another one than `port`.
+    publicPort: ''
+    # The per-pod UDP Service. It must keep the client's source address (externalTrafficPolicy: Local), or every
+    # peer would learn the node's address instead of its own.
+    service:
+      type: LoadBalancer
+      annotations: {}
   resources:
     requests:
       cpu: 50m

@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters, type PeerConfig } from 'werift'
-import { ComputerViewerRenewal, type ComputerViewerTransport } from '@agentconnect.md/protocol/computer'
+import {
+  ComputerViewerRenewal,
+  type ComputerViewerCandidate,
+  type ComputerViewerTransport
+} from '@agentconnect.md/protocol/computer'
 import type { ScreenStream } from './screen-stream.js'
 import type { ViewerPrincipal } from '../viewer.js'
 
@@ -19,8 +23,15 @@ export interface RtcSessionsOptions {
 export interface OfferOptions {
   // The local address the browser reached us on; unknown when signaling came through a relay.
   hostAddress?: string | undefined
-  // `direct` is ICE-lite with host candidates; `turn` relays media through the token's TURN servers.
+  // `direct` is ICE-lite with host candidates; `stun` is full ICE with server-reflexive ones; `turn` relays through TURN.
   transport?: ComputerViewerTransport
+}
+
+/** One trickled ICE candidate in its JSON form. */
+export interface CandidateInit {
+  candidate: string
+  sdpMid?: string | null | undefined
+  sdpMLineIndex?: number | null | undefined
 }
 
 interface Session {
@@ -29,6 +40,10 @@ interface Session {
   transport: ComputerViewerTransport
   pc: RTCPeerConnection
   lastSeen: number
+  remoteCandidates?: number
+  // Every local candidate in gathering order, for the browser to fetch over signaling; `gathered` once gathering is done.
+  candidates: CandidateInit[]
+  gathered: boolean
   unsubscribe?: () => void
 }
 
@@ -36,6 +51,9 @@ const MAX_SESSIONS = 4
 const GATHER_TIMEOUT_MS = 3000
 // A TURN allocation is a round trip or two to the server, then the relayed candidate is ready.
 const TURN_GATHER_TIMEOUT_MS = 8000
+// One Binding round trip to the relay's STUN; later candidates still reach the browser by trickle.
+const STUN_GATHER_TIMEOUT_MS = 2000
+const MAX_REMOTE_CANDIDATES = 64
 const ANSWER_TIMEOUT_MS = 30_000
 // ICE-lite never notices a vanished browser, so the page pings over the DataChannel and silent sessions are closed.
 const SILENCE_TIMEOUT_MS = 10_000
@@ -68,9 +86,21 @@ export class RtcSessions {
     this.reaper.unref()
   }
 
-  // The peer configuration for one transport; `turn` needs full ICE because an ICE-lite peer cannot allocate a relay.
+  // The peer configuration for one transport; `stun` and `turn` need full ICE, which an ICE-lite peer cannot do.
   peerConfig(principal: ViewerPrincipal, offer: OfferOptions): Partial<PeerConfig> {
     const base: Partial<PeerConfig> = { codecs: { video: [h264()] }, iceUseIpv6: false, bundlePolicy: 'max-bundle' }
+    const { advertiseAddress, portRange } = this.options
+    if (offer.transport === 'stun') {
+      // Host and server-reflexive candidates, so ICE takes a same-network host pair first and a punched pair otherwise.
+      return {
+        ...base,
+        iceServers: (principal.stunUrls ?? []).map((urls) => ({ urls })),
+        // werift awaits STUN inside setLocalDescription (5 s by default), so a silent server must not hold the offer longer.
+        iceStunGatherTimeout: STUN_GATHER_TIMEOUT_MS / 1000,
+        ...(advertiseAddress ? { iceAdditionalHostAddresses: [advertiseAddress] } : {}),
+        ...(portRange ? { icePortRange: portRange } : {})
+      }
+    }
     if (offer.transport === 'turn') {
       return {
         ...base,
@@ -82,7 +112,6 @@ export class RtcSessions {
         iceTransportPolicy: 'relay'
       }
     }
-    const { advertiseAddress, portRange } = this.options
     const address = advertiseAddress ?? offer.hostAddress?.replace(/^::ffff:/, '')
     return {
       ...base,
@@ -94,11 +123,31 @@ export class RtcSessions {
     }
   }
 
-  async offer(principal: ViewerPrincipal, offer: OfferOptions = {}): Promise<{ id: string; sdp: string }> {
+  // `candidates` counts the local candidates the SDP already carries, so trickling resumes after them.
+  async offer(
+    principal: ViewerPrincipal,
+    offer: OfferOptions = {}
+  ): Promise<{ id: string; sdp: string; candidates: number }> {
     if (this.sessions.size >= MAX_SESSIONS) throw new Error('too many viewer sessions')
     const transport = offer.transport ?? 'direct'
     const pc = new RTCPeerConnection(this.peerConfig(principal, offer))
-    const session: Session = { id: randomUUID(), principal, transport, pc, lastSeen: Date.now() }
+    const session: Session = {
+      id: randomUUID(),
+      principal,
+      transport,
+      pc,
+      lastSeen: Date.now(),
+      candidates: [],
+      gathered: false
+    }
+    pc.onIceCandidate.subscribe((candidate) => {
+      if (!candidate) return void (session.gathered = true)
+      const { candidate: line, sdpMid, sdpMLineIndex } = candidate.toJSON()
+      session.candidates.push({ candidate: line, sdpMid, sdpMLineIndex })
+    })
+    pc.iceGatheringStateChange.subscribe((state) => {
+      if (state === 'complete') session.gathered = true
+    })
     const client = () => session.principal.client
     this.sessions.set(session.id, session)
     const track = new MediaStreamTrack({ kind: 'video' })
@@ -128,7 +177,7 @@ export class RtcSessions {
     pc.connectionStateChange.subscribe((state) => {
       if (state === 'connected') {
         session.lastSeen = Date.now()
-        this.options.log(`viewer ${client()}: WebRTC connected (${transport})`)
+        this.options.log(`viewer ${client()}: WebRTC connected (${transport}${selectedPairType(pc)})`)
         session.unsubscribe ??= this.options.stream.subscribe((packet) => track.writeRtp(packet))
       }
       if (state === 'failed' || state === 'closed' || state === 'disconnected') this.close(session.id)
@@ -144,7 +193,16 @@ export class RtcSessions {
         new Promise<void>((resolve) =>
           pc.iceGatheringStateChange.subscribe((state) => (state === 'complete' ? resolve() : undefined))
         ),
-        new Promise((resolve) => setTimeout(resolve, transport === 'turn' ? TURN_GATHER_TIMEOUT_MS : GATHER_TIMEOUT_MS))
+        new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            transport === 'turn'
+              ? TURN_GATHER_TIMEOUT_MS
+              : transport === 'stun'
+                ? STUN_GATHER_TIMEOUT_MS
+                : GATHER_TIMEOUT_MS
+          )
+        )
       ])
     }
     const sdp = pc.localDescription!.sdp
@@ -153,20 +211,57 @@ export class RtcSessions {
       throw new Error('the TURN server gave no relay candidate')
     }
     const advertise = this.options.advertiseAddress
-    return { id: session.id, sdp: transport === 'direct' && advertise ? onlyCandidatesFor(sdp, advertise) : sdp }
+    const candidates = session.candidates.length
+    return {
+      id: session.id,
+      sdp: transport === 'direct' && advertise ? onlyCandidatesFor(sdp, advertise) : sdp,
+      candidates
+    }
   }
 
   async answer(client: string, id: string, sdp: string): Promise<void> {
+    await this.owned(client, id).pc.setRemoteDescription({ type: 'answer', sdp })
+  }
+
+  /** A candidate the browser trickled after its answer; null marks the end of its gathering. */
+  addCandidate(client: string, id: string, candidate: ComputerViewerCandidate['candidate']): void {
+    const session = this.owned(client, id)
+    if (session.transport === 'direct') throw new Error('an ICE-lite session takes no trickled candidates')
+    if (!candidate || candidate.candidate === '') return
+    // Each one is a connectivity check the desktop sends, so a viewer cannot make it probe without bound.
+    const remote = (session.remoteCandidates = (session.remoteCandidates ?? 0) + 1)
+    if (remote > MAX_REMOTE_CANDIDATES) throw new Error('too many candidates')
+    // Not awaited: werift resolves a browser's mDNS host name first, which must not hold up the candidates after it.
+    void session.pc
+      .addIceCandidate({
+        candidate: candidate.candidate,
+        sdpMid: candidate.sdpMid ?? undefined,
+        sdpMLineIndex: candidate.sdpMLineIndex ?? undefined
+      })
+      .catch((error: Error) => this.options.log(`viewer ${client}: candidate refused: ${error.message}`))
+  }
+
+  /** The desktop's own candidates after the first `after`, and whether gathering is done, for the browser to trickle in. */
+  candidates(client: string, id: string, after: number): { candidates: CandidateInit[]; done: boolean } {
+    const session = this.owned(client, id)
+    return { candidates: session.candidates.slice(after), done: session.gathered }
+  }
+
+  private owned(client: string, id: string): Session {
     const session = this.sessions.get(id)
     if (!session || session.principal.client !== client) throw new Error('unknown viewer session')
-    await session.pc.setRemoteDescription({ type: 'answer', sdp })
+    return session
   }
 
   // A renewed token must name the same viewer; it may narrow what the viewer can do, never switch who it is.
   private renew(session: Session, token: string): void {
     const next = this.options.reauthorize?.(token)
     if (!next || next.client !== session.principal.client) throw new Error('viewer token refused')
-    session.principal = { ...next, iceServers: next.iceServers ?? session.principal.iceServers ?? [] }
+    session.principal = {
+      ...next,
+      iceServers: next.iceServers ?? session.principal.iceServers ?? [],
+      stunUrls: next.stunUrls ?? session.principal.stunUrls ?? []
+    }
   }
 
   close(id: string): void {
@@ -190,6 +285,12 @@ export class RtcSessions {
   size(): number {
     return this.sessions.size
   }
+}
+
+// The selected pair's local candidate type (host, srflx, prflx or relay), for the log line.
+function selectedPairType(pc: RTCPeerConnection): string {
+  const pair = pc.iceTransports[0]?.connection.nominated
+  return pair ? `, ${pair.localCandidate.type} → ${pair.remoteCandidate.type}` : ''
 }
 
 // Drops host candidates for interface addresses (e.g. a container IP) that a NATed browser cannot reach.

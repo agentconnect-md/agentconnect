@@ -555,7 +555,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Open a computer viewer',
           description:
-            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 503 when no relay is configured.',
+            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 503 when no relay is configured.',
           operationId: 'createComputerViewer',
           params: IdParam,
           response: { 200: ComputerViewerGrantDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }

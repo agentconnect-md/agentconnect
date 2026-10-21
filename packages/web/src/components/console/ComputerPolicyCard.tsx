@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import type { ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import { viewerPeerToPeerAllowed } from '@agentconnect.md/protocol/computer-viewer'
 import { setComputerPolicy, type ComputerDto } from '@/lib/api'
 import { FieldSelect } from '@/components/console/FieldSelect'
 import { Button, Toggle } from '@/components/ui'
@@ -15,6 +16,8 @@ export interface PolicyDraft {
   launchApp: ComputerPolicy['approvals']['launchApp']
   submitLikeKeys: boolean
   exposeDriverTools: boolean
+  /** The effective setting; it is stored only while it differs from the default. */
+  viewerPeerToPeer: boolean
   leaseIdleSeconds: string
   leaseMaxSeconds: string
   leaseWaitSeconds: string
@@ -22,13 +25,19 @@ export interface PolicyDraft {
   screenshotRetentionDays: string
 }
 
-export function draftOf(policy: ComputerPolicy): PolicyDraft {
+/** Whose Computer the policy is for, which decides the peer-to-peer default. */
+export type PolicyOwner = Pick<ComputerDto, 'ownerUserId' | 'kind'>
+
+const NO_OWNER: PolicyOwner = { ownerUserId: '', kind: 'self-hosted' }
+
+export function draftOf(policy: ComputerPolicy, owner: PolicyOwner = NO_OWNER): PolicyDraft {
   return {
     agentMode: policy.agentMode,
     firstInputPerSession: policy.approvals.firstInputPerSession,
     launchApp: policy.approvals.launchApp,
     submitLikeKeys: policy.approvals.submitLikeKeys,
     exposeDriverTools: policy.exposeDriverTools,
+    viewerPeerToPeer: viewerPeerToPeerAllowed(policy, owner),
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
     leaseMaxSeconds: String(policy.leaseMaxSeconds),
     leaseWaitSeconds: String(policy.leaseWaitSeconds),
@@ -47,7 +56,8 @@ const wholeIn = (raw: string, min: number, max: number): number | null => {
 /** The policy to send, or what is wrong with the draft; mirrors the Control Plane's schema bounds. */
 export function policyFromDraft(
   base: ComputerPolicy,
-  draft: PolicyDraft
+  draft: PolicyDraft,
+  owner: PolicyOwner = NO_OWNER
 ): { policy: ComputerPolicy } | { problem: PolicyProblem } {
   const idle = wholeIn(draft.leaseIdleSeconds, 10, 3600)
   if (idle === null) return { problem: 'idleRange' }
@@ -59,8 +69,11 @@ export function policyFromDraft(
   const blank = draft.screenshotRetentionDays.trim() === ''
   const retention = blank ? undefined : wholeIn(draft.screenshotRetentionDays, 0, 3650)
   if (retention === null) return { problem: 'retentionRange' }
-  const { screenshotRetentionDays: _drop, ...rest } = base
+  const { screenshotRetentionDays: _drop, viewerPeerToPeer: _p2p, ...rest } = base
   void _drop
+  void _p2p
+  // Left unset while it matches the default, so sharing the Computer later still turns hole punching off.
+  const p2pDefault = draft.viewerPeerToPeer === viewerPeerToPeerAllowed({ ...base, viewerPeerToPeer: undefined }, owner)
   return {
     policy: {
       ...rest,
@@ -71,6 +84,7 @@ export function policyFromDraft(
         submitLikeKeys: draft.submitLikeKeys
       },
       exposeDriverTools: draft.exposeDriverTools,
+      ...(p2pDefault ? {} : { viewerPeerToPeer: draft.viewerPeerToPeer }),
       leaseIdleSeconds: idle,
       leaseMaxSeconds: max,
       leaseWaitSeconds: wait,
@@ -89,7 +103,10 @@ export function ComputerPolicyCard({
   onSaved: (next: ComputerDto) => void
 }) {
   const t = useTranslations('Computers.policy')
-  const saved = useMemo(() => draftOf(computer.policy), [computer.policy])
+  const saved = useMemo(
+    () => draftOf(computer.policy, { ownerUserId: computer.ownerUserId, kind: computer.kind }),
+    [computer.policy, computer.ownerUserId, computer.kind]
+  )
   const [draft, setDraft] = useState(saved)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -102,7 +119,7 @@ export function ComputerPolicyCard({
   }, [saved, base])
   const editable = computer.canEditPolicy
   const dirty = !sameDraft(draft, saved)
-  const result = policyFromDraft(computer.policy, draft)
+  const result = policyFromDraft(computer.policy, draft, computer)
   const problem = 'problem' in result ? result.problem : null
   const set = <K extends keyof PolicyDraft>(key: K, value: PolicyDraft[K]) => setDraft((d) => ({ ...d, [key]: value }))
 
@@ -218,13 +235,20 @@ export function ComputerPolicyCard({
             />
           </Field>
         </div>
-        <div className="mt-3 desktop:max-w-[50%]">
+        <div className="mt-3 grid grid-cols-1 gap-3 desktop:grid-cols-2">
           <ToggleRow
             label={t('driverTools')}
             detail={t('driverToolsHint')}
             checked={draft.exposeDriverTools}
             disabled={!editable}
             onChange={(v) => set('exposeDriverTools', v)}
+          />
+          <ToggleRow
+            label={t('peerToPeer')}
+            detail={t('peerToPeerHint')}
+            checked={draft.viewerPeerToPeer}
+            disabled={!editable}
+            onChange={(v) => set('viewerPeerToPeer', v)}
           />
         </div>
       </Section>

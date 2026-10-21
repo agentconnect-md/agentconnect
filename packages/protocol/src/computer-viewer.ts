@@ -1,4 +1,4 @@
-// The console's embedded viewer (computer-use.md §7, §10): signaling rides the relay to the desktop, media goes direct or via TURN.
+// The console's embedded viewer (computer-use.md §7, §10): signaling rides the relay; media goes direct, hole-punched, or via TURN.
 import { z } from 'zod'
 
 /** The desktop's viewer API prefix; the relay forwards only paths under it besides `/mcp`. */
@@ -13,8 +13,8 @@ export const COMPUTER_VIEWER_MAX_REQUEST_BYTES = 64 * 1024
 /** A viewer token lives this long, or less when its key runs out first; the console renews it at half-life. */
 export const COMPUTER_VIEWER_TOKEN_TTL_MS = 120_000
 
-/** How the browser reaches the desktop's media: ICE-lite host candidates, or both sides through TURN. */
-export const COMPUTER_VIEWER_TRANSPORTS = ['direct', 'turn'] as const
+/** How the browser reaches the desktop's media: ICE-lite host candidates, full ICE hole-punched through relay STUN, or TURN. */
+export const COMPUTER_VIEWER_TRANSPORTS = ['direct', 'stun', 'turn'] as const
 export type ComputerViewerTransport = (typeof COMPUTER_VIEWER_TRANSPORTS)[number]
 
 /** One TURN server with coturn REST-API credentials (`<expiry>:<user>`, HMAC-SHA1 of the shared secret). */
@@ -37,6 +37,44 @@ export type ComputerIceServer = z.infer<typeof ComputerIceServer>
 
 /** The most TURN servers one viewer token or grant names. */
 export const COMPUTER_ICE_SERVERS_MAX = 2
+
+/** A relay's STUN address (`stun:<host>:<port>`, RFC 7064), which both peers ask for their public address. */
+export const ComputerStunUrl = z
+  .string()
+  .max(256)
+  .regex(/^stun:(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?$/, 'expected stun:<host>[:<port>]')
+
+/** The most STUN servers one viewer token or grant names. */
+export const COMPUTER_STUN_URLS_MAX = 2
+
+/** Whether viewer media may hole-punch: the policy's explicit setting, else on only for a self-hosted Computer only its owner may watch. */
+export const viewerPeerToPeerAllowed = (
+  policy: { allowedMembers: readonly string[]; viewerPeerToPeer?: boolean | undefined },
+  computer: { ownerUserId: string | null | undefined; kind: 'self-hosted' | 'managed' }
+): boolean =>
+  policy.viewerPeerToPeer ??
+  // A managed Computer's editors may watch it too, so it is never owner-only by default.
+  (computer.kind === 'self-hosted' && policy.allowedMembers.every((member) => member === computer.ownerUserId))
+
+/** `POST /view/api/rtc/candidate` body: one browser candidate trickled to the desktop; null ends the browser's gathering. */
+export const ComputerViewerCandidate = z.object({
+  id: z.string().min(1).max(64),
+  candidate: z
+    .object({
+      candidate: z.string().max(1024),
+      sdpMid: z.string().max(64).nullish(),
+      sdpMLineIndex: z.number().int().min(0).max(64).nullish()
+    })
+    .nullable()
+})
+export type ComputerViewerCandidate = z.infer<typeof ComputerViewerCandidate>
+
+/** `POST /view/api/rtc/candidates` body: the desktop's candidates after the first `after` the browser already has. */
+export const ComputerViewerCandidatesRequest = z.object({
+  id: z.string().min(1).max(64),
+  after: z.number().int().min(0).max(1000).default(0)
+})
+export type ComputerViewerCandidatesRequest = z.infer<typeof ComputerViewerCandidatesRequest>
 
 /** `POST /view/api/rtc/offer` body; absent means `direct`. */
 export const ComputerViewerOfferRequest = z.object({ transport: z.enum(COMPUTER_VIEWER_TRANSPORTS).optional() })

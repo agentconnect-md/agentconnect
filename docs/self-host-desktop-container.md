@@ -114,13 +114,41 @@ path that connects, and the badge names it:
    Compose file publishes the range; with `docker run`, add `-p 7700-7709:7700-7709/udp -e RTC_PORTS=7700-7709
 -e RTC_ADDRESS=<ip>`. Without `RTC_ADDRESS` the desktop offers its container address, which no browser
    outside the server reaches.
-2. **TURN relay.** When the direct path does not connect within 6 s, both ends relay the video through the
-   deployment's TURN server, if it runs one ([below](#run-a-turn-server-for-the-viewer)). The desktop needs
-   nothing published for this.
+
+   When the relay runs STUN ([below](#run-stun-on-the-relay)) and the Computer's policy allows peer-to-peer
+   viewing, this step is full ICE instead: both ends also learn their public address from the relay and
+   hole-punch through their NATs, so the badge reads **Peer to peer** and the desktop needs nothing published.
+   A peer-to-peer session that settles on a same-network pair still reads **Direct**.
+
+2. **TURN relay.** When the first step does not connect within 6 s (8 s for peer to peer), both ends relay
+   the video through the deployment's TURN server, if it runs one ([below](#run-a-turn-server-for-the-viewer)).
+   The desktop needs nothing published for this.
 3. **Screenshots.** With neither, the page polls screenshots through the relay, about 5 frames a second.
 
 Take control and Release work the same on every path: while you hold control, agents get
 `human_in_control`.
+
+### Run STUN on the relay
+
+With STUN, video goes peer to peer between the browser and a desktop behind NAT, and the relay only helps them
+find each other: it answers each peer's Binding request with the address it came from, keeps no state and never
+sees the video. Hole punching usually fails when a side is behind a symmetric NAT (many carrier and corporate
+networks); the viewer then moves on to TURN. The Compose stack ships `compose.stun.yaml`. Set these in
+`compose.env`:
+
+```sh
+AGENTCONNECT_STUN_HOST=203.0.113.10 # the IP or DNS name browsers and desktops reach this host on
+# AGENTCONNECT_STUN_PORT=3479       # the public UDP port; 3478 is left to compose.turn.yaml
+```
+
+```sh
+docker compose --env-file compose.env -f compose.yaml -f compose.stun.yaml up -d
+```
+
+Open that UDP port on the host. The relay registers the address with the Control Plane, which names it in each
+viewer grant. Peer to peer shows the desktop's public IP to the viewer's browser, so a Computer's policy decides
+it: **Peer-to-peer viewing** is on by default while only the owner may watch, and off once other members may,
+unless the owner turns it on. In the Helm chart, `relay.stun` does the same with one UDP Service per relay pod.
 
 ### Run a TURN server for the viewer
 

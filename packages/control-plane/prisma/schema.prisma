@@ -2587,6 +2587,8 @@ model Relay {
   // Advertised relay features (rc/register.features), e.g.
   // webchat_session_continuation_v1. Refreshed on every register.
   features   String[]  @default([])
+  // This instance's public `stun:` address for viewer hole punching (computer-use.md §7.2); null when it serves none.
+  stunUrl    String?
   lastSeenAt DateTime? @db.Timestamptz(6) // rc/heartbeat; drives the failover sweeper
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
 

@@ -127,7 +127,9 @@ export const ComputerPolicySchema = z
     // Seconds an acquire waits in the FIFO lease queue before `computer_busy` (§4.4); 0 never waits.
     leaseWaitSeconds: z.number().int().min(0).max(COMPUTER_LEASE_WAIT_MAX_SECONDS).default(45),
     // Days stored screenshots are kept (§9); 0 means never written, absent means the deployment's default.
-    screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional()
+    screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional(),
+    // Whether viewers may hole-punch peer to peer, which shows them the desktop's public IP (§7.2); absent means on only for owner-only viewing.
+    viewerPeerToPeer: z.boolean().optional()
   })
   .refine((p) => p.leaseIdleSeconds <= p.leaseMaxSeconds, {
     message: 'leaseIdleSeconds must not exceed leaseMaxSeconds',
@@ -145,6 +147,8 @@ export const ComputerCapabilitiesSchema = z.object({
   backgroundInput: z.boolean().default(false),
   accessibilityTree: z.boolean().default(false),
   viewer: z.boolean().default(false),
+  // The viewer accepts a view token's `stun` claim; desktops before relay STUN refuse such a token.
+  viewerStun: z.boolean().optional(),
   displays: z
     .array(
       z.object({

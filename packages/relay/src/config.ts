@@ -8,6 +8,7 @@
  * per-relay `RELAY_API_KEY`). Credentials are secret material — never logged.
  */
 import { z } from 'zod'
+import { ComputerStunUrl } from '@agentconnect.md/protocol/computer-viewer'
 
 export const RelayConfigSchema = z
   .object({
@@ -55,7 +56,16 @@ export const RelayConfigSchema = z
     // from each binding's upstreamUrl (`<OC>/mcp`); set to override with a fixed origin.
     OPEN_CONNECTOR_URL: z.string().url().optional(),
     // Optional bearer for open-connector's runtime API (if OC requires a runtime token).
-    OPEN_CONNECTOR_RUNTIME_TOKEN: z.string().optional()
+    OPEN_CONNECTOR_RUNTIME_TOKEN: z.string().optional(),
+    // STUN for viewer hole punching (computer-use.md §7.2): the UDP port to answer on (unset ⇒ none) and its bind host.
+    RELAY_STUN_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
+    RELAY_STUN_HOST: z.string().min(1).default('0.0.0.0'),
+    // The public `stun:<host>:<port>` that reaches this instance's STUN port with the client's source address intact.
+    RELAY_STUN_URL: ComputerStunUrl.optional()
+  })
+  .refine((c) => !c.RELAY_STUN_URL || c.RELAY_STUN_PORT !== undefined, {
+    message: 'RELAY_STUN_URL advertises a STUN server, so RELAY_STUN_PORT must be set too',
+    path: ['RELAY_STUN_URL']
   })
   .refine((c) => (c.RELAY_TOKEN ? 1 : 0) + (c.RELAY_API_KEY ? 1 : 0) === 1, {
     message: 'set exactly one of RELAY_TOKEN or RELAY_API_KEY (the relay↔CP credential, §8)'

@@ -6526,6 +6526,8 @@
       "retentionDefault": "默认",
       "driverTools": "开放驱动工具",
       "driverToolsHint": "同时向 Agent 提供驱动自带的窗口级工具。默认关闭。",
+      "peerToPeer": "点对点观看",
+      "peerToPeerHint": "允许观看画面跨网络直接在浏览器和桌面之间传输。这会向观看者暴露桌面的公网 IP 地址。默认仅对只有所有者可以观看的自托管 Computer 开启。",
       "problem": {
         "idleRange": "空闲释放必须是 10 到 3600 之间的整数。",
         "maxRange": "最长控制时间必须是 60 到 86400 之间的整数。",
@@ -6541,7 +6543,7 @@
       "title": "屏幕",
       "watch": "观看",
       "close": "关闭",
-      "idle": "实时观看这台电脑的屏幕，需要时接管鼠标和键盘。视频在你的浏览器和桌面之间直连或经 TURN 传输，不经过 AgentConnect 的服务器。",
+      "idle": "实时观看这台电脑的屏幕，需要时接管鼠标和键盘。视频在你的浏览器和桌面之间直连（中继只帮助双方找到彼此）或经 TURN 传输，不经过 AgentConnect 的服务器。",
       "offline": "这台电脑上线后才能打开查看器。",
       "connecting": "正在连接…",
       "failed": "查看器已停止。",
@@ -6558,6 +6560,7 @@
       "screenAlt": "电脑的最新截图",
       "path": {
         "direct": "直连",
+        "p2p": "点对点",
         "turn": "TURN 中继",
         "screenshots": "截图"
       }

@@ -131,6 +131,8 @@ export interface RelayCpClientDeps {
   name: string
   /** Per-instance-routable address daemons dial (`rc/register.daemonUrl`). */
   daemonUrl: string
+  /** This instance's public STUN address (`rc/register.stunUrl`), when it serves one. */
+  stunUrl?: string
   /** Heartbeat cadence fallback when `rc/auth/ok` carries none. */
   heartbeatDefaultMs: number
   clock: Clock
@@ -739,6 +741,7 @@ export class RelayCpClient {
       buildRelayCpFrame('rc/register', {
         name: this.deps.name,
         daemonUrl: this.deps.daemonUrl,
+        ...(this.deps.stunUrl ? { stunUrl: this.deps.stunUrl } : {}),
         // This relay preserves RdMsgWebchat.targetSessionId end to end; the CP
         // gates session-targeted mints on every live relay advertising it.
         // gitlab-com-v1: this relay verifies and routes GitLab project

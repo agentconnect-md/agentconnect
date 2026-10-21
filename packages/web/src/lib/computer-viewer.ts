@@ -1,8 +1,10 @@
-// The console's Computer viewer (computer-use.md §7, §10): signaling via the relay; media direct, then TURN, then screenshots.
+// The console's Computer viewer (computer-use.md §7, §10): signaling via the relay; media direct or hole-punched, then TURN, then screenshots.
 import { relayComputerViewBase } from '@agentconnect.md/protocol/computer-viewer'
 import type { ComputerViewerGrantDto } from '@/lib/api'
 
-export type ViewerPath = 'direct' | 'turn' | 'screenshots'
+// `p2p` is a hole-punched pair through the relay's STUN; a full-ICE session that settles on host candidates shows `direct`.
+export type ViewerPath = 'direct' | 'p2p' | 'turn' | 'screenshots'
+type Transport = 'direct' | 'stun' | 'turn'
 
 export type ViewerInput =
   | { type: 'move'; x: number; y: number }
@@ -22,7 +24,7 @@ export interface ViewerStatus {
   paused: { reason: string; by?: string } | null
   unavailable: string | null
   lease: { holder: string } | null
-  webrtc: { unavailable: string | null; error: string | null; turn: boolean }
+  webrtc: { unavailable: string | null; error: string | null; turn: boolean; stun?: boolean }
 }
 
 export interface ViewerState {
@@ -49,7 +51,16 @@ export interface ViewerDeps {
 
 // How long each WebRTC path gets to connect before the next one is tried.
 export const DIRECT_TIMEOUT_MS = 6000
+export const STUN_TIMEOUT_MS = 8000
 export const TURN_TIMEOUT_MS = 12_000
+const TIMEOUTS: Record<Transport, number> = {
+  direct: DIRECT_TIMEOUT_MS,
+  stun: STUN_TIMEOUT_MS,
+  turn: TURN_TIMEOUT_MS
+}
+const LABELS: Record<Transport, string> = { direct: 'Direct', stun: 'Peer to peer', turn: 'TURN' }
+// How often the browser fetches the desktop's late candidates while a punched connection is being set up.
+const CANDIDATE_POLL_MS = 300
 const STATUS_INTERVAL_MS = 2000
 const PING_INTERVAL_MS = 2000
 const FRAME_INTERVAL_MS = 200
@@ -279,20 +290,23 @@ export class ComputerViewerSession {
     const unavailable = this.state.status?.webrtc.unavailable
     if (unavailable) notes.push(`WebRTC: ${unavailable}`)
     else {
-      for (const transport of ['direct', 'turn'] as const) {
+      // With relay STUN, one full-ICE attempt covers both: ICE checks host pairs first, then punched ones.
+      const punch = (this.grant!.stunUrls?.length ?? 0) > 0 && this.state.status?.webrtc.stun === true
+      for (const transport of [punch ? 'stun' : 'direct', 'turn'] as const) {
         if (transport === 'turn' && (this.grant!.iceServers.length === 0 || !this.state.status?.webrtc.turn)) {
           notes.push('TURN: not configured')
           break
         }
         try {
-          await this.connectPeer(transport, transport === 'direct' ? DIRECT_TIMEOUT_MS : TURN_TIMEOUT_MS)
+          await this.connectPeer(transport, TIMEOUTS[transport])
           // Stopped mid-ladder: stop() ran before this peer existed, so close it here.
           if (this.stopped) return this.closePeer()
-          this.update({ phase: 'live', path: transport, notes, error: null })
+          const path = transport === 'stun' ? await this.punchedPath(notes) : transport
+          this.update({ phase: 'live', path, notes, error: null })
           return
         } catch (error) {
           this.closePeer()
-          notes.push(`${transport === 'direct' ? 'Direct' : 'TURN'}: ${(error as Error).message}`)
+          notes.push(`${LABELS[transport]}: ${(error as Error).message}`)
         }
         if (this.stopped) return
       }
@@ -301,13 +315,32 @@ export class ComputerViewerSession {
     void this.pollFrames()
   }
 
-  private async connectPeer(transport: 'direct' | 'turn', timeoutMs: number): Promise<void> {
+  // Which pair a full-ICE session settled on: host on both ends reads as direct, anything else as punched.
+  private async punchedPath(notes: string[]): Promise<ViewerPath> {
+    const route = this.pc ? await selectedRoute(this.pc) : null
+    if (!route) return 'p2p'
+    if (route.local === 'host' && route.remote === 'host') return 'direct'
+    notes.push(`Peer to peer: ${route.local} → ${route.remote}`)
+    return 'p2p'
+  }
+
+  private async connectPeer(transport: Transport, timeoutMs: number): Promise<void> {
     const offerRes = await this.api('POST', 'rtc/offer', { transport })
-    const offer = (await offerRes.json()) as { id: string; sdp: string; message?: string; error?: string }
+    const offer = (await offerRes.json()) as {
+      id: string
+      sdp: string
+      candidates?: number
+      message?: string
+      error?: string
+    }
     if (!offerRes.ok) throw new Error(offer.message ?? offer.error ?? `HTTP ${offerRes.status}`)
     if (this.stopped) throw new Error('viewer stopped')
     const config: RTCConfiguration =
-      transport === 'turn' ? { iceServers: this.grant!.iceServers, iceTransportPolicy: 'relay' } : { iceServers: [] }
+      transport === 'turn'
+        ? { iceServers: this.grant!.iceServers, iceTransportPolicy: 'relay' }
+        : transport === 'stun'
+          ? { iceServers: [{ urls: this.grant!.stunUrls }] }
+          : { iceServers: [] }
     const pc = (this.deps.createPeer ?? ((c) => new RTCPeerConnection(c)))(config)
     this.pc = pc
     pc.ontrack = (event) => {
@@ -341,12 +374,51 @@ export class ComputerViewerSession {
       }
     })
     await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
+    if (transport === 'stun') return this.trickle(pc, offer.id, offer.candidates ?? 0, connected)
     await pc.setLocalDescription(await pc.createAnswer())
     // No trickle: the answer carries every candidate, TURN relays included.
     await waitForGathering(pc, transport === 'turn' ? 8000 : 3000)
     const answer = await this.api('POST', 'rtc/answer', { id: offer.id, sdp: pc.localDescription!.sdp })
     if (!answer.ok) throw new Error(((await answer.json()) as { message?: string }).message ?? `HTTP ${answer.status}`)
     await connected
+  }
+
+  // The punched path answers at once and trickles over the relay: the browser's candidates up, the desktop's late ones down.
+  private async trickle(pc: RTCPeerConnection, id: string, inOffer: number, connected: Promise<void>): Promise<void> {
+    let settled = false
+    let sent: Promise<unknown> = Promise.resolve()
+    pc.onicecandidate = (event) => {
+      const candidate = event.candidate ? event.candidate.toJSON() : null
+      // In order and after the answer; a lost candidate costs only that pair, so failures are not fatal.
+      sent = sent.then(() => this.api('POST', 'rtc/candidate', { id, candidate }).catch(() => undefined))
+    }
+    await pc.setLocalDescription(await pc.createAnswer())
+    const answered = this.api('POST', 'rtc/answer', { id, sdp: pc.localDescription!.sdp })
+    sent = answered
+    const answer = await answered
+    if (!answer.ok) throw new Error(((await answer.json()) as { message?: string }).message ?? `HTTP ${answer.status}`)
+    const poll = async () => {
+      let after = inOffer
+      while (!settled && !this.stopped && this.pc === pc) {
+        try {
+          const res = await this.api('POST', 'rtc/candidates', { id, after })
+          if (!res.ok) return
+          const late = (await res.json()) as { candidates: RTCIceCandidateInit[]; done: boolean }
+          after += late.candidates.length
+          for (const candidate of late.candidates) await pc.addIceCandidate(candidate).catch(() => undefined)
+          if (late.done && late.candidates.length === 0) return
+        } catch {
+          return
+        }
+        await sleep(CANDIDATE_POLL_MS)
+      }
+    }
+    void poll()
+    try {
+      await connected
+    } finally {
+      settled = true
+    }
   }
 
   private attachChannel(channel: RTCDataChannel): void {
@@ -414,6 +486,25 @@ export class ComputerViewerSession {
   private update(patch: Partial<ViewerState>): void {
     this.state = { ...this.state, ...patch }
     this.deps.onState(this.state)
+  }
+}
+
+/** The candidate types of the pair a peer selected, from its stats; null when the browser does not say. */
+export async function selectedRoute(pc: RTCPeerConnection): Promise<{ local: string; remote: string } | null> {
+  if (typeof pc.getStats !== 'function') return null
+  try {
+    const reports = [...(await pc.getStats()).values()] as Array<Record<string, unknown>>
+    const byId = new Map(reports.map((r) => [r.id as string, r]))
+    const transport = reports.find((r) => r.type === 'transport' && r.selectedCandidatePairId)
+    const pair =
+      (transport && byId.get(transport.selectedCandidatePairId as string)) ??
+      reports.find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+    const local = pair && byId.get(pair.localCandidateId as string)
+    const remote = pair && byId.get(pair.remoteCandidateId as string)
+    if (!local || !remote) return null
+    return { local: String(local.candidateType), remote: String(remote.candidateType) }
+  } catch {
+    return null
   }
 }
 

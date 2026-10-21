@@ -2998,6 +2998,8 @@ export interface ComputerViewerGrantDto {
   mode: 'view' | 'control'
   relays: string[]
   iceServers: { urls: string[]; username: string; credential: string }[]
+  // The relays' STUN servers for hole punching; empty when none serve STUN or the Computer's policy turns it off.
+  stunUrls: string[]
 }
 
 export async function openComputerViewer(id: string): Promise<ComputerViewerGrantDto> {
