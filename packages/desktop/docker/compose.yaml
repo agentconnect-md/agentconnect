@@ -1,0 +1,47 @@
+# A self-hosted Computer: the desktop image on your own server, registered with an AgentConnect Control Plane.
+# Guide: docs/self-host-desktop-container.md. Settings: compose.env.example, copied to .env next to this file.
+name: agentconnect-desktop
+
+services:
+  desktop:
+    image: ${AGENTCONNECT_IMAGE_REGISTRY:-ghcr.io/agentconnect-md}/desktop:${AGENTCONNECT_VERSION:-latest}
+    pull_policy: missing
+    # The Computer's name when neither the console nor AGENTCONNECT_COMPUTER_NAME gives one.
+    hostname: ${AGENTCONNECT_DESKTOP_HOSTNAME:-agentconnect-desktop}
+    environment:
+      # The Control Plane URL the console printed with the token (its exchange URL works too).
+      - AGENTCONNECT_CP_URL=${AGENTCONNECT_CP_URL:?set AGENTCONNECT_CP_URL to the Control Plane URL the console printed}
+      # Spent on the first start only; the key it buys stays in the volume, so the token can stay here afterwards.
+      - AGENTCONNECT_REGISTER_TOKEN
+      # Or a file holding the token, such as the commented secret below: /run/secrets/register-token.
+      - AGENTCONNECT_REGISTER_TOKEN_FILE
+      - AGENTCONNECT_COMPUTER_NAME
+      - RESOLUTION=${AGENTCONNECT_DESKTOP_RESOLUTION:-1600x900x24}
+      # `none` runs no browser; BROWSER_URL is the page it opens.
+      - BROWSER=${AGENTCONNECT_DESKTOP_BROWSER:-firefox-esr}
+      - BROWSER_URL
+      # Direct viewer media: the public IP browsers reach this server on, offered with the UDP range published below.
+      - RTC_ADDRESS
+      - RTC_PORTS=${AGENTCONNECT_DESKTOP_RTC_PORTS:-7700-7709}
+    ports:
+      # Same numbers on both sides, because the WebRTC candidates name them. TURN or screenshots cover a closed range.
+      - ${AGENTCONNECT_DESKTOP_RTC_PORTS:-7700-7709}:${AGENTCONNECT_DESKTOP_RTC_PORTS:-7700-7709}/udp
+    # Firefox crashes with Docker's 64 MB default /dev/shm.
+    shm_size: 1g
+    volumes:
+      # The Computer key, config, audit log and browser profile; removing the volume unregisters this desktop.
+      - desktop-home:/home/desktop
+    # secrets:
+    #   - register-token
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # A Control Plane and relay this server reaches only as localhost (an evaluation stack on the same Linux host):
+    # uncomment, and drop `ports:` above, which host networking does not take.
+    # network_mode: host
+
+# secrets:
+#   register-token:
+#     file: ./register-token
+
+volumes:
+  desktop-home:

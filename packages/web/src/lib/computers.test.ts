@@ -15,6 +15,9 @@ describe('computer console helpers', () => {
     )
     expect(computerInstallCommand('macos', registration)).toContain(`--register 'ac_tok' --cp-url '${url}'`)
     expect(computerInstallCommand('windows', registration)).toContain(`--register "ac_tok" --cp-url "${url}"`)
+    expect(computerInstallCommand('docker', registration)).toBe(
+      `docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped --shm-size=1g -v agentconnect-desktop:/home/desktop -e AGENTCONNECT_CP_URL='${url}' -e AGENTCONNECT_REGISTER_TOKEN='ac_tok' ghcr.io/agentconnect-md/desktop:latest`
+    )
   })
 
   it('puts failing checks first, then warnings, keeping the reported order', () => {

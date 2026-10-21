@@ -6205,21 +6205,25 @@
     }
   },
   "Computers": {
-    "description": "Desktops your agents can see and operate. Each runs the desktop daemon in a signed-in graphical session and reports its status and checks here.",
+    "description": "Desktops your agents can see and operate. Each runs the desktop daemon in a signed-in graphical session or a desktop container, and reports its status and checks here.",
     "addComputer": "Add computer",
     "add": {
       "title": "Add computer",
       "description": "Run one command on the desktop you want to add, in a terminal inside its signed-in graphical session. It installs the desktop daemon as a background service and registers it with this organization. You will be its owner.",
-      "os": "Operating system",
+      "descriptionDocker": "Run one command on a server with Docker. It starts a desktop container with Firefox, isolated from the server, and registers it with this organization. You will be its owner.",
+      "os": "Platform",
+      "docker": "Docker",
       "osHint": {
         "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland. Run it in a terminal on the desktop as yourself, not as root; the service then starts with every session.",
         "macos": "macOS asks you to allow Accessibility and Screen Recording for AgentConnect the first time.",
-        "windows": "Run it in a normal PowerShell of the signed-in user, not as administrator."
+        "windows": "Run it in a normal PowerShell of the signed-in user, not as administrator.",
+        "docker": "A Linux desktop with Firefox in a container, on any host with Docker. To use docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
       },
       "name": "Name",
       "optional": "optional",
       "namePlaceholder": "Uses the computer's hostname",
       "run": "Run on the computer",
+      "runDocker": "Run on the server",
       "shell": {
         "posix": "Terminal",
         "windows": "PowerShell"

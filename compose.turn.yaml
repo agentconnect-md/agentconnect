@@ -1,0 +1,37 @@
+# Optional TURN server for the console's Computer viewer, when a browser cannot reach a desktop's UDP directly.
+# docker compose -f compose.yaml -f compose.turn.yaml up -d; guide: docs/self-host-desktop-container.md.
+services:
+  turn:
+    image: coturn/coturn:${AGENTCONNECT_TURN_VERSION:-4.7.0}
+    pull_policy: missing
+    command:
+      - --log-file=stdout
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --fingerprint
+      - --realm=agentconnect
+      - --listening-port=3478
+      # The Control Plane mints per-viewer and per-desktop credentials from this secret; letters and digits only, as the entrypoint evaluates it.
+      - --use-auth-secret
+      - --static-auth-secret=${AGENTCONNECT_TURN_SECRET:?set AGENTCONNECT_TURN_SECRET to at least 16 letters and digits}
+      # The address browsers and desktops reach this host on; relayed candidates carry it.
+      - --external-ip=${AGENTCONNECT_TURN_EXTERNAL_IP:?set AGENTCONNECT_TURN_EXTERNAL_IP to this host's public IP}
+      - --min-port=${AGENTCONNECT_TURN_MIN_PORT:-49160}
+      - --max-port=${AGENTCONNECT_TURN_MAX_PORT:-49199}
+      # Both viewer peers are relay-only, so a peer is always this server's own relay address, public or container-side.
+      - --denied-peer-ip=0.0.0.0-255.255.255.255
+      - --allowed-peer-ip=${AGENTCONNECT_TURN_EXTERNAL_IP}
+      # The image's entrypoint evaluates each argument, so this is the container's own address.
+      - --allowed-peer-ip=$$(hostname -i)
+      - --no-multicast-peers
+    ports:
+      - 3478:3478/udp
+      - 3478:3478/tcp
+      - ${AGENTCONNECT_TURN_MIN_PORT:-49160}-${AGENTCONNECT_TURN_MAX_PORT:-49199}:${AGENTCONNECT_TURN_MIN_PORT:-49160}-${AGENTCONNECT_TURN_MAX_PORT:-49199}/udp
+    restart: unless-stopped
+
+  control-plane:
+    environment:
+      - COMPUTER_TURN_URLS=turn:${AGENTCONNECT_TURN_HOST:-${AGENTCONNECT_TURN_EXTERNAL_IP}}:3478?transport=udp,turn:${AGENTCONNECT_TURN_HOST:-${AGENTCONNECT_TURN_EXTERNAL_IP}}:3478?transport=tcp
+      - COMPUTER_TURN_SECRET=${AGENTCONNECT_TURN_SECRET}

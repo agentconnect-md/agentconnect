@@ -6205,21 +6205,25 @@
     }
   },
   "Computers": {
-    "description": "Agent 可以查看和操作的桌面。每台电脑在已登录的图形会话中运行桌面守护进程，并在这里报告状态和检查结果。",
+    "description": "Agent 可以查看和操作的桌面。每台电脑在已登录的图形会话或桌面容器中运行桌面守护进程，并在这里报告状态和检查结果。",
     "addComputer": "添加电脑",
     "add": {
       "title": "添加电脑",
       "description": "在要添加的桌面上，于已登录图形会话中的终端里运行一条命令。它会把桌面守护进程安装为后台服务并注册到此组织，你将成为它的所有者。",
-      "os": "操作系统",
+      "descriptionDocker": "在装有 Docker 的服务器上运行一条命令。它会启动一个带 Firefox 的桌面容器（与服务器隔离），并注册到此组织，你将成为它的所有者。",
+      "os": "平台",
+      "docker": "Docker",
       "osHint": {
         "linux": "Ubuntu，Xfce（Xorg）或 GNOME（Wayland）。请以你自己的身份在桌面的终端中运行，不要用 root；之后服务会随每次登录的会话启动。",
         "macos": "首次运行时，macOS 会请你为 AgentConnect 允许辅助功能和屏幕录制权限。",
-        "windows": "请在已登录用户的普通 PowerShell 中运行，不要以管理员身份运行。"
+        "windows": "请在已登录用户的普通 PowerShell 中运行，不要以管理员身份运行。",
+        "docker": "在任意装有 Docker 的主机上，以容器运行带 Firefox 的 Linux 桌面。如需使用 docker compose，或让查看器直连传输画面，请参阅自托管桌面容器指南。"
       },
       "name": "名称",
       "optional": "可选",
       "namePlaceholder": "默认使用电脑的主机名",
       "run": "在电脑上运行",
+      "runDocker": "在服务器上运行",
       "shell": {
         "posix": "终端",
         "windows": "PowerShell"

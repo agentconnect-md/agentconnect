@@ -88,6 +88,21 @@ describe('AddComputerModal', () => {
     expect(host.textContent).toContain('PowerShell')
   })
 
+  it('offers the desktop container for a server with Docker', async () => {
+    mocks.createComputerRegistration.mockResolvedValue(registration)
+    mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    act(() => button('Docker').click())
+    expect(host.textContent).toContain('Run one command on a server with Docker')
+    await act(async () => button('Create command').click())
+    const command = host.querySelector('[data-install-command]')!.textContent!
+    expect(command).toContain("-e AGENTCONNECT_CP_URL='https://cp.example.com/v1/computers/register'")
+    expect(command).toContain("-e AGENTCONNECT_REGISTER_TOKEN='ac_secret' ghcr.io/agentconnect-md/desktop:latest")
+    expect(host.textContent).toContain('Run on the server')
+  })
+
   it('stops waiting once the token expires and offers a new command', async () => {
     mocks.createComputerRegistration.mockResolvedValue({
       ...registration,

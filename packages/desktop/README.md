@@ -235,7 +235,8 @@ off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the bro
 code 0. `/home/desktop` is a volume: the Computer key, config, audit log, and the browser profile survive a new
 container. A `HEALTHCHECK` runs `doctor --json --daemon` inside the running daemon.
 
-Register it as a Computer: create a token in the console under **Computers → Add Computer**, then
+Register it as a Computer: create a token in the console under **Computers → Add Computer** (pick **Docker** for
+this command), then
 
 ```sh
 docker run -d --name desktop --hostname desktop-1 --shm-size=1g --restart unless-stopped \
@@ -253,6 +254,10 @@ docker run -d --name desktop --hostname desktop-1 --shm-size=1g --restart unless
 | `PUBLIC_URL`                        | how clients outside reach the published port, printed instead of the container address                                                                                |
 | `RTC_ADDRESS`, `RTC_PORTS`          | the public IP offered as the only WebRTC candidate (defaults to `PUBLIC_URL`'s host), and a fixed UDP range                                                           |
 | `RESOLUTION`, `LISTEN_HOST`, `PORT` | the screen, and where the daemon listens inside the container (`0.0.0.0:7681`)                                                                                        |
+
+For a server, [`docker/compose.yaml`](docker/compose.yaml) with [`docker/compose.env.example`](docker/compose.env.example)
+does the same with its settings in `.env`; the guide is
+[docs/self-host-desktop-container.md](../../docs/self-host-desktop-container.md), including TURN for the viewer.
 
 The token is spent on the first start; the stored key remembers its sha256, so later starts with the same token
 and Control Plane leave it unused (keep the volume). A different token, such as a new one after a revoke or for
