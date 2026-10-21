@@ -355,11 +355,35 @@ export function githubMentionCandidates(
   return targetedAgentIds.size === 0 ? rules : rules.filter((rule) => targetedAgentIds.has(rule.agentId))
 }
 
+/** Which static gate a `no-match` failed, so a dropped delivery can say why. */
+export type GithubNoMatchReason =
+  | 'not_github'
+  | 'deleted'
+  | 'lifecycle'
+  | 'bot_sender'
+  | 'release_restated'
+  | 'installation'
+  | 'review_request_target'
+  | 'event'
+  | 'comment_family'
+  | 'mention_only'
+  | 'label_filter'
+
+export type GithubRuleMatch =
+  { verdict: 'trusted' | 'needs-authz' } | { verdict: 'no-match'; reason: GithubNoMatchReason }
+
+const noMatch = (reason: GithubNoMatchReason): GithubRuleMatch => ({ verdict: 'no-match', reason })
+
 /** One rule's pure verdict: noise veto → bot veto → attribution → cadence/summon → comment scope → mention-only → labels → authz. */
 export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): GithubRuleVerdict {
-  if (rule.kind !== 'github' || !rule.github) return 'no-match'
+  return githubRuleMatch(rule, ctx).verdict
+}
+
+/** `githubRuleVerdict` with the failed gate of a `no-match`. */
+export function githubRuleMatch(rule: RcHookAssign, ctx: GithubMatchCtx): GithubRuleMatch {
+  if (rule.kind !== 'github' || !rule.github) return noMatch('not_github')
   // Deletions are never new work (issue deletion is cleanup), even under a legacy wildcard.
-  if (ctx.eventAction === `${ctx.event}:deleted`) return 'no-match'
+  if (ctx.eventAction === `${ctx.event}:deleted`) return noMatch('deleted')
   // Lifecycle changes and content edits are silent; a signed target-branch edit still changes the revision.
   if (
     (ctx.event === 'issues' &&
@@ -375,7 +399,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
         ctx.eventAction === 'pull_request:auto_merge_enabled' ||
         ctx.eventAction === 'pull_request:auto_merge_disabled'))
   )
-    return 'no-match'
+    return noMatch('lifecycle')
   // Decision 10: bots are vetoed except this App's same-repository PR revisions, deployments, which cannot loop, other bots' releases, and filtered labels.
   if (
     ctx.senderType === 'Bot' &&
@@ -384,18 +408,18 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     !isForeignBotRelease(rule, ctx) &&
     !isFilteredBotLabel(rule, ctx)
   )
-    return 'no-match'
+    return noMatch('bot_sender')
   // A restated release action fires only on its explicit pattern, so one publish is one turn under `release:*`.
   if (GITHUB_RELEASE_RESTATED_EVENTS.has(ctx.eventAction) && !rule.github.events.includes(ctx.eventAction))
-    return 'no-match'
+    return noMatch('release_restated')
   // Decision 6(a): an event that cannot prove its installation does not fire.
-  if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return 'no-match'
+  if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return noMatch('installation')
   // The native reviewer control bypasses cadence, label and mention filters, only for this App bot and behind live authz.
   if (ctx.eventAction === 'pull_request:review_requested') {
     return requestsGithubAppReviewer(ctx.requestedReviewerLogin, rule.github.appSlug) &&
       githubRuleSupportsPullRequests(rule)
-      ? 'needs-authz'
-      : 'no-match'
+      ? { verdict: 'needs-authz' }
+      : noMatch('review_request_target')
   }
   // An `issue_comment` subscription also covers diff-line review comments, so mention mode sees them.
   const action = ctx.eventAction.includes(':') ? ctx.eventAction.slice(ctx.eventAction.indexOf(':')) : ''
@@ -417,7 +441,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     createdCadenceSummonFamily !== undefined &&
     rule.github.events.includes(`${createdCadenceSummonFamily}:opened`)
   const eventMatched = nativeEventMatched || sharedCommentAliasMatched || createdCadenceSummonMatched
-  if (!eventMatched) return 'no-match'
+  if (!eventMatched) return noMatch('event')
   // `issue_comment` spans issues and PRs: selected comment families scope it, absent keeps the legacy repo-wide union.
   const matchedViaSharedComment =
     ctx.event === 'issue_comment' || (!nativeEventMatched && (sharedCommentAliasMatched || createdCadenceSummonMatched))
@@ -429,10 +453,10 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     commentFamilies.length > 0 &&
     !commentFamilies.includes(ctx.commentSubjectFamily)
   )
-    return 'no-match'
+    return noMatch('comment_family')
   // P3 mention-only: fire only when the authored text summons the App or agent; a summoned issue's later updates keep flowing.
-  if (rule.github.mentionOnly && !summoned) return 'no-match'
-  if (!labelFilterAdmits(rule.github.labelFilter, ctx.labels)) return 'no-match'
+  if (rule.github.mentionOnly && !summoned) return noMatch('mention_only')
+  if (!labelFilterAdmits(rule.github.labelFilter, ctx.labels)) return noMatch('label_filter')
 
   // Association labels prove nothing: thread events resolve the live role; push, deployments, releases and bot labels rely on the installation gate.
   return ctx.event === 'push' ||
@@ -440,8 +464,8 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     ctx.event === 'release' ||
     isInternalAppPullRequest(rule, ctx) ||
     (ctx.senderType === 'Bot' && isFilteredBotLabel(rule, ctx))
-    ? 'trusted'
-    : 'needs-authz'
+    ? { verdict: 'trusted' }
+    : { verdict: 'needs-authz' }
 }
 
 /** Truncate on a UTF-8 byte budget at a code-point boundary; the excerpt cap is bytes, not UTF-16 units. */
@@ -1038,6 +1062,13 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         // Cannot happen from GitHub (it signed valid JSON) — defensive only.
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
       }
+      // Proves GitHub delivered a thread event, so a later silent drop is never mistaken for a missing delivery.
+      if (GITHUB_ROUTED_THREAD_EVENTS.has(event)) {
+        const number = (payload.issue ?? payload.pull_request)?.number
+        deps.log.info(
+          `github ingress: received ${event}:${payload.action ?? 'none'} ${deliveryKey} (github:${payload.repository?.id ?? 'none'}#${number ?? 'none'})`
+        )
+      }
 
       const objectSignals = githubObjectSignals(event, payload, deliveryKey)
       const feedbackSignals = objectSignals.filter((signal) => !signal.wakeOnly)
@@ -1126,7 +1157,14 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
               : event === 'release' && payload.release?.tag_name
                 ? 'releases'
                 : undefined
-      if (rules.length === 0 || thread === undefined) return reply.code(202).send({ deliveryKey })
+      if (rules.length === 0 || thread === undefined) {
+        if (GITHUB_ROUTED_THREAD_EVENTS.has(event)) {
+          deps.log.info(
+            `github ingress: no rule for ${event}:${payload.action ?? 'none'} ${deliveryKey} (github:${repoId ?? 'none'}#${thread ?? 'none'}, ${rules.length} rules)`
+          )
+        }
+        return reply.code(202).send({ deliveryKey })
+      }
 
       const cleanupEvent = githubThreadWorktreeCleanupEvent(event, payload)
       const action = githubEventAction(event, payload)
@@ -1397,15 +1435,24 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       }
 
       // A record-only event (a PR review) matches nothing: it only joins its thread's history on a routing host.
-      const matched = SUBSCRIPTION_EVENTS.has(event)
-        ? mentionCandidates
-            .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
-            .filter((candidate) => candidate.verdict !== 'no-match')
+      const evaluated = SUBSCRIPTION_EVENTS.has(event)
+        ? mentionCandidates.map((rule) => ({ rule, match: githubRuleMatch(rule, ctx) }))
         : []
+      const matched = evaluated.flatMap(({ rule, match }) =>
+        match.verdict === 'no-match' ? [] : [{ rule, verdict: match.verdict }]
+      )
       // A native reviewer request is an explicit maintainer action; a drop always deserves a line.
       if (ctx.eventAction === 'pull_request:review_requested' && matched.length === 0) {
         deps.log.info(
           `github ingress: reviewer request matched no rule ${deliveryKey} (reviewer ${ctx.requestedReviewerLogin ?? 'none'} github:${repoId}#${thread})`
+        )
+      } else if (SUBSCRIPTION_EVENTS.has(event) && matched.length === 0) {
+        // Each rule's failed gate; a rule a mention narrowed away never reached the verdict.
+        const reasons = evaluated.map(
+          ({ rule, match }) => `${rule.hookId}=${match.verdict === 'no-match' ? match.reason : match.verdict}`
+        )
+        deps.log.info(
+          `github ingress: matched no rule ${deliveryKey} (${ctx.eventAction} github:${repoId}#${thread}; ${reasons.join(', ') || 'none'}; ${rules.length - mentionCandidates.length} narrowed by mention)`
         )
       }
       if (
