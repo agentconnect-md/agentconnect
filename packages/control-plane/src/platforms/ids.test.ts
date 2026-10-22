@@ -27,6 +27,7 @@ import { createFeishuCpProvider } from './feishu/provider.js'
 import { createLinearCpProvider } from './linear/provider.js'
 import { createGoogleChatCpProvider } from './googlechat/provider.js'
 import { createDingTalkCpProvider } from './dingtalk/provider.js'
+import { createMsTeamsCpProvider } from './msteams/provider.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import { Platform, UpsertCronBody, WaitlistJoinBody } from '../http/dto/index.js'
 import { findTool } from '../http/mcp/tools.js'
@@ -42,7 +43,8 @@ const productionRegistry = buildCpPlatformRegistry([
   createFeishuCpProvider({}),
   createLinearCpProvider({}),
   createGoogleChatCpProvider(),
-  createDingTalkCpProvider()
+  createDingTalkCpProvider(),
+  createMsTeamsCpProvider()
 ])
 
 const sorted = [...CP_PLATFORM_IDS].sort()
