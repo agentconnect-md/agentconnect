@@ -41,12 +41,8 @@ export const DINGTALK_ELICIT_SURFACE: ElicitSurface = {
   optionLimits: { enum: { maxOptions: DINGTALK_ELICIT_MAX_OPTIONS } }
 }
 
-// A group delivers only mentions, so the answer there must mention the bot too (§4.1).
-export function dingTalkElicitInstruction(channel: string): string {
-  return channel.startsWith('dm:')
-    ? 'Quote this message and reply with a number or an option.'
-    : 'Quote this message and reply with a number or an option, and @mention me.'
-}
+// Replying in a group mentions the bot for the user, so groups and DMs share one instruction (§4.1).
+const DINGTALK_ELICIT_INSTRUCTION = 'Reply to this message with a number or an option.'
 
 // UTF-8 bytes of `text` once JSON-encoded, the unit DingTalk's msgParam limit counts.
 function jsonBytes(text: string): number {
@@ -66,13 +62,8 @@ function clampJsonBytes(text: string, max: number): string {
   return `${out}…`
 }
 
-export function dingTalkElicitText(message: string, target: ElicitTarget, channel: string): string | null {
-  const tail = [
-    '',
-    ...target.options.map((o, i) => `${i + 1}. ${o.label}`),
-    '',
-    dingTalkElicitInstruction(channel)
-  ].join('\n')
+export function dingTalkElicitText(message: string, target: ElicitTarget): string | null {
+  const tail = ['', ...target.options.map((o, i) => `${i + 1}. ${o.label}`), '', DINGTALK_ELICIT_INSTRUCTION].join('\n')
   // The send wraps the text as `{"content": …}`; keep the whole card one message.
   const budget = DINGTALK_MSG_PARAM_MAX_BYTES - jsonBytes(tail) - jsonBytes('💬 ') - Buffer.byteLength('{"content":""}')
   if (budget < 64) return null
@@ -103,10 +94,10 @@ export const dingTalkElicitCards: ElicitCardFacet = {
   platform: 'dingtalk',
   reduction: DINGTALK_ELICIT_SURFACE,
 
-  build(_host: ElicitCardHost, turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
+  build(_host: ElicitCardHost, _turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
     const target = ask.form?.length === 1 ? ask.form[0]! : undefined
     if (ask.url || !target?.options.length) return null
-    return dingTalkElicitText(ask.message, target, turn.plan.channel)
+    return dingTalkElicitText(ask.message, target)
   },
 
   // The handle is the send's process query key: the bot never learns the card's message id, and a quote brings the key back.
@@ -123,7 +114,7 @@ export const dingTalkElicitCards: ElicitCardFacet = {
     if (!target) return null
     const index = dingTalkElicitChoice(target, reply.text)
     if (index === null) {
-      follow(handle, `Quote the question and reply with a number from 1 to ${target.options.length}.`)
+      follow(handle, `Reply to the question with a number from 1 to ${target.options.length}.`)
       return { kind: 'pending' }
     }
     return { kind: 'submit', fields: { [elicitFormBlockId(0)]: elicitOptionToken(index) } }

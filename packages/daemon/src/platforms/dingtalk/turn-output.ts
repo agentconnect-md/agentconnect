@@ -8,8 +8,8 @@ import { isNoResponseBody } from '../../session/no-response.js'
 import type { DingTalkReplyPort } from './connection.js'
 import type { DingTalkQuotaNotice } from './quota.js'
 
-/** The line on a group turn's last message: a group delivers only mentions, so a quote alone never reaches the bot (§4.1). */
-export const DINGTALK_CONTINUE_HINT = '↩️ To continue this topic, quote this message and @mention me.'
+/** The line on a group turn's last message; replying to a group message mentions its sender, which a group needs (§4.1). */
+export const DINGTALK_CONTINUE_HINT = '↩️ To continue this topic, please reply to this message.'
 
 const PROGRESS_LIMIT = 2
 const PROGRESS_SPACING_MS = 15_000
