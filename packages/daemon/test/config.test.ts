@@ -333,6 +333,13 @@ describe('loadConfig', () => {
     expect(cfg.logging.level).toBe('debug')
   })
 
+  it('lets --ahp-mode override the file and refuses an unknown mode', () => {
+    const root = tmpRoot({ version: 1, features: { ahp: { mode: 'shadow' } } })
+    expect(loadConfig({ root }).features.ahp.mode).toBe('shadow')
+    expect(loadConfig({ root, overrides: { ahpMode: 'on' } }).features.ahp.mode).toBe('on')
+    expect(() => loadConfig({ root, overrides: { ahpMode: 'yes' } })).toThrow('--ahp-mode must be off, shadow or on')
+  })
+
   it('allows the daemon to opt out of account-app isolation explicitly', () => {
     const root = tmpRoot({ version: 1, security: { isolateAccountApps: false } })
     expect(loadConfig({ root }).security.isolateAccountApps).toBe(false)

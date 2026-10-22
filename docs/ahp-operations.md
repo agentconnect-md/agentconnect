@@ -32,7 +32,9 @@ The daemon switch belongs in `config.json` under `AGENTCONNECT_ROOT` (normally
 }
 ```
 
-Merge that property into the existing file. Apply startup configuration through
+A daemon started with `--ahp-mode off|shadow|on` uses that value instead of the
+file's. Kubernetes pool members, which write their own config file, take it from
+the chart value `daemonPool.ahpMode`. Merge that property into the existing file. Apply startup configuration through
 normal service deployment/restart; do not assume live file watching or automatic
 cross-service synchronization. An older daemon cannot gain a serving host by
 setting a flag. Check the actual capability after registration and reconnection.
