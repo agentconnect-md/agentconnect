@@ -24,6 +24,7 @@ RUN pnpm --filter @agentconnect.md/desktop bundle
 
 FROM debian:trixie-slim AS desktop
 
+# Dependabot can't see these ARGs: bump the version and both SHASUMS256 sums together with the bundle stage's node FROM.
 ARG NODE_VERSION=24.22.1
 ARG NODE_SHA256_ARM64=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e
 ARG NODE_SHA256_X64=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
