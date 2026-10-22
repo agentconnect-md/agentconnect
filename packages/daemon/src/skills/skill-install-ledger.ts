@@ -835,18 +835,40 @@ async function mutateAll(
   return results
 }
 
+const BYTECODE_CACHE_DIR = '__pycache__'
+
+/** Python's bytecode cache from running a bundled script is regenerated on demand, so it does not make a bundle
+ *  read as edited; this check stays read-only and the confined mutation helper removes it before a replacement.
+ *  A cache the receipt itself names is installed content and is compared like any other. */
+function withoutBytecodeCaches(files: SkillFileReceipt[], bundle: SkillBundleReceipt): SkillFileReceipt[] {
+  const owned = new Set<string>()
+  for (const file of bundle.files) {
+    const parts = file.path.split('/')
+    for (let index = 1; index < parts.length; index += 1) owned.add(parts.slice(0, index).join('/'))
+  }
+  return files.filter((file) => {
+    const parts = file.path.split('/')
+    return !parts
+      .slice(0, -1)
+      .some((part, index) => part === BYTECODE_CACHE_DIR && !owned.has(parts.slice(0, index + 1).join('/')))
+  })
+}
+
 async function bundleIdentity(root: string, bundle: SkillBundleReceipt): Promise<PathIdentity | null> {
   try {
     validateReceipt(bundle)
     const before = await fsp.lstat(root, { bigint: true })
     if (!before.isDirectory() || before.isSymbolicLink()) return null
     const inspected = await inspectLocalSkillSource(root)
-    const files: SkillFileReceipt[] = inspected.files.map((file) => ({
-      path: file.path,
-      mode: file.mode & 0o111 ? 0o700 : 0o600,
-      size: file.size,
-      sha256: file.sha256.replace(/^sha256:/, '')
-    }))
+    const files = withoutBytecodeCaches(
+      inspected.files.map((file) => ({
+        path: file.path,
+        mode: file.mode & 0o111 ? 0o700 : 0o600,
+        size: file.size,
+        sha256: file.sha256.replace(/^sha256:/, '')
+      })),
+      bundle
+    )
     const after = await fsp.lstat(root, { bigint: true })
     if (!after.isDirectory() || !sameIdentity(identity(before), identity(after))) return null
     return JSON.stringify(files) === JSON.stringify(bundle.files) && treeDigest(files) === bundle.treeDigest
