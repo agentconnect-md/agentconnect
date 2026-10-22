@@ -17,8 +17,11 @@ export const MSTEAMS_KEYS_TTL_MS = 60 * 60 * 1000
 /** The least time between two fetches an inbound request can cause, so a forged `kid` cannot drive traffic to Microsoft. */
 export const MSTEAMS_KEYS_REFETCH_MS = 5 * 60 * 1000
 
-/** The key set is never allowed to grow past this. */
-export const MSTEAMS_MAX_KEYS = 32
+/** A sanity bound on the published document's entries; Microsoft publishes a few hundred, every one of which is kept. */
+export const MSTEAMS_MAX_DOCUMENT_KEYS = 4096
+
+/** Imported keys are cached per kid up to this bound; the published keys themselves are never dropped. */
+export const MSTEAMS_MAX_IMPORTED_KEYS = 64
 
 // A key that lists the channels it is endorsed for must name Teams.
 const MSTEAMS_CHANNEL = 'msteams'
@@ -74,33 +77,37 @@ function ttlFrom(cacheControl: string | null): number {
   return Math.min(MAX_TTL_MS, Math.max(MIN_TTL_MS, Number(m[1]) * 1000))
 }
 
-// RSA signing keys only, and only those endorsed for Teams when the key lists its channels.
-async function readJwks(body: unknown, log: Logger | undefined): Promise<Map<string, VerificationKey>> {
+/** A published RSA key's public parameters, imported only when a token names its kid. */
+interface PublishedKey {
+  n: string
+  e: string
+}
+
+// Every RSA signing key in the document, keeping only those endorsed for Teams when the key lists its channels.
+function readJwks(body: unknown): Map<string, PublishedKey> {
   const list = (body as { keys?: unknown } | null)?.keys
-  if (!Array.isArray(list)) throw new Error('not a JWKS')
-  const keys = new Map<string, VerificationKey>()
-  for (const entry of list.slice(0, MSTEAMS_MAX_KEYS)) {
+  if (!Array.isArray(list) || list.length > MSTEAMS_MAX_DOCUMENT_KEYS) throw new Error('not a usable JWKS')
+  const keys = new Map<string, PublishedKey>()
+  for (const entry of list) {
     const jwk = entry as Record<string, unknown> | null
     const kid = jwk?.kid
     if (typeof kid !== 'string' || jwk?.kty !== 'RSA') continue
+    if (typeof jwk.n !== 'string' || typeof jwk.e !== 'string') continue
     if ((jwk.alg !== undefined && jwk.alg !== 'RS256') || (jwk.use !== undefined && jwk.use !== 'sig')) continue
     if (
       jwk.endorsements !== undefined &&
       !(Array.isArray(jwk.endorsements) && jwk.endorsements.includes(MSTEAMS_CHANNEL))
     )
       continue
-    try {
-      keys.set(kid, await importJWK({ kty: 'RSA', n: jwk.n as string, e: jwk.e as string }, 'RS256'))
-    } catch {
-      log?.warn(`msteams ingress: skipped an unreadable signing key for kid ${kid}`)
-    }
+    keys.set(kid, { n: jwk.n, e: jwk.e })
   }
   return keys
 }
 
 /** The Bot Framework's published signing keys by `kid`: honours `max-age`, keeps the last good set, refetches an unknown kid at most once a spacing. */
 class BotFrameworkKeySet {
-  private keys = new Map<string, VerificationKey>()
+  private keys = new Map<string, PublishedKey>()
+  private imported = new Map<string, VerificationKey>()
   private staleAt = 0
   private lastUnknownKidFetchAt = Number.NEGATIVE_INFINITY
   private inflight: Promise<void> | undefined
@@ -117,12 +124,28 @@ class BotFrameworkKeySet {
       await this.refresh(now)
       refreshed = true
     }
-    const known = this.keys.get(kid)
-    if (known) return known
+    if (this.keys.has(kid)) return await this.import(kid)
     if (refreshed || now - this.lastUnknownKidFetchAt < MSTEAMS_KEYS_REFETCH_MS) return undefined
     this.lastUnknownKidFetchAt = now
     await this.refresh(now)
-    return this.keys.get(kid)
+    return this.keys.has(kid) ? await this.import(kid) : undefined
+  }
+
+  // The imported key for a published kid, cached within a bound; the oldest import is evicted, never a published key.
+  private async import(kid: string): Promise<VerificationKey | undefined> {
+    const cached = this.imported.get(kid)
+    if (cached) return cached
+    const published = this.keys.get(kid)
+    if (!published) return undefined
+    try {
+      const key = await importJWK({ kty: 'RSA', n: published.n, e: published.e }, 'RS256')
+      if (this.imported.size >= MSTEAMS_MAX_IMPORTED_KEYS) this.imported.delete(this.imported.keys().next().value!)
+      this.imported.set(kid, key)
+      return key
+    } catch {
+      this.log()?.warn(`msteams ingress: skipped an unreadable signing key for kid ${kid}`)
+      return undefined
+    }
   }
 
   // Concurrent callers share one fetch.
@@ -148,9 +171,10 @@ class BotFrameworkKeySet {
       const jwksUri = (config.body as { jwks_uri?: unknown } | null)?.jwks_uri
       if (typeof jwksUri !== 'string' || new URL(jwksUri).protocol !== 'https:') throw new Error('no https jwks_uri')
       const jwks = await this.getJson(jwksUri)
-      const keys = await readJwks(jwks.body, this.log())
+      const keys = readJwks(jwks.body)
       if (keys.size === 0) throw new Error('no usable key')
       this.keys = keys
+      this.imported = new Map()
       this.staleAt = now + ttlFrom(jwks.cacheControl)
     } catch (err) {
       // Keep the last good set and retry no sooner than the spacing: one failed fetch must not 401 every activity.

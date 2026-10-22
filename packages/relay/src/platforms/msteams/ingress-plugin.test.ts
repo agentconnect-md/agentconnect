@@ -240,6 +240,20 @@ describe('msteams ingress plugin — Bot Framework token verification (§3)', ()
     expect((await deliver(s, personalText)).verified).toBeDefined()
   })
 
+  it('keeps every published key, so a token signed by a key deep in a large document verifies', async () => {
+    // The live document publishes a few hundred keys; one past any small prefix must still verify.
+    const decoy = OTHER_KEYS.publicKey.export({ format: 'jwk' })
+    const decoys = Array.from({ length: 299 }, (_, i) => ({
+      ...decoy,
+      kid: `kid-decoy-${i}`,
+      use: 'sig',
+      endorsements: ['msteams']
+    }))
+    const s = setup({}, { bf: fakeBotFramework({ keys: [...decoys.slice(0, 266), JWK, ...decoys.slice(266)] }) })
+    expect((await deliver(s, personalText)).verified).toBeDefined()
+    expect(s.bf.keyFetches()).toBe(1)
+  })
+
   it("honors the keys response's max-age and falls back to the fixed TTL without one", async () => {
     const capped = setup({}, { bf: fakeBotFramework(undefined, { 'cache-control': 'public, max-age=120' }) })
     await deliver(capped, personalText)
