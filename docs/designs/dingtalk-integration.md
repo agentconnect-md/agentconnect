@@ -21,7 +21,7 @@ on hosted and self-hosted deployments alike.
 | Ingress               | Daemon-owned Stream connection. No relay module and no public callback endpoint.                                       |
 | Groups and DMs        | Explicit mentions in groups; every message in a DM. DingTalk delivers nothing else from a group.                       |
 | Sessions              | Telegram's reply-chain model: a new mention starts a session; quoting a bot reply and mentioning the bot continues it. |
-| Streaming and replies | An AI card streams progress; the final answer is a Markdown message, because the card renders Markdown poorly (§4.3).  |
+| Streaming and replies | A thinking reaction on the user's message acknowledges the turn; the answer is one or more Markdown messages (§4.3).   |
 | Attachments           | Inbound files and images through the robot download API; outbound images and files through media upload.               |
 | Questions, approvals  | A numbered text card answered by quoting it; tool approvals stay in the Console with a notice in the conversation.     |
 
@@ -63,7 +63,7 @@ feature that reads it.
 ## 3. Architecture
 
 The daemon opens the Stream connection, receives robot messages, and owns every
-outbound call, card update, and attachment transfer. The Control Plane handles
+outbound call, reaction, and attachment transfer. The Control Plane handles
 installation, credentials, and configuration and stays off the message path.
 
 ```mermaid
@@ -73,8 +73,8 @@ flowchart LR
     R --> A[Agent execution]
     X -->|Download code| F[Existing attachment APIs]
     F --> A
-    A -->|Progress| C[AI card stream]
-    A -->|Final answer, files| M[Markdown and media messages]
+    A -->|Turn start and end| C[Reaction on the user's message]
+    A -->|Answer, files| M[Markdown and media messages]
     C --> G
     M --> G
     A -->|Permission required| P[Existing Console approval]
@@ -120,8 +120,9 @@ connections of the same daemon both deliver during a rebalance.
 
 `conversationType` `1` is a DM and `2` a group. A group is keyed by its
 `conversationId`, the `openConversationId` the group send API takes; a DM is
-keyed `dm:<senderStaffId>`, because DM sends and DM card delivery address user
-IDs, not the conversation. A group mention arrives with `isInAtList: true` and the bot removed from the text,
+keyed `dm:<senderStaffId>`, because DM sends address user IDs, not the
+conversation; the raw conversation ID stays in the normalized `msgId`
+(`dingtalk:<conversationId>:<msgId>`). A group mention arrives with `isInAtList: true` and the bot removed from the text,
 leaving a leading space the adapter trims.
 
 DingTalk has no threads (the `openThreadId` field equals the conversation ID),
@@ -159,41 +160,43 @@ which expires 90 minutes after the message (**measured**) and cannot send cards.
 A send's `msgParam` is limited to 15,000 bytes. A plain message cannot be
 edited, only recalled by its process query key.
 
-### 4.3 Streaming and Markdown
+### 4.3 Acknowledgement and Markdown
 
-An AI card is the only way to show progress in place. The adapter creates the
-card (`POST /v1.0/card/instances`), delivers it to `IM_GROUP` or `IM_ROBOT`,
-then pushes full-content updates to `PUT /v1.0/card/streaming`. The template
-published in DingTalk's official SDK works for an arbitrary internal app
-(**measured**), so organizations do not import a template. An 8,000-byte card
-streamed without error, above the documented 3 KB recommendation.
+A turn is acknowledged by a reaction on the message that started it: DingTalk's
+built-in "thinking" text emotion, added with
+`POST /v1.0/robot/emotion/reply` at turn start and recalled with
+`POST /v1.0/robot/emotion/recall` when the turn ends — completed, interrupted,
+failed, or cut to run again. Both calls take the inbound `msgId` and
+`conversationId`, so a DM's reaction is addressed by its raw conversation ID
+(§4.1). DingTalk has no typing indicator, so the reaction stands in for one and
+is withdrawn like one ([product conventions](../product-conventions.md)). It
+appears in every output mode except `none`, and only on a message DingTalk
+delivered: a turn another agent started gets none. It is best effort: a
+refused or failed call logs one warning and never fails or delays the turn, and
+a failure notice is posted as a message, since a reaction cannot carry one.
 
-The card renders Markdown poorly, and the plain Markdown message renders it
-well (**measured** on the desktop client):
+The answer goes out as one or more Markdown messages split under the size
+limit. An AI card could show progress in place, but the adapter sends none: the
+card renders Markdown poorly, and the plain Markdown message renders it well
+(**measured** on the desktop client):
 
 | Element                | AI card                           | Markdown message                              |
 | ---------------------- | --------------------------------- | --------------------------------------------- |
 | Headings               | Small bold text                   | Rendered                                      |
 | Bullet and number list | Markers dropped                   | Rendered                                      |
 | Fenced code            | Fence removed; content shown bold | Code block with copy button; language ignored |
-| Table                  | Raw pipes; `---` becomes a dash   | Rendered                                      |
+| Table                  | Raw pipes; `---` becomes a dash   | Rendered after a blank line                   |
 | `_italic_`             | Rendered                          | Underscores shown literally                   |
 | Inline code            | Bold, not monospace               | Bold, not monospace                           |
 | Spaces between styles  | Dropped                           | Dropped before a link                         |
 
-So the card carries progress — status, tool activity, a bounded tail of the
-reply — and collapses to a one-line summary when the turn ends, while the final
-answer goes out as one or more Markdown messages split under the size limit. The
-card is the turn's acknowledgement: it opens at turn start in every output mode
-except `none`, names tools only in `medium` and `high`, and its text is plain —
-headings, fences, and table pipes are stripped and list markers become `•`. A
-card that cannot open (permission, quota, network) leaves the turn running
-without one, and the connection stops trying for ten minutes so a missing
-permission costs one call per window and one log line. A DingTalk renderer
-rewrites `_x_` to `*x*`, turns the space before a link or inline style into a
-no-break space (**unverified** on every client), and drops the fence language.
-A custom template with a richer Markdown component could keep the answer in the
-card; that is a later experiment, not a v1 dependency.
+A progress card beside that answer was redundant in live testing — each turn
+left a finished-status card above the Markdown answer — and cost about 25 calls
+per one-minute turn (§4.4). A DingTalk renderer rewrites `_x_` to `*x*`, turns
+the space before a link or inline style into a no-break space (**unverified**
+on every client), drops the fence language, and puts a blank line before a
+table that directly follows a paragraph line, which DingTalk otherwise renders
+as that paragraph's text (**measured**).
 
 ### 4.4 Quota
 
@@ -205,19 +208,16 @@ developer console's current announcement lists:
 | Standard / startup | 5,000                    | 3,000                               |
 | Professional       | 500,000                  | 50,000                              |
 
-A turn is expensive in calls (**measured**): a 2,500-byte card took 17 calls and
-an 8,000-byte card 43, at about two updates per second. Whether card calls
-count as "paid" is **unverified**. The adapter therefore coalesces card updates:
-at most one every three seconds, the newest snapshot winning; reply growth alone
-earns an update only after 160 characters, while a status or tool change always
-does; and a card stops at 30 content updates. A one-minute turn then costs about
-25 calls. The API client maps the quota errors (`90020`,
+A turn costs two reaction calls plus one send per message: the answer's parts
+and, in `medium` and `high`, at most two intermediate messages. A streamed card
+would cost far more (**measured**: 17 calls for 2,500 bytes, 43 for 8,000).
+The API client maps the quota errors (`90020`,
 `Forbidden.AccessDenied.ApiCountLimitForOrg`) and the per-app limit (`90018`,
 `Forbidden.AccessDenied.QpsLimitForAppkeyAndApi`, 20 QPS per API) to a typed
-limit error. A quota refusal posts one plain-text notice per turn that names
-the edition limit, instead of a generic delivery failure; a QPS refusal of a
-card update skips that update and doubles the interval, up to fifteen seconds,
-and never fails the turn. The Console setup guide states the limits up front.
+limit error. A quota refusal of a send posts one plain-text notice per turn
+that names the edition limit, instead of a generic delivery failure; a refused
+reaction call is only logged. The Console setup guide states the limits up
+front.
 
 ### 4.5 Attachments
 
@@ -241,10 +241,8 @@ Questions reuse `ElicitCardFacet` the way QQ does: a numbered text card,
 answered by quoting it with a number or an option label. As in §4.1, the bot
 never learns the card's `msgId`: the facet stores the card's send handle as its
 `processQueryKey` and matches a quote's `originalProcessQueryKey` against it, so
-ordinary chat and other quotes settle nothing.
-Card buttons arrive on the Stream card-callback topic and could replace the
-quote later; they are **unverified**. Tool approvals stay in the Console, with
-a notice in the conversation.
+ordinary chat and other quotes settle nothing. Tool approvals stay in the
+Console, with a notice in the conversation.
 
 ## 5. Console setup
 
@@ -255,8 +253,7 @@ the facts the probe hit (**measured**):
 - The robot requires a message preview image.
 - The message receive mode is Stream, the default.
 - Adding the robot grants `qyapi_robot_sendmsg`, which includes the file
-  download API. `Card.Instance.Write` and `Card.Streaming.Write` are granted
-  without review; `qyapi_get_member` is optional.
+  download API; `qyapi_get_member` is optional. No card permission is needed.
 - An internal app version publishes without review, and **every later
   configuration change takes effect only after a new version**; until then
   DingTalk keeps the previous behavior.
@@ -283,9 +280,9 @@ text, so no migration is needed. Normalization lives in the message package.
   through the API. Membership is likely observed (who has spoken) rather than
   authoritative, so a DingTalk group's visibility stays weaker than a channel
   with an enumerable roster. Not probed.
-- Whether AI card calls count toward the paid-call quota (§4.4).
+- Whether the reaction APIs need a permission beyond `qyapi_robot_sendmsg`; a
+  refusal leaves turns without a reaction (§4.3).
 - Why a DM image did not arrive (§4.5).
-- Card button callbacks (§4.6).
 - The international service is a separate API stack; its gateway routes the
   card APIs, but nothing beyond that is checked.
 
@@ -309,8 +306,10 @@ protocol, then a real internal app:
 - Mentions, DMs, and quotes route to the right session; ambient group messages
   never arrive.
 - Rebalance `disconnect` frames lose no message; duplicate `msgId`s are dropped.
-- Card progress stays within the coalescing budget and closes on finish,
-  cancel, and failure; the final Markdown splits under 15,000 bytes.
+- The thinking reaction goes on at turn start and comes off on finish, cancel,
+  and failure, in groups and DMs; a refused reaction leaves the turn unaffected.
+- The final Markdown splits under 15,000 bytes, and a table under a paragraph
+  line renders as a table.
 - Quota and rate-limit errors surface as the edition notice.
 - Inbound files in DMs and through quotes; outbound images and files.
 
@@ -318,6 +317,6 @@ protocol, then a real internal app:
 
 - Stream mode: [introduction](https://help.dingtalk.io/open/development/introduction-to-stream-mode.md), [protocol](https://github.com/open-dingtalk/developerpedia/blob/main/docs/learn/stream/protocol.md).
 - Robots: [overview](https://help.dingtalk.io/open/development/robot-overview.md), [receiving messages](https://help.dingtalk.io/open/development/receive-message.md), [sending to groups](https://help.dingtalk.io/open/development/the-robot-sends-a-group-message.md), [message types](https://help.dingtalk.io/open/development/robot-message-type.md), [file download](https://help.dingtalk.io/open/development/download-the-file-content-of-the-robot-receiving-message.md).
-- Cards: [streaming update](https://open.dingtalk.com/document/orgapp/api-streamingupdate), [create and deliver](https://open.dingtalk.com/document/orgapp/create-and-deliver-cards), [official SDK](https://github.com/open-dingtalk/dingtalk-stream-sdk-python).
+- Cards, measured in §4.3: [streaming update](https://open.dingtalk.com/document/orgapp/api-streamingupdate), [create and deliver](https://open.dingtalk.com/document/orgapp/create-and-deliver-cards).
 - Limits: [API throttling](https://help.dingtalk.io/open/development/api-throttling.md), [resource use](https://help.dingtalk.io/open/development/appendix-rational-use-of-resources.md).
 - Third-party apps: [provider onboarding](https://help.dingtalk.io/open/development/isv-cooperation-guide.md), [event push configuration](https://help.dingtalk.io/open/development/basic-configuration.md).

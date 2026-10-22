@@ -386,6 +386,11 @@ it; one that ends with no text says in its place that it finished without a repl
 a turn cut to run again leaves it for that run to take over. A turn that answers within
 two seconds never shows one.
 
+DingTalk has no typing indicator either, and the reaction its bot places is a
+"thinking" label, not a mark that the message was seen. There that reaction is
+the indicator: placed when the turn starts and taken off when it ends, however
+it ends, so nothing claims the agent is still thinking once the answer is in.
+
 The reaction is an acknowledgement, not a status: it is placed once and never
 taken back or swapped for an outcome. That is deliberate — it records that the
 turn was seen, which stays true whether the turn answers, is interrupted, or dies

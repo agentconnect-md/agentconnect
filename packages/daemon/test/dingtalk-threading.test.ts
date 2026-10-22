@@ -139,6 +139,7 @@ describe('DingTalk reply chain through the daemon', () => {
     vi.spyOn(DingTalkConnection.prototype, 'start').mockResolvedValue()
     let keys = 0
     const send = vi.spyOn(DingTalkApi.prototype, 'send').mockImplementation(async () => `pqk-${++keys}`)
+    const reactionCalls = vi.spyOn(DingTalkApi.prototype, 'call').mockResolvedValue({ result: true })
     let sessions = 0
     const prompts: string[] = []
     daemon = new Daemon({
@@ -199,6 +200,17 @@ describe('DingTalk reply chain through the daemon', () => {
       msgKey: 'sampleMarkdown',
       param: { title: 'answer 5', text: 'answer 5' }
     })
+
+    // Each turn's thinking reaction goes on and comes off its message, a DM's by its raw conversation id.
+    await vi.waitFor(() => expect(reactionCalls).toHaveBeenCalledTimes(12))
+    const reactions = reactionCalls.mock.calls.map(([, path, body]) => {
+      const { openConversationId, openMsgId } = body as { openConversationId: string; openMsgId: string }
+      return `${String(path).split('/').at(-1)} ${openConversationId} ${openMsgId}`
+    })
+    const expected = [1, 2, 3, 4, 5, 6].flatMap((n) =>
+      ['reply', 'recall'].map((kind) => `${kind} ${n > 4 ? 'cid-example-dm' : GROUP} msg-${n}`)
+    )
+    expect(reactions.sort()).toEqual(expected.sort())
 
     // The bot's reply row carries the send's process query key as its platform message id, without the hint.
     const store = (daemon as any).store

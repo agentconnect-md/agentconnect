@@ -32,6 +32,24 @@ describe('rewriteDingTalkMarkdown', () => {
     expect(rewriteDingTalkMarkdown(text)).toBe(text)
   })
 
+  it('puts a blank line before a table that directly follows a paragraph line', () => {
+    expect(rewriteDingTalkMarkdown('**Summary**\n| a | b |\n| --- | --- |\n| 1 | 2 |')).toBe(
+      '**Summary**\n\n| a | b |\n| --- | --- |\n| 1 | 2 |'
+    )
+    expect(rewriteDingTalkMarkdown('Results:\na | b\n:-- | --:\n1 | 2\n\nDone.')).toBe(
+      'Results:\n\na | b\n:-- | --:\n1 | 2\n\nDone.'
+    )
+  })
+
+  it('leaves a table already after a blank line and table-like text inside a fence', () => {
+    const spaced = '**Summary**\n\n| a | b |\n| --- | --- |\n| 1 | 2 |'
+    expect(rewriteDingTalkMarkdown(spaced)).toBe(spaced)
+    const fenced = '```\nheader\n| a | b |\n| --- | --- |\n```'
+    expect(rewriteDingTalkMarkdown(fenced)).toBe(fenced)
+    const rows = 'text | not a table\nno delimiter | here'
+    expect(rewriteDingTalkMarkdown(rows)).toBe(rows)
+  })
+
   it('keeps the space after a list, heading or quote marker when the first word is styled', () => {
     for (const text of [
       '- **Important** note',

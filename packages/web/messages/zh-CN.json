@@ -6279,11 +6279,6 @@
           "http": "HTTP 模式",
           "publish": "发布"
         },
-        "permissions": {
-          "label": "权限",
-          "caption": "<action>权限管理</action> → 开通 Card.Instance.Write 和 Card.Streaming.Write。",
-          "apply": "立即开通"
-        },
         "publish": {
           "label": "发布",
           "caption": "<action>版本管理与发布</action> → 创建版本并设置谁能看到机器人。之后每次修改配置，都要发布新版本才会生效。",

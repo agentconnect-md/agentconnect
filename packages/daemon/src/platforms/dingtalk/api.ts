@@ -107,7 +107,7 @@ export class DingTalkApi {
     return this.request<T>('POST', path, body, headers)
   }
 
-  /** One call with the app's access token, for the card APIs (§4.3). */
+  /** One call with the app's access token, for the reaction APIs (§4.3). */
   async call<T>(method: 'POST' | 'PUT', path: string, body: unknown): Promise<T> {
     const token = await this.accessToken()
     return await this.request<T>(method, path, body, { 'x-acs-dingtalk-access-token': token })
