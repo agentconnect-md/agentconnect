@@ -171,7 +171,9 @@ inside the desktop session, as the desktop user, not root. It needs Node.js ≥ 
 tarball or your distribution's package).
 
 ```bash
-npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>
+npx -y @agentconnect.md/cli@latest computer install --register <token> --cp-url <exchange URL>
+# against a release-candidate Control Plane, which the console detects and shows:
+npx -y @agentconnect.md/cli@rc computer install --channel rc --register <token> --cp-url <exchange URL>
 ```
 
 The CLI downloads `@agentconnect.md/desktop` from npm, verifies its integrity, unpacks it into
@@ -191,7 +193,7 @@ agentconnect computer uninstall # service, autostart entry and versions; --purge
 
 (`npx -y @agentconnect.md/cli` stands in for `agentconnect` without a global install.) Config, the
 Computer key and the grants stay in `~/.agentconnect/desktop`, so an upgrade keeps the
-registration; a desktop installed by the earlier `install.sh` keeps its data, and `computer install`
+registration; a desktop installed by the retired Control Plane `install.sh` keeps its data, and `computer install`
 moves its service onto the store. `AGENTCONNECT_NPM_REGISTRY` points the CLI at another registry.
 
 Requirements for running from source: Node.js ≥ 24.12 (the official tarball in `~/.local/node` works), a logged-in

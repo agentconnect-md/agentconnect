@@ -295,8 +295,9 @@ channels and dist-tags, provenance through trusted publishing, a self-contained 
 release version baked in, and the §11 license scan run on exactly what ships). Cua Driver and ffmpeg are not in the
 package: they stay pinned, checksummed downloads at `setup` / first start. A Linux host is assumed to have Node.js
 (the daemon's `engines`), and the console's **Add Computer** shows
-`npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>` once the package is on npm
-(until then, see the transition note below). `install` resolves the
+`npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>`, the
+only Linux install path. The tag is never omitted: the registration names the CP release's `cliChannel`, so a stable CP
+emits `@latest` and an rc CP (or a checkout) `@rc --channel rc`, because npm `latest` can predate `computer install`. `install` resolves the
 package from the CLI-local registry (never a CP-supplied URL), verifies its integrity and `engines`, extracts it to
 `versions/<v>` in the data directory, points `current` at it and runs `setup --register`; the systemd user unit and the
 Windows Run-key launcher run `current/dist/agentconnect-desktop.mjs`. `upgrade` installs side by side, switches
@@ -305,12 +306,9 @@ its loopback `/control/status`; otherwise it restores the previous version. Conf
 live beside the store and are never touched, so an upgrade does not register again. `doctor` names the installed
 version (also its first check, which the console shows), and `status`, `versions`, `start` / `stop` / `restart` and
 `uninstall [--purge]` complete the set ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon);
-on Windows only `start` until M4). Transition: the first npm publish of `@agentconnect.md/desktop` and its trusted
-publisher are set up by hand, and until the package exists a release skips it with a warning instead of failing. Until
-then the CP image keeps shipping the bundle and serving the CP-hosted `install.sh`, and the console keeps the Linux
-`wget … | sh` one-liner whenever the registration carries `linuxInstallerUrl`; a follow-up removes both after the
-first publish. Installs from that `install.sh` keep their data directory, and `computer install` moves their service
-onto the store. Validated on Ubuntu 26.04 Xfce on Xorg (arm64)
+on Windows only `start` until M4). The CP no longer ships the daemon or serves a Linux installer: the CP-hosted
+`install.sh` served until the package's first npm publish (2.6.0-rc.57) is gone. Installs from that `install.sh` keep
+their data directory, and `computer install` moves their service onto the store. Validated on Ubuntu 26.04 Xfce on Xorg (arm64)
 against a local registry: install and register, online across logout / login and reboot, upgrade without a new
 registration, and rollback from a version whose daemon crashes.
 
@@ -1130,8 +1128,9 @@ and every `computer/policy`.
 - Agent settings: the agent's Computers card lists the Computers its agent access derives, with add and remove for the ones the member can edit (§4.1).
 - **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
   owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
-  `npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>` on Linux (§3.5), or
-  `computer setup` with the same arguments on macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
+  `npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>` on
+  Linux (§3.5, the tag following the CP's release channel), or `computer setup` with the same tag and arguments on
+  macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
@@ -1308,8 +1307,8 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
 5. **Console**: the Computers page (list, status, `doctor` results with fixes, policy, granted agents); "Add Computer"
    producing the install command; an embedded viewer on the detail page (watch, take over, pause, stop, revoke); the
    agent setting.
-6. **Linux productization**: `setup --register`; a one-line install (**[implemented]** for X11, first as a CP-served
-   `install.sh`, now `agentconnect computer install` from npm, §3.5; GNOME Wayland is #3221); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
+6. **Linux productization**: `setup --register`; a one-line install (**[implemented]** for X11 as
+   `agentconnect computer install` from npm, §3.5, which replaced the earlier CP-served `install.sh`; GNOME Wayland is #3221); the systemd user unit and XDG autostart validated across **real logout / login** (Xfce on Xorg, GNOME
    Wayland); keyboard activity detection (XInput2 raw events on X11 **[implemented]**, §6; Wayland cannot listen
    globally, so capabilities say pointer only); local indicator and stop (StatusNotifier tray plus a global hotkey
    **[implemented]** for X11, §6; on GNOME as far as the extension allows); Wayland IME text (clipboard paste behind a
@@ -1369,8 +1368,8 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    daemon downloads the pinned build on first start, as desktops do. The Debian packages' source obligations are open.
 
 5. **The computer daemon on npm** [#3239 implemented]: `@agentconnect.md/desktop` is published with each release and
-   managed by `agentconnect computer install / upgrade / doctor / status / uninstall` (§3.5), replacing the CP-served
-   Linux installer. The desktop image still bundles the daemon from the workspace at the release commit rather than
+   managed by `agentconnect computer install / upgrade / doctor / status / uninstall` (§3.5), the only Linux install
+   path; the CP-served Linux installer and the bundle in the CP image are removed. The desktop image still bundles the daemon from the workspace at the release commit rather than
    installing the published package; macOS (`.app`) and Windows packaging stay in M3 / M4.
 
 **Acceptance**: one `docker run` with a registration token produces a usable Computer in the console; in Kubernetes, an

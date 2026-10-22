@@ -4,17 +4,25 @@ import { computerInstallCommand, computerStatusTone, doctorCounts, sortedDoctorC
 describe('computer console helpers', () => {
   it('builds a one-line register command quoted for each shell', () => {
     const url = 'https://cp.example.com/v1/computers/register'
-    const installer = 'https://cp.example.com/v1/computers/install.sh'
-    const registration = { token: 'ac_tok', exchangeUrl: url, linuxInstallerUrl: null }
+    const registration = { token: 'ac_tok', exchangeUrl: url, cliChannel: 'rc' as const }
+    // An rc CP pins the rc CLI and daemon channel: npm latest can predate `computer install`.
     expect(computerInstallCommand('linux', registration)).toBe(
-      `npx -y @agentconnect.md/cli computer install --register 'ac_tok' --cp-url '${url}'`
-    )
-    // A CP that ships the bundle keeps Linux on its installer until the npm package's first release.
-    expect(computerInstallCommand('linux', { ...registration, linuxInstallerUrl: installer })).toBe(
-      `wget -nv -O- '${installer}' | sh -s -- --register 'ac_tok'`
+      `npx -y @agentconnect.md/cli@rc computer install --channel rc --register 'ac_tok' --cp-url '${url}'`
     )
     expect(computerInstallCommand('macos', registration)).toBe(
-      `npx -y @agentconnect.md/cli computer setup --register 'ac_tok' --cp-url '${url}'`
+      `npx -y @agentconnect.md/cli@rc computer setup --register 'ac_tok' --cp-url '${url}'`
+    )
+    // A stable CP pins latest, whose own channel is stable.
+    const stable = { ...registration, cliChannel: 'stable' as const }
+    expect(computerInstallCommand('linux', stable)).toBe(
+      `npx -y @agentconnect.md/cli@latest computer install --register 'ac_tok' --cp-url '${url}'`
+    )
+    expect(computerInstallCommand('macos', stable)).toBe(
+      `npx -y @agentconnect.md/cli@latest computer setup --register 'ac_tok' --cp-url '${url}'`
+    )
+    // A CP older than the field is an rc of this line, never an untagged command.
+    expect(computerInstallCommand('linux', { token: 'ac_tok', exchangeUrl: url })).toMatch(
+      /^npx -y @agentconnect\.md\/cli@rc computer install --channel rc /
     )
     expect(computerInstallCommand('windows', registration)).toContain(`--register "ac_tok" --cp-url "${url}"`)
     expect(computerInstallCommand('docker', registration)).toBe(
