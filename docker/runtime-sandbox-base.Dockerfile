@@ -2,7 +2,7 @@
 
 # Build and publish these dependency images manually; release builds use pinned digests.
 # ───────────────────────────── gh CLI fetch ─────────────────────────────────
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS gh-cli
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS gh-cli
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -25,7 +25,7 @@ RUN set -eu; \
   /out/gh --version
 
 # ─────────────────────────── Chrome for Testing ─────────────────────────────
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS chrome
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS chrome
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/*
@@ -44,7 +44,7 @@ RUN set -eu; \
   chmod -R a-w /out
 
 # ─────────────────────────────── runtime ────────────────────────────────────
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime-base
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS runtime-base
 
 # Install the baseline Git, Python and native build toolchain.
 RUN apt-get update \
@@ -105,7 +105,7 @@ USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
 # Codex needs --argv0 to re-enter its sandbox while its credential directory stays hidden.
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS bubblewrap-builder
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS bubblewrap-builder
 ARG BUBBLEWRAP_VERSION=0.11.2
 ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
 RUN apt-get update \

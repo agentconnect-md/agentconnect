@@ -13,7 +13,7 @@ ARG OPENCODE_VERSION=1.18.32
 
 # ───────────────────────────── shim builder ─────────────────────────────────
 # The shim build inlines its dependencies so runtime images need no daemon node_modules.
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS shim-builder
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
@@ -61,7 +61,7 @@ FROM scratch AS runtime-payload-digest-export
 COPY --from=runtime-payload-digest /payload-digest /
 
 # Antigravity is the first, independently cached application layer in the full image.
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS antigravity
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS antigravity
 ARG ANTIGRAVITY_VERSION=1.2.1
 ARG ANTIGRAVITY_SHA256_AMD64=9fbf0bd584a26478161f637cabd75113f72541c842d148f578ef1a6a9edcb843
 ARG TARGETARCH
@@ -97,7 +97,7 @@ RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
   && cp LICENSE NOTICE /out/licenses/muse-acp/
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
-FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS full-native-runtimes
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS full-native-runtimes
 ARG OMP_VERSION=18.3.0
 ARG OMP_SHA256_AMD64=d2fdaa29affe96e596eb9c78d42f548f1f291df28608631bcc00750a84b94bc3
 ARG DEVIN_VERSION=3000.11.3
