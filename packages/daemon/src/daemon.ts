@@ -1127,7 +1127,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
-import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
+import { isBuiltinSystemToolCall, rememberToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
 import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
 import {
@@ -22886,6 +22886,7 @@ export class Daemon {
     update = p.termOut.fold(update)
     const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : ''
     if (toolCallId && isBuiltinSystemToolCall(update)) p.builtinSystemToolCallIds.add(toolCallId)
+    if (toolCallId) rememberToolCall((p.knownToolCalls ??= new Map()), update)
     // Select the complete GitHub final in memory. Do not write any GitHub comment here:
     // the prompt (and every agent-side tool call) must finish before publish() performs
     // the first and only public POST.
