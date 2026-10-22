@@ -142,7 +142,7 @@ export function msTeamsIntegrationConfig(
   }
 }
 
-/** The relay assignment: no secret, the app ID the inbound token's audience must equal, and the bot's own tenant. */
+/** The relay assignment: no secret, the app ID the inbound token's audience must equal, the bot's own tenant, and its `28:` mention identity. */
 export function msTeamsBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'externalTenantId'>): {
   secrets: Record<string, unknown>
   ingress: Record<string, unknown>
@@ -150,7 +150,7 @@ export function msTeamsBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'ext
   return {
     secrets: {},
     ingress: {
-      ...(bot.externalAppId ? { apiAppId: bot.externalAppId } : {}),
+      ...(bot.externalAppId ? { apiAppId: bot.externalAppId, botUserId: `28:${bot.externalAppId.toLowerCase()}` } : {}),
       ...(bot.externalTenantId ? { teamId: bot.externalTenantId } : {})
     }
   }

@@ -139,14 +139,16 @@ function resolveMentions(text: string, entities: Obj[], botId: string): { text: 
     const id = str(obj(entity.mentioned)?.id)
     const span = str(entity.text)
     if (!id || !span) continue
-    if (id.startsWith('28:')) mentionedBots.add(id)
+    // A bot's `28:` ID is compared exactly downstream, so it is recorded in the bot identity's lower case.
+    if (id.startsWith('28:')) mentionedBots.add(id.toLowerCase())
     const at = text.indexOf(span, cursor)
     if (at < 0) continue
     const label = /^<at>([\s\S]*)<\/at>$/.exec(span)?.[1]?.trim()
-    out += text.slice(cursor, at) + (id === botId ? '' : label ? `@${label}` : span)
+    const isBot = id.toLowerCase() === botId
+    out += text.slice(cursor, at) + (isBot ? '' : label ? `@${label}` : span)
     cursor = at + span.length
     // A removed span between two words leaves one space, not two.
-    if (id === botId && (!out || /\s$/.test(out)) && /[ \t]/.test(text[cursor] ?? '')) cursor++
+    if (isBot && (!out || /\s$/.test(out)) && /[ \t]/.test(text[cursor] ?? '')) cursor++
   }
   out += text.slice(cursor)
   return { text: out.trim(), mentionedBots: [...mentionedBots] }
@@ -195,7 +197,7 @@ export function normalizeMsTeamsActivity(activity: unknown, context: MsTeamsNorm
   if (a.type !== 'message') return { kind: 'unsupported', reason: 'activity_type' }
 
   // The bot's own ID is the recipient, once it matches the verified app ID.
-  const botId = str(obj(a.recipient)?.id)
+  const botId = str(obj(a.recipient)?.id)?.toLowerCase()
   if (!botId) return { kind: 'invalid', reason: 'malformed' }
   if (!sameId(botId, `28:${context.appId}`)) return { kind: 'invalid', reason: 'wrong_bot' }
   const channelData = obj(a.channelData)
