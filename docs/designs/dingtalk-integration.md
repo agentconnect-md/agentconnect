@@ -248,6 +248,29 @@ so a settlement is a new message — except when a reply in the chat answered th
 card, since that reply already shows the choice. Tool approvals stay in the
 Console, with a notice in the conversation.
 
+Answering by tap is a later option, measured but not built. An interactive card
+delivered with `POST /v1.0/card/instances/createAndDeliver` and
+`callbackType: STREAM` calls back in DMs and groups (**measured**): a tap
+arrives on the Stream `CALLBACK` topic `/v1.0/card/instances/callback`, and a
+connection subscribed to that topic alone receives it, so robot messages keep
+their own path. The callback carries the tapper's `userId`, the card's
+`outTrackId`, the conversation as `spaceId`, and the button's parameters in
+`content.cardPrivateData`. The reply to the callback is due within three
+seconds, or the client shows a submit failure; it can update the card in place
+when the template takes it, and otherwise `PUT /v1.0/card/instances` does. The
+desktop client may show that update only once the conversation is reopened.
+
+An interactive card needs a template, and only the advanced card kind calls
+back. A template created in a different organization delivers, calls back, and
+updates from this organization's internal app (**measured**), so the
+integration could ship one question template it owns, with nothing to set up in
+the customer's organization. DingTalk documents no such cross-organization use,
+and its own example template is labelled for testing only; the owned template
+would be a single point of failure for every installation. If numbered replies
+prove clumsy, the plan is one owned template kept in a dedicated organization,
+the question settled from the callback and the card closed by an update, and
+the numbered text card as the fallback whenever delivery fails.
+
 ## 5. Console setup
 
 The wizard walks the organization admin through the developer console, with
@@ -289,6 +312,8 @@ text, so no migration is needed. Normalization lives in the message package.
 - Why a DM image did not arrive (§4.5).
 - The international service is a separate API stack; its gateway routes the
   card APIs, but nothing beyond that is checked.
+- Whether DingTalk keeps allowing a template from one organization to serve
+  another; tap answers depend on it (§4.6).
 
 ## 8. Later: third-party app
 
@@ -321,6 +346,6 @@ protocol, then a real internal app:
 
 - Stream mode: [introduction](https://help.dingtalk.io/open/development/introduction-to-stream-mode.md), [protocol](https://github.com/open-dingtalk/developerpedia/blob/main/docs/learn/stream/protocol.md).
 - Robots: [overview](https://help.dingtalk.io/open/development/robot-overview.md), [receiving messages](https://help.dingtalk.io/open/development/receive-message.md), [sending to groups](https://help.dingtalk.io/open/development/the-robot-sends-a-group-message.md), [message types](https://help.dingtalk.io/open/development/robot-message-type.md), [file download](https://help.dingtalk.io/open/development/download-the-file-content-of-the-robot-receiving-message.md).
-- Cards, measured in §4.3: [streaming update](https://open.dingtalk.com/document/orgapp/api-streamingupdate), [create and deliver](https://open.dingtalk.com/document/orgapp/create-and-deliver-cards).
+- Cards, measured in §4.3 and §4.6: [streaming update](https://open.dingtalk.com/document/orgapp/api-streamingupdate), [create and deliver](https://open.dingtalk.com/document/orgapp/create-and-deliver-cards), [card callback](https://open.dingtalk.com/document/orgapp/event-callback-card).
 - Limits: [API throttling](https://help.dingtalk.io/open/development/api-throttling.md), [resource use](https://help.dingtalk.io/open/development/appendix-rational-use-of-resources.md).
 - Third-party apps: [provider onboarding](https://help.dingtalk.io/open/development/isv-cooperation-guide.md), [event push configuration](https://help.dingtalk.io/open/development/basic-configuration.md).
