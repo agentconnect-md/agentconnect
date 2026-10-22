@@ -171,6 +171,9 @@ const MicrosandboxOffer = z
     value === true ? MicrosandboxConfigSchema.parse({}) : value === false ? false : value
   )
 
+/** The daemon's AHP serving mode: no serving, observation only, or serving alongside legacy Webchat. */
+export const AhpMode = z.enum(['off', 'shadow', 'on'])
+
 export const ConfigSchema = z.object({
   version: z.literal(1),
   daemonId: z.string().optional(),
@@ -254,7 +257,7 @@ export const ConfigSchema = z.object({
   features: z
     .object({
       turnFinalContextRefresh: z.boolean().default(true),
-      ahp: z.object({ mode: z.enum(['off', 'shadow', 'on']).default('off') }).default({ mode: 'off' }),
+      ahp: z.object({ mode: AhpMode.default('off') }).default({ mode: 'off' }),
       // Steer a message into the live turn over `_session/steering` instead of queueing it.
       sessionSteering: z.boolean().default(true)
     })

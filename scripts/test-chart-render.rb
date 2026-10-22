@@ -89,6 +89,16 @@ abort('an unset maxAgents must not override the image CMD') if container.key?('a
   args = pooled.dig('spec', 'template', 'spec', 'containers').find { |item| item['name'] == 'daemon-pool' }&.fetch('args', nil)
   abort("maxAgents=#{ceiling} must reach the daemon as argv") unless args == ['run', '--k8s', '--max-agents', ceiling]
 end
+# The pool's AHP switch rides argv beside the ceiling; an unknown mode fails the render.
+rendered_ahp, error_ahp, status_ahp = Open3.capture3(*command, '--set', 'daemonPool.ahpMode=on', '--set', 'daemonPool.maxAgents=8')
+abort("rendering ahpMode=on failed:\n#{error_ahp}") unless status_ahp.success?
+ahp_pool = YAML.load_stream(rendered_ahp).compact.find { |doc|
+  doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-daemon-pool'
+}
+ahp_args = ahp_pool.dig('spec', 'template', 'spec', 'containers').find { |item| item['name'] == 'daemon-pool' }&.fetch('args', nil)
+abort('ahpMode=on must reach the daemon as argv') unless ahp_args == ['run', '--k8s', '--max-agents', '8', '--ahp-mode', 'on']
+_, _, status_bad_ahp = Open3.capture3(*command, '--set', 'daemonPool.ahpMode=yes')
+abort('an unknown ahpMode must fail the render') if status_bad_ahp.success?
 # Keyed from the EFFECTIVE full reference so a `runtime.image` pin or digest change rolls the
 # members and repeats runtime discovery exactly like a tag change does.
 abort('runtime image changes must roll daemon-pool probes') unless pod_template.dig('metadata', 'annotations', 'agentconnect.md/runtime-sandbox-image') == 'ghcr.io/agentconnect-md/runtime-sandbox:v1.41.0-rc.88'

@@ -7,7 +7,7 @@ import {
   type RelayRosterEntry
 } from '@agentconnect.md/protocol'
 import { z } from 'zod'
-import { ConfigSchema, WorkspaceGitOrigin, type Config } from './config-schema.js'
+import { AhpMode, ConfigSchema, WorkspaceGitOrigin, type Config } from './config-schema.js'
 import { resolveRoot, configPath, defaultAgentsDir } from '../paths.js'
 
 export interface FlatOverrides {
@@ -18,6 +18,7 @@ export interface FlatOverrides {
   logLevel?: Config['logging']['level']
   agentsDir?: string
   maxAgents?: number
+  ahpMode?: string
 }
 
 function protectConfigFile(file: string, writable = false): void {
@@ -95,6 +96,11 @@ export function loadConfig(
   if (o.daemonId) cfg.daemonId = o.daemonId
   if (o.logLevel) cfg.logging.level = o.logLevel
   if (o.maxAgents !== undefined) cfg.limits.maxAgents = o.maxAgents
+  if (o.ahpMode !== undefined) {
+    const mode = AhpMode.safeParse(o.ahpMode)
+    if (!mode.success) throw new Error(`--ahp-mode must be off, shadow or on (got ${o.ahpMode})`)
+    cfg.features.ahp.mode = mode.data
+  }
   if (o.apiUrl) cfg.controlPlane.url = o.apiUrl
   if (o.apiKey) cfg.controlPlane.key = o.apiKey
   // Passing --api-url/--api-key implies "connect to the CP" (it defaults off),

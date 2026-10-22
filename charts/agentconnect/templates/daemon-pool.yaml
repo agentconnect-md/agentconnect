@@ -158,9 +158,19 @@ spec:
         - name: daemon-pool
           image: "{{ .Values.image.registry }}/{{ .Values.daemonPool.image }}:{{ $daemonTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- $daemonArgs := list }}
           {{- if not (kindIs "invalid" .Values.daemonPool.maxAgents) }}
+          {{- $daemonArgs = concat $daemonArgs (list "--max-agents" (.Values.daemonPool.maxAgents | int | toString)) }}
+          {{- end }}
+          {{- with .Values.daemonPool.ahpMode }}
+          {{- if not (has . (list "off" "shadow" "on")) }}
+          {{- fail (printf "daemonPool.ahpMode must be off, shadow or on (got %q)" .) }}
+          {{- end }}
+          {{- $daemonArgs = concat $daemonArgs (list "--ahp-mode" .) }}
+          {{- end }}
+          {{- if $daemonArgs }}
           # Restates the image's CMD, which `args` replaces wholesale. Null-guarded: 0 is unbounded.
-          args: ['run', '--k8s', '--max-agents', {{ .Values.daemonPool.maxAgents | int | quote }}]
+          args: {{ concat (list "run" "--k8s") $daemonArgs | toJson }}
           {{- end }}
           env:
             # Shared with the orphan-reconciler CronJob (daemon-pool-reconciler.yaml): the CP
