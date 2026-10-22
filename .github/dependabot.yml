@@ -38,3 +38,19 @@ updates:
       github-actions:
         patterns:
           - '*'
+
+  # Pinned base images in the release Dockerfiles; it bumps a tag@digest only when the tag's version moves, not on a same-tag rebuild.
+  - package-ecosystem: docker
+    directories:
+      - /docker
+      - /packages/desktop/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    ignore:
+      # Upgrade Node across majors together with .nvmrc, engines and @types/node.
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major

@@ -27,7 +27,8 @@
 # build disabled in pnpm-workspace.yaml (allowBuilds), and every other approved
 # build (prisma engines, sharp, esbuild, unrs-resolver) ships a prebuilt binary —
 # so no node-gyp toolchain is needed.
-FROM node:24-bookworm-slim AS base
+# Exact patch + digest on every FROM (Dependabot can't see an ARG) so a release never ships whichever Node a floating tag resolved to.
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS base
 WORKDIR /app
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH \
@@ -92,7 +93,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /control-plane
 
 # ──────────────────────── control-plane: runtime ────────────────────────────
-FROM node:24-bookworm-slim AS control-plane
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS control-plane
 WORKDIR /app/packages/control-plane
 ENV NODE_ENV=production \
   PORT=8080 \
@@ -141,7 +142,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /relay
 
 # ───────────────────────────── relay: runtime ───────────────────────────────
-FROM node:24-bookworm-slim AS relay
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS relay
 WORKDIR /app/packages/relay
 ENV NODE_ENV=production \
   PORT=8080 \
@@ -178,7 +179,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /daemon
 
 # ─────────────────────────── daemon: runtime ────────────────────────────────
-FROM node:24-bookworm-slim AS daemon
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS daemon
 WORKDIR /app/packages/daemon
 ENV NODE_ENV=production \
   # The port the daemon DIALS on a ready sandbox pod's IP — the shim listens there, not here.
@@ -246,7 +247,7 @@ RUN mkdir -p packages/web/public \
   && pnpm --filter "@agentconnect.md/web..." build:package
 
 # ───────────────────────────── web: runtime ─────────────────────────────────
-FROM node:24-bookworm-slim AS web
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS web
 WORKDIR /app/packages/web
 ENV NODE_ENV=production \
   NEXT_TELEMETRY_DISABLED=1 \
@@ -281,7 +282,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /memory-plugin-mem0
 
 # ───────────────── memory-plugin-mem0 (wrapper): runtime ─────────────────────
-FROM node:24-bookworm-slim AS mem0
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS mem0
 WORKDIR /app/packages/memory-plugin-mem0
 # HTTP (remote) mode is the deployable shape; each request carries its own
 # X-Mem0-Api-Key, so no credential is baked in. PORT matches the chart's mem0.port.
