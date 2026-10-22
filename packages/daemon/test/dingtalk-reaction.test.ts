@@ -103,15 +103,22 @@ describe('acknowledgeDingTalkTurn', () => {
     }
   })
 
-  it('does not wait for the removal to end the turn', async () => {
+  it('does not wait for the removal to end the turn, but reports it as settling', async () => {
     const { reactions } = fakeReactions()
     let finish = () => {}
     reactions.remove = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)))
     const ack = acknowledgeDingTalkTurn(ctx(reactions), { rerun: false })!
+    expect(ack.settled).toBeUndefined()
     await ack.end('completed')
     await settle()
     expect(reactions.remove).toHaveBeenCalledTimes(1)
+    let settled = false
+    void ack.settled!.then(() => (settled = true))
+    await settle()
+    expect(settled).toBe(false)
     finish()
+    await settle()
+    expect(settled).toBe(true)
   })
 
   it('runs the turn without a reaction when the add is refused, logging once', async () => {

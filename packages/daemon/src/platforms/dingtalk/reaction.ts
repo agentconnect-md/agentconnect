@@ -63,7 +63,7 @@ function describe(error: unknown): string {
 export class DingTalkThinkingReaction implements TurnAcknowledgement {
   // Whether the end should take a reaction off: one this turn added, or one an earlier run of a rerun may have left.
   private readonly placed: Promise<boolean>
-  private ended = false
+  private removal: Promise<void> | undefined
 
   constructor(
     private readonly port: DingTalkReactionPort,
@@ -84,11 +84,14 @@ export class DingTalkThinkingReaction implements TurnAcknowledgement {
     return false
   }
 
-  // Every end kind takes the reaction off; the removal runs behind the end so the next turn never waits on it.
+  // The removal core waits on before releasing the connection, so the next turn never does.
+  get settled(): Promise<void> | undefined {
+    return this.removal
+  }
+
+  // Every end kind takes the reaction off, in the background.
   async end(): Promise<void> {
-    if (this.ended) return
-    this.ended = true
-    void this.placed
+    this.removal ??= this.placed
       .then(async (placed) => {
         if (placed) await this.port.remove(this.at)
       })
