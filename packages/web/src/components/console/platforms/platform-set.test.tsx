@@ -173,7 +173,8 @@ describe('platform set', () => {
       'Linear',
       'QQ',
       'Google Chat',
-      'DingTalk'
+      'DingTalk',
+      'Microsoft Teams'
     ])
   })
 
