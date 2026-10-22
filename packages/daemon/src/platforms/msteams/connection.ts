@@ -164,7 +164,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly conversations = new Map<string, KnownConversation>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
   private readonly names = new Map<string, string>()
-  /** Card activity ID → where it landed, so its replacement addresses the very conversation, thread included. */
+  /** Conversation + card activity ID → where it landed; an activity ID is unique only within its conversation (§4.2). */
   private readonly cards = new Map<string, MsTeamsTarget>()
   private readonly writeGate: (() => Promise<void>) | undefined
   private stopped = false
@@ -254,7 +254,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   /** Post an Adaptive Card; answers the activity ID Teams assigned. */
   async postCard(target: MsTeamsTarget, card: Record<string, unknown>, summary?: string): Promise<string> {
     const id = await this.write(target, () => this.api.postActivity(target, cardActivityOf(card, summary)))
-    remember(this.cards, id, target, CARDS_MAX)
+    remember(this.cards, cardKey(channelOf(target.conversationId), id), target, CARDS_MAX)
     return id
   }
 
@@ -264,7 +264,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     card: Record<string, unknown>,
     at: { channel: string; thread?: string }
   ): Promise<void> {
-    const target = this.cards.get(activityId) ?? this.targetFor(at.channel, at.thread)
+    const target = this.cards.get(cardKey(at.channel, activityId)) ?? this.targetFor(at.channel, at.thread)
     if (!target) throw new MsTeamsApiError('msteams: the card’s conversation is unknown', 'not_found')
     await this.write(target, () => this.api.updateActivity(target, activityId, cardActivityOf(card)))
   }
@@ -318,6 +318,16 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
 
 function activityOf(text: string): Record<string, unknown> {
   return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text }
+}
+
+// A raw conversation ID's normalized channel: a channel thread drops its `;messageid=` suffix.
+function channelOf(conversationId: string): string {
+  return conversationId.split(';')[0]!
+}
+
+// A posted card's cache key: its conversation and its activity ID, the pair Teams keeps unique.
+function cardKey(channel: string, activityId: string): string {
+  return `${channel}\u001f${activityId}`
 }
 
 function cardActivityOf(card: Record<string, unknown>, summary?: string): Record<string, unknown> {

@@ -527,4 +527,36 @@ describe('MsTeamsConnection cards', () => {
     await expect(conn.replaceCard('17000000009', settled, { channel: '19:unseen@thread.v2' })).rejects.toThrow()
     expect(calls).toHaveLength(2)
   })
+
+  it('keeps two conversations’ cards apart when Teams gives them the same activity ID', async () => {
+    const urls: string[] = []
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const json = (body: unknown) =>
+        ({ ok: true, status: 200, headers: { get: () => null }, json: async () => body }) as unknown as Response
+      if (String(url) === msTeamsTokenEndpoint(ZERO)) return json({ access_token: 'tok', expires_in: 3600 })
+      urls.push(`${String(init?.method)} ${String(url)}`)
+      return json({ id: '17000000001' })
+    }) as typeof fetch
+    const config = { appId: ZERO, tenantId: ZERO, clientSecret: 'client-secret-example' }
+    const conn = new MsTeamsConnection({
+      group: { key: msTeamsConnKey(config), agentId: 'a', integrationId: 'i', config, integrations: [] },
+      fetchImpl,
+      sendIntervalMs: 0
+    })
+    const a = { serviceUrl: SERVICE_URL, conversationId: '19:example-channel-a@thread.tacv2;messageid=1700000000000' }
+    const b = { serviceUrl: SERVICE_URL, conversationId: '19:example-group-b@thread.v2' }
+    const card = buildMsTeamsApprovalCard({ requestId: 'req-1', params: permission() })
+    await conn.postCard(a, card)
+    await conn.postCard(b, card)
+    await conn.replaceCard(
+      '17000000001',
+      { type: 'AdaptiveCard', version: '1.5', body: [] },
+      {
+        channel: '19:example-channel-a@thread.tacv2'
+      }
+    )
+    expect(urls.at(-1)).toBe(
+      `PUT ${SERVICE_URL}v3/conversations/${encodeURIComponent(a.conversationId)}/activities/17000000001`
+    )
+  })
 })
