@@ -5,7 +5,7 @@
 # migration files at runtime through /migration.
 # Publish command (requires a GHCR token with write:packages):
 # docker buildx build --platform linux/amd64 --push -f docker/prisma-cli.Dockerfile -t ghcr.io/example-org/prisma-cli:7.8.0-node24-r1 .
-FROM node:24-bookworm-slim
+FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d
 
 ARG PRISMA_VERSION=7.8.0
 
