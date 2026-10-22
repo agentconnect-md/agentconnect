@@ -69,7 +69,9 @@ const CHROME = new Map<string, TurnChrome>([
   ['discord', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
   ['feishu', { statusSurface: 'on-demand' }],
   // No status bar, and notices render as Markdown, so agent text quoted in one is defused first.
-  ['googlechat', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }]
+  ['googlechat', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
+  // The same for Teams: notices are sent as extended Markdown (teams-integration.md §4.3).
+  ['msteams', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }]
 ])
 
 const NONE: TurnChrome = {}

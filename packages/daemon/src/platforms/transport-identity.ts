@@ -65,7 +65,9 @@ const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string
     }
   ],
   // The Chat app's project number, not its key: a rotated key must keep the installation's scope (google-chat-integration.md §3).
-  ['googlechat', (int) => platformIntegrationConfig('googlechat', int)?.projectNumber]
+  ['googlechat', (int) => platformIntegrationConfig('googlechat', int)?.projectNumber],
+  // The bot's app ID survives a secret rotation; Entra IDs compare case-insensitively.
+  ['msteams', (int) => platformIntegrationConfig('msteams', int)?.appId.toLowerCase()]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
@@ -116,6 +118,12 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
   [
     'googlechat',
     async (host, int) => platformIntegrationConfig('googlechat', int)?.projectNumber ?? (await host.minted(int.id))
+  ],
+  // A person's Entra object ID is scoped by the tenant, which survives a secret rotation (teams-integration.md §4.1).
+  [
+    'msteams',
+    async (host, int) =>
+      platformIntegrationConfig('msteams', int)?.tenantId.toLowerCase() ?? (await host.minted(int.id))
   ]
 ])
 

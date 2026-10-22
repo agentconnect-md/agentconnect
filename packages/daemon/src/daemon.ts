@@ -504,6 +504,10 @@ import type { DingTalkConnection } from './platforms/dingtalk/connection.js'
 import { createDingTalkTurnOutput } from './platforms/dingtalk/surface.js'
 import { dingTalkCommandChrome } from './platforms/dingtalk/command-chrome.js'
 import { dingTalkPlatformModule } from './platforms/dingtalk/module.js'
+import type { MsTeamsConnection } from './platforms/msteams/connection.js'
+import { msTeamsCommandChrome } from './platforms/msteams/command-chrome.js'
+import { msTeamsPlatformModule } from './platforms/msteams/module.js'
+import { createMsTeamsTurnOutput } from './platforms/msteams/surface.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -1672,6 +1676,7 @@ export class Daemon {
     registry.register(QQCommandChrome)
     registry.register(dingTalkCommandChrome)
     registry.register(googleChatCommandChrome)
+    registry.register(msTeamsCommandChrome)
     return registry
   })()
 
@@ -1805,6 +1810,14 @@ export class Daemon {
           warn: (message) => this.log.warn(message)
         })
       )
+      registry.register(
+        createMsTeamsTurnOutput({
+          recordReplySegment: (p, text) => this.recordReplySegment(p, text),
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          nowUs: () => this.clock.now() * 1000,
+          warn: (message) => this.log.warn(message)
+        })
+      )
       return registry
     })()
   // Slack id → display-name resolver (created with the store in start()).
@@ -1897,6 +1910,8 @@ export class Daemon {
   private lnConnByIntegration = new Map<string, LinearConnection>()
   // integrationId -> the GoogleChatConnection that owns it: relay-terminated ingress, daemon-direct Chat API egress.
   private gcConnByIntegration = new Map<string, GoogleChatConnection>()
+  // integrationId -> the MsTeamsConnection that owns it: relay-terminated ingress, daemon-direct Bot Connector egress.
+  private msTeamsConnByIntegration = new Map<string, MsTeamsConnection>()
   // One Google Chat write budget per app on this daemon (§10.8), built from the config on first use.
   private googleChatBudgets: GoogleChatWriteBudgets | undefined
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
@@ -2739,7 +2754,8 @@ export class Daemon {
         qq: this.QQConnByIntegration,
         dingtalk: this.dingTalkConnByIntegration,
         linear: this.lnConnByIntegration,
-        googlechat: this.gcConnByIntegration
+        googlechat: this.gcConnByIntegration,
+        msteams: this.msTeamsConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
@@ -2768,6 +2784,7 @@ export class Daemon {
         this.bind(this.gcConnByIntegration, integrationId, conn, appUserName)
         this.sweepOrphanedApprovalCards(integrationId)
       },
+      bindMsTeams: (id, conn, botUserId) => this.bind(this.msTeamsConnByIntegration, id, conn, botUserId),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -2859,6 +2876,7 @@ export class Daemon {
     this.QQConnByIntegration.delete(integrationId)
     this.dingTalkConnByIntegration.delete(integrationId)
     this.gcConnByIntegration.delete(integrationId)
+    this.msTeamsConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
     this.placeTrust.forget(integrationId)
@@ -5766,6 +5784,9 @@ export class Daemon {
     void this.connections
       .reconcileGoogleChatConnections()
       .catch((err) => this.log.error(`googlechat: initial connect failed: ${formatErr(err)}`))
+    void this.connections
+      .reconcileMsTeamsConnections()
+      .catch((err) => this.log.error(`msteams: initial connect failed: ${formatErr(err)}`))
   }
 
   /** Phase 28 — register crons per agent; the same converge reconcile re-runs on change. */
@@ -6227,6 +6248,7 @@ export class Daemon {
       await this.connections.reconcileGoogleChatConnections()
       await this.connections.reconcileQQConnections()
       await this.connections.reconcileDingTalkConnections()
+      await this.connections.reconcileMsTeamsConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -13408,6 +13430,8 @@ export class Daemon {
     }
     const feishuConn = this.fsConnByIntegration.get(msg.integrationId)
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
+    // As on direct ingress, above the record: a relay-ingress module may place the message by its reply chain.
+    await this.canonicalizeThread(normalized)
     // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
     this.placeTrust.observe(normalized, [msg.integrationId])
     // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so
@@ -13688,7 +13712,8 @@ export class Daemon {
     googleChatPlatformModule(this.relayIngressHost((integrationId) => this.gcConnByIntegration.get(integrationId))),
     feishuPlatformModule,
     telegramPlatformModule,
-    dingTalkPlatformModule
+    dingTalkPlatformModule,
+    msTeamsPlatformModule(this.relayIngressHost((integrationId) => this.msTeamsConnByIntegration.get(integrationId)))
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
@@ -16242,7 +16267,8 @@ export class Daemon {
     ['qq', (id) => (id ? this.QQConnByIntegration.get(id) : undefined)],
     ['dingtalk', (id) => (id ? this.dingTalkConnByIntegration.get(id) : undefined)],
     ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)],
-    ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)]
+    ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)],
+    ['msteams', (id) => (id ? this.msTeamsConnByIntegration.get(id) : undefined)]
   ])
 
   private readonly platformFailureSinks = new Map<
@@ -16270,6 +16296,14 @@ export class Daemon {
         // A DM's thread coordinate is the Space itself, and a DM create carries no thread option (§5).
         const thread = ctx.thread && ctx.thread !== ctx.channel ? ctx.thread : undefined
         await conn.postChrome(ctx.channel, thread, `⚠️ Agent failed to respond: ${ctx.reason}`)
+      }
+    ],
+    [
+      'msteams',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.msTeamsConnByIntegration.get(ctx.integrationId) : undefined
+        const target = conn?.targetFor(ctx.channel, ctx.thread)
+        if (conn && target) await conn.postText(target, `⚠️ Agent failed to respond: ${ctx.reason}`)
       }
     ]
   ])
@@ -23620,6 +23654,7 @@ export class Daemon {
     for (const [id, c] of this.dingTalkConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.lnConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.gcConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.msTeamsConnByIntegration) if (c === conn) out.push(id)
     return out
   }
 
@@ -24339,7 +24374,8 @@ export class Daemon {
       this.lnConnByIntegration.get(integrationId) ??
       this.QQConnByIntegration.get(integrationId) ??
       this.dingTalkConnByIntegration.get(integrationId) ??
-      this.gcConnByIntegration.get(integrationId)
+      this.gcConnByIntegration.get(integrationId) ??
+      this.msTeamsConnByIntegration.get(integrationId)
     )
   }
 

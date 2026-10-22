@@ -37,7 +37,17 @@ describe('daemon platform registry (audit F16)', () => {
     // The pin on today's true set. A new platform makes this fail — deliberately: the
     // reviewer should confirm the CP/console gating is what they intended, not discover
     // it from a failed install.
-    expect(platformIds()).toEqual(['slack', 'telegram', 'discord', 'feishu', 'linear', 'qq', 'googlechat', 'dingtalk'])
+    expect(platformIds()).toEqual([
+      'slack',
+      'telegram',
+      'discord',
+      'feishu',
+      'linear',
+      'qq',
+      'googlechat',
+      'dingtalk',
+      'msteams'
+    ])
   })
 
   it('sends the derived list, not a copy, in the CP registration handshake', () => {
@@ -67,7 +77,8 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.QQPool,
       daemon.connections.linearPool,
       daemon.connections.googleChatPool,
-      daemon.connections.dingTalkPool
+      daemon.connections.dingTalkPool,
+      daemon.connections.msTeamsPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
   })
@@ -94,7 +105,8 @@ describe('observed-membership platforms (audit F17)', () => {
       'linear',
       'qq',
       'googlechat',
-      'dingtalk'
+      'dingtalk',
+      'msteams'
     ])
     for (const platform of platformIds()) {
       expect(observedMembershipPlatforms().includes(platform)).toBe(
