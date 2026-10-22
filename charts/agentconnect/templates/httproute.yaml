@@ -191,6 +191,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /ai-sdk/agents/:agentId/chat  → relay pool (agent chat API; bearer API key)
   /ag-ui/agents/:agentId/chat   → relay pool (agent chat API over AG-UI; bearer API key)
   /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
+  /relays/<ordinal>/cr          → that exact relay pod, rewritten to /cr (Computer dial-in, MCP, viewer)
 When the relay host == apiHost / the website host, Gateway API merges these rules with
 that host's existing route (ranked by path specificity) — no new listener needed. A
 dedicated relay.host needs its own DNS + TLS + gateway listener at the edge, like apiHost.
@@ -226,6 +227,20 @@ spec:
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /rd/ws
+      backendRefs:
+        - name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
+          port: {{ $.Values.relay.port }}
+    # Computer data plane: desktop dial-in, agent MCP and viewer must all reach the pod the desktop attached to.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ printf "/relays/%d/cr" $ordinal | quote }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /cr
       backendRefs:
         - name: {{ printf "%s-relay-%d" (include "agentconnect.fullname" $) $ordinal }}
           port: {{ $.Values.relay.port }}

@@ -615,7 +615,7 @@ web:
 # the CP is given PUBLIC_RELAY_URL (the relay public origin) — WITHOUT it the CP's mint
 # route 503s and the Playground shows "Webchat relay not configured".
 #
-# Routing (templates/httproute.yaml): /webchat + /relays/<ordinal>/rd/ws + /webhooks/in are added on the relay host
+# Routing (templates/httproute.yaml): /webchat + /relays/<ordinal>/{rd/ws,cr} + /webhooks/in are added on the relay host
 # (`relay.host`, else apiHost, else the website host) — co-locating on apiHost needs no
 # new DNS. DAEMON_DIAL_URL must route to ONE pod (a daemon must reconnect to the SAME
 # relay it registered with). The chart
