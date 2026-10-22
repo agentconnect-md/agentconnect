@@ -6,7 +6,7 @@ import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-import { elicitForm } from '../src/slack/render.js'
+import { elicitForm, elicitOptionToken } from '../src/slack/render.js'
 import { DINGTALK_MSG_PARAM_MAX_BYTES } from '../src/platforms/dingtalk/api.js'
 import {
   DINGTALK_ELICIT_SURFACE,
@@ -112,6 +112,10 @@ const reply = (text: string, replyTo?: string, conversation = CONVERSATION) => (
   actor: { userId: 'user-0001' }
 })
 
+const flush = async () => {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+}
+
 async function raise(h: ReturnType<typeof dingTalkTurn>, req: CreateElicitationRequest) {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
   await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
@@ -122,13 +126,22 @@ async function raise(h: ReturnType<typeof dingTalkTurn>, req: CreateElicitationR
 }
 
 describe('a DingTalk turn collects an elicitation answer from a quote', () => {
-  it('posts the card and accepts a quote of it, settling with a new message', async () => {
+  it('posts the card and accepts a quote of it, adding nothing beside the reply that answered', async () => {
     const h = dingTalkTurn()
     const { result } = await raise(h, form(BRANCH, ['branch']))
     expect(h.sent).toEqual([
       { channel: CHANNEL, text: dingTalkElicitText('Which branch should I cut from?', target()) }
     ])
     expect(await h.daemon.permissions.claimElicitReply(reply('2', 'pqk-1'))).toBe(true)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    await flush()
+    expect(h.sent).toHaveLength(1)
+  })
+
+  it('settles with a new message when the answer came from elsewhere', async () => {
+    const h = dingTalkTurn()
+    const { requestId, result } = await raise(h, form(BRANCH, ['branch']))
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(1) })
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
     await vi.waitFor(() => expect(h.sent.at(-1)).toEqual({ channel: CHANNEL, text: '✅ develop' }))
   })

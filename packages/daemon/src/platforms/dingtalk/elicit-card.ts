@@ -83,6 +83,9 @@ export function dingTalkElicitChoice(target: ElicitTarget, text: string): number
   return index >= 0 ? index : null
 }
 
+// The option label a chat reply chose, per card.
+const answeredInChat = new WeakMap<ElicitCardHandle, string>()
+
 // DingTalk cannot edit a sent message, so a hint or a settlement is a new message beside the card.
 function follow(handle: ElicitCardHandle, text: string): void {
   if (handle.ts === undefined) return
@@ -117,10 +120,13 @@ export const dingTalkElicitCards: ElicitCardFacet = {
       follow(handle, `Reply to the question with a number from 1 to ${target.options.length}.`)
       return { kind: 'pending' }
     }
+    answeredInChat.set(handle, target.options[index]!.label)
     return { kind: 'submit', fields: { [elicitFormBlockId(0)]: elicitOptionToken(index) } }
   },
 
+  // The reply that answered in the chat already shows the choice; any other settlement is posted.
   settle(handle: ElicitCardHandle, card: ElicitCardSettlement): void {
+    if (card.mark === 'answered' && answeredInChat.get(handle) === card.text) return
     follow(handle, `${DINGTALK_ELICIT_MARK[card.mark]} ${clampTo(card.text, DINGTALK_ELICIT_DECISION_CAP)}`)
   }
 }

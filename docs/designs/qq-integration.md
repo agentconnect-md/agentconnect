@@ -142,7 +142,9 @@ QQ turns post through a leased egress rather than a reply connection, so core
 offers a card to a turn with either transport. A card and its follow-ups are
 passive replies to the triggering message; in a group each keeps one reply slot
 free for the final answer. QQ cannot edit a sent message, so settlement posts a
-short outcome under the card, when the reply budget allows it. Tool approvals
+short outcome under the card, when the reply budget allows it. A card answered by
+a reply in the chat posts no outcome, since that reply already shows the choice;
+an answer from elsewhere, a cancellation, or an expiry still does. Tool approvals
 stay on the Console.
 
 ## 4. Shared capabilities and ownership
