@@ -55,6 +55,14 @@ export function googleChatEventsUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${GOOGLE_CHAT_EVENTS_PATH}`
 }
 
+/** The relay route the Bot Connector posts a Teams bot's activities to (teams-integration.md §3); the bot registration's messaging endpoint. */
+export const MSTEAMS_MESSAGES_PATH = '/msteams/messages'
+
+/** The messaging endpoint under a relay's public origin, which the admin pastes into the bot registration (§5). */
+export function msTeamsMessagesUrl(publicRelayUrl: string): string {
+  return `${publicRelayUrl.replace(/\/+$/, '')}${MSTEAMS_MESSAGES_PATH}`
+}
+
 /** The action an elicitation card's buttons invoke; the relay forwards its click to the owning daemon. */
 export const GOOGLE_CHAT_ELICIT_FUNCTION = 'agentconnect.elicit'
 

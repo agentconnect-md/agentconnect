@@ -114,6 +114,9 @@ export const GOOGLE_CHAT_PLATFORM = 'googlechat'
 // DingTalk's platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (dingtalk-integration.md §6).
 export const DINGTALK_PLATFORM = 'dingtalk'
 
+// Microsoft Teams' platform id; joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it (teams-integration.md §6).
+export const MSTEAMS_PLATFORM = 'msteams'
+
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   consoleContinuation: false,
@@ -246,6 +249,16 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       // A group delivers only messages that mention the robot, so a mention in a session the agent holds continues it (dingtalk-integration.md §4.1).
       addressedByConstruction: true,
       // A DM is one continuous session already, so only groups take `append` (dingtalk-integration.md §4.1).
+      appendKinds: ['channel']
+    }
+  ],
+  [
+    MSTEAMS_PLATFORM,
+    {
+      ...DEFAULT_MANIFEST,
+      // A 1:1 chat's conversation id is `a:…`; group chats and channels are `19:…` (teams-integration.md §4.1).
+      dmChannelPattern: /^a:/,
+      // A 1:1 chat is one continuous session, so only group chats and channels take `append` (teams-integration.md §4.1).
       appendKinds: ['channel']
     }
   ]

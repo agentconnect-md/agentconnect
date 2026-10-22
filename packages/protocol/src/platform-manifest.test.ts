@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { continuableOrigin, originKindOf } from './frames/route.js'
-import { DEFAULT_MANIFEST, DINGTALK_PLATFORM, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
+import {
+  DEFAULT_MANIFEST,
+  DINGTALK_PLATFORM,
+  GOOGLE_CHAT_PLATFORM,
+  MSTEAMS_PLATFORM,
+  manifestFor
+} from './platform-manifest.js'
 
 /**
  * The §5 manifest's load-bearing claim is not its field values — those are
@@ -78,20 +84,39 @@ describe('platform manifest', () => {
     expect(manifestFor('linear').addressedByConstruction).toBe(true)
     expect(manifestFor(GOOGLE_CHAT_PLATFORM).addressedByConstruction).toBe(true)
     expect(manifestFor(DINGTALK_PLATFORM).addressedByConstruction).toBe(true)
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq'])
+    // Teams delivers every message its resource-specific consent covers, so a mention there is a fresh address, as on Slack.
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', MSTEAMS_PLATFORM])
       expect(manifestFor(p).addressedByConstruction, p).toBe(false)
     expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
   })
 
   it('lets rooms append everywhere but Linear, DMs only on Slack, and group DMs nowhere', () => {
     // The spec projection reads it to give an assistant-mode agent one session per place; an unknown id forces nothing.
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, DINGTALK_PLATFORM])
+    for (const p of [
+      'slack',
+      'telegram',
+      'discord',
+      'feishu',
+      'qq',
+      GOOGLE_CHAT_PLATFORM,
+      DINGTALK_PLATFORM,
+      MSTEAMS_PLATFORM
+    ])
       expect(manifestFor(p).appendKinds, p).toContain('channel')
     expect(manifestFor('linear').appendKinds).toEqual([])
-    for (const p of ['telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, DINGTALK_PLATFORM, 'linear'])
+    for (const p of [
+      'telegram',
+      'discord',
+      'feishu',
+      'qq',
+      GOOGLE_CHAT_PLATFORM,
+      DINGTALK_PLATFORM,
+      MSTEAMS_PLATFORM,
+      'linear'
+    ])
       expect(manifestFor(p).appendKinds, p).not.toContain('im')
     expect(manifestFor('slack').appendKinds).toContain('im')
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, 'linear'])
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, MSTEAMS_PLATFORM, 'linear'])
       expect(manifestFor(p).appendKinds, p).not.toContain('mpim')
     expect(manifestFor('some-future-platform').appendKinds).toEqual([])
     expect(DEFAULT_MANIFEST.appendKinds).toEqual([])
@@ -136,6 +161,19 @@ describe('platform manifest', () => {
     // A chat origin the console composer may not continue.
     expect(originKindOf(DINGTALK_PLATFORM)).toBe('chat')
     expect(continuableOrigin(DINGTALK_PLATFORM)).toBe(false)
+  })
+
+  it('keeps Microsoft Teams on the conservative arm of every axis it did not earn, with 1:1 chats recognizable by id', () => {
+    // Teams delivers every consented message, so a mention is a fresh address; group chats and channels may append.
+    const { platform, ...axes } = manifestFor(MSTEAMS_PLATFORM)
+    expect(platform).toBe('msteams')
+    expect(axes).toEqual({ ...DEFAULT_MANIFEST, dmChannelPattern: /^a:/, appendKinds: ['channel'] })
+    expect(axes.dmChannelPattern?.test('a:1example-personal')).toBe(true)
+    expect(axes.dmChannelPattern?.test('19:example-group@thread.v2')).toBe(false)
+    expect(axes.dmChannelPattern?.test('19:example-channel@thread.tacv2')).toBe(false)
+    // Readers accept the id before writers emit it, so this build does not classify it yet (teams-integration.md §6).
+    expect(originKindOf(MSTEAMS_PLATFORM)).toBeUndefined()
+    expect(continuableOrigin(MSTEAMS_PLATFORM)).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
