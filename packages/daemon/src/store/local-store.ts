@@ -344,6 +344,9 @@ export interface SessionRecord {
   standingDigest?: string | null
   // The digests of the tool definitions its model last received, a JSON object written by `setSessionToolDigests`; null on a session from before it was recorded.
   toolDigests?: string | null
+  // When the retention sweep last kept this expired session, and when it may judge it again; written by `markSessionRetentionKept`.
+  retentionKeptAt?: number | null
+  retentionRecheckAt?: number | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1312,7 +1315,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 66
+export const SCHEMA_VERSION = 67
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2073,7 +2076,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     await db.exec('DROP TABLE IF EXISTS orchestration')
   },
   // v66 stores derived AHP recovery state and durable host sequence allocation.
-  async () => {}
+  async () => {},
+  // v67 keeps the retention sweep's last keep of an expired session, so a kept one is not woken again every pass.
+  async (db, store) => {
+    await addColumn(db, store.postgres, 'sessions', 'retentionKeptAt', 'INTEGER')
+    await addColumn(db, store.postgres, 'sessions', 'retentionRecheckAt', 'INTEGER')
+  }
 ]
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
@@ -2740,7 +2748,7 @@ export class LocalStore {
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
         onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
-        standingDigest TEXT, toolDigests TEXT
+        standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -4412,6 +4420,16 @@ export class LocalStore {
   /** The digests of the tool definitions this session's model holds, or null for unknown; compared before each turn. */
   async setSessionToolDigests(key: string, digests: string | null): Promise<void> {
     await this.db.prepare('UPDATE sessions SET toolDigests = ? WHERE key = ?').run(digests, key)
+  }
+
+  /** Record that retention kept this expired session, only while it is still the row that was judged; false when it moved on. */
+  async markSessionRetentionKept(key: string, updatedAt: number, keptAt: number, recheckAt: number): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        "UPDATE sessions SET retentionKeptAt = ?, retentionRecheckAt = ? WHERE key = ? AND updatedAt = ? AND state IN ('idle', 'closed')"
+      )
+      .run(keptAt, recheckAt, key, updatedAt)
+    return Number(res.changes) > 0
   }
 
   /** Record how the turn that just ended went (§7.3 companion of {@link setSessionState}):

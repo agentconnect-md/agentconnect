@@ -2188,6 +2188,27 @@ describe('LocalStore session retention GC (#485)', () => {
     await s.close()
   })
 
+  it('markSessionRetentionKept stamps only the row that was judged', async () => {
+    const s = await store()
+    await seed(s, 'kept', 'idle', 100)
+    await seed(s, 'moved-on', 'idle', 100)
+    await seed(s, 'live', 'prompting', 100)
+    expect(await s.markSessionRetentionKept('kept', 100, 5_000, 8_600_000)).toBe(true)
+    expect(await s.getSession('kept')).toMatchObject({ retentionKeptAt: 5_000, retentionRecheckAt: 8_600_000 })
+    // A turn since the judgement moved `updatedAt`, so the keep no longer describes the row.
+    await seed(s, 'moved-on', 'idle', 200)
+    expect(await s.markSessionRetentionKept('moved-on', 100, 5_000, 8_600_000)).toBe(false)
+    expect(await s.markSessionRetentionKept('live', 100, 5_000, 8_600_000)).toBe(false)
+    expect((await s.getSession('moved-on'))?.retentionKeptAt ?? null).toBeNull()
+    // A later upsert leaves the stamp alone.
+    await seed(s, 'kept', 'closed', 100)
+    expect((await s.listExpiredSessions(500)).find((r) => r.key === 'kept')).toMatchObject({
+      retentionKeptAt: 5_000,
+      retentionRecheckAt: 8_600_000
+    })
+    await s.close()
+  })
+
   it('sessionHasPendingInboxRows counts admitted work, not terminal hook receipts', async () => {
     const s = await store()
     // A completed hook receipt (dedup row) must not pin the session forever —

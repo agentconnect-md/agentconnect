@@ -3508,6 +3508,53 @@ describe('Daemon session retention GC (#485)', () => {
     }
   })
 
+  it('backs off a kept session instead of judging it, and waking its pod, every pass (#3281)', async () => {
+    const HOUR = 3_600_000
+    const clock = new FakeClock()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock
+    })
+    await daemon.start()
+    await sweepRetention(daemon)
+    const cleanup = vi
+      .spyOn(daemon as any, 'cleanupSessionWorktree')
+      .mockResolvedValue({ outcome: 'retained', reason: 'dirty' })
+    const judgedAfter = async (ms: number) => {
+      clock.advance(ms)
+      await sweepRetention(daemon)
+      return cleanup.mock.calls.length
+    }
+    try {
+      await seedSession(daemon, 'kept', 'idle', clock.now() - 8 * 24 * HOUR)
+      expect(await judgedAfter(0)).toBe(1)
+      expect(await judgedAfter(0)).toBe(1)
+      expect(await judgedAfter(HOUR)).toBe(2)
+      // The wait doubled: one more pass is too soon.
+      expect(await judgedAfter(HOUR)).toBe(2)
+      expect(await judgedAfter(HOUR)).toBe(3)
+      // A pod that will not come up backs off the same way.
+      cleanup.mockResolvedValue({ outcome: 'failed', error: 'sandbox did not become ready' })
+      expect(await judgedAfter(2 * HOUR)).toBe(3)
+      expect(await judgedAfter(2 * HOUR)).toBe(4)
+      expect(await (daemon as any).store.getSession('kept')).toBeDefined()
+
+      // Activity since the keep starts the back-off over: once the session expires again, the wait is one pass.
+      clock.advance(1)
+      await seedSession(daemon, 'kept', 'idle', clock.now())
+      expect(await judgedAfter(8 * 24 * HOUR)).toBe(5)
+      expect(await judgedAfter(HOUR)).toBe(6)
+      cleanup.mockResolvedValue({ outcome: 'not_applicable' })
+      expect(await judgedAfter(HOUR)).toBe(6)
+      expect(await judgedAfter(HOUR)).toBe(7)
+      expect(await (daemon as any).store.getSession('kept')).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   describe('session VMs whose row is gone (#2282)', () => {
     const vmOf = (key: string, agentId = 'bot-a') => `${agentId}/${sessionKeyDirName(key)}`
 
