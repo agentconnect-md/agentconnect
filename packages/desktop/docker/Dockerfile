@@ -3,7 +3,7 @@
 #   docker build -f packages/desktop/docker/Dockerfile -t agentconnect-desktop .
 
 # The bundle is plain JavaScript, so it is built once on the build platform for every target arch.
-FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS bundle
+FROM --platform=$BUILDPLATFORM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS bundle
 WORKDIR /app
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable \
@@ -24,9 +24,9 @@ RUN pnpm --filter @agentconnect.md/desktop bundle
 
 FROM debian:trixie-slim AS desktop
 
-ARG NODE_VERSION=24.12.0
-ARG NODE_SHA256_ARM64=a06d42807fb500f7459e5f3fa6cb431447352826ee6f07e14adfeec58a1b3210
-ARG NODE_SHA256_X64=bdebee276e58d0ef5448f3d5ac12c67daa963dd5e0a9bb621a53d1cefbc852fd
+ARG NODE_VERSION=24.22.1
+ARG NODE_SHA256_ARM64=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e
+ARG NODE_SHA256_X64=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
 ARG TARGETARCH
 ARG VERSION=dev
 

@@ -39,9 +39,11 @@ updates:
         patterns:
           - '*'
 
-  # Pinned base images in docker/*.Dockerfile; it bumps a tag@digest only when the tag's version moves, not on a same-tag rebuild.
+  # Pinned base images in the release Dockerfiles; it bumps a tag@digest only when the tag's version moves, not on a same-tag rebuild.
   - package-ecosystem: docker
-    directory: /docker
+    directories:
+      - /docker
+      - /packages/desktop/docker
     schedule:
       interval: weekly
     commit-message:
