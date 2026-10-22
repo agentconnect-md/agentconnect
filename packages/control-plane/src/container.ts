@@ -348,6 +348,8 @@ import { createQQCpProvider } from './platforms/qq/provider.js'
 import { QQCredentialRoutes } from './platforms/qq/routes.js'
 import { createDingTalkCpProvider } from './platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from './platforms/dingtalk/routes.js'
+import { createMsTeamsCpProvider } from './platforms/msteams/provider.js'
+import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -2793,7 +2795,11 @@ export function buildContainer(
       credentialReconciler: googleChatCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     }),
-    createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(httpDeps)] })
+    createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(httpDeps)] }),
+    createMsTeamsCpProvider({
+      installRoutes: [msTeamsRoutes(httpDeps)],
+      ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
+    })
   ])
 
   // Pending-install TTL reapers + provider-owned convergence loops, from the
