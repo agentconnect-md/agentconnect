@@ -38,7 +38,6 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
-import { slackMarkdownBlockText } from './formatter.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -811,17 +810,9 @@ interface MemberStanding {
   fullMember: boolean
 }
 
-/** A chat.postMessage/update payload rendering `text` as one `markdown` block; `text` stays the raw notification fallback. */
+/** Send Markdown verbatim for Slack to render, retaining the same text as the notification fallback. */
 function markdownBlock(text: string): { text: string; blocks: { type: 'markdown'; text: string }[] } {
-  return { text, blocks: [{ type: 'markdown', text: slackMarkdownBlockText(text) }] }
-}
-
-/** Rewrite the tables of every `markdown` block a caller built, so an edit shows what the first post did. */
-function renderMarkdownBlocks(blocks: unknown[]): unknown[] {
-  return blocks.map((block) => {
-    const b = block as { type?: unknown; text?: unknown }
-    return b?.type === 'markdown' && typeof b.text === 'string' ? { ...b, text: slackMarkdownBlockText(b.text) } : block
-  })
+  return { text, blocks: [{ type: 'markdown', text }] }
 }
 
 /** Slack Web API platform errors carry rejected OAuth scopes in `data.needed`.
@@ -1711,10 +1702,7 @@ export class SlackConnection implements PlatformConnection {
     })
   }
 
-  /** Post an explicit Block Kit message (the interactive status bar) — `text` is the
-   *  notification/accessibility fallback. `unfurl_links`/`unfurl_media` are off so the
-   *  status bar's "View session" URL doesn't sprout a link-preview card. Returns the ts
-   *  for later in-place edits. */
+  /** Post blocks verbatim with a notification fallback and no unfurls; return the ts for later edits. */
   async postBlocks(
     channel: string,
     blocks: unknown[],
@@ -1730,7 +1718,7 @@ export class SlackConnection implements PlatformConnection {
           channel,
           thread_ts: threadTs,
           text,
-          blocks: renderMarkdownBlocks(blocks),
+          blocks,
           unfurl_links: false,
           unfurl_media: false,
           // Block Kit chrome (status bar, cards) — mark it so the backfill skips it.
@@ -1757,24 +1745,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Re-stamp an already-posted agent reply as the FINAL event of its logical response
-   * (send-message-routing-rework.md §5.5), leaving the visible content byte-identical.
-   *
-   * A streamed answer is posted before its own text is complete, so the daemon cannot
-   * know at post time which message will end up last, nor which agents the COMPLETE
-   * response addresses. Both are only knowable at turn finalization — hence one closing
-   * edit that flips `delivery_state` to `final` and attaches the recipient set resolved
-   * from the whole response. Ingress routes that event and no other, which is what keeps
-   * a half-streamed prefix from prompting a peer (§5.4).
-   *
-   * `blocks` and `text` must be exactly what the message already shows: chat.update
-   * REPLACES content, and it also drops any metadata that isn't re-supplied — so the
-   * caller passes the content back unchanged and this method re-attaches the full
-   * authorship block. Best-effort like the other edits: a failed re-stamp leaves the
-   * message `streaming`, which means it is not routed — the safe direction, since the
-   * alternative would be routing an answer nobody confirmed was finished.
-   */
+  /** Re-stamp final authorship and recipients without changing content; a failed edit leaves the reply unrouted (§5.5). */
   async finalizeResponse(
     channel: string,
     ts: string,
@@ -1789,7 +1760,7 @@ export class SlackConnection implements PlatformConnection {
           channel,
           ts,
           text,
-          blocks: renderMarkdownBlocks(blocks),
+          blocks,
           unfurl_links: false,
           unfurl_media: false,
           ...slackMessageMetadata({ agentAuthorId, response })
@@ -1802,9 +1773,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** Edit a previously-posted Block Kit message in place (chat.update). Best-effort;
-   *  returns false after logging so footer migration can retry a failed cleanup. `text`
-   *  is optional so callers can preserve the original notification fallback. */
+  /** Edit blocks verbatim, optionally replacing the notification fallback; return false so failed edits can be retried. */
   async updateBlocks(
     channel: string,
     ts: string,
@@ -1820,7 +1789,7 @@ export class SlackConnection implements PlatformConnection {
           channel,
           ts,
           ...(text !== undefined ? { text } : {}),
-          blocks: renderMarkdownBlocks(blocks),
+          blocks,
           unfurl_links: false,
           unfurl_media: false,
           ...slackMessageMetadata({ chrome, agentAuthorId, chromeOwnerAgentId })

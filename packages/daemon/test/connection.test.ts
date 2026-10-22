@@ -1864,7 +1864,7 @@ describe('SlackConnection.updateBlocks', () => {
     stop: async () => {}
   })
 
-  it('re-renders a markdown block table on edit, as the first post did', async () => {
+  it('preserves a markdown block table verbatim on edit', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,
@@ -1874,7 +1874,7 @@ describe('SlackConnection.updateBlocks', () => {
 
     await conn.updateBlocks('C1', '123.45', [{ type: 'markdown', text }], text)
 
-    expect(calls[0]).toMatchObject({ text, blocks: [{ type: 'markdown', text: '- **a:** 1 · **b:** 2' }] })
+    expect(calls[0]).toMatchObject({ text, blocks: [{ type: 'markdown', text }] })
   })
 
   it('can replace visible blocks without resending the original top-level text', async () => {
@@ -2037,7 +2037,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
     })
   })
 
-  it('posts a reply table as list items Slack shows, keeping the raw text as the fallback', async () => {
+  it('posts a reply table verbatim in the markdown block and notification fallback', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,
@@ -2049,7 +2049,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
 
     expect(calls[0]).toMatchObject({
       text,
-      blocks: [{ type: 'markdown', text: 'Recent commits:\n\n- **Author:** alice · **Summary:** fix `ci`\n\nDone.' }]
+      blocks: [{ type: 'markdown', text }]
     })
   })
 
@@ -2138,7 +2138,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
     expect(calls[4]).not.toHaveProperty('username')
   })
 
-  it('postAsAuthor lands the bare body under the human identity when the workspace can customize', async () => {
+  it('postAsAuthor preserves a long table under the human identity when the workspace can customize', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,
@@ -2148,20 +2148,23 @@ describe('SlackConnection chat.postMessage boundary', () => {
           return { ts: `t${calls.length}` }
         }) as any
     )
+    const text = ['| Implementation detail | Verification result |', '|---|---|', ...Array(250).fill('| a | b |')].join(
+      '\n'
+    )
     const landed = await conn.postAsAuthor(
       'C1',
       '100.1',
-      { text: 'looks off?', attributedText: '[Ada via console] looks off?' },
+      { text, attributedText: `[Ada via console] ${text}` },
       { name: 'Ada', iconUrl: 'https://cdn.example.test/u/1.png' },
       { agentAuthorId: 'agent-1' }
     )
-    expect(landed).toEqual({ ts: 't1', text: 'looks off?' })
+    expect(landed).toEqual({ ts: 't1', text })
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       username: 'Ada',
       icon_url: 'https://cdn.example.test/u/1.png',
-      text: 'looks off?',
-      blocks: [{ type: 'markdown', text: 'looks off?' }]
+      text,
+      blocks: [{ type: 'markdown', text }]
     })
     expect(calls[0].metadata.event_payload).toMatchObject({ author_agent_id: 'agent-1' })
   })
