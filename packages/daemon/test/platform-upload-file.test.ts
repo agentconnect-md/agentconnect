@@ -15,7 +15,8 @@ describe('outbound file sends', () => {
       const api = {
         sendMessage: vi.fn(async () => ({ message_id: 10 })),
         sendPhoto: vi.fn(async () => ({ message_id: 11 })),
-        sendDocument: vi.fn(async () => ({ message_id: 12 }))
+        sendDocument: vi.fn(async () => ({ message_id: 12 })),
+        sendAnimation: vi.fn(async () => ({ message_id: 13 }))
       }
       const handle = { api, init: async () => {}, botInfo: { id: 1 } } as unknown as TelegramBotHandle
       const conn = new TelegramConnection(
@@ -48,6 +49,15 @@ describe('outbound file sends', () => {
       expect(api.sendPhoto).toHaveBeenCalledWith('-100123', expect.anything(), {
         reply_parameters: { message_id: 99, allow_sending_without_reply: true }
       })
+    })
+
+    it('sends a GIF as an animation — sendPhoto would silently flatten it', async () => {
+      const { conn, api } = connection()
+      const gif = { bytes: Buffer.from('GIF89a'), name: 'anim.gif', mimeType: 'image/gif' }
+      await expect(conn.uploadFile('-100123', gif, 'loop')).resolves.toEqual({ ok: true, messageId: '13' })
+      expect(api.sendAnimation).toHaveBeenCalledWith('-100123', expect.anything(), { caption: 'loop' })
+      expect(api.sendPhoto).not.toHaveBeenCalled()
+      expect(api.sendDocument).not.toHaveBeenCalled()
     })
 
     it('sends anything else as a document, the only form that preserves the bytes', async () => {
@@ -149,7 +159,10 @@ describe('outbound file sends', () => {
         replyText: vi.fn(async () => ({ messageId: 'om_reply' })),
         uploadImage: vi.fn(async () => ({ imageKey: 'img_1' })),
         createImage: vi.fn(async () => ({ messageId: 'om_img' })),
-        replyImage: vi.fn(async () => ({ messageId: 'om_img_reply' }))
+        replyImage: vi.fn(async () => ({ messageId: 'om_img_reply' })),
+        uploadDocument: vi.fn(async () => ({ fileKey: 'file_1' })),
+        createFile: vi.fn(async () => ({ messageId: 'om_file' })),
+        replyFile: vi.fn(async () => ({ messageId: 'om_file_reply' }))
       }
       const handle = { api, startWs: async () => {}, close: () => {} } as unknown as FeishuClientHandle
       const conn = new FeishuConnection(
@@ -201,7 +214,7 @@ describe('outbound file sends', () => {
       await expect(conn.uploadFile('oc_1', png, 'from slack')).resolves.toEqual({
         ok: true,
         messageId: 'om_img',
-        warning: 'the image was sent, but its caption did not post'
+        warning: 'the file was sent, but its caption did not post'
       })
     })
 
@@ -214,7 +227,7 @@ describe('outbound file sends', () => {
       await expect(conn.uploadFile('oc_1', png, long)).resolves.toEqual({
         ok: true,
         messageId: 'om_img',
-        warning: 'the image was sent, but part of its caption did not post'
+        warning: 'the file was sent, but part of its caption did not post'
       })
     })
 
@@ -245,10 +258,27 @@ describe('outbound file sends', () => {
       expect(api.uploadImage).not.toHaveBeenCalled()
     })
 
-    it('refuses a non-image, which its file endpoint cannot type honestly', async () => {
+    it('hosts a document through the file endpoint, typed by its name, then sends a file message in the topic', async () => {
       const { conn, api } = connection()
-      await expect(conn.uploadFile('oc_1', zip, 'logs')).resolves.toEqual({ ok: false, reason: 'platform_error' })
+      const pdf = { bytes: Buffer.from('%PDF-1.4'), name: 'report.pdf', mimeType: 'application/pdf' }
+      await expect(conn.uploadFile('oc_1', pdf, 'logs', { thread: 'om_root' })).resolves.toEqual({
+        ok: true,
+        messageId: 'om_file_reply'
+      })
+      expect(api.uploadDocument).toHaveBeenCalledWith(pdf.bytes, 'report.pdf', 'pdf')
+      expect(api.replyFile).toHaveBeenCalledWith('om_root', 'file_1')
       expect(api.uploadImage).not.toHaveBeenCalled()
+      // Anything the fixed `file_type` list does not name is Feishu's own `stream`.
+      await conn.uploadFile('oc_1', zip)
+      expect(api.uploadDocument).toHaveBeenLastCalledWith(zip.bytes, 'logs.zip', 'stream')
+    })
+
+    it('refuses an empty document up front — the file endpoint rejects it and the caption must not strand', async () => {
+      const { conn, api } = connection()
+      const empty = { bytes: Buffer.alloc(0), name: 'empty.txt', mimeType: 'text/plain' }
+      await expect(conn.uploadFile('oc_1', empty, 'logs')).resolves.toMatchObject({ ok: false, reason: 'too_large' })
+      expect(api.uploadDocument).not.toHaveBeenCalled()
+      expect(api.createText).not.toHaveBeenCalled()
     })
   })
 })

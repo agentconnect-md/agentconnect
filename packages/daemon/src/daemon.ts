@@ -295,7 +295,7 @@ import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/re
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
 import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { WorkBoundary } from './messages/message-boundary.js'
-import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
+import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import {
   COMPUTER_TOOLS,
@@ -878,6 +878,7 @@ import { localWorkspaceFs } from './workspace/workspace-fs.js'
 import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
+import { sharedFileKind } from './mcp/ops/share-file-types.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
   createMemoryProvider,
@@ -1210,6 +1211,7 @@ import {
   webchatRoutingNoteBlocks
 } from './webchat/narrowed-scope.js'
 import {
+  publishWebchatSharedFile,
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
   SHARED_IMAGE_SOURCE_MAX_BYTES,
@@ -1218,7 +1220,8 @@ import {
   WEBCHAT_SHARES_IN_FLIGHT,
   WEBCHAT_SHARES_PER_TURN,
   webchatConversationIdOf,
-  type SharedImagePublisherDeps
+  type SharedImagePublisherDeps,
+  type WebchatShareTurn
 } from './webchat/shared-image.js'
 import { prepareSharedImagePreview } from './images/index.js'
 import { BUILTIN_SKILL_KEY_PREFIX, builtinSkillSources, reserveBuiltinSkills } from './skills/builtin-skills.js'
@@ -4931,32 +4934,27 @@ export class Daemon {
         const { headless: _headless, synthetic: _synthetic, ...target } = t
         return { ok: true, ...target }
       },
-      imageUploaderFor: (ctx) => {
+      fileUploaderFor: (ctx) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const p = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)
         if (!p || p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
-        return this.turnSurfaces.exact(p.plan.platform)?.imageUploader?.(p)
+        return this.turnSurfaces.exact(p.plan.platform)?.fileUploader?.(p)
       },
-      readWorkspaceImage: async (ctx, rel): Promise<ShareReadResult> => {
+      readWorkspaceFile: async (ctx, rel): Promise<ShareReadResult> => {
         const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
         const read = await this.readShareWorkspaceFile(ctx, rel, cap)
         if (!read.ok) return read
         const bytes = read.bytes
-        // Sniff + name + digest: outbound name and MIME come from the SNIFFED bytes, never the model-supplied path (§4) — Discord renders by extension alone.
-        const sniffed = sniffImageMimeType(bytes)
-        if (!sniffed) {
-          const head = bytes.subarray(0, 6).toString('latin1')
-          // GIF gets a refusal that NAMES it (§4): sendPhoto would silently strip its animation.
-          if (head === 'GIF87a' || head === 'GIF89a') return { ok: false, reason: 'gif' }
-          return { ok: false, reason: 'not-image' }
-        }
-        const ext = sniffed === 'image/png' ? 'png' : sniffed === 'image/jpeg' ? 'jpg' : 'webp'
-        const stem = basename(rel).replace(/\.[A-Za-z0-9]+$/, '') || 'image'
+        if (bytes.byteLength === 0) return { ok: false, reason: 'empty' }
+        // Image name and MIME come from the SNIFFED bytes, never the model-supplied path (§4); a document keeps its name.
+        const file = sharedFileKind(rel, bytes)
         const sha256 = createHash('sha256').update(bytes).digest('hex')
-        return { ok: true, bytes, name: `${stem}.${ext}`, mimeType: sniffed, sha256 }
+        return { ok: true, bytes, name: file.name, mimeType: file.mimeType, sha256 }
       },
+      // The IM per-file cap bounds a console document too: that is what the chip's workspace download serves back.
+      outboundFileCap: () => cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes,
       // A console turn's image is bounded by the image-processing limit, not the IM per-file cap (webchat-generated-images.md §5).
-      readWorkspaceSharedImage: async (ctx, rel) => {
+      readWorkspaceSharedFile: async (ctx, rel) => {
         const read = await this.readShareWorkspaceFile(ctx, rel, SHARED_IMAGE_SOURCE_MAX_BYTES)
         if (!read.ok) return read
         return { ok: true, bytes: read.bytes, sha256: createHash('sha256').update(read.bytes).digest('hex') }
@@ -4981,39 +4979,20 @@ export class Daemon {
         }
       },
       webchatImagePublisherFor: (ctx) => {
-        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        const p = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)
-        // An IM continuation keeps its origin platform's delivery; only a console-owned turn publishes a card.
-        if (!p?.webchat || p.webchat.continuation) return undefined
-        if (p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
+        const turn = this.webchatShareTurn(ctx)
+        if (!turn) return undefined
         if (!this.relays?.supportsWebchatImages?.()) return 'unsupported'
-        const wc = p.webchat
-        return (source) =>
-          publishWebchatSharedImage(
-            this.sharedImageDeps(),
-            {
-              agentId: ctx.agentId,
-              outwardSessionId: p.outwardSessionId,
-              transcriptChannel: p.plan.transcriptChannel,
-              thread: p.plan.statusThread,
-              admission: { agentId: ctx.agentId, sessionKey: p.plan.sessionKey },
-              wc,
-              ...(p.resolveFileLink ? { resolveFileLink: p.resolveFileLink } : {}),
-              // History pages by insertion order, so the text above the card must land before it.
-              commitPrecedingText: async () => {
-                if (isNoResponsePrefix(wc.replyText.trim())) return
-                for (const segment of wc.replySegments)
-                  if (segment.text.trim()) await this.commitWebchatSegmentOnce(p, segment)
-              },
-              stillPublishable: () =>
-                [...this.pending.values()].includes(p) && !p.outputSuppressed && this.toolTurnRunnable(ctx)
-            },
-            source
-          )
+        return (source) => publishWebchatSharedImage(this.sharedImageDeps(), turn, source)
+      },
+      // A document needs no card: its row is an ordinary message every console already renders as a chip.
+      webchatFilePublisherFor: (ctx) => {
+        const turn = this.webchatShareTurn(ctx)
+        if (!turn) return undefined
+        return (source) => publishWebchatSharedFile({ store: this.store, log: this.log }, turn, source)
       },
       // read*File (inbound-file-attachments.md §2): a downloaded non-image binary lands under
       // `uploads/` at the session's working root, so the agent's own tools can open it. The same
-      // location resolution as readWorkspaceImage above; the write goes through the WorkspaceFs
+      // location resolution as readWorkspaceFile above; the write goes through the WorkspaceFs
       // seam so a cluster agent's sandbox volume is reached over the fd-anchored channel.
       saveAttachment: async (ctx, name, bytes): Promise<SaveAttachmentResult> => {
         const scope = createWorkspaceScope({
@@ -11427,6 +11406,32 @@ export class Daemon {
         return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
       }
       return { ok: false, reason: 'not-found' }
+    }
+  }
+
+  /** The trusted coordinates a console-owned turn shares into; undefined for an IM continuation (which keeps its
+   *  origin platform's delivery), a suppressed turn, or no live turn at all. */
+  private webchatShareTurn(ctx: SessionContext): WebchatShareTurn | undefined {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const p = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)
+    if (!p?.webchat || p.webchat.continuation) return undefined
+    if (p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
+    const wc = p.webchat
+    return {
+      agentId: ctx.agentId,
+      outwardSessionId: p.outwardSessionId,
+      transcriptChannel: p.plan.transcriptChannel,
+      thread: p.plan.statusThread,
+      admission: { agentId: ctx.agentId, sessionKey: p.plan.sessionKey },
+      wc,
+      ...(p.resolveFileLink ? { resolveFileLink: p.resolveFileLink } : {}),
+      // History pages by insertion order, so the text above the card must land before it.
+      commitPrecedingText: async () => {
+        if (isNoResponsePrefix(wc.replyText.trim())) return
+        for (const segment of wc.replySegments) if (segment.text.trim()) await this.commitWebchatSegmentOnce(p, segment)
+      },
+      stillPublishable: () =>
+        [...this.pending.values()].includes(p) && !p.outputSuppressed && this.toolTurnRunnable(ctx)
     }
   }
 

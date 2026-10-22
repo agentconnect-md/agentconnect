@@ -9,7 +9,7 @@ import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-li
 import type { TurnAdmissionStatus, TurnOutputContext } from '../turn-output.js'
 import { QQReplyId } from './connection.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
-import type { ImageUploader } from '../../mcp/ops/context.js'
+import type { FileUploader } from '../../mcp/ops/context.js'
 import { QQStreamText } from './text.js'
 
 export async function QQAcknowledgeAdmission(
@@ -124,7 +124,7 @@ export interface QQTurnState {
   lastProgress?: string
 }
 
-export function QQImageUploader(state: QQTurnState): ImageUploader | undefined {
+export function QQImageUploader(state: QQTurnState): FileUploader | undefined {
   const { conn, replyId, channel, outputAbort } = state
   if (!conn?.sendImage || !replyId) return undefined
   return (file, caption) => conn.sendImage!(channel, replyId, file, caption, outputAbort?.signal)

@@ -8,7 +8,7 @@ import { platformIntegrationConfig } from '../integration-config.js'
 import { QQSender, QQTargetForChannel, type QQRestPort, type QQStreamCursor } from './sender.js'
 import { QQ_ATTACHMENT_TOOL } from './attachments.js'
 import { downloadQQAttachment, downloadQQImage } from './images.js'
-import type { ImageUploader, UploadOutcome } from '../../mcp/ops/context.js'
+import type { FileUploader, UploadOutcome } from '../../mcp/ops/context.js'
 import { QQReferences } from './references.js'
 import { loadQQProtocol } from './sdk.js'
 import type { QQProtocol } from './sdk.js'
@@ -212,7 +212,7 @@ export class QQConnection implements PlatformConnection {
   sendImage(
     channel: string,
     replyId: string,
-    file: Parameters<ImageUploader>[0],
+    file: Parameters<FileUploader>[0],
     caption?: string,
     signal?: AbortSignal
   ): Promise<UploadOutcome> {

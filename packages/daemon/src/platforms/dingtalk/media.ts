@@ -1,5 +1,5 @@
 // DingTalk media (dingtalk-integration.md §4.5): inbound downloads by download code, outbound uploads sent as image or file messages.
-import type { ImageUploader, UploadOutcome } from '../../mcp/ops/context.js'
+import type { FileUploader, UploadOutcome } from '../../mcp/ops/context.js'
 import { sniffImageMimeType } from '../../session/attachment-block.js'
 import { DINGTALK_API_ORIGIN, DingTalkApiError } from './api.js'
 import type { DingTalkTurnState } from './turn-output.js'
@@ -159,7 +159,7 @@ export interface DingTalkMediaPort {
 }
 
 /** The turn's image sender, bound to the connection it leased; absent for a headless turn. */
-export function dingTalkImageUploader(state: DingTalkTurnState): ImageUploader | undefined {
+export function dingTalkFileUploader(state: DingTalkTurnState): FileUploader | undefined {
   const conn = state.conn as Partial<DingTalkMediaPort> | undefined
   if (typeof conn?.sendMedia !== 'function') return undefined
   return (file, caption) => conn.sendMedia!(state.channel, file, caption)

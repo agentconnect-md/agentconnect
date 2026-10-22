@@ -1,6 +1,6 @@
 # Agent-Authored Attachments
 
-**Status:** Implemented through phase 2 (§7's deferrals stand)
+**Status:** Implemented through phase 3 (§7's remaining deferrals stand)
 
 [#1323](https://github.com/agentconnect-md/agentconnect/pull/1323) gave the daemon an
 outbound byte path: every chat platform implements `MessageGateway.uploadFile`, and
@@ -176,35 +176,55 @@ defence-in-depth on the relative path before the read.
 cap, and the upload all consume that same buffer. (The console's workspace `read` cannot
 be reused here — it refuses binary content by design — so this is new, small I/O code.)
 
-**Images only, decided by magic bytes:** the accepted set is **PNG, JPEG, WEBP** —
-exactly `sniffImageMimeType`'s set, and that is a principled boundary, not a sniffing
-convenience: it is `SessionImageAttachment`'s enum, i.e. what the console can render back
-from a transcript row, and that enum is a wire schema shared with the webchat ingress
-validator, so widening it ripples across wire surfaces. GIF is therefore **deferred, not
-two lines away** (§7): beyond the enum, an animated GIF on Telegram must route through
-`sendAnimation` — `sendPhoto` silently de-animates it, the categorical form of the
-degradation this design forbids. Since an animated GIF is a plausible result of §1's
-find-me-images case, the refusal **names GIF** rather than saying "not an image". SVG
-stays out for the provable-bytes reason. The outbound **filename and MIME type derive
-from the sniffed type, never from the model-supplied path** — Discord renders by
-extension alone, so `out/chart` (or any curl output without an extension) would otherwise
-land as a non-previewable attachment in the feature's primary case.
+**Two kinds of file, decided by magic bytes.** A file whose bytes sniff as **PNG, JPEG,
+WEBP or GIF** is an _image_: it posts as a picture, and its outbound **filename and MIME
+type derive from the sniffed type, never from the model-supplied path** — Discord renders
+by extension alone, so `out/chart` (or any curl output without an extension) would
+otherwise land as a non-previewable attachment in the feature's primary case. Every other
+file is a _document_ (`sharedFileKind`, `share-file-types.ts`): it posts as a downloadable
+file under the path's own base name, typed by that name's extension through a small
+allowlist (`application/octet-stream` otherwise), and anything a browser could run — HTML,
+SVG, scripts — stays opaque, the rule the console's workspace download already applies.
+There is no byte signature to name a document from, and the name is what the recipient
+saves it as. An empty file is refused by name.
 
-**What the gate is honestly for:** it stops the wrong file and the injected "attach your
-.env" instruction. It is _not_ a control against deliberate exfiltration — a secret
-appended after a PNG's IEND still sniffs as PNG — and the reason that residual is
-acceptable is that the ordinary text reply already exfiltrates to the same audience.
+That split, not an images-only rule, is the principled boundary. The console's
+`SessionImageAttachment` enum (PNG/JPEG/WEBP, shared with the webchat ingress validator)
+still bounds what the transcript _replays_: a raster image's bytes ride on its row when
+they fit the cap; a GIF's and a document's row keeps the marker only and the console
+downloads the file from the workspace (§4 below, inbound-file-attachments.md §5.1). A GIF
+therefore needs no enum change to ship: Slack, Discord, Feishu and DingTalk host it as an
+image and play it, Telegram routes `image/gif` through `sendAnimation` — `sendPhoto`
+would silently de-animate it, the categorical form of the degradation this design
+forbids — and the console offers it as a download rather than a card, since animated
+previews are outside the preview pipeline's scope. A platform that can host images but not
+documents (QQ today) answers the port's `unsupported_type`, which the tool relays by
+platform name.
+
+**What the gate is honestly for:** it stops the wrong file type and the injected "attach
+your .env" instruction only as far as a type check can — with documents accepted, that
+line of defence is the workspace fence (`.git`, no escape, no symlink) and the per-file and
+per-turn caps, not the sniff. It was never a control against deliberate exfiltration — a
+secret appended after a PNG's IEND already sniffed as PNG — and the reason that residual
+is acceptable is unchanged: the ordinary text reply already exfiltrates to the same
+audience, and a produced report, export or archive is exactly what §1 asks to hand over.
 
 **Provenance is a forensic aid, not a detection control:** the transcript row records the
-workspace path (a model-chosen label) plus the **sniffed type, byte length, and a digest**
-of what was actually published — and, when the bytes fit the existing 160 KB
+workspace path (a model-chosen label) plus the **type, byte length, and a digest** of what
+was actually published — and, for an image whose bytes fit the existing 160 KB
 `SessionImageAttachment` cap, the bytes themselves, exactly as an inbound image does, so
 the console can render what the agent shared and not only that it shared something. Above
-the cap the row is digest-only; nothing else is kept daemon-side. Without this, a user's
-uploaded PNG would preview while the chart the agent produced in reply would not. The
-console also reads the marker's path and digest prefix to download the shared file's
-original bytes (inbound-file-attachments.md §5.1), so the marker's shape is a contract with
-the console, not only a forensic string.
+the cap, and for every document, the row is digest-only; nothing else is kept daemon-side.
+Without this, a user's uploaded PNG would preview while the chart the agent produced in
+reply would not. The console reads the marker's path and digest prefix to download the
+shared file's original bytes (inbound-file-attachments.md §5.1) and renders a document's
+row as a download chip, so the marker's shape is a contract with the console, not only a
+forensic string. In a console-owned turn a document is published through that same
+contract: an ordinary agent message carrying the caption and marker, committed to the
+transcript before it is emitted (webchat-generated-images.md §4's durable-before-visible
+rule), with no preview and no original delivery — the bytes stay in the workspace. That
+is why a document shares under the IM per-file cap on every surface: it is what the chip's
+workspace download serves back.
 
 ## 5. Size, time, and refusals that say why
 
@@ -231,11 +251,13 @@ the console, not only a forensic string.
   through `sendPhoto`, which re-encodes server-side — on a text-dense chart that may be
   exactly the silent degradation this design forbids (§9.1). The eventual fix is a
   `preview | file` hint on the port (deferred; MIME mislabelling is not an option — it
-  collides with Feishu's images-only refusal and with the sniff-derived name above).
+  would route a chart through Feishu's file endpoint as a `stream` and collides with the
+  sniff-derived name above).
 
-Failures are loud and **named**: an over-cap or non-image file gets a refusal quoting the
-rule; a missing Slack `files:write` scope (the likeliest first-run failure, and
-operator-fixable) is distinguishable from a deleted thread root.
+Failures are loud and **named**: an over-cap or empty file gets a refusal quoting the
+rule; a platform that hosts only images says so by name; a missing Slack `files:write`
+scope (the likeliest first-run failure, and operator-fixable) is distinguishable from a
+deleted thread root.
 
 ## 6. Reaching a pod agent's workspace
 
@@ -298,9 +320,17 @@ shim boundary, and generalizes to none of the other three platforms.
   rich posts); composing on a single-file port would force the port into a shape it does
   not need. Several images today = several `shareFile` calls = several messages, which is
   how a person sends three photos. Sequence: source → multi-file → composition.
-- **GIF** — needs the `SessionImageAttachment` enum widened across its wire surfaces and
-  a `sendAnimation` shape on the Telegram arm; until then a GIF gets a refusal that names
-  it (§4).
+- **A GIF card in the console** — an animated preview needs the preview pipeline to
+  carry animation, which webchat-generated-images.md keeps out of scope; a GIF is a
+  download chip there (§4) and a played animation on every IM platform.
+- **A document card in the console** — a preview-less variant of the shared-image card
+  (icon, name, size, download). The existing chip already renders exactly that from the
+  marker, live and from history, so a second card shape bought nothing. Revisit if a
+  document ever needs original delivery through the transfer cache (today it downloads
+  from the workspace, under that route's cap).
+- **QQ documents** — the adapter's upload is prepared as an image (`file_type: 1`); the
+  file arm is QQ's own follow-up (qq-integration.md), and until then QQ answers
+  `unsupported_type`.
 - **Webchat** — shipped separately as shared-image cards with bounded previews and
   asynchronous original delivery; see [webchat-generated-images.md](webchat-generated-images.md).
 - **Agent-to-agent attachments** — a protocol-frame change with its own routing
@@ -308,11 +338,12 @@ shim boundary, and generalizes to none of the other three platforms.
 
 ## 8. Phasing
 
-| Phase | Scope                                                                                                                                                        | Unlocks                           |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
-| 1     | `shareFile`; resolver + fence + sniff + caps; port widenings (reply anchor, typed failure reason, anchor refusal); refusal-class gates; description edits    | Host agents, current conversation |
-| 2     | Bytes read on the `WorkspaceFs` seam (shim = existing base64 op), daemon-side fence on the relative path                                                     | Pod agents                        |
-| —     | `attachFile`, GIF, multi-file, composition, `preview \| file` fidelity hint, A2A files (webchat: [webchat-generated-images.md](webchat-generated-images.md)) | Deferred; §7                      |
+| Phase | Scope                                                                                                                                                                       | Unlocks                             |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| 1     | `shareFile`; resolver + fence + sniff + caps; port widenings (reply anchor, typed failure reason, anchor refusal); refusal-class gates; description edits                   | Host agents, current conversation   |
+| 2     | Bytes read on the `WorkspaceFs` seam (shim = existing base64 op), daemon-side fence on the relative path                                                                    | Pod agents                          |
+| 3     | Documents: name-typed non-image files on every platform that hosts them (Feishu gains its file arm), GIF as an animation, `unsupported_type`, the console's marker-only row | Produced reports, exports, archives |
+| —     | `attachFile`, multi-file, composition, `preview \| file` fidelity hint, A2A files (webchat: [webchat-generated-images.md](webchat-generated-images.md))                     | Deferred; §7                        |
 
 ## 9. Open questions
 

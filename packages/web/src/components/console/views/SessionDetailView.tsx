@@ -1766,7 +1766,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
-    ...(stp.sharedImage ? sharedImageFields(stp) : {}),
+    ...(stp.sharedImage ? sharedImageFields(stp) : stp.kind === 'done' ? sharedFileFields(stp) : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
     // enough of a SessionMessageDto shape for ToolBodyDetail to pull the same
     // full body a history row shows, via `fetchToolBody` (no inline preview yet,
@@ -1797,6 +1797,18 @@ function sharedImageFields(stp: SessionStep): Partial<FmtStep> {
     sharedImage: stp.sharedImage!,
     text: shared ? shared.caption : stp.text,
     ...(shared ? { file: shared.file } : {}),
+    ...(stp.postId ? { postId: stp.postId } : {}),
+    ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
+  }
+}
+
+// A live shared-file step (a document shareFile posted as its own message): the chip's file comes off the marker, like a history row's.
+function sharedFileFields(stp: SessionStep): Partial<FmtStep> {
+  const shared = sharedFileMarker(stp.text)
+  if (!shared) return {}
+  return {
+    text: shared.caption,
+    file: shared.file,
     ...(stp.postId ? { postId: stp.postId } : {}),
     ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
   }

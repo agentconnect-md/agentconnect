@@ -70,15 +70,15 @@ original rather than silently saving the compressed preview.
 
 ## 2. Existing foundations and actual gaps
 
-| Foundation                          | Existing behavior                                                                                           | Required change                                                               |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `daemon/src/mcp/ops/share-file.ts`  | Current-conversation image publication, path validation, MIME sniffing, budgets and provenance              | Add a webchat publication path with durable-before-visible semantics          |
-| `daemon/src/daemon.ts`              | `readWorkspaceImage` uses session workspace scope and `WorkspaceFs.readFileBytes`, including pod workspaces | Preserve that seam; enforce no fallback from an unavailable isolated checkout |
-| `daemon/src/mcp/tools.ts`           | `shareFile` discovery is inside `platforms.length > 0`                                                      | Make it available to eligible webchat sessions without an IM integration      |
-| `daemon/src/webchat/turn-output.ts` | Ordered text/tool events and canonical reply segments                                                       | Add an independently identified image message                                 |
-| `protocol/src/frames/webchat.ts`    | Bounded inbound images; canonical posts already allow one image                                             | Add a live image event and agree on publication identity across copies        |
-| `SessionImageAttachment`            | PNG/JPEG/WebP, at most 160 KiB, persisted with transcript rows                                              | Retain a generated preview through the same bounded representation            |
-| `web/src/lib/shared-file.ts`        | Share markers, source-session download and digest checks                                                    | Reuse original-file downloads; render the same card live and from history     |
+| Foundation                          | Existing behavior                                                                                          | Required change                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `daemon/src/mcp/ops/share-file.ts`  | Current-conversation image publication, path validation, MIME sniffing, budgets and provenance             | Add a webchat publication path with durable-before-visible semantics          |
+| `daemon/src/daemon.ts`              | `readWorkspaceFile` uses session workspace scope and `WorkspaceFs.readFileBytes`, including pod workspaces | Preserve that seam; enforce no fallback from an unavailable isolated checkout |
+| `daemon/src/mcp/tools.ts`           | `shareFile` discovery is inside `platforms.length > 0`                                                     | Make it available to eligible webchat sessions without an IM integration      |
+| `daemon/src/webchat/turn-output.ts` | Ordered text/tool events and canonical reply segments                                                      | Add an independently identified image message                                 |
+| `protocol/src/frames/webchat.ts`    | Bounded inbound images; canonical posts already allow one image                                            | Add a live image event and agree on publication identity across copies        |
+| `SessionImageAttachment`            | PNG/JPEG/WebP, at most 160 KiB, persisted with transcript rows                                             | Retain a generated preview through the same bounded representation            |
+| `web/src/lib/shared-file.ts`        | Share markers, source-session download and digest checks                                                   | Reuse original-file downloads; render the same card live and from history     |
 
 [Agent-authored attachments](agent-authored-attachments.md) explicitly deferred
 webchat. It also records originals above the inline cap without a preview today.
@@ -615,3 +615,10 @@ Choices this design left to implementation, and where the code settled them:
 - **Not yet verified here.** The real generation-to-share runs for Codex and Claude, bucket
   CORS for **View original**, and Windows codec packaging need environment smoke checks
   (§7); EXIF orientation is not applied to JPEG previews.
+- **Documents.** A console share of a file the preparer cannot picture (anything but
+  PNG/JPEG/WEBP/SVG/GIF by sniff) does not go through this pipeline: `publishWebchatSharedFile`
+  commits an ordinary agent message — caption plus the share marker — as its own closed
+  segment and emits it as a `message` event keyed by its `postId`, so the existing
+  share-marker chip renders it live and from history. No preview, no `image` event, no
+  original delivery; the bytes stay in the workspace under the IM per-file cap
+  (agent-authored-attachments.md §4).

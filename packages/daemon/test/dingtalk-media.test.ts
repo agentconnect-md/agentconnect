@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DingTalkRobotMessage } from '@agentconnect.md/message'
 import { DingTalkConnection } from '../src/platforms/dingtalk/connection.js'
-import { dingTalkImageUploader, dingTalkMediaMessage } from '../src/platforms/dingtalk/media.js'
+import { dingTalkFileUploader, dingTalkMediaMessage } from '../src/platforms/dingtalk/media.js'
 import { attachmentReadToolsFor, isAttachmentReadTool } from '../src/platforms/read-ports.js'
 
 const log = { trace: () => {}, debug: () => {}, info: () => {}, warn: vi.fn(), error: () => {} }
@@ -221,11 +221,11 @@ describe('DingTalk outbound media', () => {
 
   it('binds the turn’s image uploader to its leased connection, and offers none to a headless turn', async () => {
     const sendMedia = vi.fn(async () => ({ ok: true as const, messageId: 'pqk-9' }))
-    const uploader = dingTalkImageUploader({ conn: { sendMedia } as never, channel: 'cid-example-group' })!
+    const uploader = dingTalkFileUploader({ conn: { sendMedia } as never, channel: 'cid-example-group' })!
     const file = { bytes: PNG, name: 'chart.png', mimeType: 'image/png' }
     expect(await uploader(file, 'Caption')).toEqual({ ok: true, messageId: 'pqk-9' })
     expect(sendMedia).toHaveBeenCalledWith('cid-example-group', file, 'Caption')
-    expect(dingTalkImageUploader({ channel: 'cid-example-group' })).toBeUndefined()
+    expect(dingTalkFileUploader({ channel: 'cid-example-group' })).toBeUndefined()
   })
 
   it('names a file without an extension by a generic type', () => {

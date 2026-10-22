@@ -1,4 +1,4 @@
-import type { ImageUploader, UploadOutcome } from '../../mcp/ops/context.js'
+import type { FileUploader, UploadOutcome } from '../../mcp/ops/context.js'
 import { sniffImageMimeType } from '../../session/attachment-block.js'
 import { QQImageMaxBytes, QQImageUploadError, uploadQQImage } from './images.js'
 import { isQQApiError } from './sdk.js'
@@ -34,7 +34,7 @@ export interface QQReplyPort {
   sendImage?(
     channel: string,
     replyId: string,
-    file: Parameters<ImageUploader>[0],
+    file: Parameters<FileUploader>[0],
     caption?: string,
     signal?: AbortSignal
   ): Promise<UploadOutcome>
@@ -313,14 +313,15 @@ export class QQSender {
   sendImage(
     target: QQTarget,
     replyId: string,
-    file: Parameters<ImageUploader>[0],
+    file: Parameters<FileUploader>[0],
     caption?: string,
     signal?: AbortSignal
   ): Promise<UploadOutcome> {
     if (!replyId) return Promise.resolve({ ok: false, reason: 'forbidden' })
     if (file.bytes.length > QQImageMaxBytes) return Promise.resolve({ ok: false, reason: 'too_large' })
+    // QQ's upload is prepared as an image (file_type 1); a document needs the file arm the adapter does not have yet.
     if (!sniffImageMimeType(file.bytes))
-      return Promise.resolve({ ok: false, reason: 'platform_error', detail: 'Unsupported image format' })
+      return Promise.resolve({ ok: false, reason: 'unsupported_type', detail: 'QQ images only' })
     let posting = false
     return this.enqueue(target, async (): Promise<UploadOutcome> => {
       const abort = signal ? AbortSignal.any([this.signal, signal]) : this.signal

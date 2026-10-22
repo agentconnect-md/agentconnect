@@ -67,7 +67,7 @@ export function displayedSharedImage(image: SharedImage): SharedImage {
 }
 
 /** The provenance line every copy carries: the model-chosen path plus what was actually published. */
-export function sharedImageMarker(path: string, mimeType: string, bytes: number, sha256: string): string {
+export function sharedFileMarker(path: string, mimeType: string, bytes: number, sha256: string): string {
   return `[shared: ${path} (${mimeType}, ${bytes} bytes, sha256:${sha256.slice(0, 16)})]`
 }
 
@@ -98,7 +98,7 @@ export interface SharedImagePublisherDeps {
 }
 
 /** The trusted coordinates of the turn publishing the image. */
-export interface SharedImageTurn {
+export interface WebchatShareTurn {
   agentId: string
   outwardSessionId: string
   transcriptChannel: string
@@ -132,6 +132,27 @@ export interface SharedImageReceipt {
   notice?: string
 }
 
+/** A document the console cannot picture: its row carries the share marker only, and the chip downloads it from the workspace. */
+export interface SharedFileSource {
+  path: string
+  caption?: string
+  name: string
+  mimeType: string
+  bytes: number
+  /** Hex SHA-256 of the file as read. */
+  sha256: string
+}
+
+export interface SharedFileReceipt {
+  type: 'agentconnect.file'
+  version: 1
+  postId: string
+  published: true
+  /** The bytes stay in the workspace; the console's chip downloads them by path and digest. */
+  original: { kind: 'workspace' }
+  notice?: string
+}
+
 export class SharedImagePublishError extends Error {}
 
 /** The session or attachment is not this daemon's to resolve; the CP answers it as a 404. */
@@ -153,10 +174,10 @@ const PREPARE_REFUSALS: Record<PreviewFailureReason, string> = {
 /** Publish one image into the active webchat turn; resolves once the card is durably committed and emitted. */
 export async function publishWebchatSharedImage(
   deps: SharedImagePublisherDeps,
-  turn: SharedImageTurn,
+  turn: WebchatShareTurn,
   source: SharedImageSource
 ): Promise<SharedImageReceipt> {
-  const marker = (mimeType: string) => sharedImageMarker(source.path, mimeType, source.bytes.byteLength, source.sha256)
+  const marker = (mimeType: string) => sharedFileMarker(source.path, mimeType, source.bytes.byteLength, source.sha256)
   // Budget against the longest marker the sniffed type can produce, so the preview always fits the carrier frames.
   const provisionalText = source.caption ? `${source.caption}\n${marker('image/svg+xml')}` : marker('image/svg+xml')
   const prepared = await deps.prepare({
@@ -307,6 +328,81 @@ export async function publishWebchatSharedImage(
   }
 }
 
+/**
+ * Publish one document into the active webchat turn as its own message: a transcript row whose
+ * trailing share marker the console renders as a download chip (inbound-file-attachments.md §5).
+ * Durable before visible, like the image card; there is no preview to prepare and no original
+ * to deliver — the bytes stay in the workspace and download by path and digest.
+ */
+export async function publishWebchatSharedFile(
+  deps: Pick<SharedImagePublisherDeps, 'store' | 'log'>,
+  turn: WebchatShareTurn,
+  source: SharedFileSource
+): Promise<SharedFileReceipt> {
+  const marker = sharedFileMarker(source.path, source.mimeType, source.bytes, source.sha256)
+  const text = source.caption ? `${source.caption}\n${marker}` : marker
+  if (turn.signal?.aborted || !turn.stillPublishable()) {
+    throw new SharedImagePublishError(
+      'shareFile: the turn ended before the file could be published — nothing was posted.'
+    )
+  }
+  const { wc } = turn
+  const postId = randomUUID()
+  let ts: string
+  try {
+    closeWebchatSegmentForImage(wc, turn.resolveFileLink)
+    await turn.commitPrecedingText?.()
+    ts = await appendWebchatTextRow(
+      deps.store as LocalStore,
+      turn.transcriptChannel,
+      turn.thread ?? '',
+      monotonicTs(),
+      {
+        postId,
+        sender: turn.agentId,
+        admission: turn.admission,
+        text
+      }
+    )
+  } catch (err) {
+    throw new SharedImagePublishError(
+      `shareFile: the file could not be recorded, so it was not posted (${(err as Error).message}).`
+    )
+  }
+  const at = Number(ts)
+  let notice: string | undefined
+  try {
+    // Its own closed segment: the browser keys a bubble by `segmentId`, so text after it starts a new one.
+    wc.sink.output({
+      conversationId: wc.conversationId,
+      turnId: wc.turnId,
+      index: wc.index++,
+      event: { kind: 'message', text, segmentId: postId, ...(wc.continuation ? {} : { postId }) }
+    })
+    wc.messageEmitted = true
+    if (!wc.continuation) {
+      wc.postSink?.({
+        conversationId: wc.conversationId,
+        agentId: turn.agentId,
+        // No hopCount: a shared file is transcript-only for peers and never wakes another agent.
+        post: { postId, conversationId: wc.conversationId, author: { kind: 'agent', agentId: turn.agentId }, text, at },
+        ...(wc.initiator ? { initiator: wc.initiator } : {})
+      })
+    }
+  } catch (err) {
+    notice = 'The file was saved, but the live view may need a refresh to show it.'
+    deps.log.warn(`shareFile: live file delivery failed (${(err as Error).message})`)
+  }
+  return {
+    type: 'agentconnect.file',
+    version: 1,
+    postId,
+    published: true,
+    original: { kind: 'workspace' },
+    ...(notice ? { notice } : {})
+  }
+}
+
 /** Staging directories carry this prefix under the daemon's own staging root, which a restart sweeps. */
 const STAGING_PREFIX = 'original-'
 
@@ -350,7 +446,7 @@ async function uploadSlot(): Promise<() => void> {
 /** Process-local original delivery: belongs to the published image, so turn end or stop never cancels it. */
 async function deliverOriginal(
   deps: SharedImagePublisherDeps,
-  turn: SharedImageTurn,
+  turn: WebchatShareTurn,
   job: { postId: string; staged: string; original: Extract<SharedImageOriginal, { kind: 'cache' }> }
 ): Promise<void> {
   const { original } = job
