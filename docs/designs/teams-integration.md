@@ -279,11 +279,31 @@ provider offers three Microsoft connectors, and they record different IDs:
 
 The social connector is the one to use. It is a social sign-in like the others
 the Console already offers, so Setup manages it as it manages Discord: one Entra
-application registered for the installation, multi-tenant, with authority
-`organizations` so personal Microsoft accounts cannot sign in. Setup creates or
-updates the connector with target `azuread`, enables the target, and keeps the
-client secret write-only. A person links Microsoft under **Profile → Sign-in
-methods**, which records their object ID.
+application registered for the installation, multi-tenant and open to all
+tenants, with authority `organizations` so personal Microsoft accounts cannot
+sign in. Setup creates or updates the connector with target `azuread`, enables
+the target, and keeps the client secret write-only. A person links Microsoft
+under **Profile → Sign-in methods**, which records their object ID.
+
+A sign-in through that connector, in the test tenant, recorded the member's
+object ID as the identity's user ID, the same lower-case value as the
+`aadObjectId` of their Teams activities (**measured**). The identity holds the
+Graph profile and no tenant ID.
+
+The connector runs with email sync off. Graph's `mail` is a directory attribute
+any tenant's administrator can set, and with `organizations` the connector
+accepts every tenant, so a synced address could equal an existing Console
+user's email, and automatic account linking would then attach the foreign
+identity to that user. With sync off the address stays in the raw profile and
+never becomes an identifier (**measured**: the new identity's user has no
+primary email).
+
+Each person consents to the login application on first sign-in, and Entra
+labels an application without a verified publisher **unverified** on that
+prompt (**measured**). Tenants that allow user consent only for verified
+publishers block that prompt, so the installation's application needs
+publisher verification before customers use it, or an administrator in each
+tenant consents for its members.
 
 **The link key.** The Control Plane reads the linked identity as
 `{ platform: 'msteams', tenant: 'global', memberId: <object ID, lower-cased> }`,
@@ -381,11 +401,9 @@ relay route is added to the chart's HTTPRoute in the same change.
   a group chat (§4.1).
 - Whether a refused clicker can be told privately in a group chat or channel
   (§4.4).
-- A Console link through the Azure AD social connector end to end: that the
-  recorded `/me` `id` equals the member's `aadObjectId` once linked, as the
-  measured object IDs predict (§4.5).
-- Whether a tenant that blocks user consent to multi-tenant applications keeps
-  its members from linking until an administrator consents (§4.5).
+- What a member sees when their tenant blocks user consent to an unverified or
+  any third-party application, and that an administrator's consent unblocks
+  linking (§4.5).
 - The member list of a group chat and of private and shared channels (§4.5).
 - Extended Markdown on mobile clients (§4.3).
 - Private and shared channels: Microsoft's pages disagree on whether bots may
