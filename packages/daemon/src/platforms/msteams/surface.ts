@@ -3,6 +3,8 @@ import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
 import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/turn-types.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputSurface } from '../turn-output.js'
+import { msTeamsApprovalCards } from './approval-card.js'
+import { msTeamsElicitCards } from './elicit-card.js'
 import {
   acknowledgeMsTeamsTurn,
   applyMsTeamsAction,
@@ -27,6 +29,8 @@ export function createMsTeamsTurnOutput(
     platform: MSTEAMS_PLATFORM,
     // The bot posts one message as its acknowledgement and the answer edits it (§4.3).
     acknowledge: (ctx, turn) => acknowledgeMsTeamsTurn(ctx, turn, { warn: (message) => host.warn(message) }),
+    elicitCards: msTeamsElicitCards,
+    approvalCards: msTeamsApprovalCards,
     createConverger: (ctx) => new MsTeamsConverger(normalizeMode(ctx.mode), ctx.resolveFileLink),
     initialTurnState: (ctx): MsTeamsTurnState => initialMsTeamsTurnState(ctx),
     apply: (turn, action) => applyMsTeamsAction(host, turn, turnState<MsTeamsTurnState>(turn), action as MsTeamsAction),

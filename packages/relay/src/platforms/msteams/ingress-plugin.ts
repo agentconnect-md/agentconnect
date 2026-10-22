@@ -1,7 +1,12 @@
 // Microsoft Teams' relay ingress plugin (teams-integration.md §3, §4): a pure HTTP decoder of Bot Connector activities with no secret on the relay.
 import { randomUUID } from 'node:crypto'
 import { msTeamsActivityTenantId, normalizeMsTeamsActivity } from '@agentconnect.md/message'
-import { MSTEAMS_PLATFORM, type RdMsgPlatformAction, type WireMsTeamsCardAction } from '@agentconnect.md/protocol'
+import {
+  MSTEAMS_PLATFORM,
+  WireMsTeamsCardActionResponse,
+  type RdMsgPlatformAction,
+  type WireMsTeamsCardAction
+} from '@agentconnect.md/protocol'
 import {
   MSTEAMS_CARD_ACTION_INVOKE,
   MsTeamsHttpIngest,
@@ -37,16 +42,12 @@ export const MSTEAMS_CLICK_NOTES = {
   unsupported: 'This card action is not available.'
 } as const
 
-// Forward one card click to the bot's integration and pick the note: a bounded race, since the daemon settles the card itself.
-async function forwardCardClick(
-  host: RelayIngressHost,
-  botId: string,
-  click: WireMsTeamsCardAction
-): Promise<keyof typeof MSTEAMS_CLICK_NOTES> {
+// Forward one card click to the bot's integration and pick the note: a bounded race, since the daemon settles the card itself; a refusal the daemon returns in time is the note.
+async function forwardCardClick(host: RelayIngressHost, botId: string, click: WireMsTeamsCardAction): Promise<string> {
   const route = host.directory.soleTarget(botId)
   if (!route) {
     host.log.warn(`relay-ingress(${botId}): Teams card click has no current integration target`)
-    return 'undelivered'
+    return MSTEAMS_CLICK_NOTES.undelivered
   }
   const rd: RdMsgPlatformAction = {
     source: 'platform_action',
@@ -62,20 +63,24 @@ async function forwardCardClick(
   let timeout: ReturnType<typeof setTimeout> | undefined
   const forwarded = host.forwardAction(rd, route).then(
     (ack) => {
-      if (ack.accepted) return 'received' as const
-      host.log.warn(`relay-ingress(${botId}): daemon rejected a Teams card click (${ack.reason ?? 'unknown'})`)
-      return 'undelivered' as const
+      if (!ack.accepted) {
+        host.log.warn(`relay-ingress(${botId}): daemon rejected a Teams card click (${ack.reason ?? 'unknown'})`)
+        return MSTEAMS_CLICK_NOTES.undelivered
+      }
+      const told = ack.response === undefined ? undefined : WireMsTeamsCardActionResponse.safeParse(ack.response)
+      return told?.success ? told.data.note : MSTEAMS_CLICK_NOTES.received
     },
     (err: unknown) => {
       host.log.warn(`relay-ingress(${botId}): Teams card click forward failed: ${(err as Error).message}`)
-      return 'undelivered' as const
+      return MSTEAMS_CLICK_NOTES.undelivered
     }
   )
   // A click still in flight at the deadline most likely lands; the daemon's card update is the real answer.
   const note = await Promise.race([
     forwarded,
-    new Promise<'received'>(
-      (resolve) => (timeout = setTimeout(() => resolve('received'), MSTEAMS_CARD_ACTION_FORWARD_TIMEOUT_MS))
+    new Promise<string>(
+      (resolve) =>
+        (timeout = setTimeout(() => resolve(MSTEAMS_CLICK_NOTES.received), MSTEAMS_CARD_ACTION_FORWARD_TIMEOUT_MS))
     )
   ])
   if (timeout) clearTimeout(timeout)
@@ -140,7 +145,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
           host.log.warn(`relay-ingress(${botId}): dropped a malformed Teams card click`)
           return { syncResponse: msTeamsInvokeNote(MSTEAMS_CLICK_NOTES.unsupported) }
         }
-        return { syncResponse: msTeamsInvokeNote(MSTEAMS_CLICK_NOTES[await forwardCardClick(host, botId, click)]) }
+        return { syncResponse: msTeamsInvokeNote(await forwardCardClick(host, botId, click)) }
       }
       // Typing, reactions, edits, deletes, installs and roster changes start nothing on the relay (§4.2).
       if (activity.type !== 'message') return {}
