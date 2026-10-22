@@ -967,8 +967,7 @@
       "profile": "Profile",
       "organizationSettings": "Organization settings",
       "more": "More",
-      "decisions": "Decisions",
-      "computers": "Computers"
+      "decisions": "Decisions"
     },
     "brand": "AgentConnect",
     "brandAgent": "Agent",
@@ -6364,7 +6363,8 @@
     }
   },
   "Computers": {
-    "description": "Desktops your agents can see and operate. Each runs the desktop daemon in a signed-in graphical session or a desktop container, and reports its status and checks here.",
+    "title": "Computers",
+    "description": "Desktops your agents can see and operate. Each runs the desktop daemon in a signed-in graphical session or a desktop container.",
     "addComputer": "Add computer",
     "add": {
       "title": "Add computer",
@@ -6420,15 +6420,9 @@
     },
     "loadError": "Could not load computers: {message}",
     "empty": {
-      "title": "No computers yet",
       "description": "Add a computer to let agents take screenshots, click and type on a desktop you choose. You stay in control: you grant agents, approve risky actions and can stop it at any time."
     },
-    "summary": {
-      "connected": "{count} connected",
-      "disconnected": "{count} disconnected"
-    },
     "never": "never",
-    "ownedBy": "owned by {name}",
     "you": "You",
     "unknownMember": "a former member",
     "noAgents": "No agents granted",

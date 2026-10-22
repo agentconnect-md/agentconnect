@@ -1,8 +1,7 @@
-import type { Metadata } from 'next'
-import ComputersView from '@/components/console/views/ComputersView'
+import { redirect } from 'next/navigation'
 
-export const metadata: Metadata = { title: 'Computers · AgentConnect' }
-
-export default function Page() {
-  return <ComputersView />
+// Computers are a section of the Infra page now; keep old links landing on it.
+export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  redirect(`/${encodeURIComponent(slug)}/daemons#computers`)
 }

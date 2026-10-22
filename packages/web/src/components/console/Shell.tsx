@@ -64,11 +64,11 @@ import { HELP_LINK_DEFAULTS } from '@/lib/help-links'
 
 // A section's own page owns the list app bar (menu button, no back) on mobile; anything
 // nested under it is a "push" screen (back-button app bar). `/conversations/:key` is the
-// Sessions section's merged detail, so its root is the Sessions list.
+// Sessions section's merged detail, so its root is the Sessions list; a Computer's lives under Infra.
 const sectionRoot = (section: string): string | null => {
   const prefix = `/${section}`
   if (!SECTIONS.some((s) => s.prefix === prefix)) return null
-  return prefix === '/conversations' ? '/sessions' : prefix
+  return prefix === '/conversations' ? '/sessions' : prefix === '/computers' ? '/daemons' : prefix
 }
 
 interface GithubCallbackNotice {
@@ -90,18 +90,18 @@ function githubCallbackNotice(code: string): GithubCallbackNotice | null {
 }
 
 // The per-list-tab "+" action → which modal it opens.
-const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon' | 'computer'> = {
+const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
   '/agents': 'agent',
   '/crons': 'cron',
-  '/daemons': 'daemon',
-  '/computers': 'computer'
+  '/daemons': 'daemon'
 }
 
 const isActive = (pathname: string, href: string) =>
   pathname === href ||
   pathname.startsWith(href + '/') ||
-  // /conversations/:key is the Sessions section's merged detail page.
-  (href === '/sessions' && pathname.startsWith('/conversations/'))
+  // /conversations/:key is the Sessions section's merged detail page; /computers/:id is Infra's.
+  (href === '/sessions' && pathname.startsWith('/conversations/')) ||
+  (href === '/daemons' && pathname.startsWith('/computers/'))
 
 // Resolve at render (not module load) so it reads the runtime config: window.__AC_ENV
 // in the browser, process.env during SSR — mirroring lib/auth.ts. `support` accepts a

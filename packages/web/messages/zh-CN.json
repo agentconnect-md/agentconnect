@@ -967,8 +967,7 @@
       "profile": "个人资料",
       "organizationSettings": "组织设置",
       "more": "更多",
-      "decisions": "决策",
-      "computers": "电脑"
+      "decisions": "决策"
     },
     "brand": "AgentConnect",
     "brandAgent": "Agent",
@@ -6364,7 +6363,8 @@
     }
   },
   "Computers": {
-    "description": "Agent 可以查看和操作的桌面。每台电脑在已登录的图形会话或桌面容器中运行桌面守护进程，并在这里报告状态和检查结果。",
+    "title": "电脑",
+    "description": "Agent 可以查看和操作的桌面。每台电脑在已登录的图形会话或桌面容器中运行桌面守护进程。",
     "addComputer": "添加电脑",
     "add": {
       "title": "添加电脑",
@@ -6420,15 +6420,9 @@
     },
     "loadError": "无法加载电脑：{message}",
     "empty": {
-      "title": "还没有电脑",
       "description": "添加一台电脑后，Agent 可以在你选择的桌面上截图、点击和输入。控制权始终在你手中：由你授权 Agent、批准高风险操作，并可随时停止。"
     },
-    "summary": {
-      "connected": "{count} 台已连接",
-      "disconnected": "{count} 台未连接"
-    },
     "never": "从未",
-    "ownedBy": "所有者：{name}",
     "you": "你",
     "unknownMember": "已离开的成员",
     "noAgents": "未授权 Agent",

@@ -32,7 +32,7 @@ vi.mock('@/lib/computers', async (importOriginal) => ({
   useComputerEgress: () => ({ data: null, mutate: vi.fn() })
 }))
 
-const ComputersView = (await import('./ComputersView')).default
+const { ComputersSection } = await import('./ComputersSection')
 
 let host: HTMLDivElement
 let root: Root
@@ -41,7 +41,7 @@ function render(): HTMLDivElement {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
-  act(() => root.render(<ComputersView />))
+  act(() => root.render(<ComputersSection />))
   return host
 }
 
@@ -52,16 +52,16 @@ beforeEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('ComputersView', () => {
+describe('ComputersSection', () => {
   it('offers Add computer from the empty state', () => {
     const el = render()
-    expect(el.textContent).toContain('No computers yet')
+    expect(el.textContent).toContain('Add a computer to let agents')
     const add = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Add computer'))!
     act(() => add.click())
     expect(mocks.openModal).toHaveBeenCalledWith('computer')
   })
 
-  it('lists status, platform, owner, granted agents and doctor failures, and opens the detail', () => {
+  it('lists status, platform, granted agents and doctor failures, and opens the detail', () => {
     mocks.computers = [
       computer({
         agentAccess: { mode: 'selected', agents: ['a1'] },
@@ -83,27 +83,23 @@ describe('ComputersView', () => {
     const el = render()
     const first = el.querySelector('[data-computer-row="c1"]')!
     expect(first.textContent).toContain('Online')
-    expect(first.textContent).toContain('Linux · X11 · owned by You')
-    expect(first.textContent).toContain('Ops bot')
+    expect(first.textContent).toContain('Linux · X11 · Ops bot')
     expect(first.textContent).toContain('1 check failing')
     const second = el.querySelector('[data-computer-row="c2"]')!
     expect(second.textContent).toContain('Revoked')
-    expect(second.textContent).toContain('owned by Dana')
-    expect(second.textContent).toContain('All agents')
+    expect(second.textContent).toContain('macOS · Aqua · All agents')
     expect(second.textContent).toContain('Checks not reported')
     act(() => (first as HTMLElement).click())
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/c1')
   })
 
-  it('renders the mobile summary strip and keeps the desktop header out of the mobile layout', () => {
+  it('heads the section with its count as an anchor the old route lands on', () => {
     mocks.computers = [computer(), computer({ id: 'c2', status: 'offline' })]
     const el = render()
-    const strip = [...el.querySelectorAll('div')].find((d) => d.className.includes('desktop:hidden'))!
-    expect(strip.textContent).toContain('1 connected')
-    expect(strip.textContent).toContain('1 disconnected')
-    // The Shell app bar's "+" opens the dialog on mobile, so the in-page header is desktop-only.
-    const header = [...el.querySelectorAll('div')].find((d) => d.className.includes('hidden min-h-[34px]'))!
-    expect(header.className).toContain('desktop:flex')
+    const heading = el.querySelector('#computers')!
+    expect(heading.textContent).toBe('Computers')
+    expect(heading.parentElement!.textContent).toContain('2')
+    expect(el.textContent).toContain('Desktops your agents can see and operate')
   })
 
   it('marks pool computers and names who has control and how many wait', () => {

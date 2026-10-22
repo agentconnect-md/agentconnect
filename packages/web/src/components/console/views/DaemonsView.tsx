@@ -23,6 +23,8 @@ import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
+import { ComputersSection } from '../ComputersSection'
+import { FLEET_GRID, FLEET_ROW } from '../fleet-grid'
 import ProviderKeysSection from '../ProviderKeysSection'
 import { SectionHeader } from '../SectionHeader'
 import { useTranslations } from 'next-intl'
@@ -146,17 +148,12 @@ export default function DaemonsView() {
           {showGroups && <GroupsSection groups={memberSets} daemons={daemons} />}
         </>
       )}
+      {/* The desktops agents operate (computer-use.md §10), beside the machines agents run on. */}
+      <ComputersSection />
       <ProviderKeysSection />
     </div>
   )
 }
-
-// Two columns as designed, as a 470px floor — what the row needs — so a narrow window drops to one, not to a crushed card.
-const FLEET_GRID =
-  'grid grid-cols-1 gap-3 desktop:grid-cols-[repeat(auto-fill,minmax(min(470px,100%),1fr))] desktop:gap-[14px]'
-
-// One height for every card here, floored at the tallest of them (the pool entry's capacity strip), so the page is one stack.
-const FLEET_ROW = 'desktop:min-h-[77px]'
 
 // Daemon groups (daemon-groups.md §2) drawn as a daemon's card — no telemetry, a group has no CPU of its own to quote.
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
