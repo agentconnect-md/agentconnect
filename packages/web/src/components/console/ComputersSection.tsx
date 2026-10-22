@@ -22,7 +22,7 @@ import { LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { SectionHeader } from '@/components/console/SectionHeader'
 import { FLEET_GRID, FLEET_ROW } from '@/components/console/fleet-grid'
-import { AllocationBadge, useAgentName } from '@/components/console/ComputerPoolCards'
+import { useAgentName } from '@/components/console/ComputerPoolCards'
 import { ComputerEgressCard, ComputerQuotasCard } from '@/components/console/ComputerPlanCards'
 
 export function ComputersSection() {
@@ -134,13 +134,12 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
           />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
-              {computer.name}
-            </span>
-            <AllocationBadge computer={computer} />
+          <div className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
+            {computer.name}
           </div>
+          {/* The allocation rides in the meta line: a pill beside the name left it no width at the grid's 470px floor. */}
           <div className="mt-[2px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px]">
+            {computer.allocation && `${t(`allocation.${computer.allocation}`)} · `}
             {t(`os.${computer.os}`)} · {t(`session.${computer.session}`)} · {accessText}
           </div>
         </div>
@@ -151,37 +150,40 @@ function ComputerRow({ computer }: { computer: ComputerDto }) {
           {statusLabel}
         </span>
       </div>
-      <div className="flex min-w-0 items-center gap-[14px] font-sans text-[12px] font-medium leading-normal max-desktop:justify-between">
-        {doctor.total === 0 ? (
-          <span className="text-(--text-tertiary)">{t('doctor.notReported')}</span>
-        ) : doctor.fail > 0 ? (
-          <span className="text-(--status-error)">
-            <Icon name="circle-x" size={13} className="mr-[5px] inline align-[-2px]" />
-            {t('doctor.failing', { count: doctor.fail })}
-          </span>
-        ) : doctor.warn > 0 ? (
-          <span className="text-[#9a6500]">
-            <Icon name="triangle-alert" size={13} className="mr-[5px] inline align-[-2px]" />
-            {t('doctor.warning', { count: doctor.warn })}
-          </span>
-        ) : (
-          <span className="text-(--status-online)">
-            <Icon name="circle-check" size={13} className="mr-[5px] inline align-[-2px]" />
-            {t('doctor.healthy')}
-          </span>
-        )}
-        {computer.lease ? (
-          <span data-lease-holder={computer.lease.agentId} className="truncate text-(--status-info)">
-            {t('inUseBy', { agent: agentName(computer.lease.agentId, computer.lease.agentName) })}
-            {waiting > 0 && <> · {t('waitingCount', { count: waiting })}</>}
-          </span>
-        ) : (
-          <span className="font-mono text-[11px] font-normal text-(--text-tertiary) desktop:text-right">
-            {computer.status === 'revoked'
-              ? t('revoked')
-              : t('lastSeen', { when: computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never') })}
-          </span>
-        )}
+      <div className="flex min-w-0 items-center gap-[14px] font-sans text-[12px] font-medium leading-normal desktop:flex-none">
+        {/* Checks over last seen in one fixed column, so the name keeps the rest of the row. */}
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-3 desktop:w-[128px] desktop:flex-none desktop:flex-col desktop:items-end desktop:justify-center desktop:gap-[3px]">
+          {doctor.total === 0 ? (
+            <span className="max-w-full truncate text-(--text-tertiary)">{t('doctor.notReported')}</span>
+          ) : doctor.fail > 0 ? (
+            <span className="max-w-full truncate text-(--status-error)">
+              <Icon name="circle-x" size={13} className="mr-[5px] inline align-[-2px]" />
+              {t('doctor.failing', { count: doctor.fail })}
+            </span>
+          ) : doctor.warn > 0 ? (
+            <span className="max-w-full truncate text-[#9a6500]">
+              <Icon name="triangle-alert" size={13} className="mr-[5px] inline align-[-2px]" />
+              {t('doctor.warning', { count: doctor.warn })}
+            </span>
+          ) : (
+            <span className="max-w-full truncate text-(--status-online)">
+              <Icon name="circle-check" size={13} className="mr-[5px] inline align-[-2px]" />
+              {t('doctor.healthy')}
+            </span>
+          )}
+          {computer.lease ? (
+            <span data-lease-holder={computer.lease.agentId} className="max-w-full truncate text-(--status-info)">
+              {t('inUseBy', { agent: agentName(computer.lease.agentId, computer.lease.agentName) })}
+              {waiting > 0 && <> · {t('waitingCount', { count: waiting })}</>}
+            </span>
+          ) : (
+            <span className="max-w-full truncate font-mono text-[11px] font-normal text-(--text-tertiary)">
+              {computer.status === 'revoked'
+                ? t('revoked')
+                : t('lastSeen', { when: computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never') })}
+            </span>
+          )}
+        </div>
         <span className="hidden w-24 flex-none items-center gap-[7px] desktop:flex">
           <span className="dot" style={{ background: tone.dot }} />
           <span className="truncate font-sans text-[12.5px] font-medium leading-normal" style={{ color: tone.text }}>
