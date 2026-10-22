@@ -57,7 +57,6 @@ COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
 COPY packages/k8s-client/package.json packages/k8s-client/
 COPY packages/object-store/package.json packages/object-store/
-COPY packages/desktop/package.json packages/desktop/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
 # Install the control-plane, the self-contained Setup Server package, and
@@ -66,8 +65,7 @@ FROM manifests AS cp-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile \
   --filter "@agentconnect.md/control-plane..." \
-  --filter "@agentconnect.md/setup..." \
-  --filter "@agentconnect.md/desktop..."
+  --filter "@agentconnect.md/setup..."
 
 # Source last — editing app code no longer busts the install layer above.
 COPY . .
@@ -80,9 +78,6 @@ RUN pnpm --config.enable-pre-post-scripts=false \
 
 # Bundle the Setup Server and its runtime dependencies.
 RUN pnpm --filter "@agentconnect.md/setup" build:package
-
-# The desktop daemon bundle and Linux installer the CP serves to desktops (computer-use.md §3.5).
-RUN pnpm --filter "@agentconnect.md/desktop" bundle
 
 # Materialize the same portable production bundle used by the other plain Node
 # services. The pnpm hook removes Prisma's build-only optional peers while
@@ -109,7 +104,6 @@ RUN apt-get update \
 COPY --from=cp-builder /control-plane ./
 COPY --from=cp-builder /app/packages/setup/dist /app/packages/setup/dist
 COPY --from=cp-builder /app/packages/setup/package.json /app/packages/setup/package.json
-COPY --from=cp-builder /app/packages/desktop/bundle/agentconnect-desktop.mjs /app/packages/desktop/bundle/agentconnect-desktop.mjs.LEGAL.txt /app/packages/desktop/bundle/install-linux.sh /app/packages/desktop/bundle/
 
 # CI replaces the dev manifest version with the effective image tag for OpenAPI and telemetry.
 ARG CONTROL_PLANE_VERSION=""

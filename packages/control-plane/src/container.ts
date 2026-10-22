@@ -267,7 +267,6 @@ import { createScreenshotBucket, isScreenshotObjectKey } from './computer-screen
 import { ComputerScreenshots } from './registry/computerScreenshots.js'
 import { ComputerPlan } from './registry/computerPlan.js'
 import { loadComputerPlanConfig } from './computer-plan/config.js'
-import { defaultDesktopBundleDir, loadDesktopDistribution } from './computer-install/desktop-distribution.js'
 import {
   COMPUTER_SCREENSHOT_REAP_INTERVAL_MS,
   ComputerScreenshotReaper
@@ -690,9 +689,6 @@ export function buildContainer(
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
   const computerAudit = new ComputerAuditLog(repos.computerAudit, clock)
-  const desktopDistribution = config.COMPUTER_DESKTOP_BUNDLE_DIR
-    ? loadDesktopDistribution(config.COMPUTER_DESKTOP_BUNDLE_DIR, true)
-    : loadDesktopDistribution(defaultDesktopBundleDir())
   // Managed computer quotas, metering and egress per organization (computer-use.md §15.4, §15.5).
   const computerPlan = new ComputerPlan(
     repos.computerUsage,
@@ -2264,7 +2260,6 @@ export function buildContainer(
     computerPlan,
     ...(computerPool ? { computerPool } : {}),
     ...(computerScreenshots ? { computerScreenshots } : {}),
-    ...(desktopDistribution ? { desktopDistribution } : {}),
     oauth,
     webchatTokens,
     inviteLinks,

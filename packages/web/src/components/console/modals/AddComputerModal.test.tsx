@@ -48,8 +48,7 @@ const registration = {
   displayTail: '…cret',
   name: null,
   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-  exchangeUrl: 'https://cp.example.com/v1/computers/register',
-  linuxInstallerUrl: 'https://cp.example.com/v1/computers/install.sh'
+  exchangeUrl: 'https://cp.example.com/v1/computers/register'
 }
 
 beforeEach(() => {
@@ -88,7 +87,7 @@ describe('AddComputerModal', () => {
     expect(mocks.createComputerRegistration).toHaveBeenCalledWith({})
     const command = host.querySelector('[data-install-command]')!.textContent!
     expect(command).toContain(
-      "wget -nv -O- 'https://cp.example.com/v1/computers/install.sh' | sh -s -- --register 'ac_secret'"
+      "npx -y @agentconnect.md/cli computer install --register 'ac_secret' --cp-url 'https://cp.example.com/v1/computers/register'"
     )
     expect(host.textContent).toContain('Waiting for the computer to register')
 

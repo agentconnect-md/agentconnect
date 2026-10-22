@@ -191,7 +191,7 @@ agentconnect computer uninstall # service, autostart entry and versions; --purge
 
 (`npx -y @agentconnect.md/cli` stands in for `agentconnect` without a global install.) Config, the
 Computer key and the grants stay in `~/.agentconnect/desktop`, so an upgrade keeps the
-registration; a desktop installed by the earlier `install.sh` keeps its data, and `computer install`
+registration; a desktop installed by the retired Control Plane `install.sh` keeps its data, and `computer install`
 moves its service onto the store. `AGENTCONNECT_NPM_REGISTRY` points the CLI at another registry.
 
 Requirements for running from source: Node.js ≥ 24.12 (the official tarball in `~/.local/node` works), a logged-in

@@ -1,5 +1,5 @@
 // Computers (computer-use.md §2.2, §3.6, §4.1): registration exchange, revocation, visibility and the `computer` principal.
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
@@ -15,7 +15,6 @@ import { ComputerChannelKeys } from '../../src/registry/computerChannelKeys.js'
 import { PgComputerRepo } from '../../src/persistence/repositories/computer.repo.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { readComputerChannelToken } from '@agentconnect.md/protocol'
-import { assertInstallerBaseUrl, type DesktopDistribution } from '../../src/computer-install/desktop-distribution.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const REGISTER = '/api/v1/computers/register'
@@ -674,90 +673,12 @@ describe('visibility and policy', () => {
   })
 })
 
-describe('Linux installer', () => {
-  const sha = createHash('sha256').update('bundle-bytes').digest('hex')
-  const dist: DesktopDistribution = {
-    bundle: 'bundle-bytes',
-    legal: 'MIT notices',
-    sha256: sha,
-    linuxInstaller: (base) => `CP_URL='${assertInstallerBaseUrl(base)}' SHA='${sha}'`
-  }
-  const withDist = (): HttpApp => {
-    const app = buildHttpApp(
-      prisma,
-      { DEFAULT_OWNER_ID, PUBLIC_CP_URL: 'https://cp.example.com' },
-      undefined,
-      undefined,
-      { desktopDistribution: dist }
-    )
-    opened.push(app)
-    return app
-  }
-
-  it('names the installer in a registration only when the bundle ships', async () => {
-    const without = await appAs().app.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
-    expect(without.json().linuxInstallerUrl).toBeNull()
-    const res = await withDist().app.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
-    expect(res.json().linuxInstallerUrl).toBe('https://cp.example.com/v1/computers/install.sh')
+describe('Computer registration', () => {
+  it('names the desktop image and no CP-served installer', async () => {
+    const res = await appAs().app.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
+    expect(res.json()).not.toHaveProperty('linuxInstallerUrl')
     // A checkout carries the dev version, so the console's Docker command falls back to latest.
-    expect(without.json().desktopImage).toBe('ghcr.io/agentconnect-md/desktop:latest')
-  })
-
-  it('serves the installer filled in for this CP, and the bundle by checksum, on both prefixes without auth', async () => {
-    const app = withDist()
-    for (const prefix of ['/api/v1', '/v1']) {
-      const script = await app.app.inject({ method: 'GET', url: `${prefix}/computers/install.sh` })
-      expect(script.statusCode).toBe(200)
-      expect(script.headers['content-type']).toBe('text/x-shellscript; charset=utf-8')
-      expect(script.body).toBe(`CP_URL='https://cp.example.com' SHA='${sha}'`)
-
-      const bundle = await app.app.inject({
-        method: 'GET',
-        url: `${prefix}/computers/desktop/${sha}/agentconnect-desktop.mjs`
-      })
-      expect(bundle.statusCode).toBe(200)
-      expect(bundle.body).toBe('bundle-bytes')
-      expect(bundle.headers.etag).toBe(`"${sha}"`)
-      const cached = await app.app.inject({
-        method: 'GET',
-        url: `${prefix}/computers/desktop/${sha}/agentconnect-desktop.mjs`,
-        headers: { 'if-none-match': `"${sha}"` }
-      })
-      expect(cached.statusCode).toBe(304)
-      const legal = await app.app.inject({
-        method: 'GET',
-        url: `${prefix}/computers/desktop/${sha}/agentconnect-desktop.mjs.LEGAL.txt`
-      })
-      expect(legal.body).toBe('MIT notices')
-    }
-    const other = await app.app.inject({ method: 'GET', url: `/v1/computers/desktop/${sha}/..%2Fpackage.json` })
-    expect(other.statusCode).toBe(400)
-  })
-
-  it('answers 404 with a retry hint for another bundle, as a replica mid-upgrade would hold', async () => {
-    const res = await withDist().app.inject({
-      method: 'GET',
-      url: `/v1/computers/desktop/${'0'.repeat(64)}/agentconnect-desktop.mjs`
-    })
-    expect(res.statusCode).toBe(404)
-    expect(res.json().message).toMatch(/different desktop bundle; retry/)
-  })
-
-  it('answers 404 when this CP ships no bundle', async () => {
-    const app = appAs()
-    expect((await app.app.inject({ method: 'GET', url: '/v1/computers/install.sh' })).statusCode).toBe(404)
-    const bundle = await app.app.inject({ method: 'GET', url: `/v1/computers/desktop/${sha}/agentconnect-desktop.mjs` })
-    expect(bundle.statusCode).toBe(404)
-  })
-
-  it('refuses a Host header that would break out of the script', async () => {
-    const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID }, undefined, undefined, { desktopDistribution: dist })
-    opened.push(app)
-    const res = await app.app.inject({
-      method: 'GET',
-      url: '/v1/computers/install.sh',
-      headers: { host: "x';reboot;'" }
-    })
-    expect(res.statusCode).toBe(400)
+    expect(res.json().desktopImage).toBe('ghcr.io/agentconnect-md/desktop:latest')
+    expect((await appAs().app.inject({ method: 'GET', url: '/v1/computers/install.sh' })).statusCode).toBe(404)
   })
 })
