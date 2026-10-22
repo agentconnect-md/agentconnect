@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ELICIT_FORM_WIRE_FIELD_CAP,
   WireFeishuCardActionEvent,
+  WireMsTeamsCardAction,
   WireNormalizedMessage,
   RdMsg,
   RdMsgWebchat,
@@ -660,6 +661,43 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     // The envelope payload is opaque at the frame layer; the daemon's feishu
     // decoder validates it against WireFeishuCardActionEvent.
     expect(WireFeishuCardActionEvent.parse(decoded.frame.payload.payload).context?.open_message_id).toBe('om_card')
+  })
+
+  it('decodes a Microsoft Teams card click inside a platform_action rd/msg', () => {
+    const click = {
+      verb: 'agentconnect.elicit',
+      data: { requestId: 'req-1', option: 0, token: 'synthetic' },
+      cardActivityId: '1767225650000',
+      conversationId: 'a:1example-personal-conversation',
+      serviceUrl: 'https://smba.trafficmanager.net/amer/00000000-0000-4000-8000-000000000002/',
+      aadObjectId: '00000000-0000-4000-8000-000000000003',
+      userId: '29:1example-user-0001',
+      userName: 'Example User'
+    }
+    const action = {
+      source: 'platform_action',
+      platformId: 'msteams',
+      agentId: AGENT_ID,
+      sessionKey: 'msteams-action:a:1example-personal-conversation/1767225650000',
+      msgId: 'msteams-action:abc123',
+      botId: DAEMON_ID,
+      integrationId: CONV_ID,
+      payload: click
+    }
+    const decoded = decodeRelayDaemonFrame(envelope('rd/msg', action))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rd/msg' || decoded.frame.payload.source !== 'platform_action') {
+      throw new Error('expected platform action')
+    }
+    expect(WireMsTeamsCardAction.parse(decoded.frame.payload.payload)).toEqual(click)
+    // The clicker's Entra ID and name are optional; the verb, the card, the conversation and the origin are not.
+    const { aadObjectId: _aad, userName: _name, ...bare } = click
+    expect(WireMsTeamsCardAction.safeParse(bare).success).toBe(true)
+    for (const key of ['verb', 'cardActivityId', 'conversationId', 'serviceUrl', 'userId'] as const) {
+      expect(WireMsTeamsCardAction.safeParse({ ...click, [key]: undefined }).success, key).toBe(false)
+    }
+    expect(WireMsTeamsCardAction.safeParse({ ...click, data: 'text' }).success).toBe(false)
+    expect(WireMsTeamsCardAction.safeParse({ ...click, serviceUrl: 'not a url' }).success).toBe(false)
   })
 
   it('decodes an rd/msg hook fire (B-github) and enforces its required fields', () => {
