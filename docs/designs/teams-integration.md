@@ -18,15 +18,16 @@ delivers every activity as an HTTPS POST, so ingress is a relay module; the
 daemon sends, edits, and deletes through the Bot Connector REST API. No
 Microsoft SDK is used.
 
-| Capability           | Initial scope and boundary                                                                                             |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Distribution         | Each organization registers its own bot and Entra app and pastes the credentials into the Console (§2).                |
-| Ingress              | Relay-terminated HTTPS with Bot Framework token verification and durable admission (§3, §4.2).                         |
-| Conversations        | Every message the app's resource-specific consent delivers, filtered by the existing channel triggers (§4.1).          |
-| Sessions             | A 1:1 chat is one session; a channel post is a thread; a group chat follows the DingTalk reply-chain model (§4.1).     |
-| Replies              | Post once, then edit in place; extended Markdown; no native streaming (§4.3).                                          |
-| Questions, approvals | Adaptive Cards with `Action.Execute`, answered in place; approvals from linked agent editors, else the Console (§4.4). |
-| Setup                | A Console wizard that checks the credentials live and downloads the Teams app package for the admin to upload (§5).    |
+| Capability           | Initial scope and boundary                                                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Distribution         | Each organization registers its own bot and Entra app and pastes the credentials into the Console (§2).                 |
+| Ingress              | Relay-terminated HTTPS with Bot Framework token verification and durable admission (§3, §4.2).                          |
+| Conversations        | Every message the app's resource-specific consent delivers, filtered by the existing channel triggers (§4.1).           |
+| Sessions             | A 1:1 chat is one session; a channel post is a thread; a group chat follows the DingTalk reply-chain model (§4.1).      |
+| Replies              | Post once, then edit in place; extended Markdown; no native streaming (§4.3).                                           |
+| Questions, approvals | Adaptive Cards with `Action.Execute`, answered in place; who may approve follows session access sync (§4.4, §4.5).      |
+| Setup                | A Console wizard that checks the credentials live and downloads the Teams app package for the admin to upload (§5).     |
+| Access               | Microsoft sign-in links a person; session access sync checks conversation membership with the bot's credentials (§4.5). |
 
 Outside this scope: files and attachments in either direction, meetings and
 calls ([voice participation](voice-meeting-participation.md)), the Teams Store,
@@ -241,14 +242,90 @@ leaves the generic note. Whether a targeted message in group chats and channels
 could carry it instead is **unverified**.
 
 Anyone who can see a question card may answer it, as on every surface. A tool
-approval follows the editor check for in-chat cards
-([approval surfaces](slack-approval-dm.md)): a click settles it only if the
-clicker's Teams identity is linked to an editor of the agent. The module's
-`chatMemberKey` is the clicker's `aadObjectId`, scoped by tenant. Linking
-needs the Console user's Entra object ID; whether the sign-in connector records
-`oid` (stable in a tenant) rather than `sub` (pairwise per application) is
-**unverified**. Until a link exists, approvals go to the Console queue with a
-notice in the conversation.
+approval follows the chat-authority rule for in-chat cards
+([approval surfaces](slack-approval-dm.md), "What people can do in chat" in
+[product conventions](../product-conventions.md)). While the organization has
+not enabled Teams session access sync, anyone in the conversation may approve at
+the agent's chat level. With sync on, a click settles an approval only when the
+clicker is linked to an editor of the agent (§4.5); an unlinked clicker or a
+non-editor is refused privately and the card stays live. The module's
+`chatMemberKey` is the clicker's `aadObjectId`, lower-cased.
+
+### 4.5 Sign-in, linking, and session access sync
+
+Teams joins the existing permission sync model as Telegram, Discord, and Google
+Chat did ([Telegram and Discord permission sync](telegram-discord-permission-sync.md)):
+one login application per installation proves who a person is, each
+organization's own bot checks what that person may read, and an organization
+owner turns sync on under **Settings → Session access**.
+
+**What identifies a person (measured).** In the test tenant, one member's Entra
+object ID, as the Entra admin center shows it, is the `from.aadObjectId` of
+every activity that member sends, in a 1:1 chat and in a channel alike. The
+Bot Connector member APIs return the same value with the bot's own token and no
+Graph permission: `GET /v3/conversations/{teamId}/pagedmembers` as `aadObjectId`,
+and the older `GET /v3/conversations/{id}/members` as `objectId`. Every member
+also carries the bot's tenant ID and a `userRole` of `user` or `guest`. A
+standard channel's member list is its team's roster (**measured**).
+
+**Which ID each sign-in connector records.** The deployment's identity
+provider offers three Microsoft connectors, and they record different IDs:
+
+| Connector                     | Identity it records                                               | Usable as the link key                        |
+| ----------------------------- | ----------------------------------------------------------------- | --------------------------------------------- |
+| Azure AD social connector     | Graph `GET /me` `id`, the user's Entra object ID                  | Yes: equals `aadObjectId` for a tenant member |
+| Microsoft Entra ID OIDC (SSO) | the ID token's `sub`, with the other claims kept as extra details | Not `sub`, which is pairwise per application  |
+| Microsoft Entra ID SAML (SSO) | the SAML `nameID`                                                 | Only if `nameID` is mapped to the object ID   |
+
+The social connector is the one to use. It is a social sign-in like the others
+the Console already offers, so Setup manages it as it manages Discord: one Entra
+application registered for the installation, multi-tenant, with authority
+`organizations` so personal Microsoft accounts cannot sign in. Setup creates or
+updates the connector with target `azuread`, enables the target, and keeps the
+client secret write-only. A person links Microsoft under **Profile → Sign-in
+methods**, which records their object ID.
+
+**The link key.** The Control Plane reads the linked identity as
+`{ platform: 'msteams', tenant: 'global', memberId: <object ID, lower-cased> }`,
+and the Teams provider's `chatMemberTenant` answers `global` while its bot is
+live and the deployment offers Microsoft sign-in. The connector records no
+tenant ID (Graph's `/me` carries none), but none is needed: Entra assigns every
+object ID, so a person can link only their own, and the bot row already fences
+each activity to its tenant (§3).
+
+A guest is the one person this cannot link. A guest in the bot's tenant is a
+separate directory object there, so Teams sends that object's ID, while the
+guest signs in to the Console through their home tenant and links its ID.
+Guests therefore stay unlinked, and with sync on they cannot approve or read
+sessions in the Console.
+
+**Access rules with sync on.**
+
+- A 1:1 chat admits its one member.
+- A channel admits the members of its team's roster; a group chat admits its
+  members. The Control Plane asks the conversation's bot with client
+  credentials and matches the viewer's linked object ID against each member's
+  `aadObjectId` or `objectId`.
+- The session's audience realm is the bot's tenant ID and its resource is the
+  conversation ID. The member call needs the conversation's regional
+  `serviceUrl`, so the audience also records it, and the Control Plane accepts
+  only a Bot Framework origin there.
+- Approvals and in-chat settings follow §4.4: linked editors only.
+- A missing link, a revoked bot, a mismatched tenant, a malformed response, or a
+  provider failure never grants access. A successful verdict lasts at most two
+  minutes, as for the other providers.
+
+Turning sync on and off, the fence on historical sessions, and the migration
+that marks earlier Teams conversations pending follow the same rules as
+Telegram and Discord. Only identity and membership metadata reach the Control
+Plane; message bodies stay on the daemon.
+
+**What exists and what is missing.** The daemon side exists: the card click
+carries the clicker's `aadObjectId`, `chatMemberKey` reads it, and the daemon's
+tenant scope is the bot's tenant. Missing are the Setup login application, the
+Control Plane's Microsoft identity read and `chatMemberTenant`, a session-access
+plugin over the member APIs, the audience entries in the protocol, daemon, and
+Control Plane, the Settings and Profile entries, and the migration.
 
 ## 5. Console setup
 
@@ -304,8 +381,12 @@ relay route is added to the chart's HTTPRoute in the same change.
   a group chat (§4.1).
 - Whether a refused clicker can be told privately in a group chat or channel
   (§4.4).
-- Which Entra ID the sign-in connector records, which decides approval linking
-  (§4.4).
+- A Console link through the Azure AD social connector end to end: that the
+  recorded `/me` `id` equals the member's `aadObjectId` once linked, as the
+  measured object IDs predict (§4.5).
+- Whether a tenant that blocks user consent to multi-tenant applications keeps
+  its members from linking until an administrator consents (§4.5).
+- The member list of a group chat and of private and shared channels (§4.5).
 - Extended Markdown on mobile clients (§4.3).
 - Private and shared channels: Microsoft's pages disagree on whether bots may
   post there.
@@ -334,8 +415,11 @@ tenant:
   without a mention; a new post starts another.
 - A group-chat quote of a bot reply continues its session; a new message starts
   another.
-- A permission request shows as a card, and a click by a linked editor settles
-  it; a click by anyone else does not.
+- Without session access sync, a permission request shows as a card that anyone
+  in the conversation can settle. With sync on, a click by a linked editor settles
+  it, and a click by an unlinked person or a non-editor is refused privately.
+- A person links Microsoft in the Profile; with sync on, a channel session is
+  visible to a linked member of its team and hidden from a linked non-member.
 - A redelivered activity does not start a second turn.
 - A request with a missing or invalid token is rejected before routing.
 - Edits stay within the per-conversation budget; 429 responses back off.
