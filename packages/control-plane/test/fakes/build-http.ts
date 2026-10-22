@@ -141,6 +141,9 @@ import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from '../../src/platforms/dingtalk/routes.js'
+import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js'
+import { msTeamsRoutes } from '../../src/platforms/msteams/routes.js'
+import { relayHttpBase } from '../../src/http/relay-ingress.js'
 import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
@@ -231,6 +234,8 @@ export interface PlatformStubs {
   googleChatFetch?: typeof fetch
   /** DingTalk's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
   dingTalkFetch?: typeof fetch
+  /** Entra's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
+  msTeamsFetch?: typeof fetch
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -254,7 +259,8 @@ const PLATFORM_STUB_KEYS = [
   'linearFetch',
   'googleChatPlatformApp',
   'googleChatFetch',
-  'dingTalkFetch'
+  'dingTalkFetch',
+  'msTeamsFetch'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -825,6 +831,11 @@ export function buildHttpApp(
     platformStubs.dingTalkFetch
       ? platformStubs.dingTalkFetch(input, init)
       : Promise.reject(new TypeError('no dingtalk fetch stub installed'))
+  const msTeamsFetch: typeof fetch = (input, init) =>
+    platformStubs.msTeamsFetch
+      ? platformStubs.msTeamsFetch(input, init)
+      : Promise.reject(new TypeError('no msteams fetch stub installed'))
+  const msTeamsRelayBase = relayHttpBase(configOverrides?.PUBLIC_RELAY_URL) ?? undefined
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: async (appId, appSecret, region) =>
       platformStubs.verifyFeishuBot
@@ -923,7 +934,12 @@ export function buildHttpApp(
         return platformStubs.googleChatPlatformApp
       }
     }),
-    createDingTalkCpProvider({ fetch: dingTalkFetch, installRoutes: [dingTalkCredentialRoutes(deps, dingTalkFetch)] })
+    createDingTalkCpProvider({ fetch: dingTalkFetch, installRoutes: [dingTalkCredentialRoutes(deps, dingTalkFetch)] }),
+    createMsTeamsCpProvider({
+      fetch: msTeamsFetch,
+      installRoutes: [msTeamsRoutes(deps, msTeamsFetch)],
+      ...(msTeamsRelayBase ? { publicRelayUrl: msTeamsRelayBase } : {})
+    })
   ])
 
   const app = buildHttpServer(deps)
