@@ -50,6 +50,8 @@ export interface TurnAcknowledgement {
   replace(notice: string): Promise<boolean>
   /** Called exactly once, after the turn's dispatch has returned or thrown. */
   end(end: TurnAcknowledgementEnd): Promise<void>
+  /** Cleanup `end` left running in the background; core keeps the egress lease until it settles, and it never rejects. */
+  readonly settled?: Promise<void>
 }
 
 /** Platform inputs and narrow rendering capabilities; core turn state stays inside the daemon. */

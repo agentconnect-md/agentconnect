@@ -15,7 +15,7 @@ import {
   splitForMsgParam,
   type DingTalkApiOptions
 } from './api.js'
-import { DingTalkCardClient, type DingTalkCardPort } from './card.js'
+import { DingTalkReactionClient, type DingTalkReactionPort } from './reaction.js'
 import { rewriteDingTalkMarkdown } from './markdown.js'
 import { DingTalkStream, type DingTalkSocket, type DingTalkStreamTiming } from './stream.js'
 import type { UploadOutcome } from '../../mcp/ops/context.js'
@@ -72,8 +72,8 @@ export interface DingTalkSentPart {
 export interface DingTalkReplyPort {
   sendMarkdown(channel: string, text: string, opts?: { suffix?: string }): Promise<DingTalkSentPart[]>
   sendText(channel: string, text: string): Promise<string | undefined>
-  /** The AI card calls for a turn's progress card (§4.3). */
-  readonly cards?: DingTalkCardPort
+  /** The reaction calls that acknowledge a turn (§4.3). */
+  readonly reactions?: DingTalkReactionPort
 }
 
 const SEEN_LIMIT = 2_000
@@ -85,7 +85,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   private readonly abort = new AbortController()
   private readonly api: DingTalkApi
   private readonly stream: DingTalkStream
-  readonly cards: DingTalkCardClient
+  readonly reactions: DingTalkReactionClient
   private readonly seen = new Set<string>()
   private readonly channels = new Map<string, { name?: string; isIm: boolean }>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
@@ -111,7 +111,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (deps.fetchImpl) apiOptions.fetchImpl = deps.fetchImpl
     if (deps.origin) apiOptions.origin = deps.origin
     this.api = new DingTalkApi(group, apiOptions)
-    this.cards = new DingTalkCardClient(this.api, group.clientId, deps.log)
+    this.reactions = new DingTalkReactionClient(this.api, group.clientId, deps.log)
     this.media = {
       accessToken: () => this.api.accessToken(),
       robotCode: group.clientId,

@@ -12,6 +12,17 @@ export function dingTalkMessageId(msg: NormalizedMessage): string {
   return msg.msgId.split(':').slice(2).join(':')
 }
 
+/** The raw conversation and message ids from the msgId grammar; undefined for a message DingTalk did not deliver. */
+export function dingTalkMessageRef(
+  msg: NormalizedMessage
+): { openConversationId: string; openMsgId: string } | undefined {
+  const [platform, conversation, ...rest] = msg.msgId.split(':')
+  const id = rest.join(':')
+  return platform === DINGTALK_PLATFORM && conversation && id
+    ? { openConversationId: conversation, openMsgId: id }
+    : undefined
+}
+
 /** Set `msg.thread`: a DM is one session, a quote joins the session its message was recorded in, anything else roots a fresh one. */
 export async function canonicalizeDingTalkThread(
   host: ThreadingHost,

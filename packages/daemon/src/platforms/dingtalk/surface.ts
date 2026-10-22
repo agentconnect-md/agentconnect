@@ -4,17 +4,14 @@ import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/t
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputContext, TurnOutputSurface } from '../turn-output.js'
 import type { DingTalkReplyPort } from './connection.js'
-import { DingTalkProgressCard, DingTalkQuotaNotice } from './progress-card.js'
 import { dingTalkElicitCards } from './elicit-card.js'
 import { dingTalkImageUploader } from './media.js'
+import { DingTalkQuotaNotice } from './quota.js'
+import { acknowledgeDingTalkTurn } from './reaction.js'
 import { applyDingTalkAction, DingTalkConverger, type DingTalkTurnHost, type DingTalkTurnState } from './turn-output.js'
 
 function egressOf(ctx: TurnOutputContext<NormalizedMessage>): DingTalkReplyPort | undefined {
   return ctx.egress && !ctx.message.headless ? (ctx.egress as DingTalkReplyPort) : undefined
-}
-
-function quotaNotice(conn: DingTalkReplyPort, channel: string): DingTalkQuotaNotice {
-  return new DingTalkQuotaNotice((text) => conn.sendText(channel, text))
 }
 
 export function createDingTalkTurnOutput(
@@ -22,12 +19,8 @@ export function createDingTalkTurnOutput(
 ): TurnOutputSurface<Pending, DaemonRenderAction, DingTalkConverger, NormalizedMessage> {
   return {
     platform: DINGTALK_PLATFORM,
-    // DingTalk has no typing indicator or bot reaction, so the progress card is the turn's acknowledgement (§4.3).
-    acknowledge: (ctx) => {
-      const conn = egressOf(ctx)
-      if (!conn?.cards || ctx.mode === 'none') return undefined
-      return new DingTalkProgressCard(conn.cards, ctx.message.channel, quotaNotice(conn, ctx.message.channel))
-    },
+    // DingTalk has no typing indicator, so a thinking reaction on the user's message stands in for one (§4.3).
+    acknowledge: acknowledgeDingTalkTurn,
     // Approvals have no card here: core posts a notice and the Console answers it (§4.6).
     elicitCards: dingTalkElicitCards,
     imageUploader: (turn) => dingTalkImageUploader(turnState<DingTalkTurnState>(turn)),
@@ -36,14 +29,11 @@ export function createDingTalkTurnOutput(
       new DingTalkConverger(ctx.mode, { continueHint: ctx.showFooter && !ctx.isDm }, ctx.resolveFileLink),
     initialTurnState: (ctx): DingTalkTurnState => {
       const conn = egressOf(ctx)
-      const card = ctx.acknowledgement instanceof DingTalkProgressCard ? ctx.acknowledgement : undefined
       return {
         channel: ctx.message.channel,
-        ...(conn ? { conn, quota: card?.quota ?? quotaNotice(conn, ctx.message.channel) } : {}),
-        ...(card ? { card } : {})
+        ...(conn ? { conn, quota: new DingTalkQuotaNotice((text) => conn.sendText(ctx.message.channel, text)) } : {})
       }
     },
-    apply: (turn, action) => applyDingTalkAction(host, turn, turnState<DingTalkTurnState>(turn), action),
-    onSuppress: (turn) => turnState<DingTalkTurnState>(turn).card?.suppress()
+    apply: (turn, action) => applyDingTalkAction(host, turn, turnState<DingTalkTurnState>(turn), action)
   }
 }

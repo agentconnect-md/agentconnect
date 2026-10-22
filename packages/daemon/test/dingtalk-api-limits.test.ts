@@ -30,7 +30,7 @@ function apiAnswering(status: number, body: unknown) {
 
 async function refusal(status: number, body: unknown): Promise<unknown> {
   const { api } = apiAnswering(status, body)
-  return await api.call('PUT', '/v1.0/card/streaming', {}).then(
+  return await api.call('POST', '/v1.0/robot/emotion/reply', {}).then(
     () => undefined,
     (error: unknown) => error
   )
@@ -60,14 +60,14 @@ describe('DingTalk limit errors', () => {
     expect(dingTalkLimitOf(new Error('network'))).toBeUndefined()
   })
 
-  it('sends a card call with the access token and its method', async () => {
+  it('sends a reaction call with the access token and its method', async () => {
     const { api, calls } = apiAnswering(200, { success: true })
-    await expect(api.call('PUT', '/v1.0/card/instances', { outTrackId: 'track-1' })).resolves.toEqual({
+    await expect(api.call('POST', '/v1.0/robot/emotion/recall', { openMsgId: 'msg-1' })).resolves.toEqual({
       success: true
     })
     expect(calls.at(-1)).toMatchObject({
-      path: '/v1.0/card/instances',
-      method: 'PUT',
+      path: '/v1.0/robot/emotion/recall',
+      method: 'POST',
       headers: { 'x-acs-dingtalk-access-token': 'token-1' }
     })
   })

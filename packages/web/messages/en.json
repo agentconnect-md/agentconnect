@@ -6279,11 +6279,6 @@
           "http": "HTTP mode",
           "publish": "Publish"
         },
-        "permissions": {
-          "label": "Access",
-          "caption": "<action>Permissions</action> → enable Card.Instance.Write and Card.Streaming.Write.",
-          "apply": "Enable"
-        },
         "publish": {
           "label": "Publish",
           "caption": "<action>Versions</action> → create a version and choose who can see the bot. Every later change takes effect only in a new version.",

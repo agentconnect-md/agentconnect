@@ -115,30 +115,6 @@ export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator): Walkthroug
       )
     },
     {
-      label: t('permissions.label'),
-      caption: t.rich('permissions.caption', { action: strong }),
-      screen: (
-        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${HOST}/fe/app/…`} />}>
-          <AppPage nav={nav} active={t('nav.permissions')}>
-            {title(t('nav.permissions'))}
-            <div className="mt-1.5 flex items-center gap-1 rounded border border-[#e5e6eb] px-1.5 py-1 font-sans text-[9px] leading-normal text-[#171a1d]">
-              <Icon name="search" size={9} className="text-[#5f6266]" />
-              Card
-            </div>
-            {['Card.Instance.Write', 'Card.Streaming.Write'].map((scope) => (
-              <div
-                key={scope}
-                className="mt-1.5 flex items-center justify-between gap-1.5 border-b border-[#f0f1f2] pb-1.5"
-              >
-                <span className="mono min-w-0 truncate text-[8.5px] leading-normal text-[#171a1d]">{scope}</span>
-                <Pulse>{t('permissions.apply')}</Pulse>
-              </div>
-            ))}
-          </AppPage>
-        </MiniScreen>
-      )
-    },
-    {
       label: t('publish.label'),
       caption: t.rich('publish.caption', { action: strong }),
       screen: (

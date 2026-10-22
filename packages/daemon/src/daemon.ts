@@ -22521,7 +22521,9 @@ export class Daemon {
     } catch (err) {
       this.log.warn(`turn acknowledgement did not settle: ${formatErr(err)}`)
     } finally {
-      ack.release()
+      const settled = ack.handle.settled
+      if (settled) void settled.finally(ack.release)
+      else ack.release()
     }
   }
 
