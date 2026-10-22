@@ -171,8 +171,8 @@ describe('platform manifest', () => {
     expect(axes.dmChannelPattern?.test('a:1example-personal')).toBe(true)
     expect(axes.dmChannelPattern?.test('19:example-group@thread.v2')).toBe(false)
     expect(axes.dmChannelPattern?.test('19:example-channel@thread.tacv2')).toBe(false)
-    // Readers accept the id before writers emit it, so this build does not classify it yet (teams-integration.md §6).
-    expect(originKindOf(MSTEAMS_PLATFORM)).toBeUndefined()
+    // A chat origin the console composer may not continue.
+    expect(originKindOf(MSTEAMS_PLATFORM)).toBe('chat')
     expect(continuableOrigin(MSTEAMS_PLATFORM)).toBe(false)
   })
 

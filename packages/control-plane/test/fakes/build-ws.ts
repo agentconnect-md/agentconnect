@@ -77,6 +77,7 @@ import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
+import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.repo.js'
@@ -174,7 +175,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
     createFeishuCpProvider({}),
     createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: linearTokenStore, tokenService: linearTokens }),
-    createDingTalkCpProvider()
+    createDingTalkCpProvider(),
+    createMsTeamsCpProvider()
   ])
   const repos = {
     daemon: new PgDaemonRepo(prisma),

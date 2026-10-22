@@ -56,8 +56,12 @@ Validation requests a client-credentials token from the tenant's endpoint
 (`https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token`, scope
 `https://api.botframework.com/.default`). That proves the app, tenant, and
 secret together, but not the messaging endpoint or the Teams channel; only the
-first inbound activity proves those. An unreachable Entra answers 503; a
-rejected secret answers 400. A Developer Portal bot obtains its token from the
+first inbound activity proves those. An unreachable Entra answers 503
+(`MSTEAMS_CHECK_UNAVAILABLE`); a definitive refusal answers 400 with a code the
+Console shows: `MSTEAMS_SECRET_INVALID` (a wrong or expired secret),
+`MSTEAMS_APP_NOT_FOUND`, `MSTEAMS_TENANT_NOT_FOUND`, or
+`MSTEAMS_CREDENTIALS_INVALID`. Both IDs are stored lower-cased, since the relay
+matches them exactly. A Developer Portal bot obtains its token from the
 tenant endpoint and receives Bot Framework tokens inbound (**measured**).
 
 ## 3. Architecture
@@ -252,8 +256,10 @@ The wizard walks the admin through both registrations and then:
   permissions with the `webApplicationInfo` they require, the relay host in
   `validDomains`, and `supportsChannelFeatures: "tier1"`, without which Teams
   refuses a v1.25-or-later manifest that has the `team` scope (**measured**).
-  The Control Plane builds it from the integration's row; its app ID is a GUID
-  stable per integration, so a re-download updates the same app. The catalog
+  The Control Plane builds it from the integration's row
+  (`GET /integrations/:id/msteams/app-package`). Its app ID is a UUIDv5 of the
+  bot's app ID, so a re-download, even after a reinstall, updates the same app,
+  and its version grows with each download. The catalog
   assigns the uploaded app an ID of its own and keeps the manifest's as its
   external ID.
 

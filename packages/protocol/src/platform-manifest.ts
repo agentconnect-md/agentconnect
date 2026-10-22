@@ -114,7 +114,7 @@ export const GOOGLE_CHAT_PLATFORM = 'googlechat'
 // DingTalk's platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (dingtalk-integration.md §6).
 export const DINGTALK_PLATFORM = 'dingtalk'
 
-// Microsoft Teams' platform id; joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it (teams-integration.md §6).
+// Microsoft Teams' platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (teams-integration.md §6).
 export const MSTEAMS_PLATFORM = 'msteams'
 
 /** The conservative arm of every axis — see the fail-closed note above. */

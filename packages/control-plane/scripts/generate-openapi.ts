@@ -34,6 +34,7 @@ import { createDiscordCpProvider } from '../src/platforms/discord/provider.js'
 import { createSlackCpProvider } from '../src/platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../src/platforms/feishu/provider.js'
 import { createDingTalkCpProvider } from '../src/platforms/dingtalk/provider.js'
+import { createMsTeamsCpProvider } from '../src/platforms/msteams/provider.js'
 
 /** `config` plus the platform registry are read at spec-build time; repos stay
  *  untouched (the docs/spec routes hit no DB-backed handler). Same stub shape as
@@ -60,7 +61,8 @@ function stubDeps(): HttpDeps {
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
       createSlackCpProvider({}),
       createFeishuCpProvider({}),
-      createDingTalkCpProvider()
+      createDingTalkCpProvider(),
+      createMsTeamsCpProvider()
     ])
   } as unknown as HttpDeps
 }

@@ -255,7 +255,8 @@ describe('Mem0 OSS plugin contract', () => {
         MEM0_API_KEY: 'oss-secret'
       },
       expectedPluginId: 'ai.mem0.memory.oss',
-      connectTimeoutMs: 3_000
+      // The child transpiles workspace sources on start, which a loaded CI runner can take several seconds to do.
+      connectTimeoutMs: 20_000
     })
     await expect(client.recall({ context, query: 'stdio?', topK: 1, maxBytes: 8_192 })).resolves.toEqual({
       records: [expect.objectContaining({ id: 'memory-1', scope: context.scope })]
@@ -263,7 +264,7 @@ describe('Mem0 OSS plugin contract', () => {
     expect(upstream.requests).toHaveLength(1)
     expect(upstream.requests[0]).toMatchObject({ method: 'POST', path: '/search', apiKey: 'oss-secret' })
     await client.close()
-  })
+  }, 30_000)
 
   it('scope-checks ID-only routes before delete and never follows credential-bearing redirects', async () => {
     const foreign = await startOssUpstream({ foreign: true })

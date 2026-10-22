@@ -16,7 +16,16 @@ export const MEMBER_FIELDS = ['Role', 'Works on', 'Knows about', 'Ask about'] as
 export type MemberField = (typeof MEMBER_FIELDS)[number]
 export const MEMBER_ENTRY_LINES = 10
 /** The platform ids a channels.md line may name: the chat platforms whose rooms an agent is in. */
-export const CHANNEL_PLATFORMS = ['slack', 'telegram', 'discord', 'feishu', 'googlechat', 'qq', 'dingtalk'] as const
+export const CHANNEL_PLATFORMS = [
+  'slack',
+  'telegram',
+  'discord',
+  'feishu',
+  'googlechat',
+  'qq',
+  'dingtalk',
+  'msteams'
+] as const
 export type ChannelPlatform = (typeof CHANNEL_PLATFORMS)[number]
 
 /** Who a fact line rests on: an internal place, a knowledge entry, a repository, the person themself, or a web page. */
