@@ -167,6 +167,19 @@ export const IntegrationGoogleChatConfig = z.object({
 })
 export type IntegrationGoogleChatConfig = z.infer<typeof IntegrationGoogleChatConfig>
 
+// The Microsoft Teams payload (teams-integration.md §2): relay-terminated ingress, so the daemon gets egress material only.
+export const IntegrationMsTeamsConfig = z.object({
+  appId: z.string().min(1), // Entra application (client) ID, the bot's ID
+  tenantId: z.string().min(1), // Entra tenant ID whose token endpoint issues the bot's tokens
+  clientSecret: z.string().min(1), // Entra client secret (plaintext — never log)
+  // The relay's public messaging endpoint the bot registration names; absent until the relay's origin is known.
+  messagesUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional()
+})
+export type IntegrationMsTeamsConfig = z.infer<typeof IntegrationMsTeamsConfig>
+
 /**
  * Which session an activation in a conversation joins (channel-session-mode.md §4).
  * `createNew` is today's behavior — a message opens a session, a thread reply continues

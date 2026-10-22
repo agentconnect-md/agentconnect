@@ -29,6 +29,8 @@ export {
   GOOGLE_CHAT_ELICIT_FUNCTION,
   GOOGLE_CHAT_EVENTS_PATH,
   googleChatEventsUrl,
+  MSTEAMS_MESSAGES_PATH,
+  msTeamsMessagesUrl,
   INTEGRATION_REVOKED_FEATURE,
   isSelfManagedGitlabHost,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
@@ -243,7 +245,13 @@ export { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from './append-coordinat
 export { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate } from './subsession-coordinate.js'
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
-export { DEFAULT_MANIFEST, DINGTALK_PLATFORM, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'
+export {
+  DEFAULT_MANIFEST,
+  DINGTALK_PLATFORM,
+  GOOGLE_CHAT_PLATFORM,
+  MSTEAMS_PLATFORM,
+  manifestFor
+} from './platform-manifest.js'
 export type { AppendConversationKind, MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
 
 // ── exact money — the decimal amount every reported/stored/served cost uses ──
