@@ -231,8 +231,11 @@ card. The daemon re-checks the agent and integration, hands the click to the
 permission coordinator, and replaces the card (`PUT` on the card's activity)
 with the question and its decision and no controls; the client then shows the
 card as edited (**measured**). A refused click leaves the card as it
-was and tells the clicker privately; whether that can be a targeted message in
-group chats and channels is **unverified**.
+was and tells the clicker privately: the daemon returns the refusal in the
+click's `rd/ack` `response`, and the relay answers the invoke with it in place
+of the generic note when the ack arrives within its two-second wait; a later ack
+leaves the generic note. Whether a targeted message in group chats and channels
+could carry it instead is **unverified**.
 
 Anyone who can see a question card may answer it, as on every surface. A tool
 approval follows the editor check for in-chat cards

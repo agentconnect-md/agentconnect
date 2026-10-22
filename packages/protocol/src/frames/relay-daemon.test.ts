@@ -3,6 +3,8 @@ import {
   ELICIT_FORM_WIRE_FIELD_CAP,
   WireFeishuCardActionEvent,
   WireMsTeamsCardAction,
+  WireMsTeamsCardActionResponse,
+  MSTEAMS_CARD_NOTE_MAX,
   WireNormalizedMessage,
   RdMsg,
   RdMsgWebchat,
@@ -698,6 +700,14 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     }
     expect(WireMsTeamsCardAction.safeParse({ ...click, data: 'text' }).success).toBe(false)
     expect(WireMsTeamsCardAction.safeParse({ ...click, serviceUrl: 'not a url' }).success).toBe(false)
+  })
+
+  it('bounds the note a Teams card click’s ack hands the relay', () => {
+    expect(WireMsTeamsCardActionResponse.parse({ note: 'Only an Agent editor can answer this request.' })).toEqual({
+      note: 'Only an Agent editor can answer this request.'
+    })
+    expect(WireMsTeamsCardActionResponse.safeParse({ note: '' }).success).toBe(false)
+    expect(WireMsTeamsCardActionResponse.safeParse({ note: 'x'.repeat(MSTEAMS_CARD_NOTE_MAX + 1) }).success).toBe(false)
   })
 
   it('decodes an rd/msg hook fire (B-github) and enforces its required fields', () => {

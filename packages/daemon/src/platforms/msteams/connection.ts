@@ -31,6 +31,10 @@ export const MSTEAMS_MESSAGE_MAX_BYTES = 80 * 1024
 const CONVERSATIONS_MAX = 2_000
 const MEMBERS_PER_CONVERSATION = 200
 const NAMES_MAX = 5_000
+const CARDS_MAX = 2_000
+
+/** The attachment type of an Adaptive Card (§4.4). */
+export const MSTEAMS_ADAPTIVE_CARD_TYPE = 'application/vnd.microsoft.card.adaptive'
 
 /** One connection's worth of consolidated integrations (§7.5 registry group shape). */
 export interface MsTeamsConnectionGroup {
@@ -101,6 +105,17 @@ export interface MsTeamsReplyPort extends MsTeamsEgressPort {
   postText(target: MsTeamsTarget, text: string): Promise<void>
 }
 
+/** What a card facet needs: a card post that answers the activity ID, and its replacement where it landed. */
+export interface MsTeamsCardPort {
+  targetFor(channel: string, thread?: string): MsTeamsTarget | undefined
+  postCard(target: MsTeamsTarget, card: Record<string, unknown>, summary?: string): Promise<string>
+  replaceCard(
+    activityId: string,
+    card: Record<string, unknown>,
+    at: { channel: string; thread?: string }
+  ): Promise<void>
+}
+
 /** A conversation as the bot has seen it: the serviceUrl its latest activity carried and its kind. */
 interface KnownConversation {
   serviceUrl: string
@@ -129,7 +144,7 @@ function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
   while (map.size > max) map.delete(map.keys().next().value!)
 }
 
-export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort {
+export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, MsTeamsCardPort {
   readonly key: string
   readonly integrationId: string
   readonly agentId: string
@@ -149,6 +164,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort {
   private readonly conversations = new Map<string, KnownConversation>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
   private readonly names = new Map<string, string>()
+  /** Conversation + card activity ID → where it landed; an activity ID is unique only within its conversation (§4.2). */
+  private readonly cards = new Map<string, MsTeamsTarget>()
   private readonly writeGate: (() => Promise<void>) | undefined
   private stopped = false
 
@@ -234,6 +251,24 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort {
     await this.write(target, () => this.api.deleteActivity(target, activityId))
   }
 
+  /** Post an Adaptive Card; answers the activity ID Teams assigned. */
+  async postCard(target: MsTeamsTarget, card: Record<string, unknown>, summary?: string): Promise<string> {
+    const id = await this.write(target, () => this.api.postActivity(target, cardActivityOf(card, summary)))
+    remember(this.cards, cardKey(channelOf(target.conversationId), id), target, CARDS_MAX)
+    return id
+  }
+
+  /** Replace a posted card in place; one this process did not post is found by its conversation, else left as it is. */
+  async replaceCard(
+    activityId: string,
+    card: Record<string, unknown>,
+    at: { channel: string; thread?: string }
+  ): Promise<void> {
+    const target = this.cards.get(cardKey(at.channel, activityId)) ?? this.targetFor(at.channel, at.thread)
+    if (!target) throw new MsTeamsApiError('msteams: the card’s conversation is unknown', 'not_found')
+    await this.write(target, () => this.api.updateActivity(target, activityId, cardActivityOf(card)))
+  }
+
   /** Chrome (a command reply, a notice): posted as is, split under the limit. */
   async postText(target: MsTeamsTarget, text: string): Promise<void> {
     for (const part of splitMsTeamsText(text)) await this.post(target, part)
@@ -283,4 +318,22 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort {
 
 function activityOf(text: string): Record<string, unknown> {
   return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text }
+}
+
+// A raw conversation ID's normalized channel: a channel thread drops its `;messageid=` suffix.
+function channelOf(conversationId: string): string {
+  return conversationId.split(';')[0]!
+}
+
+// A posted card's cache key: its conversation and its activity ID, the pair Teams keeps unique.
+function cardKey(channel: string, activityId: string): string {
+  return `${channel}\u001f${activityId}`
+}
+
+function cardActivityOf(card: Record<string, unknown>, summary?: string): Record<string, unknown> {
+  return {
+    type: 'message',
+    attachments: [{ contentType: MSTEAMS_ADAPTIVE_CARD_TYPE, content: card }],
+    ...(summary ? { summary } : {})
+  }
 }

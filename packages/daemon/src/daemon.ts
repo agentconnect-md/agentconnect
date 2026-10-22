@@ -519,7 +519,13 @@ import {
   platformIds,
   platformIntegrationConfig
 } from './platforms/integration-config.js'
-import type { ChatRefusal, InteractionActor, PlatformChannelInfo } from './platforms/contract.js'
+import type {
+  ChatCardClick,
+  ChatRefusal,
+  InteractionActor,
+  PlatformChannelInfo,
+  RelayCardClicks
+} from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import {
   rootPostNeedsThreadMaterialization,
@@ -13883,7 +13889,50 @@ export class Daemon {
 
   private async handleRelayPlatformAction(msg: RdMsgPlatformAction): Promise<RdAck> {
     const decode = this.platformActionDecoders.get(msg.platformId)
-    return decode ? await decode(msg) : { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+    if (decode) return await decode(msg)
+    const cards = this.platformModules.get(msg.platformId)?.cardClicks
+    return cards
+      ? await this.handleRelayCardClick(msg, cards)
+      : { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+  }
+
+  /** A relayed click on a platform module's approval or question card: re-check the agent and integration, then core re-derives the answer; a refusal only the clicker hears rides the ack. */
+  private async handleRelayCardClick(msg: RdMsgPlatformAction, cards: RelayCardClicks): Promise<RdAck> {
+    const click = cards.decode(msg)
+    if (!click) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+    const agent = this.agents.get(msg.agentId)
+    if (!agent) {
+      this.log.warn(`relay: ${msg.platformId} card click for unknown agent ${msg.agentId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+    }
+    if (!agent.integrations.some((i) => i.id === msg.integrationId && i.platform === msg.platformId)) {
+      this.log.warn(`relay: ${msg.platformId} card click for unknown integration ${msg.integrationId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
+    }
+    const told = await this.answerCardClick(click)
+    return { msgId: msg.msgId, accepted: true, ...(told ? { response: cards.response(told) } : {}) }
+  }
+
+  /** Hand one decoded card click to the permission coordinator; what only the clicker is told, when the card's surface cannot tell them itself. */
+  private async answerCardClick(click: ChatCardClick): Promise<string | undefined> {
+    const { answer } = click
+    const actor = click.actor ? { actor: click.actor } : {}
+    const ts = click.ts !== undefined ? { ts: click.ts } : {}
+    if (answer.kind === 'approval')
+      return await this.permissions.handlePermissionChoice({
+        requestId: answer.requestId,
+        option: answer.option,
+        ...ts,
+        ...actor
+      })
+    if (answer.kind === 'submit')
+      return await this.permissions.submitElicitEditor({ requestId: answer.requestId, values: answer.values, ...actor })
+    return await this.permissions.handleElicitCardTap({
+      requestId: answer.requestId,
+      token: answer.token,
+      ...ts,
+      ...actor
+    })
   }
 
   private async handleRelaySlackAction(msg: {

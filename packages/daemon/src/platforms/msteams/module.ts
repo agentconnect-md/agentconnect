@@ -1,6 +1,14 @@
-// Teams' daemon platform module (§7.4): relay ingress, the reply-chain thread strategy, and the chat-member key.
-import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
-import type { DaemonPlatformModule, InteractionActor } from '../contract.js'
+// Teams' daemon platform module (§7.4): relay ingress, the reply-chain thread strategy, the chat-member key, and relayed card clicks.
+import {
+  MSTEAMS_CARD_NOTE_MAX,
+  MSTEAMS_PLATFORM,
+  WireMsTeamsCardAction,
+  type RdMsgPlatformAction,
+  type WireMsTeamsCardActionResponse
+} from '@agentconnect.md/protocol'
+import type { ChatCardClick, DaemonPlatformModule, InteractionActor, RelayCardClicks } from '../contract.js'
+import { parseMsTeamsApprovalClick } from './approval-card.js'
+import { parseMsTeamsElicitClick } from './elicit-card.js'
 import { msTeamsRelayIngress, type MsTeamsRelayIngressHost } from './relay-ingress.js'
 import { canonicalizeMsTeamsThread } from './threading.js'
 
@@ -12,12 +20,37 @@ export function msTeamsChatMemberKey(actor: InteractionActor): string | undefine
   return ENTRA_OBJECT_ID.test(id) ? id.toLowerCase() : undefined
 }
 
+/** One forwarded card click: the answer it carries, the card it was on, and the clicker by Entra object ID where Teams sent one. Pure. */
+export function decodeMsTeamsCardClick(msg: Pick<RdMsgPlatformAction, 'payload'>): ChatCardClick | null {
+  const parsed = WireMsTeamsCardAction.safeParse(msg.payload)
+  if (!parsed.success) return null
+  const click = parsed.data
+  const name = click.userName?.trim()
+  const actor: InteractionActor = {
+    userId: click.aadObjectId ?? click.userId,
+    ...(click.aadObjectId ? { memberId: click.aadObjectId } : {}),
+    ...(name ? { name } : {})
+  }
+  const at = { ts: click.cardActivityId, actor }
+  const pick = parseMsTeamsApprovalClick(click)
+  if (pick) return { answer: { kind: 'approval', ...pick }, ...at }
+  const elicit = parseMsTeamsElicitClick(click)
+  return elicit ? { answer: elicit, ...at } : null
+}
+
+export const msTeamsCardClicks: RelayCardClicks = {
+  decode: decodeMsTeamsCardClick,
+  response: (privateText) =>
+    ({ note: privateText.slice(0, MSTEAMS_CARD_NOTE_MAX) }) satisfies WireMsTeamsCardActionResponse
+}
+
 /** Teams' daemon platform module, bound to one daemon's host. */
 export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlatformModule {
   return {
     platformId: MSTEAMS_PLATFORM,
     relayIngress: msTeamsRelayIngress(host),
     canonicalizeThread: canonicalizeMsTeamsThread,
-    chatMemberKey: msTeamsChatMemberKey
+    chatMemberKey: msTeamsChatMemberKey,
+    cardClicks: msTeamsCardClicks
   }
 }

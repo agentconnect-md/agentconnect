@@ -34,7 +34,7 @@
  * MANIFEST (§5, pure data) is genuinely cross-host, and it goes to protocol when
  * the registry lands. This one is daemon-owned.
  */
-import type { PlaceExternalReason, RdMsgIm } from '@agentconnect.md/protocol'
+import type { PlaceExternalReason, RdMsgIm, RdMsgPlatformAction } from '@agentconnect.md/protocol'
 import type { NormalizedMessage } from '../messages/normalized.js'
 
 /** The human behind one interactive click (button / select / modal submit). Carried
@@ -440,6 +440,28 @@ export interface RelayIngressStrategy {
   receiptId?(normalized: NormalizedMessage): string
 }
 
+/** What one relayed click on an approval or question card answers, positions and tokens as the card carried them; core re-derives every answer from the card's own params. */
+export type ChatCardAnswer =
+  | { kind: 'approval'; requestId: string; option: number }
+  | { kind: 'choice'; requestId: string; token: string | null }
+  | { kind: 'submit'; requestId: string; values: Record<string, string | readonly string[]> }
+
+/** One relayed card click as its platform decoded it: the answer, the card's own message id, and who clicked. */
+export interface ChatCardClick {
+  answer: ChatCardAnswer
+  /** The card's message id as the click reports it, adopted by a click that beats its post's return. */
+  ts?: string
+  actor?: InteractionActor
+}
+
+/** §7.4 relayed card clicks: decode a `platform_action` into a card answer, and wrap what only the clicker is told for the ack. */
+export interface RelayCardClicks {
+  /** Null for a payload that is no card click of this platform's. */
+  decode(msg: RdMsgPlatformAction): ChatCardClick | null
+  /** The ack's `response` carrying a refusal the relay shows only the clicker. */
+  response(privateText: string): unknown
+}
+
 /** The host lookup a thread strategy places a reply with: the thread a recorded message id was filed under. */
 export interface ThreadingHost {
   threadForMessage(transcriptChannel: string, messageId: string): Promise<string | undefined>
@@ -454,4 +476,6 @@ export interface DaemonPlatformModule {
   chatMemberKey?(actor: InteractionActor): string | undefined
   /** Set `msg.thread` in place before the channel record; absent ⇒ the thread normalize set stands. */
   canonicalizeThread?(host: ThreadingHost, msg: NormalizedMessage, transcriptChannel: string): Promise<void>
+  /** Clicks on this platform's approval and question cards that arrive as relayed `platform_action`s; absent ⇒ none do. */
+  readonly cardClicks?: RelayCardClicks
 }

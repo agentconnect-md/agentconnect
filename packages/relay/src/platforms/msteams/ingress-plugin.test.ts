@@ -466,6 +466,20 @@ describe('msteams ingress plugin — card clicks (§4.4)', () => {
     expect((await deliver(failed, cardClick)).handled).toEqual(note(MSTEAMS_CLICK_NOTES.undelivered))
   })
 
+  it('shows the clicker the refusal the daemon’s ack carries in place of the generic note', async () => {
+    const refusal = 'Only an Agent editor can answer this request.'
+    const told = setup(
+      {},
+      { host: { forwardAction: vi.fn(async () => ({ msgId: 'm', accepted: true, response: { note: refusal } })) } }
+    )
+    expect((await deliver(told, cardClick)).handled).toEqual(note(refusal))
+    // A response that is not a bounded note leaves the generic one.
+    for (const response of [{ note: '' }, { note: 'x'.repeat(501) }, 'text', { toast: refusal }]) {
+      const odd = setup({}, { host: { forwardAction: vi.fn(async () => ({ msgId: 'm', accepted: true, response })) } })
+      expect((await deliver(odd, cardClick)).handled).toEqual(note(MSTEAMS_CLICK_NOTES.received))
+    }
+  })
+
   it('answers within the bounded race while the daemon has not acked', async () => {
     const s = setup({}, { host: { forwardAction: vi.fn(() => new Promise<never>(() => {})) } })
     // Verified without timers, then handled on a fake clock so the race is observed rather than waited for.

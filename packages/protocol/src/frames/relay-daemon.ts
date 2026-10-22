@@ -710,6 +710,15 @@ export const WireMsTeamsCardAction = z.object({
 })
 export type WireMsTeamsCardAction = z.infer<typeof WireMsTeamsCardAction>
 
+/** The longest note a Teams card click's ack may hand the relay to show the clicker. */
+export const MSTEAMS_CARD_NOTE_MAX = 500
+
+/** The `rd/ack` `response` for a Teams card click: the words only the clicker is told under the card, in place of the generic note. */
+export const WireMsTeamsCardActionResponse = z.object({
+  note: z.string().min(1).max(MSTEAMS_CARD_NOTE_MAX)
+})
+export type WireMsTeamsCardActionResponse = z.infer<typeof WireMsTeamsCardActionResponse>
+
 /**
  * R→D REQ → rd/ack (§6.6). The ONE platform-interaction envelope replacing the
  * per-platform `slack_action` / `feishu_action` members: the ENVELOPE is
