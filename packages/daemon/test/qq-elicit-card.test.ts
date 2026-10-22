@@ -5,7 +5,7 @@ import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-import { elicitForm } from '../src/slack/render.js'
+import { elicitForm, elicitOptionToken } from '../src/slack/render.js'
 import { QQ_ELICIT_SURFACE, qqElicitChoice, qqElicitText } from '../src/platforms/qq/elicit-card.js'
 
 function form(properties: Record<string, unknown>, required: string[] = []): CreateElicitationRequest {
@@ -104,6 +104,10 @@ const reply = (text: string, replyTo?: string, conversation = CONVERSATION) => (
   actor: { userId: 'qq:user:app-1:user-openid' }
 })
 
+const flush = async () => {
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+}
+
 async function raise(h: ReturnType<typeof qqTurn>, req: CreateElicitationRequest) {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
   await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
@@ -125,7 +129,19 @@ describe('a QQ turn collects an elicitation answer from a quoted reply', () => {
     ])
     expect(await h.daemon.permissions.claimElicitReply(reply('2', 'card-1'))).toBe(true)
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
-    expect(h.follows).toEqual([{ channel: 'dm:user-openid', cardId: 'card-1', text: '✅ develop' }])
+    // The reply that answered already shows the choice.
+    await flush()
+    expect(h.follows).toEqual([])
+  })
+
+  it('settles with a follow-up when the answer came from elsewhere', async () => {
+    const h = qqTurn()
+    const { requestId, result } = await raise(h, form(BRANCH, ['branch']))
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(1) })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    await vi.waitFor(() =>
+      expect(h.follows).toEqual([{ channel: 'dm:user-openid', cardId: 'card-1', text: '✅ develop' }])
+    )
   })
 
   it('answers only a quote of this card, in this conversation', async () => {

@@ -84,6 +84,9 @@ export function qqElicitChoice(target: ElicitTarget, text: string): number | nul
   return index >= 0 ? index : null
 }
 
+// The option label a chat reply chose, per card.
+const answeredInChat = new WeakMap<ElicitCardHandle, string>()
+
 function followCard(handle: ElicitCardHandle, text: string): void {
   if (handle.ts === undefined) return
   const conn = handle.conn as Partial<Pick<QQConnection, 'followCard'>> | undefined
@@ -117,10 +120,13 @@ export const qqElicitCards: ElicitCardFacet = {
       followCard(handle, `Reply with a number from 1 to ${target.options.length}.`)
       return { kind: 'pending' }
     }
+    answeredInChat.set(handle, target.options[index]!.label)
     return { kind: 'submit', fields: { [elicitFormBlockId(0)]: elicitOptionToken(index) } }
   },
 
+  // The reply that answered in the chat already shows the choice; any other settlement is posted.
   settle(handle: ElicitCardHandle, card: ElicitCardSettlement): void {
+    if (card.mark === 'answered' && answeredInChat.get(handle) === card.text) return
     followCard(handle, `${QQ_ELICIT_MARK[card.mark]} ${clampTo(card.text, QQ_ELICIT_DECISION_CAP)}`)
   }
 }

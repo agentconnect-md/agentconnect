@@ -243,7 +243,9 @@ Questions reuse `ElicitCardFacet` the way QQ does: a numbered text card,
 answered by replying to it with a number or an option label. As in §4.1, the bot
 never learns the card's `msgId`: the facet stores the card's send handle as its
 `processQueryKey` and matches a quote's `originalProcessQueryKey` against it, so
-ordinary chat and other quotes settle nothing. Tool approvals stay in the
+ordinary chat and other quotes settle nothing. A sent message cannot be edited,
+so a settlement is a new message — except when a reply in the chat answered the
+card, since that reply already shows the choice. Tool approvals stay in the
 Console, with a notice in the conversation.
 
 ## 5. Console setup
