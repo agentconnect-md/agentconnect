@@ -114,7 +114,7 @@ describe('Teams installation', () => {
     expect(project({ externalAppId: APP_ID } as CreateBotInput)).toEqual({})
   })
 
-  it('assigns the relay the app and tenant only', async () => {
+  it('assigns the relay the app, the tenant and the bot mention identity only', async () => {
     const provider = createMsTeamsCpProvider()
     expect(provider.secretShape.httpAssignRequires).toEqual([])
     const bags = await provider.projectBotAssign!({ externalAppId: APP_ID, externalTenantId: TENANT_ID } as BotRecord, {
@@ -122,7 +122,10 @@ describe('Teams installation', () => {
       appToken: null,
       signingSecret: null
     })
-    expect(bags).toEqual({ secrets: {}, ingress: { apiAppId: APP_ID, teamId: TENANT_ID } })
+    expect(bags).toEqual({
+      secrets: {},
+      ingress: { apiAppId: APP_ID, botUserId: `28:${APP_ID}`, teamId: TENANT_ID }
+    })
   })
 
   it('projects the daemon config with the messaging endpoint under the relay origin', async () => {

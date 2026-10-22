@@ -49,8 +49,8 @@ A Teams bot needs two registrations the organization makes itself:
 Credentials are the **app ID**, the **tenant ID**, and the **client secret**.
 They map onto existing columns with no migration: `externalAppId` ← app ID,
 `externalTenantId` ← tenant ID, and the `botToken` secret slot ← client secret.
-The relay's assignment carries the app and tenant IDs only; the secret goes to
-the daemon alone, as with Google Chat.
+The relay's assignment carries the app and tenant IDs and the bot's mention
+identity `28:<appId>`; the secret goes to the daemon alone, as with Google Chat.
 
 Validation requests a client-credentials token from the tenant's endpoint
 (`https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token`, scope
@@ -157,7 +157,10 @@ follow-ups then do nothing, and how the bot can detect that is **unverified**.
 A mention arrives as a `mention` entity whose `mentioned.id` is the bot
 (`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
 (**measured**). The normalizer removes exactly that span and sets
-`mentionedBots`; a display name is never matched.
+`mentionedBots`, lower-casing a `28:` ID; a display name is never matched. The
+relay reads a mention as addressing the bot only through the assignment's
+`28:<appId>`, so a channel's first contact is a mention: it reaches the daemon,
+which registers the channel for the Console, Off where the agent is gated.
 
 Identity is tenant-scoped: `from.aadObjectId` with the tenant ID identifies a
 person, and `from.id` is specific to the bot. Display names are for display

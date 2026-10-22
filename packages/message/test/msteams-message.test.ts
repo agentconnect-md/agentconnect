@@ -127,6 +127,15 @@ describe('Microsoft Teams normalization', () => {
     expect(messageOf({ ...channelReply, text: 'Example Bot, are you there?' }).mentionedBots).toEqual([])
   })
 
+  it('records a bot mention in lower case, so an upper-cased ID still names this bot', () => {
+    const upper = { ...channelReply, recipient: { id: BOT_ID.toUpperCase(), name: 'Example Bot' } }
+    upper.text = '<at>Example Bot</at> status?'
+    upper.entities = [
+      { type: 'mention', mentioned: { id: BOT_ID.toUpperCase(), name: 'Example Bot' }, text: '<at>Example Bot</at>' }
+    ]
+    expect(messageOf(upper)).toMatchObject({ text: 'status?', mentionedBots: [BOT_ID] })
+  })
+
   it('records another bot by its ID without addressing this one', () => {
     const other = { ...channelReply, text: '<at>Other Bot</at> run the build' }
     other.entities = [
