@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
+import { permissionRequestParts, rememberToolCall, type KnownToolCall } from '../src/daemon/tool-classification.js'
 import { consolePermissionOptions } from '../src/permissions/editor-options.js'
 import { AGENT_PERMISSION_MAX_OPTIONS } from '@agentconnect.md/protocol'
 import { SlackConnection } from '../src/slack/connection.js'
@@ -2637,5 +2638,67 @@ describe('the console decides by the options the request offers (#1969)', () => 
     expect(withOptions([{ optionId: 'blank', name: '  ', kind: 'allow_once' }])).toEqual([
       { optionId: 'blank', name: 'blank', kind: 'allow_once' }
     ])
+  })
+})
+
+describe('an approval names a call its request identifies only by id (#3289)', () => {
+  const mcpCall = (toolCallId: string, args: Record<string, unknown>) => ({
+    sessionUpdate: 'tool_call',
+    toolCallId,
+    kind: 'execute',
+    title: 'mcp.files.create_folder',
+    rawInput: { server: 'files', tool: 'create_folder', arguments: args }
+  })
+
+  it('stores and shows the MCP tool and its arguments from the call’s own update', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installPending(daemon)
+    ;(daemon as any).onAcpUpdate('agent-1', 's1', mcpCall('call-1', { parent: '/reports', name: 'drafts' }))
+
+    const result = (daemon as any).permissions.onAcpPermission(
+      'agent-1',
+      's1',
+      req({ toolCallId: 'call-1', kind: 'execute' })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    expect((daemon as any).store.createPermissionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'mcp.files.create_folder: parent=/reports, name=drafts' })
+    )
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
+    await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
+    await expect(result).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+  })
+
+  it('keeps the request’s own title and input over what the call said earlier', () => {
+    const known = new Map<string, KnownToolCall>()
+    rememberToolCall(known, mcpCall('tc-1', { name: 'drafts' }))
+    expect(
+      permissionRequestParts(req({ title: 'Run tests', kind: 'execute', rawInput: { command: 'pnpm test' } }), known)
+    ).toEqual({
+      tool: 'Run tests',
+      detail: 'pnpm test'
+    })
+  })
+
+  it('keeps what an earlier update said when a later one leaves it out', () => {
+    const known = new Map<string, KnownToolCall>()
+    rememberToolCall(known, mcpCall('tc-1', { name: 'drafts' }))
+    rememberToolCall(known, { sessionUpdate: 'tool_call_update', toolCallId: 'tc-1', status: 'in_progress' })
+    expect(permissionRequestParts(req({ kind: 'execute' }), known)).toEqual({
+      tool: 'mcp.files.create_folder',
+      detail: 'name=drafts'
+    })
+  })
+
+  it('cuts each argument short, so one long value can’t hide the others', () => {
+    const known = new Map<string, KnownToolCall>()
+    rememberToolCall(known, mcpCall('tc-1', { content: 'x'.repeat(500), name: 'notes.txt', overwrite: false }))
+    expect(permissionRequestParts(req({ kind: 'execute' }), known).detail).toBe(
+      `content=${'x'.repeat(80)}, name=notes.txt, overwrite=false`
+    )
+  })
+
+  it('still falls back to the kind for a call it knows nothing about', () => {
+    expect(permissionRequestParts(req({ kind: 'execute' }), new Map())).toEqual({ tool: 'execute', detail: '' })
   })
 })

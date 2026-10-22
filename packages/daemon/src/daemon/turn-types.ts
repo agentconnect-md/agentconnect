@@ -16,6 +16,7 @@ import type { GithubTurnState } from '../platforms/github/turn-output.js'
 import type { ModelProviderTarget } from '../runtimes/model-provider-config.js'
 import type { TranscriptRecorder } from '../session/transcript-recorder.js'
 import type { TerminalOutputFolder } from '../session/terminal-output-folder.js'
+import type { KnownToolCall } from './tool-classification.js'
 import type { OutputConverger, SlackAction } from '../slack/render.js'
 import type { TelegramAction, TelegramConverger } from '../telegram/render.js'
 import type { DiscordAction, DiscordConverger } from '../discord/render.js'
@@ -661,6 +662,9 @@ export interface Pending {
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>
+  /** Each tool call's title and input summary from its updates, for an approval card whose
+   *  request names only the call's id (`rememberToolCall`). Created on the first tool call. */
+  knownToolCalls?: Map<string, KnownToolCall>
   /** Bounded fingerprint of the prompt text this turn sent, for recognizing a runtime
    *  fallback title that is only that prompt read back (session/derive-title.ts). */
   promptEchoPrefix?: string

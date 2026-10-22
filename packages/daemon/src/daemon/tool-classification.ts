@@ -94,7 +94,19 @@ function approvalInputSummary(value: unknown): string {
   for (const key of ['command', 'cmd', 'path', 'file_path', 'query', 'url']) {
     if (typeof input[key] === 'string' && input[key].trim()) return input[key]
   }
+  // An MCP call's input is `{server, tool, arguments}`: the arguments are what it will act on.
+  const args = input.arguments
+  if (args && typeof args === 'object' && !Array.isArray(args))
+    return mcpArgumentsSummary(args as Record<string, unknown>)
   return ''
+}
+
+/** `key=value` pairs, each value cut short, so one long argument (a file's contents) can't crowd out the rest. */
+function mcpArgumentsSummary(args: Record<string, unknown>): string {
+  return Object.entries(args)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${k}=${(typeof v === 'string' ? v : (JSON.stringify(v) ?? '')).slice(0, 80)}`)
+    .join(', ')
 }
 
 /** One approval request, split the way a surface renders it: the action, then its one-line input. */
@@ -103,10 +115,35 @@ export interface ApprovalRequestParts {
   detail: string
 }
 
-export function permissionRequestParts(params: RequestPermissionRequest): ApprovalRequestParts {
+/** What a tool call's own `tool_call` updates said about it, kept for an approval request that names only its id. */
+export interface KnownToolCall {
+  title?: string
+  detail?: string
+}
+
+/** Remember a tool call's title and input summary from its updates. codex-acp asks to approve a running MCP call with
+ *  just `{toolCallId, kind}`, leaving the call itself to say what it does (#3289). */
+export function rememberToolCall(known: Map<string, KnownToolCall>, update: unknown): void {
+  if (!update || typeof update !== 'object') return
+  const u = update as { sessionUpdate?: unknown; toolCallId?: unknown; title?: unknown; rawInput?: unknown }
+  if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update') return
+  if (typeof u.toolCallId !== 'string' || !u.toolCallId) return
+  const prior = known.get(u.toolCallId)
+  const title = approvalSummary(u.title, '') || prior?.title
+  const detail = approvalSummary(approvalInputSummary(u.rawInput), '') || prior?.detail
+  if (title || detail) known.set(u.toolCallId, { ...(title ? { title } : {}), ...(detail ? { detail } : {}) })
+}
+
+export function permissionRequestParts(
+  params: RequestPermissionRequest,
+  known?: ReadonlyMap<string, KnownToolCall>
+): ApprovalRequestParts {
+  const toolCallId = params.toolCall?.toolCallId
+  const prior = typeof toolCallId === 'string' ? known?.get(toolCallId) : undefined
+  // The request's own fields win; the call's earlier updates fill only what it left out.
   return {
-    tool: approvalSummary(params.toolCall?.title ?? params.toolCall?.kind, 'Tool permission request'),
-    detail: approvalSummary(approvalInputSummary(params.toolCall?.rawInput), '')
+    tool: approvalSummary(params.toolCall?.title ?? prior?.title ?? params.toolCall?.kind, 'Tool permission request'),
+    detail: approvalSummary(approvalInputSummary(params.toolCall?.rawInput), '') || (prior?.detail ?? '')
   }
 }
 

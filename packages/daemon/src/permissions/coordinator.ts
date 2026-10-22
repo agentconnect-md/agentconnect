@@ -1064,7 +1064,7 @@ export class PermissionCoordinator {
       resolve: resolveResult
     }
     this.pendingApprovals.set(id, entry)
-    const parts = permissionRequestParts(params)
+    const parts = permissionRequestParts(params, p.knownToolCalls)
     this.observeEditorPermission(p, id, parts, result, (value) => this.permissionResult(value, params))
     if (route) this.armSubsessionWait(id, entry, p, route, parts)
     this.syncApprovalActivity(p.hostKey, sessionId)
@@ -1176,7 +1176,7 @@ export class PermissionCoordinator {
       chat,
       resolve: resolveResult
     })
-    this.observeEditorPermission(p, requestId, permissionRequestParts(params), result, (value) =>
+    this.observeEditorPermission(p, requestId, permissionRequestParts(params, p.knownToolCalls), result, (value) =>
       this.permissionResult(value, params)
     )
     this.syncApprovalActivity(p.hostKey, sessionId)
@@ -1184,7 +1184,7 @@ export class PermissionCoordinator {
       requestId,
       agentId,
       sessionId,
-      permissionRequestParts(params),
+      permissionRequestParts(params, p.knownToolCalls),
       p,
       false
     )
@@ -1276,7 +1276,7 @@ export class PermissionCoordinator {
       requestId,
       agentId,
       sessionId,
-      permissionRequestParts(params),
+      permissionRequestParts(params, p.knownToolCalls),
       p,
       false,
       undefined,
@@ -2596,7 +2596,7 @@ export class PermissionCoordinator {
         this.permissionEvaluationDetails.set(evaluationParams, { reason: 'api_caller' })
         return o ? { outcome: { outcome: 'selected', optionId: o.optionId } } : { outcome: { outcome: 'cancelled' } }
       }
-      return await this.askCaller(p, sessionId, permissionRequestParts(params), {
+      return await this.askCaller(p, sessionId, permissionRequestParts(params, p.knownToolCalls), {
         allow: (id) =>
           select(id ? params.options.find((o) => o.optionId === id) : option('allow_once', 'allow_always')),
         deny: (id) =>
