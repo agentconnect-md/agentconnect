@@ -15,6 +15,7 @@ import { feishuModule } from './feishu'
 import { dingTalkModule } from './dingtalk'
 import { googleChatModule } from './googlechat'
 import { linearModule } from './linear'
+import { msTeamsModule } from './msteams'
 import { slackModule } from './slack'
 import { QQModule } from './qq'
 import { telegramModule } from './telegram'
@@ -39,7 +40,8 @@ const MODULES: readonly WebPlatformModule[] = [
   linearModule,
   QQModule,
   googleChatModule,
-  dingTalkModule
+  dingTalkModule,
+  msTeamsModule
 ]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))

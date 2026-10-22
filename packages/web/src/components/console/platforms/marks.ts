@@ -7,6 +7,7 @@ import { FeishuMark } from './feishu/mark'
 import { DingTalkMark } from './dingtalk/mark'
 import { GoogleChatMark } from './googlechat/mark'
 import { LinearMark } from './linear/mark'
+import { MsTeamsMark } from './msteams/mark'
 import { SlackMark } from './slack/mark'
 import { TelegramMark } from './telegram/mark'
 import { QQMark } from './qq/mark'
@@ -40,6 +41,7 @@ const MARKS = new Map<string, PlatformMarkComponent>([
   ['qq', QQMark],
   ['googlechat', GoogleChatMark],
   ['dingtalk', DingTalkMark],
+  ['msteams', MsTeamsMark],
   // Lark and Feishu are one platform id (`feishu`) with the cloud on a separate
   // `region` field, so nothing in the console routes a bare 'lark' here today.
   // The alias is kept because the id IS the other cloud's brand name and the

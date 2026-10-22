@@ -2130,6 +2130,10 @@
         "dingtalk": {
           "create": "Create an internal app in DingTalk",
           "existing": "An unused DingTalk bot"
+        },
+        "msteams": {
+          "create": "Register a bot for Microsoft Teams",
+          "existing": "An unused Microsoft Teams bot"
         }
       },
       "api": {
@@ -6301,6 +6305,61 @@
         "checking": "Checking…",
         "close": "Close",
         "updated": "Client Secret updated."
+      }
+    },
+    "msteams": {
+      "checking": "Checking this deployment…",
+      "relayRequired": "Microsoft Teams delivers over HTTPS callbacks only, so it needs a public callback endpoint. Ask an administrator to configure one, then connect a bot here.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "register": {
+        "title": "Register a bot",
+        "open": "Open Teams Developer Portal",
+        "endpoint": "Messaging endpoint",
+        "newBot": "Bot management → New bot, then set its endpoint address to the messaging endpoint.",
+        "secret": "Client secrets → Add a client secret, and copy it.",
+        "tenant": "The Directory (tenant) ID is on the app registration’s Overview page in Microsoft Entra.",
+        "azure": "An Azure Bot resource with the same endpoint works too."
+      },
+      "credentials": {
+        "title": "Paste the bot’s credentials",
+        "appId": "App (bot) ID",
+        "tenantId": "Directory (tenant) ID",
+        "clientSecret": "Client secret",
+        "clientSecretPlaceholder": "The secret’s value"
+      },
+      "footer": {
+        "connect": "Connect",
+        "checking": "Checking credentials…"
+      },
+      "install": {
+        "connected": "Microsoft Entra accepted the credentials.",
+        "title": "Install the app in Teams",
+        "openAdmin": "Open Teams admin center",
+        "upload": "Teams apps → Manage apps → Upload new app, and choose the downloaded package.",
+        "addToTeam": "Then open the app and choose Add to team; it answers there right away.",
+        "personal": "1:1 chats can take a few hours to open.",
+        "selfUpload": "For people to upload it themselves, allow custom apps in their app setup policy.",
+        "done": "Done"
+      },
+      "appPackage": {
+        "download": "Download app package",
+        "downloading": "Downloading…"
+      },
+      "settings": {
+        "newSecret": "New client secret",
+        "save": "Save",
+        "checking": "Checking…",
+        "updated": "Client secret updated."
+      },
+      "errors": {
+        "secretInvalid": "Microsoft Entra rejected this client secret, or it has expired. Create a new one and paste its value, not its ID.",
+        "appNotFound": "This tenant has no app with this app ID. Copy both IDs from the same app registration.",
+        "tenantNotFound": "Microsoft Entra does not know this tenant ID. Copy the Directory (tenant) ID from the app registration’s Overview page.",
+        "credentialsInvalid": "Microsoft Entra refused these credentials. Check the app ID, tenant ID and client secret.",
+        "unavailable": "Microsoft Entra could not be reached. Try again.",
+        "relayOriginMissing": "This deployment has no public callback endpoint, so the app package cannot be built.",
+        "appTaken": "This bot is already connected to an agent. Register another bot for this agent."
       }
     }
   },

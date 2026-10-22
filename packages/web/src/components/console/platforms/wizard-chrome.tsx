@@ -36,10 +36,13 @@ export type IdentityCardKey =
   | 'Integrations.dialog.identityCards.googlechat.existing'
   | 'Integrations.dialog.identityCards.dingtalk.create'
   | 'Integrations.dialog.identityCards.dingtalk.existing'
+  | 'Integrations.dialog.identityCards.msteams.create'
+  | 'Integrations.dialog.identityCards.msteams.existing'
 
 /** The mode-card pair for a module with one brand. */
 export function identityCards(
-  platform: 'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat' | 'dingtalk'
+  platform:
+    'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat' | 'dingtalk' | 'msteams'
 ): {
   create: IdentityCardKey
   existing: IdentityCardKey

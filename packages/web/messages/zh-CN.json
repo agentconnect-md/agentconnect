@@ -2130,6 +2130,10 @@
         "dingtalk": {
           "create": "在钉钉开发者后台创建应用",
           "existing": "未使用的钉钉机器人"
+        },
+        "msteams": {
+          "create": "为 Microsoft Teams 注册机器人",
+          "existing": "未使用的 Microsoft Teams 机器人"
         }
       },
       "api": {
@@ -6301,6 +6305,61 @@
         "checking": "正在检查…",
         "close": "关闭",
         "updated": "Client Secret 已更新。"
+      }
+    },
+    "msteams": {
+      "checking": "正在检查这个部署…",
+      "relayRequired": "Microsoft Teams 只通过 HTTPS 回调投递，因此需要一个公开的回调地址。请管理员配置后再在这里连接机器人。",
+      "copy": "复制",
+      "copied": "已复制",
+      "register": {
+        "title": "注册机器人",
+        "open": "打开 Teams 开发人员门户",
+        "endpoint": "消息传送终结点",
+        "newBot": "机器人管理 → 新建机器人，然后把终结点地址设为上面的消息传送终结点。",
+        "secret": "客户端密码 → 添加客户端密码，并复制它。",
+        "tenant": "目录(租户) ID 在 Microsoft Entra 中该应用注册的概述页上。",
+        "azure": "也可以用 Azure 机器人资源，终结点相同。"
+      },
+      "credentials": {
+        "title": "粘贴机器人的凭据",
+        "appId": "应用(机器人) ID",
+        "tenantId": "目录(租户) ID",
+        "clientSecret": "客户端密码",
+        "clientSecretPlaceholder": "密码的值"
+      },
+      "footer": {
+        "connect": "连接",
+        "checking": "正在检查凭据…"
+      },
+      "install": {
+        "connected": "Microsoft Entra 已接受这些凭据。",
+        "title": "在 Teams 中安装应用",
+        "openAdmin": "打开 Teams 管理中心",
+        "upload": "Teams 应用 → 管理应用 → 上传新应用，选择下载的应用包。",
+        "addToTeam": "再打开该应用，选择添加到团队；它马上就能在那里回复。",
+        "personal": "1:1 聊天可能要几个小时后才能使用。",
+        "selfUpload": "如果要让用户自己上传，请在他们的应用设置策略中允许自定义应用。",
+        "done": "完成"
+      },
+      "appPackage": {
+        "download": "下载应用包",
+        "downloading": "正在下载…"
+      },
+      "settings": {
+        "newSecret": "新的客户端密码",
+        "save": "保存",
+        "checking": "检查中…",
+        "updated": "客户端密码已更新。"
+      },
+      "errors": {
+        "secretInvalid": "Microsoft Entra 拒绝了这个客户端密码，或它已过期。请新建一个，粘贴它的值，而不是 ID。",
+        "appNotFound": "这个租户中没有这个应用 ID 对应的应用。请从同一个应用注册中复制两个 ID。",
+        "tenantNotFound": "Microsoft Entra 找不到这个租户 ID。请从该应用注册的概述页复制目录(租户) ID。",
+        "credentialsInvalid": "Microsoft Entra 拒绝了这些凭据。请检查应用 ID、租户 ID 和客户端密码。",
+        "unavailable": "无法连接到 Microsoft Entra。请重试。",
+        "relayOriginMissing": "这个部署没有公开的回调地址，无法生成应用包。",
+        "appTaken": "这个机器人已经连接到一个 Agent。请为这个 Agent 注册另一个机器人。"
       }
     }
   },

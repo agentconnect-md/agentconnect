@@ -54,6 +54,8 @@ const LABELS = new Map<string, PlatformLabel>([
   ['googlechat', { name: 'Google Chat', picker: 'Google Chat', sigil: '' }],
   // A DingTalk group is named without a "#".
   ['dingtalk', { name: 'DingTalk', picker: 'DingTalk', sigil: '' }],
+  // A Teams channel or group chat is named without a "#".
+  ['msteams', { name: 'Microsoft Teams', picker: 'Microsoft Teams', sigil: '' }],
   // Nothing routes a bare 'lark' id today (the cloud rides on its own `region`
   // field), but the substring chains this replaces accepted it.
   ['lark', { name: 'Lark', picker: 'Lark/Feishu', sigil: '' }]

@@ -865,6 +865,12 @@ export type CreateIntegrationInput =
       transport: 'http'
       googlechat?: { projectId: string; projectNumber?: string; serviceAccountKey: string }
     })
+  // Teams delivers only to the relay as well; the two IDs are GUIDs, the secret the app registration's own.
+  | (CreateIntegrationBase & {
+      platform: 'msteams'
+      transport: 'http'
+      msteams?: { appId: string; tenantId: string; clientSecret: string }
+    })
 
 export interface TelegramBotCheckDto {
   status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'
@@ -5388,6 +5394,18 @@ export async function fetchGoogleChatDeploymentApp(orgId?: string): Promise<Goog
 /** Replace a per-agent Chat app's service-account key under the create path's validation; the key is write-only. */
 export async function replaceGoogleChatKey(botId: string, serviceAccountKey: string): Promise<BotDto> {
   return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/googlechat/key`, { serviceAccountKey })
+}
+// ── Microsoft Teams (teams-integration.md §5) ──
+/** Replace a Teams bot's client secret under the create path's live check; the secret is write-only. */
+export async function replaceMsTeamsSecret(botId: string, clientSecret: string): Promise<BotDto> {
+  return apiPut<BotDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/msteams/credentials`, { clientSecret })
+}
+/** The integration's Teams app package (a zip) to upload in the Teams admin center. */
+export async function downloadMsTeamsAppPackage(integrationId: string): Promise<Blob> {
+  const path = `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/msteams/app-package`
+  const res = await authenticatedFetch(path, { cache: 'no-store' })
+  if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
+  return await res.blob()
 }
 /** Claim the caller's Google Workspace for `orgId` on the deployment's Chat app; returns where Chat continues, when the prompt carried a completion URL. */
 export async function claimGoogleChatCustomer(orgId: string, state: string): Promise<{ redirect?: string }> {
