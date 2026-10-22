@@ -37,17 +37,16 @@ function target() {
 }
 
 describe('the DingTalk card text and the replies it reads', () => {
-  it('numbers every option and says to quote it, naming the mention a group needs', () => {
-    expect(dingTalkElicitText('Pick one', target(), 'dm:user-0001')).toBe(
-      '💬 Pick one\n1. main\n2. develop\n\nQuote this message and reply with a number or an option.'
+  it('numbers every option and says to reply to it', () => {
+    expect(dingTalkElicitText('Pick one', target())).toBe(
+      '💬 Pick one\n1. main\n2. develop\n\nReply to this message with a number or an option.'
     )
-    expect(dingTalkElicitText('Pick one', target(), CHANNEL)).toContain('@mention me')
   })
 
   it('keeps a long question inside one message once encoded', () => {
-    const text = dingTalkElicitText('问"'.repeat(8000), target(), 'dm:user-0001')!
+    const text = dingTalkElicitText('问"'.repeat(8000), target())!
     expect(Buffer.byteLength(JSON.stringify({ content: text }))).toBeLessThanOrEqual(DINGTALK_MSG_PARAM_MAX_BYTES)
-    expect(text.endsWith('reply with a number or an option.')).toBe(true)
+    expect(text.endsWith('with a number or an option.')).toBe(true)
   })
 
   it('reads a number, a full-width number, or an option label, and nothing else', () => {
@@ -127,7 +126,7 @@ describe('a DingTalk turn collects an elicitation answer from a quote', () => {
     const h = dingTalkTurn()
     const { result } = await raise(h, form(BRANCH, ['branch']))
     expect(h.sent).toEqual([
-      { channel: CHANNEL, text: dingTalkElicitText('Which branch should I cut from?', target(), CHANNEL) }
+      { channel: CHANNEL, text: dingTalkElicitText('Which branch should I cut from?', target()) }
     ])
     expect(await h.daemon.permissions.claimElicitReply(reply('2', 'pqk-1'))).toBe(true)
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
@@ -150,7 +149,7 @@ describe('a DingTalk turn collects an elicitation answer from a quote', () => {
     await raise(h, form(BRANCH, ['branch']))
     expect(await h.daemon.permissions.claimElicitReply(reply('maybe', 'pqk-1'))).toBe(true)
     expect(h.daemon.permissions.pendingElicits.size).toBe(1)
-    await vi.waitFor(() => expect(h.sent.at(-1)!.text).toBe('Quote the question and reply with a number from 1 to 2.'))
+    await vi.waitFor(() => expect(h.sent.at(-1)!.text).toBe('Reply to the question with a number from 1 to 2.'))
   })
 
   it('still declines a typed question it has no control for', async () => {

@@ -20,10 +20,10 @@ on hosted and self-hosted deployments alike.
 | Distribution          | Each organization creates its own enterprise internal app and pastes its credentials into the Console (§2).            |
 | Ingress               | Daemon-owned Stream connection. No relay module and no public callback endpoint.                                       |
 | Groups and DMs        | Explicit mentions in groups; every message in a DM. DingTalk delivers nothing else from a group.                       |
-| Sessions              | Telegram's reply-chain model: a new mention starts a session; quoting a bot reply and mentioning the bot continues it. |
+| Sessions              | Telegram's reply-chain model: a new mention starts a session; replying to a bot message continues it.                  |
 | Streaming and replies | A thinking reaction on the user's message acknowledges the turn; the answer is one or more Markdown messages (§4.3).   |
 | Attachments           | Inbound files and images through the robot download API; outbound images and files through media upload.               |
-| Questions, approvals  | A numbered text card answered by quoting it; tool approvals stay in the Console with a notice in the conversation.     |
+| Questions, approvals  | A numbered text card answered by replying to it; tool approvals stay in the Console with a notice in the conversation. |
 
 Outside this scope: third-party (marketplace or distributed) apps, the
 international DingTalk service, relay-terminated HTTP callbacks, sign-in with
@@ -138,8 +138,10 @@ nothing starts a new session rather than guessing. Two things differ.
   brings that key back as `originalProcessQueryKey` (**measured**); the adapter
   records it for every reply it sends and resolves quotes by it.
 - **The mention.** A group delivers only mentions, so a quote alone never
-  reaches the bot. The continue hint on a turn's last group message says to
-  quote the message and mention the bot.
+  reaches the bot. Replying to a message in a group quotes it and mentions its
+  sender (**measured**), so replying to a bot message reaches the bot; the
+  continue hint on a turn's last group message and the question card both just
+  say to reply.
 
 That rule is the default `createNew`
 [session mode](channel-session-mode.md). A group row also offers `append`,
@@ -238,7 +240,7 @@ this path.
 ### 4.6 Questions and approvals
 
 Questions reuse `ElicitCardFacet` the way QQ does: a numbered text card,
-answered by quoting it with a number or an option label. As in §4.1, the bot
+answered by replying to it with a number or an option label. As in §4.1, the bot
 never learns the card's `msgId`: the facet stores the card's send handle as its
 `processQueryKey` and matches a quote's `originalProcessQueryKey` against it, so
 ordinary chat and other quotes settle nothing. Tool approvals stay in the
