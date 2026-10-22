@@ -620,5 +620,6 @@ Choices this design left to implementation, and where the code settled them:
   commits an ordinary agent message — caption plus the share marker — as its own closed
   segment and emits it as a `message` event keyed by its `postId`, so the existing
   share-marker chip renders it live and from history. No preview, no `image` event, no
-  original delivery; the bytes stay in the workspace under the IM per-file cap
+  original delivery; the bytes stay in the workspace, bounded by the outbound per-file cap
+  clamped to the workspace-download ceiling, the chip's only delivery path
   (agent-authored-attachments.md §4).

@@ -87,8 +87,9 @@ export interface ShareFileDeps extends GatewayDeps {
     ctx: SessionContext
   ) => ((source: SharedFileSource) => Promise<SharedFileReceipt>) | undefined
   readWorkspaceSharedFile?: (ctx: SessionContext, path: string) => Promise<SharedFileReadResult>
-  /** The per-file bound a document shares under, on every surface (docs §5). */
-  outboundFileCap?: (ctx: SessionContext) => number
+  /** The bound a console document shares under: the outbound per-file cap clamped to the workspace-download
+   *  ceiling, since the chip's download is a document's only delivery path (docs §4). */
+  consoleDocumentCap?: (ctx: SessionContext) => number
   /** Synchronous per-turn count and process-wide in-flight reservation for a console share; `done` says whether it published. */
   reserveWebchatShare?: (
     ctx: SessionContext
@@ -206,9 +207,12 @@ export async function shareFile(
       const file = sharedFileKind(path, read.bytes)
       const publishFile = deps.webchatFilePublisherFor?.(ctx)
       if (!publishFile) throw new Error('shareFile is not available in this environment.')
-      const cap = deps.outboundFileCap?.(ctx)
+      // A console document has one delivery path, the chip's workspace download; a share it could never serve is refused here, not at the click.
+      const cap = deps.consoleDocumentCap?.(ctx)
       if (cap !== undefined && read.bytes.byteLength > cap) {
-        throw new Error(READ_REFUSALS['too-large'](path, `${read.bytes.byteLength} bytes > ${cap}-byte cap`))
+        throw new Error(
+          READ_REFUSALS['too-large'](path, `${read.bytes.byteLength} bytes > ${cap}-byte console download cap`)
+        )
       }
       const receipt = await publishFile({
         path,

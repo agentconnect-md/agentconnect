@@ -258,9 +258,10 @@ export type FeishuFileType = 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 's
 /** The file endpoint's own documented bound (30 MB, and never an empty file). */
 const FEISHU_FILE_MAX_BYTES = 30 * 1024 * 1024
 
+/** Only the types a `msg_type: file` message may reference. `opus` and `mp4` uploads must be
+ *  sent as audio/media messages (Feishu error 230055 otherwise), so an audio or video file is
+ *  offered as a `stream` download instead — the honest presentation for a shared file. */
 const FEISHU_FILE_TYPES: Record<string, FeishuFileType> = {
-  opus: 'opus',
-  mp4: 'mp4',
   pdf: 'pdf',
   doc: 'doc',
   docx: 'doc',

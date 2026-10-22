@@ -157,7 +157,8 @@ import {
   WEBCHAT_IMAGE_MAX_BYTES,
   MCP_APP_INLINE_TEMPLATE_MAX_BYTES,
   COMPUTER_CHANNEL_FEATURE,
-  COMPUTER_LEASE_FEATURE
+  COMPUTER_LEASE_FEATURE,
+  MAX_WORKSPACE_DOWNLOAD_BYTES
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
@@ -4951,8 +4952,10 @@ export class Daemon {
         const sha256 = createHash('sha256').update(bytes).digest('hex')
         return { ok: true, bytes, name: file.name, mimeType: file.mimeType, sha256 }
       },
-      // The IM per-file cap bounds a console document too: that is what the chip's workspace download serves back.
-      outboundFileCap: () => cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes,
+      // A console document downloads through the chip's workspace route and nothing else, so its cap is the
+      // outbound per-file cap clamped to that route's fixed ceiling — a share the chip could never serve is refused.
+      consoleDocumentCap: () =>
+        Math.min(cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes, MAX_WORKSPACE_DOWNLOAD_BYTES),
       // A console turn's image is bounded by the image-processing limit, not the IM per-file cap (webchat-generated-images.md §5).
       readWorkspaceSharedFile: async (ctx, rel) => {
         const read = await this.readShareWorkspaceFile(ctx, rel, SHARED_IMAGE_SOURCE_MAX_BYTES)

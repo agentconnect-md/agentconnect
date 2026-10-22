@@ -700,7 +700,7 @@ describe('executeTool: sendMessage (channel post)', () => {
           webchatImagePublisherFor: () => publishImage,
           webchatFilePublisherFor: () => publishFile,
           readWorkspaceSharedFile: async () => csv,
-          outboundFileCap: () => 1024
+          consoleDocumentCap: () => 1024
         })
         const res = await executeTool(ctx, 'shareFile', { path: 'data/rows.csv', caption: 'rows' }, d)
         expect(publishFile).toHaveBeenCalledWith({
@@ -719,10 +719,10 @@ describe('executeTool: sendMessage (channel post)', () => {
           webchatImagePublisherFor: () => publishImage,
           webchatFilePublisherFor: () => publishFile,
           readWorkspaceSharedFile: async () => csv,
-          outboundFileCap: () => 4
+          consoleDocumentCap: () => 4
         })
         await expect(executeTool(ctx, 'shareFile', { path: 'data/rows.csv' }, capped.d)).rejects.toThrow(
-          /over the per-file limit \(8 bytes > 4-byte cap\)/
+          /over the per-file limit \(8 bytes > 4-byte console download cap\)/
         )
         expect(publishFile).toHaveBeenCalledTimes(1)
       })

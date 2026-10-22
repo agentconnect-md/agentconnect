@@ -222,9 +222,11 @@ row as a download chip, so the marker's shape is a contract with the console, no
 forensic string. In a console-owned turn a document is published through that same
 contract: an ordinary agent message carrying the caption and marker, committed to the
 transcript before it is emitted (webchat-generated-images.md §4's durable-before-visible
-rule), with no preview and no original delivery — the bytes stay in the workspace. That
-is why a document shares under the IM per-file cap on every surface: it is what the chip's
-workspace download serves back.
+rule), with no preview and no original delivery — the bytes stay in the workspace. The
+chip's workspace download is that document's only delivery path, so a console document is
+bounded by the outbound per-file cap _clamped to that route's fixed ceiling_
+(`MAX_WORKSPACE_DOWNLOAD_BYTES`, 8 MiB): raising `maxOutboundFileBytes` must never publish
+a chip that can only answer 413.
 
 ## 5. Size, time, and refusals that say why
 
