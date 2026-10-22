@@ -80,7 +80,7 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
   && rm /tmp/antigravity.zip
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
-FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS muse-acp
+FROM rust:1.99.0-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS muse-acp
 ARG MUSE_ACP_VERSION=0.15.0
 ARG MUSE_ACP_SOURCE_SHA256=e44fbd0fecf5ea747d3ac2228640775c41663712c16a68627e1d9017f93902b9
 RUN apt-get update \
