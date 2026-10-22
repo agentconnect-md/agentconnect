@@ -2543,7 +2543,9 @@ export class CollabCoordinator {
     // A reply is an agent-call: one hop past the deeper of this turn and the answered message, so an exchange stops.
     const sourceHopCount = Math.max(inbound?.hopCount ?? 0, answered.hopCount)
     if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) return failed('hop_limit')
-    const local = await store.getSessionByOutwardId(answered.sourceSessionId, answered.sourceAgentId || undefined)
+    const stored = await store.getSessionByOutwardId(answered.sourceSessionId, answered.sourceAgentId || undefined)
+    // A shared store also holds other members' sessions; only an agent this daemon runs resolves its reply route here.
+    const local = stored && this.host.agents().has(stored.agentId) ? stored : undefined
     if (local && local.agentId === req.callerAgentId && isSubsessionCoordinate(local.thread)) {
       // A check or approved proposal runs once (§8.9), so no reply wakes it again.
       if (!isDelegationCoordinate(local.thread)) return { delivered: false, inReplyTo, reason: 'not_authorized' }

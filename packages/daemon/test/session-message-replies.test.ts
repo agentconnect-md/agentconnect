@@ -822,6 +822,56 @@ describe('remote sessions: ids travel with the delivery, and a reply lands only 
     }
   })
 
+  it('answers a remote source over the relay even when a shared store holds its session row', async () => {
+    const run = await boot()
+    try {
+      const b1 = await openB1(run)
+      // Another member's Slack DM session, visible here through the shared store; this daemon does not run its agent.
+      const scope = 'slack:T0REMOTE'
+      await run.d.store.upsertSession({
+        key: sessionKey('slack', 'D0REMOTE', '', REMOTE, scope),
+        agentId: REMOTE,
+        platform: 'slack',
+        channel: 'D0REMOTE',
+        thread: '',
+        transportScope: scope,
+        sessionId: 'sid-remote',
+        acpSessionId: 'acp-remote',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const call = fwd(b1, {
+        coords: { platform: 'slack', channel: 'D0REMOTE' },
+        originCoords: { platform: 'slack', channel: 'D0REMOTE' }
+      })
+      expect(await run.d.handleRelayAgentMsg(call)).toMatchObject({ delivered: true, childSessionId: b1.key })
+      await vi.waitFor(() => expect(run.prompts.get(B)!.join('\n')).toContain('join in'), WAIT)
+      await settle()
+      const sent: Record<string, unknown>[] = []
+      run.d.relays = {
+        stop: vi.fn(async () => {}),
+        sendAgentMsg: vi.fn(async (payload: Record<string, unknown>) => {
+          sent.push(payload)
+          return { deliveryId: payload.deliveryId, delivered: true, childSessionId: 'remote-session-key' }
+        })
+      }
+      expect(await run.replyFrom(await run.session(b1.key), call.messageId)).toMatchObject({
+        delivered: true,
+        inReplyTo: call.messageId
+      })
+      expect(sent.at(-1)).toMatchObject({
+        toAgentId: REMOTE,
+        coords: { platform: 'slack', channel: 'D0REMOTE' },
+        lineageReplyTo: 'sid-remote',
+        deliveryKind: 'session-reply',
+        inReplyTo: call.messageId
+      })
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
   it('a local caller’s remote call carries its message id, and the remote reply lands only in the sending session', async () => {
     const run = await boot()
     try {
