@@ -902,7 +902,7 @@ secrets:
 migrate:
   enabled: true
   image: prisma-cli
-  tag: 7.8.0-node24-r1
+  tag: 7.8.0-node24-r2
 
 # ────────────────────────── managed model egress ───────────────────────────
 # Configure provider endpoints for daemon clients and agent runtimes.
