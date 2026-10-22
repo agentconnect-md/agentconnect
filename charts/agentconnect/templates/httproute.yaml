@@ -190,6 +190,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /msteams/messages             → relay pool (Microsoft Teams activities; Bot Framework-signed JWT)
   /ai-sdk/agents/:agentId/chat  → relay pool (agent chat API; bearer API key)
   /ag-ui/agents/:agentId/chat   → relay pool (agent chat API over AG-UI; bearer API key)
+  /ahp/agents/:agentId          → relay pool (AHP WebSocket; bearer API key or browser grant, docs/ahp-operations.md)
   /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
   /relays/<ordinal>/cr          → that exact relay pod, rewritten to /cr (Computer dial-in, MCP, viewer)
 When the relay host == apiHost / the website host, Gateway API merges these rules with
@@ -291,6 +292,9 @@ spec:
         - path:
             type: PathPrefix
             value: /ag-ui/agents
+        - path:
+            type: PathPrefix
+            value: /ahp/agents
       backendRefs:
         - name: {{ include "agentconnect.fullname" . }}-relay
           port: {{ .Values.relay.port }}
