@@ -234,7 +234,9 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       platform: 'googlechat',
       label: 'Google Chat'
     }
-  ]
+  ],
+  // Declares nothing: no attachments, history or reactions in this version (teams-integration.md §1).
+  ['msteams', { platform: 'msteams', label: 'Microsoft Teams' }]
 ])
 
 /** `platform`'s declaration, or undefined when it declares no read ports. */

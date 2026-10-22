@@ -59,6 +59,8 @@ import { consolidateGoogleChat, GoogleChatConnection } from './googlechat/connec
 import type { GoogleChatWriteBudgets } from './googlechat/write-budget.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import { consolidateDingTalk, DingTalkConnection, dingTalkConnKey } from './dingtalk/connection.js'
+import { consolidateMsTeams, MsTeamsConnection } from './msteams/connection.js'
+import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
@@ -78,6 +80,7 @@ export type PlatformConnection =
   | QQConnection
   | GoogleChatConnection
   | DingTalkConnection
+  | MsTeamsConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -159,6 +162,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     qq?: ReadonlyMap<string, QQConnection>
     dingtalk?: ReadonlyMap<string, DingTalkConnection>
     googlechat: ReadonlyMap<string, GoogleChatConnection>
+    msteams?: ReadonlyMap<string, MsTeamsConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -174,6 +178,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindLinear(integrationId: string, conn: LinearConnection, appUserId: string): void
   /** The Chat app's `users/…` identity, once discovered; '' until then. */
   bindGoogleChat(integrationId: string, conn: GoogleChatConnection, appUserName: string): void
+  /** The bot's `28:<appId>`, the ID a Teams mention entity names. */
+  bindMsTeams?(integrationId: string, conn: MsTeamsConnection, botUserId: string): void
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
@@ -299,6 +305,9 @@ export class ConnectionReconciler {
   )
   // Keyed by app AND key: a rotated key is a new client, and the old one drains through the turn leases.
   readonly googleChatPool = new ConnectionPool<GoogleChatConnection>('googlechat', (conn) => conn.key)
+  // Keyed by app, tenant and secret, like Google Chat's; every client of one app in one tenant shares its write budget.
+  readonly msTeamsPool = new ConnectionPool<MsTeamsConnection>('msteams', (conn) => conn.key)
+  private readonly msTeamsBudgets = new MsTeamsWriteBudgets()
   // Pending background retry timers for Slack connections that failed to open
   // at startup (keyed by appToken). Cleared on daemon stop.
   private readonly slackRetryTimers = new Map<string, TimerHandle>()
@@ -338,7 +347,8 @@ export class ConnectionReconciler {
       this.linearPool,
       this.QQPool,
       this.googleChatPool,
-      this.dingTalkPool
+      this.dingTalkPool,
+      this.msTeamsPool
     ]
   }
 
@@ -518,9 +528,14 @@ export class ConnectionReconciler {
     const dingTalkByIntegration = new Map<string, string>()
     for (const [key, group] of dingTalkGroups)
       for (const { integrationId } of group.integrations) dingTalkByIntegration.set(integrationId, key)
+    const msTeams = consolidateMsTeams(agents, this.log)
+    const msTeamsByIntegration = new Map<string, string>()
+    for (const group of msTeams.values())
+      for (const { integrationId } of group.integrations) msTeamsByIntegration.set(integrationId, group.key)
     const allDesiredIds = new Set([
       ...QQByIntegration.keys(),
       ...dingTalkByIntegration.keys(),
+      ...msTeamsByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -536,6 +551,9 @@ export class ConnectionReconciler {
     }
     for (const [id, conn] of bindings.dingtalk ?? []) {
       if (dingTalkConnKey(conn.group) !== dingTalkByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.msteams ?? []) {
+      if (conn.key !== msTeamsByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
@@ -611,6 +629,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.dingTalkPool, new Set(dingTalkGroups.keys()))
     await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
     await this.prunePool(this.googleChatPool, new Set(googleChat.keys()))
+    await this.prunePool(this.msTeamsPool, new Set(msTeams.keys()))
   }
 
   /** Close every connection in `pool` whose opaque identity consolidation no
@@ -1078,6 +1097,36 @@ export class ConnectionReconciler {
         this.googleChatPool.endConnect(group.key)
       }
       this.reportGoogleChatSpaces(conn, group.integrations)
+    }
+  }
+
+  /** Reconcile the Teams bot clients (teams-integration.md §3): no socket, so the client is published before `start()` warms the token. */
+  async reconcileMsTeamsConnections(): Promise<void> {
+    for (const group of consolidateMsTeams(this.host.transportAgents(), this.log).values()) {
+      let conn = this.msTeamsPool.find(group.key)
+      if (!conn) {
+        if (!this.msTeamsPool.beginConnect(group.key)) continue
+        conn = new MsTeamsConnection({
+          group,
+          log: this.log,
+          budget: this.msTeamsBudgets.for(group.config.appId, group.config.tenantId)
+        })
+        try {
+          this.msTeamsPool.add(conn)
+          for (const { integrationId } of group.integrations)
+            this.host.bindMsTeams?.(integrationId, conn, conn.botUserId)
+          await conn.start()
+          this.log.info(`msteams: bot client ready for integration ${group.integrationId}`)
+        } catch (err) {
+          this.log.warn(`msteams: bot client warm-up failed for integration ${group.integrationId}: ${formatErr(err)}`)
+        } finally {
+          this.msTeamsPool.endConnect(group.key)
+        }
+        continue
+      }
+      for (const { integrationId } of group.integrations)
+        if (this.host.bindings().msteams?.get(integrationId) !== conn)
+          this.host.bindMsTeams?.(integrationId, conn, conn.botUserId)
     }
   }
 
