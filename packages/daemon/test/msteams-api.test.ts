@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MSTEAMS_MAX_RETRY_AFTER_MS,
   MSTEAMS_TOKEN_SCOPE,
   MsTeamsApi,
   MsTeamsApiError,
@@ -146,6 +147,25 @@ describe('MsTeamsApi', () => {
     expect(await api(impl, { t: 1_000_000 }, sleeps).postActivity(target, { text: 'x' })).toBe('act-1')
     expect(sleeps).toEqual([3_000, 2_000])
     expect(calls.filter((c) => c.method === 'POST' && c.url.includes('/activities'))).toHaveLength(3)
+  })
+
+  it('waits out a Retry-After longer than its own backoff cap, and gives up on one beyond the honored bound', async () => {
+    const long = fakeFetch([
+      { status: 429, headers: { 'retry-after': '45' } },
+      { status: 201, body: { id: 'act-2' } }
+    ])
+    const sleeps: number[] = []
+    expect(await api(long.impl, { t: 1_000_000 }, sleeps).postActivity(target, { text: 'x' })).toBe('act-2')
+    expect(sleeps).toEqual([45_000])
+
+    const beyond = fakeFetch([{ status: 429, headers: { 'retry-after': `${MSTEAMS_MAX_RETRY_AFTER_MS / 1000 + 1}` } }])
+    const tooLong: number[] = []
+    const err = (await api(beyond.impl, { t: 1_000_000 }, tooLong)
+      .postActivity(target, {})
+      .catch((e: unknown) => e)) as MsTeamsApiError
+    expect(err.kind).toBe('rate_limited')
+    expect(tooLong).toEqual([])
+    expect(beyond.calls.filter((c) => c.url.includes('/activities'))).toHaveLength(1)
   })
 
   it('retries a 502 on an edit but never re-sends a post that may have landed', async () => {

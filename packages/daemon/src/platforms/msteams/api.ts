@@ -11,6 +11,11 @@ const REQUEST_TIMEOUT_MS = 15_000
 const MAX_ATTEMPTS = 4
 const RETRY_BASE_MS = 1_000
 const RETRY_WAIT_CAP_MS = 10_000
+/** The longest server-given `Retry-After` honored; a longer cooldown fails the write rather than retrying before it ends. */
+export const MSTEAMS_MAX_RETRY_AFTER_MS = 60_000
+/** A write's whole budget in its conversation queue: every attempt's timeout plus the longest honored waits between them. */
+export const MSTEAMS_WRITE_TIMEOUT_MS =
+  MAX_ATTEMPTS * REQUEST_TIMEOUT_MS + (MAX_ATTEMPTS - 1) * MSTEAMS_MAX_RETRY_AFTER_MS
 
 /** The tenant's Entra token endpoint; the tenant is the bot registration's, never the activity's. */
 export function msTeamsTokenEndpoint(tenantId: string): string {
@@ -254,8 +259,11 @@ export class MsTeamsApi {
       // A POST that may have landed is never sent again: a duplicate message is worse than a missing one.
       const retry = err.kind === 'rate_limited' || (method !== 'POST' && err.kind === 'ambiguous')
       if (!retry || attempt >= MAX_ATTEMPTS) throw err
-      const backoff = err.retryAfterMs ?? RETRY_BASE_MS * 2 ** (attempt - 1) * (1 + this.random() * 0.25)
-      await this.sleep(Math.min(backoff, RETRY_WAIT_CAP_MS))
+      // The server's deadline is honored in full, since retrying earlier only spends attempts; only our own backoff is capped.
+      if (err.retryAfterMs !== undefined && err.retryAfterMs > MSTEAMS_MAX_RETRY_AFTER_MS) throw err
+      const backoff =
+        err.retryAfterMs ?? Math.min(RETRY_BASE_MS * 2 ** (attempt - 1) * (1 + this.random() * 0.25), RETRY_WAIT_CAP_MS)
+      await this.sleep(backoff)
     }
   }
 }

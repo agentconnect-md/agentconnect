@@ -15,7 +15,13 @@ import type {
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
 import type { WriteBudget } from '../write-budget.js'
-import { MSTEAMS_TEXT_FORMAT, MsTeamsApi, MsTeamsApiError, type MsTeamsTarget } from './api.js'
+import {
+  MSTEAMS_TEXT_FORMAT,
+  MSTEAMS_WRITE_TIMEOUT_MS,
+  MsTeamsApi,
+  MsTeamsApiError,
+  type MsTeamsTarget
+} from './api.js'
 
 /** Every write into one conversation is spaced this far apart: Microsoft allows 1,800 an hour per conversation (§4.3). */
 export const MSTEAMS_CONVERSATION_INTERVAL_MS = 2_000
@@ -241,7 +247,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort {
   private queueFor(conversationId: string): PlatformSendQueue {
     let queue = this.queues.get(conversationId)
     if (!queue) {
-      queue = new PlatformSendQueue(this.sendIntervalMs, this.now, this.sleep)
+      // A throttled write waits out the server's Retry-After inside its task, so the queue allows the whole retry budget.
+      queue = new PlatformSendQueue(this.sendIntervalMs, this.now, this.sleep, MSTEAMS_WRITE_TIMEOUT_MS)
       remember(this.queues, conversationId, queue, CONVERSATIONS_MAX)
     }
     return queue
