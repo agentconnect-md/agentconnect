@@ -33,6 +33,8 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
+// The Computers section fetches on its own and has its own suite.
+vi.mock('../ComputersSection', () => ({ ComputersSection: () => null }))
 
 const DaemonsView = (await import('./DaemonsView')).default
 

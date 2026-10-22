@@ -48,7 +48,7 @@ export default function ComputerDetailView() {
           chip={id}
           post={t('detail.notFoundPost')}
           actionLabel={t('detail.back')}
-          actionHref={orgPath('/computers')}
+          actionHref={orgPath('/daemons#computers')}
         />
       </div>
     )
@@ -359,7 +359,7 @@ function ComputerDetail({
           onConfirm={() =>
             void run(
               () => deleteComputer(computer.id),
-              () => router.push(orgPath('/computers'))
+              () => router.push(orgPath('/daemons#computers'))
             )
           }
           onClose={() => setConfirm(null)}

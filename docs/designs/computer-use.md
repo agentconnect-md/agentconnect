@@ -1121,13 +1121,14 @@ and every `computer/policy`.
 
 ## 10. Console [design]
 
-- A **Computers** page next to Daemons: list, status, OS, session type, owner, granted agents, `doctor` results with
-  fixes, recent activity, audit.
+- A **Computers** section on the Infra page, after the daemons and their groups: list, status, OS, session type, owner,
+  granted agents, `doctor` results with fixes, recent activity, audit.
 - Computer detail: policy editing, an **embedded viewer** (watch / take over), pause and stop, revoke. Viewer media
   still flows between the browser and the desktop daemon, directly or through the relay, never through the Control Plane.
 - Agent settings: the agent's Computers card lists the Computers its agent access derives, with add and remove for the ones the member can edit (§4.1).
-- **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
-  owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
+- **[implemented]** The **Computers** section of Infra (`/daemons#computers`; `/computers` redirects there, and a
+  Computer's page keeps `/computers/:id` under Infra in the rail) lists what the caller can see as cards in the daemons'
+  grid, with status, OS and session, granted agents, and a `doctor` summary; the owner is on the detail page. **Add Computer** mints the registration token only when asked, shows
   `npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>` on
   Linux (§3.5, the tag following the CP's release channel), or `computer setup` with the same tag and arguments on
   macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which

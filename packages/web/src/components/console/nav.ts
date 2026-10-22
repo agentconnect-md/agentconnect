@@ -38,8 +38,6 @@ export const NAV_GROUPS: NavItem[][] = [
   ],
   [
     { href: '/daemons', label: 'Infra', icon: 'server' },
-    // Desktops agents operate (computer-use.md §10), beside the machines agents run on.
-    { href: '/computers', label: 'Computers', icon: 'monitor' },
     { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
     { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' }
   ]
@@ -59,7 +57,8 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/integrations', label: 'Integrations' },
   { prefix: '/knowledge', label: 'Knowledge' },
   { prefix: '/daemons', label: 'Infra' },
-  { prefix: '/computers', label: 'Computers' },
+  // A Computer's detail page sits under Infra, which lists Computers as a section.
+  { prefix: '/computers', label: 'Infra' },
   { prefix: '/usage', label: 'Analytics' },
   { prefix: '/billing', label: 'Billing' },
   { prefix: '/settings', label: 'Settings' },
@@ -81,7 +80,6 @@ export type ShellNavKey =
   | 'integrations'
   | 'knowledge'
   | 'infra'
-  | 'computers'
   | 'analytics'
   | 'billing'
   | 'settings'
@@ -100,7 +98,7 @@ export const NAV_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
   '/integrations': 'integrations',
   '/knowledge': 'knowledge',
   '/daemons': 'infra',
-  '/computers': 'computers',
+  '/computers': 'infra',
   '/usage': 'analytics',
   '/billing': 'billing',
   '/settings': 'settings',
@@ -130,7 +128,7 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   '/integrations': ['bots', 'github', 'slack', 'telegram', 'discord', 'lark', 'feishu'],
   '/decisions': ['judgement', 'question', 'trigger when', 'routing'],
   '/usage': ['usage', 'costs', 'tokens'],
-  '/computers': ['computer use', 'desktop', 'screen']
+  '/daemons': ['computers', 'computer use', 'desktop', 'screen']
 }
 
 // Card-level settings entries: one per card on /settings (anchored to the card's
