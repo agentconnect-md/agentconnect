@@ -388,8 +388,9 @@ two seconds never shows one.
 
 DingTalk has no typing indicator either, and the reaction its bot places is a
 "thinking" label, not a mark that the message was seen. There that reaction is
-the indicator: placed when the turn starts and taken off when it ends, however
-it ends, so nothing claims the agent is still thinking once the answer is in.
+the indicator, and the one exception to the rule below: placed when the turn
+starts and taken off when it ends, however it ends, so nothing claims the agent
+is still thinking once the answer is in.
 
 The reaction is an acknowledgement, not a status: it is placed once and never
 taken back or swapped for an outcome. That is deliberate — it records that the
