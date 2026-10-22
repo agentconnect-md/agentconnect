@@ -159,7 +159,7 @@ const DEFAULT_DESKTOP_IMAGE = 'ghcr.io/agentconnect-md/desktop:latest'
 /** The one-line command that installs the computer daemon and registers this desktop (computer-use.md §3.5, §3.6). */
 export function computerInstallCommand(
   os: InstallOs,
-  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'desktopImage'>
+  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'desktopImage' | 'cliChannel'>
 ): string {
   // PowerShell takes double quotes; POSIX shells single quotes, which keep the token literal.
   const q = (value: string) => (os === 'windows' ? `"${value}"` : `'${value}'`)
@@ -168,6 +168,10 @@ export function computerInstallCommand(
     return `docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped --shm-size=1g -v agentconnect-desktop:/home/desktop -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL=${q(registration.exchangeUrl)} -e AGENTCONNECT_REGISTER_TOKEN=${q(registration.token)} ${registration.desktopImage ?? DEFAULT_DESKTOP_IMAGE}`
   }
   const register = `--register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}`
+  // Always a dist-tag: an untagged npx runs npm latest, which can predate `computer install` while this CP is an rc.
+  const rc = registration.cliChannel !== 'stable'
+  const cli = `${CLI}@${rc ? 'rc' : 'latest'}`
   // Linux installs the daemon from npm into the CLI's version store; macOS and Windows run setup in their installed app (M3 / M4).
-  return `npx -y ${CLI} computer ${os === 'linux' ? 'install' : 'setup'} ${register}`
+  if (os === 'linux') return `npx -y ${cli} computer install${rc ? ' --channel rc' : ''} ${register}`
+  return `npx -y ${cli} computer setup ${register}`
 }

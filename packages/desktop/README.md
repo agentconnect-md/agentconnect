@@ -171,7 +171,9 @@ inside the desktop session, as the desktop user, not root. It needs Node.js ≥ 
 tarball or your distribution's package).
 
 ```bash
-npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>
+npx -y @agentconnect.md/cli@latest computer install --register <token> --cp-url <exchange URL>
+# against a release-candidate Control Plane, which the console detects and shows:
+npx -y @agentconnect.md/cli@rc computer install --channel rc --register <token> --cp-url <exchange URL>
 ```
 
 The CLI downloads `@agentconnect.md/desktop` from npm, verifies its integrity, unpacks it into

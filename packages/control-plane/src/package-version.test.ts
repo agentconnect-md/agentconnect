@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { desktopImage, readPackageVersion, releaseTag } from './package-version.js'
+import { cliChannel, desktopImage, readPackageVersion, releaseTag } from './package-version.js'
 
 describe('releaseTag', () => {
   it('names the release an image was built from, formal or candidate', () => {
@@ -11,6 +11,14 @@ describe('releaseTag', () => {
     expect(releaseTag('2.0.0-dev')).toBeUndefined()
     expect(releaseTag(undefined)).toBeUndefined()
     expect(releaseTag(readPackageVersion())).toBeUndefined()
+  })
+})
+
+describe('cliChannel', () => {
+  it('follows the release channel, and rc from a checkout', () => {
+    expect(cliChannel('v2.6.0')).toBe('stable')
+    expect(cliChannel('v2.6.0-rc.57')).toBe('rc')
+    expect(cliChannel(undefined)).toBe('rc')
   })
 })
 

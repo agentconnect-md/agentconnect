@@ -295,8 +295,9 @@ channels and dist-tags, provenance through trusted publishing, a self-contained 
 release version baked in, and the §11 license scan run on exactly what ships). Cua Driver and ffmpeg are not in the
 package: they stay pinned, checksummed downloads at `setup` / first start. A Linux host is assumed to have Node.js
 (the daemon's `engines`), and the console's **Add Computer** shows
-`npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>`, the only Linux install
-path. `install` resolves the
+`npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>`, the
+only Linux install path. The tag is never omitted: the registration names the CP release's `cliChannel`, so a stable CP
+emits `@latest` and an rc CP (or a checkout) `@rc --channel rc`, because npm `latest` can predate `computer install`. `install` resolves the
 package from the CLI-local registry (never a CP-supplied URL), verifies its integrity and `engines`, extracts it to
 `versions/<v>` in the data directory, points `current` at it and runs `setup --register`; the systemd user unit and the
 Windows Run-key launcher run `current/dist/agentconnect-desktop.mjs`. `upgrade` installs side by side, switches
@@ -1127,8 +1128,9 @@ and every `computer/policy`.
 - Agent settings: the agent's Computers card lists the Computers its agent access derives, with add and remove for the ones the member can edit (§4.1).
 - **[implemented]** `/computers` in the rail after Infra lists what the caller can see, with status, OS and session,
   owner, granted agents, and a `doctor` summary. **Add Computer** mints the registration token only when asked, shows
-  `npx -y @agentconnect.md/cli computer install --register <token> --cp-url <exchange URL>` on Linux (§3.5), or
-  `computer setup` with the same arguments on macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
+  `npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>` on
+  Linux (§3.5, the tag following the CP's release channel), or `computer setup` with the same tag and arguments on
+  macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot

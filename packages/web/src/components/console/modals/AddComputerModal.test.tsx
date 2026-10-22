@@ -48,7 +48,8 @@ const registration = {
   displayTail: '…cret',
   name: null,
   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-  exchangeUrl: 'https://cp.example.com/v1/computers/register'
+  exchangeUrl: 'https://cp.example.com/v1/computers/register',
+  cliChannel: 'rc' as const
 }
 
 beforeEach(() => {
@@ -87,7 +88,7 @@ describe('AddComputerModal', () => {
     expect(mocks.createComputerRegistration).toHaveBeenCalledWith({})
     const command = host.querySelector('[data-install-command]')!.textContent!
     expect(command).toContain(
-      "npx -y @agentconnect.md/cli computer install --register 'ac_secret' --cp-url 'https://cp.example.com/v1/computers/register'"
+      "npx -y @agentconnect.md/cli@rc computer install --channel rc --register 'ac_secret' --cp-url 'https://cp.example.com/v1/computers/register'"
     )
     expect(host.textContent).toContain('Waiting for the computer to register')
 
@@ -100,6 +101,18 @@ describe('AddComputerModal', () => {
     act(() => button('Open computer').click())
     expect(onClose).toHaveBeenCalled()
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/c1')
+  })
+
+  it('pins the latest CLI, with no rc channel, for a stable Control Plane', async () => {
+    mocks.createComputerRegistration.mockResolvedValue({ ...registration, cliChannel: 'stable' })
+    mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    await act(async () => button('Create command').click())
+    expect(host.querySelector('[data-install-command]')!.textContent).toContain(
+      "npx -y @agentconnect.md/cli@latest computer install --register 'ac_secret' --cp-url"
+    )
   })
 
   it('quotes the command for PowerShell on Windows', async () => {

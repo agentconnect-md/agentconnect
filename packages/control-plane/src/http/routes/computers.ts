@@ -26,7 +26,7 @@ import {
 } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { publicBaseUrl } from '../oauth/base.js'
-import { desktopImage } from '../../package-version.js'
+import { cliChannel, desktopImage } from '../../package-version.js'
 import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
 import {
   ComputerAuditPageDto,
@@ -360,7 +360,8 @@ export function computerRoutes(deps: HttpDeps) {
           name: issued.registration.name,
           expiresAt: issued.registration.expiresAt.toISOString(),
           exchangeUrl: `${publicBaseUrl(req, deps.config)}/v1${COMPUTER_REGISTER_PATH}`,
-          desktopImage: desktopImage(deps.config.COMPUTER_DESKTOP_IMAGE)
+          desktopImage: desktopImage(deps.config.COMPUTER_DESKTOP_IMAGE),
+          cliChannel: cliChannel()
         })
       }
     )

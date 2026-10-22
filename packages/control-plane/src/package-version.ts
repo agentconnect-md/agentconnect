@@ -16,6 +16,11 @@ export function releaseTag(version: string | undefined = readPackageVersion()): 
   return version && /^\d+\.\d+\.\d+(-rc\.\d+)?$/.test(version) ? `v${version}` : undefined
 }
 
+/** The npm channel of this CP's release (`rc` from a checkout, which runs ahead of stable), so the console's CLI command matches it. */
+export function cliChannel(release: string | undefined = releaseTag()): 'stable' | 'rc' {
+  return release && !release.includes('-') ? 'stable' : 'rc'
+}
+
 /** The desktop image matching this CP's release, so the console never pairs a CP with a newer or older desktop. */
 export function desktopImage(override: string | undefined, release: string | undefined = releaseTag()): string {
   return override ?? `ghcr.io/agentconnect-md/desktop:${release ?? 'latest'}`
