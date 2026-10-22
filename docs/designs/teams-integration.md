@@ -1,8 +1,8 @@
 # Microsoft Teams Integration Design
 
 Status: Proposed (draft). Provider facts come from Microsoft's documentation as
-of October 2026; facts marked **unverified** still need a live probe against a
-test tenant.
+of October 2026. Facts marked **measured** come from a live probe against a
+test tenant; facts marked **unverified** still need one.
 
 > Related: [platform modules](integration-plugin-architecture.md),
 > [Google Chat](google-chat-integration.md), [DingTalk](dingtalk-integration.md),
@@ -57,7 +57,8 @@ Validation requests a client-credentials token from the tenant's endpoint
 `https://api.botframework.com/.default`). That proves the app, tenant, and
 secret together, but not the messaging endpoint or the Teams channel; only the
 first inbound activity proves those. An unreachable Entra answers 503; a
-rejected secret answers 400.
+rejected secret answers 400. A Developer Portal bot obtains its token from the
+tenant endpoint and receives Bot Framework tokens inbound (**measured**).
 
 ## 3. Architecture
 
@@ -90,7 +91,11 @@ Tokens issued by Entra rather than the Bot Framework are refused.
 Outbound calls go to the `serviceUrl` the conversation's latest activity
 carried, which the daemon records per conversation; proactive sends need that
 recorded reference, since Teams offers no lookup by email or user principal
-name.
+name. The `serviceUrl` is regional and tenant-specific
+(`https://smba.trafficmanager.net/<region>/<tenantId>/`), so it is read, never
+built (**measured**). A proactive 1:1 with someone who has not installed the
+app in personal scope fails with 403 `BadArgument`, "Bot is not installed in
+user's personal scope" (**measured**).
 
 ## 4. Behavior and invariants
 
@@ -102,7 +107,9 @@ name.
 - **Channel.** Teams channels are threaded by construction: a top-level post
   opens a conversation whose ID ends in `;messageid=<root>`, and replies share
   it. The root ID is the thread key, so a new post starts a session and a reply
-  continues it, as a Slack thread does.
+  continues it, as a Slack thread does. A reply's `replyToId` is empty, so the
+  key comes from the conversation ID alone, and a post's subject line never
+  reaches the bot, only its body (**measured**).
 - **Group chat.** There are no threads, so group chats follow the DingTalk model
   ([DingTalk §4.1](dingtalk-integration.md#41-conversations-sessions-and-identity)),
   itself Telegram's reply chain for groups without topics: a message that
@@ -110,9 +117,12 @@ name.
   message continues that message's session, and a quote that resolves to
   nothing starts a new session rather than guessing. The module implements the
   daemon's `canonicalizeThread` member, the third after Telegram and DingTalk.
-  A send returns the new activity's ID, so the lookup is by message ID, as on
-  Telegram. Whether a quoted reply carries the quoted message's ID is
-  **unverified**; if it does not, group chats default to `append` instead.
+  A quoted reply carries a `quotedReply` entity whose `messageId` is the quoted
+  activity's ID — for a bot message, the ID its send returned — with the
+  quoted `senderId` and `validatedMessageReference: true`, so the lookup is by
+  message ID, as on Telegram (**measured** in a 1:1 chat). The text starts with
+  `<quoted messageId="…"/>` and the HTML attachment with the quoted block; the
+  normalizer removes both. Channel threads offer no quote action.
 
 That is the default `createNew` [session mode](channel-session-mode.md). Channel
 and group-chat rows also offer `append`; a 1:1 chat offers no mode, so the
@@ -121,9 +131,13 @@ manifest declares `appendKinds: ['channel']`.
 **Resource-specific consent (RSC).** By default Teams delivers only messages
 that mention the bot. The app package requests `ChannelMessage.Read.Group` and
 `ChatMessage.Read.Chat`, which the team owner or chat member who installs the
-app grants for that team or chat alone. Teams then delivers every message there,
-the same shape as Slack, which receives every message of the conversations it
-has joined. The existing activation policy does the filtering, unchanged:
+app grants for that team or chat alone. The install dialog lists them as "Read
+messages in this team." and "Read this chat's messages." beside reading the
+roster; an administrator's install from the Teams admin center grants them with
+no prompt. Teams then delivers every message there — unmentioned top-level
+posts and thread replies alike (**measured**) — the same shape as Slack, which
+receives every message of the conversations it has joined. The existing
+activation policy does the filtering, unchanged:
 
 - the channel trigger `off`, `mention`, or `auto` decides whether an
   unmentioned new message starts work;
@@ -136,10 +150,10 @@ The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
 follow-ups then do nothing, and how the bot can detect that is **unverified**.
 
-A mention arrives as a `mention` entity whose `mentioned.id` is the bot and
-whose `text` is the `<at>…</at>` span in the activity text. The normalizer
-removes exactly that span and sets `mentionedBots`; a display name is never
-matched.
+A mention arrives as a `mention` entity whose `mentioned.id` is the bot
+(`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
+(**measured**). The normalizer removes exactly that span and sets
+`mentionedBots`; a display name is never matched.
 
 Identity is tenant-scoped: `from.aadObjectId` with the tenant ID identifies a
 person, and `from.id` is specific to the bot. Display names are for display
@@ -153,16 +167,17 @@ verdict, as Google Chat does
 ([Google Chat §4](google-chat-integration.md#ack-is-an-admission-boundary)):
 200 after a durable admission or a duplicate its receipt settles, 200 after a
 deliberate gate, and 503 for a retryable refusal or an admission timeout. The
-route settles within 10 seconds, because the Bot Service reports a timeout to
-the client after 10 to 15.
+route settles within 10 seconds, which keeps relay requests bounded.
 
-Teams documents no redelivery for message activities, but duplicates of slow
-deliveries are reported in practice. The relay's dedup table and the daemon's
-durable receipt both key on the bot, the conversation ID, and the activity ID,
-because Teams message IDs are unique only within a conversation; a duplicate
-never starts a second turn. Whether a 503 is redelivered is **unverified**; if
-it is not, a message that arrives while no daemon can admit it is lost, and
-user documentation says so.
+Redelivery is minimal (**measured**). A 503 brings exactly one redelivery about
+a second later, with the same activity ID, and nothing after it. An answer that
+takes 20 seconds brings none, and the sender sees no error. A 503 therefore
+buys one immediate retry, which no daemon restart or handover fits inside, so a
+message that arrives while no daemon can admit it is lost, as on DingTalk, and
+user documentation says so. The relay's dedup table and the daemon's durable
+receipt both key on the bot, the conversation ID, and the activity ID, because
+Teams message IDs are unique only within a conversation; the retry never starts
+a second turn.
 
 Non-message activities the module does not act on (typing, reactions,
 `conversationUpdate`, `installationUpdate`) are answered 200 and not forwarded;
@@ -184,10 +199,11 @@ turn output therefore:
 - retries 429, 412, 502, and 504 with backoff, honoring `Retry-After`.
 
 Text is sent with `textFormat: "extendedmarkdown"` (generally available since
-8 October 2026), which renders headings, lists, fenced code, and tables, and
-renders progressively as a message is edited. Rendering on mobile clients is
-**unverified**. A message is limited to 100 KB, so the renderer splits an answer
-under 80 KB into consecutive messages.
+8 October 2026), which renders headings, both list kinds, quotes, fenced code
+with a copy button, and tables in the web client, and renders progressively as
+a message is edited (**measured**; the fence's language label is not shown).
+Rendering on mobile clients is **unverified**. A message is limited to 100 KB,
+so the renderer splits an answer under 80 KB into consecutive messages.
 
 Native streaming works only in 1:1 chats, one stream per chat, at one update a
 second, for at most two minutes. Turns often run longer, so v1 uses post-then-
@@ -200,15 +216,17 @@ module's `ElicitCardFacet` and `ApprovalCardFacet`. Each button is an
 `Action.Execute` whose `data` carries the request ID, the option's position
 (never its value), and a token.
 
-A click arrives as an `adaptiveCard/action` invoke on the same endpoint, and the
-client waits about five seconds for the HTTP response before retrying. The relay
-verifies the token, dedupes by a hash of the click as Google Chat does, forwards
-it to the integration as a `platform_action`, and answers at once with a short
-text response (`type: "application/vnd.microsoft.activity.message"`), never
-waiting for the daemon. How Teams shows that response is **unverified**. The
-daemon re-checks the agent and integration, hands the click to the permission
-coordinator, and replaces the card (`PUT` on the card's activity) with the
-question and its decision and no controls. A refused click leaves the card as it
+A click arrives as an `adaptiveCard/action` invoke on the same endpoint, with
+`replyToId` set to the card's activity ID, and the client waits about five
+seconds for the HTTP response before retrying. The relay verifies the token,
+dedupes by a hash of the click as Google Chat does, forwards it to the
+integration as a `platform_action`, and answers at once with a short text
+response (`type: "application/vnd.microsoft.activity.message"`), never waiting
+for the daemon; the clicker sees that text as a dismissible note under the
+card. The daemon re-checks the agent and integration, hands the click to the
+permission coordinator, and replaces the card (`PUT` on the card's activity)
+with the question and its decision and no controls; the client then shows the
+card as edited (**measured**). A refused click leaves the card as it
 was and tells the clicker privately; whether that can be a targeted message in
 group chats and channels is **unverified**.
 
@@ -216,11 +234,11 @@ Anyone who can see a question card may answer it, as on every surface. A tool
 approval follows the editor check for in-chat cards
 ([approval surfaces](slack-approval-dm.md)): a click settles it only if the
 clicker's Teams identity is linked to an editor of the agent. The module's
-`chatMemberKey` is the clicker's `aadObjectId`, scoped by tenant. Linking needs the Console user's
-Entra object ID; whether the sign-in connector records `oid` (stable in a
-tenant) rather than `sub` (pairwise per application) is **unverified**. Until a
-link exists, approvals go to the Console queue with a notice in the
-conversation.
+`chatMemberKey` is the clicker's `aadObjectId`, scoped by tenant. Linking
+needs the Console user's Entra object ID; whether the sign-in connector records
+`oid` (stable in a tenant) rather than `sub` (pairwise per application) is
+**unverified**. Until a link exists, approvals go to the Console queue with a
+notice in the conversation.
 
 ## 5. Console setup
 
@@ -231,16 +249,27 @@ The wizard walks the admin through both registrations and then:
 - downloads the Teams app package: `manifest.json` in the current schema, a
   192×192 color icon, and a 32×32 outline icon. The manifest names the bot's app
   ID with the `personal`, `team`, and `groupChat` scopes, the two RSC
-  permissions with the `webApplicationInfo` they require, and the relay host in
-  `validDomains`. The Control Plane builds it from the integration's row; its
-  app ID is a GUID stable per integration, so a re-download updates the same
-  app.
+  permissions with the `webApplicationInfo` they require, the relay host in
+  `validDomains`, and `supportsChannelFeatures: "tier1"`, without which Teams
+  refuses a v1.25-or-later manifest that has the `team` scope (**measured**).
+  The Control Plane builds it from the integration's row; its app ID is a GUID
+  stable per integration, so a re-download updates the same app. The catalog
+  assigns the uploaded app an ID of its own and keeps the manifest's as its
+  external ID.
 
 The admin uploads the package in the Teams admin center, or a user uploads it
 where the organization's app setup policy allows custom apps. Installing it into
 a team or group chat grants the RSC permissions for that place. The wizard
 states both steps; neither can be automated without Graph permissions the
 integration does not request.
+
+The install paths differ widely in how fast they take effect (**measured** in
+a new tenant). The admin center's "Add to team" installs at once: the bot
+receives `conversationUpdate` and `installationUpdate` within a second. A
+personal-scope install for chosen users took about three and a half hours to
+reach the Bot Connector, and the Teams client took hours to list the uploaded
+app. The wizard therefore leads with the admin center upload and "Add to team",
+and says that 1:1 chats may take hours to open.
 
 ## 6. Platform module work
 
@@ -257,13 +286,12 @@ relay route is added to the chart's HTTPRoute in the same change.
 
 ## 7. Unverified and open
 
-- Whether a quoted reply in a group chat carries the quoted message's ID (§4.1).
+- That a group-chat quote carries the same `quotedReply` entity as the measured
+  1:1 quote (§4.1).
 - What the bot receives when a tenant blocks RSC consent, and who may consent in
   a group chat (§4.1).
-- Whether a 503 or a timeout is redelivered, and whether a redelivery keeps the
-  same activity ID (§4.2).
-- How Teams shows a text response to `Action.Execute`, and whether a refused
-  clicker can be told privately in a group chat or channel (§4.4).
+- Whether a refused clicker can be told privately in a group chat or channel
+  (§4.4).
 - Which Entra ID the sign-in connector records, which decides approval linking
   (§4.4).
 - Extended Markdown on mobile clients (§4.3).
