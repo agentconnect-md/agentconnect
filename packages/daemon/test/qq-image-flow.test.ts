@@ -116,7 +116,7 @@ describe('QQ images through the daemon', () => {
                 )
               )
               await expect(executeTool(context, 'shareFile', { path: 'document.pdf' }, deps)).rejects.toThrow(
-                'not a PNG'
+                'host only images'
               )
               await expect(executeTool(context, 'shareFile', { path: '../outside.png' }, deps)).rejects.toThrow(
                 'workspace-relative'

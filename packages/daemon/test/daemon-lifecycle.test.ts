@@ -451,7 +451,7 @@ describe('Daemon session lifecycle (#118)', () => {
           path: 'uploads/report.pdf'
         })
         expect(String(pod.files.get(`${clone}/uploads/report.pdf`))).toBe('%PDF-1')
-        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toMatchObject({
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toMatchObject({
           ok: true,
           mimeType: 'image/png'
         })
@@ -462,7 +462,7 @@ describe('Daemon session lifecycle (#118)', () => {
           ok: false,
           reason: 'sandboxed'
         })
-        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
       } finally {
         await daemon.stop()
       }
@@ -528,7 +528,7 @@ describe('Daemon session lifecycle (#118)', () => {
           path: 'uploads/report.pdf'
         })
         expect(String(machine.files.get(`${clone}/uploads/report.pdf`))).toBe('%PDF-1')
-        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toMatchObject({
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toMatchObject({
           ok: true,
           mimeType: 'image/png'
         })
@@ -539,7 +539,7 @@ describe('Daemon session lifecycle (#118)', () => {
           ok: false,
           reason: 'sandboxed'
         })
-        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
       } finally {
         await daemon.stop()
       }
@@ -570,11 +570,11 @@ describe('Daemon session lifecycle (#118)', () => {
           thread: 'T1',
           transportScope: TRANSPORT_SCOPE
         }
-        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/chart.png')).toMatchObject({
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toMatchObject({
           ok: true,
           mimeType: 'image/png'
         })
-        expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/large.png')).toEqual({
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/large.png')).toEqual({
           ok: false,
           reason: 'too-large',
           detail: `${png.length + 200} bytes > 128-byte cap`
@@ -585,7 +585,7 @@ describe('Daemon session lifecycle (#118)', () => {
         fifoWriter(pipe, png)
         const restore = statsBeforeSwap([pipe], join(out, 'chart.png'))
         try {
-          expect(await d.mcp.deps.readWorkspaceImage(ctx, 'out/pipe.png')).toEqual({ ok: false, reason: 'not-found' })
+          expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/pipe.png')).toEqual({ ok: false, reason: 'not-found' })
         } finally {
           restore()
         }

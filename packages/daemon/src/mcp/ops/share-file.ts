@@ -1,9 +1,16 @@
 import { z } from 'zod'
-import type { ImageUploader, SendIdentity, SessionContext, UploadFailReason } from './context.js'
+import type { FileUploader, SendIdentity, SessionContext, UploadFailReason } from './context.js'
 import type { GatewayDeps } from './gateway.js'
 import { parseArgs, requiredString } from './args.js'
 import { platformLabel } from '../../platforms/read-ports.js'
-import type { SharedImageReceipt, SharedImageSource } from '../../webchat/shared-image.js'
+import type {
+  SharedFileReceipt,
+  SharedFileSource,
+  SharedImageReceipt,
+  SharedImageSource
+} from '../../webchat/shared-image.js'
+import { sharedFileKind } from './share-file-types.js'
+import { sniffSharedImage } from '../../images/sniff.js'
 
 /** Longest workspace path a share marker may carry. */
 const SHARE_PATH_MAX = 1024
@@ -21,6 +28,9 @@ const SHARE_PATH_MAX = 1024
  * It carries no routing semantics: no wake, no reply correlation, no session seeding —
  * the thread already HAS the session this turn runs in, which is why the result's
  * message id is a transcript detail here and never an anchor.
+ *
+ * Any file type (docs §4): PNG, JPEG, WEBP and GIF post as pictures, named from their bytes;
+ * every other file posts as a document under the path's own name.
  */
 
 /** Caption bound, refused up front: under Telegram's 1024-char native caption so every
@@ -52,18 +62,18 @@ export interface ShareTurnTarget {
 export type ShareTargetRefusal = 'no-turn' | 'no-conversation' | 'headless'
 export type ShareTargetResult = ({ ok: true } & ShareTurnTarget) | { ok: false; reason: ShareTargetRefusal }
 
-/** The resolved, fenced, sniffed workspace image — or why it cannot be shared. */
+/** The resolved, fenced, typed workspace file — or why it cannot be shared. */
 export type ShareReadResult =
   | { ok: true; bytes: Buffer; name: string; mimeType: string; sha256: string }
   | {
       ok: false
-      reason: 'sandboxed' | 'not-found' | 'escape' | 'not-image' | 'gif' | 'too-large'
+      reason: 'sandboxed' | 'not-found' | 'escape' | 'empty' | 'too-large'
       /** Bound or detail the refusal names (e.g. the per-file cap). */
       detail?: string
     }
 
-/** A webchat turn's workspace image read: bounded by the image-processing limit, not the IM per-file cap. */
-export type SharedImageReadResult =
+/** A webchat turn's workspace file read: bounded by the image-processing limit, not the IM per-file cap. */
+export type SharedFileReadResult =
   | { ok: true; bytes: Buffer; sha256: string }
   | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
 
@@ -72,18 +82,25 @@ export interface ShareFileDeps extends GatewayDeps {
   webchatImagePublisherFor?: (
     ctx: SessionContext
   ) => ((source: SharedImageSource) => Promise<SharedImageReceipt>) | 'unsupported' | undefined
-  readWorkspaceSharedImage?: (ctx: SessionContext, path: string) => Promise<SharedImageReadResult>
+  /** The same turn's document publisher: a transcript row whose share marker the console renders as a download chip. */
+  webchatFilePublisherFor?: (
+    ctx: SessionContext
+  ) => ((source: SharedFileSource) => Promise<SharedFileReceipt>) | undefined
+  readWorkspaceSharedFile?: (ctx: SessionContext, path: string) => Promise<SharedFileReadResult>
+  /** The bound a console document shares under: the outbound per-file cap clamped to the workspace-download
+   *  ceiling, since the chip's download is a document's only delivery path (docs §4). */
+  consoleDocumentCap?: (ctx: SessionContext) => number
   /** Synchronous per-turn count and process-wide in-flight reservation for a console share; `done` says whether it published. */
   reserveWebchatShare?: (
     ctx: SessionContext
   ) => { ok: true; done: (published: boolean) => void } | { ok: false; reason: 'turn' | 'busy' }
   // Platforms with turn-bound egress can reuse the image tool without a legacy message gateway.
-  imageUploaderFor?: (ctx: SessionContext) => ImageUploader | undefined
+  fileUploaderFor?: (ctx: SessionContext) => FileUploader | undefined
   /** The active turn's trusted post target — absent outside a live daemon. */
   shareTarget?: (ctx: SessionContext) => ShareTargetResult
-  /** Resolve + fence + read + sniff a workspace-relative path (docs §4): single-shot read,
-   *  images only by magic bytes, name and MIME from the sniffed type. */
-  readWorkspaceImage?: (ctx: SessionContext, path: string) => Promise<ShareReadResult>
+  /** Resolve + fence + read + type a workspace-relative path (docs §4): single-shot read; an
+   *  image's name and MIME come from its sniffed bytes, a document keeps the path's name. */
+  readWorkspaceFile?: (ctx: SessionContext, path: string) => Promise<ShareReadResult>
   /** Synchronous per-turn byte reservation (docs §5) — charge before the upload, release on
    *  failure. Synchronous so concurrent tool calls cannot race past the budget. */
   chargeShareBudget?: (ctx: SessionContext, bytes: number) => { ok: true; release: () => void } | { ok: false }
@@ -111,9 +128,7 @@ const READ_REFUSALS: Record<Exclude<ShareReadResult, { ok: true }>['reason'], (p
   'not-found': (path) => `shareFile: no file at "${path}" in this workspace.`,
   escape: (path) =>
     `shareFile: "${path}" is not a workspace-relative path — only files inside the workspace can be shared.`,
-  'not-image': (path) => `shareFile: "${path}" is not a PNG, JPEG, or WEBP image — only those can be shared.`,
-  gif: () =>
-    'shareFile: GIF is not supported yet — only PNG, JPEG, or WEBP. Convert it first; an animated GIF would lose its animation anyway.',
+  empty: (path) => `shareFile: "${path}" is empty — nothing to share.`,
   'too-large': (path, detail) => `shareFile: "${path}" is over the per-file limit${detail ? ` (${detail})` : ''}.`
 }
 
@@ -123,7 +138,9 @@ const UPLOAD_REFUSALS: Record<Exclude<UploadFailReason, 'indeterminate'>, (platf
   too_large: (p) => `shareFile: ${p} rejected the file as too large.`,
   not_found: (p) => `shareFile: ${p} could not place the file in this conversation.`,
   forbidden: (p) => `shareFile: the bot may not post files in this ${p} conversation.`,
-  platform_error: (p) => `shareFile: ${p} rejected the file — nothing was sent.`
+  platform_error: (p) => `shareFile: ${p} rejected the file — nothing was sent.`,
+  unsupported_type: (p) =>
+    `shareFile: ${p} can host only images here — nothing was sent. Share a PNG, JPEG, or WEBP, or describe the file in your reply.`
 }
 
 /** The tool handler. SECURITY: every coordinate comes from the trusted session/turn context;
@@ -154,28 +171,55 @@ export async function shareFile(
   const publishWebchat = deps.webchatImagePublisherFor?.(ctx)
   if (publishWebchat === 'unsupported') {
     throw new Error(
-      'shareFile: this console cannot display shared images yet — its relay needs an update. Describe the image in your reply instead.'
+      'shareFile: this console cannot display shared files yet — its relay needs an update. Describe the file in your reply instead.'
     )
   }
   if (publishWebchat) {
     if (path.length > SHARE_PATH_MAX || /[\u0000-\u001f\u007f]/.test(path)) throw new Error(READ_REFUSALS.escape(path))
-    if (!deps.readWorkspaceSharedImage) throw new Error('shareFile is not available in this environment.')
+    if (!deps.readWorkspaceSharedFile) throw new Error('shareFile is not available in this environment.')
     const reserved = deps.reserveWebchatShare?.(ctx) ?? { ok: true as const, done: () => {} }
     if (!reserved.ok) {
       throw new Error(
         reserved.reason === 'turn'
-          ? "shareFile: this turn's image limit is reached — stop sharing images this turn."
-          : 'shareFile: too many images are being prepared right now — try again shortly.'
+          ? "shareFile: this turn's share limit is reached — stop sharing files this turn."
+          : 'shareFile: too many files are being prepared right now — try again shortly.'
       )
     }
     let published = false
     try {
-      const read = await deps.readWorkspaceSharedImage(ctx, path)
+      const read = await deps.readWorkspaceSharedFile(ctx, path)
       if (!read.ok) throw new Error(READ_REFUSALS[read.reason](path, read.detail))
-      const receipt = await publishWebchat({
+      if (read.bytes.byteLength === 0) throw new Error(READ_REFUSALS.empty(path))
+      const escaped = caption ? escapeCaptionMentions(caption) : undefined
+      // Anything the console can picture (including an SVG the preparer judges by name) becomes a card; a GIF
+      // (animation is out of the preview's scope) and every document, a download chip.
+      const sniffed = sniffSharedImage(read.bytes)
+      if (sniffed && sniffed !== 'image/gif') {
+        const receipt = await publishWebchat({
+          path,
+          ...(escaped ? { caption: escaped } : {}),
+          bytes: read.bytes,
+          sha256: read.sha256
+        })
+        published = true
+        return receipt
+      }
+      const file = sharedFileKind(path, read.bytes)
+      const publishFile = deps.webchatFilePublisherFor?.(ctx)
+      if (!publishFile) throw new Error('shareFile is not available in this environment.')
+      // A console document has one delivery path, the chip's workspace download; a share it could never serve is refused here, not at the click.
+      const cap = deps.consoleDocumentCap?.(ctx)
+      if (cap !== undefined && read.bytes.byteLength > cap) {
+        throw new Error(
+          READ_REFUSALS['too-large'](path, `${read.bytes.byteLength} bytes > ${cap}-byte console download cap`)
+        )
+      }
+      const receipt = await publishFile({
         path,
-        ...(caption ? { caption: escapeCaptionMentions(caption) } : {}),
-        bytes: read.bytes,
+        ...(escaped ? { caption: escaped } : {}),
+        name: file.name,
+        mimeType: file.mimeType,
+        bytes: read.bytes.byteLength,
         sha256: read.sha256
       })
       published = true
@@ -187,7 +231,7 @@ export async function shareFile(
 
   // Port-probe the platform BEFORE reading the file, so a webchat/fileless session costs no I/O.
   const integrationId = target.integrationId ?? ctx.integrationId
-  const uploader = deps.imageUploaderFor?.(ctx)
+  const uploader = deps.fileUploaderFor?.(ctx)
   const gw = integrationId ? deps.gatewayFor(integrationId) : undefined
   if (!uploader && !gw) throw new Error(`no live platform connection for integration ${integrationId ?? '(none)'}`)
   if (!uploader && !gw?.uploadFile) {
@@ -196,8 +240,8 @@ export async function shareFile(
     )
   }
 
-  if (!deps.readWorkspaceImage) throw new Error('shareFile is not available in this environment.')
-  const read = await deps.readWorkspaceImage(ctx, path)
+  if (!deps.readWorkspaceFile) throw new Error('shareFile is not available in this environment.')
+  const read = await deps.readWorkspaceFile(ctx, path)
   if (!read.ok) throw new Error(READ_REFUSALS[read.reason](path, read.detail))
 
   const charge = deps.chargeShareBudget?.(ctx, read.bytes.byteLength) ?? { ok: true as const, release: () => {} }
@@ -227,18 +271,19 @@ export async function shareFile(
     charge.release()
     if (outcome.reason === 'indeterminate') {
       throw new Error(
-        'shareFile: the upload timed out and MAY still have been delivered — do NOT retry; say the image may have gone through instead.'
+        'shareFile: the upload timed out and MAY still have been delivered — do NOT retry; say the file may have gone through instead.'
       )
     }
     const refusal = UPLOAD_REFUSALS[outcome.reason](platformLabel(target.platform))
     throw new Error(outcome.detail ? `${refusal} (${outcome.detail})` : refusal)
   }
 
-  // Provenance (docs §4): the model-chosen path plus what was ACTUALLY published — sniffed
-  // type, size, digest — and the bytes for console replay when they fit the transcript cap.
+  // Provenance (docs §4): the model-chosen path plus what was ACTUALLY published — type,
+  // size, digest — and an image's bytes for console replay when they fit the transcript cap
+  // (a document's row keeps the marker only; the console downloads it from the workspace).
   const marker = `[shared: ${path} (${read.mimeType}, ${read.bytes.byteLength} bytes, sha256:${read.sha256.slice(0, 16)})]`
   const ts = outcome.messageId ?? `local-${deps.now()}`
-  // The image is already in the conversation past this point, so a store failure must NOT
+  // The file is already in the conversation past this point, so a store failure must NOT
   // read as a failed share — a thrown error here would invite the double-posting retry the
   // whole outcome vocabulary exists to prevent. Degrade to a notice instead.
   const recorded = await (
@@ -255,7 +300,7 @@ export async function shareFile(
     ...(outcome.warning ? [`This send partly failed: ${outcome.warning}.`] : []),
     ...(recorded
       ? []
-      : ['The image was posted, but recording it in the transcript failed — the console may not show it.'])
+      : ['The file was posted, but recording it in the transcript failed — the console may not show it.'])
   ]
   return {
     ok: true,

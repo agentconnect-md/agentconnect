@@ -62,17 +62,19 @@ export interface UploadAnchor {
   replyTo?: number
 }
 
-/** Why an upload posted nothing. `indeterminate` alone means "may have landed — do not retry". */
+/** Why an upload posted nothing. `indeterminate` alone means "may have landed — do not retry";
+ *  `unsupported_type` is a platform that hosts images but not this kind of file. */
 export type UploadFailReason =
-  'missing_scope' | 'too_large' | 'not_found' | 'forbidden' | 'indeterminate' | 'platform_error'
+  'missing_scope' | 'too_large' | 'not_found' | 'forbidden' | 'indeterminate' | 'platform_error' | 'unsupported_type'
 
 export type UploadOutcome =
   | { ok: true; messageId?: string; warning?: string }
   /** `detail` is the provider's own error code; `notJoined` marks a refusal because the bot is not in that conversation. */
   | { ok: false; reason: UploadFailReason; detail?: string; notJoined?: true }
 
-// A turn-bound image sender; its destination and reply anchor are captured by the platform.
-export type ImageUploader = (
+// A turn-bound file sender; its destination and reply anchor are captured by the platform.
+// Named for the images it first carried; a platform that cannot host a document answers `unsupported_type`.
+export type FileUploader = (
   file: { bytes: Buffer; name: string; mimeType: string },
   caption?: string
 ) => Promise<UploadOutcome>

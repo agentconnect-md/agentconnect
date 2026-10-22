@@ -192,15 +192,15 @@ conversation gets a notice, and its approvals are answered in the Console.
 ### Non-image file sharing
 
 **Need:** send generated PDFs, spreadsheets, or archives to the current chat.
-QQ supports files; the common upload port carries bytes, but `shareFile`'s
-workspace reader, validation, and recording assume images.
+QQ supports files. `shareFile` now accepts any file type
+(agent-authored-attachments.md §4), so the common side is done: the QQ sender is
+handed a document with its name and MIME type and today answers the port's
+`unsupported_type`, which the tool relays as "QQ can host only images here".
 
-**Suggested direction:** a bounded common extension accepts files according to
-platform capability, preserves workspace/size/destination constraints, and
-records file metadata. QQ owns uploading and sending. Include this in the first
-contribution if upstream accepts the limited change; otherwise defer it without
-blocking image exchange or inbound files. Richer question workflows and result
-retrieval likewise require separate agreement.
+**Remaining, QQ-owned:** prepare the upload with the file `file_type` instead of
+the image one, skip the image sniff for a document, and send the matching rich
+media type, under the same expiry and group/DM scope as images. Richer question
+workflows and result retrieval likewise require separate agreement.
 
 ## 5. Validation
 

@@ -33,6 +33,12 @@ The work that makes a shared image's original available for viewing and download
 It belongs to the shared image and can continue after the generating turn ends.
 _Avoid_: Image generation, image publication
 
+**Shared file**:
+Any workspace file the agent has explicitly published into the current conversation
+with `shareFile`. An image becomes a shared image; every other file posts as a
+downloadable file under its own name, shown in the console as a chip rather than a card.
+_Avoid_: Attachment (which names a file the conversation received)
+
 ### Session collaboration
 
 **Conversation**:

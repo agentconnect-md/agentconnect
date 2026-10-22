@@ -223,6 +223,11 @@ export interface FeishuApi {
   /** im.message.create/reply (msg_type 'image') for an already-hosted `image_key`. */
   createImage(chatId: string, imageKey: string): Promise<{ messageId?: string }>
   replyImage(messageId: string, imageKey: string): Promise<{ messageId?: string }>
+  /** im.file.create — host a non-image file (≤ 30 MB, never empty) and get the `file_key` a message can reference. */
+  uploadDocument(bytes: Buffer, name: string, fileType: FeishuFileType): Promise<{ fileKey?: string }>
+  /** im.message.create/reply (msg_type 'file') for an already-hosted `file_key`. */
+  createFile(chatId: string, fileKey: string): Promise<{ messageId?: string }>
+  replyFile(messageId: string, fileKey: string): Promise<{ messageId?: string }>
   /** im.chat.get; `chatType` is `public` or `private`, and `external` a chat shared with another tenant. */
   getChat(chatId: string): Promise<{
     id: string
@@ -245,6 +250,31 @@ export interface FeishuApi {
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string; timeZone?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
+}
+
+/** `im.file.create`'s fixed `file_type` list; `stream` is Feishu's name for any other file. */
+export type FeishuFileType = 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream'
+
+/** The file endpoint's own documented bound (30 MB, and never an empty file). */
+const FEISHU_FILE_MAX_BYTES = 30 * 1024 * 1024
+
+/** Only the types a `msg_type: file` message may reference. `opus` and `mp4` uploads must be
+ *  sent as audio/media messages (Feishu error 230055 otherwise), so an audio or video file is
+ *  offered as a `stream` download instead — the honest presentation for a shared file. */
+const FEISHU_FILE_TYPES: Record<string, FeishuFileType> = {
+  pdf: 'pdf',
+  doc: 'doc',
+  docx: 'doc',
+  xls: 'xls',
+  xlsx: 'xls',
+  ppt: 'ppt',
+  pptx: 'ppt'
+}
+
+/** The `file_type` a file name earns; everything the list does not name is a `stream`. */
+export function feishuFileType(name: string): FeishuFileType {
+  const ext = /\.([A-Za-z0-9]{1,10})$/.exec(name)?.[1]?.toLowerCase()
+  return (ext && FEISHU_FILE_TYPES[ext]) || 'stream'
 }
 
 /** Map a Feishu send error to the port's typed failure vocabulary via the permission sniffer. */
@@ -310,7 +340,7 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
 
   const createMessage = async (
     chatId: string,
-    msgType: 'text' | 'interactive' | 'image',
+    msgType: 'text' | 'interactive' | 'image' | 'file',
     content: Record<string, unknown>
   ): Promise<{ messageId?: string }> => {
     const res = (await client.im.message.create({
@@ -322,7 +352,7 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
 
   const replyMessage = async (
     messageId: string,
-    msgType: 'text' | 'interactive' | 'image',
+    msgType: 'text' | 'interactive' | 'image' | 'file',
     content: Record<string, unknown>
   ): Promise<{ messageId?: string }> => {
     const res = (await client.im.message.reply({
@@ -369,6 +399,14 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
         data: { image_type: 'message', image: bytes }
       })) as { data?: { image_key?: string } }
       return { imageKey: res?.data?.image_key }
+    },
+    createFile: (chatId, fileKey) => createMessage(chatId, 'file', { file_key: fileKey }),
+    replyFile: (messageId, fileKey) => replyMessage(messageId, 'file', { file_key: fileKey }),
+    async uploadDocument(bytes, name, fileType) {
+      const res = (await client.im.file.create({
+        data: { file_type: fileType, file_name: name, file: bytes }
+      })) as { file_key?: string; data?: { file_key?: string } } | null
+      return { fileKey: res?.file_key ?? res?.data?.file_key }
     },
     async createCardEntity(card) {
       const res = assertApiSuccess(
@@ -920,6 +958,12 @@ export class FeishuConnection implements PlatformConnection {
       : this.handle.api.createImage(channel, imageKey)
   }
 
+  private sendDocument(channel: string, anchor: string | undefined, fileKey: string): Promise<{ messageId?: string }> {
+    return anchor && anchor.startsWith('om_')
+      ? this.handle.api.replyFile(anchor, fileKey)
+      : this.handle.api.createFile(channel, fileKey)
+  }
+
   private sendPermissionCard(
     channel: string,
     anchor: string | undefined,
@@ -1206,14 +1250,14 @@ export class FeishuConnection implements PlatformConnection {
 
   /**
    * Put a file into a chat — the mirror of {@link downloadFile}. Feishu splits hosting from
-   * sending, so this is `im.image.create` for the bytes and then a `msg_type: image` message
-   * that references the returned key.
+   * sending, so this is `im.image.create` (an image) or `im.file.create` (anything else) for
+   * the bytes and then a `msg_type: image` / `msg_type: file` message that references the
+   * returned key. The file endpoint wants a `file_type` from a fixed list; the extension picks
+   * one and `stream` is Feishu's own name for everything else.
    *
-   * An image message carries NO caption, so `comment` is a second message — sent AFTER the
-   * image, so a failed image leaves the chat untouched rather than stranding a caption for a
-   * picture that never arrived. The image is therefore the anchor. Images only: everything
-   * forwardable today is one, and Feishu's file endpoint needs a `file_type` this has no
-   * honest value for.
+   * Neither message carries a caption, so `comment` is a second message — sent AFTER the
+   * file, so a failed upload leaves the chat untouched rather than stranding a caption for a
+   * file that never arrived. The file is therefore the anchor.
    */
   async uploadFile(
     channel: string,
@@ -1222,9 +1266,9 @@ export class FeishuConnection implements PlatformConnection {
     anchor?: UploadAnchor,
     _identity?: unknown
   ): Promise<UploadOutcome> {
-    if (file.mimeType && !file.mimeType.startsWith('image/')) {
-      this.deps.log?.debug(`feishu: uploadFile refused ${file.name} (${file.mimeType}) — images only`)
-      return { ok: false, reason: 'platform_error' }
+    const asImage = !file.mimeType || file.mimeType.startsWith('image/')
+    if (!asImage && (file.bytes.byteLength === 0 || file.bytes.byteLength > FEISHU_FILE_MAX_BYTES)) {
+      return { ok: false, reason: 'too_large', detail: `Feishu files are 1 byte to ${FEISHU_FILE_MAX_BYTES} bytes` }
     }
     // REFUSE an anchor this platform cannot honor rather than repurpose it: `sendImage`
     // prefix-sniffs, so an unrecognized anchor would silently become a chat-ROOT post — in
@@ -1236,14 +1280,18 @@ export class FeishuConnection implements PlatformConnection {
     }
     const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       try {
-        const { imageKey } = await this.handle.api.uploadImage(file.bytes)
-        if (!imageKey) {
-          this.deps.log?.debug(`feishu: uploadFile got no image key for ${file.name}`)
+        const key = asImage
+          ? (await this.handle.api.uploadImage(file.bytes)).imageKey
+          : (await this.handle.api.uploadDocument(file.bytes, file.name, feishuFileType(file.name))).fileKey
+        if (!key) {
+          this.deps.log?.debug(`feishu: uploadFile got no ${asImage ? 'image' : 'file'} key for ${file.name}`)
           return { ok: false, reason: 'platform_error' }
         }
         let sent: { messageId?: string }
         try {
-          sent = await this.sendImage(channel, threadAnchor, imageKey)
+          sent = asImage
+            ? await this.sendImage(channel, threadAnchor, key)
+            : await this.sendDocument(channel, threadAnchor, key)
         } catch (err) {
           this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`feishu: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
@@ -1264,7 +1312,7 @@ export class FeishuConnection implements PlatformConnection {
           this.rememberPermissionIssue(err, channel)
           this.deps.log?.debug(`feishu: uploadFile caption failed (ch=${channel}): ${(err as Error).message}`)
           const lost = landed > 0 ? 'part of its caption' : 'its caption'
-          return { ...posted, warning: `the image was sent, but ${lost} did not post` }
+          return { ...posted, warning: `the file was sent, but ${lost} did not post` }
         }
       } catch (err) {
         this.rememberPermissionIssue(err, channel)

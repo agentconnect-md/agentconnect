@@ -585,30 +585,34 @@ target's daemon after the post is made.
 
 ### Sharing a produced file into the current conversation
 
-`shareFile` posts an image from the agent's workspace into the conversation the agent is
+`shareFile` posts a file from the agent's workspace into the conversation the agent is
 answering — the one visible send that is not `sendMessage`'s job, since every `sendMessage`
 post lands at a channel root. The model supplies only a workspace-relative path and an
 optional plain-text caption; every coordinate comes from the trusted active turn, so the
-image lands in the thread that asked, threaded the way that platform threads (Slack
+file lands in the thread that asked, threaded the way that platform threads (Slack
 `thread_ts`, Telegram reply placement, Discord thread channel, Feishu topic root — which is
 refused rather than repurposed when it cannot be honored).
 
-Images only — PNG, JPEG, or WEBP, decided from the file bytes, never the file name — and
-the posted filename and type come from those bytes too. A GIF is refused by name. The file
-is capped per send and per turn; failures name their rule. A headless turn, a postless
-agent-call session, and a platform that cannot host files are refused before any file is
-read. Captions are bounded, carried as one message, and have their mention syntax
-neutralized — Slack/Discord control tokens, Feishu `<at>` tags, and the broadcast words; a
-bare Telegram `@username` is the one form with no inert spelling and may still notify. A
-caption labels a file; it must not page anyone.
+Any file type. A PNG, JPEG, WEBP or GIF — decided from the file bytes, never the file name —
+posts as a picture (a GIF as an animation that plays), and its posted filename and type come
+from those bytes too. Every other file (PDF, CSV, spreadsheet, archive, text, …) posts as a
+downloadable file under the path's own name, typed by its extension; anything a browser
+could run is labelled as an opaque download. An empty file is refused. The file is capped per send and
+per turn; failures name their rule. A headless turn, a postless agent-call session, and a
+platform that cannot host files are refused before any file is read; a platform that hosts
+only images (QQ) refuses a document by name. Captions are bounded, carried as one message,
+and have their mention syntax neutralized — Slack/Discord control tokens, Feishu `<at>`
+tags, and the broadcast words; a bare Telegram `@username` is the one form with no inert
+spelling and may still notify. A caption labels a file; it must not page anyone.
 
 The share never seeds or re-anchors a session — the thread already has one — and it posts
-when called, so the image may appear before the streamed reply finishes. The transcript
-records the share with its provenance (path, sniffed type, size, digest) and, when the
+when called, so the file may appear before the streamed reply finishes. The transcript
+records the share with its provenance (path, type, size, digest) and, for an image whose
 bytes fit the transcript budget, the image itself, so the console renders what the agent
-shared exactly as it renders what a user uploaded. An upload the platform abandoned
-mid-flight is reported as "may have been delivered — do not retry", never as a failure a
-retry could double-post.
+shared exactly as it renders what a user uploaded; a document's row renders as a download
+chip that fetches the file from the workspace. An upload the platform abandoned mid-flight
+is reported as "may have been delivered — do not retry", never as a failure a retry could
+double-post.
 
 ### Shared images in the console
 
@@ -635,12 +639,15 @@ The card appears once its preview is saved, without waiting for the original:
 - **View original** and **Download** always target the original bytes and file name,
   never the preview. A failure leaves the preview visible.
 
-PNG, JPEG, WEBP and self-contained static SVG are accepted; an oversized SVG gets a PNG
+PNG, JPEG, WEBP and self-contained static SVG get a card; an oversized SVG gets a PNG
 preview while its original stays SVG, and SVG only ever renders as an image, never as
-live markup. The agent receives a short receipt — never the image bytes or a download
-link — and is told not to repeat the image as Markdown. Peers in a multi-agent
-conversation see the caption and card as transcript only; a shared image never wakes
-another agent or feeds its pixels to another agent's model.
+live markup. Any other file — a GIF included, since previews do not animate — is published
+as its own message with a download chip (name, size) instead of a card: no preview, nothing uploaded to a transfer cache — the chip
+downloads the file from the workspace, under that route's size limit, and refuses a file
+rewritten since it was shared. The agent receives a short receipt — never the bytes or a
+download link — and is told not to repeat the file as Markdown. Peers in a multi-agent
+conversation see the caption and card or chip as transcript only; a shared file never
+wakes another agent or feeds its content to another agent's model.
 
 ### Forwarding a received file
 

@@ -37,7 +37,7 @@
 import type { ApprovalCardFacet } from './approval-card.js'
 import type { ElicitCardFacet } from './elicit-card.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
-import type { ImageUploader } from '../mcp/ops/context.js'
+import type { FileUploader } from '../mcp/ops/context.js'
 
 export type TurnAdmissionStatus = 'processing' | 'queued' | 'steered'
 
@@ -108,7 +108,7 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   // Live delivery skips final-context regeneration; absence preserves staged chat delivery.
   answerDelivery?(ctx: TurnOutputContext<TMessage>): 'staged' | 'live'
   // Optional image sender bound to this turn's leased transport and provider reply anchor.
-  imageUploader?(turn: TTurn): ImageUploader | undefined
+  fileUploader?(turn: TTurn): FileUploader | undefined
   /** How this surface COLLECTS an elicitation answer — the in-chat card, its reduction, and the
    *  rewrite that settles it. Absent ⇒ the surface has no such control and the ask is declined
    *  with a notice. Reached via {@link TurnOutputRegistry.exact}, like {@link onSuppress}: a

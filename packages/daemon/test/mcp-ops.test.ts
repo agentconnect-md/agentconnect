@@ -485,7 +485,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const d = makeDeps({
         gatewayFor: () => gw,
         shareTarget: () => target,
-        readWorkspaceImage: async (_c, path) => (path === 'out/chart.png' ? image : { ok: false, reason: 'not-found' }),
+        readWorkspaceFile: async (_c, path) => (path === 'out/chart.png' ? image : { ok: false, reason: 'not-found' }),
         chargeShareBudget: vi.fn(() => ({ ok: true as const, release: vi.fn() })),
         recordShare: async (_c, row) => {
           shares.push(row)
@@ -568,14 +568,9 @@ describe('executeTool: sendMessage (channel post)', () => {
 
     it('refuses before any file I/O when the platform cannot host files', async () => {
       const reads = vi.fn(async () => image)
-      const { d } = shareDeps({ gatewayFor: () => fakeGateway(), readWorkspaceImage: reads })
+      const { d } = shareDeps({ gatewayFor: () => fakeGateway(), readWorkspaceFile: reads })
       await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/cannot host files/)
       expect(reads).not.toHaveBeenCalled()
-    })
-
-    it('names GIF in its refusal — a plausible find-me-images result, not a generic non-image', async () => {
-      const { d } = shareDeps({ readWorkspaceImage: async () => ({ ok: false, reason: 'gif' }) })
-      await expect(executeTool(ctx, 'shareFile', { path: 'anim.gif' }, d)).rejects.toThrow(/GIF is not supported/)
     })
 
     it('refuses over the per-turn budget and never uploads', async () => {
@@ -608,7 +603,7 @@ describe('executeTool: sendMessage (channel post)', () => {
 
     it('refuses an over-long caption up front, before anything is read or sent', async () => {
       const reads = vi.fn(async () => image)
-      const { d } = shareDeps({ readWorkspaceImage: reads })
+      const { d } = shareDeps({ readWorkspaceFile: reads })
       await expect(
         executeTool(ctx, 'shareFile', { path: 'out/chart.png', caption: 'x'.repeat(1001) }, d)
       ).rejects.toThrow(/1000 characters/)
@@ -631,6 +626,50 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(res).toMatchObject({ post: expect.objectContaining({ ts: 'local-1000' }) })
     })
 
+    // agent-authored-attachments.md §4: a document posts under its own name; the platform decides whether it can host it.
+    it('shares a document by its path name and records a marker-only row — no image bytes to replay', async () => {
+      const pdf = {
+        ok: true as const,
+        bytes: Buffer.from('%PDF-1.4'),
+        name: 'report.pdf',
+        mimeType: 'application/pdf',
+        sha256: 'd'.repeat(64)
+      }
+      const { d, gw, shares } = shareDeps({ readWorkspaceFile: async () => pdf })
+      const res = (await executeTool(ctx, 'shareFile', { path: 'outputs/report.pdf', caption: 'Q3' }, d)) as Record<
+        string,
+        unknown
+      >
+      expect(gw.uploadFile).toHaveBeenCalledWith(
+        'C_CURRENT',
+        { bytes: pdf.bytes, name: 'report.pdf', mimeType: 'application/pdf' },
+        'Q3',
+        expect.anything(),
+        expect.anything()
+      )
+      expect(res).toMatchObject({ ok: true, shared: { mimeType: 'application/pdf', bytes: 8 } })
+      expect(shares[0]).toMatchObject({
+        text: 'Q3\n[shared: outputs/report.pdf (application/pdf, 8 bytes, sha256:dddddddddddddddd)]'
+      })
+    })
+
+    it('names the platform when it can host only images, and releases the budget', async () => {
+      const release = vi.fn()
+      const { d } = shareDeps({
+        chargeShareBudget: () => ({ ok: true, release }),
+        gatewayFor: () =>
+          fakeGateway({ uploadFile: vi.fn(async () => ({ ok: false as const, reason: 'unsupported_type' as const })) })
+      })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/host only images/)
+      expect(release).toHaveBeenCalled()
+    })
+
+    it('refuses an empty file by name', async () => {
+      const { d, gw } = shareDeps({ readWorkspaceFile: async () => ({ ok: false, reason: 'empty' }) })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/empty.csv' }, d)).rejects.toThrow(/is empty/)
+      expect(gw.uploadFile).not.toHaveBeenCalled()
+    })
+
     // webchat-generated-images.md §4: a console-owned turn publishes a card, never an IM upload.
     describe('webchat publication', () => {
       const receipt = {
@@ -640,13 +679,59 @@ describe('executeTool: sendMessage (channel post)', () => {
         published: true as const,
         original: { kind: 'inline' as const }
       }
-      const shared = { ok: true as const, bytes: Buffer.from('SVGBYTES'), sha256: 'b'.repeat(64) }
+      const shared = {
+        ok: true as const,
+        bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+        sha256: 'b'.repeat(64)
+      }
+
+      it('publishes a document as a chip row through the file publisher, under the per-file cap', async () => {
+        const fileReceipt = {
+          type: 'agentconnect.file' as const,
+          version: 1 as const,
+          postId: '00000000-0000-4000-8000-000000000002',
+          published: true as const,
+          original: { kind: 'workspace' as const }
+        }
+        const publishImage = vi.fn(async () => receipt)
+        const publishFile = vi.fn(async () => fileReceipt)
+        const csv = { ok: true as const, bytes: Buffer.from('a,b\n1,2\n'), sha256: 'e'.repeat(64) }
+        const { d, gw } = shareDeps({
+          webchatImagePublisherFor: () => publishImage,
+          webchatFilePublisherFor: () => publishFile,
+          readWorkspaceSharedFile: async () => csv,
+          consoleDocumentCap: () => 1024
+        })
+        const res = await executeTool(ctx, 'shareFile', { path: 'data/rows.csv', caption: 'rows' }, d)
+        expect(publishFile).toHaveBeenCalledWith({
+          path: 'data/rows.csv',
+          caption: 'rows',
+          name: 'rows.csv',
+          mimeType: 'text/csv',
+          bytes: 8,
+          sha256: csv.sha256
+        })
+        expect(res).toEqual(fileReceipt)
+        expect(publishImage).not.toHaveBeenCalled()
+        expect(gw.uploadFile).not.toHaveBeenCalled()
+
+        const capped = shareDeps({
+          webchatImagePublisherFor: () => publishImage,
+          webchatFilePublisherFor: () => publishFile,
+          readWorkspaceSharedFile: async () => csv,
+          consoleDocumentCap: () => 4
+        })
+        await expect(executeTool(ctx, 'shareFile', { path: 'data/rows.csv' }, capped.d)).rejects.toThrow(
+          /over the per-file limit \(8 bytes > 4-byte console download cap\)/
+        )
+        expect(publishFile).toHaveBeenCalledTimes(1)
+      })
 
       it('hands the fenced bytes to the publisher and returns only its receipt', async () => {
         const publish = vi.fn(async () => receipt)
         const { d, gw } = shareDeps({
           webchatImagePublisherFor: () => publish,
-          readWorkspaceSharedImage: async (_c, path) =>
+          readWorkspaceSharedFile: async (_c, path) =>
             path === 'out/d.svg' ? shared : { ok: false, reason: 'not-found' }
         })
         const res = await executeTool(ctx, 'shareFile', { path: 'out/d.svg', caption: 'see <@U1>' }, d)
@@ -662,7 +747,7 @@ describe('executeTool: sendMessage (channel post)', () => {
 
       it('refuses on a console that cannot show cards, before reading anything', async () => {
         const read = vi.fn()
-        const { d } = shareDeps({ webchatImagePublisherFor: () => 'unsupported', readWorkspaceSharedImage: read })
+        const { d } = shareDeps({ webchatImagePublisherFor: () => 'unsupported', readWorkspaceSharedFile: read })
         await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, d)).rejects.toThrow(/relay needs an update/)
         expect(read).not.toHaveBeenCalled()
       })
@@ -671,7 +756,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         const publish = vi.fn(async () => receipt)
         const { d } = shareDeps({
           webchatImagePublisherFor: () => publish,
-          readWorkspaceSharedImage: async () => ({ ok: false, reason: 'escape' })
+          readWorkspaceSharedFile: async () => ({ ok: false, reason: 'escape' })
         })
         await expect(executeTool(ctx, 'shareFile', { path: '../x.png' }, d)).rejects.toThrow(/not a workspace-relative/)
         expect(publish).not.toHaveBeenCalled()
@@ -679,7 +764,7 @@ describe('executeTool: sendMessage (channel post)', () => {
 
       it('refuses a path a share marker could not carry', async () => {
         const publish = vi.fn(async () => receipt)
-        const { d } = shareDeps({ webchatImagePublisherFor: () => publish, readWorkspaceSharedImage: vi.fn() })
+        const { d } = shareDeps({ webchatImagePublisherFor: () => publish, readWorkspaceSharedFile: vi.fn() })
         await expect(executeTool(ctx, 'shareFile', { path: 'a\nb.png' }, d)).rejects.toThrow(/workspace-relative/)
         expect(publish).not.toHaveBeenCalled()
       })
@@ -688,14 +773,14 @@ describe('executeTool: sendMessage (channel post)', () => {
         const publish = vi.fn(async () => receipt)
         const limited = shareDeps({
           webchatImagePublisherFor: () => publish,
-          readWorkspaceSharedImage: vi.fn(),
+          readWorkspaceSharedFile: vi.fn(),
           reserveWebchatShare: () => ({ ok: false, reason: 'turn' })
         })
-        await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, limited.d)).rejects.toThrow(/image limit/)
+        await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, limited.d)).rejects.toThrow(/share limit/)
         const done = vi.fn()
         const failing = shareDeps({
           webchatImagePublisherFor: () => publish,
-          readWorkspaceSharedImage: async () => ({ ok: false, reason: 'not-found' }),
+          readWorkspaceSharedFile: async () => ({ ok: false, reason: 'not-found' }),
           reserveWebchatShare: () => ({ ok: true, done })
         })
         await expect(executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, failing.d)).rejects.toThrow(/no file/)

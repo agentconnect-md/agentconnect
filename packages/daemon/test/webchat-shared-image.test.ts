@@ -9,12 +9,13 @@ import { LocalStore } from '../src/store/local-store.js'
 import {
   displayedSharedImage,
   previewByteBudget,
+  publishWebchatSharedFile,
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
   SharedImagePublishError,
   sweepSharedImageStaging,
   type SharedImagePublisherDeps,
-  type SharedImageTurn
+  type WebchatShareTurn
 } from '../src/webchat/shared-image.js'
 import type { WebchatTurnOutput } from '../src/webchat/turn-output.js'
 import { closeWebchatSegmentForImage, commitSegmentOnce } from '../src/webchat/turn-output.js'
@@ -46,7 +47,7 @@ function turnOutput(): { wc: WebchatTurnOutput; outputs: WebchatOutput[]; posts:
   return { wc, outputs, posts }
 }
 
-function turnFor(wc: WebchatTurnOutput, over: Partial<SharedImageTurn> = {}): SharedImageTurn {
+function turnFor(wc: WebchatTurnOutput, over: Partial<WebchatShareTurn> = {}): WebchatShareTurn {
   return {
     agentId: AGENT,
     outwardSessionId: 'session-1',
@@ -145,6 +146,40 @@ describe('publishWebchatSharedImage', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0]!.post.author).toEqual({ kind: 'agent', agentId: AGENT })
     expect(posts[0]!.post.image?.attachment.data).toBe(Buffer.from('PNG').toString('base64'))
+    await store.close()
+  })
+
+  it('publishes a document as its own closed message whose marker the console renders as a chip', async () => {
+    const store = await openStore()
+    const { wc, outputs, posts } = turnOutput()
+    const receipt = await publishWebchatSharedFile({ store, log: quietLog }, turnFor(wc), {
+      path: 'outputs/report.pdf',
+      caption: 'Q3',
+      name: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: 1234,
+      sha256: SHA
+    })
+    expect(receipt).toEqual({
+      type: 'agentconnect.file',
+      version: 1,
+      postId: receipt.postId,
+      published: true,
+      original: { kind: 'workspace' }
+    })
+    const text = 'Q3\n[shared: outputs/report.pdf (application/pdf, 1234 bytes, sha256:cccccccccccccccc)]'
+    // Durable before visible: the row is in the transcript, with no image to replay.
+    const { rows } = await store.transcriptPage(CONVERSATION, `webchat:${CONVERSATION}`, null, 10, AGENT)
+    expect(rows.map((r) => ({ text: r.text, sharedImage: r.sharedImage, postId: r.postId }))).toEqual([
+      { text, sharedImage: undefined, postId: receipt.postId }
+    ])
+    // Its own segment keyed by the post, so later reply text starts a new bubble.
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]!.event).toEqual({ kind: 'message', text, segmentId: receipt.postId, postId: receipt.postId })
+    expect(wc.segmentIndex).toBeUndefined()
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.post).toMatchObject({ postId: receipt.postId, text, author: { kind: 'agent', agentId: AGENT } })
+    expect(posts[0]!.post.image).toBeUndefined()
     await store.close()
   })
 

@@ -198,11 +198,21 @@ export interface TelegramApi {
     opts?: { parse_mode?: string; reply_markup?: InlineKeyboardMarkup }
   ): Promise<unknown>
   deleteMessage(chatId: number | string, messageId: number): Promise<unknown>
-  /** The two outbound file forms. An image previews inline through sendPhoto; sendDocument
-   *  takes everything else and is the only form that preserves the bytes exactly. */
+  /** The three outbound file forms. An image previews inline through sendPhoto; a GIF plays
+   *  through sendAnimation (sendPhoto would flatten it); sendDocument takes everything else
+   *  and is the only form that preserves the bytes exactly. */
   sendPhoto(
     chatId: number | string,
     photo: InputFile,
+    opts?: {
+      message_thread_id?: number
+      caption?: string
+      reply_parameters?: { message_id: number; allow_sending_without_reply?: boolean }
+    }
+  ): Promise<{ message_id: number }>
+  sendAnimation(
+    chatId: number | string,
+    animation: InputFile,
     opts?: {
       message_thread_id?: number
       caption?: string
@@ -429,8 +439,9 @@ export class TelegramConnection implements PlatformConnection {
 
   /**
    * Put a file into a chat — the mirror of {@link downloadFile}. An image goes through
-   * `sendPhoto` so it previews inline; anything else through `sendDocument`, which is also
-   * the only form that preserves the bytes exactly.
+   * `sendPhoto` so it previews inline, a GIF through `sendAnimation` so it keeps playing;
+   * anything else through `sendDocument`, which is also the only form that preserves the
+   * bytes exactly.
    *
    * Telegram caps a caption at 1024 characters and silently truncates past it, so a longer
    * `comment` becomes its own message — sent AFTER the file, so that a rejected photo (extreme
@@ -463,9 +474,13 @@ export class TelegramConnection implements PlatformConnection {
       try {
         const input = new InputFile(file.bytes, file.name)
         const opts = { ...placeOpt, ...(inCaption ? { caption: inCaption } : {}) }
-        const res = file.mimeType?.startsWith('image/')
-          ? await this.bot.api.sendPhoto(channel, input, opts)
-          : await this.bot.api.sendDocument(channel, input, opts)
+        // A GIF goes through sendAnimation: sendPhoto would silently strip its animation.
+        const res =
+          file.mimeType === 'image/gif'
+            ? await this.bot.api.sendAnimation(channel, input, opts)
+            : file.mimeType?.startsWith('image/')
+              ? await this.bot.api.sendPhoto(channel, input, opts)
+              : await this.bot.api.sendDocument(channel, input, opts)
         sentId = res?.message_id != null ? String(res.message_id) : undefined
       } catch (err) {
         this.deps.log?.debug(`telegram: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)

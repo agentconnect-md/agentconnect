@@ -107,7 +107,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
  * `platform` selector and are injected only into a session ON a declaring platform.
  */
 /**
- * `shareFile` — post a workspace image into the CURRENT conversation
+ * `shareFile` — post a workspace file into the CURRENT conversation
  * (docs/designs/agent-authored-attachments.md §3). The one visible send that is NOT
  * `sendMessage`'s job: every `sendMessage` post lands at a channel ROOT, while this places
  * a file in the thread the agent is already answering. No coordinates by construction —
@@ -117,16 +117,18 @@ function buildShareFileTool(): ToolDescriptor {
   return {
     name: 'shareFile',
     description:
-      'Post an IMAGE from your workspace into THIS conversation — the thread you are answering right now. This is ' +
-      'the only way to show someone a file you produced or downloaded: your ordinary reply is text-only, and ' +
+      'Post a FILE from your workspace into THIS conversation — the thread you are answering right now. This is ' +
+      'the only way to hand someone a file you produced or downloaded: your ordinary reply is text-only, and ' +
       '`sendMessage` posts to channel roots, never here. `path` is relative to your workspace root; put files there ' +
-      'first (generated images: save under `outputs/images/` with a unique name, copying any result that lives ' +
-      'outside the workspace). Images only (PNG, JPEG, or WEBP; the console also takes a self-contained static SVG — ' +
-      'never GIF), decided from the file bytes, not the name. The optional ' +
+      'first (generated files: save under `outputs/` — images under `outputs/images/` — with a unique name, copying ' +
+      'any result that lives outside the workspace). Any file type: PNG, JPEG, WEBP and GIF post as images (decided ' +
+      'from the file bytes, not the name; the console also shows a self-contained static SVG inline, and offers a ' +
+      'GIF as a download); everything else (PDF, CSV, XLSX, DOCX, ZIP, text, …) posts as a downloadable file named ' +
+      'after the path. Some platforms host only images and say so. The optional ' +
       '`caption` is plain text (max 1000 chars; mention syntax is neutralized, though a bare Telegram @username ' +
-      'may still notify); write everything else in your ordinary reply. Do not repeat the image as Markdown or paste ' +
-      'download links after a successful share — the card has its own view and download actions. ' +
-      'The image posts immediately, so it may appear before your streamed reply finishes. If the result says ' +
+      'may still notify); write everything else in your ordinary reply. Do not repeat the file as Markdown or paste ' +
+      'download links after a successful share — the post has its own view and download actions. ' +
+      'The file posts immediately, so it may appear before your streamed reply finishes. If the result says ' +
       'the upload MAY have been delivered, do NOT retry — report that instead.',
     inputSchema: obj(
       {
@@ -134,13 +136,14 @@ function buildShareFileTool(): ToolDescriptor {
           type: 'string',
           minLength: 1,
           description:
-            'Workspace-relative path to the image (e.g. `out/chart.png`). Absolute paths and `..` are rejected.'
+            'Workspace-relative path to the file (e.g. `out/chart.png`, `outputs/report.pdf`). Absolute paths and ' +
+            '`..` are rejected.'
         },
         caption: {
           type: 'string',
           minLength: 1,
           maxLength: 1000,
-          description: 'Optional short plain-text caption posted with the image.'
+          description: 'Optional short plain-text caption posted with the file.'
         }
       },
       ['path']

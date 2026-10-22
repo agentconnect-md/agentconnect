@@ -19,7 +19,7 @@ export function createQQTurnOutput(
     platform: 'qq',
     onAdmission: QQAcknowledgeAdmission,
     answerDelivery: QQAnswerDelivery,
-    imageUploader: (turn) => QQImageUploader(turnState<QQTurnState>(turn)),
+    fileUploader: (turn) => QQImageUploader(turnState<QQTurnState>(turn)),
     elicitCards: qqElicitCards,
     createConverger: (ctx) => new QQConverger(ctx.mode, ctx.resolveFileLink, ctx.isDm ? 'stream' : 'group'),
     initialTurnState: (ctx): QQTurnState => ({
