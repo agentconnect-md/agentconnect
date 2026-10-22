@@ -187,6 +187,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /feishu/events                → relay pool (Feishu/Lark HTTP event callback)
   /linear/events                → relay pool (Linear app webhook)
   /googlechat/events            → relay pool (Google Chat add-on events; Google-signed ID token)
+  /msteams/messages             → relay pool (Microsoft Teams activities; Bot Framework-signed JWT)
   /ai-sdk/agents/:agentId/chat  → relay pool (agent chat API; bearer API key)
   /ag-ui/agents/:agentId/chat   → relay pool (agent chat API over AG-UI; bearer API key)
   /relays/<ordinal>/rd/ws       → that exact relay pod, rewritten to /rd/ws
@@ -266,6 +267,9 @@ spec:
         - path:
             type: PathPrefix
             value: /googlechat/events
+        - path:
+            type: PathPrefix
+            value: /msteams/messages
         - path:
             type: PathPrefix
             value: /ai-sdk/agents

@@ -36,7 +36,9 @@ const EXPECTED_MOUNTS: Record<string, string[]> = {
   // One static, shared URL — a Linear app configures exactly one webhook endpoint.
   linear: ['POST /linear/events'],
   // The HTTPS endpoint the Setup Server tells the operator to enter in the Chat app configuration.
-  googlechat: ['POST /googlechat/events']
+  googlechat: ['POST /googlechat/events'],
+  // The messaging endpoint the admin enters in the Teams bot registration.
+  msteams: ['POST /msteams/messages']
 }
 
 const routeDeps = (): RelayIngressRouteDeps => ({

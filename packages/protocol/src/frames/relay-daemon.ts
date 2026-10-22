@@ -689,6 +689,27 @@ export const WireGoogleChatCardAction = z.object({
 })
 export type WireGoogleChatCardAction = z.infer<typeof WireGoogleChatCardAction>
 
+/** A verified Microsoft Teams `adaptiveCard/action` invoke, as the relay forwards it in a `platform_action` payload (teams-integration.md §4.4). */
+export const WireMsTeamsCardAction = z.object({
+  /** The `Action.Execute` verb the button named. */
+  verb: z.string().min(1).max(256),
+  /** The button's `data` as the card carried it; the daemon re-checks its token before acting on it. */
+  data: z.record(z.string(), z.unknown()),
+  /** The card's own activity ID (the invoke's `replyToId`), the message the daemon replaces. */
+  cardActivityId: z.string().min(1),
+  /** The raw conversation ID, `;messageid=<root>` included for a channel thread. */
+  conversationId: z.string().min(1),
+  /** The regional Bot Connector origin the token vouched for, where the card update goes. */
+  serviceUrl: z.string().url(),
+  /** The clicker's Entra object ID, the tenant-scoped person; absent records an unknown actor. */
+  aadObjectId: z.string().min(1).optional(),
+  /** The clicker's bot-specific `29:…` ID. */
+  userId: z.string().min(1),
+  /** The clicker's display name, which a settled card names them by. Presentation only. */
+  userName: z.string().min(1).max(256).optional()
+})
+export type WireMsTeamsCardAction = z.infer<typeof WireMsTeamsCardAction>
+
 /**
  * R→D REQ → rd/ack (§6.6). The ONE platform-interaction envelope replacing the
  * per-platform `slack_action` / `feishu_action` members: the ENVELOPE is
