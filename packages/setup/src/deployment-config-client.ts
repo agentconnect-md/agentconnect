@@ -319,37 +319,17 @@ export function googleChatDeploymentPut(
   })
 }
 
-export interface MsTeamsDeploymentApp {
-  appId: string
-  tenantId: string
-  /** Validated secret; omitted keeps the sealed secret, which only the same app may reuse. */
-  clientSecret?: string
-}
-
-/** Null clears the app. The app and its bot are registered by hand in Microsoft Entra and the Teams Developer Portal (teams-integration.md §8.2). */
-export function msTeamsDeploymentPut(
-  current: CurrentDeploymentConfig,
-  app: MsTeamsDeploymentApp | null
-): DeploymentConfigPut {
-  if (app && !app.clientSecret && current.values.msTeams?.appId !== app.appId.toLowerCase()) {
-    throw new Error('a new Teams app requires its client secret')
-  }
-  const secret = app ? app.clientSecret : null
-  return DeploymentConfigPutSchema.parse({
-    values: { ...current.values, msTeams: app ? { appId: app.appId, tenantId: app.tenantId } : null },
-    ...(secret === undefined ? {} : { secrets: { 'msTeams.clientSecret': secret } })
-  })
-}
-
 export interface LogtoOAuthClientCredentials {
   clientId: string
   clientSecret?: string
 }
 
+/** `teamsTenantId` is Microsoft's alone: a home tenant makes the sign-in app the Teams app too, null turns that off, omitted keeps it. */
 export function logtoLoginAppPut(
   current: CurrentDeploymentConfig,
   provider: 'telegram' | 'discord' | 'azuread',
-  credentials: LogtoOAuthClientCredentials | null
+  credentials: LogtoOAuthClientCredentials | null,
+  teamsTenantId?: string | null
 ): DeploymentConfigPut {
   const logto = current.values.logto
   if (!logto?.browser) throw new Error('save Logto browser configuration first')
@@ -362,9 +342,12 @@ export function logtoLoginAppPut(
     : logto.browser.socialProviders.filter((target) => target !== provider)
   if (!credentials && socialProviders.length === 0) throw new Error('keep at least one sign-in provider configured')
   const secret = credentials ? credentials.clientSecret : null
+  // Clearing Microsoft sign-in also stops the Teams app it is.
+  const teams = provider !== 'azuread' ? undefined : credentials ? teamsTenantId : null
   return DeploymentConfigPutSchema.parse({
     values: {
       ...current.values,
+      ...(teams === undefined ? {} : { msTeams: teams ? { tenantId: teams } : null }),
       logto: {
         ...logto,
         browser: { ...logto.browser, socialProviders },

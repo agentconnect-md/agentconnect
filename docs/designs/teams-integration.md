@@ -474,15 +474,16 @@ second, new tenant:
 
 ### 8.2 The app and its rows
 
-**Setup → Microsoft Teams** holds the deployment app: the Entra application
-(client) ID, its home tenant ID, and a write-only client secret. The operator
-registers the app as multi-tenant, registers a bot for it whose messaging
-endpoint is the relay's `/msteams/messages`, and adds the Console's install page
-(§8.3) as a Web redirect URI; Setup shows both URLs. Setup checks the secret
-with a client-credentials request to the home tenant, as §2 does. The app may
-be the same Entra application as the Microsoft sign-in application (§4.5),
-with its own secret; Setup keeps them as separate entries so either can change
-alone.
+The deployment app is the Microsoft sign-in application of §4.5, as Slack's
+platform app is also its sign-in app. **Setup → Microsoft** holds one Entra
+application (client) ID and one write-only client secret; entering the app's
+**home tenant ID** there makes it the Teams app too, and clearing either turns
+Teams off. The operator registers a bot for the app whose messaging endpoint is
+the relay's `/msteams/messages`, and adds the Console's connect page (§8.3) as
+another Web redirect URI; Setup shows both URLs. Setup checks the secret with a
+client-credentials request to the home tenant, as §2 does, before it saves the
+tenant. One app and one secret mean a rotation reaches sign-in and Teams
+together.
 
 Every connected tenant gets a **customer row**: the deployment app's ID as
 `externalAppId` and the customer tenant as `externalTenantId`, one row per

@@ -84,8 +84,16 @@ function server(existingConnectors: readonly string[] = ['telegram', 'discord', 
       }
     },
     verifyOidcToken: async (token) => ({ sub: 'operator', roles: token === 'admin' ? ['ADMIN'] : [] }),
-    fetch: async (input) => {
-      const path = new URL(String(input)).pathname
+    fetch: async (input, init) => {
+      const url = new URL(String(input))
+      // Microsoft Entra's client-credentials check of a Teams app: only the synthetic good secret passes.
+      if (url.host === 'login.microsoftonline.com') {
+        const secret = new URLSearchParams(String(init?.body)).get('client_secret')
+        return secret === 'login-secret'
+          ? Response.json({ access_token: 'bot-token', expires_in: 3599 })
+          : Response.json({ error: 'invalid_client', error_codes: [7000215] }, { status: 401 })
+      }
+      const path = url.pathname
       if (path === '/oidc/token') return Response.json({ access_token: 'token', expires_in: 3600 })
       if (path === '/api/connectors')
         return Response.json(
@@ -211,6 +219,41 @@ describe('global login application configuration', () => {
       'https://login.example.test/account/callback/social/agentconnect-azuread',
       'https://console.example.test/auth/social/callback'
     ])
+  })
+
+  it('makes the Microsoft sign-in app the Teams app with its home tenant, checked with Entra, and turns it off with sign-in', async () => {
+    const { app, admin, secrets } = server()
+    const APP = '00000000-0000-4000-8000-0000000000c1'
+    const HOME = '44444444-4444-4444-8444-444444444444'
+    const configure = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'POST', url: '/api/v1/configure/login-app/azuread', headers, payload })
+
+    const refused = await configure({ application: { clientId: APP, clientSecret: 'wrong' }, teamsTenantId: HOME })
+    expect(refused.statusCode).toBe(400)
+    expect(admin.values.msTeams ?? null).toBeNull()
+
+    const saved = await configure({
+      application: { clientId: APP, clientSecret: 'login-secret' },
+      teamsTenantId: HOME.toUpperCase()
+    })
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json()).toMatchObject({
+      messagingEndpoint: 'https://relay.example.test/msteams/messages',
+      connectRedirectUri: 'https://console.example.test/msteams/connect'
+    })
+    expect(admin.values.msTeams).toEqual({ tenantId: HOME })
+    expect(secrets['logto.azureadConnectorClientSecret']).toBe('login-secret')
+    expect(saved.body).not.toContain('login-secret')
+
+    // The stored secret of the same app is reused, and an empty tenant keeps sign-in alone.
+    expect((await configure({ application: { clientId: APP }, teamsTenantId: HOME })).statusCode).toBe(200)
+    expect((await configure({ application: { clientId: APP }, teamsTenantId: null })).statusCode).toBe(200)
+    expect(admin.values.msTeams).toBeNull()
+    expect(admin.values.logto?.azureadConnector).toEqual({ clientId: APP })
+
+    await configure({ application: { clientId: APP }, teamsTenantId: HOME })
+    expect((await configure({ application: null })).statusCode).toBe(200)
+    expect(admin.values.msTeams).toBeNull()
   })
 
   it('requires ADMIN access and refuses to remove the last sign-in provider', async () => {

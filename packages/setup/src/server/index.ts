@@ -44,7 +44,6 @@ import {
   giteaDeploymentPut,
   gitlabDeploymentPut,
   googleChatDeploymentPut,
-  msTeamsDeploymentPut,
   linearDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
@@ -67,7 +66,7 @@ import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
 import { msTeamsConfiguredUrls } from '../msteams-app.js'
-import { MsTeamsCreateCredentials, verifyMsTeamsApp } from '@agentconnect.md/control-plane/msteams-credential'
+import { verifyMsTeamsApp } from '@agentconnect.md/control-plane/msteams-credential'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -179,24 +178,23 @@ const ConfigureGoogleChatBody = z.strictObject({
     .nullable()
 })
 
-const ConfigureMsTeamsBody = z.strictObject({
-  application: z
-    .strictObject({
-      appId: z.string().trim().min(1).max(100),
-      tenantId: z.string().trim().min(1).max(100),
-      /** Omitted re-checks the stored secret of the same app. */
-      clientSecret: z.string().trim().min(1).max(1_000).optional()
-    })
-    .nullable()
-})
-
 const ConfigureGoogleBody = z.strictObject({
   clientId: z.string().trim().min(1).max(500),
   clientSecret: z.string().min(1).max(10_000).optional()
 })
 
 const LoginAppProvider = z.enum(['telegram', 'discord', 'azuread'])
-const ConfigureLoginAppBody = z.strictObject({ application: ConfigureGoogleBody.nullable() })
+const ConfigureLoginAppBody = z.strictObject({
+  application: ConfigureGoogleBody.nullable(),
+  /** Microsoft only: the app's home tenant makes it the deployment's Teams app too; null turns that off. */
+  teamsTenantId: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, 'must be a GUID')
+    .transform((value) => value.toLowerCase())
+    .nullable()
+    .optional()
+})
 
 const RegionalLoginAppBody = z
   .strictObject({
@@ -1157,61 +1155,6 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     })
   })
 
-  app.post('/api/v1/configure/msteams', { preHandler: requireConfigurationAccess }, async (request, reply) => {
-    const parsed = ConfigureMsTeamsBody.safeParse(request.body)
-    if (!parsed.success) return problem(reply, 400, 'the app ID, tenant ID and client secret are required')
-    const application = parsed.data.application
-    if (!application) {
-      return serializeMutation(async () => {
-        const current = await deps.store.getAdmin()
-        if (!current) return problem(reply, 409, 'save deployment settings before configuring Microsoft Teams')
-        const saved = await deps.store.replace({
-          expectedRevision: current.revision,
-          ...msTeamsDeploymentPut(current, null)
-        })
-        return { revision: saved.revision, restartRequired: true as const }
-      })
-    }
-    let urls: ReturnType<typeof msTeamsConfiguredUrls>
-    try {
-      urls = msTeamsConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
-    } catch (error) {
-      return problem(reply, 409, error instanceof Error ? error.message : 'the Teams endpoints are unavailable')
-    }
-    const credentials = MsTeamsCreateCredentials.safeParse({
-      appId: application.appId,
-      tenantId: application.tenantId,
-      clientSecret: application.clientSecret ?? 'stored'
-    })
-    if (!credentials.success) return problem(reply, 400, 'the app ID and tenant ID must be GUIDs')
-    let clientSecret = application.clientSecret
-    if (!clientSecret) {
-      // Only the same app may keep its sealed secret, and that secret is checked again like a new one.
-      const runtime = await deps.store.getRuntime(['msTeams.clientSecret'])
-      const stored = runtime?.secrets['msTeams.clientSecret']
-      if (!stored || runtime?.values.msTeams?.appId !== credentials.data.appId) {
-        return problem(reply, 400, 'paste a client secret for this app')
-      }
-      clientSecret = stored
-    }
-    // The same client-credentials request a per-organization Teams bot is checked with.
-    const checked = await verifyMsTeamsApp({ ...credentials.data, clientSecret }, fetchImpl)
-    if (!checked.ok) return problem(reply, checked.status === 503 ? 502 : 400, checked.message, checked.code)
-    return serializeMutation(async () => {
-      const current = await deps.store.getAdmin()
-      if (!current) return problem(reply, 409, 'save deployment settings before configuring Microsoft Teams')
-      const saved = await deps.store.replace({
-        expectedRevision: current.revision,
-        ...msTeamsDeploymentPut(current, {
-          appId: credentials.data.appId,
-          tenantId: credentials.data.tenantId,
-          ...(application.clientSecret ? { clientSecret: application.clientSecret } : {})
-        })
-      })
-      return { revision: saved.revision, restartRequired: true as const, ...urls }
-    })
-  })
-
   app.post('/api/v1/configure/google', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGoogleBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'Google OAuth client id is required')
@@ -1238,17 +1181,40 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       const parsed = ConfigureLoginAppBody.safeParse(request.body)
       if (!params.success || !parsed.success)
         return problem(reply, 400, 'a Telegram, Discord or Microsoft login application is required')
+      const teamsTenantId = params.data.provider === 'azuread' ? parsed.data.teamsTenantId : undefined
+      const application = parsed.data.application
+      let teamsUrls: ReturnType<typeof msTeamsConfiguredUrls> | undefined
+      if (teamsTenantId && application) {
+        try {
+          teamsUrls = msTeamsConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+        } catch (error) {
+          return problem(reply, 409, error instanceof Error ? error.message : 'the Teams endpoints are unavailable')
+        }
+        // Only the same app keeps its sealed secret, and that secret is checked for Teams like a new one.
+        let clientSecret = application.clientSecret
+        if (!clientSecret) {
+          const runtime = await deps.store.getRuntime(['logto.azureadConnectorClientSecret'])
+          if (runtime?.values.logto?.azureadConnector?.clientId === application.clientId)
+            clientSecret = runtime.secrets['logto.azureadConnectorClientSecret']
+        }
+        if (!clientSecret) return problem(reply, 400, 'paste a client secret for this application')
+        const checked = await verifyMsTeamsApp(
+          { appId: application.clientId.toLowerCase(), tenantId: teamsTenantId, clientSecret },
+          fetchImpl
+        )
+        if (!checked.ok) return problem(reply, checked.status === 503 ? 502 : 400, checked.message, checked.code)
+      }
       return serializeMutation(async () => {
         const current = await deps.store.getAdmin()
         if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
         let put: ReturnType<typeof logtoLoginAppPut>
         try {
-          put = logtoLoginAppPut(current, params.data.provider, parsed.data.application)
+          put = logtoLoginAppPut(current, params.data.provider, application, teamsTenantId)
         } catch (error) {
           return problem(reply, 400, error instanceof Error ? error.message : 'invalid login application')
         }
         const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
-        return { revision: saved.revision, restartRequired: true as const }
+        return { revision: saved.revision, restartRequired: true as const, ...(teamsUrls ?? {}) }
       })
     }
   )

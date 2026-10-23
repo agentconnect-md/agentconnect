@@ -33,10 +33,9 @@ describe('DeploymentConfigValuesV1Schema', () => {
     expect(zero.features.maxOrgsPerNonAdminUser).toBe(0)
   })
 
-  it('accepts a Teams app by its lower-cased IDs and refuses a non-GUID', () => {
-    const msTeams = { appId: '33333333-3333-4333-8333-333333333333', tenantId: '44444444-4444-4444-8444-444444444444' }
+  it('accepts the Teams home tenant lower-cased and refuses a non-GUID', () => {
+    const msTeams = { tenantId: '44444444-4444-4444-8444-444444444444' }
     expect(DeploymentConfigValuesV1Schema.parse({ ...base, msTeams }).msTeams).toEqual({
-      appId: '33333333-3333-4333-8333-333333333333',
       tenantId: '44444444-4444-4444-8444-444444444444'
     })
     expect(
