@@ -358,6 +358,12 @@ export class LogtoIdentityService {
     return firstString(user?.identities?.google?.userId)
   }
 
+  /** The linked Google identity's email, whose domain names a connecting Google Workspace. */
+  async googleAccountEmailFor(sub: string): Promise<string | null> {
+    const user = await this.logtoUser(sub, this.identityTtlMs)
+    return firstString(user?.identities?.google?.details?.email)
+  }
+
   /**
    * Warm-at-touch trigger (session-access-cold-visit.md §3): start, fire-and-forget,
    * the background lookups a later authorization read of this subject would block on.

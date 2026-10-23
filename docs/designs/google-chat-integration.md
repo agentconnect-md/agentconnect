@@ -1066,7 +1066,10 @@ collaborator):
    agent if its integration was removed. With no row, the route writes the
    customer row (`customers/…` for a Space claim, `domains/…` for a DM claim),
    installs the app on the organization's preset agent, syncs the assignment,
-   and answers 201. Either way it answers the completion URL when the state
+   and answers 201. The row is named `Google Chat · <domain>` after the domain
+   of the claimer's linked Google email, since Google offers no organization
+   name without an administrator scope; a consumer address or a failed read
+   leaves it `Google Chat`, never the deployment's own project. Either way it answers the completion URL when the state
    carried one, which the page follows.
 6. Chat removes the prompt and sends the original event again; it now routes
    like any other delivery. Without a completion URL the page closes itself

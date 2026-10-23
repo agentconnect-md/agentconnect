@@ -12,7 +12,7 @@ import { denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { relayIngress } from '../../http/relay-ingress.js'
 import { installNewBot } from '../../http/install-bot.js'
 import { deleteBotIdentity, removeIntegrationRow } from '../../http/uninstall.js'
-import { syncGoogleAccountId } from '../../http/google-account-id.js'
+import { googleWorkspaceDomainOf, syncGoogleAccountId } from '../../http/google-account-id.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { ErrorDto } from '../../http/dto/index.js'
 import type { BotRecord } from '../../persistence/ports.js'
@@ -255,6 +255,24 @@ function refuse(reply: FastifyReply, status: number, code: string, message: stri
   return reply.code(status).send({ error: googleChatErrorLabel(status), statusCode: status, code, message })
 }
 
+/** The connecting Workspace's domain, from the claimer's linked Google email; a failed read only leaves the row unnamed. */
+async function claimerWorkspaceDomain(
+  deps: HttpDeps,
+  googleChat: GoogleChatRouteSeams,
+  req: { oidcSubject?: string; log: FastifyBaseLogger },
+  userId: string
+): Promise<string | undefined> {
+  const read = googleChat.identity?.googleAccountEmailFor?.bind(googleChat.identity)
+  if (!read) return undefined
+  try {
+    const subject = req.oidcSubject ?? (await deps.repos.user.getOidcSubject(userId))
+    return subject ? googleWorkspaceDomainOf(await read(subject)) : undefined
+  } catch (err) {
+    req.log.warn({ err }, 'google chat claim: workspace domain read failed')
+    return undefined
+  }
+}
+
 export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRouteSeams) {
   return async function googleChatClaimRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -456,13 +474,15 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
         if (!ingress.ok) return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_UNAVAILABLE', ingress.message)
         const target = await googleChatInstallTarget(deps, req)
         if (!('agent' in target)) return refuse(reply, target.status, 'GOOGLE_CHAT_CLAIM_NO_AGENT', target.message)
+        // Named after the connecting Workspace, not the deployment's own project, which means nothing to the organization.
+        const domain = await claimerWorkspaceDomain(deps, googleChat, req, userId)
         try {
           await installNewBot(deps, req.log, {
             ...install,
             orgId,
             agent: target.agent,
             platform: GOOGLE_CHAT_PLATFORM,
-            name: `Google Chat · ${platform.projectId}`,
+            name: domain ? `Google Chat · ${domain}` : 'Google Chat',
             transport: 'http',
             prebuilt: true,
             createdByUserId: userId

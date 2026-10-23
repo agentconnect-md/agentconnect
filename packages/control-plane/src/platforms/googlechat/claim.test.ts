@@ -116,6 +116,8 @@ async function harness(
     app?: GoogleChatPlatformAppConfig | null
     recorded?: string | null
     identity?: string | null | 'error'
+    // The linked Google email the identity provider reports; omitted ⇒ the provider offers no email read.
+    email?: string | null | 'error'
     rows?: BotRecord[]
     google?: GoogleAnswers
     role?: 'owner' | 'collaborator' | 'viewer'
@@ -244,7 +246,17 @@ async function harness(
     googleChatClaimRoutes(deps, {
       ...(platform ? { app: platform } : {}),
       fetch: fetchImpl,
-      identity: { googleAccountIdFor }
+      identity: {
+        googleAccountIdFor,
+        ...(opts.email !== undefined
+          ? {
+              googleAccountEmailFor: async () => {
+                if (opts.email === 'error') throw new Error('identity provider down')
+                return opts.email ?? null
+              }
+            }
+          : {})
+      }
     })
   )
   running = app
@@ -344,6 +356,25 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
     )
     expect(h.syncBot).toHaveBeenCalledOnce()
     expect(res.body).not.toContain('PRIVATE KEY')
+  })
+
+  it('names a new row after the claimer’s Workspace domain, not the deployment’s project', async () => {
+    const h = await harness({ email: 'Someone@Example.Test' })
+    expect((await h.claim()).statusCode).toBe(201)
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Google Chat · example.test' }))
+  })
+
+  it('names a new row plainly when no Workspace domain can be read, and still connects', async () => {
+    for (const email of [null, 'someone@gmail.com', 'error'] as const) {
+      const h = await harness({ email })
+      expect((await h.claim()).statusCode).toBe(201)
+      expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Google Chat' }))
+      await running?.close()
+      running = undefined
+    }
+    const h = await harness()
+    expect((await h.claim()).statusCode).toBe(201)
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Google Chat' }))
   })
 
   it('binds a DM claim to the claimant’s own domain', async () => {
