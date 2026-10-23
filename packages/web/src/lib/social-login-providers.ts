@@ -27,12 +27,12 @@
 export const SOCIAL_LOGIN_CATALOG = [
   { target: 'google', name: 'Google' },
   { target: 'slack', name: 'Slack' },
+  { target: 'azuread', name: 'Microsoft' },
   { target: 'github', name: 'GitHub' },
   { target: 'gitlab', name: 'GitLab' },
   { target: 'lark', name: 'Lark' },
   { target: 'feishu', name: 'Feishu' },
   { target: 'discord', name: 'Discord' },
-  { target: 'azuread', name: 'Microsoft' },
   { target: 'telegram', name: 'Telegram' }
 ] as const
 

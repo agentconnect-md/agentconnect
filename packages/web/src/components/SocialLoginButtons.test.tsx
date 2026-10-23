@@ -52,11 +52,11 @@ describe('SocialLoginButtons layout', () => {
     expect(labels()).toEqual([
       'Continue with Google',
       'Continue with Slack',
+      'Continue with Microsoft',
       'Continue with GitHub',
       'Continue with GitLab',
       'Continue with Lark / Feishu',
       'Continue with Discord',
-      'Continue with Microsoft',
       'Continue with Telegram'
     ])
 
