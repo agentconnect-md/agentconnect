@@ -18,21 +18,20 @@ delivers every activity as an HTTPS POST, so ingress is a relay module; the
 daemon sends, edits, and deletes through the Bot Connector REST API. No
 Microsoft SDK is used.
 
-| Capability           | Initial scope and boundary                                                                                              |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Distribution         | Each organization registers its own bot and Entra app and pastes the credentials into the Console (§2).                 |
-| Ingress              | Relay-terminated HTTPS with Bot Framework token verification and durable admission (§3, §4.2).                          |
-| Conversations        | Every message the app's resource-specific consent delivers, filtered by the existing channel triggers (§4.1).           |
-| Sessions             | A 1:1 chat is one session; a channel post is a thread; a group chat follows the DingTalk reply-chain model (§4.1).      |
-| Replies              | Post once, then edit in place; extended Markdown; no native streaming (§4.3).                                           |
-| Questions, approvals | Adaptive Cards with `Action.Execute`, answered in place; who may approve follows session access sync (§4.4, §4.5).      |
-| Setup                | A Console wizard that checks the credentials live and downloads the Teams app package for the admin to upload (§5).     |
-| Access               | Microsoft sign-in links a person; session access sync checks conversation membership with the bot's credentials (§4.5). |
+| Capability           | Initial scope and boundary                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Distribution         | Each organization registers its own bot and Entra app and pastes the credentials into the Console (§2); or connects its tenant to the deployment's app (§8). |
+| Ingress              | Relay-terminated HTTPS with Bot Framework token verification and durable admission (§3, §4.2).                                                               |
+| Conversations        | Every message the app's resource-specific consent delivers, filtered by the existing channel triggers (§4.1).                                                |
+| Sessions             | A 1:1 chat is one session; a channel post is a thread; a group chat follows the DingTalk reply-chain model (§4.1).                                           |
+| Replies              | Post once, then edit in place; extended Markdown; no native streaming (§4.3).                                                                                |
+| Questions, approvals | Adaptive Cards with `Action.Execute`, answered in place; who may approve follows session access sync (§4.4, §4.5).                                           |
+| Setup                | A Console wizard that checks the credentials live and downloads the Teams app package for the admin to upload (§5).                                          |
+| Access               | Microsoft sign-in links a person; session access sync checks conversation membership with the bot's credentials (§4.5).                                      |
 
 Outside this scope: files and attachments in either direction, meetings and
 calls ([voice participation](voice-meeting-participation.md)), the Teams Store,
-one app serving many customer tenants (§8), native streaming, and one bot
-serving several agents.
+native streaming, and one bot serving several agents.
 
 ## 2. Distribution model
 
@@ -432,59 +431,147 @@ relay route is added to the chart's HTTPRoute in the same change.
 - Private and shared channels: Microsoft's pages disagree on whether bots may
   post there.
 
-## 8. Later
+## 8. The deployment's Teams app
 
-- **One app for many tenants.** One bot, registered in the installation's own
-  tenant, serves every customer tenant. Measured with a Developer Portal bot
-  whose Entra app is multi-tenant, from a second, new tenant:
-  - The customer's admin uploads the package in the Teams admin center and adds
-    the app to a team; no Store listing or Partner Center review is needed.
-    Installation events and a channel mention reached the bot's endpoint within
-    two seconds of **Add to team**.
-  - Installing created the app's service principal in the customer tenant: a
-    client-credentials request against that tenant failed with AADSTS7000229
-    before the install and succeeds after it.
-  - Sending into the customer tenant takes a token from the bot's **home**
-    tenant; tokens from the customer tenant and from `botframework.com` are
-    refused with 401. The Bot Connector origin is regional and carries the
-    customer tenant, for example `https://smba.trafficmanager.net/amer/<tenant>/`,
-    and arrives as each activity's `serviceUrl`.
-  - A new tenant's app management takes most of an hour to become usable; an
-    upload made before then did not persist.
-  - The admin's upload can be replaced by Graph calls made while the admin is
-    signed in, with three delegated scopes and admin consent:
-    `AppCatalog.ReadWrite.All` publishes the package to the organization
-    catalog (published at once, no review; application permissions are not
-    supported for this call), `Team.ReadBasic.All` lists the admin's teams, and
-    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` installs the app into
-    the chosen team with its resource-specific permissions in
-    `consentedPermissionSet`. "Self" binds the token to the app it installs, so
-    the signed-in application must be the bot's own Entra app. The install
-    returned 201, the bot received its installation events, and the team then
-    held the app's `ChannelMessage.Read.Group` grant. The same install for a
-    package whose bot ID had no bot registration failed with 400 at the step
-    that adds the bot to the team.
+Status: **implemented**, offered in the Console behind the `msteams-deployment-app`
+flag until the path is measured in a second tenant (§8.4). Each organization can
+still register its own bot (§2); this
+section adds one app the deployment operates, so an organization connects its
+Microsoft 365 tenant from the Console with an administrator's sign-in and no
+registration, package download or upload of its own.
 
-  The hosted app keeps one `Bot` row per customer tenant, as Google Chat's
-  anchor-and-claim pattern does
-  ([Google Chat §10](google-chat-integration.md#10-marketplace-distribution-and-multi-tenant-installs)):
-  the relay fences each activity to a claimed tenant instead of the single
-  `teamId`, and the daemon always signs outbound calls with the home tenant's
-  token. The same multi-tenant Entra app can also be the deployment's
-  Microsoft sign-in application (§4.5), with its own secret per consumer.
-  Installation and its resource-specific consent are separate from the Entra
-  consent the sign-in scopes need: installing creates the app's service
-  principal, but whether members can then sign in without a consent prompt, or
-  an administrator must grant the sign-in scopes for the tenant, is
-  **unverified**. Entra marks the app unverified until publisher verification,
-  which tenants that only allow verified publishers require; a Store listing
-  has its own review and is optional.
+### 8.1 Provider facts
+
+Measured with a Developer Portal bot whose Entra app is multi-tenant, from a
+second, new tenant:
+
+- The customer's admin uploads the package in the Teams admin center and adds
+  the app to a team; no Store listing or Partner Center review is needed.
+  Installation events and a channel mention reached the bot's endpoint within
+  two seconds of **Add to team**.
+- Installing created the app's service principal in the customer tenant: a
+  client-credentials request against that tenant failed with AADSTS7000229
+  before the install and succeeds after it.
+- Sending into the customer tenant takes a token from the bot's **home**
+  tenant; tokens from the customer tenant and from `botframework.com` are
+  refused with 401. The Bot Connector origin is regional and carries the
+  customer tenant, for example `https://smba.trafficmanager.net/amer/<tenant>/`,
+  and arrives as each activity's `serviceUrl`.
+- A new tenant's app management takes most of an hour to become usable; an
+  upload made before then did not persist.
+- The admin's upload can be replaced by Graph calls made while the admin is
+  signed in, with three delegated scopes and admin consent:
+  `AppCatalog.ReadWrite.All` publishes the package to the organization
+  catalog (published at once, no review; application permissions are not
+  supported for this call), `Team.ReadBasic.All` lists the admin's teams, and
+  `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` installs the app into
+  the chosen team with its resource-specific permissions in
+  `consentedPermissionSet`. "Self" binds the token to the app it installs, so
+  the signed-in application must be the bot's own Entra app. The install
+  returned 201, the bot received its installation events, and the team then
+  held the app's `ChannelMessage.Read.Group` grant. The same install for a
+  package whose bot ID had no bot registration failed with 400 at the step
+  that adds the bot to the team.
+
+### 8.2 The app and its rows
+
+**Setup → Microsoft Teams** holds the deployment app: the Entra application
+(client) ID, its home tenant ID, and a write-only client secret. The operator
+registers the app as multi-tenant, registers a bot for it whose messaging
+endpoint is the relay's `/msteams/messages`, and adds the Console's install page
+(§8.3) as a Web redirect URI; Setup shows both URLs. Setup checks the secret
+with a client-credentials request to the home tenant, as §2 does. The app may
+be the same Entra application as the Microsoft sign-in application (§4.5),
+with its own secret; Setup keeps them as separate entries so either can change
+alone.
+
+Every connected tenant gets a **customer row**: the deployment app's ID as
+`externalAppId` and the customer tenant as `externalTenantId`, one row per
+`(app, tenant)`, owned by one organization, marked prebuilt, with a copy of the
+deployment secret. Its public `platformConfig` records the home tenant as
+`tokenTenantId`. A boot pass re-stamps the secret on every customer row when
+the configured secret changes, as Google Chat's reconciler does
+([Google Chat §10.3](google-chat-integration.md#103-data-model-one-row-per-customer-as-slack-does-per-team)).
+
+The relay needs nothing new: its assignment is the `(app ID, tenant ID)` pair
+of §3, so the composite index routes each activity to its tenant's row, and an
+activity from a tenant no row claims matches nothing and is dropped. Where a
+tenant matters, the two tenants stay apart:
+
+- **The customer tenant** is the session realm (§4.5), the daemon's tenant
+  scope, the relay's fence, and the tenant whose members are matched.
+- **The token tenant** issues every token the bot uses: the daemon's outbound
+  calls and the Control Plane's member lookups (§4.5). `IntegrationMsTeamsConfig`
+  gains an optional `tokenTenantId`; absent, it is `tenantId`, so an
+  organization's own bot is unchanged.
+
+One customer row serves one agent, as an organization's own bot does (§1). An
+organization that wants another agent in the same tenant registers its own bot
+for it.
+
+### 8.3 Connecting a tenant
+
+When the deployment app is configured, the Teams wizard leads with **Connect
+with Microsoft** and keeps **Register your own bot instead** one click away. A
+per-agent install that pastes the deployment app's ID is refused
+(`MSTEAMS_DEPLOYMENT_APP`), and a customer row's secret follows the Setup Server
+rather than a Console rotation.
+
+1. **Sign-in.** The Console asks the Control Plane for an authorization URL
+   (`POST /orgs/:orgId/integrations/msteams/connect`, `{ agentId }`, an editor
+   of the agent). The Control Plane signs a state of the organization, the
+   agent, the caller and an expiry of ten minutes, and returns Microsoft's
+   `organizations` authorize URL for the deployment app with the three scopes
+   of §8.1 plus `openid`, a PKCE challenge whose verifier only the Control
+   Plane can derive from the state, and the Console's
+   `/msteams/connect` page as the redirect URI.
+2. **Exchange.** That page posts the code and state back
+   (`POST /orgs/:orgId/integrations/msteams/connect/callback`). The Control
+   Plane checks the state and caller, redeems the code with the deployment
+   secret, and takes the customer tenant from the ID token's `tid`, received
+   straight from Entra's token endpoint. A personal Microsoft account is
+   refused.
+3. **The row.** A tenant another organization holds is refused
+   (`MSTEAMS_TENANT_TAKEN`, naming no organization). A tenant this organization
+   holds for another agent is refused (`MSTEAMS_TENANT_IN_USE`) until that
+   integration is removed. Otherwise the Control Plane writes or reuses the
+   customer row, installs it on the agent, and syncs the relay assignment.
+4. **The catalog.** It builds the package of §5 from the row and publishes it
+   to the tenant's organization catalog, or adds an app definition when the
+   catalog already holds the app's external ID, so a reconnect updates it.
+5. **The team.** It answers the admin's teams (`/me/joinedTeams`) and a
+   short-lived, encrypted handle to the delegated token, which never leaves the
+   Control Plane in the clear. The page lists the teams; the admin picks one or
+   more and the Control Plane installs the app into each with the package's
+   resource-specific permissions
+   (`POST /orgs/:orgId/integrations/msteams/connect/install`). The page drops
+   the single-use code from the address bar before redeeming it.
+   The app also appears under **Built for your org**, where people add it to a
+   1:1 chat themselves where their app setup policy allows.
+
+The three scopes need an administrator: a member who is not one sees Entra's
+admin-approval page, and the connect page asks for a Teams or Global
+administrator instead. Removing the integration releases the customer row for another claim;
+the catalog app stays until the tenant's admin removes it. Entra labels the
+app **unverified** until publisher verification, which tenants that only allow
+verified publishers require.
+
+### 8.4 Open
+
+- The whole path in a second tenant: consent, the catalog publish, the team
+  install, and the first reply signed with the home tenant's token.
+- Whether members of a tenant that connected through §8.3 can sign in with
+  Microsoft without their own consent prompt (§4.5).
+- What the bot receives when the tenant's admin removes the catalog app or the
+  team removes the bot, and whether the row should then be released.
+
+## 9. Later
 
 - **Native streaming** in 1:1 chats (§4.3).
 - **Files**: 1:1 file consent cards, and Graph access for channel and group-chat
   files.
 
-## 9. Validation
+## 10. Validation
 
 Use sanitized fixtures for normalization and token verification, then a test
 tenant:
@@ -506,7 +593,7 @@ tenant:
 - Edits stay within the per-conversation budget; 429 responses back off.
 - The Control Plane never receives a message body.
 
-## 10. References
+## 11. References
 
 - Bot Connector: [authentication](https://learn.microsoft.com/azure/bot-service/rest-api/bot-framework-rest-connector-authentication), [conversations](https://learn.microsoft.com/microsoftteams/platform/bots/build-conversational-capability), [channel and group chats](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/conversations/channel-and-group-conversations), [proactive messages](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages), [rate limits](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/rate-limit), [Teams context](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/get-teams-context).
 - Registration: [Azure Bot quickstart](https://learn.microsoft.com/azure/bot-service/abs-quickstart), [Developer Portal](https://learn.microsoft.com/microsoftteams/platform/concepts/build-and-test/manage-your-apps-in-developer-portal), [app manifest](https://learn.microsoft.com/microsoft-365/extensibility/schema/), [custom app policies](https://learn.microsoft.com/microsoftteams/teams-custom-app-policies-and-settings).

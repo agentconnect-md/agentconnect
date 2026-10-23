@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { MSTEAMS_PLATFORM, msTeamsMessagesUrl, type IntegrationMsTeamsConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import { isMsTeamsConversationId, msTeamsSessionRealm } from './session-access.js'
+import { MsTeamsCpEnvSchema, isMsTeamsCustomerRow, type MsTeamsPlatformApp } from './deployment-app.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
 
 /** The Bot Framework audience a bot's outbound token is issued for. */
@@ -123,6 +124,12 @@ function unavailable(): MsTeamsValidation {
   }
 }
 
+/** The tenant whose endpoint issues the bot's tokens: a deployment app's home tenant, recorded on its customer rows, else the tenant it serves (§8.2). */
+export function msTeamsTokenTenant(bot: Pick<BotRecord, 'externalTenantId' | 'platformConfig'>): string | null {
+  const home = bot.platformConfig?.tokenTenantId
+  return typeof home === 'string' && home ? home : bot.externalTenantId
+}
+
 /** The secret row: the client secret in `botToken`, which reaches the serving daemon only. */
 export function msTeamsSecrets(clientSecret: string): BotSecretMaterial {
   return { botToken: clientSecret, appToken: null, signingSecret: null }
@@ -130,14 +137,16 @@ export function msTeamsSecrets(clientSecret: string): BotSecretMaterial {
 
 /** The daemon spec payload; undefined when the row lacks its identity or secret. */
 export function msTeamsIntegrationConfig(
-  bot: Pick<BotRecord, 'externalAppId' | 'externalTenantId'>,
+  bot: Pick<BotRecord, 'externalAppId' | 'externalTenantId' | 'platformConfig'>,
   secrets: Pick<BotSecretMaterial, 'botToken'>,
   publicRelayUrl?: string
 ): IntegrationMsTeamsConfig | undefined {
   if (!bot.externalAppId || !bot.externalTenantId || !secrets.botToken) return undefined
+  const tokenTenantId = msTeamsTokenTenant(bot)
   return {
     appId: bot.externalAppId,
     tenantId: bot.externalTenantId,
+    ...(tokenTenantId && tokenTenantId !== bot.externalTenantId ? { tokenTenantId } : {}),
     clientSecret: secrets.botToken,
     ...(publicRelayUrl ? { messagesUrl: msTeamsMessagesUrl(publicRelayUrl) } : {})
   }
@@ -157,7 +166,15 @@ export function msTeamsBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'ext
   }
 }
 
+/** The 409 copy when a per-agent install names the deployment's own app, which organizations connect from the Console (§8.3). */
+export const MSTEAMS_DEPLOYMENT_APP_MESSAGE =
+  'This is the deployment’s own Teams app. Connect your Microsoft 365 organization with Use the AgentConnect app instead.'
+
 export interface MsTeamsCpProviderDeps {
+  /** The deployment-owned app (§8.2), when Setup configured one. */
+  app?: MsTeamsPlatformApp
+  /** The boot pass that re-stamps a rotated deployment secret on customer rows. */
+  credentialReconciler?: { start(): void; stop(): void }
   /** Entra's token endpoint; tests pass a fake. Defaults to the global fetch. */
   fetch?: typeof fetch
   /** The credential and app-package routes, pre-bound by the composition root. */
@@ -178,7 +195,10 @@ export function createMsTeamsCpProvider(
     installRoutes: (scope) => (scope === 'org' ? (deps.installRoutes ?? []) : []),
     credentialBodySchema: MsTeamsCreateCredentials,
     refineCreateBody: refineMsTeamsCreateBody,
-    validateConfig: (credentials) => verifyMsTeamsApp(credentials, fetchImpl),
+    validateConfig: async (credentials) =>
+      credentials.appId === deps.app?.appId
+        ? { ok: false, status: 409, code: 'MSTEAMS_DEPLOYMENT_APP', message: MSTEAMS_DEPLOYMENT_APP_MESSAGE }
+        : await verifyMsTeamsApp(credentials, fetchImpl),
 
     // One bot serves one agent in this version, so a requested `shareable` is dropped.
     buildNewBotInstall: ({ credentials }) => ({
@@ -192,15 +212,39 @@ export function createMsTeamsCpProvider(
     }),
 
     // The relay picks the row by (app ID, tenant ID), so the tenant is the row's key rather than metadata.
+    // A deployment app's customer row also keeps its home tenant, which issues its tokens (§8.2).
     projectBotIdentity: (input) => {
       const tenantId = input.platformConfig?.tenantId
-      return input.externalAppId && tenantId ? { externalAppId: input.externalAppId, externalTenantId: tenantId } : {}
+      const tokenTenantId = input.platformConfig?.tokenTenantId
+      if (!input.externalAppId || !tenantId) return {}
+      return {
+        externalAppId: input.externalAppId,
+        externalTenantId: tenantId,
+        ...(tokenTenantId ? { platformConfig: { tokenTenantId } } : {})
+      }
     },
 
     secretShape: {
       slots: { botToken: 'Microsoft Entra client secret (daemon egress only; never sent to the relay)' },
       httpAssignRequires: []
     },
+
+    envSchema: MsTeamsCpEnvSchema,
+
+    ...(deps.credentialReconciler
+      ? {
+          backgroundLoops: [
+            {
+              label: 'msteams-credential-restamp',
+              start: () => deps.credentialReconciler!.start(),
+              stop: () => deps.credentialReconciler!.stop()
+            }
+          ]
+        }
+      : {}),
+
+    // A freed customer row is deleted so its tenant can be connected anew, by any organization (§8.3).
+    releasesFreedBot: (bot) => isMsTeamsCustomerRow(bot, deps.app),
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
       return msTeamsIntegrationConfig(bot, secrets, deps.publicRelayUrl)

@@ -319,6 +319,28 @@ export function googleChatDeploymentPut(
   })
 }
 
+export interface MsTeamsDeploymentApp {
+  appId: string
+  tenantId: string
+  /** Validated secret; omitted keeps the sealed secret, which only the same app may reuse. */
+  clientSecret?: string
+}
+
+/** Null clears the app. The app and its bot are registered by hand in Microsoft Entra and the Teams Developer Portal (teams-integration.md §8.2). */
+export function msTeamsDeploymentPut(
+  current: CurrentDeploymentConfig,
+  app: MsTeamsDeploymentApp | null
+): DeploymentConfigPut {
+  if (app && !app.clientSecret && current.values.msTeams?.appId !== app.appId.toLowerCase()) {
+    throw new Error('a new Teams app requires its client secret')
+  }
+  const secret = app ? app.clientSecret : null
+  return DeploymentConfigPutSchema.parse({
+    values: { ...current.values, msTeams: app ? { appId: app.appId, tenantId: app.tenantId } : null },
+    ...(secret === undefined ? {} : { secrets: { 'msTeams.clientSecret': secret } })
+  })
+}
+
 export interface LogtoOAuthClientCredentials {
   clientId: string
   clientSecret?: string

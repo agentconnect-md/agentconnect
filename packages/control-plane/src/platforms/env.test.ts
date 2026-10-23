@@ -24,6 +24,7 @@ import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
 import { createLinearCpProvider } from './linear/provider.js'
 import { createGoogleChatCpProvider } from './googlechat/provider.js'
+import { createMsTeamsCpProvider } from './msteams/provider.js'
 
 /** Every supported deployment key. */
 const EXPECTED_KEYS = [
@@ -63,6 +64,9 @@ const EXPECTED_KEYS = [
   'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
   'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
   'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
+  'MSTEAMS_PLATFORM_APP_ID',
+  'MSTEAMS_PLATFORM_TENANT_ID',
+  'MSTEAMS_PLATFORM_CLIENT_SECRET',
   'HEARTBEAT_SEC',
   'HOST',
   'LARK_PLATFORM_APP_ID',
@@ -222,7 +226,8 @@ describe('platform env declarations', () => {
       createSlackCpProvider({}),
       createFeishuCpProvider({}),
       createLinearCpProvider({}),
-      createGoogleChatCpProvider()
+      createGoogleChatCpProvider(),
+      createMsTeamsCpProvider()
     ])
     const fromProviders = registry
       .all()

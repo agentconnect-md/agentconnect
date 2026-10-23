@@ -126,6 +126,15 @@ describe('Microsoft Teams session access', () => {
     expect(tokenCalls()).toBe(2)
   })
 
+  it('takes a deployment app’s token from its home tenant and still fences on the tenant it serves', async () => {
+    const HOME = '66666666-6666-4666-8666-666666666666'
+    const f = fixture()
+    f.bot.platformConfig = { tenantId: TENANT, tokenTenantId: HOME }
+    await f.service.addViewerIdentities(f.viewer)
+    expect((await f.service.resolve([f.scope()], f.viewer)).allowedScopes).toHaveLength(1)
+    expect(String(f.fetchImpl.mock.calls[0]![0])).toBe(`https://login.microsoftonline.com/${HOME}/oauth2/v2.0/token`)
+  })
+
   it('reports a refused client secret as the bot’s authorization', async () => {
     const f = fixture()
     f.fetchImpl.mockImplementation(async () => Response.json({ error: 'invalid_client' }, { status: 401 }))

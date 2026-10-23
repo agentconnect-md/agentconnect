@@ -350,6 +350,10 @@ import { createDingTalkCpProvider } from './platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from './platforms/dingtalk/routes.js'
 import { createMsTeamsCpProvider } from './platforms/msteams/provider.js'
 import { msTeamsRoutes } from './platforms/msteams/routes.js'
+import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
+import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
+import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
+import { resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -2693,6 +2697,18 @@ export function buildContainer(
     log: http.log
   })
 
+  // The deployment's Teams app (teams-integration.md §8); a rotated secret reaches the connected tenants' rows on the next boot.
+  const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
+  const msTeamsCredentialReconciler = new MsTeamsCredentialReconciler({
+    bots: repos.bot,
+    secrets: repos.botSecret,
+    credentials: repos.botCredential,
+    resync: (botId) => httpBot.syncBot(botId),
+    ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+    clock,
+    log: http.log
+  })
+
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
   // functions, route-dep bundle, funnel stores, and background-loop instances
@@ -2803,7 +2819,16 @@ export function buildContainer(
     }),
     createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(httpDeps)] }),
     createMsTeamsCpProvider({
-      installRoutes: [msTeamsRoutes(httpDeps)],
+      installRoutes: [
+        msTeamsRoutes(httpDeps),
+        msTeamsConnectRoutes(httpDeps, {
+          ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+          keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
+          ...(webAppUrl ? { webAppUrl } : {})
+        })
+      ],
+      ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+      credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     })
   ])

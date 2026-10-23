@@ -32,6 +32,9 @@ const MANAGED_KEYS = [
   'GOOGLE_CHAT_PLATFORM_PROJECT_ID',
   'GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER',
   'GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY',
+  'MSTEAMS_PLATFORM_APP_ID',
+  'MSTEAMS_PLATFORM_TENANT_ID',
+  'MSTEAMS_PLATFORM_CLIENT_SECRET',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -100,6 +103,13 @@ export function applyDeploymentEnvironment(
     set('GOOGLE_CHAT_PLATFORM_PROJECT_ID', values.googleChat.projectId)
     set('GOOGLE_CHAT_PLATFORM_PROJECT_NUMBER', values.googleChat.projectNumber)
     set('GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY', secrets['googleChat.serviceAccountKey'])
+  }
+
+  // All three or none: a partial set fails fast in resolveMsTeamsPlatformApp.
+  if (values.msTeams) {
+    set('MSTEAMS_PLATFORM_APP_ID', values.msTeams.appId)
+    set('MSTEAMS_PLATFORM_TENANT_ID', values.msTeams.tenantId)
+    set('MSTEAMS_PLATFORM_CLIENT_SECRET', secrets['msTeams.clientSecret'])
   }
 
   if (values.feishu) {

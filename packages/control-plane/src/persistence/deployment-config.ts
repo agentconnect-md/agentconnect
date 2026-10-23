@@ -201,6 +201,22 @@ const GoogleChatAppSchema = z.preprocess(
   })
 )
 
+const GuidSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, 'must be a GUID')
+  .transform((value) => value.toLowerCase())
+
+const MsTeamsAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    // The deployment's multi-tenant Entra app and the bot registered for it (teams-integration.md §8.2).
+    appId: GuidSchema,
+    // The app's home tenant, whose token endpoint issues the bot's tokens for every customer tenant.
+    tenantId: GuidSchema
+  })
+)
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
@@ -212,6 +228,8 @@ export const DeploymentConfigValuesV1Schema = z
     linear: LinearAppSchema.nullable().optional(),
     /** The deployment-owned Google Chat app; its key is the write-only 'googleChat.serviceAccountKey' secret. */
     googleChat: GoogleChatAppSchema.nullable().optional(),
+    /** The deployment-owned Teams app; its client secret is the write-only 'msTeams.clientSecret' secret. */
+    msTeams: MsTeamsAppSchema.nullable().optional(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
     lark: RegionalLoginAppSchema.nullable().optional(),
@@ -301,6 +319,7 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'linear.clientSecret',
   'linear.signingSecret',
   'googleChat.serviceAccountKey',
+  'msTeams.clientSecret',
   'feishu.loginAppSecret',
   'lark.loginAppSecret',
   'logto.managementAppSecret',
@@ -518,6 +537,7 @@ export function deploymentSecretsRequiringRefresh(
   const linearIdentityChanged = next.linear && previous?.linear?.clientId !== next.linear.clientId
   // A key belongs to one project, so only a project ID change needs a new one; the number is that project's alias.
   const googleChatProjectChanged = next.googleChat && previous?.googleChat?.projectId !== next.googleChat.projectId
+  const msTeamsAppChanged = next.msTeams && previous?.msTeams?.appId !== next.msTeams.appId
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
   const larkIdentityChanged = next.lark && previous?.lark?.loginAppId !== next.lark.loginAppId
   const logtoIdentityChanged = next.logto && previous?.logto?.managementAppId !== next.logto.managementAppId
@@ -535,6 +555,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(linearIdentityChanged ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(googleChatProjectChanged ? (['googleChat.serviceAccountKey'] as const) : []),
+    ...(msTeamsAppChanged ? (['msTeams.clientSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
@@ -557,6 +578,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.linear ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(values.googleChat ? (['googleChat.serviceAccountKey'] as const) : []),
+    ...(values.msTeams ? (['msTeams.clientSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),

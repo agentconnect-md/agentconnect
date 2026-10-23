@@ -116,6 +116,22 @@ describe('MsTeamsApi', () => {
     expect(sends.map((c) => c.headers.authorization)).toEqual(['Bearer tok-1', 'Bearer tok-1', 'Bearer tok-2'])
   })
 
+  it('takes a deployment app’s token from its home tenant rather than the tenant it serves', async () => {
+    const HOME = '11111111-1111-4111-8111-111111111111'
+    const { impl, calls } = fakeFetch([{ status: 201, body: { id: 'act-1' } }])
+    const hosted = (async (url: unknown, init?: RequestInit) =>
+      String(url) === msTeamsTokenEndpoint(HOME)
+        ? ({
+            ok: true,
+            status: 200,
+            json: async () => ({ access_token: 'tok-home', expires_in: 3600 })
+          } as unknown as Response)
+        : impl(url as string, init)) as typeof fetch
+    const client = new MsTeamsApi({ ...CREDENTIALS, tokenTenantId: HOME }, { fetchImpl: hosted, now: () => 1_000_000 })
+    await client.postActivity(target, {})
+    expect(calls.map((c) => c.headers.authorization)).toEqual(['Bearer tok-home'])
+  })
+
   it('shares one token request between concurrent calls', async () => {
     const { impl, calls } = fakeFetch([
       { status: 201, body: { id: 'act-1' } },

@@ -54,6 +54,8 @@ export const consoleKeys = {
   deploymentConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'deployment-config'),
   /** The deployment's own Google Chat app (`GET /integrations/googlechat/app`). */
   googleChatApp: (orgId: string | null | undefined) => consoleKey(orgId, 'googlechat-app'),
+  /** The deployment's own Teams app (`GET /integrations/msteams/app`). */
+  msTeamsApp: (orgId: string | null | undefined) => consoleKey(orgId, 'msteams-app'),
   /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
   githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),

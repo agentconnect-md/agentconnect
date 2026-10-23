@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { cacheOptions } from '../../cache.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { BotAccessError, BotSessionAccessService, type BotSessionAccessDeps } from '../bot-session-access.js'
-import { MSTEAMS_TOKEN_SCOPE, msTeamsTokenUrl } from './provider.js'
+import { MSTEAMS_TOKEN_SCOPE, msTeamsTokenTenant, msTeamsTokenUrl } from './provider.js'
 
 /** The public cloud's global Bot Connector origin, which answers member lookups for every region (teams-integration.md §4.5). */
 export const MSTEAMS_CONNECTOR_ORIGIN = 'https://smba.trafficmanager.net/teams/'
@@ -32,7 +32,7 @@ export function createMsTeamsSessionAccess(deps: BotSessionAccessDeps, fetchImpl
     ttl: 60_000,
     fetchMethod: async (_key, _stale, { context, options }) => {
       const { bot, secret, signal } = context
-      const response = await fetchImpl(msTeamsTokenUrl(bot.externalTenantId!), {
+      const response = await fetchImpl(msTeamsTokenUrl(msTeamsTokenTenant(bot)!), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({

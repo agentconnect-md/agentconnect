@@ -62,6 +62,7 @@ export interface MsTeamsTarget {
 export interface MsTeamsCredentials {
   appId: string
   tenantId: string
+  tokenTenantId?: string
   clientSecret: string
 }
 
@@ -157,10 +158,11 @@ export class MsTeamsApi {
   }
 
   private async mint(): Promise<string> {
-    const { appId, tenantId, clientSecret } = this.credentials
+    const { appId, tenantId, tokenTenantId, clientSecret } = this.credentials
     let res: Response
     try {
-      res = await this.fetchImpl(msTeamsTokenEndpoint(tenantId), {
+      // A deployment app's tokens come from its home tenant, whichever tenant it serves (§8.2).
+      res = await this.fetchImpl(msTeamsTokenEndpoint(tokenTenantId ?? tenantId), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
         body: new URLSearchParams({

@@ -46,6 +46,12 @@
       "import": "./dist/platforms/googlechat/credential.js",
       "default": "./dist/platforms/googlechat/credential.js"
     },
+    "./msteams-credential": {
+      "development": "./src/platforms/msteams/provider.ts",
+      "types": "./dist/platforms/msteams/provider.d.ts",
+      "import": "./dist/platforms/msteams/provider.js",
+      "default": "./dist/platforms/msteams/provider.js"
+    },
     "./gitea-config": {
       "development": "./src/gitea/config.ts",
       "types": "./dist/gitea/config.d.ts",

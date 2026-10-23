@@ -11,13 +11,25 @@ const mocks = vi.hoisted(() => ({
   probeConfig: null as SlackConfigDto | null,
   create: vi.fn(),
   appPackage: vi.fn(),
-  saveBlob: vi.fn()
+  saveBlob: vi.fn(),
+  deploymentApp: vi.fn(),
+  connect: vi.fn(),
+  flags: new Set<string>()
 }))
 
 vi.mock('../deployment-config', () => ({
   useDeploymentConfig: () => ({ config: mocks.probeConfig, failed: false, apply: vi.fn() })
 }))
-vi.mock('./api', () => ({ msTeamsApi: { create: mocks.create, appPackage: mocks.appPackage } }))
+vi.mock('./api', () => ({
+  msTeamsApi: {
+    create: mocks.create,
+    appPackage: mocks.appPackage,
+    deploymentApp: mocks.deploymentApp,
+    connect: mocks.connect
+  }
+}))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
+vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (id: string) => mocks.flags.has(id) }))
 vi.mock('@/lib/shared-file', () => ({ saveBlob: mocks.saveBlob }))
 
 import { ApiError } from '@/lib/api'
@@ -102,6 +114,9 @@ beforeEach(() => {
   mocks.create.mockReset()
   mocks.appPackage.mockReset()
   mocks.saveBlob.mockReset()
+  mocks.deploymentApp.mockReset()
+  mocks.connect.mockReset()
+  mocks.flags.clear()
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -118,6 +133,34 @@ describe('msTeamsPane', () => {
     expect(msTeamsPane({ relayAvailable: false, created: false })).toBe('relay_required')
     expect(msTeamsPane({ relayAvailable: true, created: false })).toBe('register')
     expect(msTeamsPane({ relayAvailable: null, created: true })).toBe('install')
+  })
+
+  it('offers the deployment app once it is read, unless the person chose their own bot', () => {
+    expect(msTeamsPane({ relayAvailable: true, created: false, deploymentApp: null })).toBe('checking')
+    expect(msTeamsPane({ relayAvailable: true, created: false, deploymentApp: true })).toBe('deployment')
+    expect(msTeamsPane({ relayAvailable: true, created: false, deploymentApp: true, ownBot: true })).toBe('register')
+    expect(msTeamsPane({ relayAvailable: true, created: false, deploymentApp: false })).toBe('register')
+  })
+})
+
+describe('MsTeamsWizardBody with the deployment app', () => {
+  it('sends the person to Microsoft’s sign-in for this agent, or lets them register their own bot', async () => {
+    mocks.flags.add('msteams-deployment-app')
+    mocks.deploymentApp.mockResolvedValue({ appId: APP_ID })
+    mocks.connect.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/x' })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { ...window.location, assign })
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(identity?.hidden).toBe(true)
+    await act(async () => buttonWith('Connect with Microsoft')?.click())
+    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a')
+    expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/x')
+    await act(async () => buttonWith('Register your own bot instead')?.click())
+    expect(text()).toContain('Open Teams Developer Portal')
+    vi.unstubAllGlobals()
   })
 })
 

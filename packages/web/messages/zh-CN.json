@@ -1112,7 +1112,8 @@
       "join": "加入组织 · AgentConnect",
       "welcome": "开始使用 · AgentConnect",
       "googleChatClaim": "连接 Google Chat · AgentConnect",
-      "slackConnect": "连接 Slack · AgentConnect"
+      "slackConnect": "连接 Slack · AgentConnect",
+      "msTeamsConnect": "连接 Microsoft Teams · AgentConnect"
     },
     "login": {
       "brandLead": "在团队工作的地方，@ 任何 Agent。",
@@ -1321,6 +1322,33 @@
             "body": "Agent 在你的机器上运行，凭证不会离开本机。"
           }
         }
+      }
+    },
+    "msTeamsConnect": {
+      "connecting": "正在连接你的 Microsoft 365 组织…",
+      "failedTitle": "无法连接 Teams",
+      "goToAgentConnect": "前往 AgentConnect",
+      "title": "把 Agent 添加到团队",
+      "description": "你的组织已连接，应用已加入组织的应用目录。请选择 Agent 加入的团队。",
+      "noTeams": "你不是任何团队的成员。其他人仍可在「应用 → 为你的组织构建」中添加该应用。",
+      "personal": "一对一聊天：在应用设置策略允许的情况下，成员可在「应用 → 为你的组织构建」中自行添加。",
+      "install": "添加到团队",
+      "installing": "正在添加…",
+      "skip": "跳过",
+      "doneTitle": "Teams 已连接",
+      "doneBody": "在你选择的团队频道里 @ 这个 Agent，它会在那里回复。",
+      "backToAgent": "返回 Agent",
+      "errors": {
+        "expired": "这次登录已过期。请从 Agent 的集成页面重新开始连接。",
+        "declined": "登录已取消，或者 Microsoft 需要管理员批准。请让 Teams 管理员或全局管理员来连接。",
+        "denied": "Microsoft 没有接受这次登录。请重新开始连接。",
+        "personalAccount": "请使用管理你所在 Microsoft 365 组织的工作或学校账号登录。",
+        "notAdmin": "Microsoft 拒绝了请求。请使用能为组织批准的 Teams 管理员或全局管理员登录。",
+        "taken": "你的 Microsoft 365 组织已连接到这里的另一个组织。",
+        "inUse": "你的 Microsoft 365 组织已连接另一个 Agent。请先移除那个 Teams 集成。",
+        "noAgent": "这个 Agent 现在无法添加 Teams 应用。",
+        "unavailable": "无法连接 Microsoft，或本部署暂时不能连接 Teams。请稍后再试。",
+        "generic": "无法连接 Teams。"
       }
     }
   },
@@ -6390,7 +6418,10 @@
         "credentialsInvalid": "Microsoft Entra 拒绝了这些凭据。请检查应用 ID、租户 ID 和客户端密码。",
         "unavailable": "无法连接到 Microsoft Entra。请重试。",
         "relayOriginMissing": "这个部署没有公开的回调地址，无法生成应用包。",
-        "appTaken": "这个机器人已经连接到一个 Agent。请为这个 Agent 注册另一个机器人。"
+        "appTaken": "这个机器人已经连接到一个 Agent。请为这个 Agent 注册另一个机器人。",
+        "deploymentApp": "这是本部署自己的 Teams 应用。请使用「使用 Microsoft 连接」，不要粘贴它的凭据。",
+        "connectNoAgent": "这个 Agent 现在无法添加 Teams 应用。请确认你可以编辑它，并且它所在的电脑支持 Teams。",
+        "connectUnavailable": "本部署没有可连接的 Teams 应用。"
       },
       "steps": {
         "nav": {
@@ -6434,7 +6465,13 @@
           "tenantId": "Directory (tenant) ID"
         }
       },
-      "brand": "Microsoft Teams"
+      "brand": "Microsoft Teams",
+      "deployment": {
+        "connect": "使用 Microsoft 连接",
+        "connecting": "正在打开 Microsoft…",
+        "next": "由你所在 Microsoft 365 组织的 Teams 管理员或全局管理员登录并批准。之后应用会加入组织的应用目录，并添加到你选择的团队。",
+        "useOwn": "改为注册自己的 Bot"
+      }
     }
   },
   "Computers": {

@@ -170,7 +170,9 @@ export type IntegrationGoogleChatConfig = z.infer<typeof IntegrationGoogleChatCo
 // The Microsoft Teams payload (teams-integration.md §2): relay-terminated ingress, so the daemon gets egress material only.
 export const IntegrationMsTeamsConfig = z.object({
   appId: z.string().min(1), // Entra application (client) ID, the bot's ID
-  tenantId: z.string().min(1), // Entra tenant ID whose token endpoint issues the bot's tokens
+  tenantId: z.string().min(1), // Entra tenant ID the bot serves: the relay's fence and the session realm
+  // The tenant whose token endpoint issues the bot's tokens when it differs, the deployment app's home tenant (teams-integration.md §8.2).
+  tokenTenantId: z.string().min(1).optional(),
   clientSecret: z.string().min(1), // Entra client secret (plaintext — never log)
   // The relay's public messaging endpoint the bot registration names; absent until the relay's origin is known.
   messagesUrl: z

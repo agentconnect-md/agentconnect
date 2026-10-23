@@ -1112,7 +1112,8 @@
       "join": "Join organization · AgentConnect",
       "welcome": "Get started · AgentConnect",
       "googleChatClaim": "Connect Google Chat · AgentConnect",
-      "slackConnect": "Connect Slack · AgentConnect"
+      "slackConnect": "Connect Slack · AgentConnect",
+      "msTeamsConnect": "Connect Microsoft Teams · AgentConnect"
     },
     "login": {
       "brandLead": "@ any agent, right where your team works.",
@@ -1321,6 +1322,33 @@
             "body": "Agents run on your machines — credentials never leave them."
           }
         }
+      }
+    },
+    "msTeamsConnect": {
+      "connecting": "Connecting your Microsoft 365 organization…",
+      "failedTitle": "Teams could not be connected",
+      "goToAgentConnect": "Go to AgentConnect",
+      "title": "Add the agent to teams",
+      "description": "Your organization is connected and the app is in its app catalog. Choose the teams the agent joins.",
+      "noTeams": "You are not a member of any team. People can still add the app from Apps → Built for your org.",
+      "personal": "For 1:1 chats, people add the app from Apps → Built for your org where their app setup policy allows.",
+      "install": "Add to teams",
+      "installing": "Adding…",
+      "skip": "Skip",
+      "doneTitle": "Teams is connected",
+      "doneBody": "Mention the agent in a channel of the teams you chose; it answers there.",
+      "backToAgent": "Back to the agent",
+      "errors": {
+        "expired": "This sign-in has expired. Start connecting again from the agent’s integrations.",
+        "declined": "The sign-in was cancelled, or Microsoft needs an administrator to approve it. Ask a Teams or Global administrator to connect instead.",
+        "denied": "Microsoft did not accept the sign-in. Start connecting again.",
+        "personalAccount": "Sign in with a work or school account that administers your Microsoft 365 organization.",
+        "notAdmin": "Microsoft refused the request. Sign in as a Teams or Global administrator who can approve for the organization.",
+        "taken": "Your Microsoft 365 organization is already connected to another organization here.",
+        "inUse": "Your Microsoft 365 organization already connects another agent. Remove that Teams integration first.",
+        "noAgent": "This agent cannot take a Teams app right now.",
+        "unavailable": "Microsoft could not be reached, or this deployment cannot connect Teams right now. Try again later.",
+        "generic": "Teams could not be connected."
       }
     }
   },
@@ -6390,7 +6418,10 @@
         "credentialsInvalid": "Microsoft Entra refused these credentials. Check the app ID, tenant ID and client secret.",
         "unavailable": "Microsoft Entra could not be reached. Try again.",
         "relayOriginMissing": "This deployment has no public callback endpoint, so the app package cannot be built.",
-        "appTaken": "This bot is already connected to an agent. Register another bot for this agent."
+        "appTaken": "This bot is already connected to an agent. Register another bot for this agent.",
+        "deploymentApp": "This is the deployment’s own Teams app. Use Connect with Microsoft instead of pasting its credentials.",
+        "connectNoAgent": "This agent cannot take a Teams app right now. Check that you can edit it and that its computer runs Teams.",
+        "connectUnavailable": "This deployment has no Teams app to connect to."
       },
       "steps": {
         "nav": {
@@ -6434,7 +6465,13 @@
           "tenantId": "Directory (tenant) ID"
         }
       },
-      "brand": "Microsoft Teams"
+      "brand": "Microsoft Teams",
+      "deployment": {
+        "connect": "Connect with Microsoft",
+        "connecting": "Opening Microsoft…",
+        "next": "A Teams or Global administrator of your Microsoft 365 organization signs in and approves. The app is then added to your organization’s apps and to the teams you choose.",
+        "useOwn": "Register your own bot instead"
+      }
     }
   },
   "Computers": {

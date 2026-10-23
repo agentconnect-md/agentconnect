@@ -33,7 +33,10 @@ export const MSTEAMS_ERROR_KEYS = {
   MSTEAMS_TENANT_NOT_FOUND: 'tenantNotFound',
   MSTEAMS_CREDENTIALS_INVALID: 'credentialsInvalid',
   MSTEAMS_CHECK_UNAVAILABLE: 'unavailable',
-  MSTEAMS_RELAY_ORIGIN_MISSING: 'relayOriginMissing'
+  MSTEAMS_RELAY_ORIGIN_MISSING: 'relayOriginMissing',
+  MSTEAMS_DEPLOYMENT_APP: 'deploymentApp',
+  MSTEAMS_CONNECT_NO_AGENT: 'connectNoAgent',
+  MSTEAMS_CONNECT_UNAVAILABLE: 'connectUnavailable'
 } as const
 
 export type MsTeamsErrorKey = (typeof MSTEAMS_ERROR_KEYS)[keyof typeof MSTEAMS_ERROR_KEYS] | 'appTaken'
