@@ -14,9 +14,11 @@
 <p align="center">
   <sub><strong>FROM</strong>&nbsp;&nbsp;
   <a href="https://slack.com"><img src="https://api.iconify.design/logos/slack-icon.svg" width="16" height="16" alt="Slack" title="Slack" /></a>&nbsp;&nbsp;
+  <a href="https://www.microsoft.com/microsoft-teams"><img src="https://api.iconify.design/thesvg-color/microsoft-teams.svg" width="16" height="16" alt="Microsoft Teams" title="Microsoft Teams" /></a>&nbsp;&nbsp;
   <a href="https://telegram.org"><img src="https://cdn.simpleicons.org/telegram" width="16" height="16" alt="Telegram" title="Telegram" /></a>&nbsp;&nbsp;
   <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
   <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
+  <a href="https://www.dingtalk.com"><img src="https://api.iconify.design/ant-design/dingtalk-circle-filled.svg?color=%23007FFF" width="16" height="16" alt="DingTalk" title="DingTalk" /></a>&nbsp;&nbsp;
   <a href="https://workspace.google.com/products/chat/"><img src="https://api.iconify.design/thesvg-color/google-chat-2026.svg" width="16" height="16" alt="Google Chat" title="Google Chat" /></a>&nbsp;&nbsp;
   <a href="https://im.qq.com"><img src="packages/web/public/brands/qq.svg" width="16" height="16" alt="QQ" title="QQ" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
