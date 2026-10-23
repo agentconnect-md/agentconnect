@@ -225,6 +225,23 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           if (held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)) {
             return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
           }
+
+          // Publishing without review is an administrator's act, so it proves the authority the claim needs before anything is written.
+          const manifest = msTeamsManifest({
+            appId: live.app.appId,
+            relayHost: new URL(relayBase).host,
+            agentName: target.displayName ?? target.name,
+            accentColor: agentIconBackgroundColor(target.icon),
+            nowMs: deps.clock.now()
+          })
+          const zip = msTeamsAppPackage(manifest, await msTeamsAppIcons(target, deps.iconStore))
+          const catalogAppId = await publishMsTeamsPackage(
+            fetchImpl,
+            accessToken,
+            msTeamsPackageId(live.app.appId),
+            zip
+          )
+
           let integrationId: string
           if (!held) {
             try {
@@ -278,21 +295,6 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             integrationId = admission.integration.id
           }
 
-          // The package names the agent, so a reconnect for a renamed agent updates the catalog app.
-          const manifest = msTeamsManifest({
-            appId: live.app.appId,
-            relayHost: new URL(relayBase).host,
-            agentName: target.displayName ?? target.name,
-            accentColor: agentIconBackgroundColor(target.icon),
-            nowMs: deps.clock.now()
-          })
-          const zip = msTeamsAppPackage(manifest, await msTeamsAppIcons(target, deps.iconStore))
-          const catalogAppId = await publishMsTeamsPackage(
-            fetchImpl,
-            accessToken,
-            msTeamsPackageId(live.app.appId),
-            zip
-          )
           const teams = await listMsTeamsTeams(fetchImpl, accessToken)
           return {
             integrationId,

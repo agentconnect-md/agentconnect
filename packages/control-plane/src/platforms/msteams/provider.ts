@@ -212,9 +212,16 @@ export function createMsTeamsCpProvider(
     }),
 
     // The relay picks the row by (app ID, tenant ID), so the tenant is the row's key rather than metadata.
+    // A deployment app's customer row also keeps its home tenant, which issues its tokens (§8.2).
     projectBotIdentity: (input) => {
       const tenantId = input.platformConfig?.tenantId
-      return input.externalAppId && tenantId ? { externalAppId: input.externalAppId, externalTenantId: tenantId } : {}
+      const tokenTenantId = input.platformConfig?.tokenTenantId
+      if (!input.externalAppId || !tenantId) return {}
+      return {
+        externalAppId: input.externalAppId,
+        externalTenantId: tenantId,
+        ...(tokenTenantId ? { platformConfig: { tokenTenantId } } : {})
+      }
     },
 
     secretShape: {

@@ -112,6 +112,13 @@ describe('Teams installation', () => {
       externalTenantId: TENANT_ID
     })
     expect(project({ externalAppId: APP_ID } as CreateBotInput)).toEqual({})
+    const HOME = '66666666-6666-4666-8666-666666666666'
+    expect(
+      project({
+        externalAppId: APP_ID,
+        platformConfig: { tenantId: TENANT_ID, tokenTenantId: HOME }
+      } as unknown as CreateBotInput)
+    ).toEqual({ externalAppId: APP_ID, externalTenantId: TENANT_ID, platformConfig: { tokenTenantId: HOME } })
   })
 
   it('assigns the relay the app, the tenant and the bot mention identity only', async () => {

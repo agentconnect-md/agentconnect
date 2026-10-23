@@ -33,15 +33,24 @@ afterEach(async () => {
   running = undefined
 })
 
-async function harness(opts: { held?: Partial<BotRecord>; app?: MsTeamsPlatformApp | null; tid?: string } = {}) {
+async function harness(
+  opts: { held?: Partial<BotRecord>; app?: MsTeamsPlatformApp | null; tid?: string; publish?: number } = {}
+) {
   const graph: { method: string; url: string; body?: unknown }[] = []
+  // Every write in the order it ran, Graph and repository alike.
+  const order: string[] = []
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.endsWith('/oauth2/v2.0/token'))
       return Response.json({ access_token: 'delegated', id_token: idToken(opts.tid ?? CUSTOMER) })
     graph.push({ method: init?.method ?? 'GET', url, body: init?.body })
     if (url.includes('$filter')) return Response.json({ value: [] })
-    if (url.includes('/appCatalogs/teamsApps')) return Response.json({ id: 'catalog-1' }, { status: 201 })
+    if (url.includes('/appCatalogs/teamsApps')) {
+      order.push('publish')
+      return opts.publish
+        ? new Response(null, { status: opts.publish })
+        : Response.json({ id: 'catalog-1' }, { status: 201 })
+    }
     if (url.includes('/me/joinedTeams')) return Response.json({ value: [{ id: 'team-1', displayName: 'Engineering' }] })
     if (url.includes('/installedApps')) return new Response(null, { status: 201 })
     throw new Error(`unexpected request to ${url}`)
@@ -49,10 +58,16 @@ async function harness(opts: { held?: Partial<BotRecord>; app?: MsTeamsPlatformA
   const held = opts.held
     ? ({ id: BOT, orgId: ORG, name: 'Microsoft Teams', agentIds: [], ...opts.held } as BotRecord)
     : null
-  const create = vi.fn(async (input: Record<string, unknown>) => ({ ...input, agentIds: [] }) as unknown as BotRecord)
+  const create = vi.fn(async (input: Record<string, unknown>) => {
+    order.push('create')
+    return { ...input, agentIds: [] } as unknown as BotRecord
+  })
   const put = vi.fn(async () => {})
   const integrationCreate = vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'active' }))
-  const addBotMembership = vi.fn(async (input: Record<string, unknown>) => ({ outcome: 'added', integration: input }))
+  const addBotMembership = vi.fn(async (input: Record<string, unknown>) => {
+    order.push('membership')
+    return { outcome: 'added', integration: input }
+  })
   const credentialInstall = vi.fn(async () => 2)
   const syncBot = vi.fn(async () => {})
   const deps = {
@@ -98,7 +113,19 @@ async function harness(opts: { held?: Partial<BotRecord>; app?: MsTeamsPlatformA
     mintMsTeamsConnectState(keys, { orgId: ORG, agentId: AGENT, userId: 'user-1', ...over }, clock)
   const callback = (raw = state()) =>
     app.inject({ method: 'POST', url: '/integrations/msteams/connect/callback', payload: { code: 'c', state: raw } })
-  return { app, graph, create, put, integrationCreate, addBotMembership, credentialInstall, syncBot, callback, state }
+  return {
+    app,
+    graph,
+    order,
+    create,
+    put,
+    integrationCreate,
+    addBotMembership,
+    credentialInstall,
+    syncBot,
+    callback,
+    state
+  }
 }
 
 describe('the deployment Teams app routes', () => {
@@ -158,6 +185,19 @@ describe('the deployment Teams app routes', () => {
     })
     expect(install.json()).toEqual({ installed: 1 })
     expect(h.graph.at(-1)?.url).toBe('https://graph.microsoft.com/v1.0/teams/team-1/installedApps')
+  })
+
+  it('claims the tenant only after the administrator-only catalog publish succeeds', async () => {
+    const ok = await harness()
+    await ok.callback()
+    expect(ok.order).toEqual(['publish', 'create'])
+    for (const held of [undefined, {}]) {
+      const refused = await harness({ publish: 403, ...(held ? { held } : {}) })
+      expect((await refused.callback()).json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NOT_ADMIN' })
+      expect(refused.order).toEqual(['publish'])
+      expect(refused.syncBot).not.toHaveBeenCalled()
+      expect(refused.credentialInstall).not.toHaveBeenCalled()
+    }
   })
 
   it('refuses a state for another organization or caller, or a forged one', async () => {
