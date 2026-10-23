@@ -1,12 +1,12 @@
 // DingTalk OpenAPI calls the daemon makes: the access token, the Stream ticket and robot sends (dingtalk-integration.md §3, §4.2).
+import type { DingTalkEdition } from '@agentconnect.md/protocol'
 import { splitMarkdownByBytes } from '../../messages/split-markdown-bytes.js'
 
 /** DingTalk's two editions run separate OpenAPI hosts, and an app's credentials work on its own edition's only (dingtalk-integration.md §2.1). */
 export const DINGTALK_ORIGINS = {
   mainland: { api: 'https://api.dingtalk.com', oapi: 'https://oapi.dingtalk.com' },
   international: { api: 'https://api.dingtalk.io', oapi: 'https://oapi.dingtalk.io' }
-} as const
-export type DingTalkEdition = keyof typeof DINGTALK_ORIGINS
+} as const satisfies Record<DingTalkEdition, { api: string; oapi: string }>
 export const DINGTALK_ROBOT_TOPIC = '/v1.0/im/bot/messages/get'
 /** The Stream topic a tap on an interactive card calls back on (§4.6). */
 export const DINGTALK_CARD_CALLBACK_TOPIC = '/v1.0/card/instances/callback'
@@ -20,6 +20,8 @@ const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000
 export interface DingTalkCredentials {
   clientId: string
   clientSecret: string
+  /** The app's edition, which picks its hosts; mainland when absent. */
+  edition?: DingTalkEdition
 }
 
 /** Where a robot send goes: a group by its `openConversationId`, a DM by the member's staff id. */
@@ -93,22 +95,17 @@ export interface DingTalkApiOptions {
   signal?: AbortSignal
 }
 
-const TOKEN_PATH = '/v1.0/oauth2/accessToken'
-type TokenResult = { accessToken?: unknown; expireIn?: unknown }
-
 export class DingTalkApi {
   private token?: { value: string; expiresAt: number }
   private tokenRequest?: Promise<string>
-  private detected?: DingTalkEdition
 
   constructor(
     private readonly credentials: DingTalkCredentials,
     private readonly options: DingTalkApiOptions = {}
   ) {}
 
-  /** The app's edition, known once a token exchange succeeded; mainland until then. */
   get edition(): DingTalkEdition {
-    return this.detected ?? 'mainland'
+    return this.credentials.edition ?? 'mainland'
   }
 
   get origin(): string {
@@ -138,12 +135,11 @@ export class DingTalkApi {
     method: 'POST' | 'PUT',
     path: string,
     body: unknown,
-    headers: Record<string, string> = {},
-    origin = this.origin
+    headers: Record<string, string> = {}
   ): Promise<T> {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     const signal = this.options.signal ? AbortSignal.any([this.options.signal, timeout]) : timeout
-    const response = await (this.options.fetchImpl ?? fetch)(`${origin}${path}`, {
+    const response = await (this.options.fetchImpl ?? fetch)(`${this.origin}${path}`, {
       method,
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
@@ -168,9 +164,13 @@ export class DingTalkApi {
   accessToken(): Promise<string> {
     if (this.token && this.token.expiresAt - TOKEN_REFRESH_MARGIN_MS > this.now())
       return Promise.resolve(this.token.value)
-    this.tokenRequest ??= this.exchangeToken()
+    this.tokenRequest ??= this.post<{ accessToken?: unknown; expireIn?: unknown }>('/v1.0/oauth2/accessToken', {
+      appKey: this.credentials.clientId,
+      appSecret: this.credentials.clientSecret
+    })
       .then((result) => {
-        if (typeof result.accessToken !== 'string' || !result.accessToken) throw new DingTalkApiError(TOKEN_PATH, 200)
+        if (typeof result.accessToken !== 'string' || !result.accessToken)
+          throw new DingTalkApiError('/v1.0/oauth2/accessToken', 200)
         const lifetimeS = typeof result.expireIn === 'number' && result.expireIn > 0 ? result.expireIn : 7200
         this.token = { value: result.accessToken, expiresAt: this.now() + lifetimeS * 1000 }
         return result.accessToken
@@ -181,27 +181,9 @@ export class DingTalkApi {
     return this.tokenRequest
   }
 
-  // The first exchange tries the mainland host, then the international one when the mainland refuses the credentials.
-  private async exchangeToken(): Promise<TokenResult> {
-    const body = { appKey: this.credentials.clientId, appSecret: this.credentials.clientSecret }
-    if (this.options.origin || this.detected) return await this.post<TokenResult>(TOKEN_PATH, body)
-    try {
-      const result = await this.request<TokenResult>('POST', TOKEN_PATH, body, {}, DINGTALK_ORIGINS.mainland.api)
-      this.detected = 'mainland'
-      return result
-    } catch (error) {
-      if (!(error instanceof DingTalkApiError) || error.code !== 'invalidClientIdOrSecret') throw error
-      const result = await this.request<TokenResult>('POST', TOKEN_PATH, body, {}, DINGTALK_ORIGINS.international.api)
-      this.detected = 'international'
-      return result
-    }
-  }
-
   /** A Stream endpoint and its single-use ticket, valid for 90 seconds. */
   async openStream(): Promise<{ endpoint: string; ticket: string }> {
     const path = '/v1.0/gateway/connections/open'
-    // The gateway is on the edition's own host, which the first token exchange finds.
-    if (!this.options.origin && !this.detected) await this.accessToken()
     const result = await this.post<{ endpoint?: unknown; ticket?: unknown }>(path, {
       clientId: this.credentials.clientId,
       clientSecret: this.credentials.clientSecret,

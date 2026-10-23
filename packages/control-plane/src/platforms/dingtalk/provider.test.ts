@@ -5,42 +5,56 @@ import { buildCpPlatformRegistry } from '../registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import type { BotRecord, IntegrationRecord } from '../../persistence/ports.js'
 
-const credentials = { clientId: 'dingexampleclient', clientSecret: 'example-secret' }
+const credentials = { clientId: 'dingexampleclient', clientSecret: 'example-secret', edition: 'mainland' as const }
 const respond = (status: number, body: unknown) =>
   vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json(body, { status }))
+// Each edition's token endpoint accepts only its own apps, as DingTalk answers a foreign app's credentials.
+const homeOn = (home: 'mainland' | 'international', foreign = 400) =>
+  vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+    String(input) === DINGTALK_TOKEN_URLS[home]
+      ? Response.json({ accessToken: 'example-token', expireIn: 7200 })
+      : Response.json({ code: 'invalidClientIdOrSecret', message: 'invalid' }, { status: foreign })
+  )
 
 describe('DingTalk credential check', () => {
-  it('exchanges the Client ID and Secret for an access token at the mainland API', async () => {
+  it('exchanges the Client ID and Secret for an access token at the chosen edition', async () => {
     const fetchImpl = respond(200, { accessToken: 'example-token', expireIn: 7200 })
     const result = await verifyDingTalkApp(credentials, fetchImpl)
     expect(result).toEqual({
       ok: true,
-      identity: { name: 'DingTalk · dingexampleclient', externalAppId: 'dingexampleclient' }
+      identity: {
+        name: 'DingTalk · dingexampleclient',
+        externalAppId: 'dingexampleclient',
+        platformConfig: { edition: 'mainland' }
+      }
     })
     expect(fetchImpl).toHaveBeenCalledOnce()
     const [url, init] = fetchImpl.mock.calls[0]!
-    expect(url).toBe(DINGTALK_TOKEN_URLS[0])
+    expect(url).toBe(DINGTALK_TOKEN_URLS.mainland)
     expect(init?.method).toBe('POST')
     expect(JSON.parse(String(init?.body))).toEqual({ appKey: 'dingexampleclient', appSecret: 'example-secret' })
   })
 
-  it('accepts an international app the mainland API refuses', async () => {
-    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
-      String(input) === DINGTALK_TOKEN_URLS[1]
-        ? Response.json({ accessToken: 'example-token', expireIn: 7200 })
-        : Response.json({ code: 'invalidClientIdOrSecret', message: 'invalid' }, { status: 400 })
-    )
-    expect(await verifyDingTalkApp(credentials, fetchImpl)).toMatchObject({ ok: true })
-    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([...DINGTALK_TOKEN_URLS])
+  it('checks an international app at the international API only', async () => {
+    const fetchImpl = homeOn('international')
+    expect(await verifyDingTalkApp({ ...credentials, edition: 'international' }, fetchImpl)).toMatchObject({
+      ok: true,
+      identity: { platformConfig: { edition: 'international' } }
+    })
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([DINGTALK_TOKEN_URLS.international])
   })
 
-  it('cannot decide while the international API is unreachable', async () => {
-    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
-      String(input) === DINGTALK_TOKEN_URLS[1]
-        ? Response.json({}, { status: 503 })
-        : Response.json({ code: 'invalidClientIdOrSecret', message: 'invalid' }, { status: 400 })
-    )
-    expect(await verifyDingTalkApp(credentials, fetchImpl)).toMatchObject({ ok: false, status: 503 })
+  it('names the other edition when the app belongs to it', async () => {
+    expect(await verifyDingTalkApp(credentials, homeOn('international'))).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 'DINGTALK_APP_IS_INTERNATIONAL'
+    })
+    expect(await verifyDingTalkApp({ ...credentials, edition: 'international' }, homeOn('mainland'))).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 'DINGTALK_APP_IS_MAINLAND'
+    })
   })
 
   it('names rejected credentials apart from an unreachable service', async () => {
@@ -83,6 +97,7 @@ describe('DingTalk installation', () => {
     expect(install.secrets).toEqual({ botToken: 'example-secret', appToken: 'dingexampleclient', signingSecret: null })
     expect(install.externalIdentity).toMatchObject({ externalAppId: 'dingexampleclient', externalTenantId: '-' })
     expect(JSON.stringify(install.bot)).not.toContain('example-secret')
+    expect(install.bot?.platformConfig).toEqual({ edition: 'mainland' })
   })
 
   it('has no relay path and stores the app id under the tenantless sentinel', () => {
@@ -93,19 +108,28 @@ describe('DingTalk installation', () => {
       externalAppId: 'dingexampleclient',
       externalTenantId: '-'
     })
+    expect(
+      provider.projectBotIdentity?.({
+        externalAppId: 'dingexampleclient',
+        platformConfig: { edition: 'international' }
+      } as never)
+    ).toMatchObject({ platformConfig: { edition: 'international' } })
   })
 
-  it('projects the integration config the daemon reads', async () => {
-    const config = await createDingTalkCpProvider().projectIntegrationConfig(
-      {} as IntegrationRecord,
-      { externalAppId: 'dingexampleclient' } as BotRecord,
-      {} as IntegrationCoreEnvelope,
-      { botToken: 'example-secret', appToken: 'dingexampleclient', signingSecret: null }
-    )
-    expect(IntegrationDingTalkConfig.parse(config)).toEqual({
+  it('projects the integration config the daemon reads, with the bot edition', async () => {
+    const project = (bot: Partial<BotRecord>) =>
+      createDingTalkCpProvider().projectIntegrationConfig(
+        {} as IntegrationRecord,
+        { externalAppId: 'dingexampleclient', ...bot } as BotRecord,
+        {} as IntegrationCoreEnvelope,
+        { botToken: 'example-secret', appToken: 'dingexampleclient', signingSecret: null }
+      )
+    expect(IntegrationDingTalkConfig.parse(await project({ platformConfig: null }))).toEqual({
       clientId: 'dingexampleclient',
-      clientSecret: 'example-secret'
+      clientSecret: 'example-secret',
+      edition: 'mainland'
     })
+    expect(await project({ platformConfig: { edition: 'international' } })).toMatchObject({ edition: 'international' })
   })
 
   it('exposes the credential block through the actual create schema', () => {

@@ -9,7 +9,7 @@ import { denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { toBotDto } from '../../http/routes/bots.js'
 import { pushBotConfig } from '../../http/bot-config-push.js'
 import { BotId } from '../../domain/ids.js'
-import { DingTalkCreateCredentials, verifyDingTalkApp } from './provider.js'
+import { DingTalkCreateCredentials, dingTalkEditionOf, verifyDingTalkApp } from './provider.js'
 
 const ReplaceDingTalkSecretBody = DingTalkCreateCredentials.pick({ clientSecret: true })
 
@@ -35,7 +35,11 @@ export function dingTalkCredentialRoutes(deps: HttpDeps, fetchImpl: typeof fetch
         if (!bot || bot.platform !== DINGTALK_PLATFORM || !bot.externalAppId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'DingTalk bot not found.' })
         }
-        const credentials = { clientId: bot.externalAppId, clientSecret: req.body.clientSecret }
+        const credentials = {
+          clientId: bot.externalAppId,
+          clientSecret: req.body.clientSecret,
+          edition: dingTalkEditionOf(bot)
+        }
         const checked = await verifyDingTalkApp(credentials, fetchImpl)
         if (!checked.ok) {
           return reply.code(checked.status).send({

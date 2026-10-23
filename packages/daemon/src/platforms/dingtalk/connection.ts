@@ -1,6 +1,7 @@
 // One DingTalk internal app's daemon connection: the Stream client, robot sends, and what it observed (dingtalk-integration.md §3, §4).
 import { createHash, randomUUID } from 'node:crypto'
 import { normalizeDingTalkMessage, type DingTalkRobotMessage } from '@agentconnect.md/message'
+import type { DingTalkEdition } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../../agents/load-agents.js'
 import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
@@ -41,12 +42,13 @@ import {
 export interface DingTalkConnectionGroup {
   clientId: string
   clientSecret: string
+  edition: DingTalkEdition
   integrations: { agentId: string; integrationId: string }[]
 }
 
-export function dingTalkConnKey(group: Pick<DingTalkConnectionGroup, 'clientId' | 'clientSecret'>): string {
+export function dingTalkConnKey(group: Pick<DingTalkConnectionGroup, 'clientId' | 'clientSecret' | 'edition'>): string {
   return createHash('sha256')
-    .update(JSON.stringify([group.clientId, group.clientSecret]))
+    .update(JSON.stringify([group.clientId, group.clientSecret, group.edition]))
     .digest('hex')
 }
 
@@ -61,6 +63,7 @@ export function consolidateDingTalk(agents: LoadedAgent[]): Map<string, DingTalk
       const group = groups.get(key) ?? {
         clientId: config.clientId,
         clientSecret: config.clientSecret,
+        edition: config.edition,
         integrations: []
       }
       group.integrations.push({ agentId: agent.id, integrationId: integration.id })
@@ -133,7 +136,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (deps.origin) apiOptions.origin = deps.origin
     this.api = new DingTalkApi(group, apiOptions)
     this.reactions = new DingTalkReactionClient(this.api, group.clientId, deps.log)
-    if (deps.questionTemplate)
+    // The international edition offers no card permission, so its questions are the numbered text card (§2.1).
+    if (deps.questionTemplate && group.edition === 'mainland')
       this.cards = new DingTalkCardClient(this.api, group.clientId, deps.questionTemplate, deps.log)
     const api = this.api
     this.media = {

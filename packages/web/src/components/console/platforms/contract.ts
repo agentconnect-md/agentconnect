@@ -68,7 +68,7 @@
  * The daemon's S2 manifest (`packages/daemon/src/platforms/manifest.ts`) is
  * deliberately daemon-local; the shared §5 manifest lands in protocol with the
  * web registry, and until then the host literals keep carrying those values
- * (`BOT_PLATFORMS` labels :94-105, `LarkFeishuSwitcher`, `platName`'s chat
+ * (`BOT_PLATFORMS` labels :94-105, `platName`'s chat
  * arms data.ts:1923-1939, the region badge AgentDetailView.tsx:113-121).
  * Where §10's sketch ALREADY mirrors a manifest axis onto the module —
  * `affordances.transport`/`affordances.share` — the mirror is kept, because
@@ -380,6 +380,16 @@ export interface WebWizardFacet {
    * would put English in the row for every locale.
    */
   inviteHint(region: string | undefined): InviteHint
+  /** The platform's regional clouds, when it has more than one; absent on a regionless platform. */
+  regions?: WebWizardRegions
+}
+
+/** A platform's region axis: its tile carries the switch and the host holds the pick, as {@link WizardHost.region}. */
+export interface WebWizardRegions {
+  /** The region a new install starts on, from the console's locale. */
+  initial(locale: string): string
+  /** The tile's label with the region switch; the host renders it on the tile, and below the grid where tiles are icon-only. */
+  Switcher: ComponentType<{ value: string; onSwitch(next: string): void; disabled: boolean }>
 }
 
 /**

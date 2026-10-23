@@ -70,7 +70,7 @@ function connect(
 ) {
   const sockets = fakeSocketFactory()
   const conn = new DingTalkConnection(
-    { clientId: CLIENT_ID, clientSecret: 'client-secret-example', integrations: [] },
+    { clientId: CLIENT_ID, clientSecret: 'client-secret-example', edition: 'mainland', integrations: [] },
     { log, onMessage, fetchImpl, origin: ORIGIN, createSocket: (url) => sockets.createSocket(url), ...extra }
   )
   connections.push(conn)

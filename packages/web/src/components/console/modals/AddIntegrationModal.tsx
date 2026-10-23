@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
+import type { LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { ApiProtocolMark, GithubMark, LoadingState, MarkSlot, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AgentPicker } from '@/components/console/AgentPicker'
@@ -490,9 +490,11 @@ export default function AddIntegrationModal({
   } = useConsoleData()
   const { me } = useProfile()
   const [platform, setPlatform] = useState<Platform>(initialPlatform ?? 'slack')
-  // Lark/Feishu gateway: new installs default to international Lark. Host state
-  // because the PICKER TILE hosts the switcher and callers preselect it.
-  const [feishuRegion, setFeishuRegion] = useState<FeishuRegion>(initialFeishuRegion ?? 'lark')
+  // Each regional platform's pick, host state because its PICKER TILE hosts the switch and callers preselect Feishu's.
+  const [regionPicks, setRegionPicks] = useState<Record<string, string>>(
+    initialFeishuRegion ? { feishu: initialFeishuRegion } : {}
+  )
+  const locale = useLocale()
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // Synchronous re-entry guard for the chassis's own async actions (webhook,
@@ -749,9 +751,12 @@ export default function AddIntegrationModal({
   // The active platform module — undefined for the core trigger sections.
   const activeModule = platformRegistry.get(platform)
   const wizard = activeModule?.wizard
-  // §5 `regions` is manifest data the web module deliberately does not carry
-  // (contract D2), so the chassis keeps the one platform with regional clouds.
-  const region = platform === 'feishu' ? feishuRegion : undefined
+  // A platform's region: the member's pick, else where its module starts a new install.
+  const regionOf = (candidate: Platform): string | undefined => {
+    const regions = platformRegistry.get(candidate)?.wizard?.regions
+    return regions ? (regionPicks[candidate] ?? regions.initial(locale)) : undefined
+  }
+  const region = regionOf(platform)
 
   // Switching platform resets the shared bot-identity axes. The platform's OWN
   // sub-form needs no reset list any more: a different platform is a different
@@ -1502,18 +1507,25 @@ export default function AddIntegrationModal({
                 hidden: footerView?.hidden === true
               }
 
-  // Rendered inside the Lark tile on desktop and below the grid on mobile, where tiles are icon-only.
-  const feishuSwitcher = (
-    <LarkFeishuSwitcher
-      value={feishuRegion}
-      // A pending registration locks the region so the picker cannot relabel its cloud.
-      disabled={!isPlatformAvailable('feishu') || !!createdHook || regionLocked}
-      onSwitch={(next) => {
-        if (platform !== 'feishu') pickPlatform('feishu')
-        setFeishuRegion(next)
-      }}
-    />
-  )
+  // Rendered inside a regional platform's tile on desktop and below the grid on mobile, where tiles are icon-only.
+  const regionSwitcher = (candidate: Platform) => {
+    const regions = platformRegistry.get(candidate)?.wizard?.regions
+    const value = regionOf(candidate)
+    if (!regions || value === undefined) return null
+    const Switcher = regions.Switcher
+    return (
+      <Switcher
+        value={value}
+        // A pending registration locks the region so the picker cannot relabel its cloud.
+        disabled={!isPlatformAvailable(candidate) || !!createdHook || regionLocked}
+        onSwitch={(next) => {
+          if (platform !== candidate) pickPlatform(candidate)
+          setRegionPicks((picks) => ({ ...picks, [candidate]: next }))
+        }}
+      />
+    )
+  }
+  const activeRegionSwitcher = regionSwitcher(platform)
 
   return (
     <>
@@ -1561,9 +1573,9 @@ export default function AddIntegrationModal({
                     <PlatformMark platform={candidate.key} fillPct={100} />
                   </span>
                   {/* Mobile tiles are icon-only; the name stays for screen readers. */}
-                  {candidate.key === 'feishu' ? (
+                  {regionSwitcher(candidate.key) ? (
                     <>
-                      <span className="max-desktop:hidden">{feishuSwitcher}</span>
+                      <span className="max-desktop:hidden">{regionSwitcher(candidate.key)}</span>
                       <span className="sr-only desktop:hidden">{candidate.label}</span>
                     </>
                   ) : (
@@ -1575,7 +1587,7 @@ export default function AddIntegrationModal({
               )
             }}
           />
-          {platform === 'feishu' && <div className="mt-2 desktop:hidden">{feishuSwitcher}</div>}
+          {activeRegionSwitcher && <div className="mt-2 desktop:hidden">{activeRegionSwitcher}</div>}
         </div>
         {platform === 'webhook' && !createdHook && (
           <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">

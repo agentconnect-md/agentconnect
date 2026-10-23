@@ -178,7 +178,9 @@ interface PlatformManifest {
   // shared Bot rows — but region changes display name, help copy, portal
   // hosts, and bot-reuse eligibility. Recorded per bot/integration
   // (Bot.feishuRegion precedent). Any platform with regional clouds reuses
-  // this axis instead of forking the platform id.
+  // this axis instead of forking the platform id. Until this manifest lands,
+  // the web module carries the tile switch (`wizard.regions`; Lark / Feishu,
+  // DingTalk) and the host holds the pick per platform.
   regions?: { id: string; displayName: string; portalBaseUrl: string }[]
 
   // ---- pre-dispatch capabilities (the D2 rule: core reads these BEFORE a
