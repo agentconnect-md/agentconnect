@@ -1797,6 +1797,41 @@ describe('github ingress', () => {
       }
     )
 
+    it.each(['opened', 'synchronize'] as const)(
+      "publishes the manual-request Check for another bot's PR %s without authorizing the bot",
+      async (action) => {
+        h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+        h.authzResult = true
+        const pullRequest = pullPayload().pull_request as Record<string, unknown>
+        const dependencyBot = { login: 'dependabot[bot]', type: 'Bot' }
+
+        await post(
+          'pull_request',
+          pullPayload({
+            action,
+            sender: dependencyBot,
+            pull_request: {
+              ...pullRequest,
+              user: dependencyBot,
+              head: { sha: 'a'.repeat(40), repo: { full_name: 'acme/infra' } },
+              base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+            }
+          })
+        )
+        await flush()
+
+        expect(h.authzRequests).toHaveLength(0)
+        expect(h.sent).toHaveLength(0)
+        expect(h.reports).toEqual([
+          expect.objectContaining({
+            event: `pull_request:${action}`,
+            status: 'failed',
+            reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED
+          })
+        ])
+      }
+    )
+
     it('keeps an App-authored fork PR behind the workflow-approval marker', async () => {
       h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
       h.authzResult = false
@@ -3749,8 +3784,16 @@ describe('githubRuleVerdict (pure predicate)', () => {
       'needs-authz'
     )
     expect(githubRuleVerdict(r, { ...appPr, senderType: 'Bot', subjectAuthorLogin: 'dependabot[bot]' })).toBe(
-      'no-match'
+      'needs-authz'
     )
+    expect(
+      githubRuleVerdict(r, {
+        ...appPr,
+        senderType: 'Bot',
+        subjectAuthorLogin: 'dependabot[bot]',
+        eventAction: 'pull_request:labeled'
+      })
+    ).toBe('no-match')
   })
 
   it('admits a bot label only when it is the applied label of a filtered rule', () => {

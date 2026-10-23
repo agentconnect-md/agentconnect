@@ -2311,7 +2311,9 @@ Mention routing does not bypass the integration's event family, label filter,
 installation attribution, or live maintainer authorization. Bot-sender veto still
 applies to comments and review comments. A revision-bearing PR event authored by the
 installed App is admitted as a lifecycle event: same-repository PRs follow the internal
-CI review lane, while fork PRs wait for workflow approval. A targeted agent
+CI review lane, while fork PRs wait for workflow approval. Another bot's revision-bearing
+PR event never starts a review on its own: it leaves the manual-request Check, so a
+maintainer starts the review with one click instead of finding nothing on the PR. A targeted agent
 mention narrows an otherwise broader `updated` fan-out, while an event with no
 AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention

@@ -989,7 +989,9 @@ without the relay, while a webhook always requires a public ingress process.
 - Repository matching uses numeric IDs.
 - Installation membership comes from CP-owned records.
 - Bot senders never trigger GitHub hooks, except for the listed lifecycle,
-  deployment, release and filtered-label exceptions.
+  deployment, release and filtered-label exceptions. Another bot's PR revision
+  (a dependency update, say) never fires and its author is never authorized;
+  it only publishes the manual-request Check, so a maintainer can start the review.
 - Issue/PR actors pass live repository-role checks; payload associations never authorize.
 - External Issues and pull requests require an explicit maintainer request.
 - Event bodies remain relay-to-daemon only.
