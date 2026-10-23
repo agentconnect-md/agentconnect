@@ -19,10 +19,14 @@ export const MSTEAMS_DEVELOPER = {
   termsOfUseUrl: 'https://www.agentconnect.md/terms/'
 } as const
 
-// The RSC grants that deliver every message in a team's channels and a group chat, without a mention (§4.1).
+// The RSC grants: every message without a mention, channel names and members, and a meeting's details and transcripts (§4.1).
 export const MSTEAMS_RSC_PERMISSIONS = [
   { name: 'ChannelMessage.Read.Group', type: 'Application' },
-  { name: 'ChatMessage.Read.Chat', type: 'Application' }
+  { name: 'ChatMessage.Read.Chat', type: 'Application' },
+  { name: 'ChannelSettings.Read.Group', type: 'Application' },
+  { name: 'ChannelMember.Read.Group', type: 'Application' },
+  { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+  { name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }
 ] as const
 
 // The UUIDv5 namespace of package IDs; changing it would turn every re-download into a new Teams app.
