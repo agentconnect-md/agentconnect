@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
 import { DINGTALK_PLATFORM, DingTalkEdition, type IntegrationDingTalkConfig } from '@agentconnect.md/protocol'
 import { TENANTLESS_SENTINEL, type BotRecord } from '../../persistence/ports.js'
-import type { CpConfigRefusal, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
+import type { CpConfigRefusal, CpPlatformProvider, CpTenantName, CpValidatedIdentity } from '../provider.js'
 
 // Each edition runs its own OpenAPI host, and an app's credentials work on its edition's only (§2.1).
 export const DINGTALK_TOKEN_URLS: Record<DingTalkEdition, string> = {
@@ -20,6 +20,16 @@ export const DingTalkCreateCredentials = z.object({
   edition: DingTalkEdition.default('mainland')
 })
 export type DingTalkCreateCredentials = z.infer<typeof DingTalkCreateCredentials>
+
+const DINGTALK_API_ORIGINS: Record<DingTalkEdition, string> = {
+  mainland: 'https://api.dingtalk.com',
+  international: 'https://api.dingtalk.io'
+}
+
+/** The integration name a connect gives before the organization is known. */
+export function dingTalkPlaceholderName(clientId: string): string {
+  return `DingTalk · ${clientId}`
+}
 
 /** The edition a bot was installed on; rows from before the edition switch are mainland. */
 export function dingTalkEditionOf(bot: Pick<BotRecord, 'platformConfig'>): DingTalkEdition {
@@ -38,7 +48,7 @@ export async function verifyDingTalkApp(
     return {
       ok: true,
       identity: {
-        name: `DingTalk · ${credentials.clientId}`,
+        name: dingTalkPlaceholderName(credentials.clientId),
         externalAppId: credentials.clientId,
         platformConfig: { edition: credentials.edition }
       }
@@ -82,6 +92,35 @@ async function exchange(
     return response.ok && typeof data.accessToken === 'string' && data.accessToken ? 'ok' : 'refused'
   } catch {
     return 'unavailable'
+  }
+}
+
+/** The organization's name through `Contact.Org.Read` (§2.2); null when the app lacks it or DingTalk answers none. */
+export async function readDingTalkOrgName(
+  credentials: Omit<DingTalkCreateCredentials, 'edition'>,
+  edition: DingTalkEdition,
+  corpId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string | null> {
+  const origin = DINGTALK_API_ORIGINS[edition]
+  try {
+    const tokenResponse = await fetchImpl(`${origin}/v1.0/oauth2/accessToken`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appKey: credentials.clientId, appSecret: credentials.clientSecret }),
+      signal: AbortSignal.timeout(10_000)
+    })
+    const { accessToken } = (await tokenResponse.json()) as { accessToken?: unknown }
+    if (!tokenResponse.ok || typeof accessToken !== 'string' || !accessToken) return null
+    const query = new URLSearchParams({ targetCorpId: corpId })
+    const response = await fetchImpl(`${origin}/v1.0/contact/organizations/authInfos?${query}`, {
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      signal: AbortSignal.timeout(10_000)
+    })
+    const { orgName } = (await response.json()) as { orgName?: unknown }
+    return response.ok && typeof orgName === 'string' && orgName.trim() ? orgName.trim().slice(0, 200) : null
+  } catch {
+    return null
   }
 }
 
@@ -132,6 +171,25 @@ export function createDingTalkCpProvider(
     secretShape: {
       slots: { botToken: 'DingTalk Client Secret', appToken: 'DingTalk Client ID (identifier, not a secret)' },
       httpAssignRequires: []
+    },
+    socketTenant: {
+      // A socket names its app by Client ID, which is the bot's only identity (§2).
+      matches: (bot, botUserId) => bot.externalAppId === botUserId,
+      async name(bot, secrets, corpId): Promise<CpTenantName | null> {
+        const clientId = secrets.appToken ?? bot.externalAppId
+        if (!clientId) return null
+        const orgName = await readDingTalkOrgName(
+          { clientId, clientSecret: secrets.botToken },
+          dingTalkEditionOf(bot),
+          corpId,
+          fetchImpl
+        )
+        if (!orgName) return null
+        return {
+          workspaceName: orgName,
+          integrationName: { placeholder: dingTalkPlaceholderName(clientId), name: `DingTalk · ${orgName}` }
+        }
+      }
     },
     async projectIntegrationConfig(_integration, bot, _core, secrets): Promise<IntegrationDingTalkConfig> {
       return {

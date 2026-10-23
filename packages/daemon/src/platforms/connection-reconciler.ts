@@ -277,7 +277,17 @@ export class ConnectionReconciler {
             this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
           },
           onElicitChoice: (a) => this.host.handleElicitCardTap(a),
-          questionTemplate: this.dingTalkQuestionTemplate
+          questionTemplate: this.dingTalkQuestionTemplate,
+          onTenant: (corpId) => {
+            const ids = conn ? this.host.srcIntegrationIds(conn) : []
+            const integrationIds = ids.filter((id) => this.host.integrationConfigById(id)?.origin === 'cp')
+            if (!integrationIds.length) return false
+            return (
+              this.host
+                .cpClient()
+                ?.emitIntegrationTenant({ integrationIds, botUserId: group.clientId, tenantId: corpId }) ?? false
+            )
+          }
         })
         try {
           await conn.start()

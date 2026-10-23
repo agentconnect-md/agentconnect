@@ -49,6 +49,7 @@ import {
   GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
+  INTEGRATION_TENANT_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -201,7 +202,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // assistant-mode.md §5.14: this CP takes follow-up watches and sends their wakes.
       ...(deps.followUpWatch ? [FOLLOW_UP_WATCH_FEATURE] : []),
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
-      ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : [])
+      ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
+      // A daemon socket reports the tenant its traffic named only to a CP that records it.
+      ...(deps.socketBotTenant ? [INTEGRATION_TENANT_FEATURE] : [])
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

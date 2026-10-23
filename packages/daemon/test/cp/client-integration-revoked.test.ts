@@ -1,6 +1,6 @@
-// `integration/revoked` goes on the wire only to a CP that advertised it, scoped to the reported integration's org.
+// `integration/revoked` and `integration/tenant` go on the wire only to a CP that advertised them, scoped to the reported integration's org.
 import { describe, it, expect } from 'vitest'
-import { INTEGRATION_REVOKED_FEATURE, buildEnvelope } from '@agentconnect.md/protocol'
+import { INTEGRATION_REVOKED_FEATURE, INTEGRATION_TENANT_FEATURE, buildEnvelope } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
@@ -87,5 +87,23 @@ describe('CpClient.reportIntegrationRevoked', () => {
       JSON.stringify(buildEnvelope('integration/revoked/ok', { applied: true }, { corr: sent.id, orgId: ORG }))
     )
     await expect(verdict).resolves.toEqual({ applied: true })
+  })
+})
+
+describe('CpClient.emitIntegrationTenant', () => {
+  const TENANT = { integrationIds: [INTEGRATION], botUserId: 'dingexampleclient', tenantId: 'dingexamplecorp' }
+  const tenants = (t: FakeTransport) =>
+    t.sent.map((raw) => JSON.parse(raw)).filter((f) => f.type === 'integration/tenant')
+
+  it('sends nothing to a CP that does not advertise the frame', async () => {
+    const { client, t } = await ready([])
+    expect(client.emitIntegrationTenant(TENANT)).toBe(false)
+    expect(tenants(t)).toEqual([])
+  })
+
+  it("sends the report in the integration's org", async () => {
+    const { client, t } = await ready([INTEGRATION_TENANT_FEATURE])
+    expect(client.emitIntegrationTenant(TENANT)).toBe(true)
+    expect(tenants(t)).toMatchObject([{ orgId: ORG, payload: TENANT }])
   })
 })

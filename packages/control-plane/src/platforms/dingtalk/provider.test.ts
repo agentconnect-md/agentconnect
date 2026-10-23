@@ -141,3 +141,39 @@ describe('DingTalk installation', () => {
     ).toBe(false)
   })
 })
+
+describe('DingTalk organization name', () => {
+  it('reads it on the bot edition host with the app token, and names the integration after it', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+      String(input).endsWith('/oauth2/accessToken')
+        ? Response.json({ accessToken: 'example-token', expireIn: 7200 })
+        : Response.json({ orgName: ' Example Org ' })
+    )
+    const tenant = createDingTalkCpProvider({ fetch: fetchImpl }).socketTenant!
+    const bot = { externalAppId: 'dingexampleclient', platformConfig: { edition: 'international' } } as never
+    const secrets = { botToken: 'example-secret', appToken: 'dingexampleclient', signingSecret: null }
+
+    expect(tenant.matches(bot, 'dingexampleclient')).toBe(true)
+    expect(tenant.matches(bot, 'dingotherclient')).toBe(false)
+    expect(await tenant.name(bot, secrets, 'dingexamplecorp')).toEqual({
+      workspaceName: 'Example Org',
+      integrationName: { placeholder: 'DingTalk · dingexampleclient', name: 'DingTalk · Example Org' }
+    })
+    const [, read] = fetchImpl.mock.calls
+    expect(String(read![0])).toBe(
+      'https://api.dingtalk.io/v1.0/contact/organizations/authInfos?targetCorpId=dingexamplecorp'
+    )
+    expect(read![1]?.headers).toEqual({ 'x-acs-dingtalk-access-token': 'example-token' })
+  })
+
+  it('answers none without the permission', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+      String(input).endsWith('/oauth2/accessToken')
+        ? Response.json({ accessToken: 'example-token', expireIn: 7200 })
+        : Response.json({ code: 'Forbidden.AccessDenied.AccessTokenPermissionDenied' }, { status: 403 })
+    )
+    const tenant = createDingTalkCpProvider({ fetch: fetchImpl }).socketTenant!
+    const secrets = { botToken: 'example-secret', appToken: 'dingexampleclient', signingSecret: null }
+    expect(await tenant.name({ platformConfig: null } as never, secrets, 'dingexamplecorp')).toBeNull()
+  })
+})

@@ -151,6 +151,12 @@ export interface CpValidatedIdentity {
 export type CpTenantLearning =
   { kind: 'record'; change: BotIdentityChange } | { kind: 'known' } | { kind: 'refused'; reason: string }
 
+/** How a platform names a tenant a daemon socket reported: the workspace label, and the placeholder integration name it replaces. */
+export interface CpTenantName {
+  workspaceName: string
+  integrationName: { placeholder: string; name: string }
+}
+
 /** A `validateConfig` refusal the create route sends verbatim: 400 a definitive rejection, 409 an app the deployment itself owns, 503 an unreachable provider; `code` is what the console switches copy on. */
 export interface CpConfigRefusal {
   ok: false
@@ -540,6 +546,14 @@ export interface CpPlatformProvider<TCredentials = unknown> {
     get(id: string): Promise<RcBotAssign | null>
     list(): Promise<RcBotAssign[]>
     revoke(id: string, fence: { revision?: number; eventAtMs?: number }): Promise<boolean>
+  }
+
+  /** A daemon socket's `integration/tenant` (dingtalk-integration.md §2.2); absent ⇒ every report refused. */
+  socketTenant?: {
+    /** Whether the reporting socket is this bot's current one. */
+    matches(bot: BotRecord, botUserId: string): boolean
+    /** The tenant's name read with the bot's own credential; null when the platform answers none. */
+    name(bot: BotRecord, secrets: BotSecretMaterial, tenantId: string): Promise<CpTenantName | null>
   }
 
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */

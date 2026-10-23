@@ -4,6 +4,7 @@ import {
   IntegrationCoreEnvelope,
   IntegrationRevoked,
   IntegrationRevokedOk,
+  IntegrationTenant,
   mergePlaceExternalReason
 } from './integration.js'
 import { buildEnvelope, decodeEnvelope, encode } from '../codec.js'
@@ -204,5 +205,21 @@ describe('IntegrationCoreEnvelope decisions', () => {
   it('rejects an unknown consumer type', () => {
     const bad = { ...bundle, bindings: [{ ...bundle.bindings[0], consumer: { type: 'router' } }] }
     expect(IntegrationCoreEnvelope.safeParse({ ...base, decisions: bad }).success).toBe(false)
+  })
+})
+
+// A daemon socket's report of the tenant its traffic named, with the socket's own identity.
+describe('IntegrationTenant', () => {
+  const report = {
+    integrationIds: ['0f0e0d0c-0b0a-4908-8706-050403020100'],
+    botUserId: 'dingexampleclient',
+    tenantId: 'dingexamplecorp'
+  }
+
+  it('round-trips through the frame codec and refuses an empty id list or tenant', () => {
+    const decoded = decodeEnvelope(encode(buildEnvelope('integration/tenant', report, { orgId: 'org-a' })))
+    expect(decoded.ok && decoded.frame).toMatchObject({ type: 'integration/tenant', orgId: 'org-a', payload: report })
+    expect(IntegrationTenant.safeParse({ ...report, integrationIds: [] }).success).toBe(false)
+    expect(IntegrationTenant.safeParse({ ...report, tenantId: '' }).success).toBe(false)
   })
 })

@@ -6337,7 +6337,7 @@
         },
         "permissions": {
           "label": "权限",
-          "caption": "<action>权限管理</action> → 开通 Card.Instance.Write，成员就能点按卡片回答问题。",
+          "caption": "<action>权限管理</action> → 开通 Card.Instance.Write，成员就能点按卡片回答问题；再开通 Contact.Org.Read，Console 就能显示组织名称。",
           "apply": "立即开通"
         },
         "publish": {
