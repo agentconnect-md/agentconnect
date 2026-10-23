@@ -2741,10 +2741,10 @@ function AgentDetail() {
                             <PlatformMark platform={p.key} fillPct={100} />
                           </span>
                           {/* Mobile tiles are icon-only (the name stays for screen readers); a two-line label area keeps the icons on one row. */}
-                          <span className="flex items-center justify-center desktop:min-h-[39px]">
+                          <span className="flex items-start justify-center desktop:min-h-[39px]">
                             {p.key === 'feishu' ? (
                               <>
-                                <span className="max-desktop:hidden">
+                                <span className="flex max-desktop:hidden">
                                   <LarkFeishuSwitcher
                                     value="lark"
                                     disabled={!available}
