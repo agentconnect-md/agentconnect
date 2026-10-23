@@ -142,7 +142,7 @@ export function dingTalkMediaMessage(
   mediaId: string,
   file: { name: string; mimeType: string }
 ): { msgKey: string; msgParam: string } {
-  // DingTalk documents that `photoURL` takes a media id as well as a URL; not yet exercised against a live app.
+  // `photoURL` takes a media id as well as a URL, as DingTalk documents and a live app shows (dingtalk-integration.md §4.5).
   if (file.mimeType.startsWith('image/'))
     return { msgKey: 'sampleImageMsg', msgParam: JSON.stringify({ photoURL: mediaId }) }
   const fileType = /\.([A-Za-z0-9]{1,10})$/.exec(file.name)?.[1]?.toLowerCase() ?? 'file'
