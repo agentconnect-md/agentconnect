@@ -369,6 +369,12 @@ member lookup (enabled when the deployment offers Microsoft sign-in), the
 row, and the migrations that fence earlier Teams conversations on the Control
 Plane and bind them to their tenant in the daemon's store.
 
+With sync on, a linked member's channel @mention settled its session under the
+bot's tenant and that channel, and the member could open it in the Console;
+sessions from before sync stayed hidden until their conversation spoke again,
+and a session of another tenant stayed hidden from a member of this one
+(**measured**).
+
 ## 5. Console setup
 
 The wizard walks the admin through both registrations and then:
@@ -433,8 +439,9 @@ relay route is added to the chart's HTTPRoute in the same change.
 
 ## 8. The deployment's Teams app
 
-Status: **implemented**; the Console offers it once Setup configures the app, and the path in a second tenant is still to be measured (§8.4). Each organization can
-still register its own bot (§2); this
+Status: **implemented and measured** in a second tenant (§8.3); the Console
+offers it once Setup configures the app. Each organization can still register
+its own bot (§2); this
 section adds one app the deployment operates, so an organization connects its
 Microsoft 365 tenant from the Console with an administrator's sign-in and no
 registration, package download or upload of its own.
@@ -556,10 +563,15 @@ the catalog app stays until the tenant's admin removes it. Entra labels the
 app **unverified** until publisher verification, which tenants that only allow
 verified publishers require.
 
+Measured end to end from a second, new tenant (**measured**): its
+administrator's sign-in and consent, the catalog publish, and the install into
+the chosen team all succeeded from the connect page; the Control Plane wrote the
+tenant's prebuilt row with the home tenant as its token tenant; Teams sent the
+bot its installation events; and a channel @mention there ran a turn whose
+reply, signed with the home tenant's token, appeared in the channel.
+
 ### 8.4 Open
 
-- The whole path in a second tenant: consent, the catalog publish, the team
-  install, and the first reply signed with the home tenant's token.
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).
 - What the bot receives when the tenant's admin removes the catalog app or the
