@@ -375,8 +375,8 @@ export interface WebWizardFacet {
    * Region-parameterized for the same reason as {@link identityCards} (:3732).
    *
    * "Key, not copy" like {@link WebTransportAffordance.labels}: the module names
-   * the host's `Integrations.dialog.platformHints.*` message and the values only it knows (its own
-   * brand, its own room noun), and the host resolves it. Returning a sentence
+   * the host's `Integrations.dialog.platformHints.*` message and the keys of the values only it
+   * knows (its own brand, its own room noun), and the host resolves all three. Returning a word
    * would put English in the row for every locale.
    */
   inviteHint(region: string | undefined): InviteHint

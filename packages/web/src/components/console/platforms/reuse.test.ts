@@ -2,7 +2,10 @@
 
 // Check each platform's bot reuse rules and the input submitted by its wizard.
 
+import { createTranslator } from 'next-intl'
 import { describe, expect, it } from 'vitest'
+import english from '../../../../messages/en.json'
+import chinese from '../../../../messages/zh-CN.json'
 import type { BotDto } from '@/lib/api'
 import type { WizardReuseContext } from './contract'
 import { platformRegistry } from './registry'
@@ -212,26 +215,26 @@ describe('region-parameterised copy', () => {
     })
     expect(feishu.inviteHint('lark')).toEqual({
       key: 'Integrations.dialog.platformHints.mention',
-      values: { target: 'group', platform: 'Lark' }
+      values: { target: 'Integrations.dialog.platformHints.targets.group', platform: 'Platforms.feishu.brand.lark' }
     })
     expect(feishu.inviteHint('feishu')).toEqual({
       key: 'Integrations.dialog.platformHints.mention',
-      values: { target: 'group', platform: 'Feishu' }
+      values: { target: 'Integrations.dialog.platformHints.targets.group', platform: 'Platforms.feishu.brand.feishu' }
     })
   })
 
   it('the regionless platforms ignore the region argument', () => {
     expect(wizardOf('slack').inviteHint(undefined)).toEqual({
       key: 'Integrations.dialog.platformHints.listen',
-      values: { target: 'channel', platform: 'Slack' }
+      values: { target: 'Integrations.dialog.platformHints.targets.channel', platform: 'Platforms.slack.brand' }
     })
     expect(wizardOf('telegram').inviteHint(undefined)).toEqual({
       key: 'Integrations.dialog.platformHints.listen',
-      values: { target: 'group', platform: 'Telegram' }
+      values: { target: 'Integrations.dialog.platformHints.targets.group', platform: 'Platforms.telegram.brand' }
     })
     expect(wizardOf('discord').inviteHint(undefined)).toEqual({
       key: 'Integrations.dialog.platformHints.listen',
-      values: { target: 'channel', platform: 'Discord' }
+      values: { target: 'Integrations.dialog.platformHints.targets.channel', platform: 'Platforms.discord.brand' }
     })
     expect(wizardOf('slack').identityCards(undefined)).toEqual({
       create: 'Integrations.dialog.identityCards.slack.create',
@@ -245,7 +248,87 @@ describe('region-parameterised copy', () => {
     })
     expect(wizardOf('linear').inviteHint(undefined)).toEqual({
       key: 'Integrations.dialog.platformHints.mention',
-      values: { target: 'issue', platform: 'Linear' }
+      values: { target: 'Integrations.dialog.platformHints.targets.issue', platform: 'Platforms.linear.brand' }
     })
+  })
+})
+
+describe('invite hint copy', () => {
+  // Resolved the way the Add integration dialog's footer resolves it: the sentence, then its two keyed values.
+  const render = (locale: 'en' | 'zh-CN', id: string, region?: string) => {
+    const t = createTranslator({ locale, messages: locale === 'en' ? english : chinese })
+    const hint = wizardOf(id).inviteHint(region)
+    return t(hint.key, { target: t(hint.values.target), platform: t(hint.values.platform) })
+  }
+  const cases: [string, string | undefined, string, string][] = [
+    [
+      'slack',
+      undefined,
+      'invite the bot to any channel in Slack and it starts listening there.',
+      '把机器人拉进Slack的任意频道，它就会开始接收消息。'
+    ],
+    [
+      'telegram',
+      undefined,
+      'invite the bot to any group in Telegram and it starts listening there.',
+      '把机器人拉进Telegram的任意群，它就会开始接收消息。'
+    ],
+    [
+      'discord',
+      undefined,
+      'invite the bot to any channel in Discord and it starts listening there.',
+      '把机器人拉进Discord的任意频道，它就会开始接收消息。'
+    ],
+    [
+      'msteams',
+      undefined,
+      'invite the bot to any channel in Microsoft Teams and it starts listening there.',
+      '把机器人拉进Microsoft Teams的任意频道，它就会开始接收消息。'
+    ],
+    [
+      'feishu',
+      'lark',
+      'invite the bot to any group in Lark and @-mention it to start.',
+      '把机器人拉进Lark的任意群，并 @ 它即可开始使用。'
+    ],
+    [
+      'feishu',
+      'feishu',
+      'invite the bot to any group in Feishu and @-mention it to start.',
+      '把机器人拉进飞书的任意群，并 @ 它即可开始使用。'
+    ],
+    [
+      'dingtalk',
+      undefined,
+      'invite the bot to any group in DingTalk and @-mention it to start.',
+      '把机器人拉进钉钉的任意群，并 @ 它即可开始使用。'
+    ],
+    [
+      'qq',
+      undefined,
+      'invite the bot to any group in QQ and @-mention it to start.',
+      '把机器人拉进QQ的任意群，并 @ 它即可开始使用。'
+    ],
+    [
+      'googlechat',
+      undefined,
+      'invite the bot to any space in Google Chat and @-mention it to start.',
+      '把机器人拉进Google Chat的任意空间，并 @ 它即可开始使用。'
+    ],
+    [
+      'linear',
+      undefined,
+      'invite the bot to any issue in Linear and @-mention it to start.',
+      '把机器人拉进Linear的任意议题，并 @ 它即可开始使用。'
+    ]
+  ]
+
+  it.each(cases)('%s (%s) names its brand and room in each locale', (id, region, en, zh) => {
+    expect(render('en', id, region)).toBe(en)
+    expect(render('zh-CN', id, region)).toBe(zh)
+  })
+
+  it('covers every chat module', () => {
+    expect(new Set(cases.map(([id]) => id))).toEqual(new Set(platformRegistry.ids()))
   })
 })

@@ -2638,7 +2638,12 @@ export default function AddIntegrationModal({
                 ? CODE_HOST_SUBSCRIPTION_HINT[platform]
                 : (() => {
                     const hint = wizard?.inviteHint(region)
-                    return hint ? hintsT(hint.key, hint.values) : null
+                    return hint
+                      ? hintsT(hint.key, {
+                          target: hintsT(hint.values.target),
+                          platform: hintsT(hint.values.platform)
+                        })
+                      : null
                   })()}
           </span>
         </div>

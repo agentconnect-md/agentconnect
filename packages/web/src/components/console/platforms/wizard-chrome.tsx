@@ -57,24 +57,34 @@ export function identityCards(
   }
 }
 
-/** The one-line "invite the bot" hint a chat module hands the host
- *  ({@link WebWizardFacet.inviteHint}); the phrasing is shared so several modules
- *  cannot drift into several different sentences. Returns the message and the
- *  values, never a sentence — the host resolves it for the active locale. */
 /** A room noun for the hint. Linear's arm names an ISSUE it delegates to the app,
  *  which is why this is not just the two chat rooms. */
 export type InviteHintTarget = 'channel' | 'group' | 'issue' | 'space'
 
-/** The host messages an invite hint can name — the two arms of its hint row. */
+/** A module's own brand in the active locale — the `{platform}` of its hint. */
+export type InviteHintBrandKey =
+  | 'Platforms.slack.brand'
+  | 'Platforms.telegram.brand'
+  | 'Platforms.discord.brand'
+  | 'Platforms.qq.brand'
+  | 'Platforms.linear.brand'
+  | 'Platforms.feishu.brand.lark'
+  | 'Platforms.feishu.brand.feishu'
+  | 'Platforms.googlechat.brand'
+  | 'Platforms.dingtalk.brand'
+  | 'Platforms.msteams.brand'
+
+/** The host messages an invite hint can name — the two arms of its hint row — and the keys of its two values. */
 export type InviteHint = {
   key: 'Integrations.dialog.platformHints.listen' | 'Integrations.dialog.platformHints.mention'
-  values: { target: InviteHintTarget; platform: string }
+  values: { target: `Integrations.dialog.platformHints.targets.${InviteHintTarget}`; platform: InviteHintBrandKey }
 }
 
-export function inviteBotHint(target: InviteHintTarget, platform: string, mention = false): InviteHint {
+/** The one-line "invite the bot" hint a chat module hands the host ({@link WebWizardFacet.inviteHint}); shared phrasing, keys not words. */
+export function inviteBotHint(target: InviteHintTarget, brand: InviteHintBrandKey, mention = false): InviteHint {
   return {
     key: mention ? 'Integrations.dialog.platformHints.mention' : 'Integrations.dialog.platformHints.listen',
-    values: { target, platform }
+    values: { target: `Integrations.dialog.platformHints.targets.${target}`, platform: brand }
   }
 }
 

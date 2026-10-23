@@ -35,7 +35,7 @@ export const googleChatModule: WebPlatformModule<GoogleChatApi> = {
     // No transport choice (HTTPS through the relay is the only one) and no shared bots (§1).
     affordances: {},
     identityCards: () => identityCards('googlechat'),
-    inviteHint: () => inviteBotHint('space', 'Google Chat', true)
+    inviteHint: () => inviteBotHint('space', 'Platforms.googlechat.brand', true)
   },
   settingsFragments: googleChatSettingsFragments,
   apiBindings: googleChatApi,

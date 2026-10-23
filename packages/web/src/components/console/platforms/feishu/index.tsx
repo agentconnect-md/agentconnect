@@ -33,7 +33,12 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
       transport: { labels: FEISHU_TRANSPORT_LABEL, httpByDefaultWhenRelayAvailable: false }
     },
     identityCards: (region) => (feishuBrand(region) === 'Lark' ? identityCardsFor('lark') : identityCardsFor('feishu')),
-    inviteHint: (region) => inviteBotHint('group', feishuBrand(region), true)
+    inviteHint: (region) =>
+      inviteBotHint(
+        'group',
+        feishuBrand(region) === 'Feishu' ? 'Platforms.feishu.brand.feishu' : 'Platforms.feishu.brand.lark',
+        true
+      )
   },
   settingsFragments: feishuSettingsFragments,
   apiBindings: feishuApi,

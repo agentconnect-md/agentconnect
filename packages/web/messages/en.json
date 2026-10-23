@@ -2091,7 +2091,13 @@
       },
       "platformHints": {
         "listen": "invite the bot to any {target} in {platform} and it starts listening there.",
-        "mention": "invite the bot to any {target} in {platform} and @-mention it to start."
+        "mention": "invite the bot to any {target} in {platform} and @-mention it to start.",
+        "targets": {
+          "channel": "channel",
+          "group": "group",
+          "issue": "issue",
+          "space": "space"
+        }
       },
       "identityCards": {
         "slack": {
@@ -5803,7 +5809,8 @@
           "handle": "@my_agent_bot",
           "tokenSample": "123456789:AAEabcdefghijklmnopqrstuvwxyz"
         }
-      }
+      },
+      "brand": "Telegram"
     },
     "discord": {
       "guide": {
@@ -5855,7 +5862,8 @@
           "reset": "Reset Token",
           "tokenSample": "MTIzNDU2Nzg5MDEyMzQ1Njc4.Gabcde.fghijklmnopqrstuvwxyz"
         }
-      }
+      },
+      "brand": "Discord"
     },
     "feishu": {
       "transport": {
@@ -5966,6 +5974,10 @@
           "appIdSample": "cli_xxxxxxxxxxxxxxxx",
           "secretSample": "****************************"
         }
+      },
+      "brand": {
+        "lark": "Lark",
+        "feishu": "Feishu"
       }
     },
     "linear": {
@@ -6021,7 +6033,8 @@
         "comments": "Earlier comments",
         "guidance": "Workspace guidance",
         "truncated": "Context truncated by the relay."
-      }
+      },
+      "brand": "Linear"
     },
     "slack": {
       "transport": {
@@ -6146,7 +6159,8 @@
         "submit": "Replace",
         "submitting": "Replacing…",
         "cancel": "Cancel"
-      }
+      },
+      "brand": "Slack"
     },
     "qq": {
       "checking": "Checking credentials…",
@@ -6154,7 +6168,8 @@
       "createBot": "Create QQ bot",
       "step1": "Create a bot in the QQ developer portal, turn on private and group messages, then copy its AppID and AppSecret.",
       "step1Warning": "Before publishing the bot, add your daemon's public IP to its IP allowlist — QQ rejects calls from other addresses.",
-      "step2": "Paste the AppID & AppSecret — required to connect"
+      "step2": "Paste the AppID & AppSecret — required to connect",
+      "brand": "QQ"
     },
     "googlechat": {
       "checking": "Checking this deployment…",
@@ -6245,7 +6260,8 @@
         "appUnavailable": "The Chat app is not configured in this project. Enable the Google Chat API, configure the app, then connect again.",
         "unreachable": "Google could not be reached. Try again.",
         "deploymentApp": "This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat."
-      }
+      },
+      "brand": "Google Chat"
     },
     "dingtalk": {
       "checking": "Checking credentials…",
@@ -6309,7 +6325,8 @@
         "checking": "Checking…",
         "close": "Close",
         "updated": "Client Secret updated."
-      }
+      },
+      "brand": "DingTalk"
     },
     "msteams": {
       "checking": "Checking this deployment…",
@@ -6364,7 +6381,8 @@
         "unavailable": "Microsoft Entra could not be reached. Try again.",
         "relayOriginMissing": "This deployment has no public callback endpoint, so the app package cannot be built.",
         "appTaken": "This bot is already connected to an agent. Register another bot for this agent."
-      }
+      },
+      "brand": "Microsoft Teams"
     }
   },
   "Computers": {

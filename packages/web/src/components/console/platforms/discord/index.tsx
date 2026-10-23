@@ -26,7 +26,7 @@ export const discordModule: WebPlatformModule<typeof discordApi> = {
     buildReuseInput: (bot, ctx) => ({ platform: 'discord', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
     identityCards: () => identityCards('discord'),
-    inviteHint: () => inviteBotHint('channel', 'Discord')
+    inviteHint: () => inviteBotHint('channel', 'Platforms.discord.brand')
   },
   settingsFragments: discordSettingsFragments,
   apiBindings: discordApi,
