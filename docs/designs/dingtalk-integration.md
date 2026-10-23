@@ -1,6 +1,6 @@
 # DingTalk Integration Design
 
-Status: Proposed (draft). Facts marked **measured** come from a live probe
+Status: implemented. Facts marked **measured** come from a live probe or test
 against a test organization; facts marked **unverified** still need one.
 
 > Related: [platform modules](integration-plugin-architecture.md),
@@ -180,6 +180,8 @@ appears in every output mode except `none`, and only on a message DingTalk
 delivered: a turn another agent started gets none. It is best effort: a
 refused or failed call logs one warning and never fails or delays the turn, and
 a failure notice is posted as a message, since a reaction cannot carry one.
+The reaction works on an app with the robot capability and
+`Card.Instance.Write` (**measured**); no further permission was requested.
 
 The answer goes out as one or more Markdown messages split under the size
 limit. An AI card could show progress in place, but the adapter sends none: the
@@ -232,14 +234,15 @@ Inbound images and files carry a `downloadCode`; `POST
 URL, and the existing attachment pipeline applies its size limit. In a group,
 DingTalk delivers only mentions, so a file posted on its own never reaches the
 bot; quoting the file in a mention delivers its `downloadCode` in
-`repliedMsg` and the download works (**measured**). An image sent by DM did not
-arrive during the probe; the cause is **unverified**. An inbound image is
+`repliedMsg` and the download works (**measured**). An image sent by DM reaches
+the agent (**measured**); one sent during the first probe did not arrive, and
+that miss was not reproduced. An inbound image is
 fetched with the message; any other file reaches the agent through a
 `readDingTalkFile` tool that downloads it on demand. Outbound images and files
 upload through the media API (20 MB) and send as image or file messages. An
-image message names its `media_id` as `photoURL`, which DingTalk documents but
-which is **unverified** against a live app. Today only `shareFile`'s images use
-this path.
+image message names its `media_id` as `photoURL`, and DingTalk shows it as the
+image (**measured**); a file arrives as a file message (**measured**). Both are
+sent through `shareFile`; an image's caption follows as its own message.
 
 ### 4.6 Questions and approvals
 
@@ -338,9 +341,6 @@ text, so no migration is needed. Normalization lives in the message package.
   through the API. Membership is likely observed (who has spoken) rather than
   authoritative, so a DingTalk group's visibility stays weaker than a channel
   with an enumerable roster. Not probed.
-- Whether the reaction APIs need a permission beyond `qyapi_robot_sendmsg`; a
-  refusal leaves turns without a reaction (§4.3).
-- Why a DM image did not arrive (§4.5).
 - The international service is a separate API stack; its gateway routes the
   card APIs, but nothing beyond that is checked.
 - Whether DingTalk keeps allowing a template from one organization to serve
