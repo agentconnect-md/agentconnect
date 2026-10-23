@@ -14,7 +14,6 @@ import { AppPackageButton } from './app-package'
 import { CopyField } from './fields'
 import { MsTeamsMark } from './mark'
 import { useMsTeamsDeploymentApp } from './deployment-app'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { msTeamsWalkthroughSteps } from './steps'
 import {
@@ -64,7 +63,7 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
   // The person chose to register their own bot over the deployment's Teams app.
   const [ownBot, setOwnBot] = useState(false)
   const [connecting, setConnecting] = useState(false)
-  const deploymentApp = useMsTeamsDeploymentApp(featureFlagEnabled('msteams-deployment-app'), host.mockMode)
+  const deploymentApp = useMsTeamsDeploymentApp(host.mockMode)
   const { activeOrg } = useOrgs()
   // Synchronous re-entry guard; `saving` only commits on the next render.
   const busyRef = useRef(false)
