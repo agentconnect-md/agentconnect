@@ -165,7 +165,10 @@ describe('composed AppConfigSchema', () => {
         'feishu',
         'feishu_app_bot',
         'feishu_custom_bot',
-        'googlechat'
+        'googlechat',
+        'dingtalk_bot',
+        'dingtalk_mcp',
+        'microsoft_teams'
       ])
     )
     for (const provider of CODE_HOST_PROVIDERS) expect(blocklist, provider).toContain(provider)
