@@ -24398,9 +24398,15 @@ export class Daemon {
     return undefined
   }
 
-  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat one, which posts outside a turn but has no reply surface here. */
-  private gatewayForIntegration(integrationId: string): ReplyConnection | GoogleChatConnection | undefined {
-    return this.connForIntegration(integrationId) ?? this.gcConnByIntegration.get(integrationId)
+  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat or Teams one, which posts outside a turn but has no reply surface here. */
+  private gatewayForIntegration(
+    integrationId: string
+  ): ReplyConnection | GoogleChatConnection | MsTeamsConnection | undefined {
+    return (
+      this.connForIntegration(integrationId) ??
+      this.gcConnByIntegration.get(integrationId) ??
+      this.msTeamsConnByIntegration.get(integrationId)
+    )
   }
 
   private replyConnFor(agentId: string, integrationId?: string): ReplyConnection | undefined {
