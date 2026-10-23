@@ -77,7 +77,11 @@ describe('Teams manifest', () => {
         permissions: {
           resourceSpecific: [
             { name: 'ChannelMessage.Read.Group', type: 'Application' },
-            { name: 'ChatMessage.Read.Chat', type: 'Application' }
+            { name: 'ChatMessage.Read.Chat', type: 'Application' },
+            { name: 'ChannelSettings.Read.Group', type: 'Application' },
+            { name: 'ChannelMember.Read.Group', type: 'Application' },
+            { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
+            { name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }
           ]
         }
       },

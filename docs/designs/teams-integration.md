@@ -163,6 +163,14 @@ The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
 follow-ups then do nothing, and how the bot can detect that is **unverified**.
 
+The package also requests the grants later features read through Microsoft
+Graph, so that an installed app does not have to ask its installers again:
+`ChannelSettings.Read.Group` and `ChannelMember.Read.Group` for a team's channel
+names and members, and `OnlineMeeting.ReadBasic.Chat` and
+`OnlineMeetingTranscript.Read.Chat` for a meeting chat's meeting details and
+transcripts. Nothing reads them yet. An organization that installed an earlier
+package grants them when it uploads a re-downloaded one.
+
 A mention arrives as a `mention` entity whose `mentioned.id` is the bot
 (`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
 (**measured**). The normalizer removes exactly that span and sets
@@ -370,7 +378,7 @@ The wizard walks the admin through both registrations and then:
 - takes the app ID, tenant ID, and client secret, and checks them live (§2);
 - downloads the Teams app package: `manifest.json` in the current schema, a
   192×192 color icon, and a 32×32 outline icon. The manifest names the bot's app
-  ID with the `personal`, `team`, and `groupChat` scopes, the two RSC
+  ID with the `personal`, `team`, and `groupChat` scopes, the RSC
   permissions with the `webApplicationInfo` they require, the relay host in
   `validDomains`, and `supportsChannelFeatures: "tier1"`, without which Teams
   refuses a v1.25-or-later manifest that has the `team` scope (**measured**).
