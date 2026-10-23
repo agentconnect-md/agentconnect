@@ -256,10 +256,7 @@ describe('sandboxBoundary', () => {
   })
 })
 
-// Behavioral regression for the /proc escape (#799): with a PID namespace the daemon's
-// own PID must NOT be visible inside the sandbox, so /proc/<daemon-pid>/root/... cannot
-// be used to reach the daemon's writable mount namespace. Runs only where bwrap exists
-// (Linux CI); skipped elsewhere.
+// PID isolation must prevent reaching the daemon's mount namespace through /proc (#799).
 describe('bwrap PID isolation', () => {
   const hasBwrap = detectSandbox() === 'bwrap'
 
@@ -276,6 +273,10 @@ describe('bwrap PID isolation', () => {
       allowRead: [],
       gitSafeDirectories: [workspace]
     })
+    const settings = SandboxRuntimeConfigSchema.parse(JSON.parse(readFileSync(settingsPath, 'utf8')))
+    // Exercise literal write roots through the provider; the other launch tests retain string entries.
+    settings.filesystem.allowWrite = [workspace, home].map((path) => ({ path: realpathSync(path), literal: true }))
+    writeFileSync(settingsPath, JSON.stringify(settings))
     const outerPid = process.pid // the "daemon" PID; must be invisible in the child's /proc
     const { cmd, args } = sandboxWrap('sh', ['-c', `[ -e /proc/${outerPid} ] && echo LEAK || echo OK`], {
       mechanism: 'bwrap',
