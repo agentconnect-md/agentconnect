@@ -77,7 +77,12 @@ export async function openExecStream(
         if (stdinTaken) return null
         stdinTaken = true
         return {
-          write: (data: Uint8Array) => send('stdin', { data }),
+          async write(data: Uint8Array) {
+            // Keep stdin frames below agentd's 4 MiB limit, including the protocol envelope.
+            for (let offset = 0; offset < data.byteLength; offset += 64 * 1024) {
+              await send('stdin', { data: data.subarray(offset, offset + 64 * 1024) })
+            }
+          },
           async close() {
             if (stdinClosed) return
             stdinClosed = true

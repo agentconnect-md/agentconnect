@@ -60,7 +60,8 @@ jobs:
             echo "code=$(other '^docs/|\.md$')"
             # Lists what CANNOT reach the daemon/CLI closure, so a new root config, script or package stays in scope.
             echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
-            echo "microsandbox=$(any '^(packages/daemon/(src/(execution|microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)')"
+            # The VM stages the built daemon shim, so its dependency and build inputs must run this leg too.
+            echo "microsandbox=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
             # No workspace deps, so only its own files and the root install, Node, tsconfig and reporter config reach it.
             echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
             # The image bundles protocol and connection from source and installs from the root manifests.

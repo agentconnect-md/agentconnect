@@ -8,7 +8,7 @@ import { microsandboxLauncher } from '../src/execution/executor-vm.js'
 import { LocalExecutor } from '../src/execution/local-executor.js'
 import type { EnvironmentDescriptor } from '../src/execution/strategies.js'
 import { startGuestShim } from '../src/microsandbox/shim.js'
-import { daemonSocket, exchange, FAKE_SHIM_ARTIFACTS, fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
+import { daemonSocket, exchange, fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
 
 const closers: Array<() => void | Promise<void>> = []
 afterEach(async () => {
@@ -90,9 +90,10 @@ describe('a VM shim, as the manager starts it', () => {
   })
 
   // A hosted session's shim (session-executors.md §6): its holder is on another machine, and nothing here binds it.
-  it('starts a hosted shim unbound, without the complete-env claim, with the seed in one variable of its own', async () => {
+  it('stages a bundle larger than one agentd frame and starts a hosted shim with its own seed environment', async () => {
     const vm = fakeVm({ mcp: '/nonexistent/mcp.sock', gitcred: '/nonexistent/gitcred.sock' })
     closers.push(() => vm.close())
+    const artifacts = { 'index.js': Buffer.alloc(4 * 1024 * 1024, 'x').toString('base64') }
     const guest = await startGuestShim({
       sdk: vm.sdk,
       sandbox: vm.sandbox,
@@ -100,9 +101,10 @@ describe('a VM shim, as the manager starts it', () => {
       completeEnv: false,
       seedEnv: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude', AC_SHIM_WORKSPACE_ROOT: '/elsewhere' },
       runtimeStderr: () => {},
-      artifacts: FAKE_SHIM_ARTIFACTS
+      artifacts: async () => JSON.stringify(artifacts)
     })
     closers.push(() => guest.stop())
+    expect(JSON.parse(vm.execs[0]!.stdin)).toEqual({ user: 'agent', files: artifacts })
     const run = vm.execs[1]!
     const seed = { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/home/op/.claude', AC_SHIM_WORKSPACE_ROOT: '/elsewhere' }
     // The runner fills the seed in beneath a holder's env; as one JSON value it can name none of the shim's own variables.

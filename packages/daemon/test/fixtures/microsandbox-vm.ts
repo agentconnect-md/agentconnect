@@ -138,6 +138,7 @@ export function fakeVm(
             return Object.assign(queue, { id: 1 })
           },
           async send(_id: number, _flags: number, body: Uint8Array) {
+            expect(body.byteLength).toBeLessThanOrEqual(4 * 1024 * 1024)
             const message = decode(body) as { t: string; p: Uint8Array }
             const payload = decode(message.p) as { data?: Uint8Array; signal?: number }
             if (message.t === 'core.tcp.data') socket!.write(payload.data!)
