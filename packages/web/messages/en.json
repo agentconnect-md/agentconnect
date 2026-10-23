@@ -6349,7 +6349,8 @@
         "newBot": "Bot management → New bot, then set its endpoint address to the messaging endpoint.",
         "secret": "Client secrets → Add a client secret, and copy it.",
         "tenant": "The Directory (tenant) ID is on the app registration’s Overview page in Microsoft Entra.",
-        "azure": "An Azure Bot resource with the same endpoint works too."
+        "azure": "An Azure Bot resource with the same endpoint works too.",
+        "walkthroughLabel": "Teams Developer Portal walkthrough"
       },
       "credentials": {
         "title": "Paste the bot’s credentials",
@@ -6390,6 +6391,48 @@
         "unavailable": "Microsoft Entra could not be reached. Try again.",
         "relayOriginMissing": "This deployment has no public callback endpoint, so the app package cannot be built.",
         "appTaken": "This bot is already connected to an agent. Register another bot for this agent."
+      },
+      "steps": {
+        "nav": {
+          "configure": "Configure",
+          "secrets": "Client secrets"
+        },
+        "newBot": {
+          "label": "Create",
+          "caption": "<action>Bot management → New Bot</action> → name it, then Add.",
+          "title": "Bot management",
+          "newBot": "New Bot",
+          "dialogTitle": "Add a bot",
+          "nameLabel": "Bot name",
+          "nameValue": "AgentConnect",
+          "add": "Add"
+        },
+        "endpoint": {
+          "label": "URL",
+          "caption": "<action>Configure</action> → paste the messaging endpoint as the endpoint address, then Save."
+        },
+        "configure": {
+          "botId": "Bot ID",
+          "endpoint": "Endpoint address",
+          "save": "Save"
+        },
+        "secret": {
+          "label": "Secret",
+          "caption": "<action>Client secrets</action> → Add a client secret, then copy it; it is shown only once.",
+          "add": "Add a client secret for your bot",
+          "once": "Copy the secret now. It won’t be shown again."
+        },
+        "botId": {
+          "label": "Bot ID",
+          "caption": "Back on <action>Configure</action>, copy the Bot ID: it is the App (bot) ID below."
+        },
+        "tenant": {
+          "label": "Tenant",
+          "caption": "In <action>Microsoft Entra → App registrations</action>, open the bot’s app and copy its Directory (tenant) ID from Overview.",
+          "essentials": "Essentials",
+          "clientId": "Application (client) ID",
+          "tenantId": "Directory (tenant) ID"
+        }
       },
       "brand": "Microsoft Teams"
     }

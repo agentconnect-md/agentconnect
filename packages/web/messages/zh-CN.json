@@ -6349,7 +6349,8 @@
         "newBot": "机器人管理 → 新建机器人，然后把终结点地址设为上面的消息传送终结点。",
         "secret": "客户端密码 → 添加客户端密码，并复制它。",
         "tenant": "目录(租户) ID 在 Microsoft Entra 中该应用注册的概述页上。",
-        "azure": "也可以用 Azure 机器人资源，终结点相同。"
+        "azure": "也可以用 Azure 机器人资源，终结点相同。",
+        "walkthroughLabel": "Teams Developer Portal 操作步骤"
       },
       "credentials": {
         "title": "粘贴机器人的凭据",
@@ -6390,6 +6391,48 @@
         "unavailable": "无法连接到 Microsoft Entra。请重试。",
         "relayOriginMissing": "这个部署没有公开的回调地址，无法生成应用包。",
         "appTaken": "这个机器人已经连接到一个 Agent。请为这个 Agent 注册另一个机器人。"
+      },
+      "steps": {
+        "nav": {
+          "configure": "Configure",
+          "secrets": "Client secrets"
+        },
+        "newBot": {
+          "label": "新建",
+          "caption": "<action>Bot management → New Bot</action> → 填写名称，然后点击 Add。",
+          "title": "Bot management",
+          "newBot": "New Bot",
+          "dialogTitle": "Add a bot",
+          "nameLabel": "Bot name",
+          "nameValue": "AgentConnect",
+          "add": "Add"
+        },
+        "endpoint": {
+          "label": "端点",
+          "caption": "<action>Configure</action> → 把消息端点粘贴到 Endpoint address，然后点击 Save。"
+        },
+        "configure": {
+          "botId": "Bot ID",
+          "endpoint": "Endpoint address",
+          "save": "Save"
+        },
+        "secret": {
+          "label": "密钥",
+          "caption": "<action>Client secrets</action> → Add a client secret，然后复制；它只显示一次。",
+          "add": "Add a client secret for your bot",
+          "once": "请立即复制密钥，之后不会再显示。"
+        },
+        "botId": {
+          "label": "Bot ID",
+          "caption": "回到 <action>Configure</action>，复制 Bot ID：它就是下方的应用（Bot）ID。"
+        },
+        "tenant": {
+          "label": "租户",
+          "caption": "在 <action>Microsoft Entra → App registrations</action> 中打开该 Bot 的应用，从 Overview 复制 Directory (tenant) ID。",
+          "essentials": "Essentials",
+          "clientId": "Application (client) ID",
+          "tenantId": "Directory (tenant) ID"
+        }
       },
       "brand": "Microsoft Teams"
     }
