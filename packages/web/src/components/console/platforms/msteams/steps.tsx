@@ -22,13 +22,13 @@ function Pulse({ children }: { children: ReactNode }) {
 
 // A copy control the step points at, in the portal's or Entra's accent; literal class strings (STYLE.md §8).
 const COPY_PULSE = {
-  portal: { icon: 'text-[#5b5fc7]', ring: 'ring-[#5b5fc7]' },
-  entra: { icon: 'text-[#0078d4]', ring: 'ring-[#0078d4]' }
+  portal: { tint: 'text-[#5b5fc7]', ring: 'ring-[#5b5fc7]' },
+  entra: { tint: 'text-[#0078d4]', ring: 'ring-[#0078d4]' }
 } as const
 
 function CopyPulse({ accent }: { accent: keyof typeof COPY_PULSE }) {
   return (
-    <span className={`relative flex-none ${COPY_PULSE[accent].icon}`}>
+    <span className={`relative flex-none ${COPY_PULSE[accent].tint}`}>
       <Icon name="copy" size={10} />
       <span
         className={`pointer-events-none absolute -inset-[3px] step-pulse rounded ring-2 ${COPY_PULSE[accent].ring}`}
