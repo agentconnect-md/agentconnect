@@ -33,7 +33,7 @@ class SpyControl {
 function fakeDingTalk(valid: Set<string>, calls: string[]): typeof fetch {
   return (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
-    if (!(DINGTALK_TOKEN_URLS as readonly string[]).includes(url)) throw new Error(`unexpected request to ${url}`)
+    if (!Object.values(DINGTALK_TOKEN_URLS).includes(url)) throw new Error(`unexpected request to ${url}`)
     const body = JSON.parse(String(init.body)) as { appKey: string; appSecret: string }
     calls.push(body.appKey)
     if (body.appKey === CLIENT_ID && valid.has(body.appSecret))

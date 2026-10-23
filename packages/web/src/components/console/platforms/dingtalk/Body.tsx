@@ -1,13 +1,15 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useRef, useState } from 'react'
-import { useLocale, useTranslations } from 'next-intl'
+import { useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
+import { ApiError } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 import type { WizardHost } from '../contract'
 import { usePublishedFooter } from '../publish'
 import { TokenGuidePane } from '../wizard-chrome'
-import { DINGTALK_CONSOLE_HOST, dingTalkWalkthroughSteps } from './steps'
+import { DINGTALK_CONSOLE_HOST } from './edition'
+import { dingTalkWalkthroughSteps } from './steps'
 
 // The Control Plane's own Client ID rule, so a malformed paste is marked before the round trip.
 const CLIENT_ID = /^[A-Za-z0-9_-]{1,128}$/
@@ -16,8 +18,8 @@ const CLIENT_ID = /^[A-Za-z0-9_-]{1,128}$/
 export function DingTalkWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.dingtalk')
   const stepsT = useTranslations('Platforms.dingtalk.steps')
-  // The mainland console is Chinese only and the international one English, so the console language picks the edition.
-  const edition = useLocale() === 'zh-CN' ? 'mainland' : 'international'
+  // The tile's edition switch picks the console, the walkthrough and the API the check runs against.
+  const edition = host.region === 'international' ? 'international' : 'mainland'
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [saving, setSaving] = useState(false)
@@ -34,11 +36,21 @@ export function DingTalkWizardBody({ agent, host }: { agent: Agent; host: Wizard
       await host.createIntegration({
         platform: 'dingtalk',
         agentId: agent.id,
-        dingtalk: { clientId: clientIdTrim, clientSecret: clientSecret.trim() }
+        dingtalk: { clientId: clientIdTrim, clientSecret: clientSecret.trim(), edition }
       })
       host.close()
     } catch (error) {
-      host.setError(error instanceof Error ? error.message : String(error))
+      // An app of the other edition gets the switch named in the console's language.
+      const code = error instanceof ApiError ? error.code : undefined
+      host.setError(
+        code === 'DINGTALK_APP_IS_INTERNATIONAL' || code === 'DINGTALK_APP_IS_MAINLAND'
+          ? t('otherEdition', {
+              edition: t(code === 'DINGTALK_APP_IS_INTERNATIONAL' ? 'editions.international' : 'editions.mainland')
+            })
+          : error instanceof Error
+            ? error.message
+            : String(error)
+      )
       busy.current = false
       setSaving(false)
     }
@@ -52,7 +64,7 @@ export function DingTalkWizardBody({ agent, host }: { agent: Agent; host: Wizard
   return (
     <TokenGuidePane
       mark={<PlatformMark platform="dingtalk" />}
-      step1={t('step1')}
+      step1={t('step1', { edition })}
       linkHref={`https://${DINGTALK_CONSOLE_HOST[edition]}/fe/app`}
       linkLabel={t('createApp')}
       steps={dingTalkWalkthroughSteps(stepsT, edition)}

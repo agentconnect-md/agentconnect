@@ -6277,7 +6277,7 @@
       "connect": "Connect",
       "createApp": "Create DingTalk app",
       "walkthroughLabel": "DingTalk app setup steps",
-      "step1": "Create an internal app with a bot in the DingTalk developer console, publish it, then copy its Client ID and Client Secret.",
+      "step1": "Create an internal app with a bot in the DingTalk developer console, publish it, then copy its Client ID and Client Secret.{edition, select, mainland { The Standard edition allows 5,000 API calls and 3,000 messages a month.} other {}}",
       "step2": "Paste the Client ID & Client Secret — required to connect",
       "steps": {
         "nav": {
@@ -6335,7 +6335,13 @@
         "close": "Close",
         "updated": "Client Secret updated."
       },
-      "brand": "DingTalk"
+      "brand": "DingTalk",
+      "editions": {
+        "mainland": "CN",
+        "international": "Intl"
+      },
+      "switchEdition": "Switch to {edition}",
+      "otherEdition": "This app belongs to the other DingTalk edition. Switch the DingTalk tile to {edition} and connect again."
     },
     "msteams": {
       "checking": "Checking this deployment…",

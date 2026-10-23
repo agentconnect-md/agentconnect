@@ -6277,7 +6277,7 @@
       "connect": "连接",
       "createApp": "创建钉钉应用",
       "walkthroughLabel": "钉钉应用设置步骤",
-      "step1": "在钉钉开发者后台创建企业内部应用并添加机器人，发布后复制它的 Client ID 和 Client Secret。标准版每月可调用 5,000 次 API、接收 3,000 条消息。",
+      "step1": "在钉钉开发者后台创建企业内部应用并添加机器人，发布后复制它的 Client ID 和 Client Secret。{edition, select, mainland {标准版每月可调用 5,000 次 API、接收 3,000 条消息。} other {}}",
       "step2": "粘贴 Client ID 和 Client Secret——连接所必需",
       "steps": {
         "nav": {
@@ -6335,7 +6335,13 @@
         "close": "关闭",
         "updated": "Client Secret 已更新。"
       },
-      "brand": "钉钉"
+      "brand": "钉钉",
+      "editions": {
+        "mainland": "国内版",
+        "international": "国际版"
+      },
+      "switchEdition": "切换到{edition}",
+      "otherEdition": "这个应用属于另一个钉钉版本。请把钉钉切换到「{edition}」后重新连接。"
     },
     "msteams": {
       "checking": "正在检查这个部署…",

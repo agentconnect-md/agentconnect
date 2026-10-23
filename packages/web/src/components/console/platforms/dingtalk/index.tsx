@@ -3,6 +3,7 @@
 import type { WebChannelListSemantics, WebPlatformModule } from '../contract'
 import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { DingTalkWizardBody } from './Body'
+import { DingTalkEditionSwitcher, dingTalkEditionOf, dingTalkInitialEdition } from './edition'
 import { DingTalkMark } from './mark'
 import { dingTalkSettingsFragments } from './settings'
 
@@ -22,12 +23,13 @@ export const dingTalkModule: WebPlatformModule = {
   Mark: DingTalkMark,
   wizard: {
     Body: DingTalkWizardBody,
-    // One app serves one agent (§1), so a freed app is reusable and nothing else is.
-    freeBotFilter: () => true,
+    // One app serves one agent (§1), so a freed app of the picked edition is reusable and nothing else is.
+    freeBotFilter: (bot, ctx) => dingTalkEditionOf(bot) === ctx.region,
     // Stream is the only transport, and the create DTO carries none.
     buildReuseInput: (bot, ctx) => ({ platform: 'dingtalk', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
     identityCards: () => identityCards('dingtalk'),
+    regions: { initial: dingTalkInitialEdition, Switcher: DingTalkEditionSwitcher },
     inviteHint: () => inviteBotHint('group', 'Platforms.dingtalk.brand', true)
   },
   apiBindings: {},

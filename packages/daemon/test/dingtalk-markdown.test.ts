@@ -74,7 +74,7 @@ describe('DingTalkConnection.sendMarkdown', () => {
     }) as typeof fetch
     const log = { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
     const conn = new DingTalkConnection(
-      { clientId: 'client-id-example', clientSecret: 'secret', integrations: [] },
+      { clientId: 'client-id-example', clientSecret: 'secret', edition: 'mainland', integrations: [] },
       { log, onMessage: () => {}, fetchImpl, origin: 'https://api.example.test' }
     )
     const sent = await conn.sendMarkdown('cid-example', '_note_\n\n```ts\nx\n```')

@@ -76,10 +76,15 @@ export type IntegrationSlackConfig = z.infer<typeof IntegrationSlackConfig>
 export const IntegrationQQConfig = z.object({ appId: z.string().min(1), appSecret: z.string().min(1) })
 export type IntegrationQQConfig = z.infer<typeof IntegrationQQConfig>
 
+// DingTalk's two editions run separate organizations and OpenAPI hosts (dingtalk-integration.md §2.1).
+export const DingTalkEdition = z.enum(['mainland', 'international'])
+export type DingTalkEdition = z.infer<typeof DingTalkEdition>
+
 // The DingTalk payload (dingtalk-integration.md §2): an internal app's credentials, whose Client ID is also the inbound `robotCode`.
 export const IntegrationDingTalkConfig = z.object({
   clientId: z.string().min(1), // Client ID (formerly AppKey), semi-public
-  clientSecret: z.string().min(1) // Client Secret (plaintext — never log)
+  clientSecret: z.string().min(1), // Client Secret (plaintext — never log)
+  edition: DingTalkEdition.default('mainland') // the app's edition, which picks its API hosts
 })
 export type IntegrationDingTalkConfig = z.infer<typeof IntegrationDingTalkConfig>
 

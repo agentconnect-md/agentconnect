@@ -1,24 +1,30 @@
 // The DingTalk provider (dingtalk-integration.md §2, §6): an enterprise internal app's credentials, checked by a token exchange; the daemon owns the Stream connection.
 import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
-import { DINGTALK_PLATFORM, type IntegrationDingTalkConfig } from '@agentconnect.md/protocol'
-import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
+import { DINGTALK_PLATFORM, DingTalkEdition, type IntegrationDingTalkConfig } from '@agentconnect.md/protocol'
+import { TENANTLESS_SENTINEL, type BotRecord } from '../../persistence/ports.js'
 import type { CpConfigRefusal, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
 
 // Each edition runs its own OpenAPI host, and an app's credentials work on its edition's only (§2.1).
-export const DINGTALK_TOKEN_URLS = [
-  'https://api.dingtalk.com/v1.0/oauth2/accessToken',
-  'https://api.dingtalk.io/v1.0/oauth2/accessToken'
-] as const
+export const DINGTALK_TOKEN_URLS: Record<DingTalkEdition, string> = {
+  mainland: 'https://api.dingtalk.com/v1.0/oauth2/accessToken',
+  international: 'https://api.dingtalk.io/v1.0/oauth2/accessToken'
+}
 
 export const DingTalkCreateCredentials = z.object({
   clientId: z
     .string()
     .trim()
     .regex(/^[A-Za-z0-9_-]{1,128}$/),
-  clientSecret: z.string().trim().min(1).max(512)
+  clientSecret: z.string().trim().min(1).max(512),
+  edition: DingTalkEdition.default('mainland')
 })
 export type DingTalkCreateCredentials = z.infer<typeof DingTalkCreateCredentials>
+
+/** The edition a bot was installed on; rows from before the edition switch are mainland. */
+export function dingTalkEditionOf(bot: Pick<BotRecord, 'platformConfig'>): DingTalkEdition {
+  return DingTalkEdition.safeParse(bot.platformConfig?.edition).data ?? 'mainland'
+}
 
 /** The check refuses with 400 or 503 only, which the credential route relays as is. */
 export type DingTalkValidation = { ok: true; identity: CpValidatedIdentity } | (CpConfigRefusal & { status: 400 | 503 })
@@ -27,16 +33,29 @@ export async function verifyDingTalkApp(
   credentials: DingTalkCreateCredentials,
   fetchImpl: typeof fetch = fetch
 ): Promise<DingTalkValidation> {
-  // The mainland host first; a refusal there may be an international app, so the international host decides.
-  for (const url of DINGTALK_TOKEN_URLS) {
-    const answer = await exchange(url, credentials, fetchImpl)
-    if (answer === 'unavailable') return unavailable()
-    if (answer === 'ok')
-      return {
-        ok: true,
-        identity: { name: `DingTalk · ${credentials.clientId}`, externalAppId: credentials.clientId }
+  const answer = await exchange(DINGTALK_TOKEN_URLS[credentials.edition], credentials, fetchImpl)
+  if (answer === 'ok')
+    return {
+      ok: true,
+      identity: {
+        name: `DingTalk · ${credentials.clientId}`,
+        externalAppId: credentials.clientId,
+        platformConfig: { edition: credentials.edition }
       }
-  }
+    }
+  if (answer === 'unavailable') return unavailable()
+  // A refusal may be the other edition's app, which the console names so the member switches instead of copying again.
+  const other: DingTalkEdition = credentials.edition === 'mainland' ? 'international' : 'mainland'
+  if ((await exchange(DINGTALK_TOKEN_URLS[other], credentials, fetchImpl)) === 'ok')
+    return {
+      ok: false,
+      status: 400,
+      code: other === 'international' ? 'DINGTALK_APP_IS_INTERNATIONAL' : 'DINGTALK_APP_IS_MAINLAND',
+      message:
+        other === 'international'
+          ? 'This app belongs to DingTalk international. Switch the DingTalk tile to Intl and connect again.'
+          : 'This app belongs to mainland DingTalk. Switch the DingTalk tile to CN and connect again.'
+    }
   // `invalidClientIdOrSecret` is the documented refusal; any other definitive answer is no usable credential either.
   return {
     ok: false,
@@ -92,7 +111,7 @@ export function createDingTalkCpProvider(
     credentialBodySchema: DingTalkCreateCredentials,
     validateConfig: (credentials) => verifyDingTalkApp(credentials, fetchImpl),
     buildNewBotInstall: ({ credentials }) => ({
-      bot: { externalAppId: credentials.clientId },
+      bot: { externalAppId: credentials.clientId, platformConfig: { edition: credentials.edition } },
       secrets: { botToken: credentials.clientSecret, appToken: credentials.clientId, signingSecret: null },
       // The token exchange names no organization, so the fence is one bot per app under the tenantless sentinel.
       externalIdentity: {
@@ -101,14 +120,25 @@ export function createDingTalkCpProvider(
         conflictMessage: 'This DingTalk app is already installed. Reuse the existing bot.'
       }
     }),
-    projectBotIdentity: (input) =>
-      input.externalAppId ? { externalAppId: input.externalAppId, externalTenantId: TENANTLESS_SENTINEL } : {},
+    projectBotIdentity: (input) => {
+      if (!input.externalAppId) return {}
+      const edition = DingTalkEdition.safeParse(input.platformConfig?.edition).data
+      return {
+        externalAppId: input.externalAppId,
+        externalTenantId: TENANTLESS_SENTINEL,
+        ...(edition ? { platformConfig: { edition } } : {})
+      }
+    },
     secretShape: {
       slots: { botToken: 'DingTalk Client Secret', appToken: 'DingTalk Client ID (identifier, not a secret)' },
       httpAssignRequires: []
     },
     async projectIntegrationConfig(_integration, bot, _core, secrets): Promise<IntegrationDingTalkConfig> {
-      return { clientId: secrets.appToken ?? bot.externalAppId ?? '', clientSecret: secrets.botToken }
+      return {
+        clientId: secrets.appToken ?? bot.externalAppId ?? '',
+        clientSecret: secrets.botToken,
+        edition: dingTalkEditionOf(bot)
+      }
     }
   }
 }

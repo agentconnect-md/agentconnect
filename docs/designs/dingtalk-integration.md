@@ -74,16 +74,25 @@ organizations, developer consoles and OpenAPI hosts:
 An app's credentials work on its own edition's hosts only (**measured**: an
 international app's token exchange and Stream ticket succeed on `api.dingtalk.io`
 and answer `invalidClientIdOrSecret` and `authFailed` on `api.dingtalk.com`; the
-legacy `gettoken` agrees). So the edition is a property of the credentials, and
-nothing stores it: validation tries the mainland token endpoint, then the
-international one when the mainland refuses, and the daemon's first token
-exchange does the same and keeps the edition for every later call, the Stream
-ticket included.
+legacy `gettoken` agrees).
 
-The mainland console is in Chinese and the international one in English, so
-the Console's walkthrough and its developer-console link follow the Console
-language. The international console lists no card permission
-(**measured**), so its questions are the numbered text card (§4.6).
+The member picks the edition on the Console's DingTalk tile, the way Lark /
+Feishu picks its cloud: the brand on top and an edition switch below it
+(`Intl / CN`, `国际版 / 国内版`), because one line does not fit the tile. A new
+install starts on the edition of the Console language. The pick drives the
+walkthrough, the developer-console link and the credential check, which runs
+against that edition's token endpoint only; when it refuses, the other edition
+is tried, and an app that belongs there is refused with
+`DINGTALK_APP_IS_INTERNATIONAL` or `DINGTALK_APP_IS_MAINLAND`, so the member
+switches the tile rather than copying the credentials again. The edition is
+stored in the bot's `platformConfig` (absent means mainland, which every bot
+from before the switch is) and reaches the daemon in the integration config,
+which picks the `api.*` and `oapi.*` hosts from it. Reuse offers only free bots
+of the picked edition.
+
+The international console lists no card permission (**measured**), so its
+walkthrough leaves that step out and the daemon sends its questions as the
+numbered text card without trying a card (§4.6).
 
 ## 3. Architecture
 

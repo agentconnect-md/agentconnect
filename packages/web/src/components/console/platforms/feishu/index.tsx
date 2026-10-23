@@ -1,11 +1,12 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
+import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import type { WebPlatformModule } from '../contract'
 import { identityCards as identityCardsFor, inviteBotHint } from '../wizard-chrome'
 import { feishuApi, type FeishuApi } from './api'
 import { FeishuWizardBody, FEISHU_TRANSPORT_LABEL } from './Body'
 import { FeishuMark } from './mark'
-import { feishuAppLinkOrigin, feishuBrand, feishuRegionOf } from './region'
+import { feishuAppLinkOrigin, feishuBrand, feishuRegionOf, type FeishuRegion } from './region'
 import { feishuSettingsFragments } from './settings'
 
 /** Lark / Feishu's provider-native message id: an `om_`-prefixed opaque id,
@@ -33,6 +34,17 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
       transport: { labels: FEISHU_TRANSPORT_LABEL, httpByDefaultWhenRelayAvailable: false }
     },
     identityCards: (region) => (feishuBrand(region) === 'Lark' ? identityCardsFor('lark') : identityCardsFor('feishu')),
+    // New installs start on international Lark; the tile's Lark / Feishu word switches the cloud.
+    regions: {
+      initial: () => 'lark',
+      Switcher: ({ value, onSwitch, disabled }) => (
+        <LarkFeishuSwitcher
+          value={feishuRegionOf({ feishuRegion: value as FeishuRegion })}
+          onSwitch={onSwitch}
+          disabled={disabled}
+        />
+      )
+    },
     inviteHint: (region) =>
       inviteBotHint(
         'group',

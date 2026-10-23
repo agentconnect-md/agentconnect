@@ -1,60 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { DINGTALK_ORIGINS, DingTalkApi, DingTalkApiError } from '../src/platforms/dingtalk/api.js'
+import { DINGTALK_ORIGINS, DingTalkApi } from '../src/platforms/dingtalk/api.js'
+import { DingTalkConnection } from '../src/platforms/dingtalk/connection.js'
 
-const credentials = { clientId: 'client-id-example', clientSecret: 'secret' }
+const log = { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
-// Each edition's API host accepts only its own apps, as DingTalk answers a foreign app's credentials.
-function editions(home: 'mainland' | 'international' | 'none') {
+// Records each request's URL and answers the token and Stream calls.
+function recording() {
   const urls: string[] = []
   const fetchImpl = (async (url: string | URL | Request) => {
     urls.push(String(url))
-    const origin = Object.entries(DINGTALK_ORIGINS).find(([, o]) => String(url).startsWith(o.api))?.[0]
     if (String(url).endsWith('/v1.0/oauth2/accessToken'))
-      return origin === home
-        ? Response.json({ accessToken: `token-${home}`, expireIn: 7200 })
-        : Response.json({ code: 'invalidClientIdOrSecret', message: 'invalid' }, { status: 400 })
-    if (String(url).endsWith('/v1.0/gateway/connections/open'))
-      return Response.json({ endpoint: 'wss://stream.example.test', ticket: 'ticket-1' })
-    return Response.json({})
+      return Response.json({ accessToken: 'token-1', expireIn: 7200 })
+    return Response.json({ endpoint: 'wss://stream.example.test', ticket: 'ticket-1' })
   }) as typeof fetch
-  return { urls, api: new DingTalkApi(credentials, { fetchImpl }) }
+  return { urls, fetchImpl }
 }
 
 describe('DingTalk edition', () => {
-  it('stays on the mainland hosts for a mainland app', async () => {
-    const { urls, api } = editions('mainland')
-    expect(await api.accessToken()).toBe('token-mainland')
-    expect(api.edition).toBe('mainland')
-    expect(urls).toEqual([`${DINGTALK_ORIGINS.mainland.api}/v1.0/oauth2/accessToken`])
+  it('calls the mainland hosts when no edition is configured', async () => {
+    const { urls, fetchImpl } = recording()
+    const api = new DingTalkApi({ clientId: 'client-id-example', clientSecret: 'secret' }, { fetchImpl })
+    await api.openStream()
+    expect(api.oapiOrigin).toBe(DINGTALK_ORIGINS.mainland.oapi)
+    expect(urls).toEqual([`${DINGTALK_ORIGINS.mainland.api}/v1.0/gateway/connections/open`])
   })
 
-  it('moves to the international hosts when the mainland refuses the credentials', async () => {
-    const { urls, api } = editions('international')
-    expect(await api.accessToken()).toBe('token-international')
-    expect(api.edition).toBe('international')
-    expect([api.origin, api.oapiOrigin]).toEqual([
-      DINGTALK_ORIGINS.international.api,
-      DINGTALK_ORIGINS.international.oapi
-    ])
+  it('calls only the international hosts for an international app', async () => {
+    const { urls, fetchImpl } = recording()
+    const api = new DingTalkApi(
+      { clientId: 'client-id-example', clientSecret: 'secret', edition: 'international' },
+      { fetchImpl }
+    )
+    await api.accessToken()
     await api.openStream()
-    expect(urls.at(-1)).toBe(`${DINGTALK_ORIGINS.international.api}/v1.0/gateway/connections/open`)
-  })
-
-  it('finds the edition before opening the Stream', async () => {
-    const { urls, api } = editions('international')
-    await api.openStream()
+    expect(api.oapiOrigin).toBe(DINGTALK_ORIGINS.international.oapi)
     expect(urls.map((url) => new URL(url).origin)).toEqual([
-      DINGTALK_ORIGINS.mainland.api,
       DINGTALK_ORIGINS.international.api,
       DINGTALK_ORIGINS.international.api
     ])
   })
 
-  it('reports credentials neither edition accepts', async () => {
-    const { api } = editions('none')
-    const error = await api.accessToken().catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(DingTalkApiError)
-    expect((error as DingTalkApiError).code).toBe('invalidClientIdOrSecret')
-    expect(api.edition).toBe('mainland')
+  it('sends an international app no question cards', () => {
+    const group = (edition: 'mainland' | 'international') => ({
+      clientId: 'client-id-example',
+      clientSecret: 'secret',
+      edition,
+      integrations: []
+    })
+    const deps = { log, onMessage: () => {}, questionTemplate: 'template.schema' }
+    expect(new DingTalkConnection(group('mainland'), deps).cards).toBeDefined()
+    expect(new DingTalkConnection(group('international'), deps).cards).toBeUndefined()
   })
 })

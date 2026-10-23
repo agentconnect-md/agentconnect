@@ -52,7 +52,7 @@ afterEach(async () => {
 
 function connect(fetchImpl: typeof fetch) {
   const conn = new DingTalkConnection(
-    { clientId: CLIENT_ID, clientSecret: 'client-secret-example', integrations: [] },
+    { clientId: CLIENT_ID, clientSecret: 'client-secret-example', edition: 'mainland', integrations: [] },
     { log, onMessage: () => {}, fetchImpl, origin: ORIGIN }
   )
   connections.push(conn)

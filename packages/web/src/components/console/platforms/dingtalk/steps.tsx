@@ -4,15 +4,9 @@ import type { ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { BrowserBar, MiniScreen, type WalkthroughStep } from '../wizard-chrome'
+import { DINGTALK_CONSOLE_HOST, type DingTalkEdition } from './edition'
 
 type DingTalkStepsTranslator = ReturnType<typeof useTranslations<'Platforms.dingtalk.steps'>>
-
-/** The two editions' developer consoles: the mainland one in Chinese, the international one in English. */
-export const DINGTALK_CONSOLE_HOST = {
-  mainland: 'open-dev.dingtalk.com',
-  international: 'open-dev.dingtalk.io'
-} as const
-export type DingTalkConsole = keyof typeof DINGTALK_CONSOLE_HOST
 
 // The developer console's highlighted control in each mock screen.
 function Pulse({ children }: { children: ReactNode }) {
@@ -58,7 +52,7 @@ function AppPage({ nav, active, children }: { nav: string[]; active: string; chi
 }
 
 // The developer console from a new internal app to its credentials; built per locale so every label follows the console language.
-export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator, edition: DingTalkConsole): WalkthroughStep[] {
+export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator, edition: DingTalkEdition): WalkthroughStep[] {
   const host = DINGTALK_CONSOLE_HOST[edition]
   const strong = (chunks: ReactNode) => <span className="font-medium text-(--text-secondary)">{chunks}</span>
   const nav = [t('nav.credentials'), t('nav.robot'), t('nav.permissions'), t('nav.versions')]
