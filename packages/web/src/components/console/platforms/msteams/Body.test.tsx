@@ -144,6 +144,14 @@ describe('MsTeamsWizardBody', () => {
     )
     expect(text()).toContain('https://relay.example.test/msteams/messages')
     expect(text()).toContain('Azure Bot resource')
+    const walkthrough = host.querySelector('[role="group"][aria-label="Teams Developer Portal walkthrough"]')
+    expect([...(walkthrough?.querySelectorAll('button') ?? [])].map((el) => el.textContent?.slice(1))).toEqual([
+      'Create',
+      'URL',
+      'Secret',
+      'Bot ID',
+      'Tenant'
+    ])
     expect([...host.querySelectorAll('.fldlbl')].map((el) => el.textContent)).toEqual([
       'Messaging endpoint',
       'App (bot) ID',
