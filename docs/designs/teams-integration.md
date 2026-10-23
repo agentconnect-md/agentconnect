@@ -446,10 +446,14 @@ relay route is added to the chart's HTTPRoute in the same change.
   the relay fences each activity to a claimed tenant instead of the single
   `teamId`, and the daemon always signs outbound calls with the home tenant's
   token. The same multi-tenant Entra app can also be the deployment's
-  Microsoft sign-in application (§4.5), with its own secret per consumer, so a
-  customer consents once for both. Entra marks it unverified until publisher
-  verification, which tenants that only allow verified publishers require; a
-  Store listing has its own review and is optional.
+  Microsoft sign-in application (§4.5), with its own secret per consumer.
+  Installation and its resource-specific consent are separate from the Entra
+  consent the sign-in scopes need: installing creates the app's service
+  principal, but whether members can then sign in without a consent prompt, or
+  an administrator must grant the sign-in scopes for the tenant, is
+  **unverified**. Entra marks the app unverified until publisher verification,
+  which tenants that only allow verified publishers require; a Store listing
+  has its own review and is optional.
 
 - **Native streaming** in 1:1 chats (§4.3).
 - **Files**: 1:1 file consent cards, and Graph access for channel and group-chat
