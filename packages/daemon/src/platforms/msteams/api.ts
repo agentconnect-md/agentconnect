@@ -2,6 +2,8 @@
 
 /** The scope every Bot Connector token names; the token endpoint is the bot's own tenant's (§2). */
 export const MSTEAMS_TOKEN_SCOPE = 'https://api.botframework.com/.default'
+/** The scope of an app-only Microsoft Graph token, minted in the tenant whose resource-specific consent it carries. */
+export const MSTEAMS_GRAPH_SCOPE = 'https://graph.microsoft.com/.default'
 /** Renew the token this far before it expires, so no call races its expiry. */
 export const MSTEAMS_TOKEN_RENEW_MARGIN_MS = 5 * 60_000
 /** The Markdown dialect every send and edit names (§4.3). */
@@ -68,6 +70,8 @@ export interface MsTeamsCredentials {
 }
 
 export interface MsTeamsApiOptions {
+  /** The token scope; absent, the Bot Connector's. */
+  scope?: string
   fetchImpl?: typeof fetch
   now?: () => number
   sleep?: (ms: number) => Promise<void>
@@ -77,6 +81,11 @@ export interface MsTeamsApiOptions {
 /** The team's channels URL under a recorded serviceUrl, which the bot reads with its own token (no Graph permission). */
 export function msTeamsTeamChannelsUrl(serviceUrl: string, teamId: string): string {
   return new URL(`v3/teams/${encodeURIComponent(teamId)}/conversations`, serviceBase(serviceUrl)).toString()
+}
+
+/** The team's details URL under a recorded serviceUrl; it names the team's Microsoft 365 group, which Graph addresses it by. */
+export function msTeamsTeamUrl(serviceUrl: string, teamId: string): string {
+  return new URL(`v3/teams/${encodeURIComponent(teamId)}`, serviceBase(serviceUrl)).toString()
 }
 
 /** One page of a conversation's members under a recorded serviceUrl, read with the bot's own token. */
@@ -157,6 +166,7 @@ export class MsTeamsApi {
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
   private readonly random: () => number
+  private readonly scope: string
 
   constructor(
     private readonly credentials: MsTeamsCredentials,
@@ -166,6 +176,7 @@ export class MsTeamsApi {
     this.now = options.now ?? (() => Date.now())
     this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.random = options.random ?? (() => Math.random())
+    this.scope = options.scope ?? MSTEAMS_TOKEN_SCOPE
   }
 
   /** A live token: the cache until five minutes before expiry, else one shared request. */
@@ -189,7 +200,7 @@ export class MsTeamsApi {
           grant_type: 'client_credentials',
           client_id: appId,
           client_secret: clientSecret,
-          scope: MSTEAMS_TOKEN_SCOPE
+          scope: this.scope
         }).toString(),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       })
@@ -238,6 +249,20 @@ export class MsTeamsApi {
       if (typeof id !== 'string' || !id) return []
       return [{ id, ...(typeof name === 'string' && name ? { name } : {}) }]
     })
+  }
+
+  /** A team's Microsoft 365 group ID, which Graph addresses the team by; the activity's team ID is its thread ID. */
+  async teamGroupId(serviceUrl: string, teamId: string): Promise<string> {
+    const body = await this.request('GET', msTeamsTeamUrl(serviceUrl, teamId))
+    const id = typeof body.aadGroupId === 'string' ? body.aadGroupId : ''
+    if (!/^[0-9a-f-]{36}$/i.test(id))
+      throw new MsTeamsApiError('msteams: the team answered without its group ID', 'invalid')
+    return id
+  }
+
+  /** One read of a JSON resource, retried as every GET is. */
+  async read(url: string): Promise<Record<string, unknown>> {
+    return await this.request('GET', url)
   }
 
   /** A conversation's members, up to `max`; a shared channel refuses the bot this read (measured: HTTP 403). */
@@ -303,7 +328,7 @@ export class MsTeamsApi {
         }
         const { code, message } = errorOf(await readJson(res))
         err = new MsTeamsApiError(
-          `msteams: ${method} activity failed (HTTP ${res.status}${code ? ` ${code}` : ''})`,
+          `msteams: ${method} request failed (HTTP ${res.status}${code ? ` ${code}` : ''})`,
           classify(res.status, code, message),
           res.status,
           code,
@@ -311,7 +336,7 @@ export class MsTeamsApi {
         )
       } catch (thrown) {
         if (thrown instanceof MsTeamsApiError) throw thrown
-        err = new MsTeamsApiError(`msteams: ${method} activity did not answer`, 'ambiguous')
+        err = new MsTeamsApiError(`msteams: ${method} request did not answer`, 'ambiguous')
       }
       // A POST that may have landed is never sent again: a duplicate message is worse than a missing one.
       const retry = err.kind === 'rate_limited' || (method !== 'POST' && err.kind === 'ambiguous')

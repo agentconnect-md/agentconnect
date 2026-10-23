@@ -6,22 +6,34 @@ import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import { splitMarkdownByBytes } from '../../messages/split-markdown-bytes.js'
 import type {
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
   PlatformChannelInfo,
   PlatformChannelRef,
   PlatformConnection,
   PlatformMemberRef,
+  PlatformThreadMessage,
+  PlatformThreadWindow,
   PlatformUserProfile
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
 import type { WriteBudget } from '../write-budget.js'
 import {
+  MSTEAMS_GRAPH_SCOPE,
   MSTEAMS_TEXT_FORMAT,
   MSTEAMS_WRITE_TIMEOUT_MS,
   MsTeamsApi,
   MsTeamsApiError,
   type MsTeamsTarget
 } from './api.js'
+import {
+  MSTEAMS_GRAPH_PAGE_MAX,
+  MsTeamsGraph,
+  msTeamsSkiptoken,
+  type MsTeamsGraphMessage,
+  type MsTeamsHistorySource
+} from './graph.js'
 
 /** Every write into one conversation is spaced this far apart: Microsoft allows 1,800 an hour per conversation (§4.3). */
 export const MSTEAMS_CONVERSATION_INTERVAL_MS = 2_000
@@ -166,6 +178,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   /** Teams deep links come from the client, so the console URL is the fallback. */
   readonly workspaceUrl = ''
   private readonly api: MsTeamsApi
+  private readonly graph: MsTeamsGraph
+  /** Team thread ID → its Microsoft 365 group ID, which never changes; a failed read is forgotten. */
+  private readonly teamGroups = new Map<string, Promise<string>>()
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
   private readonly sendIntervalMs: number
@@ -201,6 +216,20 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       sleep: this.sleep,
       ...(deps.random ? { random: deps.random } : {})
     })
+    // A Graph token carries the consent of the tenant it is minted in, so it comes from the conversations' tenant, never the token tenant.
+    const { appId, tenantId, clientSecret } = group.config
+    this.graph = new MsTeamsGraph(
+      new MsTeamsApi(
+        { appId, tenantId, clientSecret },
+        {
+          scope: MSTEAMS_GRAPH_SCOPE,
+          ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+          now: this.now,
+          sleep: this.sleep,
+          ...(deps.random ? { random: deps.random } : {})
+        }
+      )
+    )
     const budget = deps.budget
     this.writeGate = budget ? () => budget.take() : undefined
   }
@@ -396,6 +425,129 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   async downloadFile(_ref: string, _maxBytes?: number): Promise<Buffer | null> {
     return null
   }
+
+  // ── 4. history: Graph reads under the package's resource-specific consent, for conversations the bot has seen ──
+
+  /** One newest-first page of a channel's posts or a group chat's messages, at most 50, within the inclusive bounds. */
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    const source = await this.historySource(channel)
+    const top = Math.min(Math.max(Math.trunc(options.limit ?? MSTEAMS_GRAPH_PAGE_MAX), 1), MSTEAMS_GRAPH_PAGE_MAX)
+    const oldest = historyBoundMs(options.oldest)
+    const latest = historyBoundMs(options.latest)
+    const page = await this.graph.page(source, {
+      top,
+      ...(options.cursor ? { skiptoken: msTeamsSkiptoken(options.cursor) } : {})
+    })
+    // Only a chat lists by creation; a channel lists by its threads' last activity, so an old post never ends its pages.
+    const passedOldest =
+      source.kind === 'chat' && page.messages.some((m) => oldest !== undefined && m.createdMs < oldest)
+    const nextCursor = passedOldest ? undefined : page.skiptoken
+    const messages = page.messages
+      .filter((m) => (oldest === undefined || m.createdMs >= oldest) && (latest === undefined || m.createdMs <= latest))
+      .sort(newestFirst)
+      .map((m) => ({
+        sender: m.sender,
+        ts: m.id,
+        text: m.text,
+        isBot: m.isBot,
+        // Every channel post roots a thread named by its own ID; a group chat has no threads.
+        ...(source.kind === 'channel' ? { threadTs: m.id } : {}),
+        ...(m.link ? { link: m.link } : {})
+      }))
+    return { messages, hasMore: nextCursor !== undefined, ...(nextCursor ? { nextCursor } : {}) }
+  }
+
+  /** A channel thread's root, then its newest replies within the exclusive bounds, oldest first; best-effort unless `throwOnError`. */
+  async getThreadReplies(
+    channel: string,
+    thread: string,
+    maxMessages = 200,
+    window?: PlatformThreadWindow
+  ): Promise<PlatformThreadMessage[]> {
+    try {
+      const source = await this.historySource(channel)
+      if (source.kind !== 'channel')
+        throw new MsTeamsApiError('msteams: a group chat has no threads; read its messages as its history', 'invalid')
+      if (!/^\d+$/.test(thread))
+        throw new MsTeamsApiError('msteams: a thread is named by its root post’s ID', 'invalid')
+      const root = await this.graph.message(source, thread)
+      if (!root) throw new MsTeamsApiError('msteams: the thread is not found', 'not_found')
+      const cap = Math.max(Math.trunc(maxMessages), 1) - 1
+      const oldest = historyBoundMs(window?.oldest)
+      const latest = historyBoundMs(window?.latest)
+      // Replies come newest first by creation or last change; one last changed before the oldest bound ends the read under either order.
+      const replies: MsTeamsGraphMessage[] = []
+      let skiptoken: string | undefined
+      let passedOldest = false
+      while (cap > 0) {
+        const page = await this.graph.page(source, {
+          rootId: thread,
+          top: MSTEAMS_GRAPH_PAGE_MAX,
+          ...(skiptoken ? { skiptoken } : {})
+        })
+        for (const m of page.messages) {
+          if (oldest !== undefined && m.modifiedMs <= oldest) passedOldest = true
+          if ((oldest === undefined || m.createdMs > oldest) && (latest === undefined || m.createdMs < latest))
+            replies.push(m)
+        }
+        skiptoken = page.skiptoken
+        if (!skiptoken || passedOldest || replies.length > cap) break
+      }
+      if (window?.readState && replies.length > cap) window.readState.truncated = true
+      return [root, ...replies.sort(newestFirst).slice(0, cap).reverse()].map((m) => this.threadMessage(m))
+    } catch (err) {
+      this.deps.log?.debug(`msteams: reading a thread failed: ${(err as Error).message}`)
+      if (window?.throwOnError) throw err
+      return []
+    }
+  }
+
+  // A history row; this bot's own card is a question or approval, chrome rather than conversation.
+  private threadMessage(m: MsTeamsGraphMessage): PlatformThreadMessage {
+    return {
+      sender: m.sender,
+      ts: m.id,
+      text: m.text,
+      isBot: m.isBot,
+      chrome: m.isBot && m.appId === this.appId && m.card,
+      ...(m.appId ? { appId: m.appId } : {}),
+      attachments: [],
+      ...(m.link ? { link: m.link } : {})
+    }
+  }
+
+  // Where a seen conversation's messages are read; a 1:1 chat has no history this consent reaches.
+  private async historySource(channel: string): Promise<MsTeamsHistorySource> {
+    const known = this.conversations.get(channel)
+    if (!known) throw new MsTeamsApiError('msteams: the conversation is unknown to this bot', 'not_found')
+    if (known.kind === 'chat') return { kind: 'chat', chatId: channel }
+    if (known.kind === 'personal') throw new MsTeamsApiError('msteams: a 1:1 chat’s history cannot be read', 'invalid')
+    if (!known.teamId) throw new MsTeamsApiError('msteams: the channel’s team is unknown', 'not_found')
+    let groupId = this.teamGroups.get(known.teamId)
+    if (!groupId) {
+      const teamId = known.teamId
+      groupId = this.api.teamGroupId(known.serviceUrl, teamId)
+      groupId.catch(() => this.teamGroups.delete(teamId))
+      remember(this.teamGroups, teamId, groupId, CONVERSATIONS_MAX)
+    }
+    return { kind: 'channel', groupId: await groupId, channelId: channel }
+  }
+}
+
+// A history bound as epoch milliseconds; a message ID is one, and seconds are accepted as Slack-style timestamps are.
+function historyBoundMs(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0)
+    throw new MsTeamsApiError('msteams: a history bound is a message ID or a timestamp', 'invalid')
+  return value < 1e11 ? Math.round(value * 1000) : value
+}
+
+function newestFirst(a: MsTeamsGraphMessage, b: MsTeamsGraphMessage): number {
+  return b.createdMs - a.createdMs
 }
 
 function activityOf(text: string): Record<string, unknown> {
