@@ -34,7 +34,13 @@ afterEach(async () => {
 })
 
 async function harness(
-  opts: { held?: Partial<BotRecord>; app?: MsTeamsPlatformApp | null; tid?: string; publish?: number } = {}
+  opts: {
+    held?: Partial<BotRecord>
+    app?: MsTeamsPlatformApp | null
+    tid?: string
+    publish?: number
+    organization?: string | null
+  } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
   // Every write in the order it ran, Graph and repository alike.
@@ -52,6 +58,10 @@ async function harness(
         : Response.json({ id: 'catalog-1' }, { status: 201 })
     }
     if (url.includes('/me/joinedTeams')) return Response.json({ value: [{ id: 'team-1', displayName: 'Engineering' }] })
+    if (url.includes('/organization'))
+      return opts.organization === null
+        ? new Response(null, { status: 403 })
+        : Response.json({ value: [{ displayName: opts.organization ?? 'Example Org' }] })
     if (url.includes('/installedApps')) return new Response(null, { status: 201 })
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
@@ -162,6 +172,7 @@ describe('the deployment Teams app routes', () => {
         platform: 'msteams',
         transport: 'http',
         prebuilt: true,
+        name: 'Microsoft Teams · Example Org',
         externalAppId: APP.appId,
         platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId }
       })
@@ -174,6 +185,7 @@ describe('the deployment Teams app routes', () => {
     expect(h.graph.map((call) => `${call.method} ${call.url.split('?')[0]}`)).toEqual([
       'GET https://graph.microsoft.com/v1.0/appCatalogs/teamsApps',
       'POST https://graph.microsoft.com/v1.0/appCatalogs/teamsApps',
+      'GET https://graph.microsoft.com/v1.0/organization',
       'GET https://graph.microsoft.com/v1.0/me/joinedTeams'
     ])
     expect(JSON.stringify(res.json())).not.toContain('delegated')
@@ -228,6 +240,12 @@ describe('the deployment Teams app routes', () => {
     expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT, botId: BOT }))
     expect(h.credentialInstall).toHaveBeenCalled()
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
+  })
+
+  it('names the row after the tenant when Graph answers no organization name', async () => {
+    const h = await harness({ organization: null })
+    expect((await h.callback()).statusCode).toBe(200)
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ name: `Microsoft Teams · ${CUSTOMER}` }))
   })
 
   it('refuses a personal Microsoft account', async () => {

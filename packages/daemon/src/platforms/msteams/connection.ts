@@ -120,9 +120,16 @@ export interface MsTeamsCardPort {
 interface KnownConversation {
   serviceUrl: string
   kind: 'personal' | 'chat' | 'channel'
-  /** A 1:1 chat's counterpart; group chats and channels arrive unnamed. */
+  /** A 1:1 chat's counterpart, or a channel's name read from its team; group chats stay unnamed. */
   name?: string
+  /** A channel's enclosing team, whose channel list names it. */
+  teamId?: string
 }
+
+/** What Teams answers unnamed in a team's channel list: the default channel, which its client calls General. */
+const DEFAULT_CHANNEL_NAME = 'General'
+/** How long a team's channel names are trusted, and how long a failed read waits before trying again. */
+const TEAM_CHANNELS_TTL_MS = 10 * 60_000
 
 export interface MsTeamsDeps {
   group: MsTeamsConnectionGroup
@@ -164,6 +171,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly conversations = new Map<string, KnownConversation>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
   private readonly names = new Map<string, string>()
+  /** Team → its channel names and when they were read; a read in flight is shared. */
+  private readonly teamChannels = new Map<string, { at: number; names: Promise<Map<string, string>> }>()
   /** Conversation + card activity ID → where it landed; an activity ID is unique only within its conversation (§4.2). */
   private readonly cards = new Map<string, MsTeamsTarget>()
   private readonly writeGate: (() => Promise<void>) | undefined
@@ -212,11 +221,14 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const target = msTeamsTargetOf(msg)
     if (!target) return
     const kind = msg.isDm ? 'personal' : target.conversationId.includes(';messageid=') ? 'channel' : 'chat'
-    const name = kind === 'personal' ? msg.sender.name : this.conversations.get(msg.channel)?.name
+    const known = this.conversations.get(msg.channel)
+    const name = kind === 'personal' ? msg.sender.name : known?.name
+    const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as { teamId?: unknown } | undefined
+    const teamId = kind === 'channel' && typeof ext?.teamId === 'string' ? ext.teamId : known?.teamId
     remember(
       this.conversations,
       msg.channel,
-      { serviceUrl: target.serviceUrl, kind, ...(name ? { name } : {}) },
+      { serviceUrl: target.serviceUrl, kind, ...(name ? { name } : {}), ...(teamId ? { teamId } : {}) },
       CONVERSATIONS_MAX
     )
     const members = this.members.get(msg.channel) ?? new Map<string, string | undefined>()
@@ -294,7 +306,30 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
     const known = this.conversations.get(channel)
     const isIm = known ? known.kind === 'personal' : channel.startsWith('a:')
-    return { id: channel, ...(known?.name ? { name: known.name } : {}), isIm, isPrivate: true }
+    const name = known?.name ?? (known?.kind === 'channel' ? await this.channelName(channel, known) : undefined)
+    return { id: channel, ...(name ? { name } : {}), isIm, isPrivate: true }
+  }
+
+  // A channel's name from its team's channel list, read at most once per TTL per team; a failed read names nothing.
+  private async channelName(channel: string, known: KnownConversation): Promise<string | undefined> {
+    const { teamId, serviceUrl } = known
+    if (!teamId) return undefined
+    let entry = this.teamChannels.get(teamId)
+    if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
+      const names = this.api.teamChannels(serviceUrl, teamId).then(
+        (channels) => new Map(channels.map((c) => [c.id, c.name ?? DEFAULT_CHANNEL_NAME])),
+        (err: unknown) => {
+          this.deps.log?.debug(`msteams: reading a team's channels failed: ${(err as Error).message}`)
+          return new Map<string, string>()
+        }
+      )
+      entry = { at: this.now(), names }
+      remember(this.teamChannels, teamId, entry, CONVERSATIONS_MAX)
+    }
+    const name = (await entry.names).get(channel)
+    const current = this.conversations.get(channel)
+    if (name && current) remember(this.conversations, channel, { ...current, name }, CONVERSATIONS_MAX)
+    return name
   }
 
   async listMembers(channel: string): Promise<PlatformMemberRef[]> {

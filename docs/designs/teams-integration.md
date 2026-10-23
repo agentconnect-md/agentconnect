@@ -178,6 +178,12 @@ relay reads a mention as addressing the bot only through the assignment's
 `28:<appId>`, so a channel's first contact is a mention: it reaches the daemon,
 which registers the channel for the Console, Off where the agent is gated.
 
+A channel's messages carry its ID but not its name, so the daemon names a
+channel from its team's channel list, `GET {serviceUrl}/v3/teams/{teamId}/conversations`,
+read with the bot's own token at most once per team every ten minutes. Teams
+answers the default channel, whose ID is the team's, unnamed (**measured**), and the Console shows it as **General**,
+as the Teams client does. A failed read leaves the ID until the next one.
+
 Identity is tenant-scoped: `from.aadObjectId` with the tenant ID identifies a
 person, and `from.id` is specific to the bot. Display names are for display
 only. Email and user principal name are available from the conversation member
@@ -522,7 +528,8 @@ rather than a Console rotation.
    of the agent). The Control Plane signs a state of the organization, the
    agent, the caller and an expiry of ten minutes, and returns Microsoft's
    `organizations` authorize URL for the deployment app with the three scopes
-   of §8.1 plus `openid`, a PKCE challenge whose verifier only the Control
+   of §8.1, `User.Read` (the organization's display name, which names the
+   integration in the Console), and `openid`, a PKCE challenge whose verifier only the Control
    Plane can derive from the state, and the Console's
    `/msteams/connect` page as the redirect URI.
 2. **Exchange.** That page posts the code and state back

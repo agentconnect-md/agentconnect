@@ -73,8 +73,13 @@ export interface MsTeamsApiOptions {
   random?: () => number
 }
 
-/** The activities URL under a recorded serviceUrl; the conversation ID is encoded because a channel's carries `;messageid=`. */
-export function msTeamsActivitiesUrl(serviceUrl: string, conversationId: string, activityId?: string): string {
+/** The team's channels URL under a recorded serviceUrl, which the bot reads with its own token (no Graph permission). */
+export function msTeamsTeamChannelsUrl(serviceUrl: string, teamId: string): string {
+  return new URL(`v3/teams/${encodeURIComponent(teamId)}/conversations`, serviceBase(serviceUrl)).toString()
+}
+
+// A recorded serviceUrl as a base, refused unless it is a plain https origin and path.
+function serviceBase(serviceUrl: string): URL {
   let base: URL
   try {
     base = new URL(serviceUrl.endsWith('/') ? serviceUrl : `${serviceUrl}/`)
@@ -83,6 +88,12 @@ export function msTeamsActivitiesUrl(serviceUrl: string, conversationId: string,
   }
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash)
     throw new MsTeamsApiError('the conversation has no usable service URL', 'invalid')
+  return base
+}
+
+/** The activities URL under a recorded serviceUrl; the conversation ID is encoded because a channel's carries `;messageid=`. */
+export function msTeamsActivitiesUrl(serviceUrl: string, conversationId: string, activityId?: string): string {
+  const base = serviceBase(serviceUrl)
   const path = `v3/conversations/${encodeURIComponent(conversationId)}/activities${activityId ? `/${encodeURIComponent(activityId)}` : ''}`
   return new URL(path, base).toString()
 }
@@ -209,6 +220,17 @@ export class MsTeamsApi {
     await this.request('PUT', url, { ...activity, id: activityId })
   }
 
+  /** A team's channels by ID; Teams names every channel but the default one, which it answers unnamed. */
+  async teamChannels(serviceUrl: string, teamId: string): Promise<{ id: string; name?: string }[]> {
+    const body = await this.request('GET', msTeamsTeamChannelsUrl(serviceUrl, teamId))
+    const list = Array.isArray(body.conversations) ? (body.conversations as unknown[]) : []
+    return list.flatMap((entry) => {
+      const { id, name } = (entry ?? {}) as { id?: unknown; name?: unknown }
+      if (typeof id !== 'string' || !id) return []
+      return [{ id, ...(typeof name === 'string' && name ? { name } : {}) }]
+    })
+  }
+
   /** Delete a posted activity; one already gone counts as deleted. */
   async deleteActivity(target: MsTeamsTarget, activityId: string): Promise<void> {
     try {
@@ -218,9 +240,9 @@ export class MsTeamsApi {
     }
   }
 
-  /** One call: 429 and 412 retry for every method, 502, 504 and no answer only for the idempotent PUT and DELETE, honoring `Retry-After`. */
+  /** One call: 429 and 412 retry for every method, 502, 504 and no answer only for the idempotent GET, PUT and DELETE, honoring `Retry-After`. */
   private async request(
-    method: 'POST' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     url: string,
     body?: unknown
   ): Promise<Record<string, unknown>> {

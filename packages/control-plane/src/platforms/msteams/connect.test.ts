@@ -54,6 +54,7 @@ describe('Teams connect state', () => {
       'https://graph.microsoft.com/AppCatalog.ReadWrite.All',
       'https://graph.microsoft.com/Team.ReadBasic.All',
       'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForTeam',
+      'https://graph.microsoft.com/User.Read',
       'openid'
     ])
     const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
