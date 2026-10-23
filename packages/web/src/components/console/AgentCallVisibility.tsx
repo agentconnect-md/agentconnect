@@ -343,7 +343,10 @@ export function AgentCallVisibility({
                     key={peer.id}
                     type="button"
                     disabled={!editable || busy}
-                    onClick={() => toggleAgent(peer.id)}
+                    onClick={() => {
+                      setQuery('')
+                      toggleAgent(peer.id)
+                    }}
                     className="flex min-h-12 w-full cursor-pointer items-center gap-[10px] border-0 bg-(--surface-card) px-3 py-2 text-left hover:bg-(--surface-hover) disabled:cursor-default disabled:hover:bg-(--surface-card)"
                   >
                     <span className="flex h-7 w-7 flex-none items-center justify-center rounded-sm border border-(--border-subtle) bg-(--surface-sunken) [&>svg]:h-full [&>svg]:w-full">
