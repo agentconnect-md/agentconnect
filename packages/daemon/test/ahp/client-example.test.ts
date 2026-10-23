@@ -3,7 +3,10 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import WebSocket from 'ws'
+import { AhpClient, RpcError } from '@microsoft/agent-host-protocol/client'
+import { WebSocketTransport } from '@microsoft/agent-host-protocol/ws'
 import {
   ActionType,
   MessageKind,
@@ -12,7 +15,9 @@ import {
   SessionStatus,
   chatReducer,
   type ChatAction,
+  type ActionEnvelope,
   type ChatState,
+  type RootState,
   type SessionState
 } from '@microsoft/agent-host-protocol'
 import type { RdAhpOpen, RdAhpMessage, RdAhpClose } from '@agentconnect.md/protocol'
@@ -31,7 +36,7 @@ afterEach(async () => {
 })
 
 // Real public route and protocol connection; CP verdict and execution are explicit fixture replacements.
-async function fixture() {
+async function fixture(preauth?: { deadlineMs: number; maxMessages: number }) {
   let watermark = 0
   const journal = await AhpActionJournal.create({
     reserve: async (size) => ({ start: watermark + 1, end: (watermark += size) })
@@ -112,20 +117,22 @@ async function fixture() {
     }
   }
   const hosts = new Map<string, AhpHostConnection>()
+  let opens = 0
   const listeners = new Map<string, (frame: RdAhpMessage | RdAhpClose) => void>()
   const carrier = {
     state: 'READY',
     supports: () => true,
     authorizeAhp: async (input: RdAhpOpen) => {
-      if (!hosts.has(input.attachmentId))
-        hosts.set(
-          input.attachmentId,
-          new AhpHostConnection({
-            port,
-            send: (message) => listeners.get(input.attachmentId)?.({ attachmentId: input.attachmentId, message }),
-            close: (reason) => listeners.get(input.attachmentId)?.({ attachmentId: input.attachmentId, reason })
-          })
-        )
+      if (!hosts.has(input.attachmentId)) {
+        const host = new AhpHostConnection({
+          port,
+          send: (message) => listeners.get(input.attachmentId)?.({ attachmentId: input.attachmentId, message }),
+          close: (reason) => listeners.get(input.attachmentId)?.({ attachmentId: input.attachmentId, reason })
+        })
+        hosts.set(input.attachmentId, host)
+        opens++
+        if (input.handshake) await host.adopt(input.handshake)
+      }
       return true
     },
     sendAhp: (frame: RdAhpMessage | RdAhpClose) => {
@@ -145,6 +152,7 @@ async function fixture() {
   const verified: Array<{ credential: string; agentId: string; kind: string }> = []
   const server = createServer()
   const edge = createAhpServer({ server } as Parameters<typeof createAhpServer>[0], {
+    ...(preauth ? { preauth } : {}),
     mode: () => 'on',
     daemon: () => carrier,
     verify: async (credential, agentId, kind) => {
@@ -178,6 +186,7 @@ async function fixture() {
   return {
     url: `ws://127.0.0.1:${address.port}/ahp/agents/${AGENT}`,
     verified,
+    opens: () => opens,
     counts: () => ({ creates, dispatches })
   }
 }
@@ -219,4 +228,100 @@ it('refuses URL credentials before dialing and sanitizes failure output', async 
       env: { ...process.env, AHP_URL: `ws://127.0.0.1:1/ahp/agents/${AGENT}?key=${secret}`, AHP_API_KEY: KEY }
     })
   ).rejects.toMatchObject({ code: 1, stderr: expect.not.stringContaining(secret) })
+})
+
+it('authenticates an official SDK client in-band, without headers, and completes a turn', async () => {
+  const host = await fixture()
+  const client = new AhpClient(await WebSocketTransport.connect(host.url, { protocols: ['ahp'] }), {
+    requestTimeoutMs: 5000
+  })
+  client.connect()
+  const actions: ActionEnvelope[] = []
+  const events = (async () => {
+    for await (const item of client.events()) if (item.event.type === 'action') actions.push(item.event.params)
+  })()
+  cleanups.push(async () => {
+    await client.shutdown()
+    await events
+  })
+  const hello = await client.initialize({
+    clientId: 'third-party',
+    protocolVersions: ['1.0.0'],
+    initialSubscriptions: ['ahp-root://']
+  })
+  const [agent] = (hello.snapshots[0]!.state as RootState).agents
+  const resource = agent!.protectedResources![0]!.resource
+  expect(agent!.provider).toBe(AGENT)
+  expect(resource).toBe(host.url.replace('ws://', 'https://'))
+  expect(host.opens()).toBe(0)
+  expect(await client.request('authenticate', { channel: 'ahp-root://', resource, token: KEY })).toEqual({})
+  expect(host.verified).toEqual([{ credential: KEY, agentId: AGENT, kind: 'ahp-client-key' }])
+  await vi.waitFor(() =>
+    expect(actions[0]?.action).toMatchObject({
+      type: ActionType.RootAgentsChanged,
+      agents: [{ provider: AGENT, displayName: 'Fixture agent' }]
+    })
+  )
+  await client.request('createSession', { channel: 'ahp-session:/third-party', provider: AGENT })
+  client.dispatch('ahp-chat:/third-party/main', {
+    type: ActionType.ChatTurnStarted,
+    turnId: 'turn',
+    startedAt: new Date().toISOString(),
+    message: { text: 'Hello', origin: { kind: MessageKind.User } }
+  })
+  await vi.waitFor(() => expect(actions.map((envelope) => envelope.action.type)).toContain(ActionType.ChatTurnComplete))
+  expect(actions).toContainEqual(
+    expect.objectContaining({
+      action: expect.objectContaining({ part: expect.objectContaining({ content: 'Hello through the relay.' }) })
+    })
+  )
+  expect(host.counts()).toEqual({ creates: 1, dispatches: 1 })
+})
+
+it('refuses other methods, a bad key and a stalled handshake before any daemon attachment', async () => {
+  const host = await fixture({ deadlineMs: 300, maxMessages: 8 })
+  const raw = async () => {
+    const socket = new WebSocket(host.url, ['ahp'])
+    const replies: any[] = []
+    socket.on('message', (data) => replies.push(JSON.parse(String(data))))
+    const closed = once(socket, 'close').then(([code]) => code as number)
+    await once(socket, 'open')
+    let id = 0
+    const request = async (method: string, params: unknown) => {
+      const requestId = ++id
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }))
+      await vi.waitFor(() => expect(replies.find((reply) => reply.id === requestId)).toBeDefined())
+      return replies.find((reply) => reply.id === requestId)
+    }
+    const initialize = () =>
+      request('initialize', { channel: 'ahp-root://', clientId: 'third-party', protocolVersions: ['1.0.0'] })
+    return { request, initialize, closed }
+  }
+  const resource = host.url.replace('ws://', 'https://')
+  const early = await raw()
+  await early.initialize()
+  expect((await early.request('listSessions', { channel: 'ahp-root://' })).error).toMatchObject({
+    code: -32007,
+    data: { resources: [{ resource }] }
+  })
+  expect(await early.closed).toBe(4401)
+  const wrong = await raw()
+  await wrong.initialize()
+  const refused = await wrong.request('authenticate', { channel: 'ahp-root://', resource, token: 'bad-key' })
+  expect(refused.error).toMatchObject({ code: -32007, message: 'Invalid credential' })
+  expect(JSON.stringify(refused)).not.toContain('bad-key')
+  expect(await wrong.closed).toBe(4401)
+  const stalled = await raw()
+  await stalled.initialize()
+  expect(await stalled.closed).toBe(4401)
+  const sdk = new AhpClient(await WebSocketTransport.connect(host.url, { protocols: ['ahp'] }), {
+    requestTimeoutMs: 5000
+  })
+  sdk.connect()
+  cleanups.push(() => sdk.shutdown())
+  const rejected = await sdk.request('listSessions', { channel: 'ahp-root://' }).catch((error: unknown) => error)
+  expect(rejected).toBeInstanceOf(RpcError)
+  expect((rejected as RpcError).code).toBe(-32007)
+  expect(host.verified.map((item) => item.credential)).toEqual(['bad-key'])
+  expect(host.opens()).toBe(0)
 })

@@ -316,6 +316,11 @@ export class AhpService {
         send: wire.send,
         close: (reason) => this.remove(key, attachment, reason)
       })
+      if (input.handshake) await attachment.connection.adopt(input.handshake)
+      if (!valid()) {
+        this.remove(key, attachment, 'unauthorized')
+        return false
+      }
       this.expire(key, attachment)
       return true
     } catch {

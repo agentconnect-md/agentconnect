@@ -6,6 +6,8 @@ describe ownership; this page records deployment controls and release checks.
 Enabling the endpoint does not establish compatibility with every AHP client.
 The [official SDK CLI example](../packages/daemon/examples/README.md) connects
 through the public relay using a personal-key header and no private client SDK.
+Clients that cannot set headers, including the official SDK's WebSocket
+transport, authenticate in-band with the standard `authenticate` command.
 
 ## Controls and admission
 
@@ -20,6 +22,7 @@ through the public relay using a personal-key header and no private client SDK.
 | Control Plane        | `PUBLIC_RELAY_URL`              | unset                           | Public relay origin used for bootstrap; use HTTPS/WSS in deployment.                       |
 | Each agent           | AHP API entry                   | absent                          | Explicitly permits this protocol for the agent.                                            |
 | Serving daemon       | `api-ahp-v1` capability         | absent unless wired and enabled | Independently checked during admission and placement resolution.                           |
+| Serving daemon       | `api-ahp-handshake-v1`          | advertised with `api-ahp-v1`    | Required for in-band `authenticate`; header and browser-token attachments do not need it.  |
 
 The daemon switch belongs in `config.json` under `AGENTCONNECT_ROOT` (normally
 `~/.agentconnect`). It is not a daemon `AHP_MODE` environment override:
@@ -83,12 +86,43 @@ The endpoint is `wss://<relay-origin>/ahp/agents/<agent-uuid>`. It carries stand
 AHP JSON-RPC text, without public `rd/*` envelopes. Keep any deployment routing
 prefix consistent with bootstrap and proxy rewrites. Query strings are rejected.
 
-Native clients send:
+Native clients that can set upgrade headers send:
 
 ```http
 Authorization: Bearer <personal-user-api-key>
 Sec-WebSocket-Protocol: ahp
 ```
+
+Clients that cannot set headers offer only `Sec-WebSocket-Protocol: ahp` and
+authenticate in-band. The relay admits that upgrade into a pre-authentication
+state it answers itself; nothing reaches a daemon until the key is verified:
+
+1. `initialize` returns protocol `1.0.0`, `serverSeq: 0` and, when the client
+   subscribes to `ahp-root://`, a placeholder agent whose `protectedResources`
+   names `https://<dialed-host>/ahp/agents/<agent-uuid>`. Other initial
+   subscriptions are dropped as unauthorized.
+2. `authenticate` with that `resource` and a full personal API key as `token`
+   is verified through the same `rc/verify(ahp-client-key)` rules as the header.
+   Success returns `{}`; the daemon then adopts the client and replaces the
+   placeholder with a `root/agentsChanged` action. Grant renewal and expiry
+   match the header path, rechecking the pushed key.
+3. A refused `reconnect` returns `AuthRequired` (`-32007`) and keeps the socket,
+   so resuming clients fall back to `initialize`. Any other request returns
+   `-32007` with the protected resource and closes with 4401; notifications
+   close too. A bad key returns `-32007` and closes with 4401; an unadvertised
+   resource returns `-32602` and closes with 1008. One attempt per socket.
+4. The pre-authentication window closes with 4401 after 30 seconds and with 1008
+   after 8 messages. Each relay holds at most 64 such sockets. Requests sent
+   after `authenticate` wait for its verdict and are forwarded only on success.
+
+The relay's own `initialize` answer omits the daemon's `_meta` extension flags;
+first-party clients use the header or browser-token paths.
+
+With [ahpc](https://www.npmjs.com/package/@softov/ahpc), export the key in
+`AHPC_TOKEN_<RESOURCE>` (the resource with its scheme removed and every other
+non-alphanumeric run replaced by `_`, uppercased) or pipe it to
+`ahpc --host <endpoint> auth <resource>`; never pass it with `--token`, which
+exposes it in process listings.
 
 First-party browser clients obtain a short-lived, conversation-bound token from
 the existing CP mint routes with `protocol: "ahp"`. The signed claim must permit
@@ -173,6 +207,7 @@ stream cursors or automatically resend an uncertain action across protocols.
   core third-party conversation must work without first-party extensions.
 
 Before upgrade, HTTP 401 means authorization failed and 503 means unavailable.
+A credential-less upgrade without the `ahp` subprotocol is refused with 401.
 After upgrade, authorization expiry/revocation closes with 4401; overload or
 service loss uses 1013. Surface failures and reattach through normal authenticated
 bootstrap; do not reinterpret an AHP socket as legacy.

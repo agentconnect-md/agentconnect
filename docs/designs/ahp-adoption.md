@@ -179,6 +179,18 @@ The initial full AHP profile accepts CP-issued `full` API keys in the WSS
 `Authorization: Bearer` header, still subject to the holder's role, session
 audience, continuation/approval policy, and the agent's enabled AHP API entry.
 It does not bypass authorization merely because the key is `full`.
+Clients that cannot set upgrade headers, including the official SDK's WebSocket
+transport, use AHP's own authentication instead: a credential-less upgrade
+offering the `ahp` subprotocol enters a relay-owned pre-authentication state.
+There the relay answers `initialize` with the endpoint as a required
+`AgentInfo.protectedResources` entry and accepts one `authenticate` carrying the
+same full personal key, verified through the same `rc/verify(ahp-client-key)`
+rules. Any other request refuses with `AuthRequired` and closes; a deadline and a
+message budget bound the window. On success the relay opens the daemon attachment
+with a handshake (`clientId`, root subscription), and a daemon advertising
+`api-ahp-handshake-v1` adopts that client and replaces the placeholder agent
+through `root/agentsChanged`. Renewal re-verifies the pushed key exactly as it
+re-verifies a header key. Keys never travel in URLs.
 Today's `agent:chat` profile covers a narrower turn API; it must not silently gain
 catalog/history, cancellation, configuration, or other Webchat operations.
 Reject `read` and `agent:chat` keys for this initial profile; a later restricted

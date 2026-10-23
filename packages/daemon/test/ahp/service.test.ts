@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
-import { SessionStatus, ActionType, AhpErrorCodes } from '@microsoft/agent-host-protocol'
+import {
+  SessionStatus,
+  ActionType,
+  AhpErrorCodes,
+  JsonRpcErrorCodes,
+  MessageKind
+} from '@microsoft/agent-host-protocol'
 import type { AhpAttachmentAuthorization, AhpSessionBinding, RdAhpOpen } from '@agentconnect.md/protocol'
 import { AhpService, chatChannel, type AhpServiceOptions } from '../../src/ahp/service.js'
 
@@ -56,8 +62,13 @@ function fixture(overrides: Partial<AhpServiceOptions> = {}) {
   }
   const service = new AhpService(options)
   disposals.push(() => service.dispose())
-  const connect = async (authorization = auth, connection = 'transport', attachmentId = randomUUID()) => {
-    const input: RdAhpOpen = { attachmentId, authorization }
+  const connect = async (
+    authorization = auth,
+    connection = 'transport',
+    attachmentId = randomUUID(),
+    handshake?: RdAhpOpen['handshake']
+  ) => {
+    const input: RdAhpOpen = { attachmentId, authorization, ...(handshake ? { handshake } : {}) }
     const messages: any[] = []
     const close = vi.fn()
     const accepted = await service.open(
@@ -88,6 +99,55 @@ it('off refuses attachment without allocating sequence, registry, or execution',
   expect(reserveSequence).not.toHaveBeenCalled()
   expect(options.registry.list).not.toHaveBeenCalled()
   expect(options.dispatch).not.toHaveBeenCalled()
+})
+
+it('adopts a client the relay initialized, replaces its placeholder agent and runs its turn', async () => {
+  const { connect, service, auth, binding, options } = fixture()
+  const peer = await connect(auth, 'transport', randomUUID(), { clientId: 'third-party', root: true })
+  expect(peer.accepted).toBe(true)
+  expect(peer.messages).toEqual([
+    {
+      jsonrpc: '2.0',
+      method: 'action',
+      params: {
+        channel: 'ahp-root://',
+        serverSeq: expect.any(Number),
+        action: { type: ActionType.RootAgentsChanged, agents: [expect.objectContaining({ displayName: 'Agent' })] }
+      }
+    }
+  ])
+  expect((await peer.initialize()).error.code).toBe(JsonRpcErrorCodes.InvalidRequest)
+  const chat = chatChannel(binding.sessionUri)
+  await peer.request('subscribe', { channel: chat })
+  const turn = {
+    type: ActionType.ChatTurnStarted,
+    turnId: 'turn',
+    startedAt: new Date(0).toISOString(),
+    message: { text: 'Hello', origin: { kind: MessageKind.User } }
+  }
+  await service.receive(
+    {
+      attachmentId: peer.input.attachmentId,
+      message: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'dispatchAction',
+        params: { channel: chat, clientSeq: 1, action: turn }
+      })
+    },
+    peer.connection
+  )
+  expect(options.dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({ channel: chat }),
+    { clientId: 'third-party', clientSeq: 1 },
+    expect.anything()
+  )
+  expect(peer.messages).toContainEqual(
+    expect.objectContaining({ method: 'action', params: expect.objectContaining({ channel: chat, action: turn }) })
+  )
+  expect(peer.messages).toContainEqual(expect.objectContaining({ method: 'root/sessionSummaryChanged' }))
+  const quiet = await connect(auth, 'transport', randomUUID(), { clientId: 'quiet', root: false })
+  expect(quiet.accepted).toBe(true)
+  expect(quiet.messages).toEqual([])
 })
 
 it('binds a browser attachment to CP canonical URI and refuses public create', async () => {

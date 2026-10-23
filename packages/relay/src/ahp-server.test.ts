@@ -30,14 +30,14 @@ const allow = (): RcVerifyResult => ({
   apiProtocols: ['ahp'],
   ahpGrant: { token: 'signed-grant', expiresAtMs: Date.now() + 60_000 }
 })
-async function fixture(mode: AhpMode = 'on') {
+async function fixture(mode: AhpMode = 'on', preauth?: { deadlineMs: number; maxMessages: number }) {
   const server = createServer()
   let listener: ((frame: RdAhpMessage | RdAhpClose) => void) | undefined
   let lost = () => {}
   const conn = {
     state: 'READY',
     supports: vi.fn(() => true),
-    authorizeAhp: vi.fn(async () => true),
+    authorizeAhp: vi.fn(async (_payload: unknown, _initial?: boolean) => true),
     sendAhp: vi.fn(),
     listenAhp: (_id: string, next: typeof listener) => {
       listener = next
@@ -57,7 +57,8 @@ async function fixture(mode: AhpMode = 'on') {
   const edge = createAhpServer({ server } as Parameters<typeof createAhpServer>[0], {
     mode: () => mode,
     verify,
-    daemon: () => placement
+    daemon: () => placement,
+    ...(preauth ? { preauth } : {})
   })
   resources.push({ server, edge })
   server.listen(0, '127.0.0.1')
@@ -183,4 +184,178 @@ it('closes on daemon hop loss without requesting execution cancellation', async 
   host.lose()
   expect((await close)[0]).toBe(1013)
   expect(host.conn.sendAhp).not.toHaveBeenCalled()
+})
+
+const RESOURCE = (url: string) => url.replace('ws://', 'https://')
+async function preauth(url: string) {
+  const socket = await dial(url, ['ahp'], null)
+  const inbox: any[] = []
+  const waiters: Array<() => void> = []
+  socket.on('message', (data) => {
+    inbox.push(JSON.parse(String(data)))
+    waiters.splice(0).forEach((wake) => wake())
+  })
+  const closed = once(socket, 'close').then(([code]) => code as number)
+  const next = async (match: (message: any) => boolean) => {
+    for (;;) {
+      const found = inbox.find(match)
+      if (found) return found
+      await new Promise<void>((resolve) => waiters.push(resolve))
+    }
+  }
+  let id = 0
+  const request = (method: string, params: unknown) => {
+    const requestId = ++id
+    socket.send(JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }))
+    return next((message) => message.id === requestId)
+  }
+  const initialize = () =>
+    request('initialize', {
+      channel: 'ahp-root://',
+      clientId: 'third-party',
+      protocolVersions: ['1.0.0'],
+      initialSubscriptions: ['ahp-root://', 'ahp-session:/elsewhere']
+    })
+  return { socket, inbox, closed, next, request, initialize }
+}
+it('admits a credential-less ahp upgrade only to initialize and advertise the protected endpoint', async () => {
+  const host = await fixture()
+  const client = await preauth(host.url)
+  expect(client.socket.protocol).toBe('ahp')
+  const hello = await client.initialize()
+  expect(hello.result).toMatchObject({ protocolVersion: '1.0.0', serverSeq: 0 })
+  expect(hello.result.snapshots).toEqual([
+    {
+      resource: 'ahp-root://',
+      fromSeq: 0,
+      state: {
+        agents: [
+          expect.objectContaining({
+            provider: AGENT,
+            protectedResources: [expect.objectContaining({ resource: RESOURCE(host.url) })]
+          })
+        ]
+      }
+    }
+  ])
+  const refused = await client.request('listSessions', { channel: 'ahp-root://' })
+  expect(refused.error).toMatchObject({ code: -32007, data: { resources: [{ resource: RESOURCE(host.url) }] } })
+  expect(await client.closed).toBe(4401)
+  expect(host.verify).not.toHaveBeenCalled()
+  expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
+})
+it('refuses reconnect without closing, but closes on notifications, a second initialize and malformed frames', async () => {
+  const host = await fixture()
+  const resuming = await preauth(host.url)
+  expect((await resuming.request('reconnect', { channel: 'ahp-root://' })).error.code).toBe(-32007)
+  await resuming.initialize()
+  resuming.socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'dispatchAction', params: {} }))
+  expect(await resuming.closed).toBe(4401)
+  const twice = await preauth(host.url)
+  await twice.initialize()
+  expect((await twice.initialize()).error.code).toBe(-32007)
+  expect(await twice.closed).toBe(4401)
+  const garbage = await preauth(host.url)
+  garbage.socket.send('not json')
+  expect(await garbage.closed).toBe(1008)
+  const early = await preauth(host.url)
+  expect(
+    (await early.request('authenticate', { channel: 'ahp-root://', resource: RESOURCE(host.url), token: 'k' })).error
+      .code
+  ).toBe(-32007)
+  expect(await early.closed).toBe(4401)
+  expect(host.verify).not.toHaveBeenCalled()
+})
+it('bounds the pre-auth window by deadline and message count', async () => {
+  const host = await fixture('on', { deadlineMs: 50, maxMessages: 3 })
+  const stalled = await preauth(host.url)
+  await stalled.initialize()
+  expect(await stalled.closed).toBe(4401)
+  const chatty = await preauth(host.url)
+  for (let i = 0; i < 3; i++)
+    chatty.socket.send(JSON.stringify({ jsonrpc: '2.0', id: i, method: 'reconnect', params: {} }))
+  chatty.socket.send(JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'reconnect', params: {} }))
+  expect(await chatty.closed).toBe(1008)
+  expect(host.verify).not.toHaveBeenCalled()
+})
+it('closes on a bad key or an unadvertised resource without opening a daemon attachment', async () => {
+  const host = await fixture()
+  host.verify.mockResolvedValueOnce({ ok: false, reason: 'AHP access unavailable' })
+  const client = await preauth(host.url)
+  await client.initialize()
+  const refused = await client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    token: 'wrong-key'
+  })
+  expect(refused.error).toMatchObject({ code: -32007, data: { resources: [{ resource: RESOURCE(host.url) }] } })
+  expect(await client.closed).toBe(4401)
+  expect(host.verify).toHaveBeenCalledWith('wrong-key', AGENT, 'ahp-client-key')
+  const elsewhere = await preauth(host.url)
+  await elsewhere.initialize()
+  const unknown = await elsewhere.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: 'https://other.example.test/',
+    token: 'personal-key'
+  })
+  expect(unknown.error.code).toBe(-32602)
+  expect(await elsewhere.closed).toBe(1008)
+  expect(host.verify).toHaveBeenCalledTimes(1)
+  expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
+})
+it('attaches an authenticated client with its handshake, then forwards turns and renews with the pushed key', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  const host = await fixture()
+  host.conn.authorizeAhp.mockImplementationOnce(async () => {
+    host.emit('{"jsonrpc":"2.0","method":"action","params":{"channel":"ahp-root://"}}')
+    return true
+  })
+  const client = await preauth(host.url)
+  await client.initialize()
+  const authenticated = client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    token: 'personal-key'
+  })
+  client.socket.send('{"jsonrpc":"2.0","id":7,"method":"listSessions","params":{"channel":"ahp-root://"}}')
+  expect((await authenticated).result).toEqual({})
+  expect(host.conn.authorizeAhp).toHaveBeenCalledWith(
+    expect.objectContaining({ handshake: { clientId: 'third-party', root: true } }),
+    true
+  )
+  await client.next((message) => message.method === 'action')
+  expect(client.inbox.findIndex((message) => message.method === 'action')).toBeGreaterThan(
+    client.inbox.findIndex((message) => message.result && !message.result.protocolVersion)
+  )
+  await vi.waitFor(() =>
+    expect(host.conn.sendAhp).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('listSessions') })
+    )
+  )
+  client.socket.send('{"jsonrpc":"2.0","method":"dispatchAction","params":{}}')
+  await vi.waitFor(() =>
+    expect(host.conn.sendAhp).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('dispatchAction') })
+    )
+  )
+  host.emit('{"jsonrpc":"2.0","method":"action","params":{"channel":"ahp-chat:/one/main"}}')
+  await client.next((message) => message.params?.channel === 'ahp-chat:/one/main')
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect(host.verify).toHaveBeenNthCalledWith(2, 'personal-key', AGENT, 'ahp-client-key')
+  expect(host.conn.authorizeAhp).toHaveBeenCalledTimes(2)
+  expect(host.conn.authorizeAhp).toHaveBeenLastCalledWith(expect.not.objectContaining({ handshake: expect.anything() }))
+})
+it('refuses in-band authentication on a daemon without handshake support', async () => {
+  const host = await fixture()
+  host.conn.supports.mockImplementation(((feature: string) => feature !== 'api-ahp-handshake-v1') as () => boolean)
+  const client = await preauth(host.url)
+  await client.initialize()
+  const failed = await client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    token: 'personal-key'
+  })
+  expect(failed.error.code).toBe(-32603)
+  expect(await client.closed).toBe(1013)
+  expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
 })

@@ -125,7 +125,8 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   and on reconnect. `off` / `shadow` never accept client AHP actions. Webchat's
   protocol default is independent of public-key access.
 - **Connection-bound authority:** the initial native profile accepts full
-  personal user keys through the `Authorization` upgrade header; read-only,
+  personal user keys through the `Authorization` upgrade header or one in-band
+  AHP `authenticate` on a credential-less `ahp` upgrade; read-only,
   `agent:chat`, OAuth and daemon credentials cannot acquire it. First-party tokens
   are conversation-bound and carry a signed `protocol: ahp` claim. A legacy token
   (including one without the claim) is not an AHP token, and an AHP token is not a
@@ -136,6 +137,13 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   static value. Base64url is not encryption. Never log upgrade authorization or
   token subprotocols, and never send the personal key to the daemon. The daemon
   receives only verified scope and a CP-issued grant.
+- **Pre-authentication state:** a credential-less `ahp` upgrade reaches only the
+  relay. It may `initialize` (answered by the relay, advertising the endpoint as a
+  protected resource), have `reconnect` refused, and `authenticate` once; any
+  other request or notification closes it. A 30-second deadline, an 8-message
+  budget and a 64-socket per-relay cap bound unauthenticated resources. No
+  daemon attachment, placement or registry read happens before CP verification,
+  and the refusal never echoes the pushed key.
 - **Bounded authority lifetime:** grants last at most 60 seconds and never outlive
   the source credential. Renewal rechecks membership, visibility, API entry,
   placement and credential validity. The independent expiry timer closes a
@@ -154,7 +162,8 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   bytes and socket buffering. Overload must close explicitly, never silently
   discard an action or snapshot. Late callbacks from an old transport generation
   cannot send through or clean up its replacement. Relay code must not implement
-  AHP reducers or interpret content to authorize operations.
+  AHP reducers or interpret content to authorize operations; it parses JSON-RPC
+  only in the pre-authentication state, never after attachment.
 - **Snapshot and permission integrity:** bounded derived snapshots, durable
   sequence reservations and paged history must retain scope and ordering across
   reconnect/restart. Historical imports cannot invent successful execution or
