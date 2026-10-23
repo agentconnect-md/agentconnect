@@ -484,4 +484,17 @@ describe('LogtoIdentityService.googleAccountIdFor (google-chat-integration.md §
     await expect(svc.googleAccountIdFor('sub-1', true)).resolves.toBe('100000000000000000009')
     expect(calls.user).toBe(2)
   })
+
+  it('reads the Google identity’s email, and nothing for a subject without one', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = {
+      'sub-1': { identities: { google: { userId: '1', details: { email: 'someone@example.test' } } } },
+      'sub-2': slackUser()
+    }
+    const { fetchImpl } = fakeLogto(users)
+    const svc = svcOf(fetchImpl, clock)
+
+    await expect(svc.googleAccountEmailFor('sub-1')).resolves.toBe('someone@example.test')
+    await expect(svc.googleAccountEmailFor('sub-2')).resolves.toBeNull()
+  })
 })
