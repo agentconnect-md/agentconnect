@@ -15,15 +15,15 @@ serves one agent. Members of a group mention the bot to start work; a direct
 message to the bot is its own conversation. The Console offers the integration
 on hosted and self-hosted deployments alike.
 
-| Capability            | Initial scope and boundary                                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Distribution          | Each organization creates its own enterprise internal app and pastes its credentials into the Console (§2).            |
-| Ingress               | Daemon-owned Stream connection. No relay module and no public callback endpoint.                                       |
-| Groups and DMs        | Explicit mentions in groups; every message in a DM. DingTalk delivers nothing else from a group.                       |
-| Sessions              | Telegram's reply-chain model: a new mention starts a session; replying to a bot message continues it.                  |
-| Streaming and replies | A thinking reaction on the user's message acknowledges the turn; the answer is one or more Markdown messages (§4.3).   |
-| Attachments           | Inbound files and images through the robot download API; outbound images and files through media upload.               |
-| Questions, approvals  | A numbered text card answered by replying to it; tool approvals stay in the Console with a notice in the conversation. |
+| Capability            | Initial scope and boundary                                                                                           |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Distribution          | Each organization creates its own enterprise internal app and pastes its credentials into the Console (§2).          |
+| Ingress               | Daemon-owned Stream connection. No relay module and no public callback endpoint.                                     |
+| Groups and DMs        | Explicit mentions in groups; every message in a DM. DingTalk delivers nothing else from a group.                     |
+| Sessions              | Telegram's reply-chain model: a new mention starts a session; replying to a bot message continues it.                |
+| Streaming and replies | A thinking reaction on the user's message acknowledges the turn; the answer is one or more Markdown messages (§4.3). |
+| Attachments           | Inbound files and images through the robot download API; outbound images and files through media upload.             |
+| Questions, approvals  | A card answered by a tap, else a numbered text card answered by reply; tool approvals stay in the Console (§4.6).    |
 
 Outside this scope: third-party (marketplace or distributed) apps, the
 international DingTalk service, relay-terminated HTTP callbacks, sign-in with
@@ -62,9 +62,10 @@ feature that reads it.
 
 ## 3. Architecture
 
-The daemon opens the Stream connection, receives robot messages, and owns every
-outbound call, reaction, and attachment transfer. The Control Plane handles
-installation, credentials, and configuration and stays off the message path.
+The daemon opens the Stream connection, receives robot messages and card taps,
+and owns every outbound call, reaction, card, and attachment transfer. The
+Control Plane handles installation, credentials, and configuration and stays
+off the message path.
 
 ```mermaid
 flowchart LR
@@ -75,8 +76,11 @@ flowchart LR
     F --> A
     A -->|Turn start and end| C[Reaction on the user's message]
     A -->|Answer, files| M[Markdown and media messages]
+    A -->|Question| Q[Tap card or numbered text card]
     C --> G
     M --> G
+    Q --> G
+    G -->|Card tap, Stream| X
     A -->|Permission required| P[Existing Console approval]
 ```
 
@@ -140,8 +144,8 @@ nothing starts a new session rather than guessing. Two things differ.
 - **The mention.** A group delivers only mentions, so a quote alone never
   reaches the bot. Replying to a message in a group quotes it and mentions its
   sender (**measured**), so replying to a bot message reaches the bot; the
-  continue hint on a turn's last group message and the question card both just
-  say to reply.
+  continue hint on a turn's last group message and the numbered question card
+  both just say to reply.
 
 That rule is the default `createNew`
 [session mode](channel-session-mode.md). A group row also offers `append`,
@@ -239,37 +243,62 @@ this path.
 
 ### 4.6 Questions and approvals
 
-Questions reuse `ElicitCardFacet` the way QQ does: a numbered text card,
-answered by replying to it with a number or an option label. As in §4.1, the bot
-never learns the card's `msgId`: the facet stores the card's send handle as its
-`processQueryKey` and matches a quote's `originalProcessQueryKey` against it, so
-ordinary chat and other quotes settle nothing. A sent message cannot be edited,
-so a settlement is a new message — except when a reply in the chat answered the
-card, since that reply already shows the choice. Tool approvals stay in the
-Console, with a notice in the conversation.
+Questions reuse `ElicitCardFacet` for single-choice and yes/no asks of up to
+twelve options. Each is asked with an interactive card answered by a tap, and
+falls back to a numbered text card answered by reply. Tool approvals stay in
+the Console, with a notice in the conversation.
 
-Answering by tap is a later option, measured but not built. An interactive card
-delivered with `POST /v1.0/card/instances/createAndDeliver` and
-`callbackType: STREAM` calls back in DMs and groups (**measured**): a tap
-arrives on the Stream `CALLBACK` topic `/v1.0/card/instances/callback`, and a
-connection subscribed to that topic alone receives it, so robot messages keep
-their own path. The callback carries the tapper's `userId`, the card's
-`outTrackId`, the conversation as `spaceId`, and the button's parameters in
-`content.cardPrivateData`. The reply to the callback is due within three
-seconds, or the client shows a submit failure; it can update the card in place
-when the template takes it, and otherwise `PUT /v1.0/card/instances` does. The
-desktop client may show that update only once the conversation is reopened.
+**The tap card.** The integration owns one advanced card template, kept in the
+project's own organization; its ID is a daemon constant that the
+`AGENTCONNECT_DINGTALK_QUESTION_TEMPLATE` environment variable overrides, and
+an empty override turns tap cards off. A template created in one organization
+delivers, calls back, and updates from another organization's internal app
+(**measured**), so a customer's organization has nothing to import. The
+template takes string variables and three layouts:
 
-An interactive card needs a template, and only the advanced card kind calls
-back. A template created in a different organization delivers, calls back, and
-updates from this organization's internal app (**measured**), so the
-integration could ship one question template it owns, with nothing to set up in
-the customer's organization. DingTalk documents no such cross-organization use,
-and its own example template is labelled for testing only; the owned template
-would be a single point of failure for every installation. If numbered replies
-prove clumsy, the plan is one owned template kept in a dedicated organization,
-the question settled from the callback and the card closed by an update, and
-the numbered text card as the fallback whenever delivery fails.
+| Layout    | Used for            | What the card shows                                                           |
+| --------- | ------------------- | ----------------------------------------------------------------------------- |
+| `yesno`   | Yes/no              | The question, a refusing button on the left and an accepting one on the right |
+| `buttons` | One to four options | The question and one stacked button per option                                |
+| `form`    | Five to twelve      | A required select of the options and a submit button                          |
+
+The daemon delivers the card with
+`POST /v1.0/card/instances/createAndDeliver` and `callbackType: STREAM`, to a
+group by its conversation and to a DM by the member's staff ID, and counts it
+delivered only when the response reports the delivery as successful. The
+card's `outTrackId` names its layout and the question's request ID, so a
+callback maps back to the question without any stored state. A tap arrives on
+the Stream `CALLBACK` topic `/v1.0/card/instances/callback`, which the
+connection subscribes to beside the robot topic; it carries the card's
+`outTrackId`, the tapper's staff ID as `userId`, and the button's or form's
+parameters in `content.cardPrivateData`. The connection acknowledges every
+callback at once, since the client shows a submit failure after three seconds,
+and answers the question afterwards: the tapper's staff ID is the ID their
+messages carry, so a tap is attributed as a reply is, and a tap on a card that
+is unknown or already settled is ignored. A card is closed by `PUT /v1.0/card/instances`, updating only the
+named variables, for every viewer: the buttons give way to the answer, and a
+form is disabled with the choice selected and shown on its button. Updates in
+the callback's reply are ignored by this template (**measured**). The desktop
+client may show an update only once the conversation is reopened. A question
+asked this way costs two API calls (§4.4), and delivering one needs
+`Card.Instance.Write` (§5).
+
+**The fallback.** The daemon sends the numbered text card when tap cards are
+off, when the ask does not fit a layout, and when the delivery is refused or
+fails, which a missing permission or the quota causes; a refusal logs one
+warning, so a question is never lost. The text card is answered by replying
+to it with a number or an option label. As in §4.1, the bot never learns the
+card's `msgId`: the facet stores the card's send handle as its
+`processQueryKey` and matches a quote's `originalProcessQueryKey` against it,
+so ordinary chat and other quotes settle nothing. A sent message cannot be
+edited, so a settlement is a new message — except when a reply in the chat
+answered the card, since that reply already shows the choice.
+
+**The risk.** DingTalk documents no use of a template across organizations, and
+its own example template is labelled for testing only. The owned template is a
+single point of failure for every installation: if DingTalk stops honoring it,
+or the organization that holds it loses it, every question falls back to the
+numbered text card until a new template ID is shipped or configured.
 
 ## 5. Console setup
 
@@ -280,7 +309,9 @@ the facts the probe hit (**measured**):
 - The robot requires a message preview image.
 - The message receive mode is Stream, the default.
 - Adding the robot grants `qyapi_robot_sendmsg`, which includes the file
-  download API; `qyapi_get_member` is optional. No card permission is needed.
+  download API; `qyapi_get_member` is optional.
+- `Card.Instance.Write` lets questions be answered with a tap (§4.6); without
+  it every question is the numbered text card.
 - An internal app version publishes without review, and **every later
   configuration change takes effect only after a new version**; until then
   DingTalk keeps the previous behavior.
@@ -313,7 +344,8 @@ text, so no migration is needed. Normalization lives in the message package.
 - The international service is a separate API stack; its gateway routes the
   card APIs, but nothing beyond that is checked.
 - Whether DingTalk keeps allowing a template from one organization to serve
-  another; tap answers depend on it (§4.6).
+  another; tap answers depend on it, and the numbered text card takes over if
+  it stops (§4.6).
 
 ## 8. Later: third-party app
 
@@ -341,6 +373,9 @@ protocol, then a real internal app:
   line renders as a table.
 - Quota and rate-limit errors surface as the edition notice.
 - Inbound files in DMs and through quotes; outbound images and files.
+- A question card in each layout, in a group and a DM, is answered by a tap and
+  closed for every viewer; without `Card.Instance.Write` the same question
+  arrives as the numbered text card.
 
 ## 10. References
 
