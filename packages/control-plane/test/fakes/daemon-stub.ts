@@ -12,7 +12,7 @@
  *   - `transport.onMessage`   → delivers **D→C** frames the stub injects.
  */
 import { randomUUID } from 'node:crypto'
-import { AnyFrame, type ControlExt, type FrameType } from '@agentconnect.md/protocol'
+import { AnyFrame, FrameAssembler, FrameFragment, type ControlExt, type FrameType } from '@agentconnect.md/protocol'
 import type { Transport } from '../../src/ws/transport.js'
 
 /**
@@ -35,12 +35,15 @@ export interface StubOpts {
 export class InMemoryDaemonStub implements Transport {
   /** Every C→D frame the connection has sent, in order (assert on these). */
   readonly sent: CapturedFrame[] = []
+  /** Wire size of every `frame/fragment` the connection sent; the reassembled frame lands in `sent`. */
+  readonly fragmentBytes: number[] = []
   /** The close `(code, reason)` if the connection closed the socket. */
   closed: { code: number; reason: string } | undefined
 
   readonly subprotocol: string
   readonly remoteAddr: string
 
+  private readonly assembler = new FrameAssembler()
   private messageCb: ((text: string) => void | Promise<void>) | undefined
   private closeCb: ((code: number, reason: string) => void) | undefined
   /** Dispatches started by `injectRaw` that have not settled yet — see {@link settled}. */
@@ -74,6 +77,13 @@ export class InMemoryDaemonStub implements Transport {
 
   send(text: string): void {
     const raw = JSON.parse(text) as Record<string, unknown>
+    if (raw.type === 'frame/fragment') {
+      this.fragmentBytes.push(Buffer.byteLength(text))
+      const result = this.assembler.push(FrameFragment.parse(raw.payload))
+      if ('error' in result) throw new Error(result.error)
+      if (result.done) this.send(result.text)
+      return
+    }
     const frame = AnyFrame.parse(raw) as CapturedFrame // validate the CP's output too
     // The discriminated union strips the spread `ControlExt` block (epoch/seq/
     // agentId/launchId); re-attach it so tests assert on the actual wire envelope.

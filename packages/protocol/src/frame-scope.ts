@@ -18,6 +18,7 @@ export const INSTALL_WIDE_FRAME_TYPES: ReadonlySet<FrameType> = new Set<FrameTyp
   'facts/memory-connections',
   'relay/roster',
   'collaboration/routes',
+  'frame/fragment',
   'daemon/drain',
   'drain/progress',
   'drain/done',

@@ -30,7 +30,7 @@ degraded operation, and fleet control.
 - **Encoding:** UTF-8 **JSON text frames**. One protocol envelope per WS frame. Binary frames are reserved (future MsgPack negotiation) and currently rejected with close `4415`.
 - **Validation:** every payload is a **zod**-discriminated union keyed on `type`. Unknown `type` from a peer → `error` reply with `code: "UNKNOWN_FRAME"` (not a connection close — forward-compat).
 - **Unknown KEYS are forward-compat too, and asymmetrically so.** The daemon reads this socket with the tolerant reader (`decodeCpEnvelope`, over `packages/protocol/src/tolerant.ts`): every object in a CP-authored payload strips a key it does not know instead of failing the frame. That is not a nicety — the CP upgrades first, so one added optional field inside a `.strict()` object nested anywhere in `register/ok` fails the handshake, identically, on every retry, until the daemon is upgraded too. The CP reads the daemon with the strict reader (`decodeEnvelope`), where refusing an unknown key is an input check on what a peer sends in. Field-level validation — types, required fields, refinements — is identical on both sides.
-- **Size:** soft cap **256 KiB** per frame. Anything larger (e.g. a big facts blob) must be chunked or moved off-band (attachment/object-store, see §3.2). Over cap → `error` `FRAME_TOO_LARGE`.
+- **Size:** soft cap **256 KiB** per frame. Anything larger (e.g. a big facts blob) must be chunked or moved off-band (attachment/object-store, see §3.2). Over cap → `error` `FRAME_TOO_LARGE`. The one exception is a C→D frame whose size follows the install rather than one request — `register/ok` and `collaboration/routes` grow with agents and conversations — which crosses as fragments when the daemon reassembles them (§1.2).
 - **Compression:** `permessage-deflate` enabled if both sides offer it; never assumed.
 
 ### 1.1 Envelope
@@ -54,6 +54,10 @@ An API-key or envelope-daemon connection is bound to one organization at auth ti
 **Reply correlation.** A request-shaped frame (anything expecting an `ack`/result) is answered by a frame whose `corr` == the request's `id`. Fire-and-forget frames (most telemetry) carry no reply. Each frame type below is tagged **REQ** (expects a correlated reply), **REP** (is a reply), or **EVT** (fire-and-forget).
 
 **Direction tags:** `D→C` daemon→CP, `C→D` CP→daemon, `↔` either.
+
+### 1.2 Fragments
+
+A daemon that reassembles fragments lists `frame-fragments-v1` in `register.capabilities.features`. From then on the CP sends any C→D frame larger than 256 KiB as a run of `frame/fragment` EVTs (`{ frameId, index, count, data }`): `data` is base64 of the next `FRAGMENT_DATA_BYTES` of the frame's UTF-8 text, so each fragment stays under the cap. The CP writes a run back to back, so the daemon holds one run at a time, rejoins it after fragment `count − 1`, and handles the result as if it had arrived whole, reading it up to `MAX_ASSEMBLED_FRAME_BYTES` (16 MiB). A fragment out of sequence, or a run past that ceiling, is dropped with a warning; a fragment inside a rejoined frame is refused. A daemon without the feature gets every frame whole, as before, and the CP logs any frame past the cap by type and size before sending it, since the daemon closes the socket on it with 1009. The relay's CP connection works the same way: the feature rides `rc/register.features` and the fragments are `rc/fragment` (`packages/protocol/src/frames/fragment.ts`).
 
 ---
 

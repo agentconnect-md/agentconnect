@@ -152,6 +152,10 @@ import {
   buildEnvelope,
   decodeCpEnvelope,
   encode,
+  FRAME_FRAGMENTS_FEATURE,
+  FrameAssembler,
+  type FrameFragment,
+  MAX_ASSEMBLED_FRAME_BYTES,
   MAX_FRAME_BYTES,
   AGENT_SKILL_STATUS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
@@ -406,6 +410,8 @@ export class CpClient {
   // register value, refreshed by `capabilities/update`). Serialized for the
   // change check in updateCapabilities(); reset on each register.
   private lastSentCapabilities?: string
+  /** Reassembles the current connection's `frame/fragment` streams; replaced with each transport. */
+  private fragments = new FrameAssembler()
   /** The socket-facing half handed to every control handler — this client owns the transport. */
   private readonly wire: ControlWire
   /** The deps slice the control registry dispatches against (`src/cp/control/*`). */
@@ -543,6 +549,7 @@ export class CpClient {
         return
       }
       this.transport = connected
+      this.fragments = new FrameAssembler()
       connected.onMessage((txt) => void this.onText(txt, connected))
       connected.onClose((c, r) => this.onClose(connected, c, r))
       const handshake = this.handshake(connected)
@@ -675,7 +682,7 @@ export class CpClient {
 
     // ── register ──
     this.clearProviderCredentials()
-    const registerCapabilities = this.deps.capabilities()
+    const registerCapabilities = this.wireCapabilities()
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
       host: this.deps.host,
@@ -786,6 +793,12 @@ export class CpClient {
     }
   }
 
+  /** The daemon's capabilities plus what this client itself reads off the wire. */
+  private wireCapabilities(): RegisterReq['capabilities'] {
+    const capabilities = this.deps.capabilities()
+    return { ...capabilities, features: [...capabilities.features, FRAME_FRAGMENTS_FEATURE] }
+  }
+
   /**
    * Re-announce `RegisterReq.capabilities` when the daemon's computed set has
    * changed since this connection's register (D→C `capabilities/update` EVT,
@@ -800,7 +813,7 @@ export class CpClient {
    */
   updateCapabilities(): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
-    const capabilities = this.deps.capabilities()
+    const capabilities = this.wireCapabilities()
     const serialized = JSON.stringify(capabilities)
     if (serialized === this.lastSentCapabilities) return
     this.lastSentCapabilities = serialized
@@ -1902,12 +1915,12 @@ export class CpClient {
     return rep.payload as ManagedSkillChunk
   }
 
-  private async onText(text: string, source: Transport): Promise<void> {
+  private async onText(text: string, source: Transport, assembled = false): Promise<void> {
     // A superseded socket must not settle the current connection's correlator or
     // enter its post-register FIFO.
     if (source !== this.transport) return
     // The CP authors every frame on this socket, so read it tolerantly: a field it added must strip, not fail.
-    const decoded = decodeCpEnvelope(text)
+    const decoded = decodeCpEnvelope(text, assembled ? { maxBytes: MAX_ASSEMBLED_FRAME_BYTES } : {})
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
       this.sendError(decoded.id, code, decoded.msg, false)
@@ -1921,6 +1934,13 @@ export class CpClient {
       return
     }
     const frame = decoded.frame
+    if (frame.type === 'frame/fragment') {
+      if (assembled) return this.deps.log.warn('cp: dropped a fragment nested in a reassembled frame')
+      const result = this.fragments.push(frame.payload as FrameFragment)
+      if ('error' in result) this.deps.log.warn(`cp: dropped a fragmented frame: ${result.error}`)
+      else if (result.done) await this.onText(result.text, source, true)
+      return
+    }
     const barrier = this.registerControlBarrier
     if (
       barrier !== undefined &&

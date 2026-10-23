@@ -8,7 +8,7 @@
  * before the connection is READY.
  */
 import { describe, it, expect } from 'vitest'
-import { buildEnvelope, type RegisterReq } from '@agentconnect.md/protocol'
+import { buildEnvelope, FRAME_FRAGMENTS_FEATURE, type RegisterReq } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
@@ -99,7 +99,7 @@ describe('CpClient.updateCapabilities', () => {
 
     const sent = updates(t)
     expect(sent).toHaveLength(1)
-    expect(sent[0].payload.capabilities.features).toEqual(['webchat_remote_mcp_v1'])
+    expect(sent[0].payload.capabilities.features).toEqual(['webchat_remote_mcp_v1', FRAME_FRAGMENTS_FEATURE])
   })
 
   it('emits only when the computed set changed since register, then dedups', async () => {
@@ -117,7 +117,7 @@ describe('CpClient.updateCapabilities', () => {
     client.updateCapabilities()
     const sent = updates(t)
     expect(sent).toHaveLength(1)
-    expect(sent[0].payload.capabilities.features).toEqual(['webchat_remote_mcp_v1'])
+    expect(sent[0].payload.capabilities.features).toEqual(['webchat_remote_mcp_v1', FRAME_FRAGMENTS_FEATURE])
 
     // Same set again ⇒ no duplicate frame.
     client.updateCapabilities()

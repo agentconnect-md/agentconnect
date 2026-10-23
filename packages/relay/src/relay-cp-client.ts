@@ -25,6 +25,10 @@ import {
   BOT_TENANT_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  FRAME_FRAGMENTS_FEATURE,
+  FrameAssembler,
+  type FrameFragment,
+  MAX_ASSEMBLED_FRAME_BYTES,
   GITEA_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -190,6 +194,8 @@ export class RelayCpClient {
   relayId?: string
 
   private transport?: Transport
+  /** Reassembles the current connection's `rc/fragment` streams; replaced with each transport. */
+  private fragments = new FrameAssembler()
   private readonly correlator: ReqRep<RelayCpFrame>
   private readonly backoff: Backoff
   private stopped = false
@@ -702,6 +708,7 @@ export class RelayCpClient {
         return
       }
       this.transport = t
+      this.fragments = new FrameAssembler()
       t.onMessage((txt) => void this.onText(txt))
       t.onClose((c, r) => this.onClose(c, r))
       await this.handshake()
@@ -767,6 +774,7 @@ export class RelayCpClient {
         // gitea-v1: this relay verifies and routes Gitea repository webhooks, for gitea.com
         // and a self-hosted address alike (gitea-integration.md §7, §11).
         features: [
+          FRAME_FRAGMENTS_FEATURE,
           WEBCHAT_SESSION_CONTINUATION_FEATURE,
           GITLAB_COM_V1_FEATURE,
           GITLAB_INSTANCE_V1_FEATURE,
@@ -824,8 +832,8 @@ export class RelayCpClient {
     return this.correlator.request(frame, (e) => this.transport!.send(e), opts)
   }
 
-  private async onText(text: string): Promise<void> {
-    const decoded = decodeRelayCpFrame(text)
+  private async onText(text: string, assembled = false): Promise<void> {
+    const decoded = decodeRelayCpFrame(text, assembled ? { maxBytes: MAX_ASSEMBLED_FRAME_BYTES } : {})
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
       this.sendError(decoded.id, code, decoded.msg, false)
@@ -835,6 +843,13 @@ export class RelayCpClient {
       return
     }
     const frame = decoded.frame
+    if (frame.type === 'rc/fragment') {
+      if (assembled) return this.deps.log.warn('relay: dropped a fragment nested in a reassembled frame')
+      const result = this.fragments.push(frame.payload as FrameFragment)
+      if ('error' in result) this.deps.log.warn(`relay: dropped a fragmented frame: ${result.error}`)
+      else if (result.done) await this.onText(result.text, true)
+      return
+    }
     // A correlated REP/error settles a pending relay-issued REQ.
     if (frame.corr && this.correlator.settle(frame)) {
       // One socket read can carry rc/registered and the CP's replay behind it; hold that replay until READY.

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  FRAME_FRAGMENTS_FEATURE,
+  fragmentFrame,
+  MAX_FRAME_BYTES,
   BOT_CREDENTIAL_CHECK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
@@ -90,6 +93,9 @@ class FakeTransport implements Transport {
   // ── test helpers ──
   inject(frame: RelayCpFrame): void {
     this.msgCb?.(JSON.stringify(frame))
+  }
+  injectText(text: string): void {
+    this.msgCb?.(text)
   }
   simulateClose(code: number): void {
     this.closeCb?.(code, 'test')
@@ -204,6 +210,7 @@ describe('RelayCpClient', () => {
       name: 'relay-0',
       daemonUrl: 'wss://relay-0.example',
       features: [
+        FRAME_FRAGMENTS_FEATURE,
         WEBCHAT_SESSION_CONTINUATION_FEATURE,
         GITLAB_COM_V1_FEATURE,
         GITLAB_INSTANCE_V1_FEATURE,
@@ -1180,5 +1187,32 @@ describe('RelayCpClient reconnect snapshots', () => {
     await flush()
     expect(onSnapshotBegin).toHaveBeenCalledWith({ kind: 'mcp', snapshotId })
     expect(onSnapshotEnd).toHaveBeenCalledWith({ kind: 'mcp', snapshotId, withheld: [DAEMON_ID] })
+  })
+})
+
+describe('RelayCpClient — frame fragments', () => {
+  it('reassembles a CP frame past the cap and dispatches it', async () => {
+    const onCollabRoutes = vi.fn()
+    const { client, transport } = makeClient({ onCollabRoutes })
+    await handshakeToReady(client, transport)
+    const channels = Array.from({ length: 2500 }, (_, i) => ({
+      orgId: 'org_default',
+      platform: 'slack' as const,
+      channelId: `C${String(i).padStart(10, '0')}`,
+      agents: [{ agentId: '33333333-3333-4333-8333-333333333333', daemonId: '44444444-4444-4444-8444-444444444444' }]
+    }))
+    const text = JSON.stringify(
+      buildRelayCpFrame('rc/collab-routes', { generation: 1, channels, agents: [], platformKinds: [] })
+    )
+    const parts = fragmentFrame(text, 'rc/fragment')!
+    expect(parts.length).toBeGreaterThan(1)
+    for (const part of parts) {
+      expect(Buffer.byteLength(part)).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+      transport.injectText(part)
+    }
+    await flush()
+    expect(onCollabRoutes).toHaveBeenCalledOnce()
+    expect(onCollabRoutes.mock.calls[0]![0].channels).toHaveLength(2500)
+    expect(client.state).toBe('READY')
   })
 })
