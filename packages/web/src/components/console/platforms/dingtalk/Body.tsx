@@ -1,13 +1,13 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
 import { useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
 import type { Agent } from '@/lib/data'
 import type { WizardHost } from '../contract'
 import { usePublishedFooter } from '../publish'
 import { TokenGuidePane } from '../wizard-chrome'
-import { dingTalkWalkthroughSteps } from './steps'
+import { DINGTALK_CONSOLE_HOST, dingTalkWalkthroughSteps } from './steps'
 
 // The Control Plane's own Client ID rule, so a malformed paste is marked before the round trip.
 const CLIENT_ID = /^[A-Za-z0-9_-]{1,128}$/
@@ -16,6 +16,8 @@ const CLIENT_ID = /^[A-Za-z0-9_-]{1,128}$/
 export function DingTalkWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.dingtalk')
   const stepsT = useTranslations('Platforms.dingtalk.steps')
+  // The mainland console is Chinese only and the international one English, so the console language picks the edition.
+  const edition = useLocale() === 'zh-CN' ? 'mainland' : 'international'
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [saving, setSaving] = useState(false)
@@ -51,9 +53,9 @@ export function DingTalkWizardBody({ agent, host }: { agent: Agent; host: Wizard
     <TokenGuidePane
       mark={<PlatformMark platform="dingtalk" />}
       step1={t('step1')}
-      linkHref="https://open-dev.dingtalk.com/fe/app"
+      linkHref={`https://${DINGTALK_CONSOLE_HOST[edition]}/fe/app`}
       linkLabel={t('createApp')}
-      steps={dingTalkWalkthroughSteps(stepsT)}
+      steps={dingTalkWalkthroughSteps(stepsT, edition)}
       walkthroughLabel={t('walkthroughLabel')}
       step2={t('step2')}
       fields={[

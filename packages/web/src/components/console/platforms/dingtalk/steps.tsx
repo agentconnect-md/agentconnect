@@ -7,7 +7,12 @@ import { BrowserBar, MiniScreen, type WalkthroughStep } from '../wizard-chrome'
 
 type DingTalkStepsTranslator = ReturnType<typeof useTranslations<'Platforms.dingtalk.steps'>>
 
-const HOST = 'open-dev.dingtalk.com'
+/** The two editions' developer consoles: the mainland one in Chinese, the international one in English. */
+export const DINGTALK_CONSOLE_HOST = {
+  mainland: 'open-dev.dingtalk.com',
+  international: 'open-dev.dingtalk.io'
+} as const
+export type DingTalkConsole = keyof typeof DINGTALK_CONSOLE_HOST
 
 // The developer console's highlighted control in each mock screen.
 function Pulse({ children }: { children: ReactNode }) {
@@ -53,7 +58,8 @@ function AppPage({ nav, active, children }: { nav: string[]; active: string; chi
 }
 
 // The developer console from a new internal app to its credentials; built per locale so every label follows the console language.
-export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator): WalkthroughStep[] {
+export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator, edition: DingTalkConsole): WalkthroughStep[] {
+  const host = DINGTALK_CONSOLE_HOST[edition]
   const strong = (chunks: ReactNode) => <span className="font-medium text-(--text-secondary)">{chunks}</span>
   const nav = [t('nav.credentials'), t('nav.robot'), t('nav.permissions'), t('nav.versions')]
   const title = (text: string) => (
@@ -64,7 +70,7 @@ export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator): Walkthroug
       label: t('createApp.label'),
       caption: t.rich('createApp.caption', { action: strong }),
       screen: (
-        <MiniScreen frameClass="border-[#e5e6eb] bg-[#f5f6f7]" bar={<BrowserBar url={`${HOST}/fe/app`} />}>
+        <MiniScreen frameClass="border-[#e5e6eb] bg-[#f5f6f7]" bar={<BrowserBar url={`${host}/fe/app`} />}>
           <div className="absolute inset-0 bg-[#f5f6f7] px-3 py-2.5">
             <div className="font-sans text-[10px] font-bold leading-normal text-[#171a1d]">{t('createApp.title')}</div>
             <div className="mt-2 rounded-md border border-[#e5e6eb] bg-white p-2 shadow-(--shadow-md)">
@@ -87,7 +93,7 @@ export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator): Walkthroug
       label: t('robot.label'),
       caption: t.rich('robot.caption', { action: strong }),
       screen: (
-        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${HOST}/fe/app/…`} />}>
+        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${host}/fe/app/…`} />}>
           <AppPage nav={nav} active={t('nav.robot')}>
             {title(t('robot.title'))}
             <Label>
@@ -114,32 +120,37 @@ export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator): Walkthroug
         </MiniScreen>
       )
     },
-    {
-      label: t('permissions.label'),
-      caption: t.rich('permissions.caption', { action: strong }),
-      screen: (
-        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${HOST}/fe/app/…`} />}>
-          <AppPage nav={nav} active={t('nav.permissions')}>
-            {title(t('nav.permissions'))}
-            <div className="mt-1.5 flex items-center gap-1 rounded border border-[#e5e6eb] px-1.5 py-1 font-sans text-[9px] leading-normal text-[#171a1d]">
-              <Icon name="search" size={9} className="text-[#5f6266]" />
-              Card
-            </div>
-            <div className="mt-1.5 flex items-center justify-between gap-1.5 border-b border-[#f0f1f2] pb-1.5">
-              <span className="mono min-w-0 truncate text-[8.5px] leading-normal text-[#171a1d]">
-                Card.Instance.Write
-              </span>
-              <Pulse>{t('permissions.apply')}</Pulse>
-            </div>
-          </AppPage>
-        </MiniScreen>
-      )
-    },
+    // The international edition has no card permission, so its questions are text cards (dingtalk-integration.md §4.6).
+    ...(edition === 'mainland'
+      ? [
+          {
+            label: t('permissions.label'),
+            caption: t.rich('permissions.caption', { action: strong }),
+            screen: (
+              <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${host}/fe/app/…`} />}>
+                <AppPage nav={nav} active={t('nav.permissions')}>
+                  {title(t('nav.permissions'))}
+                  <div className="mt-1.5 flex items-center gap-1 rounded border border-[#e5e6eb] px-1.5 py-1 font-sans text-[9px] leading-normal text-[#171a1d]">
+                    <Icon name="search" size={9} className="text-[#5f6266]" />
+                    Card
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between gap-1.5 border-b border-[#f0f1f2] pb-1.5">
+                    <span className="mono min-w-0 truncate text-[8.5px] leading-normal text-[#171a1d]">
+                      Card.Instance.Write
+                    </span>
+                    <Pulse>{t('permissions.apply')}</Pulse>
+                  </div>
+                </AppPage>
+              </MiniScreen>
+            )
+          }
+        ]
+      : []),
     {
       label: t('publish.label'),
       caption: t.rich('publish.caption', { action: strong }),
       screen: (
-        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${HOST}/fe/app/…`} />}>
+        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${host}/fe/app/…`} />}>
           <AppPage nav={nav} active={t('nav.versions')}>
             {title(t('publish.title'))}
             <Label>{t('publish.versionLabel')}</Label>
@@ -157,7 +168,7 @@ export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator): Walkthroug
       label: t('credentials.label'),
       caption: t.rich('credentials.caption', { action: strong }),
       screen: (
-        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${HOST}/fe/app/…`} />}>
+        <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${host}/fe/app/…`} />}>
           <AppPage nav={nav} active={t('nav.credentials')}>
             {title(t('credentials.title'))}
             <Label>Client ID</Label>

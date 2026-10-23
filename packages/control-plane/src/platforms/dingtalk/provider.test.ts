@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { IntegrationDingTalkConfig, type IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
-import { DINGTALK_TOKEN_URL, createDingTalkCpProvider, verifyDingTalkApp } from './provider.js'
+import { DINGTALK_TOKEN_URLS, createDingTalkCpProvider, verifyDingTalkApp } from './provider.js'
 import { buildCpPlatformRegistry } from '../registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import type { BotRecord, IntegrationRecord } from '../../persistence/ports.js'
@@ -17,10 +17,30 @@ describe('DingTalk credential check', () => {
       ok: true,
       identity: { name: 'DingTalk · dingexampleclient', externalAppId: 'dingexampleclient' }
     })
+    expect(fetchImpl).toHaveBeenCalledOnce()
     const [url, init] = fetchImpl.mock.calls[0]!
-    expect(url).toBe(DINGTALK_TOKEN_URL)
+    expect(url).toBe(DINGTALK_TOKEN_URLS[0])
     expect(init?.method).toBe('POST')
     expect(JSON.parse(String(init?.body))).toEqual({ appKey: 'dingexampleclient', appSecret: 'example-secret' })
+  })
+
+  it('accepts an international app the mainland API refuses', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+      String(input) === DINGTALK_TOKEN_URLS[1]
+        ? Response.json({ accessToken: 'example-token', expireIn: 7200 })
+        : Response.json({ code: 'invalidClientIdOrSecret', message: 'invalid' }, { status: 400 })
+    )
+    expect(await verifyDingTalkApp(credentials, fetchImpl)).toMatchObject({ ok: true })
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([...DINGTALK_TOKEN_URLS])
+  })
+
+  it('cannot decide while the international API is unreachable', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+      String(input) === DINGTALK_TOKEN_URLS[1]
+        ? Response.json({}, { status: 503 })
+        : Response.json({ code: 'invalidClientIdOrSecret', message: 'invalid' }, { status: 400 })
+    )
+    expect(await verifyDingTalkApp(credentials, fetchImpl)).toMatchObject({ ok: false, status: 503 })
   })
 
   it('names rejected credentials apart from an unreachable service', async () => {

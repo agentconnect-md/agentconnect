@@ -1,11 +1,9 @@
 // DingTalk media (dingtalk-integration.md §4.5): inbound downloads by download code, outbound uploads sent as image or file messages.
 import type { FileUploader, UploadOutcome } from '../../mcp/ops/context.js'
 import { sniffImageMimeType } from '../../session/attachment-block.js'
-import { DINGTALK_API_ORIGIN, DingTalkApiError } from './api.js'
+import { DINGTALK_ORIGINS, DingTalkApiError } from './api.js'
 import type { DingTalkTurnState } from './turn-output.js'
 
-/** The legacy OpenAPI host, the only one serving the media upload. */
-export const DINGTALK_OAPI_ORIGIN = 'https://oapi.dingtalk.com'
 /** The media upload's cap for both images and files. */
 export const DINGTALK_MEDIA_MAX_BYTES = 20 * 1024 * 1024
 
@@ -22,7 +20,9 @@ export interface DingTalkMediaDeps {
   robotCode: string
   signal: AbortSignal
   fetchImpl?: typeof fetch
+  /** The app's OpenAPI host; read after the token, which finds the app's edition. */
   origin?: string
+  /** The legacy OpenAPI host, the only one serving the media upload. */
   oapiOrigin?: string
 }
 
@@ -44,7 +44,7 @@ function failure(signal: AbortSignal, error: unknown): string {
 // Exchange the download code for its short-lived URL; the code is opaque and never logged.
 async function downloadUrlFor(deps: DingTalkMediaDeps, code: string, signal: AbortSignal): Promise<URL | undefined> {
   const token = await deps.accessToken()
-  const response = await (deps.fetchImpl ?? fetch)(`${deps.origin ?? DINGTALK_API_ORIGIN}${DOWNLOAD_PATH}`, {
+  const response = await (deps.fetchImpl ?? fetch)(`${deps.origin ?? DINGTALK_ORIGINS.mainland.api}${DOWNLOAD_PATH}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-acs-dingtalk-access-token': token },
     body: JSON.stringify({ downloadCode: code, robotCode: deps.robotCode }),
@@ -122,7 +122,7 @@ export async function uploadDingTalkMedia(
   form.append('media', new Blob([new Uint8Array(file.bytes)], { type: file.mimeType }), file.name)
   const query = new URLSearchParams({ access_token: token, type })
   const response = await (deps.fetchImpl ?? fetch)(
-    `${deps.oapiOrigin ?? DINGTALK_OAPI_ORIGIN}${UPLOAD_PATH}?${query}`,
+    `${deps.oapiOrigin ?? DINGTALK_ORIGINS.mainland.oapi}${UPLOAD_PATH}?${query}`,
     {
       method: 'POST',
       body: form,

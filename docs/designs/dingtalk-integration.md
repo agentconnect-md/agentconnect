@@ -10,7 +10,8 @@ against a test organization; facts marked **unverified** still need one.
 
 ## 1. Goal and scope
 
-Add a native `dingtalk` integration for the mainland DingTalk service. One bot
+Add a native `dingtalk` integration for both DingTalk editions, mainland and
+international (§2.1). One bot
 serves one agent. Members of a group mention the bot to start work; a direct
 message to the bot is its own conversation. The Console offers the integration
 on hosted and self-hosted deployments alike.
@@ -25,8 +26,8 @@ on hosted and self-hosted deployments alike.
 | Attachments           | Inbound files and images through the robot download API; outbound images and files through media upload.             |
 | Questions, approvals  | A card answered by a tap, else a numbered text card answered by reply; tool approvals stay in the Console (§4.6).    |
 
-Outside this scope: third-party (marketplace or distributed) apps, the
-international DingTalk service, relay-terminated HTTP callbacks, sign-in with
+Outside this scope: third-party (marketplace or distributed) apps,
+relay-terminated HTTP callbacks, sign-in with
 DingTalk, membership-based permission sync, and one bot serving several agents.
 
 ## 2. Distribution model
@@ -59,6 +60,30 @@ organization, so the bot's external identity is the Client ID under the
 tenantless sentinel, which keeps one bot per app. v1 needs no organization ID;
 recording `chatbotCorpId` would need a new daemon report, and waits for a
 feature that reads it.
+
+### 2.1 Two editions
+
+DingTalk runs a mainland edition and an international edition with separate
+organizations, developer consoles and OpenAPI hosts:
+
+| Edition       | Developer console       | OpenAPI hosts                           |
+| ------------- | ----------------------- | --------------------------------------- |
+| Mainland      | `open-dev.dingtalk.com` | `api.dingtalk.com`, `oapi.dingtalk.com` |
+| International | `open-dev.dingtalk.io`  | `api.dingtalk.io`, `oapi.dingtalk.io`   |
+
+An app's credentials work on its own edition's hosts only (**measured**: an
+international app's token exchange and Stream ticket succeed on `api.dingtalk.io`
+and answer `invalidClientIdOrSecret` and `authFailed` on `api.dingtalk.com`; the
+legacy `gettoken` agrees). So the edition is a property of the credentials, and
+nothing stores it: validation tries the mainland token endpoint, then the
+international one when the mainland refuses, and the daemon's first token
+exchange does the same and keeps the edition for every later call, the Stream
+ticket included.
+
+The mainland console is in Chinese and the international one in English, so
+the Console's walkthrough and its developer-console link follow the Console
+language. The international console lists no card permission
+(**measured**), so its questions are the numbered text card (§4.6).
 
 ## 3. Architecture
 
@@ -314,7 +339,8 @@ the facts the probe hit (**measured**):
 - Adding the robot grants `qyapi_robot_sendmsg`, which includes the file
   download API; `qyapi_get_member` is optional.
 - `Card.Instance.Write` lets questions be answered with a tap (§4.6); without
-  it every question is the numbered text card.
+  it every question is the numbered text card. The international console has
+  no such permission, so its walkthrough leaves the step out (§2.1).
 - An internal app version publishes without review, and **every later
   configuration change takes effect only after a new version**; until then
   DingTalk keeps the previous behavior.
@@ -341,8 +367,8 @@ text, so no migration is needed. Normalization lives in the message package.
   through the API. Membership is likely observed (who has spoken) rather than
   authoritative, so a DingTalk group's visibility stays weaker than a channel
   with an enumerable roster. Not probed.
-- The international service is a separate API stack; its gateway routes the
-  card APIs, but nothing beyond that is checked.
+- On the international edition, the thinking reaction and media have not been
+  exercised live.
 - Whether DingTalk keeps allowing a template from one organization to serve
   another; tap answers depend on it, and the numbered text card takes over if
   it stops (§4.6).

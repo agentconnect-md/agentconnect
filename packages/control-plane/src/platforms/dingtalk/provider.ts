@@ -5,9 +5,11 @@ import { DINGTALK_PLATFORM, type IntegrationDingTalkConfig } from '@agentconnect
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
 import type { CpConfigRefusal, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
 
-// The mainland service only (§1); the international service is a separate API stack.
-export const DINGTALK_API_ORIGIN = 'https://api.dingtalk.com'
-export const DINGTALK_TOKEN_URL = `${DINGTALK_API_ORIGIN}/v1.0/oauth2/accessToken`
+// Each edition runs its own OpenAPI host, and an app's credentials work on its edition's only (§2.1).
+export const DINGTALK_TOKEN_URLS = [
+  'https://api.dingtalk.com/v1.0/oauth2/accessToken',
+  'https://api.dingtalk.io/v1.0/oauth2/accessToken'
+] as const
 
 export const DingTalkCreateCredentials = z.object({
   clientId: z
@@ -25,30 +27,42 @@ export async function verifyDingTalkApp(
   credentials: DingTalkCreateCredentials,
   fetchImpl: typeof fetch = fetch
 ): Promise<DingTalkValidation> {
+  // The mainland host first; a refusal there may be an international app, so the international host decides.
+  for (const url of DINGTALK_TOKEN_URLS) {
+    const answer = await exchange(url, credentials, fetchImpl)
+    if (answer === 'unavailable') return unavailable()
+    if (answer === 'ok')
+      return {
+        ok: true,
+        identity: { name: `DingTalk · ${credentials.clientId}`, externalAppId: credentials.clientId }
+      }
+  }
+  // `invalidClientIdOrSecret` is the documented refusal; any other definitive answer is no usable credential either.
+  return {
+    ok: false,
+    status: 400,
+    code: 'DINGTALK_CREDENTIALS_INVALID',
+    message: 'DingTalk rejected the Client ID or Client Secret — copy them again from the DingTalk developer console.'
+  }
+}
+
+async function exchange(
+  url: string,
+  credentials: DingTalkCreateCredentials,
+  fetchImpl: typeof fetch
+): Promise<'ok' | 'refused' | 'unavailable'> {
   try {
-    const response = await fetchImpl(DINGTALK_TOKEN_URL, {
+    const response = await fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ appKey: credentials.clientId, appSecret: credentials.clientSecret }),
       signal: AbortSignal.timeout(10_000)
     })
-    if (response.status >= 500 || response.status === 429) return unavailable()
-    const data = (await response.json()) as { accessToken?: unknown; code?: unknown }
-    if (response.ok && typeof data.accessToken === 'string' && data.accessToken) {
-      return {
-        ok: true,
-        identity: { name: `DingTalk · ${credentials.clientId}`, externalAppId: credentials.clientId }
-      }
-    }
-    // `invalidClientIdOrSecret` is the documented refusal; any other definitive answer is no usable credential either.
-    return {
-      ok: false,
-      status: 400,
-      code: 'DINGTALK_CREDENTIALS_INVALID',
-      message: 'DingTalk rejected the Client ID or Client Secret — copy them again from the DingTalk developer console.'
-    }
+    if (response.status >= 500 || response.status === 429) return 'unavailable'
+    const data = (await response.json()) as { accessToken?: unknown }
+    return response.ok && typeof data.accessToken === 'string' && data.accessToken ? 'ok' : 'refused'
   } catch {
-    return unavailable()
+    return 'unavailable'
   }
 }
 

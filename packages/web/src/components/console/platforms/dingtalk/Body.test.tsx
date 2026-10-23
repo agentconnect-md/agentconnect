@@ -69,11 +69,12 @@ afterEach(async () => {
 })
 
 describe('DingTalkWizardBody', () => {
-  it('links the developer console, states the edition limit, and asks for both credentials', async () => {
+  it('links the English console of the international edition and asks for both credentials', async () => {
     await render()
-    const portal = host.querySelector<HTMLAnchorElement>('a[href="https://open-dev.dingtalk.com/fe/app"]')
+    const portal = host.querySelector<HTMLAnchorElement>('a[href="https://open-dev.dingtalk.io/fe/app"]')
     expect(portal?.textContent).toContain('Create DingTalk app')
-    expect(host.textContent).toContain('5,000 API calls')
+    // The international edition has no card permission to enable.
+    expect(host.textContent).not.toContain('Access')
     expect([...host.querySelectorAll('.fldlbl')].map((el) => el.textContent)).toEqual(['Client ID', 'Client Secret'])
     expect(field('Client Secret').type).toBe('password')
     expect(footer?.enabled).toBe(false)

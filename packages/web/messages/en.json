@@ -6252,34 +6252,34 @@
       "connect": "Connect",
       "createApp": "Create DingTalk app",
       "walkthroughLabel": "DingTalk app setup steps",
-      "step1": "Create an internal app with a robot in the DingTalk developer console, publish it, then copy its Client ID and Client Secret. The Standard edition allows 5,000 API calls and 3,000 messages a month.",
+      "step1": "Create an internal app with a bot in the DingTalk developer console, publish it, then copy its Client ID and Client Secret.",
       "step2": "Paste the Client ID & Client Secret — required to connect",
       "steps": {
         "nav": {
-          "credentials": "Credentials",
+          "credentials": "Credentials and basic information",
           "robot": "Robot",
-          "permissions": "Permissions",
-          "versions": "Versions"
+          "permissions": "Permission management",
+          "versions": "Version management and release"
         },
         "createApp": {
           "label": "App",
-          "caption": "Under internal apps, <action>Create app</action>. The name takes letters, Chinese characters and digits only — no spaces.",
-          "title": "Internal apps",
-          "cardTitle": "Create app",
-          "nameLabel": "App name",
+          "caption": "Under DingTalk application, <action>Create an application</action> with a name and a description.",
+          "title": "DingTalk application",
+          "cardTitle": "Create an application",
+          "nameLabel": "Application Name",
           "nameValue": "MyAgent",
-          "descriptionLabel": "Description",
+          "descriptionLabel": "Application Description",
           "descriptionValue": "Coding agent",
           "save": "Save"
         },
         "robot": {
           "label": "Robot",
-          "caption": "<action>Add capability</action> → Robot. Upload a message preview image, keep the Stream receive mode, then publish.",
+          "caption": "<action>Add application capabilities</action> → Bot. Turn on Robot configuration, upload a message preview image, keep the Stream receiving mode, then publish.",
           "title": "Robot configuration",
-          "previewLabel": "Message preview image",
-          "modeLabel": "Message receive mode",
-          "stream": "Stream mode",
-          "http": "HTTP mode",
+          "previewLabel": "Robot message preview",
+          "modeLabel": "Message receiving mode",
+          "stream": "Stream",
+          "http": "HTTP",
           "publish": "Publish"
         },
         "permissions": {
@@ -6289,17 +6289,17 @@
         },
         "publish": {
           "label": "Publish",
-          "caption": "<action>Versions</action> → create a version and choose who can see the bot. Every later change takes effect only in a new version.",
-          "title": "Create version",
-          "versionLabel": "App version",
-          "visibilityLabel": "Available to",
+          "caption": "<action>Version management and release</action> → create a version and choose who can see the bot. Every later change takes effect only in a new version.",
+          "title": "Version details",
+          "versionLabel": "App version number",
+          "visibilityLabel": "Availability",
           "visibilityValue": "All employees",
           "save": "Save"
         },
         "credentials": {
           "label": "Copy",
-          "caption": "<action>Credentials</action> → copy the Client ID and Client Secret.",
-          "title": "Credentials"
+          "caption": "<action>Credentials and basic information</action> → copy the Client ID and Client Secret.",
+          "title": "App credentials"
         }
       },
       "settings": {
