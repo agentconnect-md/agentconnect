@@ -7,6 +7,7 @@ import { useFormatter, useTranslations } from 'next-intl'
 import { deleteComputer, resumeComputer, revokeComputer, stopComputer, type ComputerDto } from '@/lib/api'
 import { computerStatusTone, poolPhaseNote, useComputer, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
@@ -27,7 +28,9 @@ export default function ComputerDetailView() {
   const params = useParams<{ id: string }>()
   const id = params?.id
   const { orgPath } = useOrgs()
-  const { data: computer, error, isLoading, mutate } = useComputer(id)
+  // Off, a deep link reads as not found without fetching the Computer.
+  const offered = featureFlagEnabled('computer-use')
+  const { data: computer, error, isLoading, mutate } = useComputer(offered ? id : undefined)
   // The mobile push bar reads the title from this slot.
   const { register: registerCrumb } = useCrumbSlot()
   const title = computer?.name ?? ''
@@ -37,7 +40,7 @@ export default function ComputerDetailView() {
     return () => registerCrumb(null)
   }, [registerCrumb, id, title])
   if (!computer) {
-    if (isLoading || (!error && id)) return <LoadingState fill />
+    if (isLoading || (offered && !error && id)) return <LoadingState fill />
     return (
       <div className="wrap px-4 pt-[14px] desktop:p-0">
         <NotFound

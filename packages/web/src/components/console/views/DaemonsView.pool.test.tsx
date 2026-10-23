@@ -34,7 +34,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
 // The Computers section fetches on its own and has its own suite.
-vi.mock('../ComputersSection', () => ({ ComputersSection: () => null }))
+vi.mock('../ComputersSection', () => ({ ComputersSection: () => <div data-computers-section /> }))
 
 const DaemonsView = (await import('./DaemonsView')).default
 
@@ -261,6 +261,12 @@ describe('DaemonsView pool', () => {
     const html = render()
 
     expect(html).toContain('No daemons connected')
+  })
+
+  it('lists Computers only where the computer-use flag is on', () => {
+    expect(render()).not.toContain('data-computers-section')
+    setFlags('daemon-pool,managed,computer-use')
+    expect(render()).toContain('data-computers-section')
   })
 })
 
