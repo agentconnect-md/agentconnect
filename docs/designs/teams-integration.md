@@ -65,6 +65,14 @@ Console shows: `MSTEAMS_SECRET_INVALID` (a wrong or expired secret),
 matches them exactly. A Developer Portal bot obtains its token from the
 tenant endpoint and receives Bot Framework tokens inbound (**measured**).
 
+The Developer Portal creates the bot's Entra app as multi-tenant, open to all
+tenants, by default (**measured**). It also ties the bots it lists to the
+signed-in name of the person who created them: after that person's sign-in name
+was changed to a custom domain, the portal listed none of their bots and could
+not open one by its ID, while the bots themselves kept receiving traffic
+(**measured**). A bot that needs another owner, or whose owner's sign-in name
+may change, is safer as an Azure Bot resource.
+
 ## 3. Architecture
 
 ```mermaid
@@ -414,12 +422,52 @@ relay route is added to the chart's HTTPRoute in the same change.
 
 ## 8. Later
 
-- **One app for many tenants.** Microsoft documents a single-tenant bot
-  registration with a multi-tenant Entra app as installable in any tenant. A
-  hosted app would reuse Google Chat's anchor-and-claim pattern
-  ([Google Chat §10](google-chat-integration.md#10-marketplace-distribution-and-multi-tenant-installs)),
-  with one `Bot` row per customer tenant. Which tenant's token endpoint a
-  cross-tenant send uses is unverified, and Store listing has its own review.
+- **One app for many tenants.** One bot, registered in the installation's own
+  tenant, serves every customer tenant. Measured with a Developer Portal bot
+  whose Entra app is multi-tenant, from a second, new tenant:
+  - The customer's admin uploads the package in the Teams admin center and adds
+    the app to a team; no Store listing or Partner Center review is needed.
+    Installation events and a channel mention reached the bot's endpoint within
+    two seconds of **Add to team**.
+  - Installing created the app's service principal in the customer tenant: a
+    client-credentials request against that tenant failed with AADSTS7000229
+    before the install and succeeds after it.
+  - Sending into the customer tenant takes a token from the bot's **home**
+    tenant; tokens from the customer tenant and from `botframework.com` are
+    refused with 401. The Bot Connector origin is regional and carries the
+    customer tenant, for example `https://smba.trafficmanager.net/amer/<tenant>/`,
+    and arrives as each activity's `serviceUrl`.
+  - A new tenant's app management takes most of an hour to become usable; an
+    upload made before then did not persist.
+  - The admin's upload can be replaced by Graph calls made while the admin is
+    signed in, with three delegated scopes and admin consent:
+    `AppCatalog.ReadWrite.All` publishes the package to the organization
+    catalog (published at once, no review; application permissions are not
+    supported for this call), `Team.ReadBasic.All` lists the admin's teams, and
+    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` installs the app into
+    the chosen team with its resource-specific permissions in
+    `consentedPermissionSet`. "Self" binds the token to the app it installs, so
+    the signed-in application must be the bot's own Entra app. The install
+    returned 201, the bot received its installation events, and the team then
+    held the app's `ChannelMessage.Read.Group` grant. The same install for a
+    package whose bot ID had no bot registration failed with 400 at the step
+    that adds the bot to the team.
+
+  The hosted app keeps one `Bot` row per customer tenant, as Google Chat's
+  anchor-and-claim pattern does
+  ([Google Chat §10](google-chat-integration.md#10-marketplace-distribution-and-multi-tenant-installs)):
+  the relay fences each activity to a claimed tenant instead of the single
+  `teamId`, and the daemon always signs outbound calls with the home tenant's
+  token. The same multi-tenant Entra app can also be the deployment's
+  Microsoft sign-in application (§4.5), with its own secret per consumer.
+  Installation and its resource-specific consent are separate from the Entra
+  consent the sign-in scopes need: installing creates the app's service
+  principal, but whether members can then sign in without a consent prompt, or
+  an administrator must grant the sign-in scopes for the tenant, is
+  **unverified**. Entra marks the app unverified until publisher verification,
+  which tenants that only allow verified publishers require; a Store listing
+  has its own review and is optional.
+
 - **Native streaming** in 1:1 chats (§4.3).
 - **Files**: 1:1 file consent cards, and Graph access for channel and group-chat
   files.
