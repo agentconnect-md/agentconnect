@@ -15,6 +15,8 @@ export type FeatureFlagId =
   | 'google-chat-deployment-app'
   // The By decision checkout for additional repositories; a row already By decision keeps it, and a set selector stays shown.
   | 'repository-decision'
+  // Computers in the console: Infra's section, a Computer's page, the agent's Computers card and their usage.
+  | 'computer-use'
 
 function enabledIds(): ReadonlySet<string> {
   // Match PublicEnvScript's precedence so server rendering and browser hydration agree.

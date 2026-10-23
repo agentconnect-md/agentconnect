@@ -50,7 +50,12 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/components/console/Shell', () => ({ useCrumbSlot: () => ({ register: () => {} }) }))
 vi.mock('@/lib/computers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/computers')>()),
-  useComputer: () => ({ data: mocks.computer, error: undefined, isLoading: false, mutate: mocks.mutate })
+  useComputer: (id: string | undefined) => ({
+    data: id ? mocks.computer : undefined,
+    error: undefined,
+    isLoading: false,
+    mutate: mocks.mutate
+  })
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
@@ -101,10 +106,18 @@ beforeEach(() => {
   ])
     fn.mockReset()
   mocks.fetchComputerAudit.mockResolvedValue({ entries: [], nextCursor: null })
+  window.__AC_ENV = { FEATURE_FLAGS: 'computer-use' }
   document.body.innerHTML = ''
 })
 
 describe('ComputerDetailView', () => {
+  it('reads as not found without the computer-use flag, without asking for the Computer', () => {
+    window.__AC_ENV = { FEATURE_FLAGS: '' }
+    const el = render(computer())
+    expect(el.textContent).toContain('Computer not found')
+    expect(el.querySelector('[data-doctor-check]')).toBeNull()
+  })
+
   it('shows each doctor failure with its fix, failures first', () => {
     const el = render(
       computer({

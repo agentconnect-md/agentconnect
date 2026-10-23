@@ -1121,6 +1121,8 @@ and every `computer/policy`.
 
 ## 10. Console [design]
 
+- **[implemented]** Everything below shows only where the `computer-use` console flag is on (the chart's
+  `features.computerUse`, off by default); the Control Plane serves Computers either way.
 - A **Computers** section on the Infra page, after the daemons and their groups: list, status, OS, session type, owner,
   granted agents, `doctor` results with fixes, recent activity, audit.
 - Computer detail: policy editing, an **embedded viewer** (watch / take over), pause and stop, revoke. Viewer media
