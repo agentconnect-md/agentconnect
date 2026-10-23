@@ -42,7 +42,7 @@ const wizardOf = (id: string) => {
 
 describe('platform registry', () => {
   it('registers exactly the nine chat platforms, in picker order', () => {
-    const ids = ['slack', 'telegram', 'discord', 'feishu', 'linear', 'qq', 'googlechat', 'dingtalk', 'msteams']
+    const ids = ['slack', 'msteams', 'googlechat', 'discord', 'telegram', 'feishu', 'dingtalk', 'qq', 'linear']
     expect(platformRegistry.ids()).toEqual(ids)
     expect(platformRegistry.all().map((m) => m.platformId)).toEqual(ids)
   })

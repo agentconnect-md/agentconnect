@@ -166,15 +166,15 @@ describe('platform set', () => {
     }
     expect(BOT_PLATFORM_TABS.map((tab) => tab.label)).toEqual([
       'Slack',
-      'Telegram',
+      'Microsoft Teams',
+      'Google Chat',
       'Discord',
+      'Telegram',
       'Lark',
       'Feishu',
-      'Linear',
-      'QQ',
-      'Google Chat',
       'DingTalk',
-      'Microsoft Teams'
+      'QQ',
+      'Linear'
     ])
   })
 
