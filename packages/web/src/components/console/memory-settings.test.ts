@@ -213,14 +213,10 @@ describe('dreaming schedule validation gates the save', () => {
     expect(memorySettingsBlocker(draft)).toMatch(/not a valid cron/)
   })
 
-  it('refuses an expression the two cron parsers disagree about', () => {
-    // The daemon installs with Croner; cronstrue is more permissive. A zero step
-    // reads as "Every 0 minutes" to cronstrue but Croner throws
-    // `illegal stepping: 0`, so validating with the display parser would let
-    // through exactly the never-fires config this blocker exists to stop.
+  it('refuses a zero-step cron expression', () => {
     const zeroStep = '*/0 * * * *'
-    expect(cronHuman(zeroStep)).not.toBeNull() // cronstrue happily reads it
-    expect(isValidCron(zeroStep)).toBe(false) // Croner — the one that matters
+    expect(cronHuman(zeroStep)).toBeNull()
+    expect(isValidCron(zeroStep)).toBe(false)
     expect(memorySettingsBlocker(managed({ schedule: zeroStep }))).toMatch(/not a valid cron/)
   })
 

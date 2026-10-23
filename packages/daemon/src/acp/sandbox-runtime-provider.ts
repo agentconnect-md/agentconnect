@@ -132,12 +132,7 @@ export function removeLegacyMountPoints(cwd: string): void {
   }
 }
 
-/**
- * Run one command through an isolated Sandbox Runtime manager. This helper is
- * launched in its own process for every ACP host: SRT's manager is global to a
- * process, while AgentConnect needs a different filesystem/socket policy per
- * agent and may run many hosts concurrently.
- */
+// Each ACP host gets its own provider process because SRT's manager is process-global.
 export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?: boolean } = {}): Promise<number> {
   if (process.platform !== 'linux' && !(opts.offline && process.platform === 'darwin')) {
     console.error(
@@ -168,7 +163,9 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
     }
     const config = SandboxRuntimeConfigSchema.parse(JSON.parse(readFileSync(argv[0]!, 'utf8')))
     const sandboxCwd = realpathSync(requestedCwd)
-    const writeRoots = config.filesystem.allowWrite.map((path) => resolve(path))
+    const writeRoots = config.filesystem.allowWrite.map((entry) =>
+      resolve(typeof entry === 'string' ? entry : entry.path)
+    )
     const safeDirectories = config.git?.safeDirectories?.map((path) => resolve(path)) ?? []
     if (!writeRoots.includes(resolve(sandboxCwd)) || !safeDirectories.includes(resolve(sandboxCwd))) {
       throw new Error('sandbox cwd must be an explicit SRT write root and Git safe directory')
