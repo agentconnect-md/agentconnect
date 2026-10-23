@@ -1572,8 +1572,8 @@ export default function AddIntegrationModal({
                   <span className="flex h-[22px] w-[22px] flex-none items-center justify-center">
                     <PlatformMark platform={candidate.key} fillPct={100} />
                   </span>
-                  {/* Mobile tiles are icon-only (the name stays for screen readers); a two-line label area keeps the icons on one row. */}
-                  <span className="flex items-start justify-center desktop:min-h-[36px]">
+                  {/* Mobile tiles are icon-only (the name stays for screen readers); a label area a line and a half tall keeps a two-line name from lifting its icon much. */}
+                  <span className="flex items-center justify-center desktop:min-h-[27px]">
                     {regionSwitcher(candidate.key) ? (
                       <>
                         <span className="flex max-desktop:hidden">{regionSwitcher(candidate.key)}</span>
