@@ -8,6 +8,7 @@ import type { Agent } from '@/lib/data'
 import type { WizardHost } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
+import { BotSetupWalkthrough } from '../wizard-chrome'
 import { msTeamsApi } from './api'
 import { AppPackageButton } from './app-package'
 import { CopyField } from './fields'
@@ -15,6 +16,7 @@ import { MsTeamsMark } from './mark'
 import { useMsTeamsDeploymentApp } from './deployment-app'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
+import { msTeamsWalkthroughSteps } from './steps'
 import {
   MSTEAMS_ADMIN_APPS_URL,
   MSTEAMS_BOT_PORTAL_URL,
@@ -50,6 +52,7 @@ export function msTeamsPane(input: {
 /** Microsoft Teams' pane (teams-integration.md §5): register a bot, paste its credentials, then download and install the app package. */
 export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardHost }) {
   const t = useTranslations('Platforms.msteams')
+  const stepsT = useTranslations('Platforms.msteams.steps')
   const translate = (key: Parameters<typeof t>[0]) => t(key)
   // The chassis reads this same probe for its relay capability; only "has it answered" is read here.
   const probe = useDeploymentConfig(true)
@@ -215,18 +218,19 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
   return (
     <Frame>
       <Step n={1} title={t('register.title')} first>
-        <a
-          href={MSTEAMS_BOT_PORTAL_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`${LINK_BUTTON} mb-[10px]`}
-        >
-          <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
-            <MsTeamsMark fillPct={100} />
-          </span>
-          {t('register.open')}
-          <Icon name="external-link" size={14} />
-        </a>
+        <div className="group relative mb-[10px]">
+          <a href={MSTEAMS_BOT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className={LINK_BUTTON}>
+            <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+              <MsTeamsMark fillPct={100} />
+            </span>
+            {t('register.open')}
+            <Icon name="external-link" size={14} />
+          </a>
+          <BotSetupWalkthrough
+            steps={msTeamsWalkthroughSteps(stepsT, endpoint)}
+            label={t('register.walkthroughLabel')}
+          />
+        </div>
         {endpoint && (
           <div className="mb-[10px]">
             <CopyField label={t('register.endpoint')} value={endpoint} />

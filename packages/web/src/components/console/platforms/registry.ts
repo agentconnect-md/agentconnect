@@ -34,14 +34,14 @@ import { telegramModule } from './telegram'
  */
 const MODULES: readonly WebPlatformModule[] = [
   slackModule,
-  telegramModule,
-  discordModule,
-  feishuModule,
-  linearModule,
-  QQModule,
+  msTeamsModule,
   googleChatModule,
+  discordModule,
+  telegramModule,
+  feishuModule,
   dingTalkModule,
-  msTeamsModule
+  QQModule,
+  linearModule
 ]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))

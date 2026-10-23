@@ -24,6 +24,7 @@ describe('social login provider selection', () => {
   it('offers Microsoft sign-in under its Logto target', () => {
     expect(SOCIAL_LOGIN_CATALOG).toContainEqual({ target: 'azuread', name: 'Microsoft' })
     expect(targets('azuread,google')).toEqual(['google', 'azuread'])
+    expect(targets('github,azuread,slack,google')).toEqual(['google', 'slack', 'azuread', 'github'])
   })
 
   it('ignores targets it cannot render rather than rendering a blank button', () => {
