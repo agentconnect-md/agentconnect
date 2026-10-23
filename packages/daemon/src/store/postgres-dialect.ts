@@ -167,6 +167,8 @@ export const canonicalColumns = [
   'resolvedAt',
   'resolvedBy',
   'resolvedByName',
+  'retentionKeptAt',
+  'retentionRecheckAt',
   'retractedAt',
   'resultLedger',
   'revision',

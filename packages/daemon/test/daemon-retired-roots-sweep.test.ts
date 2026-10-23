@@ -145,6 +145,10 @@ describe('a shared session’s on-demand clones are judged with its row (decisio
     expect(existsSync(join(clones, 'example-co', 'notes.txt'))).toBe(true)
 
     rmSync(join(clones, 'example-co', 'notes.txt'))
+    // A kept session waits out its back-off (#3281): the same instant leaves it, the next pass judges it.
+    await inner.sweepExpiredSessions()
+    expect(await inner.store.getSession(key)).toBeDefined()
+    vi.spyOn(inner.clock, 'now').mockReturnValue(30 * 86_400_000 + 3_600_000)
     await inner.sweepExpiredSessions()
     expect(await inner.store.getSession(key)).toBeUndefined()
     expect(existsSync(clones)).toBe(false)

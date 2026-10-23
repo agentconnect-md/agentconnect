@@ -1262,6 +1262,7 @@ import {
   SESSION_RETENTION_SWEEP_INTERVAL_MS,
   UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
 } from './daemon/constants.js'
+import { nextRetentionRecheck, retentionRecheckPending } from './daemon/retention-recheck.js'
 import {
   observeStartup,
   withStartupPhase,
@@ -25470,13 +25471,24 @@ export class Daemon {
     return (await this.store.currentAppendCoordinate(rec.agentId, rec.channel, rec.transportScope)) === rec.thread
   }
 
+  /** Back off a kept session so the next passes skip it instead of waking its pod each hour (#3281); a failed write only means it is judged again. */
+  private async keepExpiredSession(rec: SessionRecord, keptAt: number): Promise<void> {
+    try {
+      await this.store.markSessionRetentionKept(rec.key, rec.updatedAt, keptAt, nextRetentionRecheck(rec, keptAt))
+    } catch (err) {
+      this.log.warn(`retention: could not record keeping session ${rec.key} (${formatErr(err)})`)
+    }
+  }
+
   /** Returns how many session VMs a completed pass discarded. */
   private async sweepExpiredSessions(): Promise<number> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
     if (windowMs === null) return 0
+    const now = this.clock.now()
     // Holder-only on a shared store: the active-turn exclusions are member-local, so only the holder can judge a row.
     const expired: SessionRecord[] = []
-    for (const rec of await this.store.listExpiredSessions(this.clock.now() - windowMs)) {
+    for (const rec of await this.store.listExpiredSessions(now - windowMs)) {
+      if (retentionRecheckPending(rec, now)) continue
       if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
     }
     if (!expired.length) return 0
@@ -25500,6 +25512,7 @@ export class Daemon {
       }
       if (res.outcome === 'retained') {
         retained += 1
+        await this.keepExpiredSession(rec, purgedAt)
         this.log.info(
           `retention: keeping session ${rec.key} — worktree has ${
             res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
@@ -25509,6 +25522,7 @@ export class Daemon {
       }
       if (res.outcome === 'failed') {
         failed += 1
+        await this.keepExpiredSession(rec, purgedAt)
         this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
         continue
       }

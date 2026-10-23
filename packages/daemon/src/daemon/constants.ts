@@ -27,6 +27,9 @@ export const PROBE_ROOT_SWEEP_INTERVAL_MS = 60_000
  *  expired rows and may run several git commands per candidate. */
 export const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
 
+// The longest a session retention keeps waits before it is judged again; each keep doubles the wait from one pass up to this (#3281).
+export const SESSION_RETENTION_RECHECK_MAX_MS = 7 * 24 * 60 * 60_000
+
 // How often the idle sweep looks for Running pods no launch here tracks, which a duty change alone would re-adopt.
 export const UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS = 10 * 60_000
 
