@@ -439,6 +439,19 @@ relay route is added to the chart's HTTPRoute in the same change.
     and arrives as each activity's `serviceUrl`.
   - A new tenant's app management takes most of an hour to become usable; an
     upload made before then did not persist.
+  - The admin's upload can be replaced by Graph calls made while the admin is
+    signed in, with three delegated scopes and admin consent:
+    `AppCatalog.ReadWrite.All` publishes the package to the organization
+    catalog (published at once, no review; application permissions are not
+    supported for this call), `Team.ReadBasic.All` lists the admin's teams, and
+    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` installs the app into
+    the chosen team with its resource-specific permissions in
+    `consentedPermissionSet`. "Self" binds the token to the app it installs, so
+    the signed-in application must be the bot's own Entra app. The install
+    returned 201, the bot received its installation events, and the team then
+    held the app's `ChannelMessage.Read.Group` grant. The same install for a
+    package whose bot ID had no bot registration failed with 400 at the step
+    that adds the bot to the team.
 
   The hosted app keeps one `Bot` row per customer tenant, as Google Chat's
   anchor-and-claim pattern does
