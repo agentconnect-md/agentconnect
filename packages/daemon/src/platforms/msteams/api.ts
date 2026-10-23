@@ -10,6 +10,7 @@ export const MSTEAMS_TOKEN_RENEW_MARGIN_MS = 5 * 60_000
 export const MSTEAMS_TEXT_FORMAT = 'extendedmarkdown'
 
 const REQUEST_TIMEOUT_MS = 15_000
+const MEMBERS_PAGE_SIZE = 100
 const MAX_ATTEMPTS = 4
 const RETRY_BASE_MS = 1_000
 const RETRY_WAIT_CAP_MS = 10_000
@@ -85,6 +86,14 @@ export function msTeamsTeamChannelsUrl(serviceUrl: string, teamId: string): stri
 /** The team's details URL under a recorded serviceUrl; it names the team's Microsoft 365 group, which Graph addresses it by. */
 export function msTeamsTeamUrl(serviceUrl: string, teamId: string): string {
   return new URL(`v3/teams/${encodeURIComponent(teamId)}`, serviceBase(serviceUrl)).toString()
+}
+
+/** One page of a conversation's members under a recorded serviceUrl, read with the bot's own token. */
+export function msTeamsPagedMembersUrl(serviceUrl: string, conversationId: string, continuationToken?: string): string {
+  const url = new URL(`v3/conversations/${encodeURIComponent(conversationId)}/pagedmembers`, serviceBase(serviceUrl))
+  url.searchParams.set('pageSize', String(MEMBERS_PAGE_SIZE))
+  if (continuationToken) url.searchParams.set('continuationToken', continuationToken)
+  return url.toString()
 }
 
 // A recorded serviceUrl as a base, refused unless it is a plain https origin and path.
@@ -254,6 +263,30 @@ export class MsTeamsApi {
   /** One read of a JSON resource, retried as every GET is. */
   async read(url: string): Promise<Record<string, unknown>> {
     return await this.request('GET', url)
+  }
+
+  /** A conversation's members, up to `max`; a shared channel refuses the bot this read (measured: HTTP 403). */
+  async conversationMembers(
+    serviceUrl: string,
+    conversationId: string,
+    max: number
+  ): Promise<{ id: string; aadObjectId?: string; name?: string }[]> {
+    const out: { id: string; aadObjectId?: string; name?: string }[] = []
+    let token: string | undefined
+    do {
+      const body = await this.request('GET', msTeamsPagedMembersUrl(serviceUrl, conversationId, token))
+      for (const entry of Array.isArray(body.members) ? (body.members as unknown[]) : []) {
+        const { id, aadObjectId, name } = (entry ?? {}) as { id?: unknown; aadObjectId?: unknown; name?: unknown }
+        if (typeof id !== 'string' || !id) continue
+        out.push({
+          id,
+          ...(typeof aadObjectId === 'string' && aadObjectId ? { aadObjectId } : {}),
+          ...(typeof name === 'string' && name ? { name } : {})
+        })
+      }
+      token = typeof body.continuationToken === 'string' && body.continuationToken ? body.continuationToken : undefined
+    } while (token && out.length < max)
+    return out.slice(0, max)
   }
 
   /** Delete a posted activity; one already gone counts as deleted. */
