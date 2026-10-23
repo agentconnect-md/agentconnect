@@ -5,7 +5,7 @@ import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { DINGTALK_TOKEN_URL } from '../../src/platforms/dingtalk/provider.js'
+import { DINGTALK_TOKEN_URLS } from '../../src/platforms/dingtalk/provider.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
 
@@ -29,11 +29,11 @@ class SpyControl {
   async integrationRemove(_daemonId: string, _r: IntegrationRemove): Promise<void> {}
 }
 
-/** DingTalk's token endpoint, accepting only the secrets in `valid`; anything else fails the test. */
+/** DingTalk's token endpoints, accepting only the secrets in `valid`; anything else fails the test. */
 function fakeDingTalk(valid: Set<string>, calls: string[]): typeof fetch {
   return (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
-    if (url !== DINGTALK_TOKEN_URL) throw new Error(`unexpected request to ${url}`)
+    if (!(DINGTALK_TOKEN_URLS as readonly string[]).includes(url)) throw new Error(`unexpected request to ${url}`)
     const body = JSON.parse(String(init.body)) as { appKey: string; appSecret: string }
     calls.push(body.appKey)
     if (body.appKey === CLIENT_ID && valid.has(body.appSecret))

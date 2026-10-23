@@ -135,12 +135,18 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     this.reactions = new DingTalkReactionClient(this.api, group.clientId, deps.log)
     if (deps.questionTemplate)
       this.cards = new DingTalkCardClient(this.api, group.clientId, deps.questionTemplate, deps.log)
+    const api = this.api
     this.media = {
-      accessToken: () => this.api.accessToken(),
+      accessToken: () => api.accessToken(),
       robotCode: group.clientId,
       signal: this.abort.signal,
-      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-      ...(deps.origin ? { origin: deps.origin } : {})
+      get origin() {
+        return api.origin
+      },
+      get oapiOrigin() {
+        return api.oapiOrigin
+      },
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {})
     }
     this.stream = new DingTalkStream({
       openConnection: () => this.api.openStream(),
