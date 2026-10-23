@@ -433,8 +433,7 @@ relay route is added to the chart's HTTPRoute in the same change.
 
 ## 8. The deployment's Teams app
 
-Status: **implemented**, offered in the Console behind the `msteams-deployment-app`
-flag until the path is measured in a second tenant (§8.4). Each organization can
+Status: **implemented**; the Console offers it once Setup configures the app, and the path in a second tenant is still to be measured (§8.4). Each organization can
 still register its own bot (§2); this
 section adds one app the deployment operates, so an organization connects its
 Microsoft 365 tenant from the Console with an administrator's sign-in and no

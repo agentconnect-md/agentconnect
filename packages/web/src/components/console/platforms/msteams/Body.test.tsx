@@ -2,6 +2,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IntegrationDto, SlackConfigDto } from '@/lib/api'
 import type { Agent } from '@/lib/data'
@@ -13,8 +14,7 @@ const mocks = vi.hoisted(() => ({
   appPackage: vi.fn(),
   saveBlob: vi.fn(),
   deploymentApp: vi.fn(),
-  connect: vi.fn(),
-  flags: new Set<string>()
+  connect: vi.fn()
 }))
 
 vi.mock('../deployment-config', () => ({
@@ -29,7 +29,6 @@ vi.mock('./api', () => ({
   }
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
-vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (id: string) => mocks.flags.has(id) }))
 vi.mock('@/lib/shared-file', () => ({ saveBlob: mocks.saveBlob }))
 
 import { ApiError } from '@/lib/api'
@@ -95,7 +94,18 @@ async function type(input: HTMLInputElement, value: string): Promise<void> {
 
 async function render(over: Partial<WizardHost> = {}): Promise<WizardHost> {
   const state = wizardHost(over)
-  await act(async () => root.render(<MsTeamsWizardBody agent={agent} host={state} />))
+  // A cache per render, so one test's deployment app never answers another's read.
+  await act(async () =>
+    root.render(
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <MsTeamsWizardBody agent={agent} host={state} />
+      </SWRConfig>
+    )
+  )
+  // Let the deployment-app read settle.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
   return state
 }
 
@@ -116,7 +126,8 @@ beforeEach(() => {
   mocks.saveBlob.mockReset()
   mocks.deploymentApp.mockReset()
   mocks.connect.mockReset()
-  mocks.flags.clear()
+  // A deployment without its own Teams app, unless a test configures one.
+  mocks.deploymentApp.mockResolvedValue({ appId: null })
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -145,7 +156,6 @@ describe('msTeamsPane', () => {
 
 describe('MsTeamsWizardBody with the deployment app', () => {
   it('sends the person to Microsoft’s sign-in for this agent, or lets them register their own bot', async () => {
-    mocks.flags.add('msteams-deployment-app')
     mocks.deploymentApp.mockResolvedValue({ appId: APP_ID })
     mocks.connect.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/x' })
     const assign = vi.fn()

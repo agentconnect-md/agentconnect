@@ -13,8 +13,6 @@ export type FeatureFlagId =
   | 'qq'
   // The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; otherwise it connects its own app.
   | 'google-chat-deployment-app'
-  // The Teams wizard offers connecting the organization's tenant to the deployment's Teams app; otherwise it registers its own bot.
-  | 'msteams-deployment-app'
   // The By decision checkout for additional repositories; a row already By decision keeps it, and a set selector stays shown.
   | 'repository-decision'
 
