@@ -32,6 +32,7 @@ export const SOCIAL_LOGIN_CATALOG = [
   { target: 'lark', name: 'Lark' },
   { target: 'feishu', name: 'Feishu' },
   { target: 'discord', name: 'Discord' },
+  { target: 'azuread', name: 'Microsoft' },
   { target: 'telegram', name: 'Telegram' }
 ] as const
 

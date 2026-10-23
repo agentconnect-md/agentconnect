@@ -211,7 +211,7 @@ describe('Logto setup reconciliation', () => {
       applicationName: 'AgentConnect',
       redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
       postLogoutRedirectUris: ['http://localhost:3000/login'],
-      socialProviders: ['github', 'google', 'slack', 'telegram', 'discord', 'gitlab'],
+      socialProviders: ['github', 'google', 'slack', 'telegram', 'discord', 'azuread', 'gitlab'],
       gitlab: {
         clientId: 'gitlab-client',
         clientSecret: 'gitlab-secret',
@@ -221,6 +221,7 @@ describe('Logto setup reconciliation', () => {
       google: { clientId: 'google-client', clientSecret: 'google-secret' },
       telegram: { clientId: '123456789', clientSecret: 'telegram-secret' },
       discord: { clientId: '123456789012345678', clientSecret: 'discord-secret' },
+      azuread: { clientId: '00000000-0000-4000-8000-0000000000c1', clientSecret: 'azuread-secret' },
       slack: {
         clientId: 'slack-client',
         clientSecret: 'slack-secret',
@@ -237,6 +238,7 @@ describe('Logto setup reconciliation', () => {
         { target: 'slack', id: 'agentconnect-slack', created: true },
         { target: 'telegram', id: 'agentconnect-telegram', created: true },
         { target: 'discord', id: 'agentconnect-discord', created: true },
+        { target: 'azuread', id: 'agentconnect-azuread', created: true },
         { target: 'gitlab', id: 'agentconnect-gitlab', created: true }
       ],
       signInExperienceChanged: true,
@@ -251,6 +253,7 @@ describe('Logto setup reconciliation', () => {
         { target: 'slack', id: 'agentconnect-slack', created: false },
         { target: 'telegram', id: 'agentconnect-telegram', created: false },
         { target: 'discord', id: 'agentconnect-discord', created: false },
+        { target: 'azuread', id: 'agentconnect-azuread', created: false },
         { target: 'gitlab', id: 'agentconnect-gitlab', created: false }
       ],
       signInExperienceChanged: false,
@@ -300,6 +303,19 @@ describe('Logto setup reconciliation', () => {
       connectorId: 'discord-universal',
       config: { clientId: '123456789012345678', scope: 'identify' }
     })
+    expect(connectors.find((connector) => connector.target === 'azuread')).toEqual({
+      id: 'agentconnect-azuread',
+      connectorId: 'azuread-universal',
+      target: 'azuread',
+      syncProfile: true,
+      config: {
+        clientId: '00000000-0000-4000-8000-0000000000c1',
+        clientSecret: 'azuread-secret',
+        cloudInstance: 'https://login.microsoftonline.com',
+        tenantId: 'organizations',
+        disableEmailSync: true
+      }
+    })
     const telegramConfig = telegram.config as Record<string, unknown>
     delete telegramConfig.customConfig
     delete telegramConfig.authRequestOptionalConfig
@@ -321,7 +337,7 @@ describe('Logto setup reconciliation', () => {
       clientSecret: 'rotated-secret',
       tokenEndpointAuthMethod: 'client_secret_basic'
     })
-    const externalConnectors = { ...desired, telegram: undefined, discord: undefined }
+    const externalConnectors = { ...desired, telegram: undefined, discord: undefined, azuread: undefined }
     expect((await client.reconcileSetup(externalConnectors)).changed).toBe(false)
     expect((await client.inspectSetup(externalConnectors)).connectors.every((connector) => connector.matches)).toBe(
       true

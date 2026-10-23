@@ -181,7 +181,7 @@ const ConfigureGoogleBody = z.strictObject({
   clientSecret: z.string().min(1).max(10_000).optional()
 })
 
-const LoginAppProvider = z.enum(['telegram', 'discord'])
+const LoginAppProvider = z.enum(['telegram', 'discord', 'azuread'])
 const ConfigureLoginAppBody = z.strictObject({ application: ConfigureGoogleBody.nullable() })
 
 const RegionalLoginAppBody = z
@@ -1161,7 +1161,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       const params = z.strictObject({ provider: LoginAppProvider }).safeParse(request.params)
       const parsed = ConfigureLoginAppBody.safeParse(request.body)
       if (!params.success || !parsed.success)
-        return problem(reply, 400, 'a Telegram or Discord login application is required')
+        return problem(reply, 400, 'a Telegram, Discord or Microsoft login application is required')
       return serializeMutation(async () => {
         const current = await deps.store.getAdmin()
         if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
@@ -1607,6 +1607,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         'logto.googleConnectorClientSecret',
         'logto.telegramConnectorClientSecret',
         'logto.discordConnectorClientSecret',
+        'logto.azureadConnectorClientSecret',
         'slack.clientSecret',
         'github.clientSecret',
         'gitlab.clientSecret'
@@ -1694,6 +1695,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       'logto.googleConnectorClientSecret',
       'logto.telegramConnectorClientSecret',
       'logto.discordConnectorClientSecret',
+      'logto.azureadConnectorClientSecret',
       'gitlab.clientSecret',
       'slack.clientSecret'
     ])

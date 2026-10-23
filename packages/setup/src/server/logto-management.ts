@@ -42,6 +42,7 @@ export interface LogtoSetupDesired {
   slack?: { clientId: string; clientSecret: string; scope: string }
   telegram?: { clientId: string; clientSecret: string }
   discord?: { clientId: string; clientSecret: string }
+  azuread?: { clientId: string; clientSecret: string }
 }
 
 interface LogtoRole {
@@ -247,6 +248,19 @@ function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredCo
       id: LOGTO_LOGIN_APPS.discord.id,
       connectorId: 'discord-universal',
       config: { ...desired.discord, scope: 'identify' }
+    }
+  }
+  // `organizations` refuses personal accounts; email sync stays off because any tenant's admin controls Graph `mail`.
+  if (target === 'azuread' && desired.azuread) {
+    return {
+      id: LOGTO_LOGIN_APPS.azuread.id,
+      connectorId: 'azuread-universal',
+      config: {
+        ...desired.azuread,
+        cloudInstance: 'https://login.microsoftonline.com',
+        tenantId: 'organizations',
+        disableEmailSync: true
+      }
     }
   }
   if (target === 'gitlab' && desired.gitlab) {

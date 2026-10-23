@@ -233,6 +233,11 @@ export const DeploymentConfigValuesV1Schema = z
           .strictObject({ clientId: z.string().trim().min(1) })
           .nullable()
           .optional(),
+        /** Multi-tenant Microsoft Entra application for Microsoft sign-in. Its secret stays write-only. */
+        azureadConnector: z
+          .strictObject({ clientId: z.string().trim().min(1) })
+          .nullable()
+          .optional(),
         /** Deployment Slack App identity reused for Slack social sign-in. */
         slackConnector: LogtoSlackConnectorSchema.nullable().optional()
       })
@@ -302,7 +307,8 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'logto.githubConnectorClientSecret',
   'logto.googleConnectorClientSecret',
   'logto.telegramConnectorClientSecret',
-  'logto.discordConnectorClientSecret'
+  'logto.discordConnectorClientSecret',
+  'logto.azureadConnectorClientSecret'
 ] as const
 
 export const DeploymentSecretKeySchema = z.enum(DEPLOYMENT_SECRET_KEYS)
@@ -534,7 +540,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
     ...(logtoGithubConnectorChanged ? (['logto.githubConnectorClientSecret'] as const) : []),
     ...(logtoGoogleConnectorChanged ? (['logto.googleConnectorClientSecret'] as const) : []),
-    ...(['telegram', 'discord'] as const).flatMap((provider) => {
+    ...(['telegram', 'discord', 'azuread'] as const).flatMap((provider) => {
       const key = `${provider}Connector` as const
       return next.logto?.[key] && previous?.logto?.[key]?.clientId !== next.logto[key].clientId
         ? ([`logto.${provider}ConnectorClientSecret`] as const)
@@ -556,7 +562,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),
     ...(values.logto?.githubConnector ? (['logto.githubConnectorClientSecret'] as const) : []),
     ...(values.logto?.googleConnector ? (['logto.googleConnectorClientSecret'] as const) : []),
-    ...(['telegram', 'discord'] as const).flatMap((provider) =>
+    ...(['telegram', 'discord', 'azuread'] as const).flatMap((provider) =>
       values.logto?.[`${provider}Connector`] ? ([`logto.${provider}ConnectorClientSecret`] as const) : []
     )
   ]

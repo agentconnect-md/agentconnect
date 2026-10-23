@@ -148,6 +148,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#google-section">Google</a>
       <a href="#telegram-section">Telegram</a>
       <a href="#discord-section">Discord</a>
+      <a href="#azuread-section">Microsoft</a>
       <a href="#googlechat-section">Google Chat</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>

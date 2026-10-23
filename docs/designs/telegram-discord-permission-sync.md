@@ -39,11 +39,24 @@ and secret in Setup. Setup creates or updates the Discord connector with target
 user ID; session permission checks use the installed bot's token. See
 [Logto's Discord setup](https://docs.logto.io/integrations/discord).
 
+### Microsoft
+
+Open **Setup → Microsoft**, then register one multi-tenant application in
+Microsoft Entra (accounts in any organizational directory). Register all
+displayed redirect URIs as Web redirect URIs, then save its application (client)
+ID and a client secret in Setup. Setup creates or updates the Azure AD connector
+with target `azuread`, authority `organizations` so personal Microsoft accounts
+cannot sign in, and email sync off so a foreign tenant's directory address never
+becomes a Console identifier. The connector records the Entra object ID, which
+Teams sends as `aadObjectId`; see
+[Teams sign-in and linking](teams-integration.md#45-sign-in-linking-and-session-access-sync).
+
 Saving an application also enables its social-provider target and reconciles
 Logto. Secrets are write-only. Existing connector IDs are preserved so registered
-callbacks remain valid; a new connector uses `agentconnect-telegram` or
-`agentconnect-discord`. **Check Logto** verifies connector configuration; provider
-redirect registration and a successful login must be verified separately.
+callbacks remain valid; a new connector uses `agentconnect-telegram`,
+`agentconnect-discord` or `agentconnect-azuread`. **Check Logto** verifies
+connector configuration; provider redirect registration and a successful login
+must be verified separately.
 
 Replacing a client ID requires its new secret. **Clear configuration** removes
 the saved credentials and disables that sign-in target, while keeping at least
