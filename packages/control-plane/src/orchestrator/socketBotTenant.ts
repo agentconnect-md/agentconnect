@@ -23,13 +23,16 @@ export function createSocketBotTenant(deps: SocketBotTenantDeps): SocketBotTenan
       }
       if (bot.workspaceId && bot.workspaceName) return true
       const secrets = await deps.secrets.get(bot.orgId, bot.id)
-      const named = secrets ? await tenant.name(bot, secrets, reported.tenantId) : null
+      const named = secrets ? await tenant.name(bot, secrets, reported.tenantId) : { unnamed: 'no stored credential' }
       // The id is kept without a name too, so the next report retries only the lookup.
-      await deps.bots.setWorkspaceMetadata(bot.orgId, bot.id, reported.tenantId, named?.workspaceName ?? null)
-      if (named) {
-        const { placeholder, name } = named.integrationName
-        await deps.integrations.renameForBot(bot.orgId, bot.id, placeholder, name)
+      if ('unnamed' in named) {
+        deps.log.warn({ botId: bot.id, reason: named.unnamed }, 'integration/tenant: tenant not named')
+        await deps.bots.setWorkspaceMetadata(bot.orgId, bot.id, reported.tenantId, null)
+        return true
       }
+      await deps.bots.setWorkspaceMetadata(bot.orgId, bot.id, reported.tenantId, named.workspaceName)
+      const { placeholder, name } = named.integrationName
+      await deps.integrations.renameForBot(bot.orgId, bot.id, placeholder, name)
       return true
     }
   }
