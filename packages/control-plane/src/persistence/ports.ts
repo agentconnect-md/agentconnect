@@ -5921,6 +5921,8 @@ export interface IntegrationRepo {
    *  revoked rows and deliberately deleted/free memberships stay untouched.
    *  System-tier like {@link IntegrationRepo.markRevokedForBot}. */
   restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number>
+  /** Rename the bot's integrations still named `from` (a provider's placeholder); a name anyone changed stays. Org-fenced; returns the rows renamed. */
+  renameForBot(orgId: OrgId, botId: BotId, from: string, to: string): Promise<number>
   /** Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
   delete(orgId: OrgId, id: IntegrationId): Promise<void>
 }

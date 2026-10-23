@@ -809,6 +809,10 @@ export class PgIntegrationRepo implements IntegrationRepo {
     // Org-fenced delete: a cross-org id throws the same P2025 as an absent row.
     await this.db.integration.delete({ where: { id, orgId } })
   }
+
+  async renameForBot(orgId: OrgId, botId: BotId, from: string, to: string): Promise<number> {
+    return (await this.db.integration.updateMany({ where: { orgId, botId, name: from }, data: { name: to } })).count
+  }
 }
 
 /** The detections a later report never lifts (assistant-mode.md §5.3). */

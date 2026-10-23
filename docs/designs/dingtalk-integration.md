@@ -57,9 +57,8 @@ answer HTTP 400 `invalidClientIdOrSecret`, which the Console shows as
 `DINGTALK_CREDENTIALS_INVALID`, and an unreachable service is
 `DINGTALK_CHECK_UNAVAILABLE`. The token exchange does not reveal the
 organization, so the bot's external identity is the Client ID under the
-tenantless sentinel, which keeps one bot per app. v1 needs no organization ID;
-recording `chatbotCorpId` would need a new daemon report, and waits for a
-feature that reads it.
+tenantless sentinel, which keeps one bot per app. The organization is learned
+later, from traffic (§2.2).
 
 ### 2.1 Two editions
 
@@ -93,6 +92,32 @@ of the picked edition.
 The international console lists no card permission (**measured**), so its
 walkthrough leaves that step out and the daemon sends its questions as the
 numbered text card without trying a card (§4.6).
+
+### 2.2 Organization name
+
+The Console names a DingTalk integration after its organization, as a Slack
+one shows its workspace. Neither the token exchange nor any API reachable with
+the app token alone names the organization, and adding the robot to a group
+raises no event (**measured**), so the first robot message is the earliest
+source: every one carries the organization's `chatbotCorpId`.
+
+The daemon's connection reports it in an `integration/tenant` EVT
+(`{ integrationIds, botUserId, tenantId }`, the Control Plane-owned
+integrations the socket serves) on the first message, then at most hourly, and
+only to a Control Plane advertising `integration-tenant-v1`; a report that
+could not be sent is retried on the next message. The Control Plane accepts it
+for a socket bot only from a daemon that may act for the integration's agent,
+from the bot's own socket (`botUserId` is the Client ID), and for the
+organization the bot already recorded, if any. It stores the ID as the bot's
+display-only `workspaceId`, reads the name with the bot's own credential
+(`GET /v1.0/contact/organizations/authInfos?targetCorpId=`, which needs
+`Contact.Org.Read`, granted without approval; **measured** on mainland), stores
+it as `workspaceName`, and renames the bot's integrations still carrying the
+placeholder `DingTalk · <Client ID>` to `DingTalk · <organization>`; a name
+anyone changed stays. Without the permission the ID is kept unnamed and the
+next report retries only the read. Until the first message the placeholder
+stands. Whether the international edition grants `Contact.Org.Read` is
+unmeasured, so its walkthrough does not list it.
 
 ## 3. Architecture
 
@@ -350,6 +375,8 @@ the facts the probe hit (**measured**):
 - `Card.Instance.Write` lets questions be answered with a tap (§4.6); without
   it every question is the numbered text card. The international console has
   no such permission, so its walkthrough leaves the step out (§2.1).
+- `Contact.Org.Read` lets the Console show the organization's name (§2.2); the
+  mainland walkthrough lists it beside `Card.Instance.Write`.
 - An internal app version publishes without review, and **every later
   configuration change takes effect only after a new version**; until then
   DingTalk keeps the previous behavior.

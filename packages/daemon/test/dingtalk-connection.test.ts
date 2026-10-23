@@ -123,6 +123,31 @@ describe('DingTalk connection', () => {
     expect(await conn.listChannels()).toEqual([{ id: 'cid-example-group', name: 'Example Group', isPrivate: true }])
   })
 
+  it('reports the organization from the first message, again only hourly, and retries until the CP is told', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const reported: string[] = []
+      let told = false
+      const { conn } = connect(fakeFetch().fetchImpl, () => {}, {
+        onTenant: (corpId) => (reported.push(corpId), told)
+      })
+      const message = (n: number, corpId = 'corp-example') =>
+        conn.normalize({ ...groupMention, msgId: `msg-${n}`, chatbotCorpId: corpId })
+
+      message(1)
+      told = true
+      message(2)
+      message(3)
+      expect(reported).toEqual(['corp-example', 'corp-example'])
+      vi.setSystemTime(Date.now() + 60 * 60 * 1000)
+      message(4)
+      message(5, 'corp-other')
+      expect(reported).toEqual(['corp-example', 'corp-example', 'corp-example', 'corp-other'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends to a group by its conversation and to a DM by the staff id, with one cached token', async () => {
     const { calls, fetchImpl } = fakeFetch()
     const { conn } = connect(fetchImpl)

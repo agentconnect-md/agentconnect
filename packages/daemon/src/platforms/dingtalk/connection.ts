@@ -93,6 +93,7 @@ export interface DingTalkReplyPort {
 const SEEN_LIMIT = 2_000
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const MEMBERS_PER_CHANNEL = 200
+const TENANT_REPORT_INTERVAL_MS = 60 * 60 * 1000
 
 export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort, DingTalkMediaPort {
   readonly botUserId: string
@@ -108,6 +109,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   // Download code → declared MIME type, so an image download is held to image bytes.
   private readonly attachmentTypes = new Map<string, string>()
   private readonly media: DingTalkMediaDeps
+  private tenantReport?: { corpId: string; at: number }
 
   constructor(
     readonly group: DingTalkConnectionGroup,
@@ -122,6 +124,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
       }): Promise<string | undefined>
       /** The question card template; absent ⇒ every question is the numbered text card (§4.6). */
       questionTemplate?: string
+      /** The organization a robot message named (§2.2); true once the CP was told. */
+      onTenant?(corpId: string): boolean
       log: Logger
       fetchImpl?: typeof fetch
       origin?: string
@@ -241,6 +245,16 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     while (members.size > MEMBERS_PER_CHANNEL) members.delete(members.keys().next().value!)
     this.members.set(msg.channel, members)
     if (msg.sender.name) this.names.set(msg.sender.id, msg.sender.name)
+    this.reportTenant(payload.chatbotCorpId)
+  }
+
+  // A robot join raises no event, so the first message names the organization; resent hourly in case the CP lost it.
+  private reportTenant(corpId: unknown): void {
+    if (typeof corpId !== 'string' || !corpId || !this.deps.onTenant) return
+    const now = Date.now()
+    const last = this.tenantReport
+    if (last?.corpId === corpId && now - last.at < TENANT_REPORT_INTERVAL_MS) return
+    if (this.deps.onTenant(corpId)) this.tenantReport = { corpId, at: now }
   }
 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {

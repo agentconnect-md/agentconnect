@@ -45,6 +45,7 @@ import type {
   SessionPurged,
   IntegrationChannels,
   IntegrationRevoked,
+  IntegrationTenant,
   IntegrationRevokedOk,
   CronReport,
   HookReport,
@@ -163,6 +164,7 @@ import {
   CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
+  INTEGRATION_TENANT_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   KNOWLEDGE_RECORD_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
@@ -975,6 +977,17 @@ export class CpClient {
     this.transport?.send(
       encode(this.scopedFrame('integration/channels', snapshot, this.deps.orgForIntegration?.(snapshot.integrationId)))
     )
+  }
+
+  /** D→C `integration/tenant` EVT; false when it was not sent (not ready, or a CP not advertising {@link INTEGRATION_TENANT_FEATURE}). */
+  emitIntegrationTenant(payload: IntegrationTenant): boolean {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return false
+    if (!this.supportsServerFeature(INTEGRATION_TENANT_FEATURE) || !this.transport) return false
+    // One connection is one bot, so its integrations share the org of the first.
+    this.transport.send(
+      encode(this.scopedFrame('integration/tenant', payload, this.deps.orgForIntegration?.(payload.integrationIds[0]!)))
+    )
+    return true
   }
 
   /** D→C `integration/revoked` REQ; `'unsupported'` before a CP advertising {@link INTEGRATION_REVOKED_FEATURE}, which would refuse the frame. */

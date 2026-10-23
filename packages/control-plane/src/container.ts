@@ -218,6 +218,7 @@ import {
 import { AgentMemoryStagingSweeper } from './orchestrator/agentMemoryStagingSweeper.js'
 import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
+import { createSocketBotTenant } from './orchestrator/socketBotTenant.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
 import { resolveReadAccess } from './orchestrator/readAccess.js'
@@ -2940,6 +2941,13 @@ export function buildContainer(
       matches: (bot, reported) => platforms.get(bot.platform)?.socketLifecycleRevocation?.(bot, reported) === true,
       revoke: (botId, reason, eventAtMs) => httpBot.revokeBot(botId, reason, { eventAtMs }, { evidence: 'event' })
     },
+    socketBotTenant: createSocketBotTenant({
+      bots: repos.bot,
+      secrets: repos.botSecret,
+      integrations: repos.integration,
+      platforms,
+      log: http.log
+    }),
     githubInstallation: repos.githubInstallation,
     gitlabProjectBinding: repos.gitlabProjectBinding,
     ...(gitlabAppCfg ? { gitlabBaseUrl: gitlabAppCfg.baseUrl } : {}),

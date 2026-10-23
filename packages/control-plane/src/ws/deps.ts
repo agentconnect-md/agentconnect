@@ -41,7 +41,12 @@ import type {
 import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
-import type { DutyAgentBundle, IntegrationRevoked, RelayRosterEntry } from '@agentconnect.md/protocol'
+import type {
+  DutyAgentBundle,
+  IntegrationRevoked,
+  IntegrationTenant,
+  RelayRosterEntry
+} from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { RepoCandidatesService } from '../github/repo-candidates.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
@@ -82,6 +87,12 @@ export interface SocketBotRevocation {
   matches(bot: BotRecord, reported: Pick<IntegrationRevoked, 'botUserId' | 'workspaceId'>): boolean
   /** The fenced revocation `rc/bot-revoked` applies, fenced here by the event time alone. */
   revoke(botId: BotId, reason: IntegrationRevoked['reason'], eventAtMs: number): Promise<{ applied: boolean }>
+}
+
+/** Applies a daemon socket's `integration/tenant` to one bot it may speak for. */
+export interface SocketBotTenant {
+  /** Record the tenant and name it; false ⇒ the report was refused. */
+  record(bot: BotRecord, reported: Pick<IntegrationTenant, 'botUserId' | 'tenantId'>): Promise<boolean>
 }
 
 /** Config slice the WS edge reads. */
@@ -146,6 +157,8 @@ export interface DaemonWsDeps {
   bot?: BotRepo
   /** Applies a daemon socket's `integration/revoked`; absent ⇒ the frame is refused and `register/ok` does not advertise it. */
   socketBotRevocation?: SocketBotRevocation
+  /** Applies a daemon socket's `integration/tenant`; absent ⇒ the frame is dropped and `register/ok` does not advertise it. */
+  socketBotTenant?: SocketBotTenant
   /** Resolves a trusted GitHub delivery's installation id to this org's
    * durable credential locator before binding a repository ExternalScope. */
   githubInstallation?: GithubInstallationRepo

@@ -503,6 +503,16 @@ export const IntegrationRevoked = z.object({
 })
 export type IntegrationRevoked = z.infer<typeof IntegrationRevoked>
 
+/** D→C EVT: the tenant a daemon-held socket's own traffic named (a DingTalk app's organization); the CP records it and names the integration after it. */
+export const IntegrationTenant = z.object({
+  // The integrations the socket serves; the daemon's spec carries no bot id, so the CP resolves each one.
+  integrationIds: z.array(z.string().uuid()).min(1).max(256),
+  // The socket's own bot identity (a DingTalk Client ID), so a report from a superseded bot's socket is refused.
+  botUserId: z.string().min(1).max(200),
+  tenantId: z.string().min(1).max(200)
+})
+export type IntegrationTenant = z.infer<typeof IntegrationTenant>
+
 /** C→D REP (corr = `integration/revoked` id): a committed verdict, `applied: false` meaning refused or fenced; both are terminal, only a missing reply is retried. */
 export const IntegrationRevokedOk = z.object({
   applied: z.boolean()
