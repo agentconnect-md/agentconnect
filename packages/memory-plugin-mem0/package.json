@@ -39,18 +39,18 @@
     "@modelcontextprotocol/node": "2.1.1",
     "@modelcontextprotocol/server": "2.3.1",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/instrumentation-http": "^0.222.0",
-    "@opentelemetry/instrumentation-undici": "^0.32.0",
-    "@opentelemetry/resources": "^2.11.0",
-    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/instrumentation-http": "^0.223.0",
+    "@opentelemetry/instrumentation-undici": "^0.33.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-node": "^0.223.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^24.19.1",
+    "@types/node": "^24.19.2",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.5"
   },
   "keywords": [
     "agentconnect",
