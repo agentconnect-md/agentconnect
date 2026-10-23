@@ -58,6 +58,20 @@ describe('Teams channel names', () => {
     expect((await conn.listChannels()).map((c) => c.name)).toEqual(['General', 'Design'])
   })
 
+  it('follows a rename after the TTL, keeping the last name while a refresh fails', async () => {
+    let answer = () => Response.json({ conversations: [{ id: DESIGN, name: 'Design' }] })
+    const { conn, advance } = connection(() => answer())
+    conn.noteMessage(post(DESIGN))
+    expect((await conn.getChannelInfo(DESIGN)).name).toBe('Design')
+    answer = () => Response.json({ conversations: [{ id: DESIGN, name: 'Engineering' }] })
+    expect((await conn.getChannelInfo(DESIGN)).name).toBe('Design')
+    advance(10 * 60_000 + 1)
+    expect((await conn.getChannelInfo(DESIGN)).name).toBe('Engineering')
+    answer = () => new Response(null, { status: 503 })
+    advance(10 * 60_000 + 1)
+    expect((await conn.getChannelInfo(DESIGN)).name).toBe('Engineering')
+  })
+
   it('names nothing when the read fails, and tries again only after a while', async () => {
     const { conn, reads, advance } = connection(() => new Response(null, { status: 403 }))
     conn.noteMessage(post(DESIGN))

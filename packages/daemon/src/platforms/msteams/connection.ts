@@ -306,7 +306,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
     const known = this.conversations.get(channel)
     const isIm = known ? known.kind === 'personal' : channel.startsWith('a:')
-    const name = known?.name ?? (known?.kind === 'channel' ? await this.channelName(channel, known) : undefined)
+    // A channel's name follows its team's list, refreshed after the TTL; the last one read stands while a refresh fails.
+    const name = known?.kind === 'channel' ? ((await this.channelName(channel, known)) ?? known.name) : known?.name
     return { id: channel, ...(name ? { name } : {}), isIm, isPrivate: true }
   }
 
