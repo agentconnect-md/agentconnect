@@ -4857,6 +4857,15 @@
           "unavailable": "Configure Google sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
           "degraded": "Google Chat conversation sources stopped resolving — new sessions are being hidden."
+        },
+        "msteams": {
+          "name": "Microsoft Teams",
+          "label": "Require Microsoft Teams access",
+          "description": "Only members of the chat or channel can see its sessions.",
+          "details": "Channels, group chats and 1:1 chats follow current membership, checked by the conversation’s Teams bot. Guests cannot be matched and do not see synced sessions.\nLink your Microsoft account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
+          "unavailable": "Configure Microsoft sign-in for this deployment before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
+          "degraded": "Microsoft Teams conversation sources stopped resolving — new sessions are being hidden."
         }
       }
     },

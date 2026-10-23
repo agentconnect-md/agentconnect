@@ -60,6 +60,14 @@ const AUDIENCES = new Map<string, ConversationAudience>([
     }
   ],
   [
+    'msteams',
+    {
+      platform: 'msteams',
+      applies: () => true,
+      realmKey: async (host, _integrationId, integration) => (integration ? host.tenantScope(integration) : undefined)
+    }
+  ],
+  [
     'discord',
     {
       platform: 'discord',

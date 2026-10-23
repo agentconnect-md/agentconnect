@@ -321,15 +321,19 @@ sessions in the Console.
 
 **Access rules with sync on.**
 
-- A 1:1 chat admits its one member.
-- A channel admits the members of its team's roster; a group chat admits its
-  members. The Control Plane asks the conversation's bot with client
-  credentials and matches the viewer's linked object ID against each member's
-  `aadObjectId` or `objectId`.
+- A conversation admits its current members: a 1:1 chat its one member, a
+  standard channel its team's roster, a group chat its members. The Control
+  Plane asks with the conversation's bot token for one member,
+  `GET /v3/conversations/{conversationId}/members/{objectId}`, and admits the
+  viewer only when the answer carries the same `aadObjectId` and the bot's
+  tenant ID. A non-member answers 404 `MemberNotFoundInConversation`, and an
+  unknown conversation 404 `ConversationNotFound` (**measured**).
 - The session's audience realm is the bot's tenant ID and its resource is the
-  conversation ID. The member call needs the conversation's regional
-  `serviceUrl`, so the audience also records it, and the Control Plane accepts
-  only a Bot Framework origin there.
+  conversation ID without a thread suffix. The lookup goes to the public cloud's
+  global Bot Connector origin, `https://smba.trafficmanager.net/teams/`, which
+  answers it for a conversation whose activities carry a regional `serviceUrl`
+  (**measured**), so the audience records no service URL. National clouds have
+  other origins and are out of scope.
 - Approvals and in-chat settings follow §4.4: linked editors only.
 - A missing link, a revoked bot, a mismatched tenant, a malformed response, or a
   provider failure never grants access. A successful verdict lasts at most two
@@ -340,15 +344,15 @@ that marks earlier Teams conversations pending follow the same rules as
 Telegram and Discord. Only identity and membership metadata reach the Control
 Plane; message bodies stay on the daemon.
 
-**What exists and what is missing.** The daemon side exists: the card click
-carries the clicker's `aadObjectId`, `chatMemberKey` reads it, and the daemon's
-tenant scope is the bot's tenant. Sign-in exists: the Setup login application
-(**Setup → Microsoft**, connector `agentconnect-azuread`), the Console's
-Microsoft entry on the sign-in page and under **Profile → Sign-in methods**, and
-the Control Plane's identity read that lists a linked object ID as an `msteams`
-member. Missing are the Teams provider's `chatMemberTenant`, a session-access
-plugin over the member APIs, the audience entries in the protocol, daemon, and
-Control Plane, the Settings entry, and the migration.
+**What exists.** Sign-in is the Setup login application (**Setup → Microsoft**,
+connector `agentconnect-azuread`) with the Console's Microsoft entry on the
+sign-in page and under **Profile → Sign-in methods**; the Control Plane lists a
+linked object ID as an `msteams` member. Sync is the Teams provider's
+`chatMemberTenant` and audience realm, the session-access plugin over the
+member lookup (enabled when the deployment offers Microsoft sign-in), the
+`msteams` audience in the protocol and daemon, the **Settings → Session access**
+row, and the migrations that fence earlier Teams conversations on the Control
+Plane and bind them to their tenant in the daemon's store.
 
 ## 5. Console setup
 

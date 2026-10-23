@@ -130,7 +130,8 @@ export function useSessionAccessCardAvailable(): boolean | undefined {
   const telegram = useSWR(key('telegram'), fetcher, opts)
   const discord = useSWR(key('discord'), fetcher, opts)
   const googlechat = useSWR(key('googlechat'), fetcher, opts)
-  const results = [slack, github, gitlab, feishu, telegram, discord, googlechat]
+  const msteams = useSWR(key('msteams'), fetcher, opts)
+  const results = [slack, github, gitlab, feishu, telegram, discord, googlechat, msteams]
   if (results.some(({ data, error }) => data === undefined && !error)) return undefined
   return results.some(({ data }) => data === undefined || data.available || data.enabled)
 }

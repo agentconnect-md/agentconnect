@@ -69,11 +69,11 @@ before it:
 
 Who counts as "people" depends on whether the product can tell who someone is:
 
-- **A platform whose permissions are synced with the console** (Slack, Feishu/Lark, Telegram, Discord or Google Chat with the
+- **A platform whose permissions are synced with the console** (Slack, Feishu/Lark, Telegram, Discord, Google Chat or Microsoft Teams with the
   organization's session access sync on): only people whose console permissions allow the
   action, that is, the agent's editors, recognized by the account they linked under Sign-in
   methods in their console Profile: their Slack account in the app's workspace, or their
-  Feishu/Lark account in the app's region, or their Telegram, Discord or Google account. Anyone else, a guest or an editor who has not linked
+  Feishu/Lark account in the app's region, or their Telegram, Discord, Google or Microsoft account. Anyone else, a guest or an editor who has not linked
   included, is refused privately, and the card stays as it is. A refused approval says only an
   Agent editor can answer it, and someone linked to no console account is told how to link one;
   it gives no console link, since the console shows that conversation only to the same people. A
@@ -1914,6 +1914,15 @@ Chat app checks membership using its existing credential; unavailable checks kee
 the conversation hidden. Without sync, new Google Chat conversations are visible
 to the organization. Turning sync off hides previously synced sessions until it
 is enabled again; historical private DMs retain their recorded owner.
+
+When Microsoft Teams session access sync is enabled, channels, group chats and
+1:1 chats require a linked Microsoft account and current membership in that
+conversation within the bot's tenant. A guest cannot be matched, and a matching
+email address or organization-owner role grants no access. The conversation's
+bot checks membership using its own client secret; unavailable checks keep the
+conversation hidden. Without sync, new Teams conversations are visible to the
+organization. Turning sync off hides previously synced sessions until it is
+enabled again.
 
 GitLab session access uses the configured instance and numeric project identity.
 An enabled public repository is visible to organization members; other projects

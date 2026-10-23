@@ -1315,7 +1315,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 67
+export const SCHEMA_VERSION = 68
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2010,40 +2010,7 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
   },
   // v59 binds existing Google Chat conversations without replacing their runtime or direct child audiences.
-  async (db, store) => {
-    if (!(await tableExists(db, store.postgres, 'sessions'))) return
-    const rows = (
-      await db.query(
-        `SELECT key, channel, tenantScope FROM sessions
-         WHERE platform = 'googlechat' AND externalProvider IS NULL
-           AND transportScope IS NOT NULL AND conversationKind IS NOT NULL
-           AND launchCorrelationId IS NULL AND (originSessionId IS NULL OR directDestination = 1)`,
-        []
-      )
-    ).rows as { key: string; channel: string; tenantScope: string | null }[]
-    for (const row of rows) {
-      if (!/^spaces\/[A-Za-z0-9_-]+$/.test(row.channel)) continue
-      const realm = row.tenantScope && /^[1-9]\d*$/.test(row.tenantScope) ? row.tenantScope : null
-      await db.query(
-        `UPDATE sessions SET externalProvider = 'googlechat', externalRealmKey = ?,
-         externalResourceKind = 'conversation', externalResourceKey = ?, sourceBindingKind = 'external'
-         WHERE key = ?`,
-        [realm, row.channel, row.key]
-      )
-    }
-    await db.exec(`WITH RECURSIVE audience AS (
-      SELECT key, sessionId, externalRealmKey, externalResourceKey FROM sessions WHERE externalProvider = 'googlechat'
-      UNION
-      SELECT c.key, c.sessionId, p.externalRealmKey, p.externalResourceKey
-      FROM sessions c JOIN audience p ON c.originSessionId = p.sessionId
-      WHERE c.externalProvider IS NULL AND COALESCE(c.directDestination, 0) = 0
-    ) UPDATE sessions SET
-      externalProvider = 'googlechat',
-      externalRealmKey = (SELECT externalRealmKey FROM audience a WHERE a.key = sessions.key),
-      externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
-      externalResourceKind = 'conversation', sourceBindingKind = 'external'
-      WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
-  },
+  async (db, store) => await bindChatAudience(db, store, 'googlechat', /^spaces\/[A-Za-z0-9_-]+$/, /^[1-9]\d*$/),
   // v60 keeps the thread of the turn that asked a task for work, where its round's report replies (assistant-mode.md §5.6).
   async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'replyThread', 'TEXT'),
   // v61 keeps what a follow-up watches, its waiting wake, what started each check and a proposal's watch (assistant-mode.md §5.14).
@@ -2081,8 +2048,58 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   async (db, store) => {
     await addColumn(db, store.postgres, 'sessions', 'retentionKeptAt', 'INTEGER')
     await addColumn(db, store.postgres, 'sessions', 'retentionRecheckAt', 'INTEGER')
-  }
+  },
+  // v68 binds existing Microsoft Teams conversations to their bot's tenant, as v59 did for Google Chat.
+  async (db, store) =>
+    await bindChatAudience(
+      db,
+      store,
+      'msteams',
+      /^(?:19:[\w.@-]{1,190}|a:[\w-]{1,190})$/,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    )
 ]
+
+// Binds a platform's recorded conversations to their tenant, then hands each conversation's audience to its inherited children.
+async function bindChatAudience(
+  db: StoreTx,
+  store: { postgres: boolean },
+  platform: 'googlechat' | 'msteams',
+  channel: RegExp,
+  realm: RegExp
+): Promise<void> {
+  if (!(await tableExists(db, store.postgres, 'sessions'))) return
+  const rows = (
+    await db.query(
+      `SELECT key, channel, tenantScope FROM sessions
+       WHERE platform = ? AND externalProvider IS NULL
+         AND transportScope IS NOT NULL AND conversationKind IS NOT NULL
+         AND launchCorrelationId IS NULL AND (originSessionId IS NULL OR directDestination = 1)`,
+      [platform]
+    )
+  ).rows as { key: string; channel: string; tenantScope: string | null }[]
+  for (const row of rows) {
+    if (!channel.test(row.channel)) continue
+    await db.query(
+      `UPDATE sessions SET externalProvider = ?, externalRealmKey = ?,
+       externalResourceKind = 'conversation', externalResourceKey = ?, sourceBindingKind = 'external'
+       WHERE key = ?`,
+      [platform, row.tenantScope && realm.test(row.tenantScope) ? row.tenantScope : null, row.channel, row.key]
+    )
+  }
+  await db.exec(`WITH RECURSIVE audience AS (
+    SELECT key, sessionId, externalRealmKey, externalResourceKey FROM sessions WHERE externalProvider = '${platform}'
+    UNION
+    SELECT c.key, c.sessionId, p.externalRealmKey, p.externalResourceKey
+    FROM sessions c JOIN audience p ON c.originSessionId = p.sessionId
+    WHERE c.externalProvider IS NULL AND COALESCE(c.directDestination, 0) = 0
+  ) UPDATE sessions SET
+    externalProvider = '${platform}',
+    externalRealmKey = (SELECT externalRealmKey FROM audience a WHERE a.key = sessions.key),
+    externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
+    externalResourceKind = 'conversation', sourceBindingKind = 'external'
+    WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
+}
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */
 async function addColumn(db: StoreTx, postgres: boolean, table: string, column: string, type: string): Promise<void> {

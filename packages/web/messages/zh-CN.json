@@ -4857,6 +4857,15 @@
           "unavailable": "请先为本部署配置 Google 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
           "degraded": "Google Chat 对话来源解析失败，新的会话已隐藏。"
+        },
+        "msteams": {
+          "name": "Microsoft Teams",
+          "label": "要求 Microsoft Teams 访问权限",
+          "description": "只有该聊天或频道的成员才能看到它的会话。",
+          "details": "频道、群聊和一对一聊天按当前成员身份授权，由对话中的 Teams 机器人检查。来宾无法匹配到账号，看不到已同步的会话。\n请先在个人资料中关联 Microsoft 账号。此前学到的 Agent 记忆不会被删除。\n缺少可信来源的历史会话先隐藏，等待新的可信活动补齐来源。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
+          "unavailable": "请先为本部署配置 Microsoft 登录，再开启权限同步。",
+          "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
+          "degraded": "Microsoft Teams 对话来源解析失败，新的会话已隐藏。"
         }
       }
     },

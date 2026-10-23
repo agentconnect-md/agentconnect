@@ -7,12 +7,17 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 
-it.each(['telegram', 'discord', 'googlechat'] as const)(
+it.each(['telegram', 'discord', 'googlechat', 'msteams'] as const)(
   '%s history is fenced without replacing a direct child conversation audience',
   async (platform) => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
-    const channel = { telegram: '-10042', discord: '100000000000000004', googlechat: 'spaces/AAAAAAAAAAA' }[platform]
+    const channel = {
+      telegram: '-10042',
+      discord: '100000000000000004',
+      googlechat: 'spaces/AAAAAAAAAAA',
+      msteams: '19:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@thread.tacv2'
+    }[platform]
     const root = await seedSessionMeta(prisma, `root-${randomUUID()}`, agentId, { platform, channel })
     const child = await seedSessionMeta(prisma, `child-${randomUUID()}`, agentId, {
       platform,
@@ -21,15 +26,19 @@ it.each(['telegram', 'discord', 'googlechat'] as const)(
     })
     const direct = await seedSessionMeta(prisma, `direct-${randomUUID()}`, agentId, {
       platform,
-      channel: platform === 'googlechat' ? 'spaces/BBBBBBBBBBB' : '12345',
+      channel:
+        { googlechat: 'spaces/BBBBBBBBBBB', msteams: 'a:1BBBBBBBBBBBBBBBBBBBB-BBBBBBBBBBBBBBBB' }[platform as string] ??
+        '12345',
       parentSessionId: root
     })
     await prisma.sessionMeta.update({ where: { id: child }, data: { visibilitySource: 'inherited' } })
     const migration = readFileSync(
       new URL(
-        platform === 'googlechat'
-          ? '../../prisma/migrations/20261122000000_googlechat_session_audience/migration.sql'
-          : '../../prisma/migrations/20261120000000_telegram_discord_session_audience/migration.sql',
+        {
+          googlechat: '../../prisma/migrations/20261122000000_googlechat_session_audience/migration.sql',
+          msteams: '../../prisma/migrations/20261211000000_msteams_session_audience/migration.sql'
+        }[platform as string] ??
+          '../../prisma/migrations/20261120000000_telegram_discord_session_audience/migration.sql',
         import.meta.url
       ),
       'utf8'
