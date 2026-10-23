@@ -400,10 +400,10 @@ export function githubRuleMatch(rule: RcHookAssign, ctx: GithubMatchCtx): Github
         ctx.eventAction === 'pull_request:auto_merge_disabled'))
   )
     return noMatch('lifecycle')
-  // Decision 10: bots are vetoed except this App's same-repository PR revisions, deployments, which cannot loop, other bots' releases, and filtered labels.
+  // Decision 10: bots are vetoed except PR revisions (another bot's earns only the manual-request Check), deployments, which cannot loop, other bots' releases, and filtered labels.
   if (
     ctx.senderType === 'Bot' &&
-    !isConfiguredAppPullRequest(rule, ctx) &&
+    !(ctx.event === 'pull_request' && isGithubPullRequestRevision(ctx)) &&
     !isGithubDeploymentEvent(ctx.event) &&
     !isForeignBotRelease(rule, ctx) &&
     !isFilteredBotLabel(rule, ctx)
@@ -1462,7 +1462,12 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         for (const rule of matched.filter((candidate) => candidate.verdict === 'trusted').map(({ rule }) => rule)) {
           dispatchRule(rule, true)
         }
-        const needsAuthz = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
+        const pending = matched.filter((candidate) => candidate.verdict === 'needs-authz').map(({ rule }) => rule)
+        // Another bot's revision never fires and its author is never authorized: it publishes the manual-request Check.
+        const botRevision = (rule: RcHookAssign): boolean =>
+          ctx.senderType === 'Bot' && !isConfiguredAppPullRequest(rule, ctx)
+        for (const rule of pending.filter(botRevision)) dispatchRule(rule)
+        const needsAuthz = pending.filter((rule) => !botRevision(rule))
         if (needsAuthz.length > 0) {
           router.track(
             authorizeAndDispatch(
