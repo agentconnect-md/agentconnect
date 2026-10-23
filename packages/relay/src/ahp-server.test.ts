@@ -30,7 +30,11 @@ const allow = (): RcVerifyResult => ({
   apiProtocols: ['ahp'],
   ahpGrant: { token: 'signed-grant', expiresAtMs: Date.now() + 60_000 }
 })
-async function fixture(mode: AhpMode = 'on', preauth?: { deadlineMs: number; maxMessages: number }) {
+async function fixture(
+  mode: AhpMode = 'on',
+  preauth?: { deadlineMs: number; maxMessages: number },
+  authorizationServer?: string
+) {
   const server = createServer()
   let listener: ((frame: RdAhpMessage | RdAhpClose) => void) | undefined
   let lost = () => {}
@@ -58,7 +62,8 @@ async function fixture(mode: AhpMode = 'on', preauth?: { deadlineMs: number; max
     mode: () => mode,
     verify,
     daemon: () => placement,
-    ...(preauth ? { preauth } : {})
+    ...(preauth ? { preauth } : {}),
+    ...(authorizationServer ? { authorizationServer } : {})
   })
   resources.push({ server, edge })
   server.listen(0, '127.0.0.1')
@@ -93,10 +98,21 @@ it.each(['off', 'shadow'] as const)('refuses %s before credential or daemon acce
   expect(host.verify).not.toHaveBeenCalled()
   expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
 })
-it('requires header credentials and rejects query secrets', async () => {
+it('rejects query secrets and malformed authorization headers before upgrade', async () => {
   const host = await fixture()
-  await expect(dial(host.url, [], null)).rejects.toThrow('status:401')
   await expect(dial(`${host.url}?token=secret`)).rejects.toThrow('status:400')
+  await expect(dial(`${host.url}?tkn=secret`, [], null)).rejects.toThrow('status:400')
+  const basic = new WebSocket(host.url, [], { headers: { Authorization: 'Basic c2VjcmV0' } })
+  basic.on('error', () => {})
+  const status = await new Promise<number | undefined>((resolve) => {
+    basic.on('unexpected-response', (_request, response) => {
+      response.resume()
+      resolve(response.statusCode)
+    })
+    basic.on('open', () => resolve(undefined))
+  })
+  basic.terminate()
+  expect(status).toBe(401)
   expect(host.verify).not.toHaveBeenCalled()
 })
 it('refuses disabled API entries, invalid grant lifetimes and a capability lost during open', async () => {
@@ -187,8 +203,8 @@ it('closes on daemon hop loss without requesting execution cancellation', async 
 })
 
 const RESOURCE = (url: string) => url.replace('ws://', 'https://')
-async function preauth(url: string) {
-  const socket = await dial(url, ['ahp'], null)
+async function preauth(url: string, protocols: string[] = ['ahp']) {
+  const socket = await dial(url, protocols, null)
   const inbox: any[] = []
   const waiters: Array<() => void> = []
   socket.on('message', (data) => {
@@ -358,4 +374,59 @@ it('refuses in-band authentication on a daemon without handshake support', async
   expect(failed.error.code).toBe(-32603)
   expect(await client.closed).toBe(1013)
   expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
+})
+it('admits an upgrade with no subprotocol, as ahpc and VS Code send, through the same pre-auth bounds', async () => {
+  const host = await fixture('on', { deadlineMs: 50, maxMessages: 8 })
+  const refused = await preauth(host.url, [])
+  expect(refused.socket.protocol).toBe('')
+  await refused.initialize()
+  expect((await refused.request('createSession', { channel: 'ahp-session:/x' })).error.code).toBe(-32007)
+  expect(await refused.closed).toBe(4401)
+  const stalled = await preauth(host.url, [])
+  await stalled.initialize()
+  expect(await stalled.closed).toBe(4401)
+  host.conn.authorizeAhp.mockClear()
+  const client = await preauth(host.url, [])
+  const hello = await client.initialize()
+  expect(hello.result.snapshots[0].state.agents[0].protectedResources).toEqual([
+    { resource: RESOURCE(host.url), resource_name: 'AgentConnect agent', required: true }
+  ])
+  const authenticated = await client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    token: 'personal-key'
+  })
+  expect(authenticated.result).toEqual({})
+  expect(host.verify).toHaveBeenCalledWith('personal-key', AGENT, 'ahp-client-key')
+  client.socket.send('{"jsonrpc":"2.0","method":"dispatchAction","params":{"channel":"ahp-chat:/one/main"}}')
+  await vi.waitFor(() =>
+    expect(host.conn.sendAhp).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('dispatchAction') })
+    )
+  )
+  host.emit('{"jsonrpc":"2.0","method":"action","params":{"channel":"ahp-chat:/one/main"}}')
+  await client.next((message) => message.params?.channel === 'ahp-chat:/one/main')
+})
+it('advertises the configured authorization server for discovery without accepting its tokens', async () => {
+  const host = await fixture('on', undefined, 'https://auth.example.test')
+  const client = await preauth(host.url, [])
+  const hello = await client.initialize()
+  expect(hello.result.snapshots[0].state.agents[0].protectedResources).toEqual([
+    {
+      resource: RESOURCE(host.url),
+      resource_name: 'AgentConnect agent',
+      authorization_servers: ['https://auth.example.test'],
+      scopes_supported: ['mcp:read', 'mcp:write'],
+      required: true
+    }
+  ])
+  host.verify.mockResolvedValueOnce({ ok: false, reason: 'AHP access unavailable' })
+  const refused = await client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    token: 'oauth-access-token'
+  })
+  expect(refused.error.code).toBe(-32007)
+  expect(host.verify).toHaveBeenCalledWith('oauth-access-token', AGENT, 'ahp-client-key')
+  expect(await client.closed).toBe(4401)
 })

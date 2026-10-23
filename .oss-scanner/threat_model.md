@@ -126,7 +126,7 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   protocol default is independent of public-key access.
 - **Connection-bound authority:** the initial native profile accepts full
   personal user keys through the `Authorization` upgrade header or one in-band
-  AHP `authenticate` on a credential-less `ahp` upgrade; read-only,
+  AHP `authenticate` on a credential-less upgrade; read-only,
   `agent:chat`, OAuth and daemon credentials cannot acquire it. First-party tokens
   are conversation-bound and carry a signed `protocol: ahp` claim. A legacy token
   (including one without the claim) is not an AHP token, and an AHP token is not a
@@ -137,7 +137,8 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   static value. Base64url is not encryption. Never log upgrade authorization or
   token subprotocols, and never send the personal key to the daemon. The daemon
   receives only verified scope and a CP-issued grant.
-- **Pre-authentication state:** a credential-less `ahp` upgrade reaches only the
+- **Pre-authentication state:** a credential-less upgrade (with or without the
+  `ahp` subprotocol) reaches only the
   relay. It may `initialize` (answered by the relay, advertising the endpoint as a
   protected resource), have `reconnect` refused, and `authenticate` once; any
   other request or notification closes it. A 30-second deadline, an 8-message

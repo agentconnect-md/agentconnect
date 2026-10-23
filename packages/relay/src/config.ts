@@ -15,6 +15,12 @@ export const RelayConfigSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     AHP_MODE: z.enum(['off', 'shadow', 'on']).default('off'),
+    // Issuer of the CP's OAuth authorization server, advertised beside the AHP endpoint for client discovery only.
+    AHP_AUTHORIZATION_SERVER: z
+      .string()
+      .url()
+      .transform((url) => url.replace(/\/+$/, ''))
+      .optional(),
     // Health/readiness HTTP surface (k8s probes; the daemon/browser WS servers land here in PR 2/3).
     PORT: z.coerce.number().int().default(8080),
     HOST: z.string().default('0.0.0.0'),

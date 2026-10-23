@@ -230,11 +230,12 @@ it('refuses URL credentials before dialing and sanitizes failure output', async 
   ).rejects.toMatchObject({ code: 1, stderr: expect.not.stringContaining(secret) })
 })
 
-it('authenticates an official SDK client in-band, without headers, and completes a turn', async () => {
+it.each([
+  ['the ahp subprotocol', { protocols: ['ahp'] }],
+  ['no subprotocol, as ahpc and VS Code connect', {}]
+])('authenticates an official SDK client in-band with %s and completes a turn', async (_case, options) => {
   const host = await fixture()
-  const client = new AhpClient(await WebSocketTransport.connect(host.url, { protocols: ['ahp'] }), {
-    requestTimeoutMs: 5000
-  })
+  const client = new AhpClient(await WebSocketTransport.connect(host.url, options), { requestTimeoutMs: 5000 })
   client.connect()
   const actions: ActionEnvelope[] = []
   const events = (async () => {
@@ -280,8 +281,8 @@ it('authenticates an official SDK client in-band, without headers, and completes
 
 it('refuses other methods, a bad key and a stalled handshake before any daemon attachment', async () => {
   const host = await fixture({ deadlineMs: 300, maxMessages: 8 })
-  const raw = async () => {
-    const socket = new WebSocket(host.url, ['ahp'])
+  const raw = async (protocols = ['ahp']) => {
+    const socket = new WebSocket(host.url, protocols)
     const replies: any[] = []
     socket.on('message', (data) => replies.push(JSON.parse(String(data))))
     const closed = once(socket, 'close').then(([code]) => code as number)
@@ -305,6 +306,10 @@ it('refuses other methods, a bad key and a stalled handshake before any daemon a
     data: { resources: [{ resource }] }
   })
   expect(await early.closed).toBe(4401)
+  const bare = await raw([])
+  await bare.initialize()
+  expect((await bare.request('listSessions', { channel: 'ahp-root://' })).error.code).toBe(-32007)
+  expect(await bare.closed).toBe(4401)
   const wrong = await raw()
   await wrong.initialize()
   const refused = await wrong.request('authenticate', { channel: 'ahp-root://', resource, token: 'bad-key' })

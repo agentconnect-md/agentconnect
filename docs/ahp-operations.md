@@ -20,6 +20,7 @@ transport, authenticate in-band with the standard `authenticate` command.
 | Control Plane        | `AHP_PUBLIC_ACCESS=true\|false` | `false`                         | Admits eligible full personal keys outside the test-key allowlist; never anonymous access. |
 | Control Plane        | `AHP_TEST_KEY_IDS`              | empty                           | Comma-separated API-key row IDs for the canary audience; never secret key values.          |
 | Control Plane        | `PUBLIC_RELAY_URL`              | unset                           | Public relay origin used for bootstrap; use HTTPS/WSS in deployment.                       |
+| Every relay replica  | `AHP_AUTHORIZATION_SERVER`      | unset                           | OAuth issuer advertised beside the endpoint for discovery; tokens are not accepted yet.    |
 | Each agent           | AHP API entry                   | absent                          | Explicitly permits this protocol for the agent.                                            |
 | Serving daemon       | `api-ahp-v1` capability         | absent unless wired and enabled | Independently checked during admission and placement resolution.                           |
 | Serving daemon       | `api-ahp-handshake-v1`          | advertised with `api-ahp-v1`    | Required for in-band `authenticate`; header and browser-token attachments do not need it.  |
@@ -93,14 +94,18 @@ Authorization: Bearer <personal-user-api-key>
 Sec-WebSocket-Protocol: ahp
 ```
 
-Clients that cannot set headers offer only `Sec-WebSocket-Protocol: ahp` and
-authenticate in-band. The relay admits that upgrade into a pre-authentication
-state it answers itself; nothing reaches a daemon until the key is verified:
+Clients that cannot set headers connect with no credential and authenticate
+in-band, whether or not they offer `Sec-WebSocket-Protocol: ahp` (ahpc and VS
+Code offer none; `ahp` is selected and echoed when offered). The relay admits
+that upgrade into a pre-authentication state it answers itself; nothing reaches
+a daemon until the key is verified:
 
 1. `initialize` returns protocol `1.0.0`, `serverSeq: 0` and, when the client
    subscribes to `ahp-root://`, a placeholder agent whose `protectedResources`
-   names `https://<dialed-host>/ahp/agents/<agent-uuid>`. Other initial
-   subscriptions are dropped as unauthorized.
+   names `https://<dialed-host>/ahp/agents/<agent-uuid>` with `required: true`.
+   When the relay sets `AHP_AUTHORIZATION_SERVER`, the entry also lists that
+   issuer in `authorization_servers` with its `mcp:read`/`mcp:write` scopes.
+   Other initial subscriptions are dropped as unauthorized.
 2. `authenticate` with that `resource` and a full personal API key as `token`
    is verified through the same `rc/verify(ahp-client-key)` rules as the header.
    Success returns `{}`; the daemon then adopts the client and replaces the
@@ -117,6 +122,13 @@ state it answers itself; nothing reaches a daemon until the key is verified:
 
 The relay's own `initialize` answer omits the daemon's `_meta` extension flags;
 first-party clients use the header or browser-token paths.
+
+Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
+`/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
+otherwise `PUBLIC_CP_URL`). VS Code's Agents window can then resolve an auth
+provider for the endpoint, but it still cannot authenticate: `authenticate`
+accepts only full personal API keys, and accepting OAuth access tokens for AHP is
+separate, security-reviewed work.
 
 With [ahpc](https://www.npmjs.com/package/@softov/ahpc), export the key in
 `AHPC_TOKEN_<RESOURCE>` (the resource with its scheme removed and every other
@@ -207,7 +219,7 @@ stream cursors or automatically resend an uncertain action across protocols.
   core third-party conversation must work without first-party extensions.
 
 Before upgrade, HTTP 401 means authorization failed and 503 means unavailable.
-A credential-less upgrade without the `ahp` subprotocol is refused with 401.
+A malformed `Authorization` header is refused with 401.
 After upgrade, authorization expiry/revocation closes with 4401; overload or
 service loss uses 1013. Surface failures and reattach through normal authenticated
 bootstrap; do not reinterpret an AHP socket as legacy.

@@ -34,6 +34,8 @@ const UNSUPPORTED_VERSION = -32005
 const INVALID_PARAMS = -32602
 const INTERNAL_ERROR = -32603
 const PREAUTH = { deadlineMs: 30_000, maxMessages: 8 }
+// The authorization server's own scope vocabulary (control-plane `OAUTH_SCOPES`); `authenticate` still takes only personal keys.
+const OAUTH_SCOPES = ['mcp:read', 'mcp:write']
 const identifier = z.string().min(1).max(256)
 const PreauthRequest = z.object({
   jsonrpc: z.literal('2.0'),
@@ -60,6 +62,7 @@ export interface AhpServerDeps {
   verify(credential: string, agentId: string, kind: CredentialKind): Promise<RcVerifyResult>
   daemon(daemonId: string): RelayDaemonConnection | undefined
   now?: () => number
+  authorizationServer?: string
   preauth?: { deadlineMs: number; maxMessages: number }
 }
 interface Opened {
@@ -90,13 +93,11 @@ function credentialOf(req: IncomingMessage): Credential | undefined {
   return match ? { credential: match[1]!, kind: 'ahp-client-key' } : undefined
 }
 
-// A credential-less upgrade offering only the standard subprotocol may authenticate in-band.
+// A credential-less upgrade, with or without the `ahp` subprotocol, may authenticate in-band.
 function offersPreauth(req: IncomingMessage): boolean {
-  const protocols = protocolsOf(req)
   return (
     req.headers.authorization === undefined &&
-    protocols.includes(AHP_WEBSOCKET_PROTOCOL) &&
-    !protocols.some((value) => value.startsWith(AHP_WEBCHAT_TOKEN_PREFIX))
+    !protocolsOf(req).some((value) => value.startsWith(AHP_WEBCHAT_TOKEN_PREFIX))
   )
 }
 
@@ -327,7 +328,14 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
 
   // Before `authenticate`, only the handshake and the credential are accepted; nothing reaches a daemon.
   const preauth = (ws: WebSocket, agentId: string, resource: string) => {
-    const metadata = { resource, resource_name: 'AgentConnect agent' }
+    const metadata = {
+      resource,
+      resource_name: 'AgentConnect agent',
+      ...(deps.authorizationServer
+        ? { authorization_servers: [deps.authorizationServer], scopes_supported: OAUTH_SCOPES }
+        : {}),
+      required: true
+    }
     const required = { resources: [metadata] }
     const attachmentId = randomUUID()
     const queued: string[] = []
