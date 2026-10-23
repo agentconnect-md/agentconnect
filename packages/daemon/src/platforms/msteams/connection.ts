@@ -441,9 +441,10 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       top,
       ...(options.cursor ? { skiptoken: msTeamsSkiptoken(options.cursor) } : {})
     })
-    const nextCursor = page.messages.some((m) => oldest !== undefined && m.createdMs < oldest)
-      ? undefined
-      : page.skiptoken
+    // Only a chat lists by creation; a channel lists by its threads' last activity, so an old post never ends its pages.
+    const passedOldest =
+      source.kind === 'chat' && page.messages.some((m) => oldest !== undefined && m.createdMs < oldest)
+    const nextCursor = passedOldest ? undefined : page.skiptoken
     const messages = page.messages
       .filter((m) => (oldest === undefined || m.createdMs >= oldest) && (latest === undefined || m.createdMs <= latest))
       .sort(newestFirst)
@@ -477,7 +478,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       const cap = Math.max(Math.trunc(maxMessages), 1) - 1
       const oldest = historyBoundMs(window?.oldest)
       const latest = historyBoundMs(window?.latest)
-      // Graph answers replies newest first, so pages are read only until the cap or the oldest bound is passed.
+      // Replies come newest first by creation or last change; one last changed before the oldest bound ends the read under either order.
       const replies: MsTeamsGraphMessage[] = []
       let skiptoken: string | undefined
       let passedOldest = false
@@ -487,15 +488,16 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
           top: MSTEAMS_GRAPH_PAGE_MAX,
           ...(skiptoken ? { skiptoken } : {})
         })
-        for (const m of page.messages.sort(newestFirst)) {
-          if (oldest !== undefined && m.createdMs <= oldest) passedOldest = true
-          else if (latest === undefined || m.createdMs < latest) replies.push(m)
+        for (const m of page.messages) {
+          if (oldest !== undefined && m.modifiedMs <= oldest) passedOldest = true
+          if ((oldest === undefined || m.createdMs > oldest) && (latest === undefined || m.createdMs < latest))
+            replies.push(m)
         }
         skiptoken = page.skiptoken
         if (!skiptoken || passedOldest || replies.length > cap) break
       }
       if (window?.readState && replies.length > cap) window.readState.truncated = true
-      return [root, ...replies.slice(0, cap).reverse()].map((m) => this.threadMessage(m))
+      return [root, ...replies.sort(newestFirst).slice(0, cap).reverse()].map((m) => this.threadMessage(m))
     } catch (err) {
       this.deps.log?.debug(`msteams: reading a thread failed: ${(err as Error).message}`)
       if (window?.throwOnError) throw err

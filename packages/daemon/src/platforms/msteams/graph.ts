@@ -15,6 +15,8 @@ export type MsTeamsHistorySource =
 export interface MsTeamsGraphMessage {
   id: string
   createdMs: number
+  /** The message's own last change, never before its creation; Graph's default list order follows it. */
+  modifiedMs: number
   /** A person's Entra object ID, or a bot's `28:<appId>`. */
   sender: string
   isBot: boolean
@@ -45,6 +47,8 @@ export function msTeamsGraphMessagesUrl(
   const path = page.rootId ? `${sourcePath(source)}/${encodeURIComponent(page.rootId)}/replies` : sourcePath(source)
   const url = new URL(path, GRAPH_ROOT)
   url.searchParams.set('$top', String(page.top))
+  // A chat lists by last change unless asked; creation order lets a read stop at its oldest bound. Channels offer no such order.
+  if (source.kind === 'chat' && !page.rootId) url.searchParams.set('$orderby', 'createdDateTime desc')
   if (page.skiptoken) url.searchParams.set('$skiptoken', page.skiptoken)
   return url.toString()
 }
@@ -89,6 +93,8 @@ export function msTeamsGraphMessage(raw: unknown): MsTeamsGraphMessage | undefin
   const id = typeof m.id === 'string' && /^\d+$/.test(m.id) ? m.id : undefined
   const createdMs = typeof m.createdDateTime === 'string' ? Date.parse(m.createdDateTime) : NaN
   if (!id || Number.isNaN(createdMs)) return undefined
+  const modified = typeof m.lastModifiedDateTime === 'string' ? Date.parse(m.lastModifiedDateTime) : NaN
+  const modifiedMs = Number.isNaN(modified) ? createdMs : Math.max(modified, createdMs)
   const from = (m.from ?? {}) as { user?: { id?: unknown }; application?: { id?: unknown } }
   const userId = typeof from.user?.id === 'string' && from.user.id ? from.user.id : undefined
   const appId = typeof from.application?.id === 'string' && from.application.id ? from.application.id : undefined
@@ -100,6 +106,7 @@ export function msTeamsGraphMessage(raw: unknown): MsTeamsGraphMessage | undefin
   return {
     id,
     createdMs,
+    modifiedMs,
     sender: userId ?? `28:${appId!.toLowerCase()}`,
     isBot: !userId,
     ...(!userId && appId ? { appId: appId.toLowerCase() } : {}),

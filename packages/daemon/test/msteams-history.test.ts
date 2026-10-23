@@ -147,17 +147,39 @@ describe('Teams history', () => {
     await expect(conn.getChannelHistory(DESIGN, { cursor: 'a&$expand=x' })).rejects.toThrow(/cursor/)
   })
 
-  it('keeps the inclusive bounds and stops paging past the oldest one', async () => {
+  it('keeps the inclusive bounds, and a chat stops paging past the oldest one', async () => {
     const { conn } = connection(() =>
       Response.json({
         value: [message(1700000000300), message(1700000000200), message(1700000000100)],
         '@odata.nextLink': 'https://graph.microsoft.com/v1.0/x?$skiptoken=more'
       })
     )
-    seen(conn, DESIGN, 'channel')
-    const page = await conn.getChannelHistory(DESIGN, { oldest: '1700000000200', latest: '1700000000250' })
+    seen(conn, CHAT, 'chat')
+    const page = await conn.getChannelHistory(CHAT, { oldest: '1700000000200', latest: '1700000000250' })
     expect(page.messages.map((m) => m.ts)).toEqual(['1700000000200'])
     expect(page.hasMore).toBe(false)
+  })
+
+  it('keeps a channel’s cursor past an old post whose thread is active, since channels list by thread activity', async () => {
+    const { conn } = connection(() =>
+      Response.json({
+        value: [message(1690000000000)],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/x?$skiptoken=more'
+      })
+    )
+    seen(conn, DESIGN, 'channel')
+    expect(await conn.getChannelHistory(DESIGN, { limit: 1, oldest: '1700000000000' })).toEqual({
+      messages: [],
+      hasMore: true,
+      nextCursor: 'more'
+    })
+  })
+
+  it('asks a chat for creation order, and a channel for its default', () => {
+    const chat = new URL(msTeamsGraphMessagesUrl({ kind: 'chat', chatId: CHAT }, { top: 5, skiptoken: 'more' }))
+    expect(chat.searchParams.get('$orderby')).toBe('createdDateTime desc')
+    expect(chat.searchParams.get('$skiptoken')).toBe('more')
+    expect(new URL(msTeamsGraphMessagesUrl(CHANNEL, { top: 5 })).searchParams.has('$orderby')).toBe(false)
   })
 
   it('reads a group chat’s messages, which carry no threads', async () => {
@@ -246,6 +268,26 @@ describe('Teams history', () => {
     const before = graphCalls().length
     expect((await conn.getThreadReplies(DESIGN, '1700000000100', 1)).map((m) => m.ts)).toEqual(['1700000000100'])
     expect(graphCalls()).toHaveLength(before + 1)
+  })
+
+  it('reads on past an old reply edited after the oldest bound', async () => {
+    const { conn } = connection((url) => {
+      if (url.pathname.endsWith('/replies')) {
+        const second = url.searchParams.get('$skiptoken') === 'older'
+        return Response.json(
+          second
+            ? { value: [message(1700000000300), message(1700000000150)] }
+            : {
+                value: [message(1700000000110, { lastModifiedDateTime: new Date(1700000000500).toISOString() })],
+                '@odata.nextLink': 'https://graph.microsoft.com/v1.0/x?$skiptoken=older'
+              }
+        )
+      }
+      return Response.json(message(1700000000100))
+    })
+    seen(conn, DESIGN, 'channel')
+    const thread = await conn.getThreadReplies(DESIGN, '1700000000100', 10, { oldest: '1700000000200' })
+    expect(thread.map((m) => m.ts)).toEqual(['1700000000100', '1700000000300'])
   })
 
   it('answers a failed best-effort thread read empty, and a strict one with its reason', async () => {
