@@ -163,16 +163,17 @@ describe('applyDeploymentEnvironment', () => {
     expect(cleared.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBeUndefined()
   })
 
-  it('projects the deployment-owned Teams app with its secret, and clears stale startup values', () => {
+  it('projects the Microsoft sign-in app as the Teams app in its home tenant, and clears stale startup values', () => {
     const base = runtime()
     const managed = applyDeploymentEnvironment(
       { ...bootstrap, MSTEAMS_PLATFORM_APP_ID: 'startup-app' },
       runtime({
         values: {
           ...base.values,
-          msTeams: { appId: '33333333-3333-4333-8333-333333333333', tenantId: '44444444-4444-4444-8444-444444444444' }
+          logto: { azureadConnector: { clientId: '33333333-3333-4333-8333-333333333333' } } as never,
+          msTeams: { tenantId: '44444444-4444-4444-8444-444444444444' }
         },
-        secrets: { 'msTeams.clientSecret': 'synthetic-secret' }
+        secrets: { 'logto.azureadConnectorClientSecret': 'synthetic-secret' }
       })
     )
     expect(managed.MSTEAMS_PLATFORM_APP_ID).toBe('33333333-3333-4333-8333-333333333333')

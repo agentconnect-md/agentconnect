@@ -105,11 +105,12 @@ export function applyDeploymentEnvironment(
     set('GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY', secrets['googleChat.serviceAccountKey'])
   }
 
-  // All three or none: a partial set fails fast in resolveMsTeamsPlatformApp.
-  if (values.msTeams) {
-    set('MSTEAMS_PLATFORM_APP_ID', values.msTeams.appId)
+  // The Microsoft sign-in app doubles as the Teams app; all three or none, which resolveMsTeamsPlatformApp checks.
+  const microsoft = values.logto?.azureadConnector
+  if (values.msTeams && microsoft) {
+    set('MSTEAMS_PLATFORM_APP_ID', microsoft.clientId)
     set('MSTEAMS_PLATFORM_TENANT_ID', values.msTeams.tenantId)
-    set('MSTEAMS_PLATFORM_CLIENT_SECRET', secrets['msTeams.clientSecret'])
+    set('MSTEAMS_PLATFORM_CLIENT_SECRET', secrets['logto.azureadConnectorClientSecret'])
   }
 
   if (values.feishu) {
