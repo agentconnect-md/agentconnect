@@ -281,6 +281,18 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     await this.write(target, () => this.api.updateActivity(target, activityId, cardActivityOf(card)))
   }
 
+  /** The send tool's post into a conversation the bot has seen; a long post's later parts follow its first into its thread. */
+  async postMessage(channel: string, text: string, thread?: string): Promise<string | undefined> {
+    let first: string | undefined
+    for (const part of splitMsTeamsText(text)) {
+      const target = this.targetFor(channel, thread ?? first)
+      if (!target) throw new MsTeamsApiError('msteams: the conversation is unknown', 'not_found')
+      const id = await this.post(target, part)
+      first ??= id
+    }
+    return first
+  }
+
   /** Chrome (a command reply, a notice): posted as is, split under the limit. */
   async postText(target: MsTeamsTarget, text: string): Promise<void> {
     for (const part of splitMsTeamsText(text)) await this.post(target, part)
