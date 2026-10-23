@@ -95,13 +95,13 @@ async function exchange(
   }
 }
 
-/** The organization's name through `Contact.Org.Read` (§2.2); null when the app lacks it or DingTalk answers none. */
+/** The organization's name through `Contact.Org.Read` (§2.2), or DingTalk's error code when it answers none (a missing permission among them). */
 export async function readDingTalkOrgName(
   credentials: Omit<DingTalkCreateCredentials, 'edition'>,
   edition: DingTalkEdition,
   corpId: string,
   fetchImpl: typeof fetch = fetch
-): Promise<string | null> {
+): Promise<{ orgName: string } | { reason: string }> {
   const origin = DINGTALK_API_ORIGINS[edition]
   try {
     const tokenResponse = await fetchImpl(`${origin}/v1.0/oauth2/accessToken`, {
@@ -110,18 +110,27 @@ export async function readDingTalkOrgName(
       body: JSON.stringify({ appKey: credentials.clientId, appSecret: credentials.clientSecret }),
       signal: AbortSignal.timeout(10_000)
     })
-    const { accessToken } = (await tokenResponse.json()) as { accessToken?: unknown }
-    if (!tokenResponse.ok || typeof accessToken !== 'string' || !accessToken) return null
+    const token = (await tokenResponse.json()) as { accessToken?: unknown; code?: unknown }
+    if (!tokenResponse.ok || typeof token.accessToken !== 'string' || !token.accessToken)
+      return { reason: `token: ${errorCode(tokenResponse, token)}` }
     const query = new URLSearchParams({ targetCorpId: corpId })
     const response = await fetchImpl(`${origin}/v1.0/contact/organizations/authInfos?${query}`, {
-      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      headers: { 'x-acs-dingtalk-access-token': token.accessToken },
       signal: AbortSignal.timeout(10_000)
     })
-    const { orgName } = (await response.json()) as { orgName?: unknown }
-    return response.ok && typeof orgName === 'string' && orgName.trim() ? orgName.trim().slice(0, 200) : null
+    const info = (await response.json()) as { orgName?: unknown; code?: unknown }
+    if (!response.ok) return { reason: errorCode(response, info) }
+    return typeof info.orgName === 'string' && info.orgName.trim()
+      ? { orgName: info.orgName.trim().slice(0, 200) }
+      : { reason: 'no orgName' }
   } catch {
-    return null
+    return { reason: 'unreachable' }
   }
+}
+
+// DingTalk's own error code, never its free-text message; the status when it sends none.
+function errorCode(response: Response, body: { code?: unknown }): string {
+  return typeof body.code === 'string' && body.code ? body.code.slice(0, 120) : `HTTP ${response.status}`
 }
 
 function unavailable(): DingTalkValidation {
@@ -175,19 +184,19 @@ export function createDingTalkCpProvider(
     socketTenant: {
       // A socket names its app by Client ID, which is the bot's only identity (§2).
       matches: (bot, botUserId) => bot.externalAppId === botUserId,
-      async name(bot, secrets, corpId): Promise<CpTenantName | null> {
+      async name(bot, secrets, corpId): Promise<CpTenantName | { unnamed: string }> {
         const clientId = secrets.appToken ?? bot.externalAppId
-        if (!clientId) return null
-        const orgName = await readDingTalkOrgName(
+        if (!clientId) return { unnamed: 'no Client ID' }
+        const read = await readDingTalkOrgName(
           { clientId, clientSecret: secrets.botToken },
           dingTalkEditionOf(bot),
           corpId,
           fetchImpl
         )
-        if (!orgName) return null
+        if ('reason' in read) return { unnamed: read.reason }
         return {
-          workspaceName: orgName,
-          integrationName: { placeholder: dingTalkPlaceholderName(clientId), name: `DingTalk · ${orgName}` }
+          workspaceName: read.orgName,
+          integrationName: { placeholder: dingTalkPlaceholderName(clientId), name: `DingTalk · ${read.orgName}` }
         }
       }
     },

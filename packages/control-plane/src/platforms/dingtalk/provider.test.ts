@@ -174,6 +174,8 @@ describe('DingTalk organization name', () => {
     )
     const tenant = createDingTalkCpProvider({ fetch: fetchImpl }).socketTenant!
     const secrets = { botToken: 'example-secret', appToken: 'dingexampleclient', signingSecret: null }
-    expect(await tenant.name({ platformConfig: null } as never, secrets, 'dingexamplecorp')).toBeNull()
+    expect(await tenant.name({ platformConfig: null } as never, secrets, 'dingexamplecorp')).toEqual({
+      unnamed: 'Forbidden.AccessDenied.AccessTokenPermissionDenied'
+    })
   })
 })

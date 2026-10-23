@@ -552,8 +552,8 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   socketTenant?: {
     /** Whether the reporting socket is this bot's current one. */
     matches(bot: BotRecord, botUserId: string): boolean
-    /** The tenant's name read with the bot's own credential; null when the platform answers none. */
-    name(bot: BotRecord, secrets: BotSecretMaterial, tenantId: string): Promise<CpTenantName | null>
+    /** The tenant's name read with the bot's own credential, or the platform's short reason (an error code) for answering none. */
+    name(bot: BotRecord, secrets: BotSecretMaterial, tenantId: string): Promise<CpTenantName | { unnamed: string }>
   }
 
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */

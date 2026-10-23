@@ -114,8 +114,9 @@ display-only `workspaceId`, reads the name with the bot's own credential
 `Contact.Org.Read`, granted without approval; **measured** on mainland), stores
 it as `workspaceName`, and renames the bot's integrations still carrying the
 placeholder `DingTalk · <Client ID>` to `DingTalk · <organization>`; a name
-anyone changed stays. Without the permission the ID is kept unnamed and the
-next report retries only the read. Until the first message the placeholder
+anyone changed stays. Without the permission the ID is kept unnamed, the
+Control Plane logs DingTalk's error code, and the next report retries only the
+read. Until the first message the placeholder
 stands. Whether the international edition grants `Contact.Org.Read` is
 unmeasured, so its walkthrough does not list it.
 

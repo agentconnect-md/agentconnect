@@ -136,7 +136,10 @@ describe('integration/tenant → DingTalk organization name', () => {
   it('keeps the organization id without a name and retries the read on the next report', async () => {
     const { app, state, integrationId, botId } = await install(null)
 
-    await report(app, integrationId)
+    // A report the CP accepts but cannot name logs DingTalk's code, so a missing permission is visible.
+    expect(await report(app, integrationId)).toEqual([
+      expect.objectContaining({ reason: 'Forbidden.AccessDenied.AccessTokenPermissionDenied' })
+    ])
     expect(await names(integrationId, botId)).toEqual({
       integration: `DingTalk · ${CLIENT_ID}`,
       bot: { workspaceId: CORP, workspaceName: null }
