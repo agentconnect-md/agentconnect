@@ -130,6 +130,10 @@ interface KnownConversation {
 const DEFAULT_CHANNEL_NAME = 'General'
 /** How long a team's channel names are trusted, and how long a failed read waits before trying again. */
 const TEAM_CHANNELS_TTL_MS = 10 * 60_000
+/** How long a conversation's member list is trusted, and how long a failed read waits before trying again. */
+const ROSTER_TTL_MS = 10 * 60_000
+/** The most members one read returns, five pages of the Bot Connector's hundred. */
+const ROSTER_MAX = 500
 
 export interface MsTeamsDeps {
   group: MsTeamsConnectionGroup
@@ -171,6 +175,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly conversations = new Map<string, KnownConversation>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
   private readonly names = new Map<string, string>()
+  /** Conversation → its member list and when it was read; a read in flight is shared, a failed one answers undefined. */
+  private readonly rosters = new Map<string, { at: number; members: Promise<PlatformMemberRef[] | undefined> }>()
   /** Team → its channel names and when they were read; a read in flight is shared. */
   private readonly teamChannels = new Map<string, { at: number; names: Promise<Map<string, string>> }>()
   /** Conversation + card activity ID → where it landed; an activity ID is unique only within its conversation (§4.2). */
@@ -313,7 +319,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return queue
   }
 
-  // ── 3. read port: membership is observed from traffic, never enumerated ──
+  // ── 3. read port: members from the Bot Connector, else observed from traffic ──
 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
     const known = this.conversations.get(channel)
@@ -345,8 +351,36 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return name
   }
 
+  // The conversation's member list read through the Bot Connector, else the people seen speaking there.
   async listMembers(channel: string): Promise<PlatformMemberRef[]> {
+    const known = this.conversations.get(channel)
+    const roster = known ? await this.roster(channel, known) : undefined
+    if (roster) return roster
     return [...(this.members.get(channel) ?? [])].map(([id, name]) => ({ id, ...(name ? { name } : {}), isBot: false }))
+  }
+
+  // A conversation's members keyed as the normalizer keys a sender, read at most once per TTL; a failed read answers undefined.
+  private async roster(channel: string, known: KnownConversation): Promise<PlatformMemberRef[] | undefined> {
+    let entry = this.rosters.get(channel)
+    if (!entry || this.now() - entry.at > ROSTER_TTL_MS) {
+      const members = this.api.conversationMembers(known.serviceUrl, channel, ROSTER_MAX).then(
+        (list) =>
+          list.map(({ id, aadObjectId, name }) => ({
+            id: aadObjectId ?? id,
+            ...(name ? { name } : {}),
+            isBot: id.startsWith('28:')
+          })),
+        (err: unknown) => {
+          this.deps.log?.debug(`msteams: reading a conversation's members failed: ${(err as Error).message}`)
+          return undefined
+        }
+      )
+      entry = { at: this.now(), members }
+      remember(this.rosters, channel, entry, CONVERSATIONS_MAX)
+    }
+    const members = await entry.members
+    for (const m of members ?? []) if (m.name && !m.isBot) remember(this.names, m.id, m.name, NAMES_MAX)
+    return members
   }
 
   async listChannels(): Promise<PlatformChannelRef[]> {
