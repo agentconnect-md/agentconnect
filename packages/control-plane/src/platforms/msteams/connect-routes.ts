@@ -31,6 +31,7 @@ import {
   msTeamsAuthorizeUrl,
   openMsTeamsTicket,
   publishMsTeamsPackage,
+  readMsTeamsOrganizationName,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
   verifyMsTeamsConnectState,
@@ -259,7 +260,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 orgId,
                 agent: target,
                 platform: MSTEAMS_PLATFORM,
-                name: `Microsoft Teams · ${tenantId}`,
+                // The organization's own name, as the console lists it; the tenant ID only when Graph names none.
+                name: `Microsoft Teams · ${(await readMsTeamsOrganizationName(fetchImpl, accessToken)) ?? tenantId}`,
                 transport: 'http',
                 prebuilt: true,
                 createdByUserId: req.principal.userId

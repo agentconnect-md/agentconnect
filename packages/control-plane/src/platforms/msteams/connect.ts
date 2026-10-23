@@ -3,11 +3,12 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { z } from 'zod'
 import type { Clock } from '../../domain/clock.js'
 
-/** The delegated scopes an administrator consents to: publish to the catalog, list their teams, install with RSC (§8.1). */
+/** The delegated scopes an administrator consents to: publish to the catalog, list their teams, install with RSC, and read the organization's name (§8.1). */
 export const MSTEAMS_CONNECT_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.ReadWrite.All',
   'https://graph.microsoft.com/Team.ReadBasic.All',
   'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForTeam',
+  'https://graph.microsoft.com/User.Read',
   'openid'
 ] as const
 
@@ -246,6 +247,20 @@ export async function publishMsTeamsPackage(
   if (!published.ok) throw refused(published)
   if (existing) return existing.id
   return CatalogApp.parse(await published.json()).id
+}
+
+const Organization = z.object({ value: z.array(z.object({ displayName: z.string().nullish() })) })
+
+/** The signed-in tenant's display name, which names its integration; undefined when Graph does not answer one. */
+export async function readMsTeamsOrganizationName(fetchImpl: typeof fetch, token: string): Promise<string | undefined> {
+  try {
+    const response = await graph(fetchImpl, token, 'GET', '/organization?$select=displayName')
+    if (!response.ok) return undefined
+    const name = Organization.parse(await response.json()).value[0]?.displayName?.trim()
+    return name || undefined
+  } catch {
+    return undefined
+  }
 }
 
 const Teams = z.object({ value: z.array(z.object({ id: z.string(), displayName: z.string().nullish() })) })
