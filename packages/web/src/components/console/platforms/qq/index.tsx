@@ -15,7 +15,7 @@ export const QQModule: WebPlatformModule = {
     buildReuseInput: (bot, ctx) => ({ platform: 'qq', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
     identityCards: () => identityCards('qq'),
-    inviteHint: () => inviteBotHint('group', 'QQ', true)
+    inviteHint: () => inviteBotHint('group', 'Platforms.qq.brand', true)
   },
   apiBindings: {},
   settingsFragments: QQSettingsFragments,

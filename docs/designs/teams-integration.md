@@ -163,6 +163,14 @@ The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
 follow-ups then do nothing, and how the bot can detect that is **unverified**.
 
+The package also requests the grants later features read through Microsoft
+Graph, so that an installed app does not have to ask its installers again:
+`ChannelSettings.Read.Group` and `ChannelMember.Read.Group` for a team's channel
+names and members, and `OnlineMeeting.ReadBasic.Chat` and
+`OnlineMeetingTranscript.Read.Chat` for a meeting chat's meeting details and
+transcripts. Nothing reads them yet. An organization that installed an earlier
+package grants them when it uploads a re-downloaded one.
+
 A mention arrives as a `mention` entity whose `mentioned.id` is the bot
 (`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
 (**measured**). The normalizer removes exactly that span and sets
@@ -329,15 +337,19 @@ sessions in the Console.
 
 **Access rules with sync on.**
 
-- A 1:1 chat admits its one member.
-- A channel admits the members of its team's roster; a group chat admits its
-  members. The Control Plane asks the conversation's bot with client
-  credentials and matches the viewer's linked object ID against each member's
-  `aadObjectId` or `objectId`.
+- A conversation admits its current members: a 1:1 chat its one member, a
+  standard channel its team's roster, a group chat its members. The Control
+  Plane asks with the conversation's bot token for one member,
+  `GET /v3/conversations/{conversationId}/members/{objectId}`, and admits the
+  viewer only when the answer carries the same `aadObjectId` and the bot's
+  tenant ID. A non-member answers 404 `MemberNotFoundInConversation`, and an
+  unknown conversation 404 `ConversationNotFound` (**measured**).
 - The session's audience realm is the bot's tenant ID and its resource is the
-  conversation ID. The member call needs the conversation's regional
-  `serviceUrl`, so the audience also records it, and the Control Plane accepts
-  only a Bot Framework origin there.
+  conversation ID without a thread suffix. The lookup goes to the public cloud's
+  global Bot Connector origin, `https://smba.trafficmanager.net/teams/`, which
+  answers it for a conversation whose activities carry a regional `serviceUrl`
+  (**measured**), so the audience records no service URL. National clouds have
+  other origins and are out of scope.
 - Approvals and in-chat settings follow §4.4: linked editors only.
 - A missing link, a revoked bot, a mismatched tenant, a malformed response, or a
   provider failure never grants access. A successful verdict lasts at most two
@@ -348,15 +360,15 @@ that marks earlier Teams conversations pending follow the same rules as
 Telegram and Discord. Only identity and membership metadata reach the Control
 Plane; message bodies stay on the daemon.
 
-**What exists and what is missing.** The daemon side exists: the card click
-carries the clicker's `aadObjectId`, `chatMemberKey` reads it, and the daemon's
-tenant scope is the bot's tenant. Sign-in exists: the Setup login application
-(**Setup → Microsoft**, connector `agentconnect-azuread`), the Console's
-Microsoft entry on the sign-in page and under **Profile → Sign-in methods**, and
-the Control Plane's identity read that lists a linked object ID as an `msteams`
-member. Missing are the Teams provider's `chatMemberTenant`, a session-access
-plugin over the member APIs, the audience entries in the protocol, daemon, and
-Control Plane, the Settings entry, and the migration.
+**What exists.** Sign-in is the Setup login application (**Setup → Microsoft**,
+connector `agentconnect-azuread`) with the Console's Microsoft entry on the
+sign-in page and under **Profile → Sign-in methods**; the Control Plane lists a
+linked object ID as an `msteams` member. Sync is the Teams provider's
+`chatMemberTenant` and audience realm, the session-access plugin over the
+member lookup (enabled when the deployment offers Microsoft sign-in), the
+`msteams` audience in the protocol and daemon, the **Settings → Session access**
+row, and the migrations that fence earlier Teams conversations on the Control
+Plane and bind them to their tenant in the daemon's store.
 
 ## 5. Console setup
 
@@ -366,7 +378,7 @@ The wizard walks the admin through both registrations and then:
 - takes the app ID, tenant ID, and client secret, and checks them live (§2);
 - downloads the Teams app package: `manifest.json` in the current schema, a
   192×192 color icon, and a 32×32 outline icon. The manifest names the bot's app
-  ID with the `personal`, `team`, and `groupChat` scopes, the two RSC
+  ID with the `personal`, `team`, and `groupChat` scopes, the RSC
   permissions with the `webApplicationInfo` they require, the relay host in
   `validDomains`, and `supportsChannelFeatures: "tier1"`, without which Teams
   refuses a v1.25-or-later manifest that has the `team` scope (**measured**).

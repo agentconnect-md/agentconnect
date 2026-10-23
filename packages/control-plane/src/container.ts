@@ -390,6 +390,7 @@ import { FeishuSessionAccessService } from './http/feishu-session-access.js'
 import { GoogleChatSessionAccessService } from './http/googlechat-session-access.js'
 import { createTelegramSessionAccess } from './platforms/telegram/session-access.js'
 import { createDiscordSessionAccess } from './platforms/discord/session-access.js'
+import { createMsTeamsSessionAccess } from './platforms/msteams/session-access.js'
 import { SessionAccessWarmer } from './http/session-access-warmer.js'
 import type { AgentRecord, SessionMetaRecord, ExternalScopeRecord } from './persistence/ports.js'
 
@@ -2079,6 +2080,10 @@ export function buildContainer(
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('discord')
   })
+  const msTeamsSessionAccess = createMsTeamsSessionAccess({
+    ...botSessionAccessDeps,
+    configured: configuredSocialProviders.includes('azuread')
+  })
 
   // Built once and shared between the route deps (the live paths) and the
   // platform providers below — one closure per platform, not two.
@@ -2296,7 +2301,8 @@ export function buildContainer(
       feishuSessionAccess,
       googleChatSessionAccess,
       telegramSessionAccess,
-      discordSessionAccess
+      discordSessionAccess,
+      msTeamsSessionAccess
     ],
     ...(iconStore ? { iconStore } : {}),
     ...(fileTransfer ? { fileTransfer } : {}),

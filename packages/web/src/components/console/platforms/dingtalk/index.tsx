@@ -28,7 +28,7 @@ export const dingTalkModule: WebPlatformModule = {
     buildReuseInput: (bot, ctx) => ({ platform: 'dingtalk', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
     identityCards: () => identityCards('dingtalk'),
-    inviteHint: () => inviteBotHint('group', 'DingTalk', true)
+    inviteHint: () => inviteBotHint('group', 'Platforms.dingtalk.brand', true)
   },
   apiBindings: {},
   settingsFragments: dingTalkSettingsFragments,

@@ -11,6 +11,7 @@ import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
 import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
 import { createGoogleChatCpProvider } from '../../platforms/googlechat/provider.js'
+import { createMsTeamsCpProvider } from '../../platforms/msteams/provider.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -26,6 +27,7 @@ function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
     platforms: buildCpPlatformRegistry([
       createSlackCpProvider({}),
       createGoogleChatCpProvider(),
+      createMsTeamsCpProvider(),
       createFeishuCpProvider({}),
       createTelegramCpProvider({
         verifyBot: async () => ({ status: 'invalid' }),
@@ -78,12 +80,22 @@ function recorded(session: Partial<SessionMetaRecord> = {}): SessionMilestoneRes
 }
 
 describe('handleEventSession', () => {
-  it.each(['telegram', 'discord', 'googlechat'] as const)(
+  it.each(['telegram', 'discord', 'googlechat', 'msteams'] as const)(
     'validates %s bot realms and quarantines older local milestones',
     async (platform) => {
       const recordMilestone = vi.fn().mockResolvedValue(recorded())
-      const realmKey = { telegram: 'bot42', discord: 'bot100000000000000001', googlechat: '123456789012' }[platform]
-      const channel = { telegram: '-10042', discord: '100000000000000004', googlechat: 'spaces/AAAAAAAAAAA' }[platform]
+      const realmKey = {
+        telegram: 'bot42',
+        discord: 'bot100000000000000001',
+        googlechat: '123456789012',
+        msteams: '11111111-1111-4111-8111-111111111111'
+      }[platform]
+      const channel = {
+        telegram: '-10042',
+        discord: '100000000000000004',
+        googlechat: 'spaces/AAAAAAAAAAA',
+        msteams: '19:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@thread.tacv2'
+      }[platform]
       const deps = scopedDeps({
         session: { recordMilestone },
         integration: {
@@ -97,7 +109,14 @@ describe('handleEventSession', () => {
           })
         },
         bot: {
-          get: async () => ({ id: BOT_ID, orgId: ORG_ID, platform, revokedAt: null, externalAppId: '123456789012' })
+          get: async () => ({
+            id: BOT_ID,
+            orgId: ORG_ID,
+            platform,
+            revokedAt: null,
+            externalAppId: '123456789012',
+            externalTenantId: '11111111-1111-4111-8111-111111111111'
+          })
         },
         events: { publish: vi.fn() }
       })

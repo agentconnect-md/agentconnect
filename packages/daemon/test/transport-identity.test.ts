@@ -208,17 +208,22 @@ describe('conversation audience', () => {
     ).toBeUndefined()
   })
 
-  it.each(['feishu', 'googlechat'])('binds every %s conversation through the tenant anchor', async (platform) => {
-    const audience = conversationAudienceFor(platform)!
-    const realm = platform === 'googlechat' ? '123456789012' : 'lark:c1'
-    expect(audience.applies({ isDm: true })).toBe(true)
-    expect(
-      await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => realm }, 'i4', {
-        id: 'i4',
+  it.each(['feishu', 'googlechat', 'msteams'])(
+    'binds every %s conversation through the tenant anchor',
+    async (platform) => {
+      const audience = conversationAudienceFor(platform)!
+      const realm = { feishu: 'lark:c1', googlechat: '123456789012', msteams: '11111111-1111-4111-8111-111111111111' }[
         platform
-      })
-    ).toBe(realm)
-  })
+      ]
+      expect(audience.applies({ isDm: true })).toBe(true)
+      expect(
+        await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => realm }, 'i4', {
+          id: 'i4',
+          platform
+        })
+      ).toBe(realm)
+    }
+  )
 
   it('binds nothing elsewhere — local classification rules alone', () => {
     for (const p of ['webchat', 'hook', 'some-future-platform']) {

@@ -26,7 +26,7 @@ export const msTeamsModule: WebPlatformModule<MsTeamsApi> = {
     // No transport choice (HTTPS through the relay is the only one) and no shared bots (§1).
     affordances: {},
     identityCards: () => identityCards('msteams'),
-    inviteHint: () => inviteBotHint('channel', 'Microsoft Teams')
+    inviteHint: () => inviteBotHint('channel', 'Platforms.msteams.brand')
   },
   settingsFragments: msTeamsSettingsFragments,
   apiBindings: msTeamsApi,

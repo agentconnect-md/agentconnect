@@ -2090,8 +2090,14 @@
         "delete": "删除"
       },
       "platformHints": {
-        "listen": "把 bot 邀请到 {platform} 的任意{target}，它就会开始接收消息。",
-        "mention": "把 bot 邀请到 {platform} 的任意{target}，并 @ 它即可开始。"
+        "listen": "把机器人拉进{platform}的任意{target}，它就会开始接收消息。",
+        "mention": "把机器人拉进{platform}的任意{target}，并 @ 它即可开始使用。",
+        "targets": {
+          "channel": "频道",
+          "group": "群",
+          "issue": "议题",
+          "space": "空间"
+        }
       },
       "identityCards": {
         "slack": {
@@ -4857,6 +4863,15 @@
           "unavailable": "请先为本部署配置 Google 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
           "degraded": "Google Chat 对话来源解析失败，新的会话已隐藏。"
+        },
+        "msteams": {
+          "name": "Microsoft Teams",
+          "label": "要求 Microsoft Teams 访问权限",
+          "description": "只有该聊天或频道的成员才能看到它的会话。",
+          "details": "频道、群聊和一对一聊天按当前成员身份授权，由对话中的 Teams 机器人检查。来宾无法匹配到账号，看不到已同步的会话。\n请先在个人资料中关联 Microsoft 账号。此前学到的 Agent 记忆不会被删除。\n缺少可信来源的历史会话先隐藏，等待新的可信活动补齐来源。\n关闭后，已同步的会话会隐藏；重新开启后恢复权限检查。",
+          "unavailable": "请先为本部署配置 Microsoft 登录，再开启权限同步。",
+          "unresolved": "{count, plural, other {# 个会话已隐藏：缺少可信的对话来源。}}",
+          "degraded": "Microsoft Teams 对话来源解析失败，新的会话已隐藏。"
         }
       }
     },
@@ -5803,7 +5818,8 @@
           "handle": "@my_agent_bot",
           "tokenSample": "123456789:AAEabcdefghijklmnopqrstuvwxyz"
         }
-      }
+      },
+      "brand": "Telegram"
     },
     "discord": {
       "guide": {
@@ -5855,7 +5871,8 @@
           "reset": "重置 Token",
           "tokenSample": "MTIzNDU2Nzg5MDEyMzQ1Njc4.Gabcde.fghijklmnopqrstuvwxyz"
         }
-      }
+      },
+      "brand": "Discord"
     },
     "feishu": {
       "transport": {
@@ -5966,6 +5983,10 @@
           "appIdSample": "cli_xxxxxxxxxxxxxxxx",
           "secretSample": "****************************"
         }
+      },
+      "brand": {
+        "lark": "Lark",
+        "feishu": "飞书"
       }
     },
     "linear": {
@@ -6021,7 +6042,8 @@
         "comments": "早先的评论",
         "guidance": "工作区指引",
         "truncated": "上下文已被 relay 截断。"
-      }
+      },
+      "brand": "Linear"
     },
     "slack": {
       "transport": {
@@ -6146,7 +6168,8 @@
         "submit": "替换",
         "submitting": "替换中…",
         "cancel": "取消"
-      }
+      },
+      "brand": "Slack"
     },
     "qq": {
       "checking": "正在检查凭据…",
@@ -6154,7 +6177,8 @@
       "createBot": "创建 QQ 机器人",
       "step1": "在 QQ 开发者平台创建机器人，开启私聊和群聊消息，然后复制其 AppID 和 AppSecret。",
       "step1Warning": "发布机器人前，请将 Daemon 的公网 IP 加入 IP 白名单——QQ 会拒绝来自其他地址的调用。",
-      "step2": "粘贴 AppID 和 AppSecret——连接所必需"
+      "step2": "粘贴 AppID 和 AppSecret——连接所必需",
+      "brand": "QQ"
     },
     "googlechat": {
       "checking": "正在检查这个部署…",
@@ -6245,7 +6269,8 @@
         "appUnavailable": "这个项目中没有配置 Chat 应用。请启用 Google Chat API 并配置应用，然后重新连接。",
         "unreachable": "无法连接到 Google。请重试。",
         "deploymentApp": "这是部署自带的 Chat 应用，请在 Google Chat 中给它发一条消息来连接。"
-      }
+      },
+      "brand": "Google Chat"
     },
     "dingtalk": {
       "checking": "正在检查凭据…",
@@ -6309,7 +6334,8 @@
         "checking": "正在检查…",
         "close": "关闭",
         "updated": "Client Secret 已更新。"
-      }
+      },
+      "brand": "钉钉"
     },
     "msteams": {
       "checking": "正在检查这个部署…",
@@ -6407,7 +6433,8 @@
           "clientId": "Application (client) ID",
           "tenantId": "Directory (tenant) ID"
         }
-      }
+      },
+      "brand": "Microsoft Teams"
     }
   },
   "Computers": {

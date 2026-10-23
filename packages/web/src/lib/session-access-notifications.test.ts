@@ -4,12 +4,12 @@ import { sessionAccessNotifications, unverifiedConversationNotice } from '@/lib/
 const orgPath = (path: string) => `/acme${path}`
 
 describe('sessionAccessNotifications', () => {
-  it.each(['telegram', 'discord', 'gitlab', 'googlechat'])(
+  it.each(['telegram', 'discord', 'gitlab', 'googlechat', 'msteams'])(
     'routes %s identity and app permission failures to the right repair',
     (provider) => {
       const identity = sessionAccessNotifications('sessions', true, [{ provider, reason: 'authorization' }], orgPath)
       expect(identity[0]?.action?.href).toBe(
-        `/acme/profile?reauthorize=${provider === 'googlechat' ? 'google' : provider}#sign-in-methods`
+        `/acme/profile?reauthorize=${{ googlechat: 'google', msteams: 'azuread' }[provider] ?? provider}#sign-in-methods`
       )
       const issue = { provider, reason: 'app_authorization' as const }
       const bot = sessionAccessNotifications('sessions', true, [issue], orgPath)

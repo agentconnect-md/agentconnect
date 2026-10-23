@@ -66,8 +66,8 @@ async function render() {
 }
 
 function rowNames(): string[] {
-  return ['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'].filter((name) =>
-    [...host.querySelectorAll('span')].some((span) => span.textContent === `Require ${name} access`)
+  return ['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat', 'Microsoft Teams'].filter(
+    (name) => [...host.querySelectorAll('span')].some((span) => span.textContent === `Require ${name} access`)
   )
 }
 
@@ -82,6 +82,7 @@ beforeEach(() => {
   answers.set('telegram', nothingToOffer('telegram'))
   answers.set('discord', nothingToOffer('discord'))
   answers.set('googlechat', nothingToOffer('googlechat'))
+  answers.set('msteams', nothingToOffer('msteams'))
 })
 
 afterEach(async () => {
@@ -99,11 +100,21 @@ describe('session access card', () => {
     answers.set('telegram', access('telegram'))
     answers.set('discord', access('discord'))
     answers.set('googlechat', access('googlechat'))
+    answers.set('msteams', access('msteams'))
 
     await render()
 
-    expect(rowNames()).toEqual(['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat'])
-    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(7)
+    expect(rowNames()).toEqual([
+      'Slack',
+      'GitHub',
+      'GitLab',
+      'Feishu/Lark',
+      'Telegram',
+      'Discord',
+      'Google Chat',
+      'Microsoft Teams'
+    ])
+    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(8)
   })
 
   it('leaves out a provider this deployment cannot offer, rather than showing a dead switch', async () => {

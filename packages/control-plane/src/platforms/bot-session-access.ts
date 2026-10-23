@@ -12,7 +12,7 @@ import type {
 } from '../http/session-access-plugin.js'
 
 type Decision = { allowed: boolean; issue?: SessionAccessIssue }
-type Check = { token: string; resource: string; member: string; signal: AbortSignal }
+type Check = { token: string; bot: BotRecord; resource: string; member: string; signal: AbortSignal }
 
 export class BotAccessError extends Error {
   constructor(readonly reason: SessionAccessIssue['reason']) {
@@ -111,7 +111,7 @@ export class BotSessionAccessService implements SessionAccessPlugin {
           for (const member of members) {
             const key = [scope.id, scope.aclRevision, bot.credentialRevision, member].join(':')
             const result = await this.decisions.fetch(key, {
-              context: { token: secret.botToken, resource: scope.resourceKey, member, signal }
+              context: { token: secret.botToken, bot, resource: scope.resourceKey, member, signal }
             })
             if (result?.allowed) {
               allowedScopes.push({ id: scope.id, aclRevision: scope.aclRevision })

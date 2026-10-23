@@ -23,7 +23,7 @@ export const telegramModule: WebPlatformModule<TelegramApi> = {
     buildReuseInput: (bot, ctx) => ({ platform: 'telegram', agentId: ctx.agentId, botId: bot.id }),
     affordances: {},
     identityCards: () => identityCards('telegram'),
-    inviteHint: () => inviteBotHint('group', 'Telegram')
+    inviteHint: () => inviteBotHint('group', 'Platforms.telegram.brand')
   },
   apiBindings: telegramApi,
   // A Telegram bot's rows carry no extra chrome: there is no per-bot developer

@@ -2091,7 +2091,13 @@
       },
       "platformHints": {
         "listen": "invite the bot to any {target} in {platform} and it starts listening there.",
-        "mention": "invite the bot to any {target} in {platform} and @-mention it to start."
+        "mention": "invite the bot to any {target} in {platform} and @-mention it to start.",
+        "targets": {
+          "channel": "channel",
+          "group": "group",
+          "issue": "issue",
+          "space": "space"
+        }
       },
       "identityCards": {
         "slack": {
@@ -4857,6 +4863,15 @@
           "unavailable": "Configure Google sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
           "degraded": "Google Chat conversation sources stopped resolving — new sessions are being hidden."
+        },
+        "msteams": {
+          "name": "Microsoft Teams",
+          "label": "Require Microsoft Teams access",
+          "description": "Only members of the chat or channel can see its sessions.",
+          "details": "Channels, group chats and 1:1 chats follow current membership, checked by the conversation’s Teams bot. Guests cannot be matched and do not see synced sessions.\nLink your Microsoft account in Profile. Agent memory learned earlier is not erased.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides sessions already synced; turning it back on restores access checks.",
+          "unavailable": "Configure Microsoft sign-in for this deployment before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden — no trusted conversation scope.} other {# sessions hidden — no trusted conversation scope.}}",
+          "degraded": "Microsoft Teams conversation sources stopped resolving — new sessions are being hidden."
         }
       }
     },
@@ -5803,7 +5818,8 @@
           "handle": "@my_agent_bot",
           "tokenSample": "123456789:AAEabcdefghijklmnopqrstuvwxyz"
         }
-      }
+      },
+      "brand": "Telegram"
     },
     "discord": {
       "guide": {
@@ -5855,7 +5871,8 @@
           "reset": "Reset Token",
           "tokenSample": "MTIzNDU2Nzg5MDEyMzQ1Njc4.Gabcde.fghijklmnopqrstuvwxyz"
         }
-      }
+      },
+      "brand": "Discord"
     },
     "feishu": {
       "transport": {
@@ -5966,6 +5983,10 @@
           "appIdSample": "cli_xxxxxxxxxxxxxxxx",
           "secretSample": "****************************"
         }
+      },
+      "brand": {
+        "lark": "Lark",
+        "feishu": "Feishu"
       }
     },
     "linear": {
@@ -6021,7 +6042,8 @@
         "comments": "Earlier comments",
         "guidance": "Workspace guidance",
         "truncated": "Context truncated by the relay."
-      }
+      },
+      "brand": "Linear"
     },
     "slack": {
       "transport": {
@@ -6146,7 +6168,8 @@
         "submit": "Replace",
         "submitting": "Replacing…",
         "cancel": "Cancel"
-      }
+      },
+      "brand": "Slack"
     },
     "qq": {
       "checking": "Checking credentials…",
@@ -6154,7 +6177,8 @@
       "createBot": "Create QQ bot",
       "step1": "Create a bot in the QQ developer portal, turn on private and group messages, then copy its AppID and AppSecret.",
       "step1Warning": "Before publishing the bot, add your daemon's public IP to its IP allowlist — QQ rejects calls from other addresses.",
-      "step2": "Paste the AppID & AppSecret — required to connect"
+      "step2": "Paste the AppID & AppSecret — required to connect",
+      "brand": "QQ"
     },
     "googlechat": {
       "checking": "Checking this deployment…",
@@ -6245,7 +6269,8 @@
         "appUnavailable": "The Chat app is not configured in this project. Enable the Google Chat API, configure the app, then connect again.",
         "unreachable": "Google could not be reached. Try again.",
         "deploymentApp": "This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat."
-      }
+      },
+      "brand": "Google Chat"
     },
     "dingtalk": {
       "checking": "Checking credentials…",
@@ -6309,7 +6334,8 @@
         "checking": "Checking…",
         "close": "Close",
         "updated": "Client Secret updated."
-      }
+      },
+      "brand": "DingTalk"
     },
     "msteams": {
       "checking": "Checking this deployment…",
@@ -6407,7 +6433,8 @@
           "clientId": "Application (client) ID",
           "tenantId": "Directory (tenant) ID"
         }
-      }
+      },
+      "brand": "Microsoft Teams"
     }
   },
   "Computers": {

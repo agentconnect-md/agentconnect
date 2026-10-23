@@ -40,21 +40,21 @@
     "@agentconnect.md/protocol": "workspace:*",
     "@opentelemetry/api": "^1.9.1",
     "@slack/web-api": "^8.2.0",
-    "fastify": "^5.12.5",
-    "jose": "^6.2.12",
-    "undici": "^8.11.2",
+    "fastify": "^5.12.7",
+    "jose": "^6.2.13",
+    "undici": "^8.12.3",
     "ws": "^8.22.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@ag-ui/client": "^1.0.2",
-    "@ag-ui/core": "^1.0.2",
-    "@types/node": "^24.19.1",
+    "@ag-ui/client": "^1.0.3",
+    "@ag-ui/core": "^1.0.3",
+    "@types/node": "^24.19.2",
     "@types/ws": "^8.18.2",
-    "ai": "^7.0.128",
+    "ai": "^7.0.146",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.5"
   },
   "keywords": [
     "agentconnect",
