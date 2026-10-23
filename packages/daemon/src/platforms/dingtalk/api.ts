@@ -3,6 +3,8 @@ import { splitMarkdownByBytes } from '../../messages/split-markdown-bytes.js'
 
 export const DINGTALK_API_ORIGIN = 'https://api.dingtalk.com'
 export const DINGTALK_ROBOT_TOPIC = '/v1.0/im/bot/messages/get'
+/** The Stream topic a tap on an interactive card calls back on (§4.6). */
+export const DINGTALK_CARD_CALLBACK_TOPIC = '/v1.0/card/instances/callback'
 /** The most UTF-8 bytes a robot send's `msgParam` may carry (§4.2). */
 export const DINGTALK_MSG_PARAM_MAX_BYTES = 15_000
 
@@ -169,7 +171,10 @@ export class DingTalkApi {
     const result = await this.post<{ endpoint?: unknown; ticket?: unknown }>(path, {
       clientId: this.credentials.clientId,
       clientSecret: this.credentials.clientSecret,
-      subscriptions: [{ type: 'CALLBACK', topic: DINGTALK_ROBOT_TOPIC }],
+      subscriptions: [
+        { type: 'CALLBACK', topic: DINGTALK_ROBOT_TOPIC },
+        { type: 'CALLBACK', topic: DINGTALK_CARD_CALLBACK_TOPIC }
+      ],
       ua: 'agentconnect-daemon',
       localIp: '127.0.0.1'
     })

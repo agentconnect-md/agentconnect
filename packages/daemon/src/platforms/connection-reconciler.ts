@@ -58,6 +58,7 @@ import { consolidateLinear, linearConnKey, LinearConnection } from './linear/con
 import { consolidateGoogleChat, GoogleChatConnection } from './googlechat/connection.js'
 import type { GoogleChatWriteBudgets } from './googlechat/write-budget.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
+import { dingTalkQuestionTemplate } from './dingtalk/card.js'
 import { consolidateDingTalk, DingTalkConnection, dingTalkConnKey } from './dingtalk/connection.js'
 import { consolidateMsTeams, MsTeamsConnection } from './msteams/connection.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
@@ -97,7 +98,13 @@ export interface PlatformActionSink {
   handleElicitFormSubmit: NonNullable<SlackDeps['onElicitFormSubmit']>
   handleDiscordSelect: NonNullable<DiscordDeps['onSelectAction']>
   openElicitEditor: NonNullable<DiscordDeps['onElicitOpen']>
-  handleElicitCardTap: NonNullable<DiscordDeps['onElicitChoice']>
+  /** A tapped elicitation-card option, or Dismiss (`token` null); `ts` is the card's id as the tap reports it. */
+  handleElicitCardTap(a: {
+    requestId: string
+    token: string | null
+    ts?: string
+    actor?: InteractionActor
+  }): Promise<string | undefined>
   /** A permission card's option clicked by position, where its button payload cannot carry the option's id. */
   handlePermissionPick(a: {
     requestId: string
@@ -255,6 +262,8 @@ export class ConnectionReconciler {
 
   // One Stream client per app on this daemon: DingTalk delivers each message to one random connection (dingtalk-integration.md §3.1).
   readonly dingTalkPool = new ConnectionPool<DingTalkConnection>('dingtalk', (conn) => dingTalkConnKey(conn.group))
+  // Read once at daemon start; an empty override sends every question as the numbered text card (§4.6).
+  private readonly dingTalkQuestionTemplate = dingTalkQuestionTemplate()
 
   async reconcileDingTalkConnections(): Promise<void> {
     for (const [key, group] of consolidateDingTalk(this.host.transportAgents())) {
@@ -266,7 +275,9 @@ export class ConnectionReconciler {
           onMessage: (msg) => {
             if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
             this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
-          }
+          },
+          onElicitChoice: (a) => this.host.handleElicitCardTap(a),
+          questionTemplate: this.dingTalkQuestionTemplate
         })
         try {
           await conn.start()

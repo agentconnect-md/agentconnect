@@ -4,6 +4,7 @@ import { DingTalkConnection } from '../src/platforms/dingtalk/connection.js'
 import { DINGTALK_MSG_PARAM_MAX_BYTES, splitForMsgParam } from '../src/platforms/dingtalk/api.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { fakeSocketFactory } from './fakes/dingtalk-socket.js'
+import { elicitOptionToken } from '../src/slack/render.js'
 
 const log = { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 const ORIGIN = 'https://api.example.test'
@@ -31,7 +32,7 @@ interface Call {
   body: Record<string, unknown>
 }
 
-function fakeFetch(opts: { failSendAfter?: number } = {}) {
+function fakeFetch(opts: { failSendAfter?: number; cardDelivered?: boolean } = {}) {
   const calls: Call[] = []
   let sends = 0
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -46,6 +47,9 @@ function fakeFetch(opts: { failSendAfter?: number } = {}) {
     if (path === '/v1.0/oauth2/accessToken') return json(200, { accessToken: 'token-1', expireIn: 7200 })
     if (path === '/v1.0/gateway/connections/open')
       return json(200, { endpoint: 'wss://stream.example.test/connect', ticket: 'ticket-1' })
+    if (path === '/v1.0/card/instances/createAndDeliver')
+      return json(200, { success: true, result: { deliverResults: [{ success: opts.cardDelivered ?? true }] } })
+    if (path === '/v1.0/card/instances') return json(200, { success: true, result: true })
     sends++
     if (opts.failSendAfter !== undefined && sends > opts.failSendAfter)
       return json(403, { code: 'Forbidden.AccessDenied.ApiCountLimitForOrg', message: 'quota' })
@@ -59,11 +63,15 @@ afterEach(async () => {
   for (const conn of connections.splice(0)) await conn.stop()
 })
 
-function connect(fetchImpl: typeof fetch, onMessage: (msg: NormalizedMessage) => void = () => {}) {
+function connect(
+  fetchImpl: typeof fetch,
+  onMessage: (msg: NormalizedMessage) => void = () => {},
+  extra: Partial<ConstructorParameters<typeof DingTalkConnection>[1]> = {}
+) {
   const sockets = fakeSocketFactory()
   const conn = new DingTalkConnection(
     { clientId: CLIENT_ID, clientSecret: 'client-secret-example', integrations: [] },
-    { log, onMessage, fetchImpl, origin: ORIGIN, createSocket: (url) => sockets.createSocket(url) }
+    { log, onMessage, fetchImpl, origin: ORIGIN, createSocket: (url) => sockets.createSocket(url), ...extra }
   )
   connections.push(conn)
   return { conn, sockets: sockets.sockets }
@@ -80,7 +88,10 @@ describe('DingTalk connection', () => {
       body: {
         clientId: CLIENT_ID,
         clientSecret: 'client-secret-example',
-        subscriptions: [{ type: 'CALLBACK', topic: '/v1.0/im/bot/messages/get' }]
+        subscriptions: [
+          { type: 'CALLBACK', topic: '/v1.0/im/bot/messages/get' },
+          { type: 'CALLBACK', topic: '/v1.0/card/instances/callback' }
+        ]
       }
     })
 
@@ -167,6 +178,98 @@ describe('DingTalk connection', () => {
     const text = `${'x'.repeat(9000)}\n\n${'y'.repeat(9000)}\n\n${'z'.repeat(9000)}`
     const parts = await conn.sendMarkdown('cid-example-group', text)
     expect(parts.map((part) => part.processQueryKey)).toEqual(['pqk-1', undefined, undefined])
+  })
+})
+
+describe('DingTalk question cards', () => {
+  const TEMPLATE = 'template-example.schema'
+  const PARAMS = { layout: 'buttons', prompt: 'Pick one', opt0: 'main' }
+
+  it('delivers to a group by its conversation and to a DM by the staff id, from the configured template', async () => {
+    const { calls, fetchImpl } = fakeFetch()
+    const { conn } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    expect(await conn.cards!.deliver('cid-example-group', 'acq-b-req-1', PARAMS)).toBe(true)
+    expect(await conn.cards!.deliver('dm:user-0001', 'acq-b-req-2', PARAMS)).toBe(true)
+    const delivered = calls.filter((call) => call.path === '/v1.0/card/instances/createAndDeliver')
+    const common = {
+      cardTemplateId: TEMPLATE,
+      callbackType: 'STREAM',
+      cardData: { cardParamMap: PARAMS },
+      imGroupOpenSpaceModel: { supportForward: false },
+      imRobotOpenSpaceModel: { supportForward: false }
+    }
+    expect(delivered.map((call) => call.body)).toEqual([
+      {
+        ...common,
+        outTrackId: 'acq-b-req-1',
+        openSpaceId: 'dtv1.card//IM_GROUP.cid-example-group',
+        imGroupOpenDeliverModel: { robotCode: CLIENT_ID }
+      },
+      {
+        ...common,
+        outTrackId: 'acq-b-req-2',
+        userIdType: 1,
+        openSpaceId: 'dtv1.card//IM_ROBOT.user-0001',
+        imRobotOpenDeliverModel: { spaceType: 'IM_ROBOT', robotCode: CLIENT_ID }
+      }
+    ])
+    expect(delivered[0]!.headers['x-acs-dingtalk-access-token']).toBe('token-1')
+  })
+
+  it('reports a refused delivery with one warning, and updates a card by key', async () => {
+    const { calls, fetchImpl } = fakeFetch({ cardDelivered: false })
+    const warn = vi.fn()
+    const { conn } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE, log: { ...log, warn } })
+    expect(await conn.cards!.deliver('cid-example-group', 'acq-b-req-1', PARAMS)).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    await conn.cards!.update('acq-b-req-1', { answer: '✅ main' })
+    expect(calls.at(-1)).toMatchObject({
+      path: '/v1.0/card/instances',
+      body: {
+        outTrackId: 'acq-b-req-1',
+        cardData: { cardParamMap: { answer: '✅ main' } },
+        cardUpdateOptions: { updateCardDataByKey: true }
+      }
+    })
+  })
+
+  it('has no card calls without a template', () => {
+    const { fetchImpl } = fakeFetch()
+    expect(connect(fetchImpl).conn.cards).toBeUndefined()
+  })
+
+  it('hands a tap on the card topic to core with the tapper, and ignores one on a card it did not send', async () => {
+    const { fetchImpl } = fakeFetch()
+    const taps: unknown[] = []
+    const onElicitChoice = vi.fn(async (a: unknown) => void taps.push(a))
+    const { conn, sockets } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE, onElicitChoice })
+    await conn.start()
+    // The tapper's name is known once they have spoken to the bot.
+    sockets[0]!.callback('cb-1', groupMention)
+    const tap = (outTrackId: string) => ({
+      outTrackId,
+      userId: 'user-0001',
+      spaceType: 'IM_GROUP',
+      spaceId: 'cid-example-group',
+      content: JSON.stringify({ cardPrivateData: { actionIds: ['choice'], params: { option: '1' } } })
+    })
+    sockets[0]!.callback('cb-2', tap('acq-b-req-1'), '/v1.0/card/instances/callback')
+    sockets[0]!.callback('cb-3', tap('another-card'), '/v1.0/card/instances/callback')
+    await vi.waitFor(() => expect(onElicitChoice).toHaveBeenCalledTimes(1))
+    expect(taps).toEqual([
+      {
+        requestId: 'req-1',
+        token: elicitOptionToken(1),
+        ts: 'acq-b-req-1',
+        actor: { userId: 'user-0001', name: 'Example User' }
+      }
+    ])
+    // Every callback is acknowledged, whether or not it named a card.
+    expect(sockets[0]!.sent.map((frame) => (frame.headers as { messageId: string }).messageId)).toEqual([
+      'cb-1',
+      'cb-2',
+      'cb-3'
+    ])
   })
 })
 

@@ -4,9 +4,16 @@ import { normalizeDingTalkMessage, type DingTalkRobotMessage } from '@agentconne
 import type { LoadedAgent } from '../../agents/load-agents.js'
 import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
-import type { PlatformChannelInfo, PlatformConnection, PlatformMemberRef, PlatformUserProfile } from '../contract.js'
+import type {
+  InteractionActor,
+  PlatformChannelInfo,
+  PlatformConnection,
+  PlatformMemberRef,
+  PlatformUserProfile
+} from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import {
+  DINGTALK_CARD_CALLBACK_TOPIC,
   DINGTALK_ROBOT_TOPIC,
   DingTalkApi,
   DingTalkApiError,
@@ -15,6 +22,8 @@ import {
   splitForMsgParam,
   type DingTalkApiOptions
 } from './api.js'
+import { DingTalkCardClient, type DingTalkCardPort } from './card.js'
+import { dingTalkCardTap } from './elicit-card.js'
 import { DingTalkReactionClient, type DingTalkReactionPort } from './reaction.js'
 import { rewriteDingTalkMarkdown } from './markdown.js'
 import { DingTalkStream, type DingTalkSocket, type DingTalkStreamTiming } from './stream.js'
@@ -74,6 +83,8 @@ export interface DingTalkReplyPort {
   sendText(channel: string, text: string): Promise<string | undefined>
   /** The reaction calls that acknowledge a turn (§4.3). */
   readonly reactions?: DingTalkReactionPort
+  /** The question card calls; absent when tap cards are turned off (§4.6). */
+  readonly cards?: DingTalkCardPort
 }
 
 const SEEN_LIMIT = 2_000
@@ -86,6 +97,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   private readonly api: DingTalkApi
   private readonly stream: DingTalkStream
   readonly reactions: DingTalkReactionClient
+  readonly cards?: DingTalkCardClient
   private readonly seen = new Set<string>()
   private readonly channels = new Map<string, { name?: string; isIm: boolean }>()
   private readonly members = new Map<string, Map<string, string | undefined>>()
@@ -98,6 +110,15 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     readonly group: DingTalkConnectionGroup,
     private readonly deps: {
       onMessage(msg: NormalizedMessage): void
+      /** A tap on a question card; a refusal for the tapper comes back, which DingTalk has nowhere private to show. */
+      onElicitChoice?(a: {
+        requestId: string
+        token: string | null
+        ts?: string
+        actor?: InteractionActor
+      }): Promise<string | undefined>
+      /** The question card template; absent ⇒ every question is the numbered text card (§4.6). */
+      questionTemplate?: string
       log: Logger
       fetchImpl?: typeof fetch
       origin?: string
@@ -112,6 +133,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (deps.origin) apiOptions.origin = deps.origin
     this.api = new DingTalkApi(group, apiOptions)
     this.reactions = new DingTalkReactionClient(this.api, group.clientId, deps.log)
+    if (deps.questionTemplate)
+      this.cards = new DingTalkCardClient(this.api, group.clientId, deps.questionTemplate, deps.log)
     this.media = {
       accessToken: () => this.api.accessToken(),
       robotCode: group.clientId,
@@ -144,7 +167,9 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   }
 
   private onCallback(topic: string, data: string): void {
-    if (topic !== DINGTALK_ROBOT_TOPIC || this.abort.signal.aborted) return
+    if (this.abort.signal.aborted) return
+    if (topic === DINGTALK_CARD_CALLBACK_TOPIC) return this.onCardCallback(data)
+    if (topic !== DINGTALK_ROBOT_TOPIC) return
     let payload: DingTalkRobotMessage
     try {
       payload = JSON.parse(data) as DingTalkRobotMessage
@@ -154,6 +179,19 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     }
     const msg = this.normalize(payload)
     if (msg) this.deps.onMessage(msg)
+  }
+
+  // The callback was acknowledged already; a tap on an unknown or settled card is simply ignored by core.
+  private onCardCallback(data: string): void {
+    const tap = dingTalkCardTap(data)
+    if (!tap || !this.deps.onElicitChoice) return
+    const name = this.names.get(tap.userId)
+    const actor: InteractionActor = { userId: tap.userId, ...(name ? { name } : {}) }
+    void this.deps
+      .onElicitChoice({ requestId: tap.requestId, token: tap.token, ts: tap.outTrackId, actor })
+      .catch((error: unknown) =>
+        this.deps.log.warn(`dingtalk: card tap failed (${error instanceof Error ? error.message : 'unknown error'})`)
+      )
   }
 
   /** Normalize one robot message, dropping a `msgId` already delivered (two sockets overlap during a handover, §3.2). */

@@ -1,4 +1,4 @@
-// DingTalk's question card answered by quote, and the approval notice that keeps approvals in the Console (dingtalk-integration.md §4.6).
+// DingTalk's question cards — tapped, or answered by quote — and the approval notice that keeps approvals in the Console (dingtalk-integration.md §4.6).
 import { DatabaseSync } from 'node:sqlite'
 import { describe, it, expect, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
@@ -10,9 +10,17 @@ import { elicitForm, elicitOptionToken } from '../src/slack/render.js'
 import { DINGTALK_MSG_PARAM_MAX_BYTES } from '../src/platforms/dingtalk/api.js'
 import {
   DINGTALK_ELICIT_SURFACE,
+  dingTalkCardLayout,
+  dingTalkCardTap,
   dingTalkElicitChoice,
-  dingTalkElicitText
+  dingTalkElicitText,
+  dingTalkQuestionCard
 } from '../src/platforms/dingtalk/elicit-card.js'
+import {
+  DINGTALK_QUESTION_TEMPLATE,
+  DINGTALK_QUESTION_TEMPLATE_ENV,
+  dingTalkQuestionTemplate
+} from '../src/platforms/dingtalk/card.js'
 import { applyDingTalkAction } from '../src/platforms/dingtalk/turn-output.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
@@ -36,6 +44,108 @@ function target() {
   return elicitForm(form(BRANCH, ['branch']), DINGTALK_ELICIT_SURFACE)![0]!
 }
 
+const BOOL = { proceed: { type: 'boolean', title: 'Proceed' } }
+const SIX = { branch: { type: 'string', enum: ['b1', 'b2', 'b3', 'b4', 'b5', 'b6'], title: 'Base branch' } }
+const targetOf = (properties: Record<string, unknown>) =>
+  elicitForm(form(properties, Object.keys(properties)), DINGTALK_ELICIT_SURFACE)![0]!
+const REQ = '33333333-3333-4333-8333-333333333333'
+
+// One card callback as DingTalk delivers it: the card's outTrackId, the tapper, and the action in a JSON string.
+function callback(outTrackId: string, actionIds: string[], params: Record<string, unknown>, userId = 'user-0001') {
+  return JSON.stringify({
+    outTrackId,
+    userId,
+    spaceType: 'IM_GROUP',
+    spaceId: CHANNEL,
+    corpId: 'corp-example',
+    content: JSON.stringify({ cardPrivateData: { actionIds, params } })
+  })
+}
+
+describe('the DingTalk tap card', () => {
+  it('lays out yes/no, up to four buttons, and a select for five to twelve options', () => {
+    expect(dingTalkCardLayout(targetOf(BOOL))).toBe('yesno')
+    expect(dingTalkCardLayout(target())).toBe('buttons')
+    expect(dingTalkCardLayout(targetOf(SIX))).toBe('form')
+  })
+
+  it('puts the refusing option on the left of a yes/no card and the accepting one on the right', () => {
+    expect(dingTalkQuestionCard(REQ, 'Butler', 'Proceed?', targetOf(BOOL))).toEqual({
+      outTrackId: `acq-y10-${REQ}`,
+      params: {
+        title: 'Butler',
+        lastMessage: '💬 Proceed?',
+        layout: 'yesno',
+        prompt: 'Proceed?',
+        opt0: 'No',
+        opt1: 'Yes',
+        opt2: '',
+        opt3: '',
+        answer: ''
+      }
+    })
+  })
+
+  it('labels each button and leaves the unused ones empty', () => {
+    expect(dingTalkQuestionCard(REQ, 'Butler', 'Which branch?', target())).toEqual({
+      outTrackId: `acq-b-${REQ}`,
+      params: {
+        title: 'Butler',
+        lastMessage: '💬 Which branch?',
+        layout: 'buttons',
+        prompt: 'Which branch?',
+        opt0: 'main',
+        opt1: 'develop',
+        opt2: '',
+        opt3: '',
+        answer: ''
+      }
+    })
+  })
+
+  it('asks five or more options with a required select whose values are option positions', () => {
+    const card = dingTalkQuestionCard(REQ, 'Butler', 'Which branch?', targetOf(SIX))!
+    expect(card.outTrackId).toBe(`acq-f-${REQ}`)
+    expect(card.params).toMatchObject({ layout: 'form', form_status: 'normal', form_btn_text: 'Submit' })
+    expect(JSON.parse(card.params.form!)).toEqual({
+      fields: [
+        {
+          name: 'choice',
+          label: 'Which branch?',
+          type: 'SELECT',
+          required: true,
+          options: ['b1', 'b2', 'b3', 'b4', 'b5', 'b6'].map((text, i) => ({ value: String(i), text }))
+        }
+      ]
+    })
+  })
+
+  it('reads a button tap and a form submit back to the option token, and nothing it did not send', () => {
+    expect(dingTalkCardTap(callback(`acq-b-${REQ}`, ['choice'], { option: '1' }))).toEqual({
+      requestId: REQ,
+      token: elicitOptionToken(1),
+      outTrackId: `acq-b-${REQ}`,
+      userId: 'user-0001'
+    })
+    // The right-hand yes/no button is the accepting option, core's first.
+    expect(dingTalkCardTap(callback(`acq-y10-${REQ}`, ['choice'], { option: '1' }))?.token).toBe(elicitOptionToken(0))
+    expect(dingTalkCardTap(callback(`acq-y10-${REQ}`, ['choice'], { option: '0' }))?.token).toBe(elicitOptionToken(1))
+    expect(dingTalkCardTap(callback(`acq-y10-${REQ}`, ['choice'], { option: '2' }))).toBeNull()
+    const submit = { form: { choice: { index: 4, value: '4' } }, current_form: {} }
+    expect(dingTalkCardTap(callback(`acq-f-${REQ}`, ['form'], submit))?.token).toBe(elicitOptionToken(4))
+    expect(dingTalkCardTap(callback('another-card', ['choice'], { option: '1' }))).toBeNull()
+    expect(dingTalkCardTap(callback(`acq-b-${REQ}`, ['other'], { option: '1' }))).toBeNull()
+    expect(dingTalkCardTap(callback(`acq-b-${REQ}`, ['choice'], { option: '1' }, ''))).toBeNull()
+    expect(dingTalkCardTap('not json')).toBeNull()
+  })
+
+  it('uses the project template unless the environment overrides it, and an empty override turns it off', () => {
+    expect(dingTalkQuestionTemplate({})).toBe(DINGTALK_QUESTION_TEMPLATE)
+    expect(dingTalkQuestionTemplate({ [DINGTALK_QUESTION_TEMPLATE_ENV]: ' other.schema ' })).toBe('other.schema')
+    expect(dingTalkQuestionTemplate({ [DINGTALK_QUESTION_TEMPLATE_ENV]: '' })).toBeUndefined()
+  })
+})
+
 describe('the DingTalk card text and the replies it reads', () => {
   it('numbers every option and says to reply to it', () => {
     expect(dingTalkElicitText('Pick one', target())).toBe(
@@ -58,7 +168,7 @@ describe('the DingTalk card text and the replies it reads', () => {
   })
 })
 
-function dingTalkTurn() {
+function dingTalkTurn(opts: { delivered?: boolean; cards?: boolean } = {}) {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
@@ -66,11 +176,18 @@ function dingTalkTurn() {
     upsertElicit: vi.fn(async () => {})
   }
   const sent: { channel: string; text: string }[] = []
+  const cards = {
+    deliver: vi.fn(
+      async (_channel: string, _outTrackId: string, _params: Record<string, string>) => opts.delivered ?? true
+    ),
+    update: vi.fn(async (_outTrackId: string, _params: Record<string, string>) => {})
+  }
   const egress = {
     sendText: async (channel: string, text: string) => {
       sent.push({ channel, text })
       return `pqk-${sent.length}`
-    }
+    },
+    ...(opts.cards ? { cards } : {})
   }
   daemon.pending.set(JSON.stringify(['agent-1', 's1']), {
     plan: {
@@ -102,7 +219,7 @@ function dingTalkTurn() {
   })
   const applied: any[] = []
   daemon.enqueueApply = (_p: any, action: any) => void applied.push(action)
-  return { daemon, sent, notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text) }
+  return { daemon, sent, cards, notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text) }
 }
 
 const reply = (text: string, replyTo?: string, conversation = CONVERSATION) => ({
@@ -170,6 +287,93 @@ describe('a DingTalk turn collects an elicitation answer from a quote', () => {
     const req = form({ note: { type: 'string', title: 'Note' } }, ['note'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.sent).toEqual([])
+  })
+})
+
+async function raiseCard(h: ReturnType<typeof dingTalkTurn>, req: CreateElicitationRequest) {
+  const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBeDefined())
+  return { requestId, result, ts: h.daemon.permissions.pendingElicits.get(requestId).ts as string }
+}
+
+// A tap as the connection hands it to core.
+async function tapCard(h: ReturnType<typeof dingTalkTurn>, data: string) {
+  const tap = dingTalkCardTap(data)!
+  return await h.daemon.permissions.handleElicitCardTap({
+    requestId: tap.requestId,
+    token: tap.token,
+    ts: tap.outTrackId,
+    actor: { userId: tap.userId }
+  })
+}
+
+describe('a DingTalk turn collects an elicitation answer from a tap', () => {
+  it('delivers the tap card and closes it in place with the answer', async () => {
+    const h = dingTalkTurn({ cards: true })
+    const { requestId, result, ts } = await raiseCard(h, form(BRANCH, ['branch']))
+    expect(ts).toBe(`acq-b-${requestId}`)
+    expect(h.cards.deliver).toHaveBeenCalledWith(CHANNEL, ts, expect.objectContaining({ layout: 'buttons' }))
+    expect(h.sent).toEqual([])
+    await tapCard(h, callback(ts, ['choice'], { option: '1' }))
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    await vi.waitFor(() => expect(h.cards.update).toHaveBeenCalledWith(ts, { answer: '✅ develop' }))
+    expect(h.sent).toEqual([])
+  })
+
+  it('answers a yes/no card from the accepting button', async () => {
+    const h = dingTalkTurn({ cards: true })
+    const { result, ts } = await raiseCard(h, form(BOOL, ['proceed']))
+    await tapCard(h, callback(ts, ['choice'], { option: '1' }))
+    await expect(result).resolves.toEqual({ action: 'accept', content: { proceed: true } })
+    await vi.waitFor(() => expect(h.cards.update).toHaveBeenCalledWith(ts, { answer: '✅ Yes' }))
+  })
+
+  it('disables a submitted form and shows the choice in it', async () => {
+    const h = dingTalkTurn({ cards: true })
+    const { result, ts } = await raiseCard(h, form(SIX, ['branch']))
+    await tapCard(h, callback(ts, ['form'], { form: { choice: { index: 4, value: '4' } }, current_form: {} }))
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'b5' } })
+    await vi.waitFor(() => expect(h.cards.update).toHaveBeenCalledTimes(1))
+    const [track, params] = h.cards.update.mock.calls[0]!
+    expect(track).toBe(ts)
+    expect(params).toMatchObject({ form_status: 'disabled', form_btn_text: '✅ b5' })
+    expect(JSON.parse(params.form!).fields[0].defaultValue).toEqual({ index: 4, value: '4' })
+  })
+
+  it('closes a dismissed form without a choice', async () => {
+    const h = dingTalkTurn({ cards: true })
+    const { requestId, result, ts } = await raiseCard(h, form(SIX, ['branch']))
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: null })
+    await expect(result).resolves.toEqual({ action: 'decline' })
+    await vi.waitFor(() => expect(h.cards.update).toHaveBeenCalledTimes(1))
+    const params = h.cards.update.mock.calls[0]![1]
+    expect(params).toMatchObject({ form_status: 'disabled', form_btn_text: '🚫 Dismissed' })
+    expect(JSON.parse(params.form!).fields[0].defaultValue).toBeUndefined()
+  })
+
+  it('asks with the numbered text card when DingTalk refuses the tap card', async () => {
+    const h = dingTalkTurn({ cards: true, delivered: false })
+    const { result, ts } = await raiseCard(h, form(BRANCH, ['branch']))
+    expect(ts).toBe('pqk-1')
+    expect(h.sent).toEqual([
+      { channel: CHANNEL, text: dingTalkElicitText('Which branch should I cut from?', target()) }
+    ])
+    expect(await h.daemon.permissions.claimElicitReply(reply('2', 'pqk-1'))).toBe(true)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    expect(h.cards.update).not.toHaveBeenCalled()
+  })
+
+  it('ignores a tap on a card that is already settled', async () => {
+    const h = dingTalkTurn({ cards: true })
+    const { result, ts } = await raiseCard(h, form(BRANCH, ['branch']))
+    await tapCard(h, callback(ts, ['choice'], { option: '0' }))
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+    expect(await tapCard(h, callback(ts, ['choice'], { option: '1' }))).toBeUndefined()
+    await flush()
+    expect(h.cards.update).toHaveBeenCalledTimes(1)
+    expect(h.notices()).toEqual([])
   })
 })
 
