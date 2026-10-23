@@ -36,7 +36,7 @@ export function DingTalkEditionSwitcher({
     <span className="inline-flex flex-col items-center gap-[2px]">
       <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">{t('brand')}</span>
       <span className="inline-flex items-baseline whitespace-nowrap">
-        <span className="font-sans text-[10px] font-semibold leading-normal text-(--brand)">
+        <span className="font-sans text-[10px] font-semibold leading-normal text-(--text-primary)">
           {t(`editions.${edition}`)}
         </span>
         <span
