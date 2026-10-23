@@ -56,6 +56,20 @@ it('uses Telegram profile id rather than OIDC sub, and Discord verified user id'
   expect(await svc.chatIdentitiesFor('missing')).toEqual([])
 })
 
+it('reads a Microsoft identity as the lower-cased Entra object ID Teams sends, and only a GUID', async () => {
+  const { fetchImpl } = fakeLogto({
+    linked: { identities: { azuread: { userId: '00000000-0000-4000-8000-0000000000A1' } } },
+    malformed: { identities: { azuread: { userId: 'live.com#user@example.test' } } },
+    missing: { identities: { azuread: {} } }
+  })
+  const svc = svcOf(fetchImpl)
+  expect(await svc.chatIdentitiesFor('linked')).toEqual([
+    { platform: 'msteams', tenant: 'global', memberId: '00000000-0000-4000-8000-0000000000a1' }
+  ])
+  expect(await svc.chatIdentitiesFor('malformed')).toEqual([])
+  expect(await svc.chatIdentitiesFor('missing')).toEqual([])
+})
+
 /** A Logto user whose slack identity carries `rawData` — the connector stores the
  *  decoded OIDC payload whole. Synthetic ids: never a real workspace. */
 function slackUser(rawData: Record<string, unknown>, userId = 'U0EXAMPLE1') {

@@ -16,5 +16,12 @@ export const LOGTO_LOGIN_APPS = {
     settingsUrl: 'https://discord.com/developers/applications',
     instruction:
       'Create an application in the Discord Developer Portal. Under OAuth2, add these redirects and copy the Client ID and Client Secret below.'
+  },
+  azuread: {
+    name: 'Microsoft',
+    id: 'agentconnect-azuread',
+    settingsUrl: 'https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
+    instruction:
+      'Register a multi-tenant application in Microsoft Entra (accounts in any organizational directory). Add these as Web redirect URIs, then copy the Application (client) ID and a client secret below.'
   }
 } as const

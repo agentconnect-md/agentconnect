@@ -347,7 +347,8 @@ export class LogtoIdentityService {
         ? [{ platform: 'googlechat', tenant: 'global', memberId: `users/${google}` }]
         : []),
       ...feishuIdentitiesOf(user).map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId })),
-      ...globalChatIdentitiesOf(user)
+      ...globalChatIdentitiesOf(user),
+      ...msteamsIdentitiesOf(user)
     ]
   }
 
@@ -848,4 +849,15 @@ function globalChatIdentitiesOf(user: LogtoUser | null): LinkedChatIdentity[] {
   ].flatMap(({ platform, memberId }) =>
     typeof memberId === 'string' && /^[1-9]\d*$/.test(memberId) ? [{ platform, tenant: 'global', memberId }] : []
   )
+}
+
+const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+// The Azure AD connector records the Entra object ID, which Teams sends lower-cased as `aadObjectId`.
+function msteamsIdentitiesOf(user: LogtoUser | null): LinkedChatIdentity[] {
+  const userId = user?.identities?.azuread?.userId
+  const objectId = typeof userId === 'string' ? userId.toLowerCase() : null
+  return objectId && ENTRA_OBJECT_ID.test(objectId)
+    ? [{ platform: 'msteams', tenant: 'global', memberId: objectId }]
+    : []
 }

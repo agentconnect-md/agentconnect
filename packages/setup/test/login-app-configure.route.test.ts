@@ -16,7 +16,7 @@ afterEach(async () => {
 })
 const headers = { authorization: 'Bearer admin' }
 
-function server() {
+function server(existingConnectors: readonly string[] = ['telegram', 'discord', 'azuread']) {
   const admin: DeploymentConfigAdmin = {
     schemaVersion: 1,
     revision: 1,
@@ -89,9 +89,9 @@ function server() {
       if (path === '/oidc/token') return Response.json({ access_token: 'token', expires_in: 3600 })
       if (path === '/api/connectors')
         return Response.json(
-          ['telegram', 'discord'].map((provider) => ({
+          existingConnectors.map((provider) => ({
             id: `existing-${provider}`,
-            connectorId: provider === 'telegram' ? 'oidc' : 'discord-universal',
+            connectorId: provider === 'telegram' ? 'oidc' : `${provider}-universal`,
             target: provider,
             config: {}
           }))
@@ -157,7 +157,7 @@ describe('global login application configuration', () => {
     expect((await configure(false)).statusCode).toBe(200)
   })
 
-  it.each(['telegram', 'discord'] as const)(
+  it.each(['telegram', 'discord', 'azuread'] as const)(
     'saves, reconciles, rotates and clears %s without exposing its secret',
     async (provider) => {
       const { app, admin, secrets, reconciled } = server()
@@ -195,6 +195,23 @@ describe('global login application configuration', () => {
       expect(secrets[secretKey]).toBeUndefined()
     }
   )
+
+  it('shows the fixed Microsoft connector ID before Logto has the connector', async () => {
+    const { app } = server(['telegram', 'discord'])
+    const configured = await app.inject({
+      method: 'POST',
+      url: '/api/v1/configure/login-app/azuread',
+      headers,
+      payload: { application: { clientId: '00000000-0000-4000-8000-0000000000c1', clientSecret: 'login-secret' } }
+    })
+    expect(configured.statusCode).toBe(200)
+    const status = await app.inject({ method: 'GET', url: '/api/v1/deployment-config', headers })
+    expect(status.json().providerExpectations.azuread.redirects).toEqual([
+      'https://login.example.test/callback/agentconnect-azuread',
+      'https://login.example.test/account/callback/social/agentconnect-azuread',
+      'https://console.example.test/auth/social/callback'
+    ])
+  })
 
   it('requires ADMIN access and refuses to remove the last sign-in provider', async () => {
     const { app, admin } = server()

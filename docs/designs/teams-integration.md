@@ -342,10 +342,13 @@ Plane; message bodies stay on the daemon.
 
 **What exists and what is missing.** The daemon side exists: the card click
 carries the clicker's `aadObjectId`, `chatMemberKey` reads it, and the daemon's
-tenant scope is the bot's tenant. Missing are the Setup login application, the
-Control Plane's Microsoft identity read and `chatMemberTenant`, a session-access
+tenant scope is the bot's tenant. Sign-in exists: the Setup login application
+(**Setup → Microsoft**, connector `agentconnect-azuread`), the Console's
+Microsoft entry on the sign-in page and under **Profile → Sign-in methods**, and
+the Control Plane's identity read that lists a linked object ID as an `msteams`
+member. Missing are the Teams provider's `chatMemberTenant`, a session-access
 plugin over the member APIs, the audience entries in the protocol, daemon, and
-Control Plane, the Settings and Profile entries, and the migration.
+Control Plane, the Settings entry, and the migration.
 
 ## 5. Console setup
 

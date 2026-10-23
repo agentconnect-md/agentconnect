@@ -10,6 +10,7 @@ import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
 // `logos/gitlab` is the LOGOTYPE (tanuki + wordmark, ~4.6:1); `-icon` is the mark, like `slack-icon`.
 import gitlabIcon from '@iconify-icons/logos/gitlab-icon'
 import kubernetesIcon from '@iconify-icons/logos/kubernetes'
+import microsoftIcon from '@iconify-icons/logos/microsoft-icon'
 import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
@@ -380,6 +381,8 @@ export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; s
     return <IconifyIcon icon={gitlabIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
   if (target === 'slack')
     return <IconifyIcon icon={slackIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
+  if (target === 'azuread')
+    return <IconifyIcon icon={microsoftIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />
   if (target === 'lark' || target === 'feishu')
     return (
       <img src={LARK_MARK_SRC} alt="" width={size ?? 18} height={size ?? 18} className="object-contain" aria-hidden />

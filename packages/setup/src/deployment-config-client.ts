@@ -326,7 +326,7 @@ export interface LogtoOAuthClientCredentials {
 
 export function logtoLoginAppPut(
   current: CurrentDeploymentConfig,
-  provider: 'telegram' | 'discord',
+  provider: 'telegram' | 'discord' | 'azuread',
   credentials: LogtoOAuthClientCredentials | null
 ): DeploymentConfigPut {
   const logto = current.values.logto

@@ -45,10 +45,24 @@ describe('DeploymentConfigValuesV1Schema', () => {
         .success
     ).toBe(false)
   })
+
+  it('accepts a Microsoft login application and refuses an empty client ID', () => {
+    const azureadConnector = { clientId: '00000000-0000-4000-8000-0000000000c1' }
+    expect(
+      DeploymentConfigValuesV1Schema.parse({ ...base, logto: { ...base.logto, azureadConnector } }).logto
+        ?.azureadConnector
+    ).toEqual(azureadConnector)
+    expect(
+      DeploymentConfigValuesV1Schema.safeParse({
+        ...base,
+        logto: { ...base.logto, azureadConnector: { clientId: ' ' } }
+      }).success
+    ).toBe(false)
+  })
 })
 
 describe('deploymentSecretsRequiringRefresh', () => {
-  it.each(['telegram', 'discord'] as const)('binds the %s login secret to its client ID', (provider) => {
+  it.each(['telegram', 'discord', 'azuread'] as const)('binds the %s login secret to its client ID', (provider) => {
     const key = `${provider}Connector` as const
     const next = DeploymentConfigValuesV1Schema.parse({
       ...base,
