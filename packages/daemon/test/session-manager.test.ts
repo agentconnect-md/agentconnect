@@ -858,7 +858,7 @@ describe('SessionManager', () => {
     expect(decision).toBe(trigger + 1)
     expect(first.captureInput).not.toContain('Background conversation')
     expect(first.captureInput).not.toContain('Decision evidence')
-    expect((await run()).blocks).toEqual(first.blocks)
+    expect(withoutNow((await run()).blocks)).toEqual(withoutNow(first.blocks))
   })
 
   it('fails open when recall errors and never exposes a plugin error body in the prompt', async () => {
