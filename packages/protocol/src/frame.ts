@@ -32,6 +32,7 @@ import {
 } from './frames/computer-pool.js'
 import { RegisterReq, RegisterOk, RelayRosterUpdate, CapabilitiesUpdate } from './frames/register.js'
 import { CollabRoutesSnapshot } from './frames/collab.js'
+import { FrameFragment } from './frames/fragment.js'
 import { RouteAssign, RouteAssignAck, RouteUpdate, Drain, DrainProgress, DrainDone } from './frames/route.js'
 import {
   AgentLaunch,
@@ -353,6 +354,8 @@ export const FRAME_SCHEMAS = {
   'relay/roster': RelayRosterUpdate,
   // ── collaboration routing snapshot (C→D hot push; baseline in register/ok) ──
   'collaboration/routes': CollabRoutesSnapshot,
+  // ── one slice of a C→D frame larger than MAX_FRAME_BYTES (§1.2) ──
+  'frame/fragment': FrameFragment,
   // ── telemetry ──
   heartbeat: Heartbeat,
   'duty/grant': DutyGrant,
@@ -771,6 +774,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('capabilities/update', FRAME_SCHEMAS['capabilities/update']),
   frame('relay/roster', FRAME_SCHEMAS['relay/roster']),
   frame('collaboration/routes', FRAME_SCHEMAS['collaboration/routes']),
+  frame('frame/fragment', FRAME_SCHEMAS['frame/fragment']),
   frame('heartbeat', FRAME_SCHEMAS['heartbeat']),
   frame('duty/grant', FRAME_SCHEMAS['duty/grant']),
   frame('duty/renewed', FRAME_SCHEMAS['duty/renewed']),

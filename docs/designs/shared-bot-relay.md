@@ -224,7 +224,9 @@ public-callback load-balancer hop without turning the legacy owner into a set.
 ### 7.1 Relay and CP (`rc/*`)
 
 The relay connects to `/api/v1/relays/ws` and uses a frame union separate from
-daemon control and relay-daemon traffic.
+daemon control and relay-daemon traffic. A relay that lists `frame-fragments-v1` in
+`rc/register.features` receives CP frames past 256 KiB as `rc/fragment` runs
+([daemon-cp-ws-protocol.md §1.2](daemon-cp-ws-protocol.md#12-fragments)).
 
 ```ts
 rc/auth       { method: 'token' | 'apikey', credential }

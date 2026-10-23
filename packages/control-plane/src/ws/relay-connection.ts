@@ -47,6 +47,9 @@ import type {
   ErrorCode
 } from '@agentconnect.md/protocol'
 import {
+  FRAME_FRAGMENTS_FEATURE,
+  MAX_FRAME_BYTES,
+  fragmentFrame,
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   COMPUTER_MEDIA_USAGE_FEATURE,
@@ -150,6 +153,7 @@ export interface RelayConnDeps {
   /** Provider-neutral live membership re-check (gitlab-com-integration.md §12.2).
    *  A thrown store/provider error becomes a retryable correlated error. */
   authorizeCodeHostMembership: (req: RcCodeHostMembershipAuthz) => Promise<boolean>
+  log?: { warn: (obj: Record<string, unknown>, message: string) => void }
 }
 
 export class RelayConnection implements RelayChannel {
@@ -596,16 +600,32 @@ export class RelayConnection implements RelayChannel {
     type: T,
     payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>
   ): void {
-    this.transport.send(JSON.stringify(buildRelayCpFrame(type, payload, { corr: req.id })))
+    this.write(JSON.stringify(buildRelayCpFrame(type, payload, { corr: req.id })), type)
   }
 
   /** {@link RelayChannel} — fire-and-forget C→R EVT (no corr), e.g. `rc/daemon-revoke`. */
   send<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): void {
-    this.transport.send(JSON.stringify(buildRelayCpFrame(type, payload)))
+    this.write(JSON.stringify(buildRelayCpFrame(type, payload)), type)
   }
 
   private sendError(corr: string, code: ErrorCode, message: string, retryable = false): void {
     this.transport.send(JSON.stringify(buildRelayCpFrame('error', { code, message, retryable }, { corr })))
+  }
+
+  private write(text: string, type: string): void {
+    const parts = this.features.includes(FRAME_FRAGMENTS_FEATURE) ? fragmentFrame(text, 'rc/fragment') : null
+    if (parts) {
+      for (const part of parts) this.transport.send(part)
+      return
+    }
+    // The relay closes the socket with 1009 on a frame past its cap, so name the frame first.
+    if (text.length * 3 > MAX_FRAME_BYTES && Buffer.byteLength(text) > MAX_FRAME_BYTES) {
+      this.deps.log?.warn(
+        { relayId: this.relayId, type, bytes: Buffer.byteLength(text) },
+        'relay ws: frame exceeds the relay frame cap'
+      )
+    }
+    this.transport.send(text)
   }
 
   private decodeErrorCode(msg: string): ErrorCode {

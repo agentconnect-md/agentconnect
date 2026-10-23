@@ -5,6 +5,9 @@ import {
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
   COMPUTER_MEDIA_USAGE_FEATURE,
+  FRAME_FRAGMENTS_FEATURE,
+  FrameAssembler,
+  type FrameFragment,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
@@ -115,6 +118,7 @@ function build(
     onBotTenant?: ConstructorParameters<typeof RelayConnection>[1]['onBotTenant'] | null
     onComputerMediaUsage?: ConstructorParameters<typeof RelayConnection>[1]['onComputerMediaUsage']
     clock?: Clock
+    log?: ConstructorParameters<typeof RelayConnection>[1]['log']
   } = {}
 ) {
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: 'unit-test-pepper-0123456789abcdefghij' })
@@ -176,6 +180,7 @@ function build(
     onPullRequestFeedback,
     onCodeHostFeedback: over.onCodeHostFeedback,
     ...(over.onComputerMediaUsage ? { onComputerMediaUsage: over.onComputerMediaUsage } : {}),
+    ...(over.log ? { log: over.log } : {}),
     relayReg,
     verifyWebchatToken,
     verifyAgentChatKey,
@@ -1628,5 +1633,50 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     await expect(
       pooled({ daemonId: RECORDER, contentSetId: POOL_SET }, [RECORDER]).verifier('t')
     ).resolves.toMatchObject({ ok: false })
+  })
+})
+
+describe('RelayConnection — frame fragments', () => {
+  const snapshot = {
+    generation: 1,
+    channels: Array.from({ length: 2500 }, (_, i) => ({
+      orgId: 'org_default',
+      platform: 'slack' as const,
+      channelId: `C${String(i).padStart(10, '0')}`,
+      agents: [{ agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID }]
+    })),
+    agents: [],
+    platformKinds: []
+  }
+
+  it('fragments a frame past the cap for a relay that reassembles', async () => {
+    const { conn, transport } = build()
+    await toReady(transport, [FRAME_FRAGMENTS_FEATURE])
+    await vi.waitFor(() => expect(conn.state).toBe('READY'))
+    transport.sent = []
+    conn.send('rc/collab-routes', snapshot)
+    expect(transport.sent.length).toBeGreaterThan(1)
+    expect(transport.sent.every((f) => f.type === 'rc/fragment')).toBe(true)
+    const assembler = new FrameAssembler()
+    const results = transport.sent.map((f) => assembler.push(f.payload as FrameFragment))
+    const last = results.at(-1)!
+    expect(last.done).toBe(true)
+    const frame = JSON.parse((last as { text: string }).text) as RelayCpFrame
+    expect(frame.type).toBe('rc/collab-routes')
+    expect((frame.payload as { channels: unknown[] }).channels).toHaveLength(2500)
+  })
+
+  it('sends a frame past the cap whole, and names it, to a relay that does not reassemble', async () => {
+    const warn = vi.fn()
+    const { conn, transport } = build({ log: { warn } })
+    await toReady(transport)
+    await vi.waitFor(() => expect(conn.state).toBe('READY'))
+    transport.sent = []
+    conn.send('rc/collab-routes', snapshot)
+    expect(transport.sent.map((f) => f.type)).toEqual(['rc/collab-routes'])
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ relayId: RELAY_ID, type: 'rc/collab-routes' }),
+      'relay ws: frame exceeds the relay frame cap'
+    )
   })
 })

@@ -35,9 +35,9 @@ export function decodeEnvelope(text: string): DecodeResult {
 let cpSchemas: typeof FRAME_SCHEMAS | undefined
 
 /** Decode a CP-authored frame. Same union as `decodeEnvelope`, read tolerantly. */
-export function decodeCpEnvelope(text: string): DecodeResult {
+export function decodeCpEnvelope(text: string, opts: { maxBytes?: number } = {}): DecodeResult {
   cpSchemas ??= tolerantSchemas(FRAME_SCHEMAS)
-  return decodeEnvelopeWith<AnyFrame>(cpSchemas, text)
+  return decodeEnvelopeWith<AnyFrame>(cpSchemas, text, opts)
 }
 
 export function buildEnvelope<T extends FrameType>(type: T, payload: unknown, opts: BuildOpts = {}): AnyFrame {

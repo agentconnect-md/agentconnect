@@ -19,8 +19,10 @@ import {
   type ErrorCode,
   checkInboundFrameOrg,
   checkReplyFrameOrg,
+  fragmentFrame,
   isFrame,
   isInstallWideFrameType,
+  MAX_FRAME_BYTES,
   type FrameOrgPeer
 } from '@agentconnect.md/protocol'
 import { decodeEnvelope, buildEnvelope, encode, type InboundControlExt } from './codec.js'
@@ -57,6 +59,8 @@ export class DaemonConnection implements ConnChannel {
   setId: string | null = null
   /** Current fencing epoch for this daemon (set on auth/ok). */
   sessionEpoch = 0
+  /** Set when the daemon's register advertises FRAME_FRAGMENTS_FEATURE: a frame past MAX_FRAME_BYTES then goes out in fragments. */
+  private fragmentFrames = false
   /** Per-agent fencing baseline (current launch + next-expected inbound seq). */
   readonly fencing = new FencingState()
   readonly correlator: ReqRep
@@ -287,7 +291,7 @@ export class DaemonConnection implements ConnChannel {
       ...(ext ? { ext } : {}),
       ...(scopedOrgId ? { orgId: scopedOrgId } : {})
     })
-    const rep = await this.correlator.request(frame, (e) => this.transport.send(e), opts)
+    const rep = await this.correlator.request(frame, (e) => this.write(e, type), opts)
     return rep.payload as TReply
   }
 
@@ -298,7 +302,7 @@ export class DaemonConnection implements ConnChannel {
       ...(ext ? { ext } : {}),
       ...(scopedOrgId ? { orgId: scopedOrgId } : {})
     })
-    this.transport.send(encode(frame))
+    this.write(encode(frame), type)
   }
 
   /** An install-wide frame to a pool member never carries an org, whatever a caller passed; the rest resolve one. */
@@ -348,7 +352,27 @@ export class DaemonConnection implements ConnChannel {
       corr: req.id,
       ...(req.orgId ? { orgId: req.orgId } : {})
     })
-    this.transport.send(encode(frame))
+    this.write(encode(frame), type)
+  }
+
+  enableFrameFragments(): void {
+    this.fragmentFrames = true
+  }
+
+  private write(text: string, type: string): void {
+    const parts = this.fragmentFrames ? fragmentFrame(text, 'frame/fragment') : null
+    if (parts) {
+      for (const part of parts) this.transport.send(part)
+      return
+    }
+    // The daemon closes the socket with 1009 on a frame past its cap, so name the frame first.
+    if (text.length * 3 > MAX_FRAME_BYTES && Buffer.byteLength(text) > MAX_FRAME_BYTES) {
+      this.deps.log.warn?.(
+        { daemonId: this.daemonId, type, bytes: Buffer.byteLength(text) },
+        'daemon ws: frame exceeds the daemon frame cap'
+      )
+    }
+    this.transport.send(text)
   }
 
   /** Send a typed `error` REP correlated to `corr`. */

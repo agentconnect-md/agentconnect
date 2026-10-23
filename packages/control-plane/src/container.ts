@@ -3040,6 +3040,7 @@ export function buildContainer(
     webAppUrl
   )
   const relayWsDeps: RelayWsServerDeps = {
+    log: http.log,
     auth: relayAuth,
     verifyAhpKey: (req) => ahpAuthorization.verifyKey(req),
     verifyAhpBrowser: (req) => ahpAuthorization.verifyBrowser(req),

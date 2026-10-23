@@ -12,6 +12,7 @@
  */
 import {
   FOLLOW_UP_WATCH_FEATURE,
+  FRAME_FRAGMENTS_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
@@ -110,6 +111,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   // dial (shared-bot-relay.md §5). Hot changes ride the `relay/roster` EVT.
   const [relays, gitCommitIdentity] = await Promise.all([deps.relayRoster(), deps.github?.getGitCommitIdentity()])
 
+  // register/ok grows with the daemon's agents and the org's conversations, so it is the first frame that may need fragments.
+  if (req.capabilities.features.includes(FRAME_FRAGMENTS_FEATURE)) conn.enableFrameFragments()
   conn.state = 'READY'
   conn.replyTo(frame, 'register/ok', {
     ...snap,

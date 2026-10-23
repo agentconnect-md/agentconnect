@@ -13,11 +13,13 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   AGENT_MEMORY_STORE_V1_FEATURE,
   AGENT_SKILL_STATUS_V1_FEATURE,
+  FRAME_FRAGMENTS_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
+  MAX_FRAME_BYTES,
   isFrame
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
@@ -872,5 +874,47 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     // No auth/ok or register/ok was produced.
     expect(stub.lastSent('auth/ok')).toBeUndefined()
     expect(stub.lastSent('register/ok')).toBeUndefined()
+  })
+})
+
+describe('register handler — a register/ok past the frame cap', () => {
+  const DESCRIPTION = 'x'.repeat(2 * MAX_FRAME_BYTES)
+
+  async function seedLargeAgent(): Promise<void> {
+    await seedReconcileState()
+    await prisma.agent.update({ where: { id: AGENT }, data: { description: DESCRIPTION } })
+  }
+
+  it('arrives in fragments for a daemon that advertises frame-fragments-v1', async () => {
+    await seedLargeAgent()
+    const h = buildWsHarness(prisma)
+    const { stub } = await authThenAwaitOk(h)
+    const payload = registerPayload()
+    stub.inject(
+      'register',
+      { ...payload, capabilities: { ...payload.capabilities, features: [FRAME_FRAGMENTS_FEATURE] } },
+      { id: REG_ID }
+    )
+    const ok = await stub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+    expect(ok.corr).toBe(REG_ID)
+    expect(ok.payload.agents.find((a) => a.agentId === AGENT)?.description).toBe(DESCRIPTION)
+    expect(stub.fragmentBytes.length).toBeGreaterThan(1)
+    expect(Math.max(...stub.fragmentBytes)).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+  })
+
+  it('goes out whole, and is named in the log, for a daemon that does not', async () => {
+    await seedLargeAgent()
+    const h = buildWsHarness(prisma)
+    const warn = vi.fn()
+    h.deps.log.warn = warn
+    const { stub } = await authThenAwaitOk(h)
+    stub.inject('register', registerPayload(), { id: REG_ID })
+    await stub.expectFrame('register/ok')
+    expect(stub.fragmentBytes).toEqual([])
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ daemonId: DAEMON, type: 'register/ok' }),
+      'daemon ws: frame exceeds the daemon frame cap'
+    )
   })
 })

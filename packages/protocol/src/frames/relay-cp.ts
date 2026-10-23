@@ -15,6 +15,7 @@ import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
+import { FrameFragment } from './fragment.js'
 import {
   GiteaHookMetadata,
   GithubHookMetadata,
@@ -1448,6 +1449,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/memoryconnection-unassign': RcMemoryConnectionUnassign,
   'rc/snapshot-begin': RcSnapshotBegin,
   'rc/snapshot-end': RcSnapshotEnd,
+  'rc/fragment': FrameFragment,
   'rc/computer-media-usage': RcComputerMediaUsage,
   error: ErrorFrame
 } as const
@@ -1511,6 +1513,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/memoryconnection-unassign', RELAY_CP_SCHEMAS['rc/memoryconnection-unassign']),
   frameSchema('rc/snapshot-begin', RELAY_CP_SCHEMAS['rc/snapshot-begin']),
   frameSchema('rc/snapshot-end', RELAY_CP_SCHEMAS['rc/snapshot-end']),
+  frameSchema('rc/fragment', RELAY_CP_SCHEMAS['rc/fragment']),
   frameSchema('rc/computer-media-usage', RELAY_CP_SCHEMAS['rc/computer-media-usage']),
   frameSchema('error', RELAY_CP_SCHEMAS['error'])
 ])
@@ -1522,8 +1525,8 @@ export function isRelayCpFrameType(t: string): t is RelayCpFrameType {
 }
 
 /** Decode one relay↔CP wire frame (envelope + typed payload). */
-export function decodeRelayCpFrame(text: string): DecodeResultOf<RelayCpFrame> {
-  return decodeEnvelopeWith<RelayCpFrame>(RELAY_CP_SCHEMAS, text)
+export function decodeRelayCpFrame(text: string, opts: { maxBytes?: number } = {}): DecodeResultOf<RelayCpFrame> {
+  return decodeEnvelopeWith<RelayCpFrame>(RELAY_CP_SCHEMAS, text, opts)
 }
 
 /** Build a relay↔CP frame with a compile-time-typed payload. */
