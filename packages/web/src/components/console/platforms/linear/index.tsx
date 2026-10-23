@@ -45,7 +45,7 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     identityCards: () => identityCards('linear'),
     // Not `inviteBotHint`: nobody invites the app to an issue. A Linear session starts
     // by delegating the issue to the app or mentioning it, and neither is an invite.
-    inviteHint: () => inviteBotHint('issue', 'Linear', true)
+    inviteHint: () => inviteBotHint('issue', 'Platforms.linear.brand', true)
   },
   settingsFragments: linearSettingsFragments,
   apiBindings: linearApi,

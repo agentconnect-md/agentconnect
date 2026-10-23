@@ -36,7 +36,7 @@ export const slackModule: WebPlatformModule<SlackApi> = {
       share: true
     },
     identityCards: () => identityCards('slack'),
-    inviteHint: () => inviteBotHint('channel', 'Slack')
+    inviteHint: () => inviteBotHint('channel', 'Platforms.slack.brand')
   },
   settingsFragments: slackSettingsFragments,
   apiBindings: slackApi,
