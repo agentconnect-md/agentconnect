@@ -44,6 +44,7 @@ import {
   giteaDeploymentPut,
   gitlabDeploymentPut,
   googleChatDeploymentPut,
+  msTeamsDeploymentPut,
   linearDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
@@ -65,6 +66,8 @@ import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
+import { msTeamsConfiguredUrls } from '../msteams-app.js'
+import { MsTeamsCreateCredentials, verifyMsTeamsApp } from '@agentconnect.md/control-plane/msteams-credential'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -172,6 +175,17 @@ const ConfigureGoogleChatBody = z.strictObject({
       projectNumber: z.string().trim().min(1).max(40).optional(),
       /** The downloaded key file's JSON; omitted re-validates the stored key of the same project. */
       serviceAccountKey: z.string().trim().min(1).max(20_000).optional()
+    })
+    .nullable()
+})
+
+const ConfigureMsTeamsBody = z.strictObject({
+  application: z
+    .strictObject({
+      appId: z.string().trim().min(1).max(100),
+      tenantId: z.string().trim().min(1).max(100),
+      /** Omitted re-checks the stored secret of the same app. */
+      clientSecret: z.string().trim().min(1).max(1_000).optional()
     })
     .nullable()
 })
@@ -608,6 +622,12 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Linear needs HTTPS Control Plane and ingress URLs before either endpoint is publishable.
     }
+    let msTeams: ReturnType<typeof msTeamsConfiguredUrls> | null = null
+    try {
+      msTeams = msTeamsConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // Teams needs HTTPS ingress and console URLs before its endpoints are publishable.
+    }
     let googleChat: ReturnType<typeof googleChatConfiguredUrls> | null = null
     try {
       googleChat = googleChatConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
@@ -630,6 +650,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       slack,
       linear,
       googleChat,
+      msTeams,
       ...Object.fromEntries(
         LoginAppProvider.options.map((provider) => [
           provider,
@@ -1133,6 +1154,61 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         callbackUrl: urls.callbackUrl,
         probe: { status: checked.status, message: checked.message }
       }
+    })
+  })
+
+  app.post('/api/v1/configure/msteams', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureMsTeamsBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'the app ID, tenant ID and client secret are required')
+    const application = parsed.data.application
+    if (!application) {
+      return serializeMutation(async () => {
+        const current = await deps.store.getAdmin()
+        if (!current) return problem(reply, 409, 'save deployment settings before configuring Microsoft Teams')
+        const saved = await deps.store.replace({
+          expectedRevision: current.revision,
+          ...msTeamsDeploymentPut(current, null)
+        })
+        return { revision: saved.revision, restartRequired: true as const }
+      })
+    }
+    let urls: ReturnType<typeof msTeamsConfiguredUrls>
+    try {
+      urls = msTeamsConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'the Teams endpoints are unavailable')
+    }
+    const credentials = MsTeamsCreateCredentials.safeParse({
+      appId: application.appId,
+      tenantId: application.tenantId,
+      clientSecret: application.clientSecret ?? 'stored'
+    })
+    if (!credentials.success) return problem(reply, 400, 'the app ID and tenant ID must be GUIDs')
+    let clientSecret = application.clientSecret
+    if (!clientSecret) {
+      // Only the same app may keep its sealed secret, and that secret is checked again like a new one.
+      const runtime = await deps.store.getRuntime(['msTeams.clientSecret'])
+      const stored = runtime?.secrets['msTeams.clientSecret']
+      if (!stored || runtime?.values.msTeams?.appId !== credentials.data.appId) {
+        return problem(reply, 400, 'paste a client secret for this app')
+      }
+      clientSecret = stored
+    }
+    // The same client-credentials request a per-organization Teams bot is checked with.
+    const checked = await verifyMsTeamsApp({ ...credentials.data, clientSecret }, fetchImpl)
+    if (!checked.ok) return problem(reply, checked.status === 503 ? 502 : 400, checked.message, checked.code)
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring Microsoft Teams')
+      const saved = await deps.store.replace({
+        expectedRevision: current.revision,
+        ...msTeamsDeploymentPut(current, {
+          appId: credentials.data.appId,
+          tenantId: credentials.data.tenantId,
+          ...(application.clientSecret ? { clientSecret: application.clientSecret } : {})
+        })
+      })
+      return { revision: saved.revision, restartRequired: true as const, ...urls }
     })
   })
 

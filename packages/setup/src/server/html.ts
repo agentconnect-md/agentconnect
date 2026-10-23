@@ -150,6 +150,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#discord-section">Discord</a>
       <a href="#azuread-section">Microsoft</a>
       <a href="#googlechat-section">Google Chat</a>
+      <a href="#msteams-section">Microsoft Teams</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>
       <a href="#options-section">Options</a>
@@ -444,6 +445,35 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
         </div>
         <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
+      </section>
+
+      <section id="msteams-section" class="panel setup-section" aria-labelledby="msteams-heading">
+        <div class="provider-head">
+          <div><h3 id="msteams-heading">Microsoft Teams</h3><p class="muted">One Teams app for the deployment. Each Microsoft 365 organization connects itself from the console with an administrator's sign-in.</p></div>
+          <span id="msteams-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Application (client) ID</dt><dd class="value-line"><code id="msteams-app-id">Not configured</code><button class="edit-configuration" data-provider="msteams">Edit</button></dd>
+          <dt>Directory (tenant) ID</dt><dd class="value-line"><code id="msteams-tenant-id">Not configured</code><button class="edit-configuration" data-provider="msteams">Edit</button></dd>
+          <dt>Client secret</dt><dd class="value-line"><span id="msteams-secret-display" class="muted">Not configured</span><button class="edit-configuration" data-provider="msteams">Edit</button></dd>
+        </dl>
+        <p id="msteams-status" class="muted"></p>
+        <p>Messaging endpoint:</p><ul id="msteams-endpoint" class="uris"></ul>
+        <p>Web redirect URI:</p><ul id="msteams-redirects" class="uris"></ul>
+        <ol class="muted">
+          <li>In Microsoft Entra, register an application for accounts in any organizational directory, and add the redirect URI above as a Web redirect URI. It may be the same application as Microsoft sign-in; give each its own client secret.</li>
+          <li>Register a bot for that application in the Teams Developer Portal or as an Azure Bot, with the messaging endpoint above.</li>
+          <li>Create a client secret, then save the application ID, its home tenant ID and the secret here.</li>
+          <li>Publish the application with a verified publisher before other organizations connect: tenants that allow consent only to verified publishers refuse it otherwise.</li>
+        </ol>
+        <div class="row"><a id="msteams-registrations" class="button" href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Open App registrations</a></div>
+        <div id="msteams-config-controls" class="subsection">
+          <h3 id="msteams-edit-heading" hidden>Edit Teams app identity</h3>
+          <label class="field">Application (client) ID<input id="msteams-app-id-input" autocomplete="off"></label>
+          <label class="field">Directory (tenant) ID<input id="msteams-tenant-id-input" autocomplete="off"></label>
+          <label class="field">Client secret<input id="msteams-secret" type="password" autocomplete="off" placeholder="Required when the application ID changes"></label>
+        </div>
+        <div class="row"><button id="save-msteams">Save Teams app</button><button id="cancel-msteams-configuration" hidden>Cancel</button><button id="clear-msteams" class="danger" hidden>Clear configuration</button></div>
       </section>
 
       <section id="feishu-section" class="panel setup-section" aria-labelledby="feishu-heading">
@@ -869,6 +899,31 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('cancel-googlechat-configuration').hidden = true;
       el('clear-googlechat').hidden = !googleChat;
 
+      const msTeams = values.msTeams;
+      const msTeamsSecret = configured(byKey, 'msTeams.clientSecret');
+      const expectedMsTeams = expected.msTeams;
+      renderUriList('msteams-endpoint', expectedMsTeams ? [expectedMsTeams.messagingEndpoint] : []);
+      renderUriList('msteams-redirects', expectedMsTeams ? [expectedMsTeams.connectRedirectUri] : []);
+      text('msteams-app-id', msTeams && msTeams.appId);
+      text('msteams-tenant-id', msTeams && msTeams.tenantId);
+      el('msteams-secret-display').textContent = msTeamsSecret ? '***' : 'Not configured';
+      el('msteams-secret-display').className = msTeamsSecret ? 'redacted' : 'muted';
+      showIdentityEditors('msteams', Boolean(msTeams));
+      el('msteams-app-id-input').value = msTeams ? msTeams.appId : '';
+      el('msteams-tenant-id-input').value = msTeams ? msTeams.tenantId : '';
+      el('msteams-secret').value = '';
+      el('msteams-status').textContent = msTeams
+        ? msTeams.appId + ' is configured.'
+        : expectedMsTeams
+          ? 'Register the app and its bot, then save the application ID, tenant ID and client secret here.'
+          : 'Publishing the endpoints needs HTTPS ingress and console public URLs.';
+      match('msteams-match', msTeams && msTeamsSecret ? 'pass' : msTeams ? 'warn' : '', !msTeams ? 'Not configured' : !msTeamsSecret ? 'Missing secret' : 'Checked on save');
+      el('msteams-edit-heading').hidden = true;
+      el('msteams-config-controls').hidden = Boolean(msTeams);
+      el('save-msteams').hidden = Boolean(msTeams);
+      el('cancel-msteams-configuration').hidden = true;
+      el('clear-msteams').hidden = !msTeams;
+
       const linear = values.linear;
       const linearSecrets = configured(byKey, 'linear.clientSecret') && configured(byKey, 'linear.signingSecret');
       const expectedLinear = expected.linear;
@@ -1058,6 +1113,17 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('cancel-googlechat-configuration').hidden = false;
         el('clear-googlechat').hidden = true;
         el('googlechat-project-id-input').focus();
+      } else if (provider === 'msteams') {
+        if (!values.msTeams) return;
+        el('msteams-app-id-input').value = values.msTeams.appId;
+        el('msteams-tenant-id-input').value = values.msTeams.tenantId;
+        el('msteams-secret').value = '';
+        el('msteams-edit-heading').hidden = false;
+        el('msteams-config-controls').hidden = false;
+        el('save-msteams').hidden = false;
+        el('cancel-msteams-configuration').hidden = false;
+        el('clear-msteams').hidden = true;
+        el('msteams-app-id-input').focus();
       } else if (provider === 'linear') {
         if (!values.linear) return;
         el('linear-id').value = values.linear.clientId;
@@ -1270,6 +1336,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
       } else if (provider === 'googlechat') {
         next = { ...values, googleChat: null };
         secrets = { 'googleChat.serviceAccountKey': null };
+      } else if (provider === 'msteams') {
+        next = { ...values, msTeams: null };
+        secrets = { 'msTeams.clientSecret': null };
       } else if (provider === 'linear') {
         next = { ...values, linear: null };
         secrets = { 'linear.clientSecret': null, 'linear.signingSecret': null };
@@ -1604,6 +1673,25 @@ export const SETUP_HTML = String.raw`<!doctype html>
       }
       await load();
       message('Google Chat app saved. ' + saved.probe.message + '. Restart AgentConnect to apply it.');
+    }
+
+    async function saveMsTeams() {
+      const application = {
+        appId: requiredInput('msteams-app-id-input', 'the application (client) ID'),
+        tenantId: requiredInput('msteams-tenant-id-input', 'the directory (tenant) ID')
+      };
+      const clientSecret = el('msteams-secret').value.trim();
+      try {
+        await json(await fetch(api + '/configure/msteams', {
+          method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+          body: JSON.stringify({ application: { ...application, ...(clientSecret ? { clientSecret } : {}) } })
+        }));
+      } finally {
+        // The secret never stays in the page once it has been submitted, whatever the outcome.
+        el('msteams-secret').value = '';
+      }
+      await load();
+      message('Teams app saved. Restart AgentConnect to apply it.');
     }
 
     async function saveLinear() {
@@ -1953,6 +2041,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('save-googlechat').onclick = () => saveGoogleChat().catch((error) => message(error.message, true));
     el('cancel-googlechat-configuration').onclick = cancelConfigurationEdit;
     el('clear-googlechat').onclick = () => clearProvider('googlechat').catch((error) => message(error.message, true));
+    el('save-msteams').onclick = () => saveMsTeams().catch((error) => message(error.message, true));
+    el('cancel-msteams-configuration').onclick = cancelConfigurationEdit;
+    el('clear-msteams').onclick = () => clearProvider('msteams').catch((error) => message(error.message, true));
     el('save-linear').onclick = () => saveLinear().catch((error) => message(error.message, true));
     el('cancel-linear-configuration').onclick = cancelConfigurationEdit;
     el('clear-linear').onclick = () => clearProvider('linear').catch((error) => message(error.message, true));

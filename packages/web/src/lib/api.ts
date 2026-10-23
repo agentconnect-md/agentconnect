@@ -5409,6 +5409,39 @@ export async function downloadMsTeamsAppPackage(integrationId: string): Promise<
   if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return await res.blob()
 }
+/** `GET /integrations/msteams/app`: the deployment Teams app's ID, null when the deployment has none (teams-integration.md §8). */
+export interface MsTeamsDeploymentAppDto {
+  appId: string | null
+}
+export async function fetchMsTeamsDeploymentApp(orgId?: string): Promise<MsTeamsDeploymentAppDto> {
+  return apiGet<MsTeamsDeploymentAppDto>(`${orgBase(orgId)}/integrations/msteams/app`)
+}
+/** Microsoft's sign-in page for connecting the organization's tenant to the deployment Teams app for `agentId`. */
+export async function startMsTeamsConnect(orgId: string, agentId: string): Promise<{ authorizeUrl: string }> {
+  return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect`, { agentId })
+}
+export interface MsTeamsConnectResultDto {
+  integrationId: string
+  agentId: string
+  teams: { id: string; name: string }[]
+  ticket: string
+}
+/** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */
+export async function finishMsTeamsConnect(
+  orgId: string,
+  code: string,
+  state: string
+): Promise<MsTeamsConnectResultDto> {
+  return apiPost<MsTeamsConnectResultDto>(`${orgBase(orgId)}/integrations/msteams/connect/callback`, { code, state })
+}
+/** Install the connected app into the chosen teams. */
+export async function installMsTeamsTeams(
+  orgId: string,
+  ticket: string,
+  teamIds: string[]
+): Promise<{ installed: number }> {
+  return apiPost<{ installed: number }>(`${orgBase(orgId)}/integrations/msteams/connect/install`, { ticket, teamIds })
+}
 /** Claim the caller's Google Workspace for `orgId` on the deployment's Chat app; returns where Chat continues, when the prompt carried a completion URL. */
 export async function claimGoogleChatCustomer(orgId: string, state: string): Promise<{ redirect?: string }> {
   return apiPost<{ redirect?: string }>(`${orgBase(orgId)}/integrations/googlechat/claim`, { state })

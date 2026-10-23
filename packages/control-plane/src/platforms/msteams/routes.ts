@@ -38,7 +38,7 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
           operationId: 'replaceMsTeamsBotSecret',
           params: IdParam,
           body: ReplaceMsTeamsSecretBody,
-          response: { 200: BotDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: BotDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -46,6 +46,15 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
         const bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
         if (!bot || bot.platform !== MSTEAMS_PLATFORM || !bot.externalAppId || !bot.externalTenantId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams bot not found.' })
+        }
+        // A connected tenant's row takes its secret from the deployment app (§8.2).
+        if (bot.prebuilt) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            code: 'MSTEAMS_DEPLOYMENT_APP',
+            message: 'This bot is the deployment’s Teams app; its secret is managed in the Setup Server.'
+          })
         }
         const checked = await verifyMsTeamsApp(
           { appId: bot.externalAppId, tenantId: bot.externalTenantId, clientSecret: req.body.clientSecret },

@@ -145,6 +145,15 @@ describe('Teams installation', () => {
       messagesUrl: 'https://relay.example.test/msteams/messages'
     })
     expect(await project()).toEqual({ appId: APP_ID, tenantId: TENANT_ID, clientSecret: SECRET })
+    const HOME = '66666666-6666-4666-8666-666666666666'
+    expect(
+      await createMsTeamsCpProvider().projectIntegrationConfig(
+        {} as IntegrationRecord,
+        { ...bot, platformConfig: { tenantId: TENANT_ID, tokenTenantId: HOME } },
+        {} as IntegrationCoreEnvelope,
+        secrets
+      )
+    ).toEqual({ appId: APP_ID, tenantId: TENANT_ID, tokenTenantId: HOME, clientSecret: SECRET })
     expect(
       await createMsTeamsCpProvider().projectIntegrationConfig(
         {} as IntegrationRecord,

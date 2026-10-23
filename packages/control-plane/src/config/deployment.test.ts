@@ -163,6 +163,27 @@ describe('applyDeploymentEnvironment', () => {
     expect(cleared.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBeUndefined()
   })
 
+  it('projects the deployment-owned Teams app with its secret, and clears stale startup values', () => {
+    const base = runtime()
+    const managed = applyDeploymentEnvironment(
+      { ...bootstrap, MSTEAMS_PLATFORM_APP_ID: 'startup-app' },
+      runtime({
+        values: {
+          ...base.values,
+          msTeams: { appId: '33333333-3333-4333-8333-333333333333', tenantId: '44444444-4444-4444-8444-444444444444' }
+        },
+        secrets: { 'msTeams.clientSecret': 'synthetic-secret' }
+      })
+    )
+    expect(managed.MSTEAMS_PLATFORM_APP_ID).toBe('33333333-3333-4333-8333-333333333333')
+    expect(managed.MSTEAMS_PLATFORM_TENANT_ID).toBe('44444444-4444-4444-8444-444444444444')
+    expect(managed.MSTEAMS_PLATFORM_CLIENT_SECRET).toBe('synthetic-secret')
+    expect(
+      applyDeploymentEnvironment({ ...bootstrap, MSTEAMS_PLATFORM_APP_ID: 'startup-app' }, runtime())
+        .MSTEAMS_PLATFORM_APP_ID
+    ).toBeUndefined()
+  })
+
   it('keeps regional Login Apps owned by the deployment document', () => {
     const base = runtime()
     const managed = applyDeploymentEnvironment(

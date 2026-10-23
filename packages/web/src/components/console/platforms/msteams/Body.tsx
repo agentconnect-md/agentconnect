@@ -12,6 +12,9 @@ import { msTeamsApi } from './api'
 import { AppPackageButton } from './app-package'
 import { CopyField } from './fields'
 import { MsTeamsMark } from './mark'
+import { useMsTeamsDeploymentApp } from './deployment-app'
+import { featureFlagEnabled } from '@/lib/feature-flags'
+import { useOrgs } from '@/lib/org-context'
 import {
   MSTEAMS_ADMIN_APPS_URL,
   MSTEAMS_BOT_PORTAL_URL,
@@ -25,14 +28,23 @@ const LINK_BUTTON =
   'flex h-[38px] items-center justify-center gap-2 rounded-md bg-(--surface-inverse) px-3 font-sans text-[13px] font-semibold leading-normal text-white no-underline'
 const ID_PLACEHOLDER = '00000000-0000-0000-0000-000000000000'
 
-/** Which pane shows: the probe in flight, no relay to receive activities, the registration steps, or the install step. */
-export type MsTeamsPane = 'checking' | 'relay_required' | 'register' | 'install'
+/** Which pane shows: the probe in flight, no relay to receive activities, the deployment app, the registration steps, or the install step. */
+export type MsTeamsPane = 'checking' | 'relay_required' | 'deployment' | 'register' | 'install'
 
 /** The pane for the wizard's current facts; pure so the step flow is testable without rendering. */
-export function msTeamsPane(input: { relayAvailable: boolean | null; created: boolean }): MsTeamsPane {
+export function msTeamsPane(input: {
+  relayAvailable: boolean | null
+  created: boolean
+  /** Whether the deployment's Teams app is offered; null while that is read. */
+  deploymentApp?: boolean | null
+  ownBot?: boolean
+}): MsTeamsPane {
   if (input.created) return 'install'
   if (input.relayAvailable === null) return 'checking'
-  return input.relayAvailable ? 'register' : 'relay_required'
+  if (!input.relayAvailable) return 'relay_required'
+  if (input.ownBot) return 'register'
+  if (input.deploymentApp === null) return 'checking'
+  return input.deploymentApp ? 'deployment' : 'register'
 }
 
 /** Microsoft Teams' pane (teams-integration.md §5): register a bot, paste its credentials, then download and install the app package. */
@@ -46,12 +58,33 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
   const [clientSecret, setClientSecret] = useState('')
   const [saving, setSaving] = useState(false)
   const [created, setCreated] = useState<IntegrationDto | null>(null)
+  // The person chose to register their own bot over the deployment's Teams app.
+  const [ownBot, setOwnBot] = useState(false)
+  const [connecting, setConnecting] = useState(false)
+  const deploymentApp = useMsTeamsDeploymentApp(featureFlagEnabled('msteams-deployment-app'), host.mockMode)
+  const { activeOrg } = useOrgs()
   // Synchronous re-entry guard; `saving` only commits on the next render.
   const busyRef = useRef(false)
 
   // An answer wins over a later error, as in the other relay-only panes.
   const relayAvailable: boolean | null = probe.config ? host.relayCapability.available : probe.failed ? false : null
-  const pane = msTeamsPane({ relayAvailable, created: !!created })
+  const pane = msTeamsPane({ relayAvailable, created: !!created, deploymentApp, ownBot })
+
+  // Leaves for Microsoft's sign-in; the connect page finishes the install there.
+  const connect = async () => {
+    if (busyRef.current || !activeOrg) return
+    busyRef.current = true
+    setConnecting(true)
+    host.setError(null)
+    try {
+      const { authorizeUrl } = await msTeamsApi.connect(activeOrg.id, agent.id)
+      window.location.assign(authorizeUrl)
+    } catch (e) {
+      host.setError(msTeamsErrorMessage(e, translate))
+      setConnecting(false)
+      busyRef.current = false
+    }
+  }
   const endpoint = msTeamsMessagesUrl(host.relayCapability.publicUrl)
 
   const appIdOk = guidOk(appId)
@@ -111,6 +144,37 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
           <span>{t('relayRequired')}</span>
         </div>
       </Frame>
+    )
+  }
+
+  if (pane === 'deployment') {
+    return (
+      <>
+        <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-card) p-4">
+          <button
+            type="button"
+            disabled={connecting}
+            onClick={() => void connect()}
+            className={`${LINK_BUTTON} w-full cursor-pointer border-0 disabled:opacity-60`}
+          >
+            <span className="imark h-[18px] w-[18px] border-0 bg-transparent">
+              <MsTeamsMark fillPct={100} />
+            </span>
+            {connecting ? t('deployment.connecting') : t('deployment.connect')}
+          </button>
+          <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
+            {t('deployment.next')}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOwnBot(true)}
+          className="mb-4 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
+        >
+          <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
+          {t('deployment.useOwn')}
+        </button>
+      </>
     )
   }
 

@@ -21,6 +21,7 @@ import { SlackCpEnvSchema } from './slack/provider.js'
 import { FeishuCpEnvSchema } from './feishu/provider.js'
 import { LinearCpEnvSchema } from './linear/provider.js'
 import { GoogleChatCpEnvSchema } from './googlechat/provider.js'
+import { MsTeamsCpEnvSchema } from './msteams/deployment-app.js'
 
 /** Every platform's declared env keys. Telegram and Discord own none — their
  *  whole install is the create-DTO path, with no deployment-level
@@ -29,7 +30,8 @@ export const CP_PLATFORM_ENV_SCHEMAS = [
   { platformId: 'slack', envSchema: SlackCpEnvSchema },
   { platformId: 'feishu', envSchema: FeishuCpEnvSchema },
   { platformId: 'linear', envSchema: LinearCpEnvSchema },
-  { platformId: 'googlechat', envSchema: GoogleChatCpEnvSchema }
+  { platformId: 'googlechat', envSchema: GoogleChatCpEnvSchema },
+  { platformId: 'msteams', envSchema: MsTeamsCpEnvSchema }
 ] as const
 
 type EnvSchemaOf<T> = T extends { envSchema: infer S } ? S : never
