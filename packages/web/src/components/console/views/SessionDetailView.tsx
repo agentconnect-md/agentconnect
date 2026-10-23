@@ -2774,16 +2774,18 @@ export default function SessionDetailView() {
   const profileProviderHint = (value: string | null): SessionProfileProvider | undefined =>
     value === 'googlechat'
       ? 'google'
-      : value === 'slack' ||
-          value === 'google' ||
-          value === 'github' ||
-          value === 'gitlab' ||
-          value === 'lark' ||
-          value === 'feishu' ||
-          value === 'telegram' ||
-          value === 'discord'
-        ? value
-        : undefined
+      : value === 'msteams'
+        ? 'azuread'
+        : value === 'slack' ||
+            value === 'google' ||
+            value === 'github' ||
+            value === 'gitlab' ||
+            value === 'lark' ||
+            value === 'feishu' ||
+            value === 'telegram' ||
+            value === 'discord'
+          ? value
+          : undefined
   const hintedProvider = profileProviderHint(source) ?? profileProviderHint(integration)
   const profileLinkProvider =
     hintedProvider && socialLoginProviders().some((provider) => provider.target === hintedProvider)

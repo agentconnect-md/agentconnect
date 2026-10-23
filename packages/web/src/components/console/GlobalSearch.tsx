@@ -154,6 +154,7 @@ export function GlobalSearch({
   const telegramAccess = useSWR(accessKey('telegram'), accessFetcher)
   const discordAccess = useSWR(accessKey('discord'), accessFetcher)
   const googlechatAccess = useSWR(accessKey('googlechat'), accessFetcher)
+  const msteamsAccess = useSWR(accessKey('msteams'), accessFetcher)
   // Hide only when every provider is unavailable and disabled; pending or failed reads keep the entry.
   const sessionAccessRenders = [
     slackAccess,
@@ -162,7 +163,8 @@ export function GlobalSearch({
     feishuAccess,
     telegramAccess,
     discordAccess,
-    googlechatAccess
+    googlechatAccess,
+    msteamsAccess
   ].some(({ data }) => data === undefined || data.available || data.enabled)
 
   const groups = useMemo<SearchGroup[]>(() => {

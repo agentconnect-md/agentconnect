@@ -690,7 +690,8 @@ export function sessionRoutes(deps: HttpDeps) {
       feishu: 'Feishu/Lark',
       telegram: 'Telegram',
       discord: 'Discord',
-      googlechat: 'Google Chat'
+      googlechat: 'Google Chat',
+      msteams: 'Microsoft Teams'
     } as const
     type ExternalAccessProvider = keyof typeof accessProviders
     const externalAccessAvailable = (provider: ExternalAccessProvider) =>

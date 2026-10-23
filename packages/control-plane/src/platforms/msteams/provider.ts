@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
 import { MSTEAMS_PLATFORM, msTeamsMessagesUrl, type IntegrationMsTeamsConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
+import { isMsTeamsConversationId, msTeamsSessionRealm } from './session-access.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
 
 /** The Bot Framework audience a bot's outbound token is issued for. */
@@ -171,6 +172,9 @@ export function createMsTeamsCpProvider(
   const fetchImpl: typeof fetch = (input, init) => (deps.fetch ?? fetch)(input, init)
   return {
     platformId: MSTEAMS_PLATFORM,
+    chatMemberTenant: (bot) => (bot.revokedAt ? null : 'global'),
+    legacySessionAudience: isMsTeamsConversationId,
+    sessionAudienceRealm: msTeamsSessionRealm,
     installRoutes: (scope) => (scope === 'org' ? (deps.installRoutes ?? []) : []),
     credentialBodySchema: MsTeamsCreateCredentials,
     refineCreateBody: refineMsTeamsCreateBody,

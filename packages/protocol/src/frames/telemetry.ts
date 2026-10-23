@@ -34,7 +34,7 @@ const ExternalKey = z.string().min(1).max(200)
 const NumericId = z.string().regex(/^[1-9]\d*$/)
 
 export const ConversationSessionAudience = z.object({
-  provider: z.enum(['slack', 'feishu', 'telegram', 'discord', 'googlechat']),
+  provider: z.enum(['slack', 'feishu', 'telegram', 'discord', 'googlechat', 'msteams']),
   realmKey: ExternalKey.optional(),
   resourceKind: z.literal('conversation'),
   resourceKey: ExternalKey

@@ -202,6 +202,15 @@ function SessionAccessRow({
       unavailable: t('providers.googlechat.unavailable'),
       unresolved: (count: number) => t('providers.googlechat.unresolved', { count }),
       degraded: t('providers.googlechat.degraded')
+    },
+    msteams: {
+      name: t('providers.msteams.name'),
+      label: t('providers.msteams.label'),
+      description: t('providers.msteams.description'),
+      details: t('providers.msteams.details'),
+      unavailable: t('providers.msteams.unavailable'),
+      unresolved: (count: number) => t('providers.msteams.unresolved', { count }),
+      degraded: t('providers.msteams.degraded')
     }
   }[provider]
   const hiddenSessions = access?.hiddenSessions ?? 0
@@ -287,7 +296,8 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
     useSessionAccess('feishu', orgId, isOwner),
     useSessionAccess('telegram', orgId, isOwner),
     useSessionAccess('discord', orgId, isOwner),
-    useSessionAccess('googlechat', orgId, isOwner)
+    useSessionAccess('googlechat', orgId, isOwner),
+    useSessionAccess('msteams', orgId, isOwner)
   ]
   const pending = providers.some((state) => state.access === undefined && !state.loadError)
   const rows = providers.filter((state) => !hasNothingToOffer(state))

@@ -60,8 +60,11 @@ const BOT_PLATFORM_NAMES: Record<string, string> = {
   telegram: 'Telegram',
   discord: 'Discord',
   gitlab: 'GitLab',
-  googlechat: 'Google'
+  googlechat: 'Google',
+  msteams: 'Microsoft'
 }
+// The sign-in method a platform's people link, where its name differs from the platform's.
+const PROFILE_PROVIDERS: Record<string, string> = { googlechat: 'google', msteams: 'azuread' }
 const APP_ACCESS_MESSAGES: Record<string, string> = {
   telegram:
     'The Telegram chat bot must be an administrator to verify group membership. Ask a group administrator to check its role and credentials.',
@@ -69,6 +72,8 @@ const APP_ACCESS_MESSAGES: Record<string, string> = {
     'The Discord bot cannot verify conversation access. Ask a server administrator to check its channel access and credentials.',
   googlechat:
     'The Google Chat app cannot verify space membership. Ask an administrator to check the app’s space access and credentials.',
+  msteams:
+    'The Teams bot cannot verify conversation membership. Ask an administrator to check that the app is still installed and its client secret is current.',
   gitlab:
     'The GitLab connection cannot verify project access. Ask an organization owner to reconnect it in Integrations.'
 }
@@ -85,9 +90,7 @@ function botAccessNotice(
       retry: false,
       action: {
         label: `Link ${name}`,
-        href: orgPath(
-          `/profile?reauthorize=${issue.provider === 'googlechat' ? 'google' : issue.provider}#sign-in-methods`
-        ),
+        href: orgPath(`/profile?reauthorize=${PROFILE_PROVIDERS[issue.provider] ?? issue.provider}#sign-in-methods`),
         external: false
       }
     }

@@ -64,7 +64,7 @@ export const consoleKeys = {
   serviceAccountKeys: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'service-account-keys', id),
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
   sessionAccess: <
-    const Provider extends 'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat'
+    const Provider extends 'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat' | 'msteams'
   >(
     orgId: string | null | undefined,
     provider: Provider
