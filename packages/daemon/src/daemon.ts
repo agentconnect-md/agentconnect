@@ -1387,6 +1387,8 @@ type HostRetirement = {
 const RELAY_ACK_SLOW_MS = 4000
 // One pod-local skill ref listing, the same bound the daemon's own ref naming has.
 const POD_SKILL_REF_TIMEOUT_MS = 10_000
+/** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
+const GATED_NOTICE_LATCH_LIMIT = 10_000
 
 /** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
 const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
@@ -23272,8 +23274,7 @@ export class Daemon {
 
   // ── Conversation gating (resource-visibility.md §14) ────────────────────────
 
-  /** One-time gating-notice latch, `${integrationId}:${channel}` — per daemon
-   *  lifetime (§14.7 open question 2: a restart re-notices, which is acceptable). */
+  /** Messages the §14.3 notice answered, by integration and message id, so a message's second event copy posts nothing more; bounded. */
   private readonly gatedNoticesSent = new Set<string>()
 
   /** agentId → the CP launch correlation awaiting the next session this agent
@@ -24245,8 +24246,9 @@ export class Daemon {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
-      // An ungated integration speaks only where nobody decided its Off (§14.9); an operator's Off stays silent.
-      if (!routing.gated && !routing.pendingChannels.includes(msg.channel)) continue
+      // An ungated integration speaks in an Off conversation, not in a held decision's.
+      const off = routing.mutedChannels.includes(msg.channel) && !routing.decisionBound(msg.channel)
+      if (!routing.gated && !off) continue
       // An ENABLED conversation never gets a report/notice — this guard makes the
       // helper safe from the pre-command call site, which sees every DM. A thread of an
       // enabled channel is enabled too (the rule is scoped to the enclosing channel).
@@ -24255,7 +24257,8 @@ export class Daemon {
       // A trusted mention cause is an address even before the bot's own identity is known.
       const addressed = isDm || msg.trigger === 'mention' || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      const latch = `${integrationId}:${msg.channel}`
+      // A message id is unique only per bot connection: two bots' DMs can share one.
+      const latch = `${integrationId}:${msg.msgId}`
       if (this.gatedNoticesSent.has(latch)) return
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
@@ -24268,8 +24271,10 @@ export class Daemon {
           ? conn.postMessage(msg.channel, text, thread, { chrome: true })
           : conn.postChrome(msg.channel, text, { threadTs: thread })
       if (!post) return
-      // Held while the post is in flight so a burst posts once; a failed post releases it for the next message.
+      // Held from the post on so the message's other copy posts nothing; a failed post releases it.
       this.gatedNoticesSent.add(latch)
+      if (this.gatedNoticesSent.size > GATED_NOTICE_LATCH_LIMIT)
+        this.gatedNoticesSent.delete(this.gatedNoticesSent.values().next().value!)
       void post.catch((err: unknown) => {
         this.gatedNoticesSent.delete(latch)
         this.log.warn(`gating: notice post failed in ch=${msg.channel}: ${(err as Error).message}`)

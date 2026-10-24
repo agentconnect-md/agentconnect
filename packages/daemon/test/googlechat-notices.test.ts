@@ -200,35 +200,33 @@ describe('the gated notice on Google Chat', () => {
   })
 })
 
-// resource-visibility.md §14.9: an ungated integration's Off that nobody decided keeps the notice; an operator's Off stays silent.
-describe('the notice for an undecided Off on an ungated integration', () => {
-  it('answers once where the Off is pending and stays silent where an editor chose it', async () => {
-    const daemon = await boot(scaffold({ bindRules: [], mutedChannels: [SPACE, DM], pendingChannels: [DM] }))
+// resource-visibility.md §14.9: an ungated integration's Off answers every addressed message; a held decision does not.
+describe('the notice for an Off on an ungated integration', () => {
+  it('answers every addressed message in an Off conversation, once per message', async () => {
+    const daemon = await boot(scaffold({ bindRules: [], mutedChannels: [SPACE, DM] }))
     try {
       expect(await im(daemon, delivery('space'))).toMatchObject({ accepted: true, routeAdmission: 'rejected' })
       expect(await im(daemon, delivery('dm'))).toMatchObject({ accepted: true, routeAdmission: 'rejected' })
-      await vi.waitFor(() => expect(posts).toEqual([{ space: DM, text: GATED }]), WAIT)
+      await vi.waitFor(() => expect(posts).toHaveLength(2), WAIT)
       await im(daemon, delivery('dm', 'EXAMPLE_MSG_2'))
-      expect(posts).toHaveLength(1)
+      await vi.waitFor(() => expect(posts).toHaveLength(3), WAIT)
+      // A redelivery of the same message posts nothing more.
+      await im(daemon, delivery('dm', 'EXAMPLE_MSG_2'))
+      expect(posts.map((p) => p.text)).toEqual([GATED, GATED, GATED])
     } finally {
       await daemon.stop()
     }
   })
 
-  it('stays silent everywhere when the spec carries no pending list, as an older control plane sends', async () => {
-    const daemon = await boot(scaffold({ bindRules: [], mutedChannels: [SPACE, DM] }))
+  it('stays silent in a muted conversation held By decision', async () => {
+    const held = { match: { kind: 'decision' }, channel: SPACE }
+    const daemon = await boot(scaffold({ bindRules: [held], mutedChannels: [SPACE, DM] }))
     try {
-      await im(daemon, delivery('dm'))
       await im(daemon, delivery('space'))
-      // A pending sibling conversation's notice is the barrier: anything the two muted ones posted would precede it.
-      const pending = await boot(scaffold({ bindRules: [], mutedChannels: [DM], pendingChannels: [DM] }))
-      try {
-        await im(pending, delivery('dm', 'EXAMPLE_MSG_3'))
-        await vi.waitFor(() => expect(posts).toHaveLength(1), WAIT)
-        expect(posts).toEqual([{ space: DM, text: GATED }])
-      } finally {
-        await pending.stop()
-      }
+      // The Off DM's notice is the barrier: anything the held Space posted would precede it.
+      await im(daemon, delivery('dm'))
+      await vi.waitFor(() => expect(posts).toHaveLength(1), WAIT)
+      expect(posts).toEqual([{ space: DM, text: GATED }])
     } finally {
       await daemon.stop()
     }

@@ -63,7 +63,6 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } from './placement.js'
-import { pendingConversation } from '../domain/conversation-defaults.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -135,16 +134,11 @@ interface Compiled {
   /** Every Off conversation — the relay's subtractive fence over the rungs no missing
    *  route can suppress (keyword, `defaultAgentId`, thread continuity). */
   mutedChannels: string[]
-  /** The muted conversations whose owner is GATED: Off because §14 has not enabled them,
-   *  so they keep the one-time notice. Every other muted channel is silent. */
-  gatedOffChannels: string[]
+  /** The muted conversations that are Off (not a held decision): an addressed message there gets the §14.3 notice. */
+  offChannels: string[]
   /** Every membership row of the bot, read once for the compile and reused by the
    *  spec push (both need the per-install trigger state). */
   botChannels: IntegrationChannelRecord[]
-  /** DM conversation ids whose §14.3 notice was ACTUALLY DELIVERED — the
-   *  pool-wide latch for single-copy DM messages (never row-derived: discovery
-   *  without delivery must not latch). */
-  noticedDmConversations: string[]
   /** Placed member integrations (spec push targets: daemonId + integration). */
   placed: { integration: IntegrationRecord; agent: AgentRecord; daemonId: string; gated: boolean }[]
   /** Per-conversation defaults (linear-integration.md §6.2): each row's owner, on a
@@ -399,8 +393,7 @@ export class HttpBotOrchestrator {
             ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
             gatedAgentIds: compiled.gatedAgentIds,
             mutedChannels: compiled.mutedChannels,
-            gatedOffChannels: compiled.gatedOffChannels,
-            noticedDmConversations: compiled.noticedDmConversations,
+            offChannels: compiled.offChannels,
             // An owner edit converges here without a re-assign, so the defaults must ride the hot
             // update too — otherwise a connected relay keeps the old default, and the old grant.
             conversationDefaults: compiled.conversationDefaults,
@@ -835,27 +828,7 @@ export class HttpBotOrchestrator {
     await this.syncRoutes(botId)
   }
 
-  /** §14.3 DM notices ACTUALLY DELIVERED (`botId:channel`), reported via
-   *  `rc/notice-posted`. Per CP lifetime (a restart allows one fresh notice —
-   *  the daemon's own latch semantics); size-bounded. */
-  private readonly noticedDms = new Set<string>()
-
-  /** Record one delivered §14.3 DM notice and re-stamp the pool so every pod
-   *  latches the conversation. Fire-and-forget from the relay's perspective. */
-  async recordNoticePosted(m: { botId: string; channel: string }): Promise<void> {
-    const key = `${m.botId}:${m.channel}`
-    if (this.noticedDms.has(key)) return
-    if (this.noticedDms.size >= 100_000) this.noticedDms.clear()
-    this.noticedDms.add(key)
-    await this.syncRoutes(m.botId)
-  }
-
-  /** §14.3: the relay DETERMINISTICALLY responsible for a bot's one-time gating
-   *  notices, chosen from the CONNECTED roster at (re)assign/replay time — pure
-   *  config-time orchestration, never a per-message CP round-trip (the CP stays
-   *  off the message hot path). Stable while the roster is stable; a roster
-   *  change re-broadcasts and moves the authority (its local latch moves too —
-   *  per-lifetime notice semantics, matching the daemon). Undefined ⇒ no relay. */
+  /** §14.3: the relay that posts a bot's channel gating notices, chosen deterministically from the connected roster at (re)assign time; undefined ⇒ no relay. */
   private noticeAuthorityFor(botId: string): string | undefined {
     const ids = this.relayReg
       .all()
@@ -1516,20 +1489,6 @@ export class HttpBotOrchestrator {
     for (const [channelId, ownerId] of conversationOwner) {
       if (!byAgent.has(ownerId)) muted.add(channelId)
     }
-    // The Off conversations nobody enabled keep the notice: a gated owner's, or an ungated owner's Off nobody chose (§14.9).
-    const gatedOff = new Set(
-      chans
-        .filter((c) => c.trigger === 'off')
-        .filter((c) => {
-          const agent = c.agentId ? agentById.get(c.agentId) : undefined
-          if (!agent) return false
-          if (isGatedAgent(agent)) return true
-          // Read conversation-wide, as ownership convergence does: any sibling may carry the decision.
-          const rows = chans.filter((row) => row.channelId === c.channelId)
-          return pendingConversation({ trigger: c.trigger, triggerChosen: rows.some((row) => row.triggerChosen) })
-        })
-        .map((c) => c.channelId)
-    )
 
     for (const c of chans) {
       if (!c.agentId) continue
@@ -1591,7 +1550,7 @@ export class HttpBotOrchestrator {
       })
     }
     const mutedChannels = [...muted]
-    const gatedOffChannels = [...gatedOff]
+    const offChannels = [...offConversationIds]
     // Every daemon a routed conversation's host could move to or from resyncs this bot when it comes and goes.
     const routingDependents = new Set<string>(
       routing ? [...(routing.defaultDaemonId ? [routing.defaultDaemonId] : []), ...routing.candidateDaemonIds] : []
@@ -1645,10 +1604,6 @@ export class HttpBotOrchestrator {
         integrationId: p.integration.id
       }
     })
-    const dmPrefix = `${bot.id}:`
-    const noticedDmConversations = [...this.noticedDms]
-      .filter((k) => k.startsWith(dmPrefix))
-      .map((k) => k.slice(dmPrefix.length))
     return {
       // The row's own id, verbatim. The pre-flatten ternary narrowed it into the
       // closed wire enum and coerced anything unrecognized to 'feishu' — with the
@@ -1663,8 +1618,7 @@ export class HttpBotOrchestrator {
       ...(first ? { defaultAgentId: first.integration.agentId, defaultDaemonId: first.daemonId } : {}),
       gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
       mutedChannels,
-      gatedOffChannels,
-      noticedDmConversations,
+      offChannels,
       conversationDefaults,
       ownerAsDefault,
       routedConversations,
@@ -1830,8 +1784,7 @@ export class HttpBotOrchestrator {
       ...(compiled.defaultDaemonId ? { defaultDaemonId: compiled.defaultDaemonId } : {}),
       gatedAgentIds: compiled.gatedAgentIds,
       mutedChannels: compiled.mutedChannels,
-      gatedOffChannels: compiled.gatedOffChannels,
-      noticedDmConversations: compiled.noticedDmConversations,
+      offChannels: compiled.offChannels,
       conversationDefaults: compiled.conversationDefaults,
       ownerAsDefault: compiled.ownerAsDefault,
       routedConversations: compiled.routedConversations,

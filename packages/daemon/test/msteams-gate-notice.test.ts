@@ -1,4 +1,4 @@
-// The gate notice on Teams (teams-integration.md §4.6): a relay-delivered mention in an undecided Off channel, with a stubbed `fetch` as the only network.
+// The gate notice on Teams (teams-integration.md §4.6): a relay-delivered mention in an Off channel, with a stubbed `fetch` as the only network.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,8 +11,7 @@ import { msTeamsTokenEndpoint } from '../src/platforms/msteams/api.js'
 const ZERO = '00000000-0000-0000-0000-000000000000'
 const BOT = `28:${ZERO}`
 const SERVICE_URL = `https://smba.trafficmanager.net/amer/${ZERO}/`
-const PENDING = '19:example-pending@thread.tacv2'
-const CHOSEN = '19:example-chosen@thread.tacv2'
+const OFF = '19:example-off@thread.tacv2'
 const AGENT = 'teams-agent'
 const INTEGRATION = 'teams-install'
 const GATED = '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
@@ -92,7 +91,7 @@ async function boot(): Promise<Daemon> {
         {
           id: INTEGRATION,
           platform: 'msteams',
-          core: { mode: 'shared', bindRules: [], mutedChannels: [PENDING, CHOSEN], pendingChannels: [PENDING] },
+          core: { mode: 'shared', bindRules: [], mutedChannels: [OFF] },
           config: { appId: ZERO, tenantId: ZERO, clientSecret: 'client-secret-example' }
         }
       ],
@@ -120,15 +119,17 @@ const deliver = (d: Daemon, payload: NormalizedMessage) =>
   })
 
 describe('the gate notice on Teams', () => {
-  it('answers a mention once in its thread where the Off is undecided, and stays silent where an editor chose it', async () => {
+  it('answers every mention in an Off channel in its own thread', async () => {
     daemon = await boot()
-    expect(await deliver(daemon, mention(CHOSEN, '1700000000001'))).toMatchObject({ routeAdmission: 'rejected' })
-    expect(await deliver(daemon, mention(PENDING, '1700000000002'))).toMatchObject({ routeAdmission: 'rejected' })
+    expect(await deliver(daemon, mention(OFF, '1700000000001'))).toMatchObject({ routeAdmission: 'rejected' })
+    expect(await deliver(daemon, mention(OFF, '1700000000002'))).toMatchObject({ routeAdmission: 'rejected' })
     await vi.waitFor(
-      () => expect(posts).toEqual([{ conversation: `${PENDING};messageid=1700000000002`, text: GATED }]),
+      () =>
+        expect(posts).toEqual([
+          { conversation: `${OFF};messageid=1700000000001`, text: GATED },
+          { conversation: `${OFF};messageid=1700000000002`, text: GATED }
+        ]),
       { timeout: 5000 }
     )
-    await deliver(daemon, mention(PENDING, '1700000000003'))
-    expect(posts).toHaveLength(1)
   })
 })

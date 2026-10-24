@@ -3423,15 +3423,6 @@ export function buildContainer(
     onBotCredentialCheck: async (m, relayId) => httpBot.recordCredentialCheck(m, relayId),
     // A single-tenant Google Chat row's learned tenant key; acknowledged, so a failure propagates and the relay retries.
     onBotTenant: async (m) => httpBot.recordTenant(m.botId, m.tenantId),
-    // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
-    // latch. Swallow+log.
-    onNoticePosted: async (m) => {
-      try {
-        await httpBot.recordNoticePosted(m)
-      } catch (err) {
-        http.log.error({ err, botId: m.botId }, 'relay: notice-posted record failed')
-      }
-    },
     // Incremental direct-conversation report: surface a configurable row on every
     // install, with its visibility-appropriate default. Swallow+log.
     onBotConversation: async (m) => {

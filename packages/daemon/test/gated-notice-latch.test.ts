@@ -32,7 +32,7 @@ describe('the gated notice latch', () => {
     root = undefined
   })
 
-  it('posts once on DingTalk, and a failed post leaves the notice for the next message', async () => {
+  it('answers each DingTalk message once, and a failed post leaves that message unanswered for a retry', async () => {
     root = mkdtempSync(join(tmpdir(), 'ac-gated-notice-'))
     writeFileSync(
       join(root, 'config.json'),
@@ -54,11 +54,36 @@ describe('the gated notice latch', () => {
     notice(1)
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect((daemon as any).gatedNoticesSent.size).toBe(0))
-    notice(2)
-    notice(3)
+    // The failed message's redelivery is answered; its second copy posts nothing more.
+    notice(1)
+    notice(1)
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2))
-    notice(4)
-    expect(sendText).toHaveBeenCalledTimes(2)
+    notice(2)
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(3))
     expect(sendText).toHaveBeenLastCalledWith('group:example', GATED)
+  })
+
+  it('answers the same message id on two bots, since an id is unique only per bot connection', async () => {
+    root = mkdtempSync(join(tmpdir(), 'ac-gated-notice-'))
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({ version: 1, controlPlane: { enabled: false }, runtimes: {} })
+    )
+    const daemon = new Daemon({ root, hostFactory: () => ({}) as any })
+    const integrations = ['int-a', 'int-b'].map((id) => ({
+      id,
+      platform: 'dingtalk',
+      core: { mode: 'shared', gated: true, bindRules: [] }
+    }))
+    ;(daemon as any).integrationConfigById = (id: string) => integrations.find((i) => i.id === id)
+    const sends = integrations.map((i) => {
+      const sendText = vi.fn(async () => 'query-key')
+      ;(daemon as any).dingTalkConnByIntegration.set(i.id, { sendText })
+      return sendText
+    })
+    const msg = message('dingtalk', 'group:example', { msgId: 'm1' })
+    ;(daemon as any).maybeGatedNotice(msg, ['int-a'])
+    ;(daemon as any).maybeGatedNotice(msg, ['int-b'])
+    await vi.waitFor(() => expect(sends.map((s) => s.mock.calls.length)).toEqual([1, 1]))
   })
 })
