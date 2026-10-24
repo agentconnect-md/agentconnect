@@ -1679,7 +1679,8 @@ export class PermissionCoordinator {
   /** The asker's card in their own DM through their platform's facet, where no Slack DM card reaches them (§5.5); true once it is live. */
   private async sendAskerCard(requestId: string, agentId: string, p: Pending): Promise<boolean> {
     const rec = this.pendingApprovals.get(requestId)
-    if (rec?.kind !== 'permission' || rec.chat || rec.notify) return false
+    // An MCP approval with no choices has no card to send; it goes on to the editor path.
+    if (!rec || rec.chat || rec.notify || !cardRequest(rec)) return false
     const dm = await this.host.askerDirectMessage?.(p).catch(() => undefined)
     return dm ? await this.sendDirectCard(requestId, agentId, p, dm, { askerId: dm.userId }) : false
   }
@@ -2430,12 +2431,20 @@ export class PermissionCoordinator {
     const optionId =
       input.optionId ?? (input.option === undefined ? undefined : cardRequest(rec)?.options[input.option]?.optionId)
     if (optionId === undefined) return
-    // An MCP approval's only card here is the routed editor's in their own chat.
+    // An MCP approval's only card here is in one person's own chat: the routed editor's, or an external place's asker's.
     if (rec.kind === 'elicitation') {
-      if (!rec.chat?.editor) return
-      if (rec.chat.ts === undefined && input.ts !== undefined) rec.chat.ts = input.ts
-      await this.answerEditorCard(input.requestId, rec, { ...rec.chat, editor: rec.chat.editor }, optionId, input.actor)
-      return
+      const chat = rec.chat
+      if (!chat) return
+      if (chat.ts === undefined && input.ts !== undefined) chat.ts = input.ts
+      if (chat.editor) {
+        await this.answerEditorCard(input.requestId, rec, { ...chat, editor: chat.editor }, optionId, input.actor)
+        return
+      }
+      if (input.actor?.isBot) {
+        this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
+        return
+      }
+      return await this.answerChatCard(input.requestId, rec, chat, optionId, input.actor)
     }
     // A DM card's request lives on the editor path (§2): its addressee's click is checked there, anyone else's on the card beside it.
     if (rec.notify && (!rec.chat || input.actor?.userId === rec.notify.target.userId)) {
@@ -2482,30 +2491,44 @@ export class PermissionCoordinator {
       await this.answerEditorCard(input.requestId, rec, { ...chat, editor: chat.editor }, optionId, input.actor)
       return
     }
+    return await this.answerChatCard(input.requestId, rec, chat, optionId, input.actor)
+  }
+
+  /** A click on a card the chat level governs, or an asker's card in their own chat; returns what only the clicker is told when the card's surface cannot tell them itself. */
+  private async answerChatCard(
+    requestId: string,
+    rec: PendingApproval,
+    chat: ChatPermissionCard,
+    optionId: string,
+    actor: InteractionActor | undefined
+  ): Promise<string | undefined> {
     // The level was lowered, the conversation closed, or only editors may answer here and this person is not one; an asker's card answers to them alone.
     const verdict =
       chat.askerId === undefined
-        ? await this.chatAnswerVerdict(rec.agentId, chat.place, input.actor)
-        : input.actor?.userId === chat.askerId
-          ? await this.chatAnswerVerdict(rec.agentId, chat.place, input.actor, true)
+        ? await this.chatAnswerVerdict(rec.agentId, chat.place, actor)
+        : actor?.userId === chat.askerId
+          ? await this.chatAnswerVerdict(rec.agentId, chat.place, actor, true)
           : 'closed'
     if (verdict !== 'allowed') {
       // Refused, so it decided nothing — recorded as an attempt, never as the decision.
-      this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
-      if (!input.actor) return
+      this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, actor)
+      if (!actor) return
       // Only the clicker is told; the card stays as everyone else sees it.
       const text = this.chatRefusal(rec, verdict, chat.facet)
       if (!chat.facet.tellPrivately) return text
-      chat.facet.tellPrivately(chat, input.actor.userId, text)
+      chat.facet.tellPrivately(chat, actor.userId, text)
       return
     }
-    const picked = choiceById(permissionChoices(rec.params), optionId)
-    if (!picked) return
-    const actor = input.actor
     // A relayed click carries only the member's id, so the settled card names them by a lookup.
     const name = actor ? (actor.name ?? (await this.cardMemberName(chat, actor.userId))) : undefined
     const by = actor ? { resolvedBy: cardAnswererId(chat, actor.userId), resolvedByName: name ?? null } : undefined
-    await this.settle(input.requestId, rec, picked, by, 'chat', input.actor)
+    if (rec.kind === 'permission') {
+      const picked = choiceById(permissionChoices(rec.params), optionId)
+      if (picked) await this.settle(requestId, rec, picked, by, 'chat', actor)
+      return
+    }
+    const picked = choiceById(rec.choices, optionId)
+    if (picked) await this.settle(requestId, rec, picked, by, 'chat', actor)
   }
 
   /** A click on a routed editor's card in their own chat: the control plane rechecks the clicker, and a rights refusal retires the card. */

@@ -1,4 +1,4 @@
-/** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes a permission request or MCP approval to, alone or beside the channel's card (teams-integration.md §4.4). */
+/** A Teams approval card, for a permission request or an MCP approval with choices, in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes it to, alone or beside the channel's card (teams-integration.md §4.4). */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
@@ -153,6 +153,36 @@ describe('an approval in a Teams channel shared with another organization', () =
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
     // The card says how it ended.
     await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    await w.store.close()
+  })
+
+  it('sends an MCP approval with choices to the asker’s own 1:1 chat, where only they decide', async () => {
+    const w = await world()
+    const decided = vi.fn()
+    void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${ASKER}`]))
+    expect(JSON.stringify(w.conn.postCard.mock.calls[0]![1])).toContain('Which one?')
+    expect(w.cp).not.toHaveBeenCalled()
+    const id = w.onlyRequest()
+
+    expect(
+      await w.permissions.handlePermissionChoice({ requestId: id, option: 0, actor: { userId: GUEST } })
+    ).toBeTruthy()
+    expect(decided).not.toHaveBeenCalled()
+    await w.permissions.handlePermissionChoice({ requestId: id, option: 0, actor: { userId: ASKER } })
+    await vi.waitFor(() => expect(decided).toHaveBeenCalledWith({ action: 'accept', content: { pick: 'a' } }))
+    expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
+    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    await w.store.close()
+  })
+
+  it('sends the asker no card for an MCP approval that reduces to no choices', async () => {
+    const w = await world()
+    void w.permissions.onAcpElicit(AGENT, 's1', yesNo)
+    await vi.waitFor(() => expect(w.permissions.pendingApprovals.size).toBe(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(w.conn.openDirectMessage).not.toHaveBeenCalled()
+    expect(w.postedTo()).toEqual([])
     await w.store.close()
   })
 
