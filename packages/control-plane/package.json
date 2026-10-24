@@ -117,7 +117,7 @@
     "@fastify/swagger-ui": "^6.1.2",
     "@modelcontextprotocol/server": "2.3.1",
     "@octokit/auth-app": "^8.3.1",
-    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api": "^1.10.0",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "@prisma/instrumentation": "^7.10.1",
