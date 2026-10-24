@@ -1336,6 +1336,8 @@
       "installing": "正在添加…",
       "updated": "已在 {count} 个已有该应用的团队中更新应用。",
       "teamUpdated": "已更新",
+      "teamNotUpdated": "未更新",
+      "updateFailed": "Microsoft 没有在 {count} 个团队中更新应用。请在 Agent 的 Teams bot 上点「在 Teams 中更新」重试。",
       "finish": "完成",
       "skip": "跳过",
       "doneTitle": "Teams 已连接",

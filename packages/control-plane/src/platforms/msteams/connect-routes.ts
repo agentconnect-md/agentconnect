@@ -81,7 +81,11 @@ const CallbackDto = z.object({
       z.object({
         id: z.string(),
         name: z.string(),
-        installed: z.boolean().describe('Whether the team already had the app, now upgraded to the published package.')
+        app: z
+          .enum(['updated', 'none', 'failed'])
+          .describe(
+            'The app in this team: updated to the published package, not installed, or not updated because Microsoft refused or failed the read or upgrade; the package stays pending until no team fails.'
+          )
       })
     )
     .describe('The signed-in administrator’s teams.'),
@@ -255,12 +259,13 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           )
 
           let integrationId: string
+          let botId = held?.id
           if (!held) {
             try {
               const installed = await installNewBot(deps, req.log, {
                 bot: {
                   externalAppId: live.app.appId,
-                  platformConfig: { tenantId, tokenTenantId: live.app.tenantId, appPackage }
+                  platformConfig: { tenantId, tokenTenantId: live.app.tenantId }
                 },
                 secrets: msTeamsSecrets(live.app.clientSecret),
                 externalIdentity: {
@@ -278,6 +283,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 createdByUserId: req.principal.userId
               })
               integrationId = installed.integration.id
+              botId = installed.bot.id
             } catch (err) {
               if (err instanceof BotExternalIdentityTaken)
                 return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
@@ -306,23 +312,24 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               await deps.httpBot.syncBot(held.id)
             }
             integrationId = admission.integration.id
-            await deps.repos.bot.mergeBotIdentity(orgId, held.id, () => ({ platformConfig: { appPackage } }))
           }
 
           // A team that already has the app takes the new definition and re-consents its permissions here (§8.3).
           const teams = await listMsTeamsTeams(fetchImpl, accessToken)
-          const upgraded = new Set(
-            await upgradeMsTeamsInstalls(
-              fetchImpl,
-              accessToken,
-              { teamIds: teams.map((team) => team.id), catalogAppId, permissions: MSTEAMS_RSC_PERMISSIONS },
-              req.log
-            )
+          const upgrades = await upgradeMsTeamsInstalls(
+            fetchImpl,
+            accessToken,
+            { teamIds: teams.map((team) => team.id), catalogAppId, permissions: MSTEAMS_RSC_PERMISSIONS },
+            req.log
           )
+          // A team left on the old package keeps Update in Teams on offer (§5.1).
+          if (botId && ![...upgrades.values()].includes('failed')) {
+            await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { appPackage } }))
+          }
           return {
             integrationId,
             agentId: target.id,
-            teams: teams.map((team) => ({ ...team, installed: upgraded.has(team.id) })),
+            teams: teams.map((team) => ({ ...team, app: upgrades.get(team.id) ?? 'failed' })),
             ticket: sealMsTeamsTicket(seams.keys, { accessToken, orgId, integrationId, catalogAppId }, deps.clock)
           }
         } catch (err) {

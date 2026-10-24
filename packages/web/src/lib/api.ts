@@ -5388,8 +5388,8 @@ export async function startMsTeamsConnect(orgId: string, agentId: string): Promi
 export interface MsTeamsConnectResultDto {
   integrationId: string
   agentId: string
-  /** `installed`: the team already had the app and now runs the published package. */
-  teams: { id: string; name: string; installed: boolean }[]
+  /** `app`: updated to the published package, not installed, or not updated (the package stays pending). */
+  teams: { id: string; name: string; app: 'updated' | 'none' | 'failed' }[]
   ticket: string
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */

@@ -455,8 +455,8 @@ background as it does a Telegram or Discord avatar.
 
 The Control Plane records a fingerprint of each package that reaches Teams in
 the bot row's `platformConfig.appPackage`: a hash of the manifest without its
-version and of the agent's icon descriptor. A connected tenant records it on
-each catalog publish (§8.3); an own bot records it on each download, the last
+version and of the agent's icon descriptor. A connected tenant records it after
+each catalog publish whose team upgrades all succeeded (§8.3); an own bot records it on each download, the last
 step the Control Plane sees before the admin uploads by hand.
 `GET /integrations/:id/msteams/app-package/status` compares it with the package
 the integration would build now, and a row with none counts as out of date.
@@ -622,7 +622,11 @@ rather than a Console rotation.
    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope covers both the
    read and the upgrade. A team that only picks up a new grant after the app is
    removed and added again (**measured** without this step) takes it here. The
-   page marks those teams as updated and preselects none of the others. The page drops
+   page marks those teams as updated and preselects none of the others. A team
+   whose read or upgrade Microsoft refuses or fails is marked as not updated
+   and cannot be picked for an install, which would count its existing app as
+   installed; the fingerprint of §5.1 then stays unrecorded, so **Update in
+   Teams** stays on offer to retry. The page drops
    the single-use code from the address bar before redeeming it.
    The app also appears under **Built for your org**, where people add it to a
    1:1 chat themselves where their app setup policy allows.

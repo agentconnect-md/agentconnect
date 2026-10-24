@@ -305,16 +305,19 @@ const Installed = z.object({ value: z.array(z.object({ id: z.string() })) })
 // Teams upgraded at once; an administrator can belong to hundreds.
 const UPGRADE_CONCURRENCY = 4
 
-/** Upgrades the catalog app to its latest definition in each team that has it, re-consenting its resource-specific permissions; answers the upgraded teams, skipping any Microsoft refuses since the connect itself already stands. */
+/** Where a team's app stands after {@link upgradeMsTeamsInstalls}: upgraded, absent, or unknown after a refused or failed read or upgrade. */
+export type MsTeamsAppUpgrade = 'updated' | 'none' | 'failed'
+
+/** Upgrades the catalog app to its latest definition in each team that has it, re-consenting its resource-specific permissions; a refused or failed team is reported, not thrown, since the connect itself already stands. */
 export async function upgradeMsTeamsInstalls(
   fetchImpl: typeof fetch,
   token: string,
   input: { teamIds: readonly string[]; catalogAppId: string; permissions: readonly { name: string; type: string }[] },
   log: { warn(bindings: Record<string, unknown>, message: string): void }
-): Promise<string[]> {
+): Promise<Map<string, MsTeamsAppUpgrade>> {
   const filter = encodeURIComponent(`teamsApp/id eq '${input.catalogAppId}'`)
-  const upgraded: string[] = []
-  const upgrade = async (teamId: string) => {
+  const outcome = new Map<string, MsTeamsAppUpgrade>()
+  const upgrade = async (teamId: string): Promise<MsTeamsAppUpgrade> => {
     const team = encodeURIComponent(teamId)
     const listed = await graph(
       fetchImpl,
@@ -323,11 +326,11 @@ export async function upgradeMsTeamsInstalls(
       `/teams/${team}/installedApps?$expand=teamsApp&$filter=${filter}`
     )
     if (!listed.ok) {
-      log.warn({ status: listed.status }, 'msteams: could not read a team’s installed apps; skipped')
-      return
+      log.warn({ status: listed.status }, 'msteams: could not read a team’s installed apps')
+      return 'failed'
     }
     const installation = Installed.parse(await listed.json()).value[0]
-    if (!installation) return
+    if (!installation) return 'none'
     const response = await graph(
       fetchImpl,
       token,
@@ -335,14 +338,16 @@ export async function upgradeMsTeamsInstalls(
       `/teams/${team}/installedApps/${encodeURIComponent(installation.id)}/upgrade`,
       { json: { consentedPermissionSet: consentedPermissions(input.permissions) } }
     )
-    if (!response.ok) log.warn({ status: response.status }, 'msteams: could not upgrade the app in a team')
-    else upgraded.push(teamId)
+    if (response.ok) return 'updated'
+    log.warn({ status: response.status }, 'msteams: could not upgrade the app in a team')
+    return 'failed'
   }
   const queue = [...input.teamIds]
   await Promise.all(
     Array.from({ length: Math.min(UPGRADE_CONCURRENCY, queue.length) }, async () => {
-      for (let teamId = queue.shift(); teamId !== undefined; teamId = queue.shift()) await upgrade(teamId)
+      for (let teamId = queue.shift(); teamId !== undefined; teamId = queue.shift())
+        outcome.set(teamId, await upgrade(teamId))
     })
   )
-  return upgraded
+  return outcome
 }

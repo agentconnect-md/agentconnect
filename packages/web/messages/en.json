@@ -1336,6 +1336,8 @@
       "installing": "Adding…",
       "updated": "Updated the app in {count, plural, one {# team} other {# teams}} that already had it.",
       "teamUpdated": "Updated",
+      "teamNotUpdated": "Not updated",
+      "updateFailed": "Microsoft did not update the app in {count, plural, one {# team} other {# teams}}. Use Update in Teams on the agent’s Teams bot to try again.",
       "finish": "Done",
       "skip": "Skip",
       "doneTitle": "Teams is connected",

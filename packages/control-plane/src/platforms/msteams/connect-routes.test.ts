@@ -192,8 +192,8 @@ describe('the deployment Teams app routes', () => {
     expect(res.json()).toMatchObject({
       agentId: AGENT,
       teams: [
-        { id: 'team-1', name: 'Engineering', installed: false },
-        { id: 'team-2', name: 'Support', installed: false }
+        { id: 'team-1', name: 'Engineering', app: 'none' },
+        { id: 'team-2', name: 'Support', app: 'none' }
       ]
     })
     expect(h.create).toHaveBeenCalledWith(
@@ -204,7 +204,7 @@ describe('the deployment Teams app routes', () => {
         prebuilt: true,
         name: 'Microsoft Teams · Example Org',
         externalAppId: APP.appId,
-        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, appPackage: expect.any(String) }
+        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId }
       })
     )
     expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
@@ -234,7 +234,7 @@ describe('the deployment Teams app routes', () => {
   it('claims the tenant only after the administrator-only catalog publish succeeds', async () => {
     const ok = await harness()
     await ok.callback()
-    expect(ok.order).toEqual(['publish', 'create'])
+    expect(ok.order).toEqual(['publish', 'create', 'record'])
     for (const held of [undefined, {}]) {
       const refused = await harness({ publish: 403, ...(held ? { held } : {}) })
       expect((await refused.callback()).json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NOT_ADMIN' })
@@ -279,10 +279,10 @@ describe('the deployment Teams app routes', () => {
     const res = await h.callback()
     expect(res.statusCode).toBe(200)
     expect(res.json<{ teams: unknown[] }>().teams).toEqual([
-      { id: 'team-1', name: 'Engineering', installed: false },
-      { id: 'team-2', name: 'Support', installed: true }
+      { id: 'team-1', name: 'Engineering', app: 'none' },
+      { id: 'team-2', name: 'Support', app: 'updated' }
     ])
-    expect(h.order).toEqual(['publish', 'membership', 'record', 'upgrade team-2'])
+    expect(h.order).toEqual(['publish', 'membership', 'upgrade team-2', 'record'])
     expect(h.recorded).toEqual([{ appPackage: expect.stringMatching(/^[\w-]{22}$/) }])
     const upgrade = h.graph.find((call) => call.url.endsWith('/upgrade'))
     expect(upgrade?.url).toBe('https://graph.microsoft.com/v1.0/teams/team-2/installedApps/install-team-2/upgrade')
@@ -295,16 +295,13 @@ describe('the deployment Teams app routes', () => {
     })
   })
 
-  it('keeps the connect when Microsoft refuses or fails a team’s upgrade, and leaves that team unmarked', async () => {
+  it('keeps the connect when Microsoft refuses or fails a team’s upgrade, reports it, and leaves the package pending', async () => {
     for (const upgrade of [403, 500]) {
       const h = await harness({ held: { agentIds: [AGENT] }, installedIn: ['team-1'], upgrade })
       const res = await h.callback()
       expect(res.statusCode).toBe(200)
-      expect(res.json<{ teams: { installed: boolean }[] }>().teams.map((team) => team.installed)).toEqual([
-        false,
-        false
-      ])
-      expect(h.recorded).toHaveLength(1)
+      expect(res.json<{ teams: { app: string }[] }>().teams.map((team) => team.app)).toEqual(['failed', 'none'])
+      expect(h.recorded).toEqual([])
     }
   })
 

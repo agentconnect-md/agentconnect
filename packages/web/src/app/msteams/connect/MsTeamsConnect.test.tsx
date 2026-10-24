@@ -72,8 +72,8 @@ describe('MsTeamsConnect', () => {
       integrationId: 'int-1',
       agentId: 'agent-a',
       teams: [
-        { id: 'team-1', name: 'Engineering', installed: false },
-        { id: 'team-2', name: 'Support', installed: false }
+        { id: 'team-1', name: 'Engineering', app: 'none' },
+        { id: 'team-2', name: 'Support', app: 'none' }
       ],
       ticket: 'sealed'
     })
@@ -93,8 +93,8 @@ describe('MsTeamsConnect', () => {
       integrationId: 'int-1',
       agentId: 'agent-a',
       teams: [
-        { id: 'team-1', name: 'Engineering', installed: true },
-        { id: 'team-2', name: 'Support', installed: false }
+        { id: 'team-1', name: 'Engineering', app: 'updated' },
+        { id: 'team-2', name: 'Support', app: 'none' }
       ],
       ticket: 'sealed'
     })
@@ -108,6 +108,21 @@ describe('MsTeamsConnect', () => {
     await act(async () => button('Done').click())
     expect(mocks.install).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Teams is connected')
+  })
+
+  it('names the teams Microsoft did not update and offers no install into them', async () => {
+    mocks.finish.mockResolvedValue({
+      integrationId: 'int-1',
+      agentId: 'agent-a',
+      teams: [{ id: 'team-1', name: 'Engineering', app: 'failed' }],
+      ticket: 'sealed'
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microsoft did not update the app in 1 team.')
+    expect(host.textContent).toContain('Not updated')
+    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect([box.checked, box.disabled]).toEqual([false, true])
+    expect(button('Done')).toBeTruthy()
   })
 
   it('names a refusal, and a sign-in Microsoft sent back without a code', async () => {
