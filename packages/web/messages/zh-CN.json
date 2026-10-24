@@ -6802,35 +6802,6 @@
       "queued": "自 {when} 开始等待",
       "openSession": "打开会话"
     },
-    "quotas": {
-      "title": "限额",
-      "edit": "编辑",
-      "hint": "本组织可使用的额度。超出限额时，启动或唤醒托管电脑、打开查看器都会被拒绝并说明原因，智能体和此处都一样。",
-      "rows": {
-        "runningDesktops": "运行中的托管电脑",
-        "desktops": "持有的托管电脑（含休眠）",
-        "storageGib": "托管电脑存储（GiB）",
-        "monthlyDesktopHours": "本月托管电脑时长",
-        "viewers": "打开的查看器",
-        "viewersPerComputer": "单台电脑的查看者",
-        "monthlyViewerGib": "本月中继的查看器视频（GiB）",
-        "screenshotStorageGib": "已存截图（GiB）",
-        "screenshotRetentionDays": "截图最长保留天数"
-      },
-      "unlimited": "不限",
-      "usedUnlimited": "{used} · 不限",
-      "limitOnly": "最多 {limit}",
-      "usedOf": "{used} / {limit}",
-      "invalid": "{label} 必须是 0 或更大的整数",
-      "defaultUnlimited": "默认：不限",
-      "defaultValue": "默认：{value}",
-      "noLimitFor": "{label} 不限",
-      "noLimit": "不限",
-      "editHint": "留空则沿用部署的默认值。降低限额不会停止正在运行的内容，只会拒绝下一次启动、唤醒或查看。",
-      "save": "保存",
-      "cancel": "取消",
-      "useDefaults": "恢复默认"
-    },
     "egress": {
       "title": "托管电脑出口",
       "edit": "编辑",

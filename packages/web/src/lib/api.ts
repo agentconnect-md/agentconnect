@@ -2943,41 +2943,6 @@ export async function fetchComputerPool(orgId?: string): Promise<ComputerPoolSta
   return apiGet<ComputerPoolStatusDto>(`${orgBase(orgId)}/computers/pool`)
 }
 
-/** One quota set (computer-use.md §15.5); null is unlimited. */
-export interface ComputerQuotas {
-  runningDesktops: number | null
-  desktops: number | null
-  storageGib: number | null
-  monthlyDesktopHours: number | null
-  modes: Partial<Record<ComputerAllocation, { runningDesktops?: number | null; desktops?: number | null }>>
-  viewers: number | null
-  viewersPerComputer: number | null
-  monthlyViewerGib: number | null
-  screenshotStorageGib: number | null
-  screenshotRetentionDays: number | null
-}
-
-export type ComputerQuotaOverride = Partial<ComputerQuotas>
-
-/** The organization's quotas: the deployment's defaults, its override, what applies and what it uses now. */
-export interface ComputerQuotaStatusDto {
-  defaults: ComputerQuotas
-  override: ComputerQuotaOverride | null
-  limits: ComputerQuotas
-  used: {
-    runningDesktops: number
-    desktops: number
-    storageGib: number
-    monthlyDesktopHours: number
-    modes: Record<ComputerAllocation, { runningDesktops: number; desktops: number }>
-    viewers: number
-    monthlyViewerGib: number
-    screenshotStorageGib: number
-  }
-  volumeGib: number
-  canEdit: boolean
-}
-
 /** Where the organization's managed computers' browser traffic leaves (computer-use.md §15.4); never the password. */
 export interface ComputerEgressDto {
   mode: 'deployment' | 'proxy'
@@ -3010,15 +2975,6 @@ export interface ComputerUsageDto {
     ComputerUsageRowDto & { computerId: string; name: string | null; kind: string; allocation: string | null }
   >
   screenshots: { written: { count: number; bytes: number }; stored: { count: number; bytes: number } }
-}
-
-export async function fetchComputerQuotas(orgId?: string): Promise<ComputerQuotaStatusDto> {
-  return apiGet<ComputerQuotaStatusDto>(`${orgBase(orgId)}/computers/quotas`)
-}
-
-/** A deployment administrator's override; null returns the organization to the defaults. */
-export async function setComputerQuotas(override: ComputerQuotaOverride | null): Promise<ComputerQuotaStatusDto> {
-  return apiPut<ComputerQuotaStatusDto>(`${orgBase()}/computers/quotas`, { override })
 }
 
 export async function fetchComputerEgress(orgId?: string): Promise<ComputerEgressDto> {
