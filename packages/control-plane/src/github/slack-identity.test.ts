@@ -362,6 +362,26 @@ describe('LogtoIdentityService.socialAccountFor', () => {
     ...extra
   })
 
+  it('reads a Microsoft identity’s email from the Graph profile the connector stored', async () => {
+    const azuread = {
+      userId: 'example-object-id',
+      details: {
+        name: 'Example Person',
+        rawData: {
+          displayName: 'Example Person',
+          mail: 'person@example.test',
+          userPrincipalName: 'person@example.test'
+        }
+      }
+    }
+    const { fetchImpl } = fakeLogto({ 'sub-1': account({ identities: { azuread } }) })
+    const result = await svcOf(fetchImpl).socialAccountFor('sub-1')
+    expect(result.identities.find((i) => i.target === 'azuread')).toMatchObject({
+      name: 'Example Person',
+      email: 'person@example.test'
+    })
+  })
+
   it('narrows each identity for rendering and addresses it at its provider', async () => {
     const { fetchImpl } = fakeLogto({ 'sub-1': account() })
     const result = await svcOf(fetchImpl).socialAccountFor('sub-1')
