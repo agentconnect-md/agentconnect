@@ -79,8 +79,18 @@ async function world(asker = ASKER, slack = false, editorsOnly = false) {
   conn.isFullMember = vi.fn(async (user: string) => user !== GUEST)
   conn.openDirectMessage = vi.fn(async (user: string) => `a:${user}`)
   conn.targetFor = (channel: string) => ({ serviceUrl: 'https://smba.example.test/', conversationId: channel })
-  conn.postCard = vi.fn(async () => `activity-${++posted}`)
-  conn.replaceCard = vi.fn(async () => {})
+  // The editor path's notice is a card in the conversation too; it is kept apart from the approval cards here.
+  const notices: string[] = []
+  const cardPosts = vi.fn(async (_target: unknown, _card: unknown, _summary?: string) => `activity-${++posted}`)
+  const cardReplaces = vi.fn(async (_id: string, _card: unknown, _at: unknown) => {})
+  conn.postCard = vi.fn(async (target: unknown, card: unknown, summary?: string) => {
+    if (summary !== 'Permission requested') return await cardPosts(target, card, summary)
+    notices.push(JSON.stringify(card))
+    return `notice-${notices.length}`
+  })
+  conn.replaceCard = vi.fn(async (id: string, card: unknown, at: unknown) =>
+    id.startsWith('notice-') ? undefined : await cardReplaces(id, card, at)
+  )
   daemon.msTeamsConnByIntegration.set(INT, conn)
   const cp = vi.fn(async (payload: { requestId: string; verify?: unknown }): Promise<Record<string, unknown>> => ({
     requestId: payload.requestId
@@ -128,9 +138,9 @@ async function world(asker = ASKER, slack = false, editorsOnly = false) {
   })
   const permissions = daemon.permissions
   const postedTo = (): string[] =>
-    conn.postCard.mock.calls.map((call: [{ conversationId: string }]) => call[0].conversationId)
+    cardPosts.mock.calls.map((call) => (call[0] as { conversationId: string }).conversationId)
   const onlyRequest = (): string => [...permissions.pendingApprovals.keys()][0]
-  return { store, conn, cp, permissions, postedTo, onlyRequest, applied }
+  return { store, conn, cp, permissions, postedTo, onlyRequest, applied, notices, cardPosts, cardReplaces }
 }
 
 describe('an approval in a Teams channel shared with another organization', () => {
@@ -152,7 +162,7 @@ describe('an approval in a Teams channel shared with another organization', () =
     )
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
     // The card says how it ended.
-    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    await vi.waitFor(() => expect(w.cardReplaces).toHaveBeenCalled())
     await w.store.close()
   })
 
@@ -161,7 +171,7 @@ describe('an approval in a Teams channel shared with another organization', () =
     const decided = vi.fn()
     void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
     await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${ASKER}`]))
-    expect(JSON.stringify(w.conn.postCard.mock.calls[0]![1])).toContain('Which one?')
+    expect(JSON.stringify(w.cardPosts.mock.calls[0]![1])).toContain('Which one?')
     expect(w.cp).not.toHaveBeenCalled()
     const id = w.onlyRequest()
 
@@ -172,7 +182,7 @@ describe('an approval in a Teams channel shared with another organization', () =
     await w.permissions.handlePermissionChoice({ requestId: id, option: 0, actor: { userId: ASKER } })
     await vi.waitFor(() => expect(decided).toHaveBeenCalledWith({ action: 'accept', content: { pick: 'a' } }))
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
-    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    await vi.waitFor(() => expect(w.cardReplaces).toHaveBeenCalled())
     await w.store.close()
   })
 
@@ -184,8 +194,8 @@ describe('an approval in a Teams channel shared with another organization', () =
       expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ notifyTs: 'activity-1' })
     )
     w.permissions.disableChatPermissionSurfaces(AGENT)
-    expect(w.conn.replaceCard.mock.calls.map((call: [string]) => call[0])).toEqual(['activity-1'])
-    expect(JSON.stringify(w.conn.replaceCard.mock.calls[0]![1])).toContain('turned off')
+    expect(w.cardReplaces.mock.calls.map((call) => call[0])).toEqual(['activity-1'])
+    expect(JSON.stringify(w.cardReplaces.mock.calls[0]![1])).toContain('turned off')
     await w.store.close()
   })
 
@@ -202,7 +212,7 @@ describe('an approval in a Teams channel shared with another organization', () =
   it('opens no chat for an asker who is not a full member, leaving the notice in the channel', async () => {
     const w = await world(GUEST)
     void w.permissions.onAcpPermission(AGENT, 's1', permission)
-    await vi.waitFor(() => expect(w.applied.some((a) => a.kind === 'notice')).toBe(true))
+    await vi.waitFor(() => expect(w.notices).toEqual([expect.stringContaining('Ask an Agent editor')]))
     await vi.waitFor(() => expect(w.conn.isFullMember).toHaveBeenCalledWith(GUEST))
     expect(w.conn.openDirectMessage).not.toHaveBeenCalled()
     expect(w.postedTo()).toEqual([])
@@ -239,7 +249,7 @@ describe('an approval on the editor path of a Teams turn', () => {
     expect(w.cp.mock.calls[0]![0]).toMatchObject({ integrationIds: [INT], requesterId: GUEST, sessionId: 'sid-1' })
     expect(w.conn.openDirectMessage).toHaveBeenCalledWith(EDITOR)
     // The card says which agent asks and links its session.
-    const card = cardText(w.conn.postCard.mock.calls[0]![1])
+    const card = cardText(w.cardPosts.mock.calls[0]![1])
     expect(card).toContain('Butler is waiting on an approval')
     expect(card).toContain('Open session')
     const id = w.onlyRequest()
@@ -258,8 +268,8 @@ describe('an approval on the editor path of a Teams turn', () => {
       undefined
     )
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
-    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
-    expect(cardText(w.conn.replaceCard.mock.calls.at(-1)![1])).toContain('Butler is waiting on an approval')
+    await vi.waitFor(() => expect(w.cardReplaces).toHaveBeenCalled())
+    expect(cardText(w.cardReplaces.mock.calls.at(-1)![1])).toContain('Butler is waiting on an approval')
     await w.store.close()
   })
 
@@ -274,8 +284,8 @@ describe('an approval on the editor path of a Teams turn', () => {
       optionId: 'allow',
       actor: { userId: EDITOR }
     })
-    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
-    expect(cardText(w.conn.replaceCard.mock.calls[0]![1])).toContain('No longer authorized')
+    await vi.waitFor(() => expect(w.cardReplaces).toHaveBeenCalled())
+    expect(cardText(w.cardReplaces.mock.calls[0]![1])).toContain('No longer authorized')
     expect(decided).not.toHaveBeenCalled()
     expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'pending' })
     await w.store.close()
@@ -290,7 +300,7 @@ describe('an approval on the editor path of a Teams turn', () => {
     const decided = vi.fn()
     void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
     await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
-    const card = cardText(w.conn.postCard.mock.calls[0]![1])
+    const card = cardText(w.cardPosts.mock.calls[0]![1])
     expect(card).toContain('Butler is waiting on an approval')
     expect(card).toContain('Which one?')
     expect(card).toContain('"Deny"')
@@ -310,8 +320,8 @@ describe('an approval on the editor path of a Teams turn', () => {
     })
     await vi.waitFor(() => expect(decided).toHaveBeenCalledWith({ action: 'accept', content: { pick: 'b' } }))
     expect(await row(w)).toMatchObject({ status: 'allowed', notifyTs: null })
-    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
-    expect(cardText(w.conn.replaceCard.mock.calls.at(-1)![1])).toContain('b — Edie')
+    await vi.waitFor(() => expect(w.cardReplaces).toHaveBeenCalled())
+    expect(cardText(w.cardReplaces.mock.calls.at(-1)![1])).toContain('b — Edie')
     await w.store.close()
   })
 
@@ -334,8 +344,8 @@ describe('an approval on the editor path of a Teams turn', () => {
     void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
     await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
     await w.permissions.handlePermissionChoice({ requestId: w.onlyRequest(), option: 0, actor: { userId: EDITOR } })
-    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
-    expect(cardText(w.conn.replaceCard.mock.calls[0]![1])).toContain('No longer authorized')
+    await vi.waitFor(() => expect(w.cardReplaces).toHaveBeenCalled())
+    expect(cardText(w.cardReplaces.mock.calls[0]![1])).toContain('No longer authorized')
     expect(decided).not.toHaveBeenCalled()
     expect(await row(w)).toMatchObject({ status: 'pending' })
     await w.store.close()
@@ -351,7 +361,7 @@ describe('an approval on the editor path of a Teams turn', () => {
     w.permissions.pendingApprovals.delete(id)
     await w.store.resolvePermissionRequest(AGENT, id, 'expired', Date.now())
     await w.permissions.retireOrphanedCards(INT)
-    expect(w.conn.replaceCard.mock.calls.map((call: [string]) => call[0])).toEqual(['activity-1'])
+    expect(w.cardReplaces.mock.calls.map((call) => call[0])).toEqual(['activity-1'])
     expect(await row(w)).toMatchObject({ notifyTs: null })
     await w.store.close()
   })
@@ -373,7 +383,7 @@ describe('an approval on the editor path of a Teams turn', () => {
     void w.permissions.onAcpPermission(AGENT, 's1', permission)
     await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
     w.permissions.disableChatPermissionSurfaces(AGENT)
-    expect(w.conn.replaceCard).not.toHaveBeenCalled()
+    expect(w.cardReplaces).not.toHaveBeenCalled()
     await w.store.close()
   })
 })
@@ -427,8 +437,7 @@ describe('an approval card in a Teams channel only editors may answer', () => {
   }
   const besideRow = async (w: Awaited<ReturnType<typeof world>>) =>
     (await w.store.listPermissionRequests(AGENT))[0] as unknown as Record<string, unknown>
-  const replaced = (w: Awaited<ReturnType<typeof world>>): string[] =>
-    w.conn.replaceCard.mock.calls.map((call: [string]) => call[0])
+  const replaced = (w: Awaited<ReturnType<typeof world>>): string[] => w.cardReplaces.mock.calls.map((call) => call[0])
 
   it('also sends the routed editor the card in their own chat, which decides it there', async () => {
     const w = await editorsWorld()
@@ -503,7 +512,7 @@ describe('an approval card in a Teams channel only editors may answer', () => {
       actor: { userId: EDITOR }
     })
     await vi.waitFor(() => expect(replaced(w)).toEqual(['activity-2']))
-    expect(JSON.stringify(w.conn.replaceCard.mock.calls[0]![1])).toContain('No longer authorized')
+    expect(JSON.stringify(w.cardReplaces.mock.calls[0]![1])).toContain('No longer authorized')
     expect(decided).not.toHaveBeenCalled()
     await w.store.close()
   })

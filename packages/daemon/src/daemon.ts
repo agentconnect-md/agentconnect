@@ -15941,6 +15941,7 @@ export class Daemon {
       assistantApprover: (agentId, requestId) => this.drafts.cardApprover(agentId, requestId),
       chatSurface: (agentId, integrationId, channel, externallyShared) =>
         this.chatSurface(agentId, integrationId, channel, externallyShared),
+      placeExternal: (agentId, integrationId, channel) => this.memoryPlaceExternal(agentId, integrationId, channel),
       chatEditorsOnly: (agentId, integrationId) => this.chatEditorsOnly(agentId, integrationId),
       chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
       personDm: (agentId, requestId, asker) => this.drafts.personApprover(agentId, requestId, asker),

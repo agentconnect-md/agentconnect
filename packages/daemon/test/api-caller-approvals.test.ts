@@ -96,6 +96,7 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui', platform = 'webcha
     approvalDmIntegrations: () => [],
     slackDmSessionTarget: () => 'encoded-target',
     chatSurface: () => 'open',
+    placeExternal: () => false,
     chatEditorsOnly: () => false,
     chatActor: async () => 'allowed' as const
   }

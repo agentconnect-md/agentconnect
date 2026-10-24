@@ -36,6 +36,7 @@ import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
+import { TURN_NOTICE_TEXT, turnNoticeSettledText } from '../platforms/approval-card.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
 
@@ -699,6 +700,14 @@ export function buildSubsessionApprovalSettledNotice(
       }
     }
   ]
+}
+
+/** The editor path's notice in the turn's own conversation, rewritten in place once its request settles. Pure. */
+export function buildTurnApprovalNotice(outcome?: SubsessionNoticeOutcome): unknown[] {
+  const text = outcome
+    ? turnNoticeSettledText(outcome, (name) => escapeMrkdwnLabel(clampTo(name, 60)))
+    : TURN_NOTICE_TEXT
+  return [{ type: 'section', text: { type: 'mrkdwn', text } }]
 }
 
 function subsessionSettledLine(asker: string, outcome: SubsessionNoticeOutcome): string {

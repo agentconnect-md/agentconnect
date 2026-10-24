@@ -17,6 +17,7 @@ import { FeishuConnection } from '../src/feishu/connection.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage } from '../src/feishu/normalize.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
+import { TURN_NOTICE_TEXT } from '../src/platforms/approval-card.js'
 import { parseFeishuApproval } from '../src/platforms/feishu/approval-card.js'
 import { parseFeishuElicit } from '../src/platforms/feishu/elicit-card.js'
 import type { SubsessionApprovalRoute } from '../src/permissions/subsession-approval.js'
@@ -244,7 +245,15 @@ async function world(
   }
   daemon.pending.set(JSON.stringify([AGENT, 's1']), pending)
   const permissions = daemon.permissions
-  const notices = (): string[] => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+  // The editor path's notice is posted on the card surface now, so it is told apart from a card here.
+  const isNotice = (post: { text: string }): boolean => post.text.includes(TURN_NOTICE_TEXT)
+  const all = (): any[] => fake.posts()
+  const noticePosts = () => all().filter(isNotice)
+  const posts = () => all().filter((post: any) => !isNotice(post))
+  const notices = (): string[] => [
+    ...applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
+    ...noticePosts().map((post: any) => post.text)
+  ]
   const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
   /** Click a permission card's option as the platform's ingress delivers it; what only the clicker was told by the click's own answer. */
   const click = async (
@@ -307,7 +316,9 @@ async function world(
     asked,
     slackConn,
     approvalRoute,
-    ...fake
+    ...fake,
+    posts,
+    noticePosts
   }
 }
 
@@ -337,6 +348,20 @@ describe.each(['feishu', 'googlechat'] as const)('%s permission cards', (platfor
       expect(w.posts()).toEqual([])
       await w.store.close()
     }
+  })
+
+  it('rewrites the notice once an Agent editor decides, naming them', async () => {
+    const w = await world(platform, { level: 'talk' })
+    const decided = w.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(w.noticePosts()).toHaveLength(1))
+    const id = w.onlyRequest()
+    await w.permissions.decideEditorPermission({ agentId: AGENT, requestId: id, decision: 'deny', decidedByName: 'Ed' })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    await vi.waitFor(() => expect(w.rewrites()).toHaveLength(1))
+    expect(w.rewrites()[0]!.ts).toMatch(/101$/)
+    expect(w.rewrites()[0]!.text).toContain('🚫 Permission denied by Ed.')
+    expect(w.rewrites()[0]!.live).toBe(false)
+    await w.store.close()
   })
 
   it('takes a participant’s click as the decision, and the card says who answered', async () => {

@@ -273,6 +273,27 @@ describe('a Teams turn’s permission card', () => {
     await w.store.close()
   })
 
+  it('posts the editor path’s notice as a card and replaces it with the outcome once an editor decides', async () => {
+    const w = await world({ level: 'talk' })
+    const decided = w.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+    expect(textOf(w.posts()[0]!.card)).toContain('Ask an Agent editor to allow it')
+    expect(ofType(w.posts()[0]!.card, 'Action.Execute')).toEqual([])
+    const id = [...w.permissions.pendingApprovals.keys()][0]
+    await w.permissions.decideEditorPermission({
+      agentId: AGENT,
+      requestId: id,
+      decision: 'allow',
+      decidedByName: 'Ed'
+    })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    await vi.waitFor(() => expect(w.replaced()).toHaveLength(1))
+    expect(w.replaced()[0]!.id).toBe('17000000001')
+    expect(textOf(w.replaced()[0]!.card)).toContain('✅ Permission granted by Ed.')
+    expect(w.notices()).toEqual([])
+    await w.store.close()
+  })
+
   it('leaves the card unchanged for a refused clicker and hands the refusal back on the ack', async () => {
     const w = await world()
     void w.permissions.onAcpPermission(AGENT, 's1', permission())

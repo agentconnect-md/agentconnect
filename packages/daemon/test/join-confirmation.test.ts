@@ -125,6 +125,7 @@ async function world(
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     chatSurface: () => over.surface ?? 'open',
+    placeExternal: () => false,
     chatEditorsOnly: () => false,
     chatActor: async () => 'not-editor',
     ...(over.personDm ? { personDm: over.personDm } : {}),

@@ -182,6 +182,7 @@ async function world(
     subsessionApprovalRoute,
     assistantApprover,
     chatSurface: () => over.surface ?? 'open',
+    placeExternal: () => false,
     chatEditorsOnly: () => over.editors !== undefined,
     chatActor: async (_agentId, _integrationId, actor) =>
       !over.editors || over.editors.includes(actor?.userId ?? '') ? 'allowed' : 'not-editor'

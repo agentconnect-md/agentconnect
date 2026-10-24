@@ -87,6 +87,7 @@ import type {
   SubsessionAsker,
   SubsessionNoticeView
 } from '../platforms/approval-card.js'
+import { TURN_NOTICE_TEXT } from '../platforms/approval-card.js'
 import { sessionLinkSourceFor } from '../platforms/link-source.js'
 import type { ChatEvent } from '../session/chat-turn.js'
 import { consolePermissionOptions, isAllowOption } from './editor-options.js'
@@ -173,6 +174,8 @@ export interface PermissionCoreHost {
     channel: string,
     externallyShared?: boolean
   ): ChatSurface
+  /** Whether a conversation is held external (a share or a guest detected), whatever its chat surface; one it cannot place counts as such. */
+  placeExternal(agentId: string, integrationId: string | undefined, channel: string): boolean
   /** Whether chat actions on this integration are taken only from the agent's editors (its platform's permissions are synced). */
   chatEditorsOnly(agentId: string, integrationId: string | undefined): boolean
   /** Whether this person may act in chat past the level and the conversation; fails closed where permissions are synced. */
@@ -477,11 +480,13 @@ interface ChatPermissionCard extends ApprovalCardHandle {
   settledFirst?: ApprovalCardDraft
 }
 
-/** A sub-session's neutral notice in its conversation (§5.6); its handle is on the row too, so a restart's sweep settles it. */
-interface SubsessionNotice {
+/** A neutral notice: a sub-session's in its conversation (§5.6), or the turn's own on the editor path (view unset); its handle is on the row too, so a restart's sweep settles it. */
+interface NeutralNotice {
   facet: ApprovalCardFacet
   handle: ApprovalCardHandle
-  view: SubsessionNoticeView
+  view?: SubsessionNoticeView
+  /** The turn's notice in an external conversation, whose settled line names nobody. */
+  anonymous?: boolean
 }
 
 /** Where people may answer a turn's approval: its conversation's card, the asker's DM for an external one, or only the editor path. */
@@ -519,7 +524,7 @@ interface ApprovalEntry<P, R> {
   notify?: DmNotice
   /** Set on a background sub-session's request: denied and stopped once its wait runs out. */
   subsession?: SubsessionWait
-  notice?: SubsessionNotice
+  notice?: NeutralNotice
   /** How it settled, for a notice whose post returns after that. */
   settled?: SubsessionNoticeOutcome
 }
@@ -752,7 +757,7 @@ export class PermissionCoordinator {
     })
 
     if (!notifyChat) return { requesterName }
-    const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
+    const text = TURN_NOTICE_TEXT
     try {
       if (p.webchat) {
         // A webchat conversation's owner answers it there too once people in chat may approve.
@@ -768,8 +773,7 @@ export class PermissionCoordinator {
       // surface owns that notice where it has one — Linear's feed has no chat transport at all,
       // so without this the gate would be invisible until the session went stale.
       if (!p.webchat || p.webchat.continuation) {
-        if (!this.host.approvalGateOpened(p, id, request) && chatOut(p))
-          this.host.enqueueApply(p, { kind: 'notice', text })
+        if (!this.host.approvalGateOpened(p, id, request) && chatOut(p)) this.postTurnNotice(id, agentId, p)
       }
     } catch (err) {
       // The durable editor request is authoritative. A best-effort chat notice
@@ -777,6 +781,42 @@ export class PermissionCoordinator {
       this.host.log().warn(`permission request notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }
     return { requesterName }
+  }
+
+  /** The editor path's notice in the turn's conversation; a card surface keeps its handle so it says how the request settled. */
+  private postTurnNotice(id: string, agentId: string, p: Pending): void {
+    const rec = this.pendingApprovals.get(id)
+    const facet = p.plan.approvalSurfaceSuppressed ? undefined : this.host.approvalCardFacet(p.plan.platform)
+    const integrationId = p.plan.integrationId
+    if (!rec || !facet || integrationId === undefined) {
+      this.host.enqueueApply(p, { kind: 'notice', text: TURN_NOTICE_TEXT })
+      return
+    }
+    const thread = p.plan.thread ? { thread: p.plan.thread } : {}
+    const handle: ApprovalCardHandle = {
+      conn: chatOut(p),
+      channel: facet.cardChannel?.({ channel: p.plan.channel, ...thread }) ?? p.plan.channel,
+      ...thread
+    }
+    // Read from the audience, not the chat surface: a closed surface outranks external there.
+    const anonymous =
+      p.entry.msg.externallyShared === true || this.host.placeExternal(agentId, integrationId, p.plan.channel)
+    void facet
+      .send(this.elicitCardHost, p, facet.turnNotice())
+      .catch(() => undefined)
+      .then(async (ts) => {
+        // A card that did not land still leaves the plain notice.
+        if (!ts) return this.host.enqueueApply(p, { kind: 'notice', text: TURN_NOTICE_TEXT })
+        await this.keepNotice(
+          id,
+          rec,
+          { facet, handle: { ...handle, ts }, ...(anonymous ? { anonymous } : {}) },
+          integrationId
+        )
+      })
+      .catch((err: unknown) =>
+        this.host.log().warn(`permission request notice for "${p.plan.sessionKey}" not kept: ${formatErr(err)}`)
+      )
   }
 
   private async resolveStoredPermissionRequest(
@@ -1913,13 +1953,7 @@ export class PermissionCoordinator {
         : null
     if (!permission || !draft) {
       const ts = await post(facet.notice(asker))
-      if (ts)
-        await this.keepSubsessionNotice(
-          requestId,
-          rec,
-          { facet, handle: { ...landed, ts }, view: asker },
-          at.integrationId
-        )
+      if (ts) await this.keepNotice(requestId, rec, { facet, handle: { ...landed, ts }, view: asker }, at.integrationId)
       return await editorDm()
     }
     const ts = await post(draft)
@@ -1953,15 +1987,17 @@ export class PermissionCoordinator {
   }
 
   /** Hold the notice's handle until its request settles, on the row too; a request settled while it posted gets its settled line now. */
-  private async keepSubsessionNotice(
+  private async keepNotice(
     requestId: string,
     rec: PendingApproval,
-    notice: SubsessionNotice & { handle: { ts: string } },
+    notice: NeutralNotice & { handle: { ts: string } },
     integrationId: string
   ): Promise<void> {
     const store = this.host.store()
+    const { channel, ts } = notice.handle
+    const kind = notice.view ? undefined : 'turn'
     const stored = await store
-      .setPermissionRequestNotice(rec.agentId, requestId, integrationId, notice.handle.channel, notice.handle.ts)
+      .setPermissionRequestNotice(rec.agentId, requestId, integrationId, channel, ts, kind)
       .catch(() => false)
     // Still listed, a decision in flight included: whichever path settles it rewrites the notice.
     if (this.pendingApprovals.get(requestId) === rec) {
@@ -1969,12 +2005,14 @@ export class PermissionCoordinator {
       return
     }
     // Only a turn's release awaits between unlisting and settling, and it settles as cancelled.
-    this.settleSubsessionNotice(notice, rec.settled ?? { kind: 'cancelled' })
+    this.settleNotice(notice, rec.settled ?? { kind: 'cancelled' })
     if (stored) void store.clearPermissionRequestNotice(rec.agentId, requestId).catch(() => {})
   }
 
-  private settleSubsessionNotice(notice: SubsessionNotice, outcome: SubsessionNoticeOutcome): void {
-    notice.facet.rewrite(notice.handle, notice.facet.noticeSettled(notice.view, outcome))
+  private settleNotice(notice: NeutralNotice, outcome: SubsessionNoticeOutcome): void {
+    const { facet, view } = notice
+    const named = notice.anonymous && 'by' in outcome ? { ...outcome, by: null } : outcome
+    facet.rewrite(notice.handle, view ? facet.noticeSettled(view, outcome) : facet.turnNoticeSettled(named))
   }
 
   /** Rewrite the cards whose rows settled while no process could edit them (a restart): the reconnect sweep (slack-approval-dm.md §5.4). */
@@ -1990,12 +2028,19 @@ export class PermissionCoordinator {
     }
   }
 
-  /** Settle sub-session notices whose requests ended while no process could edit them (a restart): the reconnect sweep's half for §5.6. */
+  /** Settle neutral notices whose requests ended while no process could edit them (a restart): the reconnect sweep's half for §5.6. */
   async retireOrphanedSubsessionNotices(integrationId: string): Promise<void> {
     const cards = this.host.chatCardsAt(integrationId)
     if (!cards) return
     const store = this.host.store()
     for (const row of await store.takeOrphanedSubsessionNotices(integrationId)) {
+      const outcome: SubsessionNoticeOutcome =
+        row.status === 'allowed' || row.status === 'denied' ? { kind: row.status, by: null } : { kind: 'cancelled' }
+      const handle = { conn: cards.conn, channel: row.noticeChannel, ts: row.noticeTs }
+      if (row.noticeKind === 'turn') {
+        cards.facet.rewrite(handle, cards.facet.turnNoticeSettled(outcome))
+        continue
+      }
       const agent = this.host.agents().get(row.agentId)
       const session = await store.getSessionByAcpIdForAgent(row.agentId, row.sessionId).catch(() => undefined)
       const source = sessionLinkSourceFor(cards.facet.platform)
@@ -2004,9 +2049,6 @@ export class PermissionCoordinator {
         title: subsessionLabel(session?.title, undefined),
         ...(session?.sessionId ? { sessionUrl: this.host.sessionLink(session.sessionId, source) } : {})
       }
-      const outcome: SubsessionNoticeOutcome =
-        row.status === 'allowed' || row.status === 'denied' ? { kind: row.status, by: null } : { kind: 'cancelled' }
-      const handle = { conn: cards.conn, channel: row.noticeChannel, ts: row.noticeTs }
       cards.facet.rewrite(handle, cards.facet.noticeSettled(view, outcome))
     }
   }
@@ -2148,7 +2190,7 @@ export class PermissionCoordinator {
   ): void {
     rec.settled = outcome
     if (rec.notice) {
-      this.settleSubsessionNotice(rec.notice, outcome)
+      this.settleNotice(rec.notice, outcome)
       void this.host
         .store()
         .clearPermissionRequestNotice(rec.agentId, id)
