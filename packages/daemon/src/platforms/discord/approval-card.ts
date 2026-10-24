@@ -15,7 +15,9 @@ import {
   orphanMark,
   subsessionAskerText,
   subsessionSettledText,
-  subsessionWaitText
+  subsessionWaitText,
+  TURN_NOTICE_TEXT,
+  turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { DiscordConnection } from '../../discord/connection.js'
@@ -103,6 +105,14 @@ export const discordApprovalCards: ApprovalCardFacet = {
     const line = subsessionSettledText(subsessionAskerText(view.agentName, view.title, md), outcome, (s) => md(s, 60))
     const link = view.sessionUrl ? `\n[Open the task](${view.sessionUrl})` : ''
     return { text: fit(`${line}${link}`) } satisfies DiscordApprovalDraft
+  },
+
+  turnNotice(): ApprovalCardDraft {
+    return { text: TURN_NOTICE_TEXT } satisfies DiscordApprovalDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    return { text: turnNoticeSettledText(outcome, (s) => md(s, 60)) } satisfies DiscordApprovalDraft
   },
 
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft {

@@ -117,6 +117,7 @@ export const canonicalColumns = [
   'noteId',
   'noticeChannel',
   'noticeIntegrationId',
+  'noticeKind',
   'noticeTs',
   'notifyChannel',
   'notifyIntegrationId',

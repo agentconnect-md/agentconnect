@@ -19,6 +19,7 @@ import {
   buildSubsessionApprovalIntro,
   buildSubsessionApprovalNotice,
   buildSubsessionApprovalSettledNotice,
+  buildTurnApprovalNotice,
   SLACK_PERMISSION_MAX_OPTIONS,
   type SubsessionNoticeOutcome
 } from '../../slack/render.js'
@@ -64,6 +65,17 @@ export const slackApprovalCards: ApprovalCardFacet = {
   noticeSettled(view: SubsessionNoticeView, outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
     return {
       blocks: buildSubsessionApprovalSettledNotice(view, outcome),
+      fallback: 'Permission request settled'
+    } satisfies SlackApprovalDraft
+  },
+
+  turnNotice(): ApprovalCardDraft {
+    return { blocks: buildTurnApprovalNotice(), fallback: 'Permission requested' } satisfies SlackApprovalDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    return {
+      blocks: buildTurnApprovalNotice(outcome),
       fallback: 'Permission request settled'
     } satisfies SlackApprovalDraft
   },

@@ -35,7 +35,7 @@ tool approval onto `elicitation/create`), the daemon's
   lands in the daemon's `permission_requests` table
   (`packages/daemon/src/store/local-store.ts`), and chat gets only a notice:
   _"🔒 Permission requested. Ask an Agent editor to allow it from the Agent
-  or Session page."_ The console polls
+  or Session page."_ (§5.5 says how it reads once decided.) The console polls
   `GET /orgs/:org/agents/:id/permission-requests` (the CP proxies to the
   owning daemon and persists nothing) and an agent **editor** decides from
   the Agent or Session page.
@@ -296,6 +296,37 @@ in a DM channel routes exactly like one in the session thread:
 - **No timeout:** pending approvals have none today and this design adds
   none.
 
+### 5.5 The conversation's notice says how it ended
+
+A notice still reading "Permission requested" after an editor answered sends
+people after an editor who already acted, and one left by a stopped turn or a
+restart waits forever. So on a platform with an approval card (Slack, Teams,
+Telegram, Discord, Feishu/Lark, Google Chat) the editor path's notice is posted
+through the card facet (`turnNotice`, on the turn's apply chain), its handle is
+kept, and it is rewritten in place once the request settles (`turnNoticeSettled`):
+
+| Outcome                  | The notice reads                    |
+| ------------------------ | ----------------------------------- |
+| An editor allowed it     | _"✅ Permission granted by Ada."_   |
+| An editor denied it      | _"🚫 Permission denied by Ada."_    |
+| The turn ended undecided | _"⏳ Permission no longer needed."_ |
+
+A console decision with no recorded name reads "by an Agent editor". In an
+external conversation the line names nobody ("✅ Permission granted."): the
+notice there never named a person, and the decider is an organization member.
+The handle rides the same row columns a task's notice uses
+(`noticeIntegrationId`, `noticeChannel`, `noticeTs`) with `noticeKind = 'turn'`,
+so the reconnect sweep that settles a task's notice (assistant-mode.md §5.6)
+rewrites this one too, in its own words and without a name. A request that
+settles while the notice is still posting gets its settled line once the post
+returns.
+
+DingTalk and QQ have no approval card, so their notice stays as posted: neither
+connection can edit the message it sent, and a second line on every decision
+would double the noise (and QQ's passive replies are limited in number and
+time). A webchat conversation lists its pending requests itself, and Linear's
+activity feed already follows a gate through to its decision.
+
 ## 6. Recording the decision
 
 ### 6.1 Store (daemon SQLite, `permission_requests`)
@@ -306,7 +337,9 @@ New nullable columns:
   `slack:<teamId>:<userId>` for DM/chat-card decisions (the `ownerIdentity`
   encoding, keyed on the pair per the standing rule);
 - `resolvedByName` — display name captured at decision time;
-- `notifyChannel`, `notifyTs` — the DM card handle, for §5.4.
+- `notifyChannel`, `notifyTs` — the DM card handle, for §5.4;
+- `noticeKind` — `turn` when the notice handle is the editor path's own notice
+  (§5.5), null for a task's notice.
 
 The existing `ownerId` column is the daemon-pool lease and is **not** a
 human — untouched.

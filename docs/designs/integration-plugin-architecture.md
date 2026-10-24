@@ -543,7 +543,8 @@ looked up exactly, so webchat, hook and dream turns inherit neither:
   message buttons need a provider grant a bot cannot count on. A card is built for the
   connection it is posted on, the turn's reply connection or, for a surface that posts
   through a leased egress (Google Chat), that egress. A surface builds the live card, its settled
-  form, a task's card and notice, and the form a restart's sweep
+  form, a task's card and notice, the editor path's own notice and its settled line
+  (slack-approval-dm.md §5.5), and the form a restart's sweep
   rewrites; it posts on the turn's apply chain (`send`) or into another conversation of
   the platform (`post`, for a task's request), and rewrites in place. `maxOptions`
   never exceeds the cap every surface and the console share (#1969). A button carries

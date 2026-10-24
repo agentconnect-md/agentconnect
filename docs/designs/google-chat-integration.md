@@ -724,7 +724,8 @@ Permission requests follow the rule every chat surface shares
 where people in chat may approve tool calls, the request is an approval card in the
 turn's thread (integration-plugin-architecture.md §7.3), or an elicitation card (§5)
 for an MCP approval, and a refused click is told in a private message; otherwise it
-goes to the agent's editors in the Console queue. That approval authority is separate
+goes to the agent's editors in the Console queue, and the thread's notice is patched to
+the outcome once they decide (slack-approval-dm.md §5.5). That approval authority is separate
 from private transcript readership. No Google message or mention grants approval
 authority, and an ask the card cannot render must never select a permissive
 fallback. Verify this behavior for private DM turns as part of the acceptance checks.

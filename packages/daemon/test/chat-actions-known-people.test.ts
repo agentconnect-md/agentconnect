@@ -161,8 +161,11 @@ async function world(
   }
   daemon.pending.set(JSON.stringify([AGENT, 's1']), pending)
   const permissions = daemon.permissions
-  /** Where each post went, by channel. */
-  const postedTo = (): string[] => conn.postBlocks.mock.calls.map((call: unknown[]) => call[0] as string)
+  /** Where each card went, by channel; the editor path's notice is told apart by its fallback. */
+  const postedTo = (): string[] =>
+    conn.postBlocks.mock.calls
+      .filter((call: unknown[]) => call[2] !== 'Permission requested')
+      .map((call: unknown[]) => call[0] as string)
   /** What each person was told privately. */
   const toldTo = (user: string): string[] =>
     conn.postEphemeral.mock.calls.filter((call: unknown[]) => call[1] === user).map((call: unknown[]) => call[2])

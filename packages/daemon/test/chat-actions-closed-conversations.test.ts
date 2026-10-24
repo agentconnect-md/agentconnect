@@ -140,9 +140,17 @@ async function world(opts: { level: 'talk' | 'approve' | 'settings'; core?: Core
     workBoundary: new WorkBoundary()
   }
   daemon.pending.set(JSON.stringify([AGENT, 's1']), pending)
-  /** Where each post went, by channel. */
-  const postedTo = (): string[] => conn.postBlocks.mock.calls.map((call: unknown[]) => call[0] as string)
-  const notices = (): string[] => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+  // The editor path's notice is posted as blocks now, so it is told apart from a card by its fallback.
+  const isNotice = (call: unknown[]): boolean => call[2] === 'Permission requested'
+  /** Where each card went, by channel. */
+  const postedTo = (): string[] =>
+    conn.postBlocks.mock.calls.filter((call: unknown[]) => !isNotice(call)).map((call: unknown[]) => call[0] as string)
+  const notices = (): string[] => [
+    ...applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
+    ...conn.postBlocks.mock.calls
+      .filter(isNotice)
+      .map((call: unknown[]) => (call[1] as { text: { text: string } }[])[0]!.text.text)
+  ]
   const permissions = daemon.permissions
   const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
   return { daemon, store, conn, cp, integration, permissions, postedTo, notices, onlyRequest }
@@ -259,7 +267,7 @@ describe('a conversation shared with another organization', () => {
     await vi.waitFor(() => expect(w.postedTo()).toEqual(['D-U-ASKER']))
     // No card in the shared conversation, and no editor chain for this one.
     expect(w.cp).not.toHaveBeenCalled()
-    const dmCard = JSON.stringify(w.conn.postBlocks.mock.calls[0][1])
+    const dmCard = JSON.stringify(w.conn.postBlocks.mock.calls.find((c: unknown[]) => c[0] === 'D-U-ASKER')[1])
     expect(dmCard).toContain('please write it')
     const id = w.onlyRequest()
 
@@ -327,7 +335,11 @@ describe('a conversation shared with another organization', () => {
 
   it('falls back to the editor path when the asker’s DM does not land', async () => {
     const w = await world({ level: 'approve', core: { externalChannels: ['C1'] } })
-    w.conn.postBlocks.mockImplementationOnce(async () => undefined)
+    // Only the asker's DM fails; the notice in the conversation still lands.
+    const post = w.conn.postBlocks.getMockImplementation()
+    w.conn.postBlocks.mockImplementation(async (channel: string, ...rest: unknown[]) =>
+      channel === 'D-U-ASKER' ? undefined : await post(channel, ...rest)
+    )
     void w.permissions.onAcpPermission(AGENT, 's1', permission)
     await vi.waitFor(() => expect(w.postedTo()).toEqual(['D-U-ASKER', 'D-U-EDITOR']))
     expect(w.cp).toHaveBeenCalledTimes(1)
@@ -352,6 +364,76 @@ describe('a conversation shared with another organization', () => {
     await w.permissions.handlePermissionChoice({ requestId: id, optionId: 'allow', actor: { userId: 'U-ASKER' } })
     expect(w.permissions.pendingApprovals.has(id)).toBe(true)
     expect(decided).not.toHaveBeenCalled()
+    await w.store.close()
+  })
+})
+
+describe('the editor path’s notice in the conversation', () => {
+  /** The notice's own post and every rewrite of it in C1, as text. */
+  const notice = (w: Awaited<ReturnType<typeof world>>) => {
+    const calls = w.conn.postBlocks.mock.calls as unknown[][]
+    const at = calls.findIndex((c) => c[2] === 'Permission requested')
+    const rewrites = (w.conn.updateBlocks.mock.calls as unknown[][])
+      .filter((c) => c[0] === 'C1')
+      .map((c) => ({ ts: c[1], text: (c[2] as { text: { text: string } }[])[0]!.text.text }))
+    return { ts: at < 0 ? undefined : `ts-${at + 1}`, rewrites }
+  }
+
+  it('says who decided once an Agent editor answers', async () => {
+    const w = await world({ level: 'talk' })
+    const decided = w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(notice(w).ts).toBeDefined())
+    const id = w.onlyRequest()
+    await w.permissions.decideEditorPermission({
+      agentId: AGENT,
+      requestId: id,
+      decision: 'allow',
+      decidedByName: 'Ed'
+    })
+    await decided
+    await vi.waitFor(() =>
+      expect(notice(w).rewrites).toEqual([{ ts: notice(w).ts, text: '✅ Permission granted by Ed.' }])
+    )
+    await w.store.close()
+  })
+
+  it('names nobody in a conversation shared with another organization', async () => {
+    const w = await world({ level: 'talk', core: { externalChannels: ['C1'] } })
+    const decided = w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(notice(w).ts).toBeDefined())
+    const id = w.onlyRequest()
+    await w.permissions.decideEditorPermission({
+      agentId: AGENT,
+      requestId: id,
+      decision: 'allow',
+      decidedByName: 'Ed'
+    })
+    await decided
+    await vi.waitFor(() => expect(notice(w).rewrites).toEqual([{ ts: notice(w).ts, text: '✅ Permission granted.' }]))
+    await w.store.close()
+  })
+
+  it('settles a notice a restart left behind in its own words, naming nobody', async () => {
+    const w = await world({ level: 'talk' })
+    await w.store.createPermissionRequest({
+      id: 'request-1',
+      agentId: AGENT,
+      sessionId: 's1',
+      createdAt: 100,
+      requesterId: null,
+      requesterName: null,
+      command: 'Write example.txt',
+      status: 'pending',
+      resolvedAt: null
+    })
+    expect(await w.store.setPermissionRequestNotice(AGENT, 'request-1', INT, 'C1', '9.100', 'turn')).toBe(true)
+    await w.store.resolvePermissionRequest(AGENT, 'request-1', 'denied', 200, {
+      resolvedBy: null,
+      resolvedByName: 'Ed'
+    })
+    await w.permissions.retireOrphanedSubsessionNotices(INT)
+    await w.permissions.retireOrphanedSubsessionNotices(INT)
+    expect(notice(w).rewrites).toEqual([{ ts: '9.100', text: '🚫 Permission denied.' }])
     await w.store.close()
   })
 })

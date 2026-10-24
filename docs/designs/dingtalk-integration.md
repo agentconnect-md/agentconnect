@@ -368,7 +368,8 @@ sent through `shareFile`; an image's caption follows as its own message.
 Questions reuse `ElicitCardFacet` for single-choice and yes/no asks of up to
 twelve options. Each is asked with an interactive card answered by a tap, and
 falls back to a numbered text card answered by reply. Tool approvals stay in
-the Console, with a notice in the conversation.
+the Console, with a notice in the conversation that stays as posted: a robot's
+text message cannot be edited (slack-approval-dm.md §5.5).
 
 **The tap card.** The integration owns one advanced card template, kept in the
 project's own organization; its ID is a daemon constant that the

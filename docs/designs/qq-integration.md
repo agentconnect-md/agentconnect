@@ -187,7 +187,9 @@ Tool approvals now have a common interface, the approval-card facet
 and who may answer is the agent's "What people can do in chat" setting
 ([product-conventions.md](../product-conventions.md)). QQ does not implement it:
 its message buttons need a grant from QQ that a bot cannot count on. A QQ
-conversation gets a notice, and its approvals are answered in the Console.
+conversation gets a notice, and its approvals are answered in the Console. The
+notice stays as posted once they are: the bot cannot edit a message it sent
+([slack-approval-dm.md](slack-approval-dm.md) §5.5).
 
 ### Non-image file sharing
 

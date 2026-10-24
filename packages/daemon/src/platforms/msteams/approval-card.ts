@@ -17,7 +17,9 @@ import {
   orphanMark,
   subsessionAskerText,
   subsessionSettledText,
-  subsessionWaitText
+  subsessionWaitText,
+  TURN_NOTICE_TEXT,
+  turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
@@ -162,6 +164,18 @@ export const msTeamsApprovalCards: ApprovalCardFacet = {
     )
     const body = [...plainText(line), ...(view.sessionUrl ? [openUrlRow('Open the task', view.sessionUrl)] : [])]
     return { card: adaptiveCard(body) } satisfies MsTeamsCardDraft
+  },
+
+  turnNotice(): ApprovalCardDraft {
+    return {
+      card: adaptiveCard(plainText(TURN_NOTICE_TEXT)),
+      summary: 'Permission requested'
+    } satisfies MsTeamsCardDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    const line = turnNoticeSettledText(outcome, (s) => clampTo(s, 60))
+    return { card: adaptiveCard(plainText(line)) } satisfies MsTeamsCardDraft
   },
 
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft {

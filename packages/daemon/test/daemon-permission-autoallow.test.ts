@@ -18,6 +18,7 @@ import { pendingTurnKey } from '../src/daemon/turn-types.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 import {
   SLACK_PERMISSION_MAX_OPTIONS,
+  buildTurnApprovalNotice,
   ELICIT_CONFIRM_ACTION,
   elicitForm,
   elicitFormBlockId,
@@ -1129,7 +1130,8 @@ describe('what people can do in chat decides whether the conversation gets an ap
     ;(daemon as any).agents.set('agent-1', chatAgent('talk'))
     void (daemon as any).permissions.onAcpPermission('agent-1', 's1', req)
     await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
-    expect(posted).toEqual([])
+    // Only the editor path's notice, which is no card.
+    await vi.waitFor(() => expect(posted).toEqual([buildTurnApprovalNotice()]))
   })
 
   it.each([
@@ -1142,7 +1144,7 @@ describe('what people can do in chat decides whether the conversation gets an ap
     const approval = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
     if (!card) {
       await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
-      expect(posted).toEqual([])
+      await vi.waitFor(() => expect(posted).toEqual([buildTurnApprovalNotice()]))
       return
     }
     await vi.waitFor(() => expect(posted).toHaveLength(1))

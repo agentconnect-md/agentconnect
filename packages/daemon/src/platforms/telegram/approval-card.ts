@@ -15,7 +15,9 @@ import {
   orphanMark,
   subsessionAskerText,
   subsessionSettledText,
-  subsessionWaitText
+  subsessionWaitText,
+  TURN_NOTICE_TEXT,
+  turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
@@ -112,6 +114,14 @@ export const telegramApprovalCards: ApprovalCardFacet = {
     return { text: plain(`${line}${link}`) } satisfies TelegramApprovalDraft
   },
 
+  turnNotice(): ApprovalCardDraft {
+    return { text: TURN_NOTICE_TEXT } satisfies TelegramApprovalDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    return { text: plain(turnNoticeSettledText(outcome, (s) => clampTo(s, 60))) } satisfies TelegramApprovalDraft
+  },
+
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft {
     const by = row.resolvedByName ? ` by ${clampTo(row.resolvedByName, 60)}` : ''
     return {
@@ -124,11 +134,12 @@ export const telegramApprovalCards: ApprovalCardFacet = {
     const d = draft as TelegramApprovalDraft
     // Anchored as the turn's other posts are, so a `tg:<root>` session keeps the card in its reply chain.
     const { replyTo } = host.turnState(turn) as TelegramTurnState
+    const anchor = { threadTs: turn.plan.thread, ...(replyTo !== undefined ? { replyTo } : {}) }
+    // A notice has no keyboard, so it is posted as the plain line `rewrite` edits.
     return await host.postCardSerialized(turn, (conn) =>
-      (conn as TelegramConnection).postCard(turn.plan.channel, d.text, d.buttons ?? [], {
-        threadTs: turn.plan.thread,
-        ...(replyTo !== undefined ? { replyTo } : {})
-      })
+      d.buttons
+        ? (conn as TelegramConnection).postCard(turn.plan.channel, d.text, d.buttons, anchor)
+        : (conn as TelegramConnection).postChrome(turn.plan.channel, d.text, anchor)
     )
   },
 

@@ -288,7 +288,9 @@ non-editor is refused privately and the card stays live. The module's
 `chatMemberKey` is the clicker's `aadObjectId`, lower-cased.
 
 In an external place (§4.6) no approval card goes into the conversation, as on
-Slack ([assistant mode](assistant-mode.md) §5.5): a neutral notice does, and
+Slack ([assistant mode](assistant-mode.md) §5.5): a neutral notice does, replaced
+with the outcome once the request settles and naming nobody there
+([approval surfaces](slack-approval-dm.md) §5.5), and
 the card goes to the asker's own 1:1 chat when they are a full member of the
 home tenant. The connection opens that chat (`openDirectMessage`) by the
 asker's `29:` ID, read from a conversation the bot shares with them. Only the

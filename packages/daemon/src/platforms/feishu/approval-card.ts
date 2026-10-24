@@ -16,7 +16,9 @@ import {
   orphanMark,
   subsessionAskerText,
   subsessionSettledText,
-  subsessionWaitText
+  subsessionWaitText,
+  TURN_NOTICE_TEXT,
+  turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { FeishuConnection } from '../../feishu/connection.js'
@@ -130,6 +132,15 @@ export const feishuApprovalCards: ApprovalCardFacet = {
     )
     const elements = [feishuPlainText(fit(line)), ...(view.sessionUrl ? [link(view.sessionUrl)] : [])]
     return { card: feishuCard(elements) } satisfies FeishuApprovalDraft
+  },
+
+  turnNotice(): ApprovalCardDraft {
+    return { card: feishuCard([feishuPlainText(TURN_NOTICE_TEXT)]) } satisfies FeishuApprovalDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    const text = turnNoticeSettledText(outcome, (s) => clampTo(s, 60))
+    return { card: feishuCard([feishuPlainText(fit(text))]) } satisfies FeishuApprovalDraft
   },
 
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft {
