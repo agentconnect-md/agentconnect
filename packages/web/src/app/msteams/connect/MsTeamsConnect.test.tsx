@@ -125,6 +125,20 @@ describe('MsTeamsConnect', () => {
     expect(button('Done')).toBeTruthy()
   })
 
+  // teams-integration.md §8.4: a Teams Store install already has the app, so connecting the tenant finishes.
+  it('finishes a Teams Store connect without a team step, and names a sign-in of another tenant', async () => {
+    mocks.finish.mockResolvedValue({ integrationId: 'int-1', agentId: 'agent-a', teams: [], store: true })
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Teams is connected')
+    expect(host.textContent).toContain('Message the agent in Teams')
+    expect(mocks.install).not.toHaveBeenCalled()
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    mocks.finish.mockRejectedValue(new mocks.FakeApiError('mismatch', 400, 'MSTEAMS_TENANT_MISMATCH'))
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('added the app in Teams')
+  })
+
   it('names a refusal, and a sign-in Microsoft sent back without a code', async () => {
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('taken', 409, 'MSTEAMS_TENANT_TAKEN'))
     await land(`code=c&state=${STATE}`)

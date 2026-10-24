@@ -1,4 +1,4 @@
-import type { RcDeploymentConfig, RcGoogleChatAnchor } from '@agentconnect.md/protocol'
+import type { RcDeploymentConfig, RcGoogleChatAnchor, RcMsTeamsAnchor } from '@agentconnect.md/protocol'
 import type { DeploymentConfigRuntime } from '../persistence/deployment-config.js'
 
 /**
@@ -137,15 +137,17 @@ export function relayDeploymentSnapshot(
   deployment: Pick<DeploymentConfigRuntime, 'revision' | 'values' | 'secrets'> | undefined,
   googleChatAnchor: RcGoogleChatAnchor | undefined,
   publicRelayUrl?: string,
-  webAppUrl?: string
+  webAppUrl?: string,
+  msTeamsAnchor?: RcMsTeamsAnchor
 ): RcDeploymentConfig | undefined {
-  if (!deployment && !googleChatAnchor && !publicRelayUrl && !webAppUrl) return undefined
+  if (!deployment && !googleChatAnchor && !msTeamsAnchor && !publicRelayUrl && !webAppUrl) return undefined
   const githubWebhookSecret = deployment?.values.github ? deployment.secrets['github.webhookSecret'] : undefined
   return {
     // Zero when nothing came from a stored document.
     revision: deployment?.revision ?? 0,
     ...(githubWebhookSecret ? { githubWebhookSecret } : {}),
     ...(googleChatAnchor ? { googleChatAnchor } : {}),
+    ...(msTeamsAnchor ? { msTeamsAnchor } : {}),
     ...(publicRelayUrl ? { publicRelayUrl } : {}),
     ...(webAppUrl ? { webAppUrl } : {})
   }

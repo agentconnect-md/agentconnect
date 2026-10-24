@@ -174,6 +174,8 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
         if (source === 'not_found')
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams integration not found.' })
         if (source === 'no_relay') return reply.code(409).send(RELAY_ORIGIN_MISSING)
+        // A Teams Store install takes its package from the Store listing (§8.4).
+        if (source.bot.platformConfig?.source === 'store') return { current: true }
         return { current: source.bot.platformConfig?.appPackage === source.fingerprint }
       }
     )

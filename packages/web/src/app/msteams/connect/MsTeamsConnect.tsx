@@ -34,7 +34,8 @@ const ERROR_KEYS: Record<string, string> = {
   MSTEAMS_TENANT_IN_USE: 'inUse',
   MSTEAMS_CONNECT_NO_AGENT: 'noAgent',
   MSTEAMS_RELAY_ORIGIN_MISSING: 'unavailable',
-  MSTEAMS_CONNECT_UNAVAILABLE: 'unavailable'
+  MSTEAMS_CONNECT_UNAVAILABLE: 'unavailable',
+  MSTEAMS_TENANT_MISMATCH: 'tenantMismatch'
 }
 
 export default function MsTeamsConnect() {
@@ -77,11 +78,16 @@ export default function MsTeamsConnect() {
         if (cancelled) return
         setOrgId(org)
         setResult(connected)
+        const slug = (await fetchOrgs().catch(() => [])).find((o) => o.id === org)?.slug
+        if (slug) setAgentHref(`/${slug}/agents/${connected.agentId}`)
+        // A Teams Store install already has the app: connecting the tenant was the whole step.
+        if (connected.store) {
+          setPhase('done')
+          return
+        }
         // An update preselects nothing: the teams that had the app already run the new package.
         const update = connected.teams.some((team) => team.app !== 'none')
         setChosen(new Set(update ? [] : connected.teams.slice(0, 1).map((team) => team.id)))
-        const slug = (await fetchOrgs().catch(() => [])).find((o) => o.id === org)?.slug
-        if (slug) setAgentHref(`/${slug}/agents/${connected.agentId}`)
         setPhase('teams')
       } catch (e) {
         if (!cancelled) fail(e)
@@ -94,7 +100,7 @@ export default function MsTeamsConnect() {
   }, [])
 
   async function install() {
-    if (!result || chosen.size === 0) return
+    if (!result?.ticket || chosen.size === 0) return
     setPhase('installing')
     setError(null)
     try {
@@ -144,7 +150,9 @@ export default function MsTeamsConnect() {
             </span>
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('doneTitle')}</h1>
-              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('doneBody')}</p>
+              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
+                {t(result?.store ? 'storeDoneBody' : 'doneBody')}
+              </p>
             </div>
             <a href={agentHref} className="dsbtn dsbtn-primary">
               {t('backToAgent')}

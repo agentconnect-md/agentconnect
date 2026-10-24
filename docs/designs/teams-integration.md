@@ -672,9 +672,9 @@ deployment secret. Its public `platformConfig` records the home tenant as
 the configured secret changes, as Google Chat's reconciler does
 ([Google Chat §10.3](google-chat-integration.md#103-data-model-one-row-per-customer-as-slack-does-per-team)).
 
-The relay needs nothing new: its assignment is the `(app ID, tenant ID)` pair
-of §3, so the composite index routes each activity to its tenant's row, and an
-activity from a tenant no row claims matches nothing and is dropped. Where a
+The relay's assignment is the `(app ID, tenant ID)` pair of §3, so the
+composite index routes each activity to its tenant's row; an activity from a
+tenant no row claims reaches the deployment app's anchor instead (§8.4). Where a
 tenant matters, the two tenants stay apart:
 
 - **The customer tenant** is the session realm (§4.5), the daemon's tenant
@@ -755,7 +755,69 @@ tenant's prebuilt row with the home tenant as its token tenant; Teams sent the
 bot its installation events; and a channel @mention there ran a turn whose
 reply, signed with the home tenant's token, appeared in the channel.
 
-### 8.4 Open
+### 8.4 A tenant no organization connected
+
+Status: **implemented**, not yet measured in a tenant that installed from the
+Store. Once the app is listed in the Teams Store, anyone can add
+it to a tenant that no organization has connected, a Store reviewer included.
+The Store requires the bot to welcome that install and to answer every message,
+signed in or not, with a way forward
+([§4.7](#47-first-run-welcome-and-help)). Such an activity matches no customer
+row, so without an answer of its own the person would see nothing.
+
+**The anchor.** The Control Plane's deployment snapshot gains a Teams anchor
+when the deployment app is configured and the Console origin is https: the
+app ID, the home tenant, the client secret, and the Console's connect URL. The
+relay builds a deployment-owned assignment from it, as it does for Google
+Chat's (§10.4 there), keyed by the app ID alone. Demux tries the
+`(app, tenant)` row first and falls back to the anchor, so a connected tenant
+never reaches it. The anchor forwards nothing to a daemon and reports nothing
+to the Control Plane. The assignment itself carries no secret: the plugin keeps
+the snapshot's credentials and updates them in place when a snapshot changes
+them.
+
+**Egress on the relay.** Teams takes no reply in the HTTP response, so the
+anchor posts its answers itself, which is the one place the relay holds a Teams
+secret: it mints a Bot Framework token from the home tenant with the client
+credentials (§8.1) and posts to the activity's `serviceUrl`, which the token
+check has already bound to the activity. Only the deployment app's secret
+reaches the relay; an organization's own bot stays secret-free there.
+
+**What it answers.**
+
+- An install (a `conversationUpdate` adding the bot) gets a welcome card: what
+  the app is, that an AgentConnect organization must connect this Microsoft 365
+  tenant before it answers, and **Connect AgentConnect**, **Guide** and
+  **Contact us** buttons. Outside a 1:1 chat it mentions the person who added it.
+- Every DM and every @mention gets a shorter card with the same Connect button,
+  as a reply in its thread. `help` gets the same card, with the guide link.
+- Everything else (typing, reactions, roster changes, invokes) gets an empty 200.
+
+**Connect.** The button opens `<Console>/msteams/connect?tenant=<tid>`, the
+page Microsoft also returns to; a `tenant` without a `code` starts a Store
+connect. The page signs the person in to AgentConnect, offers the organizations
+they can edit and the agents they can configure, and starts §8.3 with the
+tenant pinned (`POST …/msteams/connect` with `tenantId`). The state carries the
+tenant; sign-in and redemption use that tenant's own authority, so Entra offers
+only its accounts, and the redemption refuses an ID token whose `tid` differs
+(`MSTEAMS_TENANT_MISMATCH`). The other refusals of §8.3 apply unchanged.
+
+**Store installs skip the catalog.** A tenant that installed from the Store
+already has the app, so the pinned flow asks only for `openid` and `User.Read`,
+writes the customer row with `source: store` in its `platformConfig`, and
+answers `store: true` with no teams and no ticket: no catalog publish (which
+would put a second copy of the app beside the Store one) and no team install.
+The page then shows the connection as done. Proving the tenant takes any work
+account of that tenant, not an administrator, and the first organization to
+connect it holds it, as §8.3 already does. A Store row's package status always
+reads current, since the Store listing, not the Console, updates the app.
+
+**Unverified.** Whether a Store install and an organization-catalog copy of the
+same app ID conflict; whether the welcome reaches a personal install before the
+tenant's admin approves the app; the token the relay mints for a tenant whose
+admin has not consented.
+
+### 8.5 Open
 
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).

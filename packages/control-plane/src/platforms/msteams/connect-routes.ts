@@ -67,7 +67,15 @@ const MsTeamsDeploymentAppDto = z.object({
     .nullable()
     .describe('The deployment Teams app’s Entra application ID; null when the deployment has no app to connect to.')
 })
-const ConnectBody = z.object({ agentId: z.uuid().describe('The agent the Teams app will serve.') })
+const ConnectBody = z.object({
+  agentId: z.uuid().describe('The agent the Teams app will serve.'),
+  tenantId: z
+    .uuid()
+    .optional()
+    .describe(
+      'The tenant a Teams Store install named on its Connect card: the sign-in must be of it, asks only to read the profile, and publishes and installs nothing.'
+    )
+})
 const ConnectDto = z.object({ authorizeUrl: z.url().describe('Microsoft’s sign-in page to send the browser to.') })
 const CallbackBody = z.object({
   code: z.string().min(1).max(4096).describe('The authorization code Microsoft returned to the connect page.'),
@@ -88,8 +96,14 @@ const CallbackDto = z.object({
           )
       })
     )
-    .describe('The signed-in administrator’s teams.'),
-  ticket: z.string().describe('An opaque, short-lived handle for the install step.')
+    .describe('The signed-in administrator’s teams; empty for a Teams Store install.'),
+  ticket: z
+    .string()
+    .optional()
+    .describe('An opaque, short-lived handle for the install step; absent for a Teams Store install.'),
+  store: z
+    .boolean()
+    .describe('Whether the tenant installed the app from the Teams Store, so nothing was published or installed.')
 })
 const InstallBody = z.object({
   ticket: z.string().min(1).max(16_384),
@@ -108,7 +122,8 @@ const STATUS_OF: Record<MsTeamsConnectError['code'], number> = {
   MSTEAMS_CONNECT_DENIED: 400,
   MSTEAMS_CONNECT_PERSONAL_ACCOUNT: 400,
   MSTEAMS_CONNECT_NOT_ADMIN: 403,
-  MSTEAMS_CONNECT_UNAVAILABLE: 502
+  MSTEAMS_CONNECT_UNAVAILABLE: 502,
+  MSTEAMS_TENANT_MISMATCH: 400
 }
 
 // The agent the tenant will serve, once the caller may edit it and its daemon runs Teams.
@@ -171,16 +186,18 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment has no Teams app.')
         const target = await connectTarget(deps, req, req.body.agentId)
         if (typeof target === 'string') return refuse(reply, 409, 'MSTEAMS_CONNECT_NO_AGENT', target)
+        const tenant = req.body.tenantId?.toLowerCase()
         const state = mintMsTeamsConnectState(
           seams.keys,
-          { orgId: orgOf(req), agentId: target.id, userId: req.principal.userId },
+          { orgId: orgOf(req), agentId: target.id, userId: req.principal.userId, ...(tenant ? { tenant } : {}) },
           deps.clock
         )
         return {
           authorizeUrl: msTeamsAuthorizeUrl(seams.keys, {
             clientId: live.app.appId,
             redirectUri: msTeamsConnectRedirectUri(live.webAppUrl),
-            state
+            state,
+            ...(tenant ? { tenant } : {})
           })
         }
       }
@@ -229,10 +246,13 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               clientSecret: live.app.clientSecret,
               redirectUri: msTeamsConnectRedirectUri(live.webAppUrl),
               code: req.body.code,
-              state: req.body.state
+              state: req.body.state,
+              ...(state.tenant ? { tenant: state.tenant } : {})
             },
             fetchImpl
           )
+          // A Teams Store install already has the app, so this connect only claims the tenant (§8.4).
+          const store = state.tenant !== undefined
 
           // One tenant maps to one organization and, within it, to one agent (§8.2).
           const held = await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, live.app.appId, tenantId)
@@ -241,22 +261,25 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
           }
 
-          // Publishing without review is an administrator's act, so it proves the authority the claim needs before anything is written.
+          // Publishing without review is an administrator's act, so it proves the authority the claim needs before anything is written; a Store install publishes nothing.
           const packageInput = {
             appId: live.app.appId,
             relayHost: new URL(relayBase).host,
             agentName: target.displayName ?? target.name,
             accentColor: agentIconBackgroundColor(target.icon)
           }
-          const manifest = msTeamsManifest({ ...packageInput, nowMs: deps.clock.now() })
           const appPackage = msTeamsPackageFingerprint(packageInput, target)
-          const zip = msTeamsAppPackage(manifest, await msTeamsAppIcons(target, deps.iconStore))
-          const catalogAppId = await publishMsTeamsPackage(
-            fetchImpl,
-            accessToken,
-            msTeamsPackageId(live.app.appId),
-            zip
-          )
+          const catalogAppId = store
+            ? undefined
+            : await publishMsTeamsPackage(
+                fetchImpl,
+                accessToken,
+                msTeamsPackageId(live.app.appId),
+                msTeamsAppPackage(
+                  msTeamsManifest({ ...packageInput, nowMs: deps.clock.now() }),
+                  await msTeamsAppIcons(target, deps.iconStore)
+                )
+              )
 
           let integrationId: string
           let botId = held?.id
@@ -265,7 +288,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               const installed = await installNewBot(deps, req.log, {
                 bot: {
                   externalAppId: live.app.appId,
-                  platformConfig: { tenantId, tokenTenantId: live.app.tenantId }
+                  platformConfig: { tenantId, tokenTenantId: live.app.tenantId, ...(store ? { source: 'store' } : {}) }
                 },
                 secrets: msTeamsSecrets(live.app.clientSecret),
                 externalIdentity: {
@@ -314,6 +337,12 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             integrationId = admission.integration.id
           }
 
+          if (!catalogAppId) {
+            // The Store keeps the package current; recording the source keeps Update in Teams off its row.
+            if (botId)
+              await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { source: 'store' } }))
+            return { integrationId, agentId: target.id, teams: [], store: true }
+          }
           // A team that already has the app takes the new definition and re-consents its permissions here (§8.3).
           const teams = await listMsTeamsTeams(fetchImpl, accessToken)
           const upgrades = await upgradeMsTeamsInstalls(
@@ -330,7 +359,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             integrationId,
             agentId: target.id,
             teams: teams.map((team) => ({ ...team, app: upgrades.get(team.id) ?? 'failed' })),
-            ticket: sealMsTeamsTicket(seams.keys, { accessToken, orgId, integrationId, catalogAppId }, deps.clock)
+            ticket: sealMsTeamsTicket(seams.keys, { accessToken, orgId, integrationId, catalogAppId }, deps.clock),
+            store: false
           }
         } catch (err) {
           if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)

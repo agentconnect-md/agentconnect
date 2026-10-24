@@ -142,7 +142,7 @@ async function harness(
     })
   )
   running = app
-  const state = (over: Partial<{ orgId: string; agentId: string; userId: string }> = {}) =>
+  const state = (over: Partial<{ orgId: string; agentId: string; userId: string; tenant: string }> = {}) =>
     mintMsTeamsConnectState(keys, { orgId: ORG, agentId: AGENT, userId: 'user-1', ...over }, clock)
   const callback = (raw = state()) =>
     app.inject({ method: 'POST', url: '/integrations/msteams/connect/callback', payload: { code: 'c', state: raw } })
@@ -229,6 +229,44 @@ describe('the deployment Teams app routes', () => {
     })
     expect(install.json()).toEqual({ installed: 1 })
     expect(h.graph.at(-1)?.url).toBe('https://graph.microsoft.com/v1.0/teams/team-1/installedApps')
+  })
+
+  // teams-integration.md §8.4: a Teams Store install only proves its tenant; nothing is published or installed.
+  it('pins a Store install’s sign-in to its tenant and asks only to read the profile', async () => {
+    const h = await harness()
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/integrations/msteams/connect',
+      payload: { agentId: AGENT, tenantId: CUSTOMER.toUpperCase() }
+    })
+    const url = new URL(res.json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(url.origin + url.pathname).toBe(`https://login.microsoftonline.com/${CUSTOMER}/oauth2/v2.0/authorize`)
+    expect(url.searchParams.get('scope')).toBe('https://graph.microsoft.com/User.Read openid')
+  })
+
+  it('connects a Store install’s tenant without publishing or listing teams, and keeps Update in Teams off it', async () => {
+    const h = await harness()
+    const res = await h.callback(h.state({ tenant: CUSTOMER }))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ integrationId: expect.any(String), agentId: AGENT, teams: [], store: true })
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prebuilt: true,
+        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, source: 'store' }
+      })
+    )
+    expect(h.graph.map((call) => call.url.split('?')[0])).toEqual(['https://graph.microsoft.com/v1.0/organization'])
+    expect(h.order).toEqual(['create', 'record'])
+    expect(h.recorded).toEqual([{ source: 'store' }])
+  })
+
+  it('refuses a Store connect signed in to another tenant, and writes nothing', async () => {
+    const h = await harness({ tid: '99999999-9999-4999-8999-999999999999' })
+    const res = await h.callback(h.state({ tenant: CUSTOMER }))
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ code: 'MSTEAMS_TENANT_MISMATCH' })
+    expect(h.create).not.toHaveBeenCalled()
+    expect(h.graph).toEqual([])
   })
 
   it('claims the tenant only after the administrator-only catalog publish succeeds', async () => {

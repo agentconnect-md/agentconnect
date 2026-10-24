@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import { getTranslations } from 'next-intl/server'
-import MsTeamsConnect from './MsTeamsConnect'
+import MsTeamsConnectEntry from './MsTeamsConnectEntry'
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('Auth.metadata')
@@ -8,5 +8,5 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function MsTeamsConnectPage() {
-  return <MsTeamsConnect />
+  return <MsTeamsConnectEntry />
 }

@@ -1342,6 +1342,7 @@
       "skip": "Skip",
       "doneTitle": "Teams is connected",
       "doneBody": "Mention the agent in a channel of the teams you chose; it answers there.",
+      "storeDoneBody": "Message the agent in Teams, or mention it in a channel or group chat where the app was added; it answers there.",
       "backToAgent": "Back to the agent",
       "errors": {
         "expired": "This sign-in has expired. Start connecting again from the agent’s integrations.",
@@ -1353,8 +1354,26 @@
         "inUse": "Your Microsoft 365 organization already connects another agent. Remove that Teams integration first.",
         "noAgent": "This agent cannot take a Teams app right now.",
         "unavailable": "Microsoft could not be reached, or this deployment cannot connect Teams right now. Try again later.",
-        "generic": "Teams could not be connected."
+        "generic": "Teams could not be connected.",
+        "tenantMismatch": "Sign in with an account of the Microsoft 365 organization that added the app in Teams."
       }
+    },
+    "msTeamsStoreConnect": {
+      "title": "Connect your Microsoft 365 organization",
+      "description": "Choose the AgentConnect organization and agent that answer in Teams. Then confirm with a work account of the Microsoft 365 organization that added the app.",
+      "organization": "Organization",
+      "agent": "Agent",
+      "noOrganizations": "Create an organization, then return here and refresh to finish connecting Teams.",
+      "createOrganization": "Create an organization",
+      "noAgents": "You have no agent you can connect in this organization. Create one or ask an organization owner for access, then refresh.",
+      "manageAgents": "Manage agents",
+      "connect": "Continue with Microsoft",
+      "connecting": "Opening Microsoft…",
+      "refresh": "Refresh",
+      "invalidLink": "This connection link is invalid. Open the app in Teams and select Connect AgentConnect again.",
+      "storageBlocked": "Allow this site to store browser data before signing in, then refresh to continue.",
+      "loadError": "Could not load your connection options. Refresh to try again.",
+      "connectError": "Could not start connecting Teams. Please try again."
     }
   },
   "Home": {

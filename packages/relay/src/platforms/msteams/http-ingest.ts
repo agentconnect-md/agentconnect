@@ -6,6 +6,7 @@ import {
   type WireMsTeamsCardAction,
   type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
+import type { MsTeamsAnchorEgress } from './anchor.js'
 import type { MsTeamsTokenVerifier } from './token.js'
 
 /** Hard cap on one activity's raw body; Teams caps a message at 100 KB, and its HTML twin rides beside the text. */
@@ -175,7 +176,9 @@ export class MsTeamsHttpIngest {
     /** Shared across the platform's ingests; the keys are the Bot Framework's, not the bot's. */
     readonly verifier: MsTeamsTokenVerifier,
     /** The generation THIS ingest was built from. */
-    readonly credentialRevision?: number
+    readonly credentialRevision?: number,
+    /** Present only on the deployment app's anchor, which answers an unconnected tenant itself (§8.4). */
+    readonly anchor?: MsTeamsAnchorEgress
   ) {}
 
   /** §8 RelayBotIngress: a pure decoder has nothing to release. */
