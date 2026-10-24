@@ -467,6 +467,10 @@ unlisted place on one session from its first message (§5.2).
   its own: the standing list of follow-ups is not injected there (§5.4 ②). Its replies, its other
   writes there and its turns are what any agent's are.
 - Telegram groups, Discord channels, Feishu groups: no detection; such a place is internal.
+- DingTalk groups: a message from outside the robot's organization, which carries no staff ID
+  or names another organization, makes the group external, never lifted
+  ([dingtalk-integration.md](dingtalk-integration.md) §4.1). The message that reveals the
+  outsider is itself judged in the external place.
 - DM: never external; what it is told is judged by its one person (§5.5). Webchat is internal by
   construction.
 - A delegated task's place is its owning session's: one delegated in an external place reports through

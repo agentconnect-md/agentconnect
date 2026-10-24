@@ -148,6 +148,26 @@ describe('DingTalk connection', () => {
     }
   })
 
+  it('marks a group external once someone outside the organization speaks there', () => {
+    const external: [string, string][] = []
+    const { conn } = connect(fakeFetch().fetchImpl, () => {}, {
+      onPlaceExternal: (channel, reason) => void external.push([channel, reason])
+    })
+    const message = (n: number, extra: Partial<DingTalkRobotMessage>) =>
+      conn.normalize({ ...groupMention, msgId: `msg-${n}`, chatbotCorpId: 'corp-example', ...extra })
+
+    message(1, { senderCorpId: 'corp-example' })
+    expect(external).toEqual([])
+    // An outsider has no staff ID in the robot's organization, only the opaque sender id.
+    message(2, { senderStaffId: undefined, senderId: '$:LWCP_v1:$outsider' })
+    message(3, { senderStaffId: undefined, senderId: '$:LWCP_v1:$outsider' })
+    message(4, { conversationId: 'cid-example-other', senderCorpId: 'corp-other' })
+    expect(external).toEqual([
+      ['cid-example-group', 'externalMember'],
+      ['cid-example-other', 'externalMember']
+    ])
+  })
+
   it('sends to a group by its conversation and to a DM by the staff id, with one cached token', async () => {
     const { calls, fetchImpl } = fakeFetch()
     const { conn } = connect(fetchImpl)

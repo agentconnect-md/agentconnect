@@ -232,6 +232,21 @@ and `senderUnionId` is stable across organizations for the same developer.
 `senderNick` is display-only; the adapter never merges people by name. Profiles
 (`qyapi_get_member`) are optional enrichment.
 
+Only DMs and ordinary groups reach the robot. A topic circle admits DingTalk's
+own assistants and webhook custom robots only, so an internal app's robot cannot
+be added to one (**measured**). A group that includes members of another
+organization accepts the robot, and its messages carry no field marking the
+group external (**measured**). A member of the other organization can
+@-mention the robot and is answered, and their message carries no
+`senderStaffId`, since a staff ID exists only within the robot's organization,
+only the opaque `senderId` (**measured**). The connection therefore reports a
+group as external (`externalMember`,
+[assistant-mode.md](assistant-mode.md) §5.3) the first time a group message
+arrives without a staff ID, or with a `senderCorpId` other than the robot's.
+The detection is sticky, as a guest's is on Slack, so the group stays external
+for every agent: approvals go to internal members, its memory stays in its own
+place layer, and a post into it from elsewhere is drafted.
+
 ### 4.2 Replies
 
 Replies use the robot send APIs (`/v1.0/robot/groupMessages/send` and
@@ -414,11 +429,17 @@ text, so no migration is needed. Normalization lives in the message package.
   needs a third-party app (§2). A per-organization internal app should support
   web OAuth for its own members, which would allow linking a signed-in user to
   their DingTalk identity, but not a sign-in button. Not probed.
-- **Permission sync.** No API was found that lists the members of an ordinary
-  group by `openConversationId`; the legacy chat API accepts only groups created
-  through the API. Membership is likely observed (who has spoken) rather than
-  authoritative, so a DingTalk group's visibility stays weaker than a channel
-  with an enumerable roster. Not probed.
+- **Permission sync.** No API lists an ordinary group's members to an internal
+  app: the member query (`POST /v1.0/im/innerGroups/members/query`) needs
+  `Chat.OrgInnerGroup.Read`, which an internal app's console does not offer,
+  and the group detail read (`POST /v1.0/im/sceneGroups/queryDetail`,
+  `qyapi_chat_read`) returns the title, owner and member count but no members
+  (**measured**). Membership stays observed (who has spoken), so a DingTalk
+  group's visibility stays weaker than a channel with an enumerable roster.
+- **Group history.** No API reads an ordinary group's messages for an internal
+  app; the legacy `POST /chat/getChatHistory` answers that the URI does not
+  exist (**measured**). A getting-to-know task therefore never runs on DingTalk
+  ([assistant-mode.md](assistant-mode.md) §5.13).
 - On the international edition, the thinking reaction and media have not been
   exercised live.
 - Whether DingTalk keeps allowing a template from one organization to serve

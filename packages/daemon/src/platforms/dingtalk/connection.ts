@@ -95,6 +95,13 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const MEMBERS_PER_CHANNEL = 200
 const TENANT_REPORT_INTERVAL_MS = 60 * 60 * 1000
 
+/** A sender outside the robot's organization has no staff ID in it (**measured**, §4.1), or names another organization. */
+function fromOutside(payload: DingTalkRobotMessage): boolean {
+  if (typeof payload.senderStaffId !== 'string' || !payload.senderStaffId) return true
+  const sender = payload.senderCorpId
+  return typeof sender === 'string' && !!sender && !!payload.chatbotCorpId && sender !== payload.chatbotCorpId
+}
+
 export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort, DingTalkMediaPort {
   readonly botUserId: string
   private readonly abort = new AbortController()
@@ -110,6 +117,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   private readonly attachmentTypes = new Map<string, string>()
   private readonly media: DingTalkMediaDeps
   private tenantReport?: { corpId: string; at: number }
+  // Groups already reported as holding an outsider; the detection is sticky, so once per connection is enough.
+  private readonly outsiderPlaces = new Set<string>()
 
   constructor(
     readonly group: DingTalkConnectionGroup,
@@ -126,6 +135,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
       questionTemplate?: string
       /** The organization a robot message named (§2.2); true once the CP was told. */
       onTenant?(corpId: string): boolean
+      /** A group just heard from someone outside the robot's organization (§4.1). */
+      onPlaceExternal?(channel: string, reason: 'externalMember'): void
       log: Logger
       fetchImpl?: typeof fetch
       origin?: string
@@ -246,6 +257,12 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     this.members.set(msg.channel, members)
     if (msg.sender.name) this.names.set(msg.sender.id, msg.sender.name)
     this.reportTenant(payload.chatbotCorpId)
+    if (!msg.isDm && fromOutside(payload) && !this.outsiderPlaces.has(msg.channel)) {
+      this.outsiderPlaces.add(msg.channel)
+      while (this.outsiderPlaces.size > SEEN_LIMIT)
+        this.outsiderPlaces.delete(this.outsiderPlaces.values().next().value!)
+      this.deps.onPlaceExternal?.(msg.channel, 'externalMember')
+    }
   }
 
   // A robot join raises no event, so the first message names the organization; resent hourly in case the CP lost it.
