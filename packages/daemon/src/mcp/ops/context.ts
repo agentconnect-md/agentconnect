@@ -90,6 +90,8 @@ export interface MessageGateway {
    *  daemon can record it. `identity` carries the agent's stable id and optional
    *  visual identity; other platforms may ignore it. */
   postMessage(channel: string, text: string, threadTs?: string, identity?: SendIdentity): Promise<string | undefined>
+  /** A channel-root post that mentions `users` where a mention is not body text (read port `channelMentions: 'gateway'`). */
+  postMentioning?(channel: string, text: string, users: string[], identity?: SendIdentity): Promise<string | undefined>
   /** Materialize a provider-native thread from a root message when that platform
    *  requires one before the post can own a follow-up session (Discord). */
   createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>

@@ -105,8 +105,8 @@ export interface PlatformReadPorts {
    *  id to the app's own 1:1 conversation, so `sendMessage`'s `toUser` form has
    *  somewhere to post. */
   readonly openDirectMessage?: boolean
-  /** `sendMessage`'s `toUser` channel form writes `<@id>` into the body, which this platform renders as a real mention. */
-  readonly bodyMentions?: boolean
+  /** How `sendMessage`'s `toUser` channel form mentions people: `body` writes `<@id>` into the text, `gateway` hands the ids to `postMentioning`. */
+  readonly channelMentions?: 'body' | 'gateway'
   /** The agent-facing channel history tool backed by this platform's cursor API. */
   readonly channelHistory?: boolean
   /** `getThreadReplies`: the root + replies of one thread can be read on demand. */
@@ -166,7 +166,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       platform: 'slack',
       label: 'Slack',
       openDirectMessage: true,
-      bodyMentions: true,
+      channelMentions: 'body',
       channelHistory: true,
       threadHistory: true,
       reactions: true,
@@ -204,7 +204,13 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
   ],
   [
     'dingtalk',
-    { platform: 'dingtalk', label: 'DingTalk', openDirectMessage: true, attachmentReadTool: DINGTALK_ATTACHMENT_TOOL }
+    {
+      platform: 'dingtalk',
+      label: 'DingTalk',
+      openDirectMessage: true,
+      channelMentions: 'gateway',
+      attachmentReadTool: DINGTALK_ATTACHMENT_TOOL
+    }
   ],
   [
     'discord',
@@ -292,9 +298,9 @@ export function directMessagePlatformFor(sessionPlatform: string): string {
   return sessionPlatform
 }
 
-/** Does `platform` render a `<@id>` in a message body as a mention? Undeclared ⇒ no, so the `toUser` channel form is refused there. */
-export function rendersBodyMentions(platform: string): boolean {
-  return READ_PORTS.get(platform)?.bodyMentions === true
+/** How `platform` mentions people in a channel post; undefined ⇒ it cannot, so the `toUser` channel form is refused there. */
+export function channelMentionsFor(platform: string): 'body' | 'gateway' | undefined {
+  return READ_PORTS.get(platform)?.channelMentions
 }
 
 /** Does `platform` confine what `sendMessage` reaches beyond the session's own conversation to public channels? Undeclared ⇒ no gate. */

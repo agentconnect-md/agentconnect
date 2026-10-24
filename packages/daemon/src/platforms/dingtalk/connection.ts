@@ -24,11 +24,11 @@ import {
   type DingTalkApiOptions
 } from './api.js'
 import { DingTalkCardClient, type DingTalkCardPort } from './card.js'
-import { dingTalkCardTap } from './elicit-card.js'
+import { dingTalkCardTap, dingTalkMentionCard } from './elicit-card.js'
 import { DingTalkReactionClient, type DingTalkReactionPort } from './reaction.js'
 import { rewriteDingTalkMarkdown } from './markdown.js'
 import { DingTalkStream, type DingTalkSocket, type DingTalkStreamTiming } from './stream.js'
-import type { UploadOutcome } from '../../mcp/ops/context.js'
+import type { SendIdentity, UploadOutcome } from '../../mcp/ops/context.js'
 import { DINGTALK_ATTACHMENT_TOOL } from './attachments.js'
 import {
   DINGTALK_MEDIA_MAX_BYTES,
@@ -280,6 +280,22 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     const failed = sent.find((part) => part.error !== undefined)
     if (failed) throw failed.error instanceof Error ? failed.error : new Error('dingtalk: send failed')
     return sent[0]?.processQueryKey
+  }
+
+  /** A group post that @-mentions members: only a card carries mentions, so it needs the card client (§4.2). */
+  async postMentioning(channel: string, text: string, users: string[], identity?: SendIdentity): Promise<string> {
+    if (!this.cards) throw new Error('dingtalk: this app mentions people only on a card, and it sends no cards')
+    if (channel.startsWith('dm:'))
+      throw new Error('dingtalk: a direct message mentions no one; send it without a channel')
+    const ids = [...new Set(users)]
+    if (!ids.every((id) => /^[^\s:$]{1,64}$/.test(id))) throw new Error("dingtalk: a mention needs a member's staff ID")
+    const names = Object.fromEntries(ids.map((id) => [id, this.names.get(id) ?? id]))
+    const shown = `${ids.map((id) => `@${names[id]}`).join(' ')} ${text}`
+    const outTrackId = `acm-${randomUUID()}`
+    const params = dingTalkMentionCard(identity?.username ?? '', shown)
+    if (!(await this.cards.deliver(channel, outTrackId, params, names)))
+      throw new Error('dingtalk: the mention card was not delivered')
+    return outTrackId
   }
 
   /** A member's DM is the robot's own 1:1 chat, addressed by staff ID (§4.2); an outsider's opaque sender id has none. */

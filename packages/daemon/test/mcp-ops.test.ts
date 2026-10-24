@@ -1239,10 +1239,18 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
-  it('sends a DingTalk DM, and refuses the channel form whose mention DingTalk would show raw', async () => {
-    const gw = fakeGateway()
-    const { deps: d } = deps(gw)
-    const dt = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-dt', platform: 'dingtalk' }] }
+  it('sends a DingTalk DM, and hands a channel mention to the gateway instead of writing it into the text', async () => {
+    const postMentioning = vi.fn(async () => 'acm-1')
+    const gw = fakeGateway({ postMentioning })
+    const d = makeDeps({ gatewayFor: () => gw, recordOutbound: async () => {} })
+    // A DingTalk session mentioning people in its own group, the one place DingTalk's write rule can confirm.
+    const dt = {
+      ...ctx,
+      platform: 'dingtalk',
+      integrationId: 'int-dt',
+      channel: 'C1',
+      integrations: [...ctx.integrations!, { id: 'int-dt', platform: 'dingtalk' }]
+    }
     await executeTool(
       dt,
       'sendMessage',
@@ -1253,14 +1261,35 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).toHaveBeenCalledWith('D-0123', 'x', undefined, authorIdentity)
 
     vi.mocked(gw.postMessage).mockClear()
+    await executeTool(
+      dt,
+      'sendMessage',
+      { action: 'postMessage', toUser: ['0123', '0456'], channel: 'C1', platform: 'dingtalk', message: 'x' },
+      d
+    )
+    expect(postMentioning).toHaveBeenCalledWith('C1', 'x', ['0123', '0456'], authorIdentity)
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses a channel mention where the gateway cannot carry one', async () => {
+    const gw = fakeGateway()
+    const d = makeDeps({ gatewayFor: () => gw, recordOutbound: async () => {} })
+    // A DingTalk session mentioning people in its own group, the one place DingTalk's write rule can confirm.
+    const dt = {
+      ...ctx,
+      platform: 'dingtalk',
+      integrationId: 'int-dt',
+      channel: 'C1',
+      integrations: [...ctx.integrations!, { id: 'int-dt', platform: 'dingtalk' }]
+    }
     await expect(
       executeTool(
         dt,
         'sendMessage',
-        { action: 'postMessage', toUser: '0123', channel: 'cid-example', platform: 'dingtalk', message: 'x' },
+        { action: 'postMessage', toUser: '0123', channel: 'C1', platform: 'dingtalk', message: 'x' },
         d
       )
-    ).rejects.toThrow('toUser with channel (an @-mention in a channel) is not supported on DingTalk')
+    ).rejects.toThrow('cannot mention people in a channel')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 

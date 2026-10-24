@@ -278,6 +278,43 @@ describe('DingTalk question cards', () => {
     expect(delivered[0]!.headers['x-acs-dingtalk-access-token']).toBe('token-1')
   })
 
+  it('mentions members on a group card, naming the people it has seen', async () => {
+    const { calls, fetchImpl } = fakeFetch()
+    const { conn } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    conn.normalize(groupMention)
+    const id = await conn.postMentioning('cid-example-group', 'PR #482 needs a look', ['user-0001', 'user-0002'], {
+      username: 'Reviewer'
+    })
+    expect(id).toMatch(/^acm-/)
+    const delivered = calls.filter((call) => call.path === '/v1.0/card/instances/createAndDeliver')
+    expect(delivered.at(-1)!.body).toMatchObject({
+      outTrackId: id,
+      openSpaceId: 'dtv1.card//IM_GROUP.cid-example-group',
+      imGroupOpenDeliverModel: {
+        robotCode: CLIENT_ID,
+        atUserIds: { 'user-0001': 'Example User', 'user-0002': 'user-0002' }
+      },
+      cardData: {
+        cardParamMap: {
+          title: 'Reviewer',
+          layout: 'buttons',
+          prompt: '@Example User @user-0002 PR #482 needs a look',
+          opt0: ''
+        }
+      }
+    })
+    await expect(conn.postMentioning('dm:user-0001', 'x', ['user-0001'])).rejects.toThrow('mentions no one')
+    await expect(conn.postMentioning('cid-example-group', 'x', ['$:LWCP_v1:$outsider'])).rejects.toThrow('staff ID')
+  })
+
+  it('refuses a mention where it sends no cards, and when the card is not delivered', async () => {
+    await expect(
+      connect(fakeFetch().fetchImpl).conn.postMentioning('cid-example-group', 'x', ['user-0001'])
+    ).rejects.toThrow('only on a card')
+    const refused = connect(fakeFetch({ cardDelivered: false }).fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    await expect(refused.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).rejects.toThrow('not delivered')
+  })
+
   it('reports a refused delivery with one warning, and updates a card by key', async () => {
     const { calls, fetchImpl } = fakeFetch({ cardDelivered: false })
     const warn = vi.fn()

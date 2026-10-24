@@ -145,6 +145,19 @@ function questionForm(question: string, target: ElicitTarget, chosen?: number): 
   return JSON.stringify({ fields: [field] })
 }
 
+/** A channel post that mentions people, on the question template: the text as its body and no buttons (§4.2). */
+export function dingTalkMentionCard(title: string, text: string): Record<string, string> {
+  const opts = Object.fromEntries(Array.from({ length: DINGTALK_CARD_MAX_BUTTONS }, (_, slot) => [`opt${slot}`, '']))
+  return {
+    title: clampTo(title, DINGTALK_CARD_LABEL_CAP) || 'Message',
+    lastMessage: clampTo(text, DINGTALK_CARD_LABEL_CAP),
+    layout: 'buttons',
+    prompt: clampTo(text, DINGTALK_CARD_PROMPT_CAP),
+    ...opts,
+    answer: ''
+  }
+}
+
 /** The tap card for one question: the template variables per layout, or null when the layout does not fit it. */
 export function dingTalkQuestionCard(
   requestId: string,
