@@ -31,7 +31,7 @@ const DINGTALK_ELICIT_MAX_OPTIONS = 12
 const DINGTALK_ELICIT_DECISION_CAP = 300
 // Up to four options fit as buttons; more go in the card's select.
 const DINGTALK_CARD_MAX_BUTTONS = 4
-const DINGTALK_CARD_PROMPT_CAP = 2000
+export const DINGTALK_CARD_PROMPT_CAP = 2000
 const DINGTALK_CARD_LABEL_CAP = 60
 const DINGTALK_CARD_BUTTON_CAP = 40
 
@@ -143,6 +143,19 @@ function questionForm(question: string, target: ElicitTarget, chosen?: number): 
     ...(chosen !== undefined ? { defaultValue: { index: chosen, value: String(chosen) } } : {})
   }
   return JSON.stringify({ fields: [field] })
+}
+
+/** A channel post that mentions people, on the question template: the text as its body and no buttons (§4.2). */
+export function dingTalkMentionCard(title: string, text: string): Record<string, string> {
+  const opts = Object.fromEntries(Array.from({ length: DINGTALK_CARD_MAX_BUTTONS }, (_, slot) => [`opt${slot}`, '']))
+  return {
+    title: clampTo(title, DINGTALK_CARD_LABEL_CAP) || 'Message',
+    lastMessage: clampTo(text, DINGTALK_CARD_LABEL_CAP),
+    layout: 'buttons',
+    prompt: clampTo(text, DINGTALK_CARD_PROMPT_CAP),
+    ...opts,
+    answer: ''
+  }
 }
 
 /** The tap card for one question: the template variables per layout, or null when the layout does not fit it. */

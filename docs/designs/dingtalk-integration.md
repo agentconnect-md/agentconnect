@@ -258,10 +258,32 @@ edited, only recalled by its process query key.
 An agent can direct-message a member it has seen (`sendMessage` with `toUser`
 alone): the DM is the batch send to that staff ID, so the read ports declare
 `openDirectMessage`. An outsider's opaque sender id addresses no DM and is
-refused. The `toUser` form that @-mentions people in a group is refused on
-DingTalk: the group send takes no mentions, so a `<@id>` in the body would show
-raw and notify nobody. Only a card delivery carries mentions
-(`imGroupOpenDeliverModel.atUserIds`), which a later change can use.
+refused. The group send takes no mentions in any form tried: `@<staffId>` or
+`@<name>` in text or Markdown, or an `at` field, all arrive as plain text
+(**measured**). Two sends do carry them (**measured**: the person sees a
+highlighted mention and finds it under @-mentions):
+
+- the reply address a group message brings (`sessionWebhook`, 90 minutes), with
+  `@<staffId>` in a text or Markdown body and the person in `at.atUserIds`;
+- a card delivery, with `imGroupOpenDeliverModel.atUserIds` (staff ID → name).
+
+The `toUser` form that @-mentions people in a group (read port
+`channelMentions: 'gateway'`) therefore posts Markdown through the group's
+latest reply address while more than a minute of it remains; the connection
+keeps the latest one per group, only when its origin is the edition's own
+`oapi` host. Without a fresh one, or when the address refuses the message, it
+posts a card on the question template: the text, prefixed with `@<name>` for
+each person, as its body, with no buttons, plain text up to 2,000 characters.
+The international edition, or a deployment with no question template, has only
+the reply address. A post too long for its send is refused whole rather than
+cut.
+
+Replies stay on the group send. A message sent through the reply address
+answers with no key (only `errcode` and `errmsg`), while a quote of it carries
+an `originalProcessQueryKey` and `originalMsgId` the sender never learned
+(**measured**), so a quote of such a reply could not find its session. Nor can
+a robot message quote the one it answers: fields naming that message are
+ignored (**measured**).
 
 ### 4.3 Acknowledgement and Markdown
 

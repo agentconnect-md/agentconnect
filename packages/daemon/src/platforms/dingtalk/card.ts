@@ -17,8 +17,13 @@ export function dingTalkQuestionTemplate(env: NodeJS.ProcessEnv = process.env): 
 
 /** The card calls a question makes; the connection owns one when a template is configured. */
 export interface DingTalkCardPort {
-  /** Deliver one card into the conversation; false when DingTalk refused or the call failed. */
-  deliver(channel: string, outTrackId: string, params: Record<string, string>): Promise<boolean>
+  /** Deliver one card into the conversation, @-mentioning `atUserIds` (staff ID → name) in a group; false when DingTalk refused or the call failed. */
+  deliver(
+    channel: string,
+    outTrackId: string,
+    params: Record<string, string>,
+    atUserIds?: Record<string, string>
+  ): Promise<boolean>
   /** Replace the named variables of a delivered card for every viewer. */
   update(outTrackId: string, params: Record<string, string>): Promise<void>
 }
@@ -39,13 +44,18 @@ export class DingTalkCardClient implements DingTalkCardPort {
     private readonly log: Pick<Logger, 'warn'>
   ) {}
 
-  async deliver(channel: string, outTrackId: string, params: Record<string, string>): Promise<boolean> {
+  async deliver(
+    channel: string,
+    outTrackId: string,
+    params: Record<string, string>,
+    atUserIds?: Record<string, string>
+  ): Promise<boolean> {
     const target = dingTalkTargetForChannel(channel)
     const space =
       target.kind === 'group'
         ? {
             openSpaceId: `dtv1.card//IM_GROUP.${target.openConversationId}`,
-            imGroupOpenDeliverModel: { robotCode: this.robotCode }
+            imGroupOpenDeliverModel: { robotCode: this.robotCode, ...(atUserIds ? { atUserIds } : {}) }
           }
         : {
             userIdType: 1,
@@ -63,9 +73,9 @@ export class DingTalkCardClient implements DingTalkCardPort {
         ...space
       })
       if (result.result?.deliverResults?.[0]?.success === true) return true
-      this.log.warn('dingtalk: question card not delivered; sending the text card instead')
+      this.log.warn('dingtalk: card not delivered')
     } catch (error) {
-      this.log.warn(`dingtalk: question card refused (${describe(error)}); sending the text card instead`)
+      this.log.warn(`dingtalk: card refused (${describe(error)})`)
     }
     return false
   }
