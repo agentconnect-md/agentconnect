@@ -18,6 +18,7 @@ import {
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
+import { DingTalkConnection } from '../src/platforms/dingtalk/connection.js'
 import { FeishuConnection } from '../src/feishu/connection.js'
 
 /**
@@ -72,6 +73,7 @@ describe('the read-port registry', () => {
     expect(offersDirectMessages('telegram')).toBe(has(TelegramConnection, 'openDirectMessage'))
     expect(offersDirectMessages('discord')).toBe(has(DiscordConnection, 'openDirectMessage'))
     expect(offersDirectMessages('feishu')).toBe(has(FeishuConnection, 'openDirectMessage'))
+    expect(offersDirectMessages('dingtalk')).toBe(has(DingTalkConnection, 'openDirectMessage'))
   })
 
   // assistant-mode.md §5.5: membership is decided only where the listing names every member — Slack, and Feishu/Lark by union_id.
@@ -157,6 +159,7 @@ describe('the direct-message port', () => {
     // Slack is the only platform declaring the port, so every session resolves
     // to it — including sessions on platforms that cannot DM at all.
     expect(directMessagePlatformFor('slack')).toBe('slack')
+    expect(directMessagePlatformFor('dingtalk')).toBe('dingtalk')
     expect(directMessagePlatformFor('telegram')).toBe('slack')
     expect(directMessagePlatformFor('discord')).toBe('slack')
     expect(directMessagePlatformFor('feishu')).toBe('slack')
@@ -164,7 +167,7 @@ describe('the direct-message port', () => {
   })
 
   it('renders the capable platforms for the "not supported here" error', () => {
-    expect(directMessagePlatformList()).toBe('Slack')
+    expect(directMessagePlatformList()).toBe('Slack or DingTalk')
   })
 })
 

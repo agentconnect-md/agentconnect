@@ -1,6 +1,6 @@
 // One DingTalk internal app's daemon connection: the Stream client, robot sends, and what it observed (dingtalk-integration.md §3, §4).
 import { createHash, randomUUID } from 'node:crypto'
-import { normalizeDingTalkMessage, type DingTalkRobotMessage } from '@agentconnect.md/message'
+import { dingTalkDmChannel, normalizeDingTalkMessage, type DingTalkRobotMessage } from '@agentconnect.md/message'
 import type { DingTalkEdition } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../../agents/load-agents.js'
 import type { Logger } from '../../log.js'
@@ -272,6 +272,12 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     const last = this.tenantReport
     if (last?.corpId === corpId && now - last.at < TENANT_REPORT_INTERVAL_MS) return
     if (this.deps.onTenant(corpId)) this.tenantReport = { corpId, at: now }
+  }
+
+  /** A member's DM is the robot's own 1:1 chat, addressed by staff ID (§4.2); an outsider's opaque sender id has none. */
+  async openDirectMessage(user: string): Promise<string> {
+    if (!/^[^\s:$]{1,64}$/.test(user)) throw new Error("dingtalk: a direct message needs a member's staff ID")
+    return dingTalkDmChannel(user)
   }
 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
