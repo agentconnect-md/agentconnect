@@ -22,6 +22,20 @@ export type AgentCommand =
   /** `/permission [mode|number]` (or `/permissions`, `/perm`) — pick the permission mode. */
   | { kind: 'permission'; value: string | null }
 
+/** Each command's usage and what it does, for a platform's help reply; keyed by kind so a new command cannot go unlisted. */
+export const COMMAND_HELP: Readonly<Record<AgentCommand['kind'], { usage: string; does: string }>> = {
+  new: { usage: '!new', does: 'start over with a fresh session' },
+  stop: { usage: '!stop', does: 'stop the current answer and pause replies here' },
+  cancel: { usage: '!cancel', does: 'stop the current answer' },
+  resume: { usage: '!resume', does: 'lift a pause or loop protection' },
+  queue: { usage: '!queue your message', does: 'send your message once the current answer finishes' },
+  status: { usage: '!status', does: 'show the model, context, and token use' },
+  model: { usage: '!model', does: 'list or switch models' },
+  effort: { usage: '!effort', does: 'list or switch the reasoning effort' },
+  permission: { usage: '!permission', does: 'list or switch the permission mode' },
+  fast: { usage: '!fast on|off', does: 'turn fast mode on or off' }
+}
+
 /** Accepted command prefixes (Slack uses `!`; `/` is the Telegram/Discord surface). */
 export const COMMAND_PREFIXES = ['!', '/'] as const
 

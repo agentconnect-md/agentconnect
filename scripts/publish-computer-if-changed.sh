@@ -49,8 +49,8 @@ if [ "$MODE" = prepare ]; then
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
   AGENTCONNECT_RELEASE_VERSION="$VALUE" pnpm run build
   pnpm run license-scan dist
-  pnpm exec json -I -f package.json -e 'this.dependencies={}'
-  pnpm exec json -I -f package.json -e "this.optionalDependencies=$APP_PINS"
+  # One edit: pnpm checks a workspace's dependencies before each exec, and one after the strip would try to reinstall them (frozen in CI).
+  pnpm exec json -I -f package.json -e "this.dependencies={}; this.optionalDependencies=$APP_PINS"
   exit 0
 fi
 

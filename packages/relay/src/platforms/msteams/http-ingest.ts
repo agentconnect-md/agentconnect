@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto'
 import {
   MSTEAMS_MEMBERS_ADDED_MAX,
+  type WireMsTeamsBotAdded,
   type WireMsTeamsCardAction,
   type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
@@ -96,6 +97,41 @@ export function msTeamsMembersAdded(activity: Obj, appId: string): WireMsTeamsMe
     teamWide: channelData?.eventType === 'teamMemberAdded',
     members: members.slice(0, MSTEAMS_MEMBERS_ADDED_MAX)
   }
+}
+
+/** The bot's own install into a conversation, from a `conversationUpdate` that adds it; undefined for any other activity. */
+export function msTeamsBotAdded(activity: Obj, appId: string): WireMsTeamsBotAdded | undefined {
+  if (activity.type !== 'conversationUpdate' || !Array.isArray(activity.membersAdded)) return undefined
+  const bot = `28:${appId}`.toLowerCase()
+  if (!activity.membersAdded.some((entry) => str(obj(entry)?.id)?.toLowerCase() === bot)) return undefined
+  const conversation = obj(activity.conversation)
+  const conversationId = str(conversation?.id)?.split(';')[0]
+  const serviceUrl = str(activity.serviceUrl)
+  const type = str(conversation?.conversationType)
+  const scope = type === 'personal' || type === 'groupChat' || type === 'channel' ? type : undefined
+  if (!conversationId || !serviceUrl || !scope) return undefined
+  const botName = str(obj(activity.recipient)?.name)?.trim().slice(0, 256)
+  const from = obj(activity.from)
+  const fromId = str(from?.id)
+  const fromName = str(from?.name)?.trim().slice(0, 256)
+  return {
+    kind: 'bot-added',
+    conversationId,
+    serviceUrl,
+    scope,
+    ...(botName ? { botName } : {}),
+    ...(fromId && fromId.toLowerCase() !== bot
+      ? { addedBy: { id: fromId, ...(fromName ? { name: fromName } : {}) } }
+      : {})
+  }
+}
+
+/** A bot install's dedup identity: the conversation and the activity, so a redelivery welcomes once and a later reinstall again. */
+export function msTeamsBotAddedMsgId(botId: string, activity: Obj): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ v: 1, botId, conversationId: obj(activity.conversation)?.id, id: activity.id }))
+    .digest('hex')
+  return `msteams-bot-added:${digest.slice(0, 32)}`
 }
 
 /** A member join's dedup identity: the conversation and the activity, unique together. */

@@ -5,6 +5,7 @@ import {
   MSTEAMS_PLATFORM,
   WireMsTeamsCardActionResponse,
   type RdMsgPlatformAction,
+  type WireMsTeamsBotAdded,
   type WireMsTeamsCardAction,
   type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
@@ -13,6 +14,8 @@ import {
   MsTeamsHttpIngest,
   msTeamsActionMsgId,
   msTeamsActivityOf,
+  msTeamsBotAdded,
+  msTeamsBotAddedMsgId,
   msTeamsCardClick,
   msTeamsDedupKey,
   msTeamsInvokeNote,
@@ -90,12 +93,11 @@ async function forwardCardClick(host: RelayIngressHost, botId: string, click: Wi
   return note
 }
 
-// Forward the people a roster change added for the daemon to look up; bounded like a click, since Teams waits on the answer and the lookup is the daemon's.
-async function forwardMembersAdded(
+// Forward a roster change to the bot's agent: the people it added for the daemon to look up, or the bot's own install for it to welcome; bounded like a click, since Teams waits on the answer.
+async function forwardRosterChange(
   host: RelayIngressHost,
   botId: string,
-  activity: Record<string, unknown>,
-  joined: WireMsTeamsMembersAdded
+  change: { sessionKey: string; msgId: string; payload: WireMsTeamsMembersAdded | WireMsTeamsBotAdded; what: string }
 ): Promise<void> {
   const route = host.directory.soleTarget(botId)
   if (!route) return
@@ -104,19 +106,19 @@ async function forwardMembersAdded(
     platformId: MSTEAMS_PLATFORM,
     agentId: route.agentId,
     integrationId: route.integrationId,
-    sessionKey: `msteams-members:${joined.conversationId}`,
-    msgId: msTeamsMembersAddedMsgId(botId, activity),
+    sessionKey: change.sessionKey,
+    msgId: change.msgId,
     botId,
-    payload: joined
+    payload: change.payload
   }
   let timeout: ReturnType<typeof setTimeout> | undefined
   const forwarded = host.forwardAction(rd, route).then(
     (ack) => {
       if (!ack.accepted)
-        host.log.debug(`relay-ingress(${botId}): daemon declined a Teams member join (${ack.reason ?? 'unknown'})`)
+        host.log.debug(`relay-ingress(${botId}): daemon declined a Teams ${change.what} (${ack.reason ?? 'unknown'})`)
     },
     (err: unknown) =>
-      host.log.warn(`relay-ingress(${botId}): Teams member join forward failed: ${(err as Error).message}`)
+      host.log.warn(`relay-ingress(${botId}): Teams ${change.what} forward failed: ${(err as Error).message}`)
   )
   await Promise.race([
     forwarded,
@@ -185,12 +187,25 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         }
         return { syncResponse: msTeamsInvokeNote(await forwardCardClick(host, botId, click)) }
       }
+      // The bot's own install is welcomed once in the conversation it joined (teams-integration.md §4.7).
+      const added = msTeamsBotAdded(activity, ingest.appId)
+      if (added)
+        await forwardRosterChange(host, botId, {
+          sessionKey: `msteams-bot-added:${added.conversationId}`,
+          msgId: msTeamsBotAddedMsgId(botId, activity),
+          payload: added,
+          what: 'bot install'
+        })
       // People added to a conversation are looked up for a guest or another organization (assistant-mode.md §5.3).
       const joined = msTeamsMembersAdded(activity, ingest.appId)
-      if (joined) {
-        await forwardMembersAdded(host, botId, activity, joined)
-        return {}
-      }
+      if (joined)
+        await forwardRosterChange(host, botId, {
+          sessionKey: `msteams-members:${joined.conversationId}`,
+          msgId: msTeamsMembersAddedMsgId(botId, activity),
+          payload: joined,
+          what: 'member join'
+        })
+      if (added || joined) return {}
       // Typing, reactions, edits, deletes, installs and other roster changes start nothing on the relay (§4.2).
       if (activity.type !== 'message') return {}
       const result = normalizeMsTeamsActivity(activity, {

@@ -485,6 +485,34 @@ members, while the row kept its reason. Graph's `allMembers` listed the
 requester twice there, once directly and once through the team the channel is
 shared with; the read keeps one entry per user ID (**measured**).
 
+### 4.7 First run: welcome and help
+
+The Teams Store requires a bot to greet the people who install it and to
+answer `help`, so a first contact never dead-ends.
+
+- **Welcome.** A `conversationUpdate` that adds the bot itself is forwarded to
+  the bot's agent as a `platform_action` (`bot-added`: the conversation, its
+  scope, the bot's manifest name, and who added it). Core composes one welcome
+  and Teams posts it as an Adaptive Card: the bot's name, what it does, how to
+  reach it in that scope, a line that an admin turns it on in the console when
+  the conversation is not enabled yet, how to ask for help, and links to the
+  console, the guide and support. Outside a 1:1 chat the card mentions the
+  person who added the bot. The relay's dedup key is the conversation and the
+  activity, so a redelivery welcomes once and a later reinstall again.
+  `installationUpdate` starts nothing.
+- **Help.** A message that is exactly `help` (the bot's mention removed) is
+  answered by the daemon's relay-ingress step with how to use the bot, every
+  command, and the guide and support links; it starts no turn. It runs after
+  the gate, so in a conversation that is not enabled the not-enabled notice
+  answers instead.
+- **Manifest.** The bot's command list offers `help` and two prompts the agent
+  answers, and the long description says an admin connects the app to an
+  AgentConnect organization first and where to sign up or ask.
+
+A tenant no organization has connected still gets nothing: its activities
+match no row (§8.3). That case needs the deployment app's own answer and is
+not covered here.
+
 ## 5. Console setup
 
 The wizard walks the admin through both registrations and then:

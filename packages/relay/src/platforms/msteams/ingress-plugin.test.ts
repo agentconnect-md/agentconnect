@@ -407,9 +407,13 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
     const added = edit(conversationUpdate, (a) => {
       a.membersAdded = [{ id: BOT_ID }, { id: USER, aadObjectId: AAD_USER }]
     })
+    const joins = () =>
+      vi
+        .mocked(s.h.forwardAction)
+        .mock.calls.filter(([rd]) => (rd.payload as { kind: string }).kind === 'members-added')
     expect((await deliver(s, added)).handled).toEqual({})
-    expect(s.h.forwardAction).toHaveBeenCalledOnce()
-    const [rd] = vi.mocked(s.h.forwardAction).mock.calls[0]!
+    expect(joins()).toHaveLength(1)
+    const [rd] = joins()[0]!
     expect(rd).toMatchObject({
       source: 'platform_action',
       platformId: 'msteams',
@@ -433,7 +437,50 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
       a.membersAdded = [{ id: BOT_ID }, { id: USER, aadObjectId: AAD_USER }]
     })
     expect((await deliver(s, personalInstall)).handled).toEqual({})
-    expect(s.h.forwardAction).toHaveBeenCalledOnce()
+    expect(joins()).toHaveLength(1)
+  })
+
+  it('forwards the bot’s own install for the daemon to welcome, naming who added it', async () => {
+    const s = setup()
+    const installs = () =>
+      vi.mocked(s.h.forwardAction).mock.calls.filter(([rd]) => (rd.payload as { kind: string }).kind === 'bot-added')
+    const teamInstall = edit(conversationUpdate, (a) => {
+      a.membersAdded = [{ id: BOT_ID }]
+      a.from = { id: USER, name: 'Example Person', aadObjectId: AAD_USER }
+      a.recipient = { id: BOT_ID, name: 'Example Bot' }
+    })
+    expect((await deliver(s, teamInstall)).handled).toEqual({})
+    const personalInstall = edit(teamInstall, (a) => {
+      a.id = 'f:example-personal-install'
+      a.conversation = { id: PERSONAL, conversationType: 'personal', tenantId: TENANT }
+    })
+    expect((await deliver(s, personalInstall)).handled).toEqual({})
+    expect(installs().map(([rd]) => rd.payload)).toEqual([
+      {
+        kind: 'bot-added',
+        conversationId: CHANNEL,
+        serviceUrl: SERVICE_URL,
+        scope: 'channel',
+        botName: 'Example Bot',
+        addedBy: { id: USER, name: 'Example Person' }
+      },
+      {
+        kind: 'bot-added',
+        conversationId: PERSONAL,
+        serviceUrl: SERVICE_URL,
+        scope: 'personal',
+        botName: 'Example Bot',
+        addedBy: { id: USER, name: 'Example Person' }
+      }
+    ])
+    const [first, second] = installs().map(([rd]) => rd)
+    expect(first).toMatchObject({ integrationId: TARGET.integrationId, sessionKey: `msteams-bot-added:${CHANNEL}` })
+    expect(first!.msgId).toMatch(/^msteams-bot-added:[0-9a-f]{32}$/)
+    expect(second!.msgId).not.toBe(first!.msgId)
+    // Someone else joining forwards no install.
+    const someoneElse = edit(conversationUpdate, (a) => (a.membersAdded = [{ id: USER, aadObjectId: AAD_USER }]))
+    await deliver(s, someoneElse)
+    expect(installs()).toHaveLength(2)
   })
 })
 

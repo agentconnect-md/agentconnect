@@ -732,6 +732,21 @@ export const WireMsTeamsMembersAdded = z.object({
 })
 export type WireMsTeamsMembersAdded = z.infer<typeof WireMsTeamsMembersAdded>
 
+/** R→D `platform_action` payload for the bot itself being added to a Teams conversation, which the daemon welcomes once. */
+export const WireMsTeamsBotAdded = z.object({
+  kind: z.literal('bot-added'),
+  /** The conversation the bot joined, `;messageid=` stripped: a 1:1 chat, a group chat, or the channel it was added in. */
+  conversationId: z.string().min(1),
+  /** The regional Bot Connector origin the token vouched for, where the welcome is posted. */
+  serviceUrl: z.string().url(),
+  scope: z.enum(['personal', 'groupChat', 'channel']),
+  /** The bot's own name as the manifest gives it, which the welcome names it by. */
+  botName: z.string().min(1).max(256).optional(),
+  /** The person who added the bot, whom a group or channel welcome mentions. */
+  addedBy: z.object({ id: z.string().min(1), name: z.string().min(1).max(256).optional() }).optional()
+})
+export type WireMsTeamsBotAdded = z.infer<typeof WireMsTeamsBotAdded>
+
 /** The longest note a Teams card click's ack may hand the relay to show the clicker. */
 export const MSTEAMS_CARD_NOTE_MAX = 500
 
