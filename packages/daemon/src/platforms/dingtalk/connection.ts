@@ -274,6 +274,14 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (this.deps.onTenant(corpId)) this.tenantReport = { corpId, at: now }
   }
 
+  /** The send tool's post (§4.2): DingTalk has no threads, so the first part's process query key names it. */
+  async postMessage(channel: string, text: string): Promise<string | undefined> {
+    const sent = await this.sendMarkdown(channel, text)
+    const failed = sent.find((part) => part.error !== undefined)
+    if (failed) throw failed.error instanceof Error ? failed.error : new Error('dingtalk: send failed')
+    return sent[0]?.processQueryKey
+  }
+
   /** A member's DM is the robot's own 1:1 chat, addressed by staff ID (§4.2); an outsider's opaque sender id has none. */
   async openDirectMessage(user: string): Promise<string> {
     if (!/^[^\s:$]{1,64}$/.test(user)) throw new Error("dingtalk: a direct message needs a member's staff ID")
